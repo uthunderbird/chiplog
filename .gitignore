@@ -24,3 +24,9 @@ build/
 *.log
 credentials.json
 token.json
+.harness/.healthcheck-state
+.harness/handoff.md
+/runtime/
+/state/
+/journal.jsonl
+/*.journal.jsonl

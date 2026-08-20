@@ -12,12 +12,12 @@
 # exit 2 — блокирующий отказ, stderr возвращается агенту.
 set -eu
 
-cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
+cd "${HARNESS_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}" 2>/dev/null || exit 0
 [ -f .harness/scripts/thresholds.sh ] || exit 0
 . .harness/scripts/thresholds.sh
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
-PORCELAIN=$(git status --porcelain 2>/dev/null || true)
+PORCELAIN=$(git status --porcelain --untracked-files=all 2>/dev/null || true)
 FILES=$(printf '%s\n' "$PORCELAIN" | grep -c '^[^R]' 2>/dev/null || true)
 case "$FILES" in ''|*[!0-9]*) FILES=0 ;; esac
 [ -z "$PORCELAIN" ] && FILES=0

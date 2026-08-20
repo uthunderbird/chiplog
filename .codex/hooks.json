@@ -1,0 +1,40 @@
+{
+  "description": "Repository harness lifecycle hooks.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=\"$(git rev-parse --show-toplevel)\"; if [ -L \"$root/.agents/hooks/codex-harness.py\" ] || [ -L \"$root/.harness/scripts/session-start.sh\" ] || ! printf '%s  %s\\n%s  %s\\n' 0366113a5ee05d0aee898065e2358a85f44a1a24c1c9531e3f487654b3e9e350 \"$root/.agents/hooks/codex-harness.py\" 2c106e631e92d888c533a7c5c5a57230f4e0ef5fbb52092bcd56507bd0a948ff \"$root/.harness/scripts/session-start.sh\" | shasum -a 256 -c --status; then echo 'Codex harness hook: reviewed executable changed; open /hooks' >&2; exit 0; fi; python3 \"$root/.agents/hooks/codex-harness.py\" session-start \"$root\"",
+            "statusMessage": "Loading harness dashboard"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=\"$(git rev-parse --show-toplevel)\"; if [ -L \"$root/.agents/hooks/codex-harness.py\" ] || [ -L \"$root/.harness/scripts/healthcheck.sh\" ] || ! printf '%s  %s\\n%s  %s\\n' 0366113a5ee05d0aee898065e2358a85f44a1a24c1c9531e3f487654b3e9e350 \"$root/.agents/hooks/codex-harness.py\" d0c7ef601fe293c845b5f7115196cb8c7f88b8f38afa70e4777ef81a55caf569 \"$root/.harness/scripts/healthcheck.sh\" | shasum -a 256 -c --status; then echo 'Codex harness hook: reviewed executable changed; open /hooks' >&2; exit 0; fi; python3 \"$root/.agents/hooks/codex-harness.py\" healthcheck \"$root\"",
+            "statusMessage": "Checking repository health"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=\"$(git rev-parse --show-toplevel)\"; if [ -L \"$root/.agents/hooks/codex-harness.py\" ] || [ -L \"$root/.harness/scripts/guard-edit.sh\" ] || ! printf '%s  %s\\n%s  %s\\n' 0366113a5ee05d0aee898065e2358a85f44a1a24c1c9531e3f487654b3e9e350 \"$root/.agents/hooks/codex-harness.py\" ec40d2fb090b75fb8d6845600dd24fa98e68ac9cdc11a8e56d108f079f2ebc69 \"$root/.harness/scripts/guard-edit.sh\" | shasum -a 256 -c --status; then echo 'Codex harness hook: reviewed executable changed; open /hooks' >&2; exit 2; fi; python3 \"$root/.agents/hooks/codex-harness.py\" guard-edit \"$root\"",
+            "statusMessage": "Checking harness edit guard"
+          }
+        ]
+      }
+    ]
+  }
+}

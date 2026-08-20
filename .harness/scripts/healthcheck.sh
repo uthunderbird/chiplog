@@ -16,7 +16,7 @@
 # всё, что печатается на каждом ходу, перестают читать примерно на третьем.
 set -eu
 
-cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
+cd "${HARNESS_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-.}}" 2>/dev/null || exit 0
 [ -f .harness/scripts/thresholds.sh ] || exit 0
 . .harness/scripts/thresholds.sh
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
@@ -54,7 +54,7 @@ hl() {
 }
 
 # --- состояние дерева: один вызов git на все проверки ------------------------
-PORCELAIN=$(git status --porcelain 2>/dev/null || true)
+PORCELAIN=$(git status --porcelain --untracked-files=all 2>/dev/null || true)
 # Переименования не считаем: перенос каталога даёт десятки путей и одну мысль.
 # В истории этого репозитория переименования доходили до половины путей
 # (git status --porcelain | grep -c '^R').
