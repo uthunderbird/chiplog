@@ -1,0 +1,3 @@
+#!/bin/sh
+# Гейт — шаг, который нельзя пропустить молча.
+exec sh "$(git rev-parse --show-toplevel)/.harness/scripts/gate.sh"

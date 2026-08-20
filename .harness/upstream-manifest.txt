@@ -1,0 +1,40 @@
+100755 blob d0eeca31bae4ca144f201a7cc8d5c92359f6f15b	.githooks/pre-commit
+100644 blob 3e35250ccc91ba84a76fc217ca4ac3d56d3433a7	.harness/reproducers/README.md
+100644 blob 446c79a5e50d019a3cafbc132a3743d7b7f00ed8	.harness/retro/README.md
+100644 blob e0634e063784cbe5c8f2d9d4e71b4cfc62fb414e	.harness/retro/TEMPLATE.md
+100644 blob 2faf4956c573c976af50023bc33fc7dd531694d4	.harness/rules/README.md
+100755 blob 1e94cb98b357e1105b082962d33e23ef09cf6eb7	.harness/scripts/bootstrap.sh
+100755 blob 4f851aa2c173c57218bc5c6651f6bb6e7cc90746	.harness/scripts/checks/checks_are_wired.py
+100755 blob 1050b2f93c9c822fc2d1a65ba44a8213ac47be9e	.harness/scripts/checks/commit_trail.py
+100755 blob 9a4b6206c29ed1fc2a6f36ed8572f7bc8bd6bf81	.harness/scripts/checks/handoff_pending.py
+100644 blob 7cf54dedd6aaa240cfe43a498ac5a6d34399a3c9	.harness/scripts/checks/messages_are_actionable.py
+100755 blob d74c59df7f46bf0d12e23d4c57aa57bce3aead16	.harness/scripts/checks/polish_artifacts.py
+100755 blob f832f8a3223e26c57e3a4a2be12b19cb3499d0b8	.harness/scripts/checks/retro_due.py
+100755 blob 786d286a476dcb8ef1268b398c380ce8b785d407	.harness/scripts/checks/rules_have_reproducers.py
+100755 blob 47d7ef1a8d9f7172738867ffeefed4a4e83d5b93	.harness/scripts/checks/slugify.py
+100755 blob 52fe9485731fa7847f831d0255abd28c76325588	.harness/scripts/dashboard.sh
+100755 blob 75a62eba76c3b44bac8fb8bfd950a34c3c7d4cb6	.harness/scripts/decide.sh
+100755 blob 34288dc20fe421956678f98027346c1e6b1d272c	.harness/scripts/defer.sh
+100755 blob b28be5fe281bed8f9a2a074d97b33891eb96e264	.harness/scripts/gate.sh
+100755 blob c025957b8a59030abf4eb4811a75f8a1b23484da	.harness/scripts/guard-edit.sh
+100755 blob 759ea5934c01e1daccf8afc7d943259fa5f633a8	.harness/scripts/handoff.py
+100755 blob 97497ab73b37b3f787e2876492677c64c434e2e5	.harness/scripts/handoff.sh
+100755 blob 216e8e1a3b948ac6cfa324f949507b2be25c864e	.harness/scripts/healthcheck.sh
+100755 blob 4418a0ea4a11e5dfabe2a46709f893c37ef95810	.harness/scripts/install-skills.sh
+100755 blob a13d643a8fff0a31a758f1e7901f4c7ba2127adc	.harness/scripts/lint.sh
+100755 blob 3b0cf1c7356de652648af82144de4390a84674f1	.harness/scripts/new-case.sh
+100755 blob e9901493986209b9debc225a0a44e1f4d412f6ac	.harness/scripts/new-retro.sh
+100755 blob e47cec76f9a2f3888d58ca400a99907c387ffe5c	.harness/scripts/new-rule.sh
+100755 blob 23358cbb5a1578e9f8760f749af886fc9a8c1345	.harness/scripts/replay.sh
+100755 blob f3bb270c3530072c50fc3fe4fd2bda97214b0438	.harness/scripts/retro-inputs.sh
+100755 blob 67961f42b41ab7efac77e8a62f51e8ac98009364	.harness/scripts/session-start.sh
+100755 blob 950db5d13be7e59823f4d1af285e508823aaafb1	.harness/scripts/test.sh
+100644 blob 2b367df55875459c56f6f76a530d5d3b4b96581b	.harness/scripts/thresholds.sh
+100755 blob 1c06c6c02c52a152f7c792e3cb5e2ddfee5c4bd8	.harness/scripts/verify-integration.sh
+100644 blob ba05ad129fce84d65024e81591c45e06d64da4a7	.harness/skills/integrate/SKILL.md
+100644 blob 19c362fb030f1cbeed5692df9b08d1a7bbadcb4f	.harness/skills/retro/SKILL.md
+100644 blob 064347e32888579ecacfd6ef187aec3b245d6d8b	.harness/skills/retro/references/actions.md
+source local:../harness-boilerplate
+commit 25412952cb5a2d56a83d2b9e1c66521d4deca59b
+manifest-oid 4d3655993b0e6c5026cf7987c668ad702968bf52
+license-basis owner-confirmed-right-and-compatibility

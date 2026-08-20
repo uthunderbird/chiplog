@@ -22,6 +22,7 @@ dev = [
 ]
 
 [tool.ruff]
+extend-exclude = [".harness"]
 line-length = 100
 src = ["src", "tests"]
 target-version = "py314"
@@ -34,6 +35,10 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 python_version = "3.14"
 strict = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["test_scaffold"]
+warn_unused_ignores = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
