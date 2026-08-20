@@ -8,6 +8,9 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 FAILED=0
 
+: "${UV_CACHE_DIR:=${TMPDIR:-/tmp}/chiplog-uv-cache}"
+export UV_CACHE_DIR
+
 # --- shell: синтаксис всех скриптов харнесса и хуков -------------------------
 for f in .harness/scripts/*.sh .githooks/*; do
     [ -f "$f" ] || continue

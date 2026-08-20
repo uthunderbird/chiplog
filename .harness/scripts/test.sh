@@ -8,6 +8,9 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 FAILED=0
 
+: "${UV_CACHE_DIR:=${TMPDIR:-/tmp}/chiplog-uv-cache}"
+export UV_CACHE_DIR
+
 # --- chiplog: тесты ---------------------------------------------------------
 if ! uv run pytest; then
     echo "    тесты Chiplog не прошли" >&2
