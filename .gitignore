@@ -1,0 +1,26 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Local planning artifacts
+scratchpads/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Local runtime state
+*.db
+*.sqlite
+*.sqlite3
+*.log
+credentials.json
+token.json
