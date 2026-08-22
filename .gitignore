@@ -5,6 +5,7 @@
 
 # Local planning artifacts
 scratchpads/
+/grill/
 
 # Python
 .venv/
