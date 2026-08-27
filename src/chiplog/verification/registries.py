@@ -11,7 +11,19 @@ CLOSED_PROFILES = (
     "release",
 )
 
-IMPLEMENTED_PROFILES = frozenset({"fast"})
+IMPLEMENTED_PROFILES = frozenset({"fast", "stage0"})
+
+STAGE0_INCREMENT_REGISTRY = (
+    "R1",
+    "R2",
+    "R3",
+    "R4",
+    "R5",
+    "R6",
+    "R7",
+    "R8",
+)
+STAGE0_EVIDENCED_INCREMENTS = frozenset({"R1", "R2", "R3"})
 
 FIXTURES = (
     FixtureRegistration(

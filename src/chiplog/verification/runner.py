@@ -13,6 +13,8 @@ from .registries import (
     CLOSED_PROFILES,
     FIXTURES,
     IMPLEMENTED_PROFILES,
+    STAGE0_EVIDENCED_INCREMENTS,
+    STAGE0_INCREMENT_REGISTRY,
     SURFACE_REGISTRY_GENERATION,
     SURFACES,
 )
@@ -200,6 +202,73 @@ def _validate_surface_registry(
         raise ValueError(f"R0 production surface registry must be empty: {surfaces}")
 
 
+def _validate_stage0_registry(
+    increments: tuple[str, ...] = STAGE0_INCREMENT_REGISTRY,
+    evidenced: frozenset[str] = STAGE0_EVIDENCED_INCREMENTS,
+) -> None:
+    expected = tuple(f"R{number}" for number in range(1, 9))
+    if increments != expected or len(increments) != len(set(increments)):
+        raise ValueError("stage0 increment registry must be the exact ordered R1-R8 set")
+    if not evidenced or not evidenced <= set(increments):
+        raise ValueError("stage0 evidenced increment set is empty or contains unknown rows")
+    if evidenced != frozenset({"R1", "R2", "R3"}):
+        raise ValueError("stage0 evidenced increment set silently omits or adds a stage")
+
+
+def _run_test_slice(root: Path, increment: str, paths: tuple[str, ...]) -> CheckResult:
+    completed = subprocess.run(
+        ["uv", "run", "pytest", "-q", *paths],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return CheckResult(
+        f"stage0.{increment.lower()}",
+        "PASS" if completed.returncode == 0 else "FAIL",
+        f"{increment} implementation evidence passes its frozen test slice",
+        {
+            "command": ["uv", "run", "pytest", "-q", *paths],
+            "returncode": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+        },
+    )
+
+
+def _check_stage0(root: Path) -> list[CheckResult]:
+    _validate_stage0_registry()
+    slices = {
+        "R1": ("tests/conformance/test_canonicalization.py",),
+        "R2": ("tests/architecture", "tests/integration/test_r1_r2_contract.py"),
+        "R3": ("tests/platform",),
+    }
+    checks = [
+        _run_test_slice(root, increment, slices[increment]) for increment in ("R1", "R2", "R3")
+    ]
+    checks.extend(
+        CheckResult(
+            f"stage0.{increment.lower()}",
+            "HOLD",
+            f"{increment} implementation evidence is required before the Stage-0 barrier",
+            {"implemented": False, "evidenced_invariants": []},
+        )
+        for increment in ("R4", "R5", "R6", "R7", "R8")
+    )
+    if tuple(check.check_id.removeprefix("stage0.").upper() for check in checks) != (
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7",
+        "R8",
+    ):
+        raise RuntimeError("stage0 check aggregation is not the exact R1-R8 set")
+    return checks
+
+
 def run_profile(root: Path, profile: str) -> tuple[dict[str, object], Path]:
     if profile not in CLOSED_PROFILES:
         raise ValueError(f"unknown profile: {profile}")
@@ -220,15 +289,26 @@ def run_profile(root: Path, profile: str) -> tuple[dict[str, object], Path]:
             },
         }
         return result, write_artifact(root, result)
-    checks = _check_fast(root)
+    checks = _check_fast(root) if profile == "fast" else _check_stage0(root)
     if not checks:
         raise RuntimeError("an implemented profile cannot contain zero checks")
-    status = "PASS" if all(check.status == "PASS" for check in checks) else "FAIL"
+    status = (
+        "PASS"
+        if all(check.status == "PASS" for check in checks)
+        else "HOLD"
+        if any(check.status == "HOLD" for check in checks)
+        and not any(check.status == "FAIL" for check in checks)
+        else "FAIL"
+    )
     result = {
         "schema_version": 1,
         "profile": profile,
         "status": status,
-        "claim": "R0 verifier substrate and compile-only transcript contracts only",
+        "claim": (
+            "R0 verifier substrate and compile-only transcript contracts only"
+            if profile == "fast"
+            else "R1-R3 Stage-0 implementation evidence only; R4-R8 remain HOLD"
+        ),
         "checks": [check.to_dict() for check in checks],
         "input_identity": inputs,
         "eligibility": {

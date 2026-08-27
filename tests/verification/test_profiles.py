@@ -39,7 +39,7 @@ def test_fast_profile_pass_is_narrow_and_holds_all_eligibility() -> None:
     assert json.loads(artifact.read_text()) == result
 
 
-@pytest.mark.parametrize("profile", sorted(set(CLOSED_PROFILES) - {"fast"}))
+@pytest.mark.parametrize("profile", sorted(set(CLOSED_PROFILES) - {"fast", "stage0"}))
 def test_unimplemented_profile_is_nonpassing_hold(profile: str) -> None:
     result, _ = run_profile(ROOT, profile)
 
@@ -47,6 +47,43 @@ def test_unimplemented_profile_is_nonpassing_hold(profile: str) -> None:
     assert result["checks"] == []
     eligibility = cast(dict[str, object], result["eligibility"])
     assert eligibility["adoption"] == "HOLD_ADOPTION"
+
+
+def test_stage0_emits_r3_evidence_but_holds_explicit_r4_r8_set() -> None:
+    result, artifact = run_profile(ROOT, "stage0")
+
+    assert result["status"] == "HOLD"
+    checks = cast(list[dict[str, object]], result["checks"])
+    assert [check["check_id"] for check in checks] == [
+        f"stage0.r{number}" for number in range(1, 9)
+    ]
+    assert [check["status"] for check in checks[:3]] == ["PASS", "PASS", "PASS"]
+    assert [check["status"] for check in checks[3:]] == ["HOLD"] * 5
+    assert json.loads(artifact.read_text()) == result
+
+
+@pytest.mark.parametrize(
+    ("increments", "evidenced"),
+    [
+        ((), frozenset()),
+        (("R1", "R2", "R3", "R4", "R5", "R6", "R7"), frozenset({"R1", "R2", "R3"})),
+        (
+            ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R8"),
+            frozenset({"R1", "R2", "R3"}),
+        ),
+        (
+            ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"),
+            frozenset({"R1", "R2", "UNKNOWN"}),
+        ),
+    ],
+)
+def test_stage0_rejects_empty_missing_duplicate_or_unknown_check_sets(
+    increments: tuple[str, ...], evidenced: frozenset[str]
+) -> None:
+    from chiplog.verification import runner
+
+    with pytest.raises(ValueError, match="stage0"):
+        runner._validate_stage0_registry(increments, evidenced)
 
 
 def test_unknown_profile_fails_closed() -> None:
