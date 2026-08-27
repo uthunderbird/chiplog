@@ -68,8 +68,11 @@ runnable test suite; it does not activate or claim the integrated `stage0` profi
 ## Integration-owned contract
 
 The root integration owns shared verification registries and the profile runner.
-Only after both lanes merge may it activate `stage0`, whose exact check set is the
-union of R1 V1/V2 and R2 V2 evidence. Neither lane edits
+After both lanes merge it runs a distinct R1/R2 convergence suite whose exact check
+set is the union of R1 V1/V2, R2 V2, and an independently derived runtime-to-frozen
+signature comparison. This convergence result does not activate or imply the
+canonical `stage0` profile. That profile remains `HOLD` until the R0–R8 Stage-0
+barrier in the roadmap is complete. Neither lane edits
 `src/chiplog/verification/runner.py` or `registries.py`.
 
 The canonical ignored inputs copied into each worktree are read-only snapshots of
