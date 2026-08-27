@@ -316,3 +316,107 @@ def test_test_gate_clears_git_local_environment_before_verifiers(tmp_path: Path)
         )
         == "nested\n"
     )
+
+
+def test_new_retro_supports_explicit_collision_safe_ids(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    scripts = project / ".harness/scripts"
+    retro = project / ".harness/retro"
+    scripts.mkdir(parents=True)
+    retro.mkdir(parents=True)
+    shutil.copy2(ROOT / ".harness/scripts/new-retro.sh", scripts / "new-retro.sh")
+    shutil.copy2(ROOT / ".harness/retro/TEMPLATE.md", retro / "TEMPLATE.md")
+
+    base = subprocess.run(
+        ["sh", str(scripts / "new-retro.sh")], capture_output=True, text=True, check=True
+    )
+    base_match = re.search(r"создано: (.+)", base.stdout)
+    assert base_match is not None
+    base_path = Path(base_match.group(1))
+    base_bytes = base_path.read_bytes()
+
+    collision = subprocess.run(
+        ["sh", str(scripts / "new-retro.sh")], capture_output=True, text=True, check=False
+    )
+    assert collision.returncode != 0
+    assert "→ сделай:" in collision.stderr
+    assert "--id" in collision.stderr
+
+    qualified = subprocess.run(
+        ["sh", str(scripts / "new-retro.sh"), "--id", "r1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    qualified_match = re.search(r"создано: (.+)", qualified.stdout)
+    assert qualified_match is not None
+    qualified_path = Path(qualified_match.group(1))
+    qualified_bytes = qualified_path.read_bytes()
+    repeated = subprocess.run(
+        ["sh", str(scripts / "new-retro.sh"), "--id", "r1"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert repeated.returncode != 0
+    assert base_path.read_bytes() == base_bytes
+    assert qualified_path.read_bytes() == qualified_bytes
+    assert not list(retro.glob(".new-retro.*"))
+
+
+def test_retro_skip_streak_uses_commit_order_not_same_day_filename_order(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    checks = project / ".harness/scripts/checks"
+    retro = project / ".harness/retro"
+    checks.mkdir(parents=True)
+    retro.mkdir(parents=True)
+    shutil.copy2(ROOT / ".harness/scripts/checks/retro_due.py", checks / "retro_due.py")
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "retro@example.invalid"], cwd=project, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Retro"], cwd=project, check=True)
+
+    (retro / "2026-08-27-z.md").write_text(
+        "---\ndate: 2026-08-27\noutcome: skip\nreason: first\n---\n"
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "first retro"], cwd=project, check=True)
+    (retro / "2026-08-27-a.md").write_text(
+        "---\ndate: 2026-08-27\noutcome: change\nrule: .harness/scripts/checks/retro_due.py\n---\n"
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "second retro"], cwd=project, check=True)
+
+    status = subprocess.check_output(
+        ["python3", str(checks / "retro_due.py"), "--root", str(project), "--status"],
+        text=True,
+    )
+    assert "retro_entries=2" in status
+    assert "retro_skips=0" in status
+
+    subprocess.run(
+        ["git", "mv", ".harness/retro/2026-08-27-z.md", ".harness/retro/2026-08-27-y.md"],
+        cwd=project,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-qm", "rename first retro"], cwd=project, check=True)
+    committed_rename_status = subprocess.check_output(
+        ["python3", str(checks / "retro_due.py"), "--root", str(project), "--status"],
+        text=True,
+    )
+    assert "retro_skips=0" in committed_rename_status
+
+    subprocess.run(
+        ["git", "mv", ".harness/retro/2026-08-27-y.md", ".harness/retro/2026-08-27-x.md"],
+        cwd=project,
+        check=True,
+    )
+    staged_rename_status = subprocess.check_output(
+        ["python3", str(checks / "retro_due.py"), "--root", str(project), "--status"],
+        text=True,
+    )
+    assert "retro_skips=0" in staged_rename_status

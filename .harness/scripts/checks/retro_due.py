@@ -82,6 +82,51 @@ def commits_since(root, path):
         return None
 
 
+def order_entries_by_history(root, entries):
+    """Order committed retros by repository history; current work follows HEAD."""
+    try:
+        history = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "--reverse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        positions = {commit: index for index, commit in enumerate(history)}
+    except subprocess.CalledProcessError:
+        positions = {}
+
+    staged_sources = {}
+    try:
+        staged = subprocess.run(
+            [
+                "git", "-C", str(root), "diff", "--cached", "--name-status", "-M", "--",
+                ".harness/retro",
+            ],
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        for line in staged:
+            fields = line.split("\t")
+            if fields and fields[0].startswith("R") and len(fields) == 3:
+                staged_sources[fields[2]] = fields[1]
+    except subprocess.CalledProcessError:
+        pass
+
+    def key(path):
+        relative = str(path.relative_to(root))
+        historical_path = staged_sources.get(relative, relative)
+        try:
+            created = subprocess.run(
+                [
+                    "git", "-C", str(root), "log", "--follow", "--diff-filter=A", "-1",
+                    "--format=%H", "--", historical_path,
+                ],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+        except subprocess.CalledProcessError:
+            created = ""
+        return (positions.get(created, len(positions)), path.name)
+
+    return sorted(entries, key=key)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(pathlib.Path(__file__).resolve().parents[3]))
@@ -91,7 +136,10 @@ def main():
     root = pathlib.Path(args.root)
     retro_dir = root / ".harness" / "retro"
 
-    entries = sorted(p for p in retro_dir.glob("*.md") if p.name not in ("README.md", "TEMPLATE.md"))
+    entries = order_entries_by_history(
+        root,
+        [p for p in retro_dir.glob("*.md") if p.name not in ("README.md", "TEMPLATE.md")],
+    )
     problems = []
 
     if args.status:
