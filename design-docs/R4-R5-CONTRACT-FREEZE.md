@@ -62,7 +62,12 @@ evidence that either isolated lane is already integrated.
 
 ## Ownership and convergence barrier
 
-R4 owns `chiplog.capabilities.deployment_trust`; R5 owns
+R4 owns `chiplog.capabilities.deployment_trust` plus the mechanical driven
+implementations in `chiplog.adapters.driven.deployment_trust`: an independently
+durable `TenantDecisionJournalPort` provider outside the SQLite backup domain and
+a `TrustMaterializationPort` provider over the R3 substrate. The capability never
+imports either implementation, and journal `DECIDED_COMMIT` precedes idempotent
+SQLite materialization. R5 owns
 `chiplog.capabilities.planning` and `chiplog.capabilities.projections`. Neither
 lane imports the other, changes `chiplog.platform`, or edits this freeze. Both use
 only frozen R1 values at their public boundary. The projection is a separately
@@ -76,3 +81,8 @@ sink frozen in code. Before R4/R5 convergence is accepted, mutation tests remove
 or alter one entry in every frozen family and observe rejection; the full R0–R5
 stage-0 suite then runs. Until that barrier passes, neither lane is production or
 evaluation evidence.
+
+All R4/R5 inbound and outbound interfaces are `typing.Protocol` contracts.
+Requests, decisions, references, commands, records, and results are immutable
+value types; concrete adapters and test doubles satisfy ports structurally and
+are never imported by a capability.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from .manifests import (
     R1_SIGNATURES,
@@ -10,6 +11,7 @@ from .manifests import (
     CapabilityDecl,
     ExportDecl,
     PackageDecl,
+    ProviderBinding,
     RecordOwnership,
     SurfaceDecl,
     signature_digest,
@@ -22,6 +24,7 @@ class FrozenExport:
     reference: str
     owner: str
     fields: tuple[tuple[str, str], ...]
+    visibility: Literal["public", "private"] = "public"
 
     @property
     def signature_digest(self) -> str:
@@ -37,12 +40,25 @@ class FrozenRecord:
 
 
 R4_R5_PACKAGES: tuple[tuple[str, str], ...] = (
+    ("chiplog.adapters.driven.deployment_trust", "composition"),
     ("chiplog.capabilities.deployment_trust", "deployment_trust"),
     ("chiplog.capabilities.planning", "planning"),
     ("chiplog.capabilities.projections", "projections"),
 )
 
 R4_R5_EXPORTS: tuple[FrozenExport, ...] = (
+    FrozenExport(
+        "chiplog.adapters.driven.deployment_trust:IndependentTenantDecisionJournal",
+        "",
+        (("path", "Path"),),
+        "private",
+    ),
+    FrozenExport(
+        "chiplog.adapters.driven.deployment_trust:SQLiteTrustMaterializer",
+        "",
+        (("database", "Path"),),
+        "private",
+    ),
     FrozenExport(
         "chiplog.capabilities.deployment_trust:AuthenticationRequest",
         "deployment_trust",
@@ -55,6 +71,11 @@ R4_R5_EXPORTS: tuple[FrozenExport, ...] = (
         ),
     ),
     FrozenExport(
+        "chiplog.capabilities.deployment_trust:TenantDecisionJournalPort",
+        "deployment_trust",
+        (("decision", "bytes"), ("predecessor", "str | None"), ("result", "str")),
+    ),
+    FrozenExport(
         "chiplog.capabilities.deployment_trust:TrustDecision",
         "deployment_trust",
         (
@@ -62,6 +83,11 @@ R4_R5_EXPORTS: tuple[FrozenExport, ...] = (
             ("reference", "TrustReference | None"),
             ("reason", "str | None"),
         ),
+    ),
+    FrozenExport(
+        "chiplog.capabilities.deployment_trust:TrustMaterializationPort",
+        "deployment_trust",
+        (("decision_id", "str"), ("records", "tuple[bytes, ...]"), ("result", "str")),
     ),
     FrozenExport(
         "chiplog.capabilities.deployment_trust:TrustReference",
@@ -305,18 +331,33 @@ R4_R5_SURFACES = (
     "planning.commit",
     "projections.rebuild",
 )
+R4_R5_PROVIDERS = (
+    ProviderBinding(
+        "chiplog.capabilities.deployment_trust:TenantDecisionJournalPort",
+        "deployment_trust",
+        "chiplog.adapters.driven.deployment_trust:IndependentTenantDecisionJournal",
+    ),
+    ProviderBinding(
+        "chiplog.capabilities.deployment_trust:TrustMaterializationPort",
+        "deployment_trust",
+        "chiplog.adapters.driven.deployment_trust:SQLiteTrustMaterializer",
+    ),
+)
 
 R4_R5_ARCHITECTURE = ArchitectureManifest(
     generation="r4-r5-parallel-freeze-v1",
     schema_version=1,
     evidentiary=False,
     r1_signatures=R1_SIGNATURES,
-    packages=tuple(PackageDecl(name, "capability", owner) for name, owner in R4_R5_PACKAGES),
+    packages=tuple(
+        PackageDecl(name, "adapter" if ".adapters." in name else "capability", owner)
+        for name, owner in R4_R5_PACKAGES
+    ),
     exports=tuple(
         ExportDecl(
             item.reference,
             item.reference.rpartition(":")[0],
-            "public",
+            item.visibility,
             item.signature_digest,
             item.owner,
         )
@@ -330,7 +371,7 @@ R4_R5_ARCHITECTURE = ArchitectureManifest(
         for item in R4_R5_RECORDS
     ),
     bridges=(),
-    providers=(),
+    providers=R4_R5_PROVIDERS,
     surfaces=(
         SurfaceDecl("deployment_trust.commit", "deployment_trust", False),
         SurfaceDecl("planning.commit", "planning", False),
@@ -352,21 +393,22 @@ def verify_r4_r5_freeze() -> None:
         R4_R5_DERIVATIVE_SINKS,
         R4_R5_CAPABILITIES,
         R4_R5_SURFACES,
+        tuple(item.port for item in R4_R5_PROVIDERS),
     )
     for values in collections:
         if values != tuple(sorted(values)) or len(values) != len(set(values)):
             raise ValueError("R4/R5 freeze sets must be unique and canonically ordered")
     owners = set(R4_R5_CAPABILITIES)
-    if any(owner not in owners for _, owner in R4_R5_PACKAGES):
+    if any(owner not in owners | {"composition"} for _, owner in R4_R5_PACKAGES):
         raise ValueError("R4/R5 package owner is not frozen")
-    if any(item.owner not in owners for item in R4_R5_EXPORTS):
+    if any(item.owner not in owners | {""} for item in R4_R5_EXPORTS):
         raise ValueError("R4/R5 export owner is not frozen")
     if any(item.owner not in owners for item in R4_R5_RECORDS):
         raise ValueError("R4/R5 record owner is not frozen")
     if {item.commit_boundary for item in R4_R5_RECORDS} - set(R4_R5_SURFACES):
         raise ValueError("R4/R5 record commit boundary is not frozen")
     package_owners = dict(R4_R5_PACKAGES)
-    if set(package_owners.values()) != owners:
+    if {owner for owner in package_owners.values() if owner != "composition"} != owners:
         raise ValueError("R4/R5 package/capability sets differ")
     if set(R4_R5_DERIVATIVE_SINKS) != {"chiplog.projections.planning.v1"}:
         raise ValueError("R4/R5 derivative sink differs from freeze")
@@ -381,4 +423,6 @@ def verify_r4_r5_freeze() -> None:
         raise ValueError("R4/R5 architecture record set differs from freeze")
     if tuple(item.name for item in expected.surfaces) != R4_R5_SURFACES:
         raise ValueError("R4/R5 architecture surface set differs from freeze")
+    if expected.providers != R4_R5_PROVIDERS:
+        raise ValueError("R4/R5 architecture provider set differs from freeze")
     verify_manifest(expected, expected)

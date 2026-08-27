@@ -54,6 +54,7 @@ def test_unknown_owner_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         "R4_R5_RECORDS",
         "R4_R5_SURFACES",
         "R4_R5_DERIVATIVE_SINKS",
+        "R4_R5_PROVIDERS",
     ],
 )
 def test_each_exact_set_rejects_an_omission(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
