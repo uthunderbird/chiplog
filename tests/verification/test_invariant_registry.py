@@ -14,11 +14,11 @@ def test_canonical_invariant_manifest_is_source_derived_and_complete() -> None:
     source_digest, entries = extract_invariant_manifest(SOURCE)
 
     assert len(source_digest) == 64
-    assert [entry.number for entry in entries] == list(range(1, 97))
+    assert [entry.number for entry in entries] == list(range(1, 98))
     assert [entry.invariant_id for entry in entries] == [
-        f"A{number:02d}" for number in range(1, 97)
+        f"A{number:02d}" for number in range(1, 98)
     ]
-    assert len({entry.text_digest for entry in entries}) == 96
+    assert len({entry.text_digest for entry in entries}) == 97
 
 
 @pytest.mark.parametrize("mutation", ["omit", "duplicate", "renumber", "unknown"])
@@ -29,11 +29,11 @@ def test_invariant_manifest_rejects_source_mutations(tmp_path: Path, mutation: s
     elif mutation == "duplicate":
         text = text.replace("2. Tenant and principal", "1. Tenant and principal", 1)
     elif mutation == "renumber":
-        text = text.replace("96. `PREPARED`", "97. `PREPARED`", 1)
+        text = text.replace("97. Under the version-one", "98. Under the version-one", 1)
     else:
         text = text.replace(
             "## Operation-level deployment gate",
-            "97. Unknown invariant.\n\n## Operation-level deployment gate",
+            "98. Unknown invariant.\n\n## Operation-level deployment gate",
             1,
         )
     path = tmp_path / "document.md"

@@ -172,7 +172,7 @@ run "леса полировки"         python3 .harness/scripts/checks/polish
 run "хвосты сессии"          python3 .harness/scripts/checks/handoff_pending.py
 run "R0 fast verification"   uv run python -m chiplog.verification fast
 run "разбор исходников"      sh .harness/scripts/lint.sh
-run "тесты и эвалы"          sh .harness/scripts/test.sh
+run "тесты и эвалы"          sh .harness/scripts/clean-git-env.sh sh .harness/scripts/test.sh
 
 if [ "$FAILED" -ne 0 ]; then
     echo

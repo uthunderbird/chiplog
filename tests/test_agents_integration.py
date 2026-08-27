@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -244,3 +245,74 @@ def test_codex_edit_guard_rejects_payload_from_another_worktree(tmp_path: Path) 
     assert result.returncode == 2
     assert "different Git worktree" in result.stderr
     assert "bypass" not in result.stdout
+
+
+def test_test_gate_clears_git_local_environment_before_verifiers(tmp_path: Path) -> None:
+    gate_source = (ROOT / ".harness/scripts/gate.sh").read_text()
+    assert (
+        'run "тесты и эвалы"          sh .harness/scripts/clean-git-env.sh '
+        "sh .harness/scripts/test.sh"
+    ) in gate_source
+
+    project = tmp_path / "owner"
+    clean_env = os.environ.copy()
+    for name in subprocess.check_output(
+        ["git", "rev-parse", "--local-env-vars"], text=True
+    ).splitlines():
+        clean_env.pop(name, None)
+    subprocess.run(["git", "init", "-q", str(project)], env=clean_env, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "owner@example.invalid"],
+        cwd=project,
+        env=clean_env,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Owner"], cwd=project, env=clean_env, check=True)
+    (project / "owner.txt").write_text("owner")
+    subprocess.run(["git", "add", "owner.txt"], cwd=project, env=clean_env, check=True)
+    subprocess.run(["git", "commit", "-qm", "owner"], cwd=project, env=clean_env, check=True)
+    owner_head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, env=clean_env, text=True
+    )
+    owner_index = (project / ".git/index").read_bytes()
+    owner_config = (project / ".git/config").read_bytes()
+
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        "#!/bin/sh\nset -e\nmkdir nested\ncd nested\n"
+        "git init -q\ngit config user.email nested@example.invalid\n"
+        "git config user.name Nested\necho nested > nested.txt\n"
+        "git add nested.txt\ngit commit -qm nested\n"
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_DIR": str(project / ".git"),
+            "GIT_WORK_TREE": str(project),
+            "GIT_COMMON_DIR": str(project / ".git"),
+            "GIT_INDEX_FILE": str(project / ".git/index"),
+        }
+    )
+    subprocess.run(
+        ["sh", str(ROOT / ".harness/scripts/clean-git-env.sh"), "sh", str(probe)],
+        cwd=project,
+        env=env,
+        check=True,
+    )
+
+    current_owner_head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=project, env=clean_env, text=True
+    )
+    assert current_owner_head == owner_head
+    assert (project / ".git/index").read_bytes() == owner_index
+    assert (project / ".git/config").read_bytes() == owner_config
+    assert (
+        subprocess.check_output(
+            ["git", "show", "HEAD:nested.txt"],
+            cwd=project / "nested",
+            env=clean_env,
+            text=True,
+        )
+        == "nested\n"
+    )
