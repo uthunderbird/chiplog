@@ -1,0 +1,244 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+
+from .artifacts import write_artifact
+from .identity import digest_file, sha256_bytes
+from .invariants import extract_invariant_manifest
+from .models import CheckResult, FixtureRegistration
+from .registries import (
+    CLOSED_PROFILES,
+    FIXTURES,
+    IMPLEMENTED_PROFILES,
+    SURFACE_REGISTRY_GENERATION,
+    SURFACES,
+)
+from .transcripts import compile_transcript
+
+BOUND_INPUTS = (
+    "pyproject.toml",
+    "uv.lock",
+    "grill/project-architecture/document.md",
+    "design-docs/TRANSCRIPTS.md",
+)
+
+
+def _git(root: Path, *args: str) -> str:
+    completed = subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
+    return completed.stdout.strip()
+
+
+def _git_bytes(root: Path, *args: str) -> bytes:
+    completed = subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+    return completed.stdout
+
+
+def _workspace_file_identity(path: Path) -> dict[str, str]:
+    if path.is_symlink():
+        return {"kind": "symlink", "digest": sha256_bytes(os.readlink(path).encode())}
+    if path.is_file():
+        return {"kind": "file", "digest": digest_file(path)}
+    if not path.exists():
+        return {"kind": "missing", "digest": sha256_bytes(b"MISSING")}
+    return {"kind": "other", "digest": sha256_bytes(str(path.stat().st_mode).encode())}
+
+
+def _input_identity(
+    root: Path,
+    bound_inputs: tuple[str, ...] = BOUND_INPUTS,
+    fixtures: tuple[FixtureRegistration, ...] = FIXTURES,
+) -> dict[str, object]:
+    bound_files = {
+        path: digest_file(root / path) for path in bound_inputs if (root / path).is_file()
+    }
+    for path in sorted((root / "src/chiplog/verification").glob("*.py")):
+        bound_files[str(path.relative_to(root))] = digest_file(path)
+    for registration in fixtures:
+        if registration.relative_path is not None:
+            path = root / registration.relative_path
+            bound_files[registration.relative_path] = digest_file(path)
+    status = _git(root, "status", "--porcelain=v1", "--untracked-files=all")
+    workspace_paths = {
+        item.decode()
+        for item in _git_bytes(root, "ls-files", "-co", "--exclude-standard", "-z").split(b"\0")
+        if item
+    }
+    workspace_files = {
+        path: _workspace_file_identity(root / path) for path in sorted(workspace_paths)
+    }
+    identity = {
+        "head": _git(root, "rev-parse", "--verify", "HEAD"),
+        "index": sha256_bytes(_git_bytes(root, "ls-files", "--stage", "-z")),
+        "git_status": status.splitlines(),
+        "bound_files": bound_files,
+        "workspace_files": workspace_files,
+    }
+    return {**identity, "digest": sha256_bytes(json.dumps(identity, sort_keys=True).encode())}
+
+
+def _check_fast(root: Path) -> list[CheckResult]:
+    _validate_fixture_registry()
+    _validate_surface_registry()
+    source_digest, invariants = extract_invariant_manifest(
+        root / "grill/project-architecture/document.md"
+    )
+    invariant_result = CheckResult(
+        "V0.invariant-source-exact-set",
+        "PASS",
+        "canonical invariant source is contiguous, unique, and source-bound",
+        {
+            "count": len(invariants),
+            "source_digest": source_digest,
+            "entries": [
+                {
+                    "invariant_id": item.invariant_id,
+                    "number": item.number,
+                    "text_digest": item.text_digest,
+                }
+                for item in invariants
+            ],
+            "evidenced_invariants": [],
+        },
+    )
+    active_paths = {
+        registration.relative_path for registration in FIXTURES if registration.state == "ACTIVE"
+    }
+    discovered = {
+        str(path.relative_to(root)) for path in (root / "design-docs/transcripts").glob("*.md")
+    }
+    if active_paths != discovered:
+        raise ValueError(
+            f"active transcript registry mismatch: active={active_paths}, discovered={discovered}"
+        )
+    compiled = []
+    for registration in FIXTURES:
+        if registration.state == "RESERVED":
+            if registration.relative_path is not None:
+                raise ValueError("reserved fixture must not have a path")
+            continue
+        assert registration.relative_path is not None
+        item = compile_transcript(root / registration.relative_path)
+        if item.scenario_id != registration.scenario_id:
+            raise ValueError(f"scenario registry mismatch for {registration.fixture_id}")
+        compiled.append(
+            {
+                "fixture_id": registration.fixture_id,
+                "scenario_id": item.scenario_id,
+                "source_digest": item.source_digest,
+                "compiled_bundle_digest": item.compiled_bundle_digest,
+            }
+        )
+    fixture_result = CheckResult(
+        "V8.transcript-compile",
+        "PASS",
+        "active authored transcripts compile under the closed R0 schema",
+        {
+            "compiled": compiled,
+            "reserved": [item.fixture_id for item in FIXTURES if item.state == "RESERVED"],
+        },
+    )
+    surface_result = CheckResult(
+        "V0.surface-registry-generation",
+        "PASS",
+        "R0 explicitly has no production surfaces",
+        {"generation": SURFACE_REGISTRY_GENERATION, "surfaces": list(SURFACES)},
+    )
+    return [invariant_result, fixture_result, surface_result]
+
+
+def _validate_fixture_registry(
+    fixtures: tuple[FixtureRegistration, ...] = FIXTURES,
+) -> None:
+    expected = {
+        "T01": (
+            "calendar-proposal-confirmation",
+            "ACTIVE",
+            "design-docs/transcripts/calendar-proposal-confirmation.md",
+        ),
+        "T02": (
+            "fact-claim-without-plan-change",
+            "ACTIVE",
+            "design-docs/transcripts/fact-claim-without-plan-change.md",
+        ),
+        "T03": (
+            "unknown-calendar-outcome",
+            "ACTIVE",
+            "design-docs/transcripts/unknown-calendar-outcome.md",
+        ),
+        "T04": ("stale-proposal-after-head-change", "RESERVED", None),
+    }
+    if len(fixtures) != len(expected):
+        raise ValueError("fixture registry must contain exactly T01-T04")
+    observed: dict[str, tuple[str, str, str | None]] = {}
+    for item in fixtures:
+        if item.fixture_id in observed:
+            raise ValueError(f"duplicate fixture id: {item.fixture_id}")
+        observed[item.fixture_id] = (item.scenario_id, item.state, item.relative_path)
+    if observed != expected:
+        raise ValueError(f"fixture registry differs from closed R0 registry: {observed}")
+    active = [item for item in fixtures if item.state == "ACTIVE"]
+    if len({item.scenario_id for item in fixtures}) != len(fixtures):
+        raise ValueError("fixture scenario ids must be unique")
+    if len({item.relative_path for item in active}) != len(active):
+        raise ValueError("active fixture paths must be unique")
+
+
+def _validate_surface_registry(
+    generation: str | None = None,
+    surfaces: tuple[str, ...] | None = None,
+) -> None:
+    if generation is None:
+        generation = SURFACE_REGISTRY_GENERATION
+    if surfaces is None:
+        surfaces = SURFACES
+    if generation != "R0_NO_PRODUCTION_SURFACES":
+        raise ValueError(f"unknown R0 surface registry generation: {generation}")
+    if surfaces != ():
+        raise ValueError(f"R0 production surface registry must be empty: {surfaces}")
+
+
+def run_profile(root: Path, profile: str) -> tuple[dict[str, object], Path]:
+    if profile not in CLOSED_PROFILES:
+        raise ValueError(f"unknown profile: {profile}")
+    inputs = _input_identity(root)
+    if profile not in IMPLEMENTED_PROFILES:
+        result: dict[str, object] = {
+            "schema_version": 1,
+            "profile": profile,
+            "status": "HOLD",
+            "reason": "profile verifier manifest is not implemented",
+            "checks": [],
+            "input_identity": inputs,
+            "eligibility": {
+                "ready": False,
+                "evaluation_authorized": False,
+                "production_authorized": False,
+                "adoption": "HOLD_ADOPTION",
+            },
+        }
+        return result, write_artifact(root, result)
+    checks = _check_fast(root)
+    if not checks:
+        raise RuntimeError("an implemented profile cannot contain zero checks")
+    status = "PASS" if all(check.status == "PASS" for check in checks) else "FAIL"
+    result = {
+        "schema_version": 1,
+        "profile": profile,
+        "status": status,
+        "claim": "R0 verifier substrate and compile-only transcript contracts only",
+        "checks": [check.to_dict() for check in checks],
+        "input_identity": inputs,
+        "eligibility": {
+            "ready": False,
+            "evaluation_authorized": False,
+            "production_authorized": False,
+            "adoption": "HOLD_ADOPTION",
+        },
+    }
+    return result, write_artifact(root, result)
+
+
+__all__ = ["CLOSED_PROFILES", "run_profile"]

@@ -170,6 +170,7 @@ run "императив в провалах"   python3 .harness/scripts/checks/m
 run "проверки подключены"    python3 .harness/scripts/checks/checks_are_wired.py
 run "леса полировки"         python3 .harness/scripts/checks/polish_artifacts.py
 run "хвосты сессии"          python3 .harness/scripts/checks/handoff_pending.py
+run "R0 fast verification"   uv run python -m chiplog.verification fast
 run "разбор исходников"      sh .harness/scripts/lint.sh
 run "тесты и эвалы"          sh .harness/scripts/test.sh
 
