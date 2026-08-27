@@ -25,6 +25,8 @@ CREATE_INTENTION_LINE = "CREATE_INTENTION_LINE"
 CREATE_SCOPE = "planning.create_intention_line"
 DIRECT_CONTOURS = frozenset({"CLI", "TELEGRAM"})
 PLANNING_SCHEMA_ID = "chiplog.planning.record.v1"
+PLANNING_RECORD_OWNER = "planning"
+PLANNING_COMMIT_BOUNDARY = "planning.commit"
 PLANNING_RECORD_TYPES = (
     "chiplog.planning.authorization_evidence",
     "chiplog.planning.committed_result",
@@ -85,8 +87,6 @@ class PlanningCommands(Protocol):
         self,
         context: InvocationContext,
         command: CreateIntentionLine,
-        *,
-        predecessor_result_id: RecordId | None = None,
     ) -> _PlanningOutcome: ...
 
 
@@ -439,13 +439,11 @@ class _PlanningUseCase:
         self,
         context: InvocationContext,
         command: CreateIntentionLine,
-        *,
-        predecessor_result_id: RecordId | None = None,
     ) -> _PlanningOutcome:
-        structural_error = _structural_error(context, command, predecessor_result_id)
+        structural_error = _structural_error(context, command, None)
         if structural_error is not None:
             return _PlanningOutcome("DENIED", None, structural_error)
-        request_fingerprint = _request_fingerprint(context, command, predecessor_result_id)
+        request_fingerprint = _request_fingerprint(context, command, None)
 
         def commit(state: _PlanningState) -> _PlanningOutcome:
             prior = state.by_command.get(command.command_id.value)

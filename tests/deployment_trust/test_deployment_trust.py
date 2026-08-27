@@ -210,6 +210,18 @@ def test_cli_authentication_and_complete_reference_revalidation(tmp_path: Path) 
         RecordId(TenantId("tenant-2"), "line-1"),
     )
     assert trust.revalidate(foreign).disposition == "DENIED"
+    substituted_operation = TrustReferenceRevalidation(
+        decision.reference,
+        "DELETE_INTENTION_LINE",
+        request.subject_id,
+    )
+    assert trust.revalidate(substituted_operation).disposition == "DENIED"
+    empty_subject = TrustReferenceRevalidation(
+        decision.reference,
+        request.operation,
+        RecordId(TenantId("tenant-1"), ""),
+    )
+    assert trust.revalidate(empty_subject).disposition == "DENIED"
 
 
 def test_rotation_revokes_old_credential_and_sessions(tmp_path: Path) -> None:

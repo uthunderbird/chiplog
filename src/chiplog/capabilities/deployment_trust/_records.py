@@ -23,6 +23,8 @@ RECORD_TYPE_IDS = (
 )
 
 SCHEMA_ID = "chiplog.deployment_trust.record.v1"
+RECORD_OWNER = "deployment_trust"
+RECORD_COMMIT_BOUNDARY = "deployment_trust.commit"
 
 KIND_RECORD_TYPES: dict[str, tuple[str, ...]] = {
     "INITIALIZE": (

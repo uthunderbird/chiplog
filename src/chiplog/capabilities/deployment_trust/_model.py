@@ -481,8 +481,12 @@ class DeploymentTrustService:
 
     def revalidate(self, request: TrustReferenceRevalidation) -> TrustDecision:
         reference = request.reference
+        if request.operation != "CREATE_INTENTION_LINE":
+            return TrustDecision("DENIED", None, "operation is not admitted by trust contour")
         if request.subject_id.tenant_id != reference.tenant_id:
             return TrustDecision("DENIED", None, "foreign subject")
+        if not request.subject_id.value:
+            return TrustDecision("DENIED", None, "allocation subject is empty")
         witness = next(
             (
                 item

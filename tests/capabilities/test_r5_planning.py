@@ -107,9 +107,9 @@ def test_owner_factory_publishes_complete_closed_manifest() -> None:
 
 
 @pytest.mark.parametrize(
-    ("bad_context", "bad_command", "predecessor", "reason"),
+    ("bad_context", "bad_command", "reason"),
     [
-        (context(), command(tenant=TenantId("foreign")), None, "foreign tenant"),
+        (context(), command(tenant=TenantId("foreign")), "foreign tenant"),
         (
             replace(
                 context(),
@@ -118,39 +118,40 @@ def test_owner_factory_publishes_complete_closed_manifest() -> None:
                 ),
             ),
             command(),
-            None,
             "principal mismatch",
         ),
         (
             replace(context(), permission_scope=PermissionScope("planning.read")),
             command(),
-            None,
             "forbidden actor",
         ),
-        (context(contour="EVIDENCE"), command(), None, "wrong direct-principal source"),
-        (context(), command(), RecordId(TENANT, "prior-result"), "forbids a predecessor"),
+        (context(contour="EVIDENCE"), command(), "wrong direct-principal source"),
         (
             context(),
             replace(command(), intention_line_id=RecordId(TENANT, "command-1")),
-            None,
             "distinct",
         ),
-        (context(), replace(command(), purpose=" trailing "), None, "normalized"),
+        (context(), replace(command(), purpose=" trailing "), "normalized"),
     ],
 )
 def test_construction_rejects_foreign_wrong_source_and_forbidden_predecessor(
     bad_context: InvocationContext,
     bad_command: CreateIntentionLine,
-    predecessor: RecordId | None,
     reason: str,
 ) -> None:
     repository = _InMemoryPlanningRepository()
-    result = _PlanningUseCase(repository, TrustFake()).execute(
-        bad_context, bad_command, predecessor_result_id=predecessor
-    )
+    result = _PlanningUseCase(repository, TrustFake()).execute(bad_context, bad_command)
     assert result.disposition == "DENIED"
     assert reason in str(result.reason)
     assert repository.committed_publications(TENANT) == ()
+
+
+def test_create_intention_line_public_port_has_no_predecessor_escape_hatch() -> None:
+    use_case = _PlanningUseCase(_InMemoryPlanningRepository(), TrustFake())
+    with pytest.raises(TypeError):
+        use_case.execute(  # type: ignore[call-arg]
+            context(), command(), predecessor_result_id=RecordId(TENANT, "prior-result")
+        )
 
 
 @pytest.mark.parametrize("disposition", ["DENIED", "STALE", "INDETERMINATE"])

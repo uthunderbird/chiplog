@@ -19,6 +19,7 @@ from chiplog.domain_primitives.versions import (
 )
 
 PROJECTION_SINK = "chiplog.projections.planning.v1"
+PROJECTION_REBUILD_SURFACE = "projections.rebuild"
 REDUCER_VERSION = 1
 PROJECTION_SCHEMA_VERSION = 1
 PLANNING_RECORD_TYPES = frozenset(

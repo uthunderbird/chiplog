@@ -23,7 +23,7 @@ STAGE0_INCREMENT_REGISTRY = (
     "R7",
     "R8",
 )
-STAGE0_EVIDENCED_INCREMENTS = frozenset({"R1", "R2", "R3"})
+STAGE0_EVIDENCED_INCREMENTS = frozenset({"R1", "R2", "R3", "R4", "R5"})
 
 FIXTURES = (
     FixtureRegistration(
