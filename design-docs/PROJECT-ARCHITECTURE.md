@@ -18,7 +18,7 @@ Every real effect, disclosure, authority use, or cohort-visible evaluation remai
 
 The architecture inherits the VISION's unresolved assurance holds: repaired Plan/Fact/Journal and commitment/reliance material has not been independently re-cleared; natural-language interaction, external-information handling, and institutional/governance design did not receive dedicated terminal attacks; and neither a whole-document canonical-parent coverage audit nor a full regression sweep exists. A local fixture, cross-reference, or accepted mechanism cannot clear these holds or change `HOLD_ADOPTION`; only a successor VISION or the exact independently governed readiness and release processes may do so.
 
-This handoff is intentionally not standalone or normative. Implementers must use the full companion for exact fields, state transitions, ordering, recovery, and fixtures; on omission, ambiguity, or conflict, [`NORMATIVE.md`](project-architecture/NORMATIVE.md) governs this overview, while VISION continues to govern product semantics. The grill source remains provenance for that companion.
+This handoff is intentionally not standalone or normative. Implementers must use the full companion for exact fields, state transitions, ordering, recovery, and fixtures; on omission, ambiguity, or conflict, [`NORMATIVE.md`](project-architecture/NORMATIVE.md) governs this overview, while VISION continues to govern product semantics. Any local ignored grill source is optional provenance, not a checkout dependency.
 
 ## Goals and non-goals
 

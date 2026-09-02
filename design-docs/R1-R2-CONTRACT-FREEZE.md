@@ -75,7 +75,12 @@ canonical `stage0` profile. That profile remains `HOLD` until the R0–R8 Stage-
 barrier in the roadmap is complete. Neither lane edits
 `src/chiplog/verification/runner.py` or `registries.py`.
 
-The canonical ignored inputs copied into each worktree are read-only snapshots of
+The original lanes used read-only snapshots of the then-ignored inputs
 `grill/project-architecture/document.md`, `grill/project-architecture/roadmap.md`,
 and the authored transcript fixtures. Their SHA-256 digests are recorded in each
 lane assignment; a mismatch stops the lane.
+
+Current and future replay and verification use the tracked
+`design-docs/project-architecture/NORMATIVE.md` and
+`design-docs/IMPLEMENTATION-ROADMAP.md` as canonical inputs. The historical snapshot
+digests above remain evidence about those original lanes, not checkout dependencies.

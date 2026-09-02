@@ -34,7 +34,7 @@ def test_fast_profile_pass_is_narrow_and_holds_all_eligibility() -> None:
     assert observed["evidenced_invariants"] == []
     entries = cast(list[dict[str, object]], observed["entries"])
     assert [entry["invariant_id"] for entry in entries] == [
-        f"A{number:02d}" for number in range(1, 98)
+        f"A{number:02d}" for number in range(1, 109)
     ]
     assert json.loads(artifact.read_text()) == result
 

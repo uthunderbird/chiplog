@@ -23,7 +23,7 @@ from .transcripts import compile_transcript
 BOUND_INPUTS = (
     "pyproject.toml",
     "uv.lock",
-    "grill/project-architecture/document.md",
+    "design-docs/project-architecture/NORMATIVE.md",
     "design-docs/TRANSCRIPTS.md",
 )
 
@@ -85,7 +85,7 @@ def _check_fast(root: Path) -> list[CheckResult]:
     _validate_fixture_registry()
     _validate_surface_registry()
     source_digest, invariants = extract_invariant_manifest(
-        root / "grill/project-architecture/document.md"
+        root / "design-docs/project-architecture/NORMATIVE.md"
     )
     invariant_result = CheckResult(
         "V0.invariant-source-exact-set",

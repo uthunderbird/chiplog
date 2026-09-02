@@ -2,7 +2,7 @@
 
 ## Status and authority
 
-This document records the physical Python package layout selected for Chiplog's modular monolith. It realizes the implementation boundaries described in [`../grill/project-architecture/document.md`](../grill/project-architecture/document.md) and is subordinate to [`VISION.md`](VISION.md). It defines code ownership and dependency direction; it does not create or change product semantics.
+This document records the physical Python package layout selected for Chiplog's modular monolith. It realizes the implementation boundaries described in [`project-architecture/NORMATIVE.md`](project-architecture/NORMATIVE.md) and is subordinate to [`VISION.md`](VISION.md). It defines code ownership and dependency direction; it does not create or change product semantics.
 
 For implementation ownership, this layout refines and supersedes the implementation draft: `planning` owns the authority, acceptance, and delegation record families. `VISION.md` authorizes this layout to select the trust-boundary and atomic-publication constraints that realize those semantics.
 

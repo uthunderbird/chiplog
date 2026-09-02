@@ -57,11 +57,11 @@ def extract_invariant_manifest(path: Path) -> tuple[str, tuple[InvariantSource, 
         raise InvariantManifestError(
             f"invariant numbering must be contiguous from 1: got {numbers}"
         )
-    if len(entries) != 97:
-        raise InvariantManifestError(f"expected 97 canonical invariants, got {len(entries)}")
+    if len(entries) != 108:
+        raise InvariantManifestError(f"expected 108 canonical invariants, got {len(entries)}")
     if len({entry.text_digest for entry in entries}) != len(entries):
         raise InvariantManifestError("duplicate invariant text is not allowed")
-    expected_ids = [f"A{number:02d}" for number in range(1, 98)]
+    expected_ids = [f"A{number:02d}" for number in range(1, 109)]
     if [entry.invariant_id for entry in entries] != expected_ids:
-        raise InvariantManifestError("invariant IDs must be exactly A01-A97")
+        raise InvariantManifestError("invariant IDs must be exactly A01-A108")
     return sha256_bytes(raw), tuple(entries)

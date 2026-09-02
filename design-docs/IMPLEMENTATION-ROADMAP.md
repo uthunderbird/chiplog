@@ -8,8 +8,8 @@ Source precedence is:
 
 1. [`design-docs/VISION.md`](VISION.md), `VisionVersion: 2026-08-22.2`, is the product authority.
 2. [`design-docs/project-architecture/NORMATIVE.md`](project-architecture/NORMATIVE.md)
-   selects implementation mechanisms subordinate to the vision. The grill
-   `grill/project-architecture/document.md` is its ignored restore/provenance source, not a second authority.
+   selects implementation mechanisms subordinate to the vision. A local ignored
+   `grill/project-architecture/document.md` may retain restore/provenance material; it is neither a checkout dependency nor a second authority.
 3. [`design-docs/HEXAGONAL-CODE-LAYOUT.md`](HEXAGONAL-CODE-LAYOUT.md) is the
    physical-layout projection. It is subordinate to the normative architecture; until R7 updates its
    predecessor-topology sections, any conflict is resolved in favor of the normative companion.
@@ -161,7 +161,7 @@ The ledger records successor ownership; it never mutates a frozen predecessor co
 
 **Depends on:** current scaffold. **Parallel after completion:** R1 and R2.
 
-Create the profile runner, evidence-result schema, invariant/fixture/surface registries, before/after state observer, deterministic fault/mutation runner, and compile-only transcript parser. The historical R0 result derived 97 numbered architecture invariants and registered A01–A97. R7 rebases the same closed mechanism to the promoted normative source and A01–A108; this later rebase does not rewrite or upgrade the historical R0 evidence. Register transcript fixtures T01–T04; unknown, renumbered, duplicated, or omitted source and registry items fail closed.
+Create the profile runner, evidence-result schema, invariant/fixture/surface registries, before/after state observer, deterministic fault/mutation runner, and compile-only transcript parser. The historical R0 result derived 97 numbered architecture invariants and registered A01–A97. The current verifier reads the promoted normative source and requires A01–A108; this source rebase does not rewrite or upgrade the historical R0 evidence. Register transcript fixtures T01–T04; unknown, renumbered, duplicated, or omitted source and registry items fail closed.
 
 **DoD:** `V0` proves exact-set completeness and rejects missing/orphan rows; `V8` compiles the three authored transcripts, rejects an unknown discriminator/field/mixed modality, proves `design` is ignored, and reserves T04 stale-proposal. `uv run python -m chiplog.verification fast` emits a bound result artifact. This is verifier infrastructure only, not product evidence.
 
@@ -217,8 +217,8 @@ Wire `CLI → planning inbound port → use case → owner factory → repositor
 
 **Depends on:** R2, R3, R4, R6.
 
-Rebase verification from the grill provenance path and historical A01–A97 set to the promoted
-normative source and exact A01–A108 set. Close the compatibility/supersession ledger above, then build
+Consume the promoted normative source and exact A01–A108 verification set. Close the
+compatibility/supersession ledger above, then build
 one canonical assembly manifest and graph builder, Dishka scopes, strict Pydantic public DTOs and
 owner-local models, process-isolated owner compartments, tenant `AuthorityBroker`,
 `RuntimeGraphGeneration`, authenticated IPC/session/proxy capabilities, finite call budgets,
@@ -558,9 +558,9 @@ Authored evidence fixtures have one primary owner:
 
 - One integration owner holds each vertical slice; adapter teams may work in parallel only against frozen public contracts.
 - A registry grows when a concrete variant is implemented, but its coverage check always rejects unknown runtime members. Empty future packages are not milestones.
-- R7 rebases the verifier source and exact invariant registry from the historical A01–A97 result to
-  A01–A108. Later executable surfaces extend their closed current manifests without changing
-  historical evidence identities.
+- The current verifier source and exact invariant registry are A01–A108; R7 consumes that set.
+  Later executable surfaces extend their closed current manifests without changing historical
+  A01–A97 evidence identities.
 - A completed pre-R7 contract is never silently reinterpreted: its compatibility-ledger row and
   successor evidence must close before the corresponding old executable path is disabled.
 - Recovery states are introduced before the operation that can create their uncertainty, never retrofitted after exposure.
