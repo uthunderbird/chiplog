@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"$(git rev-parse --show-toplevel)\"; if [ -L \"$root/.agents/hooks/codex-harness.py\" ] || [ -L \"$root/.harness/scripts/healthcheck.sh\" ] || ! printf '%s  %s\\n%s  %s\\n' 0366113a5ee05d0aee898065e2358a85f44a1a24c1c9531e3f487654b3e9e350 \"$root/.agents/hooks/codex-harness.py\" d0c7ef601fe293c845b5f7115196cb8c7f88b8f38afa70e4777ef81a55caf569 \"$root/.harness/scripts/healthcheck.sh\" | shasum -a 256 -c --status; then echo 'Codex harness hook: reviewed executable changed; open /hooks' >&2; exit 0; fi; python3 \"$root/.agents/hooks/codex-harness.py\" healthcheck \"$root\"",
+            "command": "root=\"$(git rev-parse --show-toplevel)\"; if [ -L \"$root/.agents/hooks/codex-harness.py\" ] || [ -L \"$root/.harness/scripts/healthcheck.sh\" ] || ! printf '%s  %s\\n%s  %s\\n' 0366113a5ee05d0aee898065e2358a85f44a1a24c1c9531e3f487654b3e9e350 \"$root/.agents/hooks/codex-harness.py\" 10d6620e9267437bb1bcc91879930b2370978a065ec632df286bcc92c9e1d412 \"$root/.harness/scripts/healthcheck.sh\" | shasum -a 256 -c --status; then echo 'Codex harness hook: reviewed executable changed; open /hooks' >&2; exit 0; fi; python3 \"$root/.agents/hooks/codex-harness.py\" healthcheck \"$root\"",
             "statusMessage": "Checking repository health"
           }
         ]

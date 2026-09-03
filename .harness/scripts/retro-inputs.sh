@@ -151,16 +151,16 @@ echo "   самотест гейта здесь не гоняется: он тя
 echo "   отработает на коммите. Досрочно: sh .harness/scripts/gate.sh --self-test"
 
 echo "   долги:"
-if [ ! -f HARNESS_MODEL.md ]; then
-    echo "   · HARNESS_MODEL.md отсутствует — список долгов читать негде"
-elif grep -q '^| D[0-9]' HARNESS_MODEL.md; then
-    grep '^| D[0-9]' HARNESS_MODEL.md | while IFS='|' read -r _ id _ hook _; do
+if [ ! -f .harness/HARNESS_MODEL.md ]; then
+    echo "   · .harness/HARNESS_MODEL.md отсутствует — список долгов читать негде"
+elif grep -q '^| D[0-9]' .harness/HARNESS_MODEL.md; then
+    grep '^| D[0-9]' .harness/HARNESS_MODEL.md | while IFS='|' read -r _ id _ hook _; do
         printf '   · %s — крючок: %s\n' "$(echo "$id" | xargs)" "$(echo "$hook" | xargs)"
     done
-    echo "     (grep '^| D' HARNESS_MODEL.md)"
+    echo "     (grep '^| D' .harness/HARNESS_MODEL.md)"
     echo "     вопрос: сработал ли крючок. Сработал и не закрыт — исход обязателен"
 else
-    echo "   · нет открытых   (grep '^| D' HARNESS_MODEL.md)"
+    echo "   · нет открытых   (grep '^| D' .harness/HARNESS_MODEL.md)"
 fi
 echo
 echo "Вставь этот вывод в раздел «Что перечитано» записи ретро."
