@@ -49,7 +49,7 @@ def test_unimplemented_profile_is_nonpassing_hold(profile: str) -> None:
     assert eligibility["adoption"] == "HOLD_ADOPTION"
 
 
-def test_stage0_emits_r6_evidence_but_holds_explicit_r7_r8_set() -> None:
+def test_stage0_emits_r7_evidence_but_holds_explicit_r8() -> None:
     result, artifact = run_profile(ROOT, "stage0")
 
     assert result["status"] == "HOLD"
@@ -57,8 +57,8 @@ def test_stage0_emits_r6_evidence_but_holds_explicit_r7_r8_set() -> None:
     assert [check["check_id"] for check in checks] == [
         f"stage0.r{number}" for number in range(1, 9)
     ]
-    assert [check["status"] for check in checks[:6]] == ["PASS"] * 6
-    assert [check["status"] for check in checks[6:]] == ["HOLD"] * 2
+    assert [check["status"] for check in checks[:7]] == ["PASS"] * 7
+    assert [check["status"] for check in checks[7:]] == ["HOLD"]
     assert json.loads(artifact.read_text()) == result
 
 
@@ -68,11 +68,11 @@ def test_stage0_emits_r6_evidence_but_holds_explicit_r7_r8_set() -> None:
         ((), frozenset()),
         (
             ("R1", "R2", "R3", "R4", "R5", "R6", "R7"),
-            frozenset({"R1", "R2", "R3", "R4", "R5", "R6"}),
+            frozenset({"R1", "R2", "R3", "R4", "R5", "R6", "R7"}),
         ),
         (
             ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R8"),
-            frozenset({"R1", "R2", "R3", "R4", "R5", "R6"}),
+            frozenset({"R1", "R2", "R3", "R4", "R5", "R6", "R7"}),
         ),
         (
             ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"),

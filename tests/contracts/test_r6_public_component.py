@@ -14,7 +14,7 @@ from chiplog.capabilities.planning import (
     InvocationContext,
     PlanningOutcome,
 )
-from chiplog.composition import R6CreateRequest, build_r6_component
+from chiplog.composition.r6 import R6CreateRequest, build_r6_component
 from chiplog.domain_primitives import PrincipalId, RecordId, TenantId
 
 TENANT = TenantId("tenant-1")

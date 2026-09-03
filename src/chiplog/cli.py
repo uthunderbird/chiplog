@@ -1,4 +1,4 @@
-"""R6 authenticated CLI planning slice."""
+"""Authenticated CLI over the canonical R7 broker composition."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from chiplog.capabilities.planning import CreateIntentionLine
-from chiplog.composition.r6 import open_r6_runtime
+from chiplog.composition.r7_planning import open_r7_runtime
 from chiplog.domain_primitives import RecordId, TenantId
 
 
@@ -20,9 +20,10 @@ def _operator_secret() -> bytes:
 
 
 async def _bootstrap(args: argparse.Namespace) -> None:
-    async with open_r6_runtime(Path(args.database), operator_secret=_operator_secret()) as runtime:
+    async with open_r7_runtime(
+        Path(args.database), tenant_id=args.tenant, operator_secret=_operator_secret()
+    ) as runtime:
         await runtime.bootstrap(
-            tenant_id=args.tenant,
             database_instance_id=args.database_instance,
             principal_id=args.principal,
             credential_id=args.credential,
@@ -35,20 +36,24 @@ async def _bootstrap(args: argparse.Namespace) -> None:
 async def _create(args: argparse.Namespace) -> None:
     tenant = TenantId(args.tenant)
     outcome: object
-    async with open_r6_runtime(Path(args.database), operator_secret=_operator_secret()) as runtime:
-        outcome = await runtime.create(
-            tenant_id=args.tenant,
-            principal_id=args.principal,
-            credential_id=args.credential,
-            session_id=args.session,
-            command=CreateIntentionLine(
-                RecordId(tenant, args.command_id),
-                RecordId(tenant, args.intention_id),
-                RecordId(tenant, args.revision_id),
-                args.purpose,
-                args.authority_act,
-            ),
-        )
+    try:
+        async with open_r7_runtime(
+            Path(args.database), tenant_id=args.tenant, operator_secret=_operator_secret()
+        ) as runtime:
+            outcome = await runtime.create(
+                principal_id=args.principal,
+                credential_id=args.credential,
+                session_id=args.session,
+                command=CreateIntentionLine(
+                    RecordId(tenant, args.command_id),
+                    RecordId(tenant, args.intention_id),
+                    RecordId(tenant, args.revision_id),
+                    args.purpose,
+                    args.authority_act,
+                ),
+            )
+    except PermissionError as error:
+        raise SystemExit(f"DENIED: {error}") from error
     disposition = getattr(outcome, "disposition", "INDETERMINATE")
     reason = getattr(outcome, "reason", None)
     result = getattr(outcome, "result", None)
@@ -58,10 +63,11 @@ async def _create(args: argparse.Namespace) -> None:
 
 
 async def _render(args: argparse.Namespace) -> None:
-    async with open_r6_runtime(Path(args.database), operator_secret=_operator_secret()) as runtime:
+    async with open_r7_runtime(
+        Path(args.database), tenant_id=args.tenant, operator_secret=_operator_secret()
+    ) as runtime:
         try:
-            rendered = runtime.render(
-                tenant_id=args.tenant,
+            rendered = await runtime.render(
                 principal_id=args.principal,
                 credential_id=args.credential,
                 session_id=args.session,

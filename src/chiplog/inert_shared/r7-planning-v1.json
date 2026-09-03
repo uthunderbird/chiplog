@@ -1,0 +1,16 @@
+{
+  "additionalProperties": false,
+  "fields": [
+    ["tenant_id", "str"],
+    ["principal_id", "str"],
+    ["command_id", "str"],
+    ["intention_line_id", "str"],
+    ["revision_id", "str"],
+    ["purpose", "str"],
+    ["authority_act_id", "str"],
+    ["trust_reference_bytes", "bytes"],
+    ["planning_snapshot_bytes", "bytes"]
+  ],
+  "owner": "planning",
+  "schema_id": "chiplog.planning.public.create-intention-line.v1"
+}
