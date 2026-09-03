@@ -58,6 +58,12 @@ if ! uv run ruff format --check --force-exclude .; then
     echo "    → команда: uv run ruff format ." >&2
     FAILED=1
 fi
+if ! python3 quality/checks/resource_contexts.py src; then
+    echo "    ручное закрытие ресурса обошло policy контекстных менеджеров" >&2
+    echo "    → сделай: запусти python3 quality/checks/resource_contexts.py src и оберни ресурс в with" >&2
+    echo "    ✓ проверка завершается без найденных ручных close в production source" >&2
+    FAILED=1
+fi
 if ! uv run mypy; then
     echo "    проект не прошёл mypy" >&2
     echo "    → команда: uv run mypy" >&2
