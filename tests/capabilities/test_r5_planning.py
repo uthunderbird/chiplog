@@ -53,6 +53,7 @@ def context(
         "trust-head",
         "materialization-head",
         sequence,
+        "peer-credential",
     )
     return InvocationContext(
         tenant, PRINCIPAL, PermissionScope("planning.create_intention_line"), reference

@@ -92,6 +92,7 @@ class CredentialState:
     head: str
     session_id: str
     session_head: str
+    peer_credential: str
     revoked: bool = False
 
 
@@ -270,7 +271,7 @@ class DeploymentTrustService:
             raise TrustInvariantError("bootstrap token expired")
         if self._principal is not None:
             raise TrustInvariantError("second principal denied")
-        credential = CredentialState(credential_id, "credential:1", session_id, "session:1")
+        credential = CredentialState(credential_id, "credential:1", session_id, "session:1", peer)
         decision = self._commit(
             "BOOTSTRAP",
             {
@@ -310,6 +311,7 @@ class DeploymentTrustService:
             f"credential:{self._freshness + 1}",
             "",
             f"session:{self._freshness + 1}",
+            current.peer_credential,
         )
         decision = self._commit("ROTATE_CREDENTIAL", asdict(replacement))
         self._credential = replacement
@@ -338,7 +340,13 @@ class DeploymentTrustService:
         new_credential_id: str,
     ) -> CredentialState:
         self._require_active()
-        if peer != expected_peer or _digest(recovery_secret.encode()) != expected_recovery_verifier:
+        current = self._credential
+        if (
+            current is None
+            or peer != expected_peer
+            or peer != current.peer_credential
+            or _digest(recovery_secret.encode()) != expected_recovery_verifier
+        ):
             raise TrustInvariantError("operator recovery authentication failed")
         if self._principal is None:
             raise TrustInvariantError("immutable principal missing")
@@ -347,6 +355,7 @@ class DeploymentTrustService:
             f"credential:{self._freshness + 1}",
             "",
             f"session:{self._freshness + 1}",
+            current.peer_credential,
         )
         decision = self._commit(
             "EMERGENCY_RECOVERY",
@@ -444,6 +453,8 @@ class DeploymentTrustService:
             return TrustDecision("STALE", None, "credential is not current")
         if request.session_id != credential.session_id:
             return TrustDecision("STALE", None, "session is not current")
+        if request.peer_credential != credential.peer_credential:
+            return TrustDecision("STALE", None, "peer credential is not current")
         source_head = "local"
         if request.contour == "TELEGRAM":
             witness = self._witnesses.get(request.transport_witness_id or "")
@@ -476,6 +487,7 @@ class DeploymentTrustService:
             self._state.trust_head,
             self._state.materialization_head,
             self._freshness,
+            credential.peer_credential,
         )
         return TrustDecision("VALID", reference, None)
 
@@ -511,6 +523,7 @@ class DeploymentTrustService:
                     else ""
                 ),
                 witness.witness_id if witness is not None else None,
+                self._credential.peer_credential if self._credential else "",
             )
         )
         if current.disposition != "VALID" or current.reference != reference:
@@ -996,6 +1009,7 @@ class DeploymentTrustService:
                     str(credential["head"]),
                     str(credential["session_id"]),
                     str(credential["session_head"]),
+                    str(credential["peer_credential"]),
                     bool(credential.get("revoked", False)),
                 )
                 self._freshness += 1

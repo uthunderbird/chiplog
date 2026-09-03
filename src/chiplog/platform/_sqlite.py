@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -116,11 +117,12 @@ class PhysicalPublicationCommand:
     minimum_fence_frontier: int
     records: tuple[PhysicalRecord, ...]
     fault: Literal["none", "before_commit", "after_commit"] = "none"
+    admission_guard: Callable[[], Literal["DENIED", "STALE", "INDETERMINATE"] | None] | None = None
 
 
 @dataclass(frozen=True)
 class PublicationResult:
-    disposition: Literal["COMMITTED", "REPLAY", "CONFLICT", "STALE"]
+    disposition: Literal["COMMITTED", "REPLAY", "CONFLICT", "STALE", "DENIED", "INDETERMINATE"]
     commit_sequence: int | None
     record_ids: tuple[str, ...]
 
@@ -173,6 +175,7 @@ class FenceAdvanceCommand:
     tenant_id: str
     generation: str
     frontier: int
+    allow_exact_replay: bool = False
 
 
 @dataclass(frozen=True)
@@ -184,7 +187,7 @@ class DerivativeRegistrationCommand:
 
 @dataclass(frozen=True)
 class PlatformMutationResult:
-    disposition: Literal["COMMITTED"]
+    disposition: Literal["COMMITTED", "REPLAY"]
     subject: str
 
 
@@ -202,12 +205,9 @@ def _schema_manifest(connection: sqlite3.Connection) -> tuple[tuple[object, ...]
 
 
 def _expected_schema_manifest() -> tuple[tuple[object, ...], ...]:
-    reference = sqlite3.connect(":memory:")
-    try:
+    with contextlib.closing(sqlite3.connect(":memory:")) as reference:
         reference.executescript(SCHEMA_SQL)
         return _schema_manifest(reference)
-    finally:
-        reference.close()
 
 
 class SQLiteMaterializer:
@@ -247,6 +247,12 @@ class SQLiteMaterializer:
             raise
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.execute("PRAGMA journal_mode = WAL")
+
+    def __enter__(self) -> SQLiteMaterializer:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     def _admit(self, store_version: int) -> None:
         tables = {
@@ -307,19 +313,24 @@ class SQLiteMaterializer:
             exact_frontier=command.expected_fence_frontier,
         )
 
-        existing = self._connection.execute(
-            """SELECT request_fingerprint, commit_sequence, record_ids
-               FROM publications
-               WHERE tenant_id = ? AND operation_kind = ? AND idempotency_key = ?""",
-            (command.tenant_id, command.operation_kind, command.idempotency_key),
-        ).fetchone()
-        if existing is not None:
-            if existing[0] != command.request_fingerprint:
-                return PublicationResult("CONFLICT", existing[1], ())
-            return PublicationResult("REPLAY", existing[1], tuple(existing[2].split("\n")))
-
         try:
             self._connection.execute("BEGIN IMMEDIATE")
+            existing = self._connection.execute(
+                """SELECT request_fingerprint, commit_sequence, record_ids
+                   FROM publications
+                   WHERE tenant_id = ? AND operation_kind = ? AND idempotency_key = ?""",
+                (command.tenant_id, command.operation_kind, command.idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                self._connection.rollback()
+                if existing[0] != command.request_fingerprint:
+                    return PublicationResult("CONFLICT", existing[1], ())
+                return PublicationResult("REPLAY", existing[1], tuple(existing[2].split("\n")))
+            if command.admission_guard is not None:
+                disposition = command.admission_guard()
+                if disposition is not None:
+                    self._connection.rollback()
+                    return PublicationResult(disposition, None, ())
             row = self._connection.execute(
                 "SELECT head FROM tenant_heads WHERE tenant_id = ?", (command.tenant_id,)
             ).fetchone()
@@ -390,7 +401,13 @@ class SQLiteMaterializer:
             raise RuntimeError("SQLite mutation requires EventAppender ownership")
 
     def _install_fence(
-        self, token: _WriterToken, tenant_id: str, generation: str, frontier: int
+        self,
+        token: _WriterToken,
+        tenant_id: str,
+        generation: str,
+        frontier: int,
+        *,
+        allow_exact_replay: bool = False,
     ) -> PlatformMutationResult:
         self._require_writer(token)
         if frontier < 0 or not generation:
@@ -400,6 +417,8 @@ class SQLiteMaterializer:
                 "SELECT generation, frontier FROM deletion_fences WHERE tenant_id = ?",
                 (tenant_id,),
             ).fetchone()
+            if current == (generation, frontier) and allow_exact_replay:
+                return PlatformMutationResult("REPLAY", f"fence:{tenant_id}:{generation}")
             if current is not None and (frontier < current[1] or generation == current[0]):
                 raise ValueError("deletion fence must advance generation and not regress")
             self._connection.execute(
@@ -433,8 +452,7 @@ class SQLiteMaterializer:
     def guarded_records(
         self, tenant_id: str, generation: str, minimum_frontier: int
     ) -> tuple[tuple[object, ...], ...]:
-        reader = sqlite3.connect(self._path)
-        try:
+        with contextlib.closing(sqlite3.connect(self._path)) as reader:
             reader.execute("BEGIN")
             row = reader.execute(
                 "SELECT generation, frontier FROM deletion_fences WHERE tenant_id = ?",
@@ -454,8 +472,6 @@ class SQLiteMaterializer:
             ).fetchall()
             reader.commit()
             return tuple(tuple(item) for item in rows)
-        finally:
-            reader.close()
 
     def _register_derivative(
         self,
@@ -665,6 +681,12 @@ class EventAppender:
         self._worker = asyncio.create_task(self._run())
         self._close_task: asyncio.Task[None] | None = None
 
+    async def __aenter__(self) -> EventAppender:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
+
     async def submit(self, command: PhysicalPublicationCommand) -> PublicationResult:
         loop = asyncio.get_running_loop()
         result: asyncio.Future[PublicationResult | EvidenceResult | PlatformMutationResult] = (
@@ -766,6 +788,7 @@ class EventAppender:
                             accepted.command.tenant_id,
                             accepted.command.generation,
                             accepted.command.frontier,
+                            allow_exact_replay=accepted.command.allow_exact_replay,
                         )
                     else:
                         value = await asyncio.to_thread(

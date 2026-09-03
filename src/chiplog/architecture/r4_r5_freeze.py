@@ -68,12 +68,18 @@ R4_R5_EXPORTS: tuple[FrozenExport, ...] = (
             ("session_id", "str"),
             ("source_id", "str"),
             ("transport_witness_id", "str | None"),
+            ("peer_credential", "str"),
         ),
     ),
     FrozenExport(
         "chiplog.capabilities.deployment_trust:TenantDecisionJournalPort",
         "deployment_trust",
         (("decision", "bytes"), ("predecessor", "str | None"), ("result", "str")),
+    ),
+    FrozenExport(
+        "chiplog.capabilities.deployment_trust:TrustAuthenticator",
+        "deployment_trust",
+        (("request", "AuthenticationRequest"), ("result", "TrustDecision")),
     ),
     FrozenExport(
         "chiplog.capabilities.deployment_trust:TrustDecision",
@@ -102,6 +108,7 @@ R4_R5_EXPORTS: tuple[FrozenExport, ...] = (
             ("trust_head", "str"),
             ("materialization_head", "str"),
             ("freshness_sequence", "int"),
+            ("peer_credential", "str"),
         ),
     ),
     FrozenExport(
@@ -141,6 +148,32 @@ R4_R5_EXPORTS: tuple[FrozenExport, ...] = (
         (("context", "InvocationContext"), ("command", "CreateIntentionLine")),
     ),
     FrozenExport(
+        "chiplog.capabilities.planning:PlanningCommittedResult",
+        "planning",
+        (
+            ("command_id", "RecordId"),
+            ("result_id", "RecordId"),
+            ("intention_line_id", "RecordId"),
+            ("revision_id", "RecordId"),
+            ("authorization_evidence_id", "RecordId"),
+            ("commit_sequence", "int"),
+            ("allocation_manifest", "tuple[tuple[int, str, RecordId], ...]"),
+            ("record_manifest", "tuple[tuple[RecordId, str, str], ...]"),
+            ("batch_fingerprint", "str"),
+            ("result_fingerprint", "str"),
+            ("publication_fingerprint", "str"),
+        ),
+    ),
+    FrozenExport(
+        "chiplog.capabilities.planning:PlanningOutcome",
+        "planning",
+        (
+            ("disposition", "COMMITTED | REPLAY | CONFLICT | STALE | DENIED | INDETERMINATE"),
+            ("result", "PlanningCommittedResult | None"),
+            ("reason", "str | None"),
+        ),
+    ),
+    FrozenExport(
         "chiplog.capabilities.planning:PlanningTrustDecision",
         "planning",
         (("disposition", "VALID | DENIED | STALE | INDETERMINATE"), ("reason", "str | None")),
@@ -158,6 +191,7 @@ R4_R5_EXPORTS: tuple[FrozenExport, ...] = (
             ("trust_head", "str"),
             ("materialization_head", "str"),
             ("freshness_sequence", "int"),
+            ("peer_credential", "str"),
         ),
     ),
     FrozenExport(

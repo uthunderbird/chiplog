@@ -51,6 +51,7 @@ class PlanningTrustReference:
     trust_head: str
     materialization_head: str
     freshness_sequence: int
+    peer_credential: str
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ class PlanningCommands(Protocol):
         self,
         context: InvocationContext,
         command: CreateIntentionLine,
-    ) -> _PlanningOutcome: ...
+    ) -> PlanningOutcome: ...
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,8 @@ class _OwnedRecord:
     fingerprint: str
 
 
-class _PlanningCommittedResult(NamedTuple):
+@dataclass(frozen=True)
+class PlanningCommittedResult:
     command_id: RecordId
     result_id: RecordId
     intention_line_id: RecordId
@@ -119,16 +121,21 @@ class _PlanningPublication(NamedTuple):
     request_fingerprint: str
     commit_sequence: int
     records: tuple[_OwnedRecord, ...]
-    result: _PlanningCommittedResult
+    result: PlanningCommittedResult
     record_manifest: tuple[tuple[RecordId, str, str], ...]
     batch_fingerprint: str
 
 
 @dataclass(frozen=True)
-class _PlanningOutcome:
+class PlanningOutcome:
     disposition: Literal["COMMITTED", "REPLAY", "CONFLICT", "STALE", "DENIED", "INDETERMINATE"]
-    result: _PlanningCommittedResult | None
+    result: PlanningCommittedResult | None
     reason: str | None
+
+
+# The concrete use case and its driven adapter retain these compatibility aliases.
+_PlanningCommittedResult = PlanningCommittedResult
+_PlanningOutcome = PlanningOutcome
 
 
 class _PlanningState:
@@ -211,6 +218,7 @@ def _trust_fields(reference: PlanningTrustReference) -> dict[str, object]:
         "source_head": reference.source_head,
         "tenant_id": reference.tenant_id.value,
         "trust_head": reference.trust_head,
+        "peer_credential": reference.peer_credential,
     }
 
 

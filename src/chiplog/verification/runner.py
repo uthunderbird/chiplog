@@ -211,7 +211,7 @@ def _validate_stage0_registry(
         raise ValueError("stage0 increment registry must be the exact ordered R1-R8 set")
     if not evidenced or not evidenced <= set(increments):
         raise ValueError("stage0 evidenced increment set is empty or contains unknown rows")
-    if evidenced != frozenset({"R1", "R2", "R3", "R4", "R5"}):
+    if evidenced != frozenset({"R1", "R2", "R3", "R4", "R5", "R6"}):
         raise ValueError("stage0 evidenced increment set silently omits or adds a stage")
 
 
@@ -244,10 +244,15 @@ def _check_stage0(root: Path) -> list[CheckResult]:
         "R3": ("tests/platform",),
         "R4": ("tests/deployment_trust",),
         "R5": ("tests/capabilities", "tests/integration/test_r4_r5_convergence.py"),
+        "R6": (
+            "tests/contracts/test_r6_public_component.py",
+            "tests/contracts/test_r6_trust_bridge.py",
+            "tests/integration/test_r6_cli.py",
+        ),
     }
     checks = [
         _run_test_slice(root, increment, slices[increment])
-        for increment in ("R1", "R2", "R3", "R4", "R5")
+        for increment in ("R1", "R2", "R3", "R4", "R5", "R6")
     ]
     checks.extend(
         CheckResult(
@@ -256,7 +261,7 @@ def _check_stage0(root: Path) -> list[CheckResult]:
             f"{increment} implementation evidence is required before the Stage-0 barrier",
             {"implemented": False, "evidenced_invariants": []},
         )
-        for increment in ("R6", "R7", "R8")
+        for increment in ("R7", "R8")
     )
     if tuple(check.check_id.removeprefix("stage0.").upper() for check in checks) != (
         "R1",
@@ -310,7 +315,7 @@ def run_profile(root: Path, profile: str) -> tuple[dict[str, object], Path]:
         "claim": (
             "R0 verifier substrate and compile-only transcript contracts only"
             if profile == "fast"
-            else "R1-R5 Stage-0 implementation evidence only; R6-R8 remain HOLD"
+            else "R1-R6 Stage-0 implementation evidence only; R7-R8 remain HOLD"
         ),
         "checks": [check.to_dict() for check in checks],
         "input_identity": inputs,

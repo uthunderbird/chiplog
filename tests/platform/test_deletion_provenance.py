@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import replace
@@ -113,6 +114,18 @@ async def test_stale_fence_blocks_replay_after_fence_advance(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="generation mismatch"):
         await appender.submit(command())
     assert len(subject.durable_records()) == 1
+    await appender.close()
+
+
+async def test_exact_fence_install_is_idempotent_for_concurrent_bootstrap(tmp_path: Path) -> None:
+    subject = store(tmp_path / "fence-replay.sqlite3")
+    appender = EventAppender(subject, capacity=2)
+    first, second = await asyncio.gather(
+        appender.advance_fence(FenceAdvanceCommand("tenant-1", "r6", 0, True)),
+        appender.advance_fence(FenceAdvanceCommand("tenant-1", "r6", 0, True)),
+    )
+    assert {first.disposition, second.disposition} == {"COMMITTED", "REPLAY"}
+    subject.require_fence("tenant-1", "r6", 0, exact_frontier=0)
     await appender.close()
 
 

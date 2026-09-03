@@ -1,11 +1,33 @@
 from __future__ import annotations
 
+import fcntl
 import hmac
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal
+
+
+@contextmanager
+def _descriptor(path: Path, flags: int, mode: int = 0o600) -> Iterator[int]:
+    value = os.open(path, flags, mode)
+    try:
+        yield value
+    finally:
+        os.close(value)
+
+
+@contextmanager
+def _lock(path: Path, operation: int) -> Iterator[None]:
+    with _descriptor(path, os.O_CREAT | os.O_RDWR) as descriptor:
+        fcntl.flock(descriptor, operation)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 class IndependentTenantDecisionJournal:
@@ -15,6 +37,7 @@ class IndependentTenantDecisionJournal:
         self._path = path
         self._head_path = path.with_suffix(path.suffix + ".head")
         self._key_path = path.with_suffix(path.suffix + ".key")
+        self._lock_path = path.with_suffix(path.suffix + ".lock")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch(exist_ok=True)
         path.chmod(0o600)
@@ -33,46 +56,46 @@ class IndependentTenantDecisionJournal:
         self.entries()
 
     def append(self, decision: bytes, predecessor: str | None) -> str:
-        entries = self.entries()
-        current = entries[-1][0] if entries else None
-        if predecessor != current:
-            raise RuntimeError("journal predecessor mismatch")
-        decision_id = sha256((predecessor or "GENESIS").encode() + b"\x00" + decision).hexdigest()
-        line = (
-            json.dumps(
-                {
-                    "authentication": self._authenticate(decision_id, predecessor, decision),
-                    "decision": decision.hex(),
-                    "decision_id": decision_id,
-                    "predecessor": predecessor,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-            + b"\n"
-        )
-        descriptor = os.open(self._path, os.O_APPEND | os.O_WRONLY)
-        try:
-            os.write(descriptor, line)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        temporary = self._head_path.with_suffix(self._head_path.suffix + ".new")
-        temporary_descriptor = os.open(temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-        try:
-            os.write(temporary_descriptor, decision_id.encode("ascii"))
-            os.fsync(temporary_descriptor)
-        finally:
-            os.close(temporary_descriptor)
-        os.replace(temporary, self._head_path)
-        directory_descriptor = os.open(self._head_path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
-        return decision_id
+        with _lock(self._lock_path, fcntl.LOCK_EX):
+            entries = self._entries()
+            current = entries[-1][0] if entries else None
+            if predecessor != current:
+                raise RuntimeError("journal predecessor mismatch")
+            decision_id = sha256(
+                (predecessor or "GENESIS").encode() + b"\x00" + decision
+            ).hexdigest()
+            line = (
+                json.dumps(
+                    {
+                        "authentication": self._authenticate(decision_id, predecessor, decision),
+                        "decision": decision.hex(),
+                        "decision_id": decision_id,
+                        "predecessor": predecessor,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+                + b"\n"
+            )
+            with _descriptor(self._path, os.O_APPEND | os.O_WRONLY) as descriptor:
+                os.write(descriptor, line)
+                os.fsync(descriptor)
+            temporary = self._head_path.with_suffix(self._head_path.suffix + ".new")
+            with _descriptor(
+                temporary, os.O_CREAT | os.O_TRUNC | os.O_WRONLY
+            ) as temporary_descriptor:
+                os.write(temporary_descriptor, decision_id.encode("ascii"))
+                os.fsync(temporary_descriptor)
+            os.replace(temporary, self._head_path)
+            with _descriptor(self._head_path.parent, os.O_RDONLY) as directory_descriptor:
+                os.fsync(directory_descriptor)
+            return decision_id
 
     def entries(self) -> tuple[tuple[str, str | None, bytes], ...]:
+        with _lock(self._lock_path, fcntl.LOCK_SH):
+            return self._entries()
+
+    def _entries(self) -> tuple[tuple[str, str | None, bytes], ...]:
         result: list[tuple[str, str | None, bytes]] = []
         predecessor: str | None = None
         for raw in self._path.read_bytes().splitlines():

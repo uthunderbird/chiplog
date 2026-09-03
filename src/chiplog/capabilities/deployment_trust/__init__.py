@@ -18,6 +18,7 @@ class AuthenticationRequest:
     session_id: str
     source_id: str
     transport_witness_id: str | None
+    peer_credential: str
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class TrustReference:
     trust_head: str
     materialization_head: str
     freshness_sequence: int
+    peer_credential: str
 
 
 @dataclass(frozen=True)
@@ -67,9 +69,14 @@ class TrustRevalidator(Protocol):
     def revalidate(self, request: TrustReferenceRevalidation) -> TrustDecision: ...
 
 
+class TrustAuthenticator(Protocol):
+    def authenticate(self, request: AuthenticationRequest) -> TrustDecision: ...
+
+
 __all__ = [
     "AuthenticationRequest",
     "TenantDecisionJournalPort",
+    "TrustAuthenticator",
     "TrustDecision",
     "TrustMaterializationPort",
     "TrustReference",

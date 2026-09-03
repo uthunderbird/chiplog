@@ -90,7 +90,7 @@ def test_durable_record_discriminators_equal_the_freeze() -> None:
     frozen = tuple(
         item.record_type_id for item in R4_R5_RECORDS if item.owner == "deployment_trust"
     )
-    assert RECORD_TYPE_IDS == frozen
+    assert frozen == RECORD_TYPE_IDS
 
 
 def test_genesis_is_immutable_and_cross_tenant_relabel_is_denied(tmp_path: Path) -> None:
@@ -146,10 +146,10 @@ def test_restart_rebuilds_principal_credentials_sources_replay_and_poll_state(
         broker_secret=b"broker-secret",
     )
     restarted.admit_startup(trust.state, trust.genesis, trust.binding)
-    cli = AuthenticationRequest("CLI", "credential-1", "session-1", "", None)
+    cli = AuthenticationRequest("CLI", "credential-1", "session-1", "", None, "uid:1000")
     assert restarted.authenticate(cli).disposition == "VALID"
     telegram = AuthenticationRequest(
-        "TELEGRAM", "credential-1", "session-1", "candidate-1", witness.witness_id
+        "TELEGRAM", "credential-1", "session-1", "candidate-1", witness.witness_id, "uid:1000"
     )
     assert restarted.authenticate(telegram).disposition == "DENIED"
     assert restarted.may_emit_poll_request("poll", "0001")
@@ -195,7 +195,7 @@ def test_one_shot_bootstrap_replay_wrong_peer_expiry_and_second_principal(tmp_pa
 def test_cli_authentication_and_complete_reference_revalidation(tmp_path: Path) -> None:
     trust, _, _ = active(tmp_path)
     decision = trust.authenticate(
-        AuthenticationRequest("CLI", "credential-1", "session-1", "", None)
+        AuthenticationRequest("CLI", "credential-1", "session-1", "", None, "uid:1000")
     )
     assert decision.disposition == "VALID" and decision.reference is not None
     request = TrustReferenceRevalidation(
@@ -224,20 +224,42 @@ def test_cli_authentication_and_complete_reference_revalidation(tmp_path: Path) 
     assert trust.revalidate(empty_subject).disposition == "DENIED"
 
 
+def test_cli_peer_credential_is_durable_and_exact(tmp_path: Path) -> None:
+    trust, journal, materializer = active(tmp_path)
+    valid = AuthenticationRequest("CLI", "credential-1", "session-1", "", None, "uid:1000")
+    assert trust.authenticate(valid).disposition == "VALID"
+    forged = AuthenticationRequest("CLI", "credential-1", "session-1", "", None, "uid:attacker")
+    assert trust.authenticate(forged).disposition == "STALE"
+    restarted = DeploymentTrustService(
+        journal,
+        materializer,
+        operator_key_id="operator:1",
+        operator_secret=b"operator-secret",
+        broker_secret=b"broker-secret",
+    )
+    assert restarted.recover() == 0
+    assert restarted.authenticate(valid).disposition == "VALID"
+    assert restarted.authenticate(forged).disposition == "STALE"
+
+
 def test_rotation_revokes_old_credential_and_sessions(tmp_path: Path) -> None:
     trust, _, _ = active(tmp_path)
-    before = trust.authenticate(AuthenticationRequest("CLI", "credential-1", "session-1", "", None))
+    before = trust.authenticate(
+        AuthenticationRequest("CLI", "credential-1", "session-1", "", None, "uid:1000")
+    )
     assert before.disposition == "VALID"
     trust.rotate_credential("credential:1", "credential-2")
     assert (
         trust.authenticate(
-            AuthenticationRequest("CLI", "credential-1", "session-1", "", None)
+            AuthenticationRequest("CLI", "credential-1", "session-1", "", None, "uid:1000")
         ).disposition
         == "STALE"
     )
     trust.revoke("credential:2")
     assert (
-        trust.authenticate(AuthenticationRequest("CLI", "credential-2", "", "", None)).disposition
+        trust.authenticate(
+            AuthenticationRequest("CLI", "credential-2", "", "", None, "uid:1000")
+        ).disposition
         == "STALE"
     )
 
@@ -264,7 +286,9 @@ def test_emergency_recovery_keeps_principal_and_rejects_wrong_secret(tmp_path: P
 
 def test_telegram_requires_broker_witness_and_replay_is_closed(tmp_path: Path) -> None:
     trust, _, _ = active(tmp_path)
-    request = AuthenticationRequest("TELEGRAM", "credential-1", "session-1", "candidate-1", None)
+    request = AuthenticationRequest(
+        "TELEGRAM", "credential-1", "session-1", "candidate-1", None, "uid:1000"
+    )
     assert trust.authenticate(request).disposition == "DENIED"
     witness = trust.issue_transport_witness(
         witness_id="witness-1",
@@ -276,7 +300,7 @@ def test_telegram_requires_broker_witness_and_replay_is_closed(tmp_path: Path) -
         replay_identity="update-1",
     )
     request = AuthenticationRequest(
-        "TELEGRAM", "credential-1", "session-1", "candidate-1", witness.witness_id
+        "TELEGRAM", "credential-1", "session-1", "candidate-1", witness.witness_id, "uid:1000"
     )
     authenticated = trust.authenticate(request)
     assert authenticated.disposition == "VALID" and authenticated.reference is not None
@@ -291,7 +315,7 @@ def test_telegram_requires_broker_witness_and_replay_is_closed(tmp_path: Path) -
         == "VALID"
     )
     substituted = AuthenticationRequest(
-        "TELEGRAM", "credential-1", "session-1", "candidate-2", witness.witness_id
+        "TELEGRAM", "credential-1", "session-1", "candidate-2", witness.witness_id, "uid:1000"
     )
     assert trust.authenticate(substituted).disposition == "DENIED"
     trust.register_evidence_source("later-source")
@@ -330,7 +354,7 @@ def test_telegram_requires_broker_witness_and_replay_is_closed(tmp_path: Path) -
         )
     trust.rotate_credential("credential:1", "credential-2")
     stale_witness = AuthenticationRequest(
-        "TELEGRAM", "credential-2", "", "candidate-1", witness.witness_id
+        "TELEGRAM", "credential-2", "", "candidate-1", witness.witness_id, "uid:1000"
     )
     assert trust.authenticate(stale_witness).disposition == "DENIED"
     with pytest.raises(TrustInvariantError, match="conflict"):
@@ -348,10 +372,14 @@ def test_telegram_requires_broker_witness_and_replay_is_closed(tmp_path: Path) -
 def test_evidence_source_authentication_and_late_evidence(tmp_path: Path) -> None:
     trust, _, _ = active(tmp_path)
     source = trust.register_evidence_source("provider-1")
-    request = AuthenticationRequest("EVIDENCE", "credential-1", "session-1", "provider-1", None)
+    request = AuthenticationRequest(
+        "EVIDENCE", "credential-1", "session-1", "provider-1", None, "uid:1000"
+    )
     assert trust.authenticate(request).disposition == "VALID"
     trust.mark_authenticated_late_evidence("provider-1", source.head)
-    stale = AuthenticationRequest("EVIDENCE", "credential-1", "session-1", "missing", None)
+    stale = AuthenticationRequest(
+        "EVIDENCE", "credential-1", "session-1", "missing", None, "uid:1000"
+    )
     assert trust.authenticate(stale).disposition == "STALE"
 
 
@@ -510,7 +538,7 @@ def test_independent_database_rollback_replays_from_protected_journal(tmp_path: 
     assert len(replacement.records()) == expected_records
     assert (
         restarted.authenticate(
-            AuthenticationRequest("CLI", "credential-1", "session-1", "", None)
+            AuthenticationRequest("CLI", "credential-1", "session-1", "", None, "uid:1000")
         ).disposition
         == "VALID"
     )
@@ -559,6 +587,6 @@ def test_future_contour_holds_all_authentication(tmp_path: Path) -> None:
     trust, _, _ = active(tmp_path)
     trust.hold_future_contour()
     decision = trust.authenticate(
-        AuthenticationRequest("CLI", "credential-1", "session-1", "", None)
+        AuthenticationRequest("CLI", "credential-1", "session-1", "", None, "uid:1000")
     )
     assert decision.disposition == "INDETERMINATE"
