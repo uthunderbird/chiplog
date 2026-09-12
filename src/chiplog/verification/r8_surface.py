@@ -188,6 +188,17 @@ def verify_offline_import_boundary(root: Path) -> None:
     A newly reachable SDK/transport requires new inventory and gate evidence.
     """
     forbidden = {"openai", "httpx", "requests", "urllib", "aiohttp", "telegram", "google", "grpc"}
+    # R9 uses only the reviewed stateless renderer/DTO facade, not the optional
+    # hub or TUI. This registration grants no additional deployment surface.
+    dashboard_imports = {
+        "chiplog/composition/r9.py": {"render_screen", "screen_from_dict", "screen_to_dict"},
+        "chiplog/capabilities/projections/workspace.py": {
+            "DashboardScreen",
+            "render_screen",
+            "screen_from_dict",
+            "screen_to_dict",
+        },
+    }
     for path in (root / "src/chiplog").rglob("*.py"):
         relative = path.relative_to(root / "src").as_posix()
         tree = ast.parse(path.read_text())
@@ -203,6 +214,15 @@ def verify_offline_import_boundary(root: Path) -> None:
                 )
             for module in modules:
                 top = module.split(".")[0]
+                if top == "agent_dashboard":
+                    if (
+                        module != "agent_dashboard"
+                        or not isinstance(node, ast.ImportFrom)
+                        or not {alias.name for alias in node.names}
+                        <= dashboard_imports.get(relative, set())
+                    ):
+                        raise R8SurfaceViolation("unregistered dashboard import surface")
+                    continue
                 if top not in sys.stdlib_module_names | {"chiplog", "dishka", "pydantic"}:
                     raise R8SurfaceViolation("offline graph acquired an unregistered dependency")
                 if (

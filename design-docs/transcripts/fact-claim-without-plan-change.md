@@ -5,7 +5,7 @@
 <!--
 scenario:
   id: fact-claim-without-plan-change
-  version: 1
+  version: 2
   vision_version: 2026-08-22.2
   arrange:
     principal: owner
@@ -23,10 +23,14 @@ scenario:
 
 <!--
 design:
-  tool_call: resolve the exact occurrence, then record an owner-authored FactClaim
+  tool_call: resolve the exact occurrence, display immutable claim and consequence; append only after exact confirmation
   tool_result: claim stored against the 2026-08-18 occurrence
   rationale: a factual report does not authorize a planning revision
 -->
+
+**Chiplog:** Подтвердите точную запись: занятие в бассейне 18 августа не состоялось. Изменится только журнал фактов; план останется прежним.
+
+**Пользователь:** Подтверждаю эту точную запись через привязанную к показу команду подтверждения.
 
 **Chiplog:** Записал ваш факт: занятие в бассейне 18 августа не состоялось. Это изменило журнал фактов, но не план. Задача в плане остаётся в прежнем состоянии. Хотите отдельно решить, что с ней делать?
 

@@ -526,6 +526,20 @@ class SQLiteMaterializer:
         if hashlib.sha256(canonical).hexdigest() != registration.provenance_fingerprint:
             raise ValueError("derivative provenance fingerprint mismatch")
         with self._connection:
+            existing = self._connection.execute(
+                """SELECT source_record_ids, source_epoch, provenance_fingerprint
+                   FROM derivatives WHERE tenant_id = ? AND sink = ? AND derivative_id = ?""",
+                (tenant_id, registration.sink, registration.derivative_id),
+            ).fetchone()
+            binding = (
+                "\n".join(registration.source_record_ids),
+                registration.source_epoch,
+                registration.provenance_fingerprint,
+            )
+            if existing is not None:
+                if tuple(existing) != binding:
+                    raise ValueError("derivative identity reused with changed provenance")
+                return PlatformMutationResult("REPLAY", registration.derivative_id)
             self._connection.execute(
                 """INSERT INTO derivatives(
                        tenant_id, sink, derivative_id, source_record_ids, source_epoch,

@@ -88,3 +88,44 @@ def test_audited_implementation_identity_rejects_unreviewed_behavior(
         )
     with pytest.raises(R8SurfaceViolation, match="implementation"):
         verify_r8_surfaces(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "relative,statement",
+    [
+        ("composition/r9.py", "from agent_dashboard import render_screen, screen_to_dict"),
+        ("capabilities/projections/workspace.py", "from agent_dashboard import DashboardScreen"),
+    ],
+)
+def test_offline_gate_accepts_registered_stateless_dashboard_imports(
+    tmp_path: Path, relative: str, statement: str
+) -> None:
+    target = tmp_path / "src/chiplog" / relative
+    target.parent.mkdir(parents=True)
+    target.write_text(statement + "\n")
+    verify_offline_import_boundary(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "relative,statement",
+    [
+        ("new_adapter.py", "from agent_dashboard import render_screen"),
+        ("composition/r9.py", "import agent_dashboard"),
+        ("composition/r9.py", "from agent_dashboard import ScreenHub"),
+        ("composition/r9.py", "from agent_dashboard import *"),
+        ("composition/r9.py", "from agent_dashboard.hub import ScreenHub"),
+        ("composition/r9.py", "from agent_dashboard import DashboardScreen"),
+        ("capabilities/projections/workspace.py", "from agent_dashboard.tui import run"),
+        ("composition/r9.py", "import openai"),
+        ("capabilities/projections/workspace.py", "import socket"),
+    ],
+)
+def test_offline_gate_rejects_unregistered_dashboard_and_transport_imports(
+    tmp_path: Path, relative: str, statement: str
+) -> None:
+    target = tmp_path / "src/chiplog" / relative
+    target.parent.mkdir(parents=True)
+    target.write_text(statement + "\n")
+    # Exercise this gate directly: the separate source-hash gate must not mask it.
+    with pytest.raises(R8SurfaceViolation):
+        verify_offline_import_boundary(tmp_path)

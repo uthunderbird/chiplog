@@ -1,0 +1,1121 @@
+{
+  "models": {
+    "DisclosureEnvelope": {
+      "$defs": {
+        "DisclosureLabel": {
+          "additionalProperties": false,
+          "properties": {
+            "allowed_endpoints": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Allowed Endpoints",
+              "type": "array"
+            },
+            "lattice_version": {
+              "const": "chiplog.disclosure.v1",
+              "title": "Lattice Version",
+              "type": "string"
+            },
+            "value": {
+              "enum": [
+                "UNRESTRICTED",
+                "ENDPOINT_RESTRICTED",
+                "DENY_ALL"
+              ],
+              "title": "Value",
+              "type": "string"
+            }
+          },
+          "required": [
+            "lattice_version",
+            "value",
+            "allowed_endpoints"
+          ],
+          "title": "DisclosureLabel",
+          "type": "object"
+        },
+        "SourceReference": {
+          "additionalProperties": false,
+          "properties": {
+            "content_digest": {
+              "minLength": 1,
+              "title": "Content Digest",
+              "type": "string"
+            },
+            "label": {
+              "$ref": "#/$defs/DisclosureLabel"
+            },
+            "label_head": {
+              "minLength": 1,
+              "title": "Label Head",
+              "type": "string"
+            },
+            "owner": {
+              "minLength": 1,
+              "title": "Owner",
+              "type": "string"
+            },
+            "record_id": {
+              "minLength": 1,
+              "title": "Record Id",
+              "type": "string"
+            },
+            "record_version": {
+              "minLength": 1,
+              "title": "Record Version",
+              "type": "string"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tenant_id",
+            "owner",
+            "record_id",
+            "record_version",
+            "content_digest",
+            "label_head",
+            "label"
+          ],
+          "title": "SourceReference",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "content_digest": {
+          "minLength": 1,
+          "title": "Content Digest",
+          "type": "string"
+        },
+        "contour_head": {
+          "minLength": 1,
+          "title": "Contour Head",
+          "type": "string"
+        },
+        "deletion_fence_head": {
+          "minLength": 1,
+          "title": "Deletion Fence Head",
+          "type": "string"
+        },
+        "label": {
+          "$ref": "#/$defs/DisclosureLabel"
+        },
+        "policy_head": {
+          "minLength": 1,
+          "title": "Policy Head",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/SourceReference"
+          },
+          "minItems": 1,
+          "title": "Sources",
+          "type": "array"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "content_digest",
+        "sources",
+        "label",
+        "policy_head",
+        "contour_head",
+        "deletion_fence_head"
+      ],
+      "title": "DisclosureEnvelope",
+      "type": "object"
+    },
+    "DisclosureLabel": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_endpoints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Endpoints",
+          "type": "array"
+        },
+        "lattice_version": {
+          "const": "chiplog.disclosure.v1",
+          "title": "Lattice Version",
+          "type": "string"
+        },
+        "value": {
+          "enum": [
+            "UNRESTRICTED",
+            "ENDPOINT_RESTRICTED",
+            "DENY_ALL"
+          ],
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "lattice_version",
+        "value",
+        "allowed_endpoints"
+      ],
+      "title": "DisclosureLabel",
+      "type": "object"
+    },
+    "SourceReference": {
+      "$defs": {
+        "DisclosureLabel": {
+          "additionalProperties": false,
+          "properties": {
+            "allowed_endpoints": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Allowed Endpoints",
+              "type": "array"
+            },
+            "lattice_version": {
+              "const": "chiplog.disclosure.v1",
+              "title": "Lattice Version",
+              "type": "string"
+            },
+            "value": {
+              "enum": [
+                "UNRESTRICTED",
+                "ENDPOINT_RESTRICTED",
+                "DENY_ALL"
+              ],
+              "title": "Value",
+              "type": "string"
+            }
+          },
+          "required": [
+            "lattice_version",
+            "value",
+            "allowed_endpoints"
+          ],
+          "title": "DisclosureLabel",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "content_digest": {
+          "minLength": 1,
+          "title": "Content Digest",
+          "type": "string"
+        },
+        "label": {
+          "$ref": "#/$defs/DisclosureLabel"
+        },
+        "label_head": {
+          "minLength": 1,
+          "title": "Label Head",
+          "type": "string"
+        },
+        "owner": {
+          "minLength": 1,
+          "title": "Owner",
+          "type": "string"
+        },
+        "record_id": {
+          "minLength": 1,
+          "title": "Record Id",
+          "type": "string"
+        },
+        "record_version": {
+          "minLength": 1,
+          "title": "Record Version",
+          "type": "string"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "owner",
+        "record_id",
+        "record_version",
+        "content_digest",
+        "label_head",
+        "label"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    },
+    "WorkspaceReadContext": {
+      "additionalProperties": false,
+      "properties": {
+        "broker_epoch": {
+          "exclusiveMinimum": 0,
+          "title": "Broker Epoch",
+          "type": "integer"
+        },
+        "channel_id": {
+          "minLength": 1,
+          "title": "Channel Id",
+          "type": "string"
+        },
+        "database_instance_id": {
+          "minLength": 1,
+          "title": "Database Instance Id",
+          "type": "string"
+        },
+        "deletion_fence_head": {
+          "minLength": 1,
+          "title": "Deletion Fence Head",
+          "type": "string"
+        },
+        "endpoint_binding_head": {
+          "minLength": 1,
+          "title": "Endpoint Binding Head",
+          "type": "string"
+        },
+        "generation_id": {
+          "minLength": 1,
+          "title": "Generation Id",
+          "type": "string"
+        },
+        "invalidator_registry_digest": {
+          "minLength": 1,
+          "title": "Invalidator Registry Digest",
+          "type": "string"
+        },
+        "observed_at_ns": {
+          "minimum": 0,
+          "title": "Observed At Ns",
+          "type": "integer"
+        },
+        "owner_id": {
+          "minLength": 1,
+          "title": "Owner Id",
+          "type": "string"
+        },
+        "policy_head": {
+          "minLength": 1,
+          "title": "Policy Head",
+          "type": "string"
+        },
+        "principal_contour_head": {
+          "minLength": 1,
+          "title": "Principal Contour Head",
+          "type": "string"
+        },
+        "principal_id": {
+          "minLength": 1,
+          "title": "Principal Id",
+          "type": "string"
+        },
+        "session_id": {
+          "minLength": 1,
+          "title": "Session Id",
+          "type": "string"
+        },
+        "snapshot_frontier": {
+          "minimum": 0,
+          "title": "Snapshot Frontier",
+          "type": "integer"
+        },
+        "snapshot_id": {
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "verified_snapshot_bytes": {
+          "format": "base64url",
+          "minLength": 1,
+          "title": "Verified Snapshot Bytes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "database_instance_id",
+        "principal_id",
+        "principal_contour_head",
+        "channel_id",
+        "endpoint_binding_head",
+        "broker_epoch",
+        "owner_id",
+        "generation_id",
+        "session_id",
+        "snapshot_id",
+        "snapshot_frontier",
+        "verified_snapshot_bytes",
+        "invalidator_registry_digest",
+        "policy_head",
+        "deletion_fence_head",
+        "observed_at_ns"
+      ],
+      "title": "WorkspaceReadContext",
+      "type": "object"
+    },
+    "WorkspaceReadRequest": {
+      "$defs": {
+        "WorkspaceReadContext": {
+          "additionalProperties": false,
+          "properties": {
+            "broker_epoch": {
+              "exclusiveMinimum": 0,
+              "title": "Broker Epoch",
+              "type": "integer"
+            },
+            "channel_id": {
+              "minLength": 1,
+              "title": "Channel Id",
+              "type": "string"
+            },
+            "database_instance_id": {
+              "minLength": 1,
+              "title": "Database Instance Id",
+              "type": "string"
+            },
+            "deletion_fence_head": {
+              "minLength": 1,
+              "title": "Deletion Fence Head",
+              "type": "string"
+            },
+            "endpoint_binding_head": {
+              "minLength": 1,
+              "title": "Endpoint Binding Head",
+              "type": "string"
+            },
+            "generation_id": {
+              "minLength": 1,
+              "title": "Generation Id",
+              "type": "string"
+            },
+            "invalidator_registry_digest": {
+              "minLength": 1,
+              "title": "Invalidator Registry Digest",
+              "type": "string"
+            },
+            "observed_at_ns": {
+              "minimum": 0,
+              "title": "Observed At Ns",
+              "type": "integer"
+            },
+            "owner_id": {
+              "minLength": 1,
+              "title": "Owner Id",
+              "type": "string"
+            },
+            "policy_head": {
+              "minLength": 1,
+              "title": "Policy Head",
+              "type": "string"
+            },
+            "principal_contour_head": {
+              "minLength": 1,
+              "title": "Principal Contour Head",
+              "type": "string"
+            },
+            "principal_id": {
+              "minLength": 1,
+              "title": "Principal Id",
+              "type": "string"
+            },
+            "session_id": {
+              "minLength": 1,
+              "title": "Session Id",
+              "type": "string"
+            },
+            "snapshot_frontier": {
+              "minimum": 0,
+              "title": "Snapshot Frontier",
+              "type": "integer"
+            },
+            "snapshot_id": {
+              "minLength": 1,
+              "title": "Snapshot Id",
+              "type": "string"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            },
+            "verified_snapshot_bytes": {
+              "format": "base64url",
+              "minLength": 1,
+              "title": "Verified Snapshot Bytes",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tenant_id",
+            "database_instance_id",
+            "principal_id",
+            "principal_contour_head",
+            "channel_id",
+            "endpoint_binding_head",
+            "broker_epoch",
+            "owner_id",
+            "generation_id",
+            "session_id",
+            "snapshot_id",
+            "snapshot_frontier",
+            "verified_snapshot_bytes",
+            "invalidator_registry_digest",
+            "policy_head",
+            "deletion_fence_head",
+            "observed_at_ns"
+          ],
+          "title": "WorkspaceReadContext",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "after_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "After Cursor"
+        },
+        "context": {
+          "$ref": "#/$defs/WorkspaceReadContext"
+        },
+        "detail_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Detail Id"
+        },
+        "max_rows": {
+          "exclusiveMinimum": 0,
+          "maximum": 1000,
+          "title": "Max Rows",
+          "type": "integer"
+        },
+        "query": {
+          "enum": [
+            "CONVERSATION_HISTORY",
+            "PLANNING_VIEW",
+            "JOURNAL_CLAIMS",
+            "CALENDAR_AGENDA",
+            "CALENDAR_DETAIL"
+          ],
+          "title": "Query",
+          "type": "string"
+        },
+        "range_end_ns": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Range End Ns"
+        },
+        "range_start_ns": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Range Start Ns"
+        },
+        "read_attempt_id": {
+          "minLength": 1,
+          "title": "Read Attempt Id",
+          "type": "string"
+        },
+        "request_id": {
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "response_slot_id": {
+          "minLength": 1,
+          "title": "Response Slot Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "context",
+        "query",
+        "request_id",
+        "read_attempt_id",
+        "response_slot_id",
+        "max_rows",
+        "after_cursor",
+        "detail_id",
+        "range_start_ns",
+        "range_end_ns"
+      ],
+      "title": "WorkspaceReadRequest",
+      "type": "object"
+    },
+    "WorkspaceReadResult": {
+      "$defs": {
+        "DisclosureEnvelope": {
+          "additionalProperties": false,
+          "properties": {
+            "content_digest": {
+              "minLength": 1,
+              "title": "Content Digest",
+              "type": "string"
+            },
+            "contour_head": {
+              "minLength": 1,
+              "title": "Contour Head",
+              "type": "string"
+            },
+            "deletion_fence_head": {
+              "minLength": 1,
+              "title": "Deletion Fence Head",
+              "type": "string"
+            },
+            "label": {
+              "$ref": "#/$defs/DisclosureLabel"
+            },
+            "policy_head": {
+              "minLength": 1,
+              "title": "Policy Head",
+              "type": "string"
+            },
+            "sources": {
+              "items": {
+                "$ref": "#/$defs/SourceReference"
+              },
+              "minItems": 1,
+              "title": "Sources",
+              "type": "array"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tenant_id",
+            "content_digest",
+            "sources",
+            "label",
+            "policy_head",
+            "contour_head",
+            "deletion_fence_head"
+          ],
+          "title": "DisclosureEnvelope",
+          "type": "object"
+        },
+        "DisclosureLabel": {
+          "additionalProperties": false,
+          "properties": {
+            "allowed_endpoints": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Allowed Endpoints",
+              "type": "array"
+            },
+            "lattice_version": {
+              "const": "chiplog.disclosure.v1",
+              "title": "Lattice Version",
+              "type": "string"
+            },
+            "value": {
+              "enum": [
+                "UNRESTRICTED",
+                "ENDPOINT_RESTRICTED",
+                "DENY_ALL"
+              ],
+              "title": "Value",
+              "type": "string"
+            }
+          },
+          "required": [
+            "lattice_version",
+            "value",
+            "allowed_endpoints"
+          ],
+          "title": "DisclosureLabel",
+          "type": "object"
+        },
+        "SourceReference": {
+          "additionalProperties": false,
+          "properties": {
+            "content_digest": {
+              "minLength": 1,
+              "title": "Content Digest",
+              "type": "string"
+            },
+            "label": {
+              "$ref": "#/$defs/DisclosureLabel"
+            },
+            "label_head": {
+              "minLength": 1,
+              "title": "Label Head",
+              "type": "string"
+            },
+            "owner": {
+              "minLength": 1,
+              "title": "Owner",
+              "type": "string"
+            },
+            "record_id": {
+              "minLength": 1,
+              "title": "Record Id",
+              "type": "string"
+            },
+            "record_version": {
+              "minLength": 1,
+              "title": "Record Version",
+              "type": "string"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tenant_id",
+            "owner",
+            "record_id",
+            "record_version",
+            "content_digest",
+            "label_head",
+            "label"
+          ],
+          "title": "SourceReference",
+          "type": "object"
+        },
+        "WorkspaceReadContext": {
+          "additionalProperties": false,
+          "properties": {
+            "broker_epoch": {
+              "exclusiveMinimum": 0,
+              "title": "Broker Epoch",
+              "type": "integer"
+            },
+            "channel_id": {
+              "minLength": 1,
+              "title": "Channel Id",
+              "type": "string"
+            },
+            "database_instance_id": {
+              "minLength": 1,
+              "title": "Database Instance Id",
+              "type": "string"
+            },
+            "deletion_fence_head": {
+              "minLength": 1,
+              "title": "Deletion Fence Head",
+              "type": "string"
+            },
+            "endpoint_binding_head": {
+              "minLength": 1,
+              "title": "Endpoint Binding Head",
+              "type": "string"
+            },
+            "generation_id": {
+              "minLength": 1,
+              "title": "Generation Id",
+              "type": "string"
+            },
+            "invalidator_registry_digest": {
+              "minLength": 1,
+              "title": "Invalidator Registry Digest",
+              "type": "string"
+            },
+            "observed_at_ns": {
+              "minimum": 0,
+              "title": "Observed At Ns",
+              "type": "integer"
+            },
+            "owner_id": {
+              "minLength": 1,
+              "title": "Owner Id",
+              "type": "string"
+            },
+            "policy_head": {
+              "minLength": 1,
+              "title": "Policy Head",
+              "type": "string"
+            },
+            "principal_contour_head": {
+              "minLength": 1,
+              "title": "Principal Contour Head",
+              "type": "string"
+            },
+            "principal_id": {
+              "minLength": 1,
+              "title": "Principal Id",
+              "type": "string"
+            },
+            "session_id": {
+              "minLength": 1,
+              "title": "Session Id",
+              "type": "string"
+            },
+            "snapshot_frontier": {
+              "minimum": 0,
+              "title": "Snapshot Frontier",
+              "type": "integer"
+            },
+            "snapshot_id": {
+              "minLength": 1,
+              "title": "Snapshot Id",
+              "type": "string"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            },
+            "verified_snapshot_bytes": {
+              "format": "base64url",
+              "minLength": 1,
+              "title": "Verified Snapshot Bytes",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tenant_id",
+            "database_instance_id",
+            "principal_id",
+            "principal_contour_head",
+            "channel_id",
+            "endpoint_binding_head",
+            "broker_epoch",
+            "owner_id",
+            "generation_id",
+            "session_id",
+            "snapshot_id",
+            "snapshot_frontier",
+            "verified_snapshot_bytes",
+            "invalidator_registry_digest",
+            "policy_head",
+            "deletion_fence_head",
+            "observed_at_ns"
+          ],
+          "title": "WorkspaceReadContext",
+          "type": "object"
+        },
+        "WorkspaceRow": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_payload": {
+              "format": "base64url",
+              "title": "Canonical Payload",
+              "type": "string"
+            },
+            "envelope": {
+              "$ref": "#/$defs/DisclosureEnvelope"
+            },
+            "order_key": {
+              "minLength": 1,
+              "title": "Order Key",
+              "type": "string"
+            },
+            "row_id": {
+              "minLength": 1,
+              "title": "Row Id",
+              "type": "string"
+            },
+            "row_version": {
+              "minLength": 1,
+              "title": "Row Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "row_id",
+            "row_version",
+            "order_key",
+            "canonical_payload",
+            "envelope"
+          ],
+          "title": "WorkspaceRow",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/WorkspaceReadContext"
+        },
+        "disposition": {
+          "enum": [
+            "CURRENT",
+            "LAGGING",
+            "STALE_OR_INDETERMINATE_READ",
+            "DENIED",
+            "NOT_FOUND"
+          ],
+          "title": "Disposition",
+          "type": "string"
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Next Cursor"
+        },
+        "read_attempt_id": {
+          "minLength": 1,
+          "title": "Read Attempt Id",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason"
+        },
+        "request_id": {
+          "minLength": 1,
+          "title": "Request Id",
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/WorkspaceRow"
+          },
+          "title": "Rows",
+          "type": "array"
+        }
+      },
+      "required": [
+        "disposition",
+        "context",
+        "request_id",
+        "read_attempt_id",
+        "rows",
+        "next_cursor",
+        "reason"
+      ],
+      "title": "WorkspaceReadResult",
+      "type": "object"
+    },
+    "WorkspaceRow": {
+      "$defs": {
+        "DisclosureEnvelope": {
+          "additionalProperties": false,
+          "properties": {
+            "content_digest": {
+              "minLength": 1,
+              "title": "Content Digest",
+              "type": "string"
+            },
+            "contour_head": {
+              "minLength": 1,
+              "title": "Contour Head",
+              "type": "string"
+            },
+            "deletion_fence_head": {
+              "minLength": 1,
+              "title": "Deletion Fence Head",
+              "type": "string"
+            },
+            "label": {
+              "$ref": "#/$defs/DisclosureLabel"
+            },
+            "policy_head": {
+              "minLength": 1,
+              "title": "Policy Head",
+              "type": "string"
+            },
+            "sources": {
+              "items": {
+                "$ref": "#/$defs/SourceReference"
+              },
+              "minItems": 1,
+              "title": "Sources",
+              "type": "array"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tenant_id",
+            "content_digest",
+            "sources",
+            "label",
+            "policy_head",
+            "contour_head",
+            "deletion_fence_head"
+          ],
+          "title": "DisclosureEnvelope",
+          "type": "object"
+        },
+        "DisclosureLabel": {
+          "additionalProperties": false,
+          "properties": {
+            "allowed_endpoints": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Allowed Endpoints",
+              "type": "array"
+            },
+            "lattice_version": {
+              "const": "chiplog.disclosure.v1",
+              "title": "Lattice Version",
+              "type": "string"
+            },
+            "value": {
+              "enum": [
+                "UNRESTRICTED",
+                "ENDPOINT_RESTRICTED",
+                "DENY_ALL"
+              ],
+              "title": "Value",
+              "type": "string"
+            }
+          },
+          "required": [
+            "lattice_version",
+            "value",
+            "allowed_endpoints"
+          ],
+          "title": "DisclosureLabel",
+          "type": "object"
+        },
+        "SourceReference": {
+          "additionalProperties": false,
+          "properties": {
+            "content_digest": {
+              "minLength": 1,
+              "title": "Content Digest",
+              "type": "string"
+            },
+            "label": {
+              "$ref": "#/$defs/DisclosureLabel"
+            },
+            "label_head": {
+              "minLength": 1,
+              "title": "Label Head",
+              "type": "string"
+            },
+            "owner": {
+              "minLength": 1,
+              "title": "Owner",
+              "type": "string"
+            },
+            "record_id": {
+              "minLength": 1,
+              "title": "Record Id",
+              "type": "string"
+            },
+            "record_version": {
+              "minLength": 1,
+              "title": "Record Version",
+              "type": "string"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tenant_id",
+            "owner",
+            "record_id",
+            "record_version",
+            "content_digest",
+            "label_head",
+            "label"
+          ],
+          "title": "SourceReference",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "canonical_payload": {
+          "format": "base64url",
+          "title": "Canonical Payload",
+          "type": "string"
+        },
+        "envelope": {
+          "$ref": "#/$defs/DisclosureEnvelope"
+        },
+        "order_key": {
+          "minLength": 1,
+          "title": "Order Key",
+          "type": "string"
+        },
+        "row_id": {
+          "minLength": 1,
+          "title": "Row Id",
+          "type": "string"
+        },
+        "row_version": {
+          "minLength": 1,
+          "title": "Row Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "row_id",
+        "row_version",
+        "order_key",
+        "canonical_payload",
+        "envelope"
+      ],
+      "title": "WorkspaceRow",
+      "type": "object"
+    }
+  },
+  "owners": [
+    "projections",
+    "evidence_journal",
+    "calendar_observations"
+  ],
+  "port": {
+    "async": true,
+    "method": "read",
+    "name": "WorkspaceQueryPort",
+    "request": "WorkspaceReadRequest",
+    "result": "WorkspaceReadResult"
+  },
+  "schema_id": "chiplog.workspace.wire.v1"
+}

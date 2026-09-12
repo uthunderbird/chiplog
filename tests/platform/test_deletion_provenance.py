@@ -209,3 +209,36 @@ async def test_derivative_requires_exact_existing_unique_provenance(tmp_path: Pa
                 DerivativeRegistrationCommand("tenant-1", invalid, "fence-1")
             )
     await appender.close()
+
+
+async def test_derivative_exact_replay_survives_restart_but_not_changed_binding_or_fence(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "derivative-replay.sqlite3"
+    publication = command()
+    publication = replace(
+        publication,
+        records=(*publication.records, replace(publication.records[0], record_id="record-2")),
+    )
+    registration = DerivativeRegistration(
+        "projection", "immutable-screen", ("record-1", "record-2"), 3, ""
+    )
+    registration = replace(
+        registration, provenance_fingerprint=provenance_fingerprint(registration)
+    )
+    request = DerivativeRegistrationCommand("tenant-1", registration, "fence-1")
+    async with EventAppender(store(path), capacity=2) as appender:
+        await appender.advance_fence(FenceAdvanceCommand("tenant-1", "fence-1", 3))
+        assert (await appender.submit(publication)).disposition == "COMMITTED"
+        assert (await appender.register_derivative(request)).disposition == "COMMITTED"
+        assert (await appender.register_derivative(request)).disposition == "REPLAY"
+    async with EventAppender(store(path), capacity=2) as appender:
+        assert (await appender.register_derivative(request)).disposition == "REPLAY"
+        changed = replace(registration, source_record_ids=("record-2", "record-1"))
+        changed = replace(changed, provenance_fingerprint=provenance_fingerprint(changed))
+        with pytest.raises(ValueError, match="changed provenance"):
+            await appender.register_derivative(replace(request, registration=changed))
+        assert (await appender.register_derivative(request)).disposition == "REPLAY"
+        await appender.advance_fence(FenceAdvanceCommand("tenant-1", "fence-2", 4))
+        with pytest.raises(ValueError, match="generation mismatch"):
+            await appender.register_derivative(request)
