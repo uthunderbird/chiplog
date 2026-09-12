@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
 from typing import Literal
 
+from .r8_implementation import R8_IMPLEMENTATION_FILES
+
 
 @dataclass(frozen=True)
 class OwnerProcessDecl:
@@ -188,6 +190,39 @@ R7_EVALUATION_MANIFEST = replace(
 )
 
 
+R8_PRODUCTION_MANIFEST = replace(
+    R7_PRODUCTION_MANIFEST,
+    manifest_version=2,
+    broker_version="r8-broker-v1:"
+    + sha256(json.dumps(R8_IMPLEMENTATION_FILES, sort_keys=True).encode()).hexdigest(),
+    application_loop_id="chiplog.r8.application-loop.v1",
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=("planning.r8_create_intention_line",),
+            public_operations=("planning.r8_create_intention_line",),
+            target_ids=("chiplog.capabilities.planning._r8_process:dispatch",),
+        )
+        if owner.owner_id == "planning"
+        else owner
+        for owner in R7_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        replace(
+            route,
+            operation_id="planning.r8_create_intention_line",
+            request_schema_id="chiplog.planning.public.create.v2",
+        )
+        if route.operation_id == "planning.create_intention_line"
+        else route
+        for route in R7_PRODUCTION_MANIFEST.routes
+    ),
+)
+R8_EVALUATION_MANIFEST = replace(
+    R8_PRODUCTION_MANIFEST, environment="evaluation", leaves=R7_EVALUATION_MANIFEST.leaves
+)
+
+
 class RuntimeManifestViolation(ValueError):
     pass
 
@@ -198,8 +233,11 @@ def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
 
 
 def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
-    if manifest.manifest_version != 1:
+    if manifest.manifest_version not in (1, 2):
         raise RuntimeManifestViolation("unknown runtime manifest version")
+    expected_manifest = (
+        R7_PRODUCTION_MANIFEST if manifest.manifest_version == 1 else R8_PRODUCTION_MANIFEST
+    )
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
     if owner_ids != ("deployment_trust", "planning", "projections"):
@@ -213,7 +251,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         _require_canonical_unique(owner.scopes, f"{owner.owner_id} scopes")
         if owner.raw_capabilities:
             raise RuntimeManifestViolation("owner process must be authority-empty")
-    expected_owners = R7_PRODUCTION_MANIFEST.owners
+    expected_owners = expected_manifest.owners
     if manifest.owners != expected_owners:
         raise RuntimeManifestViolation(
             "owner capabilities or public operations differ from R7 freeze"
@@ -253,7 +291,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
 
     for owner_id in owner_ids:
         visit(owner_id)
-    if manifest.routes != R7_PRODUCTION_MANIFEST.routes:
+    if manifest.routes != expected_manifest.routes:
         raise RuntimeManifestViolation("public-port route set differs from R7 freeze")
     return manifest.fingerprint()
 
@@ -277,6 +315,8 @@ def verify_production_evaluation_equivalence(
 __all__ = [
     "R7_EVALUATION_MANIFEST",
     "R7_PRODUCTION_MANIFEST",
+    "R8_EVALUATION_MANIFEST",
+    "R8_PRODUCTION_MANIFEST",
     "LeafBinding",
     "OwnerProcessDecl",
     "RoutedCallDecl",

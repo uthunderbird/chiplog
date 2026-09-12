@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +16,24 @@ from chiplog.architecture.r7_compatibility import PREDECESSOR_UNIVERSE
 def test_ledger_is_canonical_complete_and_bound() -> None:
     assert tuple(item.predecessor_id for item in R7_COMPATIBILITY_LEDGER) == PREDECESSOR_UNIVERSE
     assert len(R7_COMPATIBILITY_LEDGER) == len(set(PREDECESSOR_UNIVERSE))
-    assert len(verify_r7_compatibility_ledger()) == 64
+    assert len(verify_r7_compatibility_ledger(evidence_root=Path(__file__).parents[2])) == 64
+
+
+@pytest.mark.parametrize("field", ["successor_id", "successor_evidence"])
+def test_ledger_rejects_unknown_successor(field: str) -> None:
+    candidate = (
+        replace(R7_COMPATIBILITY_LEDGER[0], successor_id="unknown")
+        if field == "successor_id"
+        else replace(R7_COMPATIBILITY_LEDGER[0], successor_evidence="unknown"),
+        *R7_COMPATIBILITY_LEDGER[1:],
+    )
+    with pytest.raises(ValueError, match="unknown successor"):
+        verify_r7_compatibility_ledger(candidate)
+
+
+def test_ledger_rejects_missing_successor_evidence(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="evidence is missing"):
+        verify_r7_compatibility_ledger(evidence_root=tmp_path)
 
 
 @pytest.mark.parametrize(

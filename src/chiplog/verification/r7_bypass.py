@@ -49,7 +49,7 @@ def verify_canonical_r7_entrypoint(path: Path) -> None:
         for node in ast.walk(entry_tree)
         if isinstance(node, ast.ImportFrom) and node.module
     }
-    if "chiplog.composition.r7_planning" not in entry_imports:
+    if not entry_imports & {"chiplog.composition.r7_planning", "chiplog.composition.r8"}:
         raise R7BypassViolation("production entrypoint does not use the canonical R7 runtime")
     queue = [path]
     visited: set[Path] = set()
@@ -126,14 +126,10 @@ def verify_canonical_r7_entrypoint(path: Path) -> None:
                     raise R7BypassViolation("transitive production closure contains an R6 bypass")
                 if "_PlanningUseCase" in imported_names:
                     raise R7BypassViolation("private in-process planning use case bypasses R7")
-                if (
-                    module
-                    in {
-                        "chiplog.adapters.driven.planning_sqlite",
-                        "chiplog.platform._sqlite",
-                    }
-                    and importer != "chiplog.composition.r7_planning"
-                ):
+                if module in {
+                    "chiplog.adapters.driven.planning_sqlite",
+                    "chiplog.platform._sqlite",
+                } and importer not in {"chiplog.composition.r7_planning", "chiplog.composition.r8"}:
                     raise R7BypassViolation(
                         "raw planning authority bypasses the R7 broker boundary"
                     )

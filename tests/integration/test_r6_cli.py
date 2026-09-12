@@ -21,7 +21,18 @@ from chiplog.domain_primitives import RecordId, TenantId
 def _run(database: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     environment = {**os.environ, "CHIPLOG_R6_OPERATOR_SECRET": "r6-test-operator-secret"}
     return subprocess.run(
-        [sys.executable, "-m", "chiplog.cli", "--database", str(database), *arguments],
+        # Historical R6/R7 semantics only. R8's production CLI is separately
+        # tested for default HOLD; this fixture never supplies R8 gate evidence.
+        [
+            sys.executable,
+            "-c",
+            "from chiplog import cli; "
+            "from chiplog.composition.r7_planning import open_r7_runtime; "
+            "cli.open_r8_runtime = open_r7_runtime; cli.main()",
+            "--database",
+            str(database),
+            *arguments,
+        ],
         check=check,
         capture_output=True,
         text=True,

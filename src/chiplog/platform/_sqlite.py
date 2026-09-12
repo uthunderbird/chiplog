@@ -118,6 +118,9 @@ class PhysicalPublicationCommand:
     records: tuple[PhysicalRecord, ...]
     fault: Literal["none", "before_commit", "after_commit"] = "none"
     admission_guard: Callable[[], Literal["DENIED", "STALE", "INDETERMINATE"] | None] | None = None
+    decision_guard: Callable[[str], Literal["DENIED", "STALE", "INDETERMINATE"] | None] | None = (
+        None
+    )
 
 
 @dataclass(frozen=True)
@@ -372,6 +375,13 @@ class SQLiteMaterializer:
                    ON CONFLICT(tenant_id) DO UPDATE SET head = excluded.head""",
                 (command.tenant_id, commit_sequence),
             )
+            if command.decision_guard is not None:
+                from .authority_reads import _authority_commitment
+
+                disposition = command.decision_guard(_authority_commitment(self._connection))
+                if disposition is not None:
+                    self._connection.rollback()
+                    return PublicationResult(disposition, None, ())
             if command.fault == "before_commit":
                 raise RuntimeError("injected fault before commit")
             self._connection.commit()

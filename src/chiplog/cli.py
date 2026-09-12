@@ -1,4 +1,4 @@
-"""Authenticated CLI over the canonical R7 broker composition."""
+"""Authenticated CLI over the canonical R8 gated broker composition."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from chiplog.capabilities.planning import CreateIntentionLine
-from chiplog.composition.r7_planning import open_r7_runtime
+from chiplog.composition.r8 import open_r8_runtime
 from chiplog.domain_primitives import RecordId, TenantId
 
 
@@ -20,7 +20,7 @@ def _operator_secret() -> bytes:
 
 
 async def _bootstrap(args: argparse.Namespace) -> None:
-    async with open_r7_runtime(
+    async with open_r8_runtime(
         Path(args.database), tenant_id=args.tenant, operator_secret=_operator_secret()
     ) as runtime:
         await runtime.bootstrap(
@@ -37,7 +37,7 @@ async def _create(args: argparse.Namespace) -> None:
     tenant = TenantId(args.tenant)
     outcome: object
     try:
-        async with open_r7_runtime(
+        async with open_r8_runtime(
             Path(args.database), tenant_id=args.tenant, operator_secret=_operator_secret()
         ) as runtime:
             outcome = await runtime.create(
@@ -63,7 +63,7 @@ async def _create(args: argparse.Namespace) -> None:
 
 
 async def _render(args: argparse.Namespace) -> None:
-    async with open_r7_runtime(
+    async with open_r8_runtime(
         Path(args.database), tenant_id=args.tenant, operator_secret=_operator_secret()
     ) as runtime:
         try:

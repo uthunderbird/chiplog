@@ -19,12 +19,13 @@ Source precedence is:
 
 ## Current baseline
 
-Planning status at the 2026-09-12 review: R0–R7 are complete; R8 is in progress.
-R7 is the implemented successor runtime, not future compatibility work. R8 working-tree
-contracts and gate implementation are partial work, not Stage-0 completion; its scope follows
+Implementation status at the 2026-09-12 review: R0–R8 are implemented.
+R7 is the implemented successor runtime, not future compatibility work. R8 authority-read
+contracts and operation gate are described in [`R8-CONTRACT-FREEZE.md`](R8-CONTRACT-FREEZE.md); their scope follows
 the authority-read and operation-gate contracts in [`NORMATIVE.md`](project-architecture/NORMATIVE.md).
 The current verification runner
-executes R1–R7 slices and explicitly holds R8. Status here does not upgrade historical evidence.
+executes R0–R8 checks, including the current surface inventory and compatibility ledger.
+All deployment eligibility remains HOLD. Status here does not upgrade historical evidence.
 
 R0–R6 are implemented under the predecessor in-process topology. The repository now has the
 verification runner and registries, canonical identities/bytes, boundary manifests, SQLite

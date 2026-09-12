@@ -11,7 +11,9 @@ export CHIPLOG_R6_OPERATOR_SECRET=reproducer-operator-secret
 uv run chiplog --database "$TMP/store.sqlite3" bootstrap \
   --tenant tenant-1 --principal principal-1 --credential credential --session session \
   --database-instance reproducer-store --token reproducer-token >/dev/null
-uv run chiplog --database "$TMP/store.sqlite3" create purpose \
+# Historical fixture setup seeds the retained durable format. The corruption
+# observation below still uses the canonical R8 CLI, including startup integrity.
+uv run python -c 'from chiplog import cli; from chiplog.composition.r7_planning import open_r7_runtime; cli.open_r8_runtime = open_r7_runtime; cli.main()' --database "$TMP/store.sqlite3" create purpose \
   --tenant tenant-1 --principal principal-1 --command-id command-1 \
   --intention-id intention-1 --revision-id revision-1 --authority-act act-1 \
   --credential credential --session session >/dev/null

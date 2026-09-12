@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from dataclasses import asdict, dataclass
 from hashlib import sha256
+from pathlib import Path
 from typing import Literal, cast
 
 from .manifests import R1_SIGNATURES
@@ -91,6 +93,53 @@ PREDECESSOR_UNIVERSE = tuple(
 )
 
 
+_INERT = (
+    "tests/r7/test_inert_owner_models.py::"
+    "test_inert_schema_is_closed_and_owner_models_encode_identically"
+)
+_GRAPH = (
+    "tests/r7/test_owner_process_isolation.py::"
+    "test_broker_starts_one_distinct_dishka_graph_process_per_owner"
+)
+_PARITY = (
+    "tests/r7/test_r7_planning_runtime.py::"
+    "test_r6_and_r7_emit_identical_durable_bytes_and_rendering"
+)
+_TRUST = (
+    "tests/r7/test_r4_runtime_admission.py::"
+    "test_supervisor_admits_generation_only_after_real_r4_recovery"
+)
+_READS = (
+    "tests/r7/test_authority_reads.py::"
+    "test_same_head_raw_content_substitution_fails_full_amr_recomputation"
+)
+_BYPASS = (
+    "tests/r7/test_r7_bypass_gate.py::test_gate_rejects_every_registered_direct_in_process_bypass"
+)
+
+# These successors prove the changed runtime boundary. The predecessor fixtures
+# remain independently executed for their retained semantics, including primitives
+# (e.g. inbox) whose complete new business journey belongs to a later increment.
+_FIXTURE_SUCCESSORS = {
+    "tests/architecture/test_inert_shared.py": _INERT,
+    "tests/architecture/test_manifest_contract.py": _GRAPH,
+    "tests/architecture/test_manifest_mutants.py": _GRAPH,
+    "tests/architecture/test_r4_r5_freeze.py": _GRAPH,
+    "tests/capabilities/test_r5_planning.py": _PARITY,
+    "tests/capabilities/test_r5_projection.py": _PARITY,
+    "tests/conformance/test_canonicalization.py": _INERT,
+    "tests/contracts/test_r6_public_component.py": _BYPASS,
+    "tests/contracts/test_r6_trust_bridge.py": _TRUST,
+    "tests/deployment_trust/test_deployment_trust.py": _TRUST,
+    "tests/integration/test_r1_r2_contract.py": _GRAPH,
+    "tests/integration/test_r4_r5_convergence.py": _PARITY,
+    "tests/integration/test_r6_cli.py": _PARITY,
+    "tests/platform/test_deletion_provenance.py": _READS,
+    "tests/platform/test_evidence_inbox.py": _READS,
+    "tests/platform/test_sqlite_substrate.py": _READS,
+}
+
+
 def _entry(predecessor_id: str) -> CompatibilityEntry:
     kind = cast(EntryKind, predecessor_id.partition(":")[0])
     if kind in {"record", "schema", "sink"}:
@@ -98,7 +147,7 @@ def _entry(predecessor_id: str) -> CompatibilityEntry:
         successor = predecessor_id
     elif kind == "fixture":
         disposition = "HISTORICAL_ONLY"
-        successor = f"r7-successor:{predecessor_id.removeprefix('fixture:')}"
+        successor = f"test:{_FIXTURE_SUCCESSORS[predecessor_id.removeprefix('fixture:')]}"
     elif kind == "bridge":
         disposition = "DEPRECATE_AS_EXECUTABLE"
         successor = "route:broker:planning.create_intention_line.v1"
@@ -110,7 +159,17 @@ def _entry(predecessor_id: str) -> CompatibilityEntry:
         kind,
         disposition,
         successor,
-        "tests/r7/test_compatibility_ledger.py",
+        (
+            _FIXTURE_SUCCESSORS[predecessor_id.removeprefix("fixture:")]
+            if kind == "fixture"
+            else _BYPASS
+            if kind == "bridge"
+            else _TRUST
+            if "trust" in predecessor_id.lower()
+            else _PARITY
+            if kind in {"record", "schema", "sink"}
+            else _GRAPH
+        ),
     )
 
 
@@ -146,14 +205,30 @@ R7_PARITY_CORPUS = (
 
 def verify_r7_compatibility_ledger(
     candidate: tuple[CompatibilityEntry, ...] = R7_COMPATIBILITY_LEDGER,
+    *,
+    evidence_root: Path | None = None,
 ) -> str:
     keys = tuple(item.predecessor_id for item in candidate)
     if keys != PREDECESSOR_UNIVERSE:
         raise ValueError("R7 compatibility ledger must equal the canonical predecessor universe")
     if len(keys) != len(set(keys)):
         raise ValueError("R7 compatibility ledger contains duplicate predecessors")
-    if any(not item.successor_id or not item.successor_evidence for item in candidate):
-        raise ValueError("R7 compatibility entry lacks successor ownership or evidence")
+    if candidate != tuple(_entry(key) for key in PREDECESSOR_UNIVERSE):
+        raise ValueError("R7 compatibility entry has unknown successor, disposition or evidence")
+    if evidence_root is not None:
+        for node_id in {item.successor_evidence for item in candidate}:
+            relative, separator, function = node_id.partition("::")
+            path = evidence_root / relative
+            if not separator or not path.is_file():
+                raise ValueError(f"R7 successor evidence is missing: {node_id}")
+            tree = ast.parse(path.read_text())
+            if not any(
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == function
+                and node.name.startswith("test_")
+                for node in tree.body
+            ):
+                raise ValueError(f"R7 successor evidence is not executable: {node_id}")
     payload = json.dumps(
         [asdict(item) for item in candidate], sort_keys=True, separators=(",", ":")
     ).encode()

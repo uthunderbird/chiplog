@@ -21,7 +21,7 @@ from chiplog.adapters.driven.deployment_trust import (
     SQLiteTrustMaterializer,
 )
 from chiplog.adapters.driven.planning_sqlite import _publication
-from chiplog.architecture.r7_runtime import R7_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import R7_PRODUCTION_MANIFEST, RuntimeAssemblyManifest
 from chiplog.architecture.r7_storage_surface import AUTHORITY_STORAGE_SURFACE_DIGEST
 from chiplog.capabilities.planning import (
     CreateIntentionLine,
@@ -34,6 +34,7 @@ from chiplog.capabilities.planning.r7_boundary import (
     R7PlanningRenderResultDTO,
     R7PlanningResultDTO,
 )
+from chiplog.capabilities.planning.r8_boundary import R8PlanningRequest
 from chiplog.domain_primitives import RecordId, TenantId
 from chiplog.platform._sqlite import (
     EventAppender,
@@ -115,6 +116,9 @@ def _decode_owner_result(payload: bytes) -> R7PlanningResultDTO:
 
 class R7PlanningRuntime:
     """The broker is the only object holding trust, SQLite, writer, and token authority."""
+
+    _planning_operation = _OPERATION
+    _planning_schema = "chiplog.planning.public.create.v1"
 
     def __init__(
         self,
@@ -524,17 +528,7 @@ class R7PlanningRuntime:
                 )
             }
         )
-        request = R7PlanningCreateDTO(
-            tenant_id=self._tenant_id,
-            principal_id=principal_id,
-            command_id=command.command_id.value,
-            intention_line_id=command.intention_line_id.value,
-            revision_id=command.revision_id.value,
-            purpose=command.purpose,
-            authority_act_id=command.authority_act_id,
-            trust_reference_bytes=trust_bytes,
-            planning_snapshot_bytes=self._snapshot(),
-        )
+        request = self._planning_request(command, principal_id, trust_bytes)
         runtime = self._supervisor.runtime()
         callee = runtime.session("planning")
         caller = BrokerSession(
@@ -546,11 +540,11 @@ class R7PlanningRuntime:
         )
         response = await runtime.call(
             PublicPortCall(
-                operation_id=_OPERATION,
+                operation_id=self._planning_operation,
                 request_id=f"planning:{command.command_id.value}:{secrets.token_hex(8)}",
                 caller=caller,
                 callee=callee,
-                schema_id="chiplog.planning.public.create.v1",
+                schema_id=self._planning_schema,
                 canonical_payload=request.canonical_bytes(),
                 budget=CallBudget(
                     remaining_calls=1,
@@ -607,7 +601,9 @@ class R7PlanningRuntime:
                     "subject_id": result.intention_line_id.value,
                 }
             )
-            return None if current.disposition == "VALID" else current.disposition
+            if current.disposition != "VALID":
+                return current.disposition
+            return self._publication_authority_guard(current.reference_bytes)
 
         try:
             publication = await self._appender.submit(
@@ -631,6 +627,9 @@ class R7PlanningRuntime:
                         for item in proposal["records"]
                     ),
                     admission_guard=guard,
+                    decision_guard=lambda commitment: self._publication_decision_guard(
+                        owner_result.canonical_result_bytes, commitment
+                    ),
                 )
             )
         except BaseException:
@@ -681,6 +680,34 @@ class R7PlanningRuntime:
             result = _committed_result(value["result"], TenantId(self._tenant_id))
         return PlanningOutcome(value["disposition"], result, value["reason"])
 
+    def _planning_request(
+        self, command: CreateIntentionLine, principal_id: str, trust_bytes: bytes
+    ) -> R7PlanningCreateDTO | R8PlanningRequest:
+        return R7PlanningCreateDTO(
+            tenant_id=self._tenant_id,
+            principal_id=principal_id,
+            command_id=command.command_id.value,
+            intention_line_id=command.intention_line_id.value,
+            revision_id=command.revision_id.value,
+            purpose=command.purpose,
+            authority_act_id=command.authority_act_id,
+            trust_reference_bytes=trust_bytes,
+            planning_snapshot_bytes=self._snapshot(),
+        )
+
+    def _publication_authority_guard(
+        self, current_reference: bytes | None
+    ) -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
+        return None
+
+    def _publication_decision_guard(
+        self, proposal_bytes: bytes | None, resulting_commitment: str
+    ) -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
+        return None
+
+    async def _prepare_startup(self) -> None:
+        pass
+
     def close(self) -> None:
         self._supervisor.close()
 
@@ -688,6 +715,25 @@ class R7PlanningRuntime:
 @asynccontextmanager
 async def open_r7_runtime(
     database: Path, *, tenant_id: str, operator_secret: bytes
+) -> AsyncIterator[R7PlanningRuntime]:
+    async with _open_runtime(
+        database,
+        tenant_id=tenant_id,
+        operator_secret=operator_secret,
+        runtime_type=R7PlanningRuntime,
+        manifest=R7_PRODUCTION_MANIFEST,
+    ) as runtime:
+        yield runtime
+
+
+@asynccontextmanager
+async def _open_runtime(
+    database: Path,
+    *,
+    tenant_id: str,
+    operator_secret: bytes,
+    runtime_type: type[R7PlanningRuntime],
+    manifest: RuntimeAssemblyManifest,
 ) -> AsyncIterator[R7PlanningRuntime]:
     journal = IndependentTenantDecisionJournal(
         database.with_suffix(database.suffix + ".trust-journal")
@@ -698,7 +744,7 @@ async def open_r7_runtime(
     supervisor = R7RuntimeSupervisor(
         tenant_id,
         database.with_suffix(database.suffix + ".broker.sqlite3"),
-        R7_PRODUCTION_MANIFEST,
+        manifest,
         R4RuntimeAdmission(trust, journal),
         {"clock": ProductionClock(), "planning_store": planning_store},
     )
@@ -706,7 +752,7 @@ async def open_r7_runtime(
         async with EventAppender(store, capacity=4) as appender:
             read_ledger = BrokerReadLedger(database.with_suffix(database.suffix + ".reads.sqlite3"))
             commitment_journal = AuthorityCommitmentJournal(database, operator_secret)
-            runtime = R7PlanningRuntime(
+            runtime = runtime_type(
                 tenant_id,
                 trust,
                 journal,
@@ -722,6 +768,7 @@ async def open_r7_runtime(
                     await appender.advance_fence(
                         FenceAdvanceCommand(tenant_id, _FENCE, 0, allow_exact_replay=True)
                     )
+                    await runtime._prepare_startup()
                     runtime.restart_generation()
                 yield runtime
             finally:

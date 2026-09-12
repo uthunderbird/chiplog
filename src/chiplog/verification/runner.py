@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from dataclasses import asdict
 from pathlib import Path
+
+from chiplog.architecture.r7_compatibility import verify_r7_compatibility_ledger
 
 from .artifacts import write_artifact
 from .identity import digest_file, sha256_bytes
 from .invariants import extract_invariant_manifest
 from .models import CheckResult, FixtureRegistration
+from .r8_surface import SURFACES as R8_SURFACES
+from .r8_surface import verify_offline_import_boundary, verify_r8_surfaces
 from .registries import (
     CLOSED_PROFILES,
     FIXTURES,
@@ -211,7 +216,7 @@ def _validate_stage0_registry(
         raise ValueError("stage0 increment registry must be the exact ordered R1-R8 set")
     if not evidenced or not evidenced <= set(increments):
         raise ValueError("stage0 evidenced increment set is empty or contains unknown rows")
-    if evidenced != frozenset({"R1", "R2", "R3", "R4", "R5", "R6", "R7"}):
+    if evidenced != frozenset(expected):
         raise ValueError("stage0 evidenced increment set silently omits or adds a stage")
 
 
@@ -238,6 +243,24 @@ def _run_test_slice(root: Path, increment: str, paths: tuple[str, ...]) -> Check
 
 def _check_stage0(root: Path) -> list[CheckResult]:
     _validate_stage0_registry()
+    substrate = _check_fast(root)
+    verify_r8_surfaces(root, R8_SURFACES)
+    verify_offline_import_boundary(root)
+    compatibility_digest = verify_r7_compatibility_ledger(evidence_root=root)
+    current_surfaces = CheckResult(
+        "V10.current-operation-surfaces",
+        "PASS",
+        "R8 executable surfaces match the inventory and contain no external adapter",
+        {
+            "generation": "R8_OPERATION_SURFACES_V1",
+            "surfaces": [
+                {**asdict(surface), "downstream": list(surface.downstream)}
+                for surface in R8_SURFACES
+            ],
+            "exposure": "HOLD",
+            "compatibility_ledger_digest": compatibility_digest,
+        },
+    )
     slices = {
         "R1": ("tests/conformance/test_canonicalization.py",),
         "R2": ("tests/architecture", "tests/integration/test_r1_r2_contract.py"),
@@ -250,20 +273,12 @@ def _check_stage0(root: Path) -> list[CheckResult]:
             "tests/integration/test_r6_cli.py",
         ),
         "R7": ("tests/r7", "tests/contracts/test_r7_public_boundary.py"),
+        "R8": ("tests/r8", "tests/contracts/test_r8_public_boundary.py"),
     }
     checks = [
         _run_test_slice(root, increment, slices[increment])
-        for increment in ("R1", "R2", "R3", "R4", "R5", "R6", "R7")
+        for increment in STAGE0_INCREMENT_REGISTRY
     ]
-    checks.extend(
-        CheckResult(
-            f"stage0.{increment.lower()}",
-            "HOLD",
-            f"{increment} implementation evidence is required before the Stage-0 barrier",
-            {"implemented": False, "evidenced_invariants": []},
-        )
-        for increment in ("R8",)
-    )
     if tuple(check.check_id.removeprefix("stage0.").upper() for check in checks) != (
         "R1",
         "R2",
@@ -275,7 +290,7 @@ def _check_stage0(root: Path) -> list[CheckResult]:
         "R8",
     ):
         raise RuntimeError("stage0 check aggregation is not the exact R1-R8 set")
-    return checks
+    return [*substrate, current_surfaces, *checks]
 
 
 def run_profile(root: Path, profile: str) -> tuple[dict[str, object], Path]:
@@ -316,7 +331,7 @@ def run_profile(root: Path, profile: str) -> tuple[dict[str, object], Path]:
         "claim": (
             "R0 verifier substrate and compile-only transcript contracts only"
             if profile == "fast"
-            else "R1-R7 Stage-0 implementation evidence only; R8 remains HOLD"
+            else "R0-R8 Stage-0 implementation evidence; all deployment eligibility remains HOLD"
         ),
         "checks": [check.to_dict() for check in checks],
         "input_identity": inputs,

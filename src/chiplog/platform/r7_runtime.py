@@ -110,7 +110,9 @@ class _OwnerService:
             "target_ids": (f"{self._handler.__module__}:dispatch",),
             "factory_ids": ("chiplog.platform.r7_runtime:_OwnerProvider.service",),
             "loaded_policy_modules": tuple(
-                sorted(name for name in sys.modules if name.endswith("._r7_process"))
+                sorted(
+                    name for name in sys.modules if name.endswith(("._r7_process", "._r8_process"))
+                )
             ),
             "routes": routes,
         }
@@ -147,14 +149,22 @@ class _OwnerProvider(Provider):
         return _OwnerService(self._identity, self._handler)
 
 
-def _load_owner_handler(owner_id: str) -> Callable[[str, bytes], dict[str, object]]:
-    module = importlib.import_module(
-        {
-            "deployment_trust": "chiplog.capabilities.deployment_trust._r7_process",
-            "planning": "chiplog.capabilities.planning._r7_process",
-            "projections": "chiplog.capabilities.projections._r7_process",
-        }[owner_id]
-    )
+def _owner_module(identity: OwnerProcessIdentity) -> str:
+    if identity.owner_id == "planning" and identity.capability_ids == (
+        "planning.r8_create_intention_line",
+    ):
+        return "chiplog.capabilities.planning._r8_process"
+    return {
+        "deployment_trust": "chiplog.capabilities.deployment_trust._r7_process",
+        "planning": "chiplog.capabilities.planning._r7_process",
+        "projections": "chiplog.capabilities.projections._r7_process",
+    }[identity.owner_id]
+
+
+def _load_owner_handler(
+    identity: OwnerProcessIdentity,
+) -> Callable[[str, bytes], dict[str, object]]:
+    module = importlib.import_module(_owner_module(identity))
     return cast(Callable[[str, bytes], dict[str, object]], module.dispatch)
 
 
@@ -213,7 +223,7 @@ def _owner_process_main(
     identity: OwnerProcessIdentity,
     ready: Any,
 ) -> None:
-    handler = _load_owner_handler(identity.owner_id)
+    handler = _load_owner_handler(identity)
     with (
         make_container(_OwnerProvider(identity, handler)) as container,
         socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener,
@@ -390,14 +400,7 @@ class AuthorityBrokerRuntime:
                 or value.get("filesystem_denied") is not True
                 or value.get("network_denied") is not True
                 or value.get("process_spawn_denied") is not True
-                or tuple(value.get("loaded_policy_modules", ()))
-                != (
-                    {
-                        "deployment_trust": "chiplog.capabilities.deployment_trust._r7_process",
-                        "planning": "chiplog.capabilities.planning._r7_process",
-                        "projections": "chiplog.capabilities.projections._r7_process",
-                    }[identity.owner_id],
-                )
+                or tuple(value.get("loaded_policy_modules", ())) != (_owner_module(identity),)
             ):
                 raise OwnerProcessFailure("owner attestation identity mismatch")
             attestations.append(
@@ -456,7 +459,12 @@ class AuthorityBrokerRuntime:
                 "raw_sqlite_connection",
                 "socket_handle",
             ),
-            application_loop_id="chiplog.r7.application-loop.v1",
+            application_loop_id=(
+                "chiplog.r8.application-loop.v1"
+                if self._identities["planning"].capability_ids
+                == ("planning.r8_create_intention_line",)
+                else "chiplog.r7.application-loop.v1"
+            ),
         )
 
     def session(self, owner_id: str) -> BrokerSession:

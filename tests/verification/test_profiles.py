@@ -49,16 +49,27 @@ def test_unimplemented_profile_is_nonpassing_hold(profile: str) -> None:
     assert eligibility["adoption"] == "HOLD_ADOPTION"
 
 
-def test_stage0_emits_r7_evidence_but_holds_explicit_r8() -> None:
+def test_stage0_evidences_r0_through_r8_and_holds_deployment_eligibility() -> None:
     result, artifact = run_profile(ROOT, "stage0")
 
-    assert result["status"] == "HOLD"
+    assert result["status"] == "PASS"
     checks = cast(list[dict[str, object]], result["checks"])
-    assert [check["check_id"] for check in checks] == [
+    assert [check["check_id"] for check in checks[:4]] == [
+        "V0.invariant-source-exact-set",
+        "V8.transcript-compile",
+        "V0.surface-registry-generation",
+        "V10.current-operation-surfaces",
+    ]
+    assert [check["check_id"] for check in checks[4:]] == [
         f"stage0.r{number}" for number in range(1, 9)
     ]
-    assert [check["status"] for check in checks[:7]] == ["PASS"] * 7
-    assert [check["status"] for check in checks[7:]] == ["HOLD"]
+    assert all(check["status"] == "PASS" for check in checks)
+    assert result["eligibility"] == {
+        "ready": False,
+        "evaluation_authorized": False,
+        "production_authorized": False,
+        "adoption": "HOLD_ADOPTION",
+    }
     assert json.loads(artifact.read_text()) == result
 
 
@@ -92,6 +103,40 @@ def test_stage0_rejects_empty_missing_duplicate_or_unknown_check_sets(
 def test_unknown_profile_fails_closed() -> None:
     with pytest.raises(ValueError, match="unknown profile"):
         run_profile(ROOT, "unknown")
+
+
+@pytest.mark.parametrize("failed_increment", [f"R{number}" for number in range(1, 9)])
+def test_stage0_cannot_promote_with_any_failed_increment(
+    failed_increment: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chiplog.verification import runner
+    from chiplog.verification.models import CheckResult
+
+    reached: dict[str, tuple[str, ...]] = {}
+
+    def fake_slice(root: Path, increment: str, paths: tuple[str, ...]) -> CheckResult:
+        reached[increment] = paths
+        return CheckResult(
+            f"stage0.{increment.lower()}",
+            "FAIL" if increment == failed_increment else "PASS",
+            "controlled test outcome",
+            {},
+        )
+
+    monkeypatch.setattr(runner, "_run_test_slice", fake_slice)
+    result, artifact = run_profile(ROOT, "stage0")
+    assert result["status"] == "FAIL"
+    assert json.loads(artifact.read_text()) == result
+    assert tuple(reached) == tuple(f"R{number}" for number in range(1, 9))
+    assert reached["R8"] == ("tests/r8", "tests/contracts/test_r8_public_boundary.py")
+
+
+def test_stage0_rejects_missing_current_surface(monkeypatch: pytest.MonkeyPatch) -> None:
+    from chiplog.verification import runner
+
+    monkeypatch.setattr(runner, "R8_SURFACES", ())
+    with pytest.raises(ValueError, match="surface inventory"):
+        runner._check_stage0(ROOT)
 
 
 def test_artifact_identity_changes_with_bound_input() -> None:
