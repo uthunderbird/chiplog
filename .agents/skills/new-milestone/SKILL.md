@@ -21,6 +21,19 @@ Compose the findings into compact task-specific context containing:
 - acceptance criteria;
 - unresolved items.
 
+Include inherited dirty files and their ownership, the existing change-size limit,
+and files needed for final evidence/review in the scope estimate. Identify semantic
+splits early if the estimate exceeds the limit. When changing a canonical entrypoint,
+inspect legacy fixture drivers and their intended historical entrypoint. Identify
+source-bound catalogs and the stable source state the final verification will read;
+an isolated worktree alone does not freeze its bytes.
+
+Run `sh .harness/scripts/test.sh --preflight` before broad verification, and again
+after changes to affected entrypoints, contracts, or fixture drivers. This runs the
+same preliminary checks as the final test adapter; it is not commit approval or a
+replacement for the full gate. Planned evidence can remain pending at milestone start;
+do not repin evidence merely to silence a failure.
+
 Resolve anything decidable by inspection. Record decisions as required by the project's
 process. Treat missing or contradictory information as a blocker only when inspection
 cannot choose between named viable branches; report those branches and the human decision

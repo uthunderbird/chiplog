@@ -7,16 +7,15 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 FAILED=0
+PREFLIGHT=0
+case "$#:$*" in
+    0:) ;;
+    1:--preflight) PREFLIGHT=1 ;;
+    *) echo "→ команда: sh .harness/scripts/test.sh [--preflight]" >&2; exit 2 ;;
+esac
 
 : "${UV_CACHE_DIR:=${TMPDIR:-/tmp}/chiplog-uv-cache}"
 export UV_CACHE_DIR
-
-# --- chiplog: тесты ---------------------------------------------------------
-if ! uv run pytest; then
-    echo "    тесты Chiplog не прошли" >&2
-    echo "    → команда: uv run pytest" >&2
-    FAILED=1
-fi
 
 # --- самотест гейта: каждая проверка на паре входов --------------------------
 # Проверяется критерий и наблюдаемый исход, а не исполнение: плохой вход обязан
@@ -50,4 +49,12 @@ for dir in .harness/reproducers/*/; do
     fi
 done
 
-exit "$FAILED"
+[ "$FAILED" -eq 0 ] || exit "$FAILED"
+# Предварительный успех не заменяет полный гейт коммита.
+[ "$PREFLIGHT" -eq 0 ] || exit 0
+
+if ! uv run pytest; then
+    echo "    тесты Chiplog не прошли" >&2
+    echo "    → команда: uv run pytest" >&2
+    exit 1
+fi

@@ -157,8 +157,12 @@ if [ "$SELFTEST" -eq 1 ]; then
 
     if [ "$SELF_FAILED" -ne 0 ]; then exit 1; fi
     echo "самотест пройден: 8 пар входов на семи проверках"
-    echo "adapters lint.sh/test.sh под инвариант 3 не подпадают: пока стек не вписан,"
-    echo "хорошего входа у них не существует."
+    if ! uv run pytest -q tests/test_harness_preflight.py; then
+        echo "→ сделай: почини парные проверки fast и контрактов адаптеров" >&2
+        echo "✓ uv run pytest -q tests/test_harness_preflight.py возвращает ноль" >&2
+        exit 1
+    fi
+    echo "fast и диспетчеры адаптеров проверены на успешных и отказных входах; полный набор здесь не запускается."
     exit 0
 fi
 
@@ -172,14 +176,16 @@ run "леса полировки"         python3 .harness/scripts/checks/polish
 run "хвосты сессии"          python3 .harness/scripts/checks/handoff_pending.py
 run "R0 fast verification"   uv run python -m chiplog.verification fast
 run "разбор исходников"      sh .harness/scripts/lint.sh
+if [ "$FAILED" -eq 0 ]; then
 run "тесты и эвалы"          sh .harness/scripts/clean-git-env.sh sh .harness/scripts/test.sh
+fi
 
 if [ "$FAILED" -ne 0 ]; then
     echo
     echo "гейт закрыт. Работа дальше не едет."
     echo "  → сделай: закрой провалы выше по их же императивам, по одному."
     echo "Каждый провал выше называет следующее действие. Метка говорит, кто решает:"
-    echo "  команда / сделай — агент;  стоп / чинить нечем — человек."
+    echo "  команда / сделай / чинить нечем — агент; стоп — человек."
     echo "  ✗ не обходи через git commit --no-verify: обход виден в истории по"
     echo "    отсутствию правки рядом с правилом."
     echo "  ✓ ./.harness/scripts/gate.sh возвращает ноль."
