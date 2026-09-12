@@ -6,7 +6,8 @@ import pytest
 
 from chiplog.verification.invariants import InvariantManifestError, extract_invariant_manifest
 
-ROOT = Path(__file__).parents[2]
+ROOT = Path(__file__).resolve().parents[2]
+
 SOURCE = ROOT / "design-docs/project-architecture/NORMATIVE.md"
 
 

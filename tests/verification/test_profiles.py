@@ -14,7 +14,7 @@ from chiplog.verification.artifacts import write_artifact
 from chiplog.verification.models import FixtureRegistration
 from chiplog.verification.registries import FIXTURES
 
-ROOT = Path(__file__).parents[2]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_fast_profile_pass_is_narrow_and_holds_all_eligibility() -> None:
@@ -128,7 +128,18 @@ def test_stage0_cannot_promote_with_any_failed_increment(
     assert result["status"] == "FAIL"
     assert json.loads(artifact.read_text()) == result
     assert tuple(reached) == tuple(f"R{number}" for number in range(1, 9))
-    assert reached["R8"] == ("tests/r8", "tests/contracts/test_r8_public_boundary.py")
+    assert reached["R8"] == (
+        "tests/architecture/test_r8_current_surfaces.py",
+        "tests/capabilities/planning/test_r8_authority.py",
+        "tests/capabilities/planning/test_r8_authority_contract.py",
+        "tests/cli/test_corrupt_store.py",
+        "tests/cli/test_r8_default_hold.py",
+        "tests/composition/test_planning_journeys.py",
+        "tests/composition/test_r8_runtime.py",
+        "tests/platform/test_r8_deployment_gate.py",
+        "tests/platform/test_r8_gate_contract.py",
+        "tests/verification/test_r8_surface.py",
+    )
 
 
 def test_stage0_rejects_missing_current_surface(monkeypatch: pytest.MonkeyPatch) -> None:

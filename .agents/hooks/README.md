@@ -69,5 +69,5 @@ For runtime acceptance after trusting the hooks, use a disposable worktree: make
 a harness diagnostic omit its observable outcome, observe additional context,
 repair it in a subsequent edit, and verify silence and that edits remain allowed.
 Also check an unrelated edit, a shell edit, and a repeated identical finding.
-`uv run pytest -q tests/test_post_tool_checks.py tests/test_agents_integration.py`
+`uv run pytest -q tests/tooling/test_post_tool_checks.py tests/tooling/test_agents_integration.py`
 tests the scripts/configured command, not the active application's trust state.

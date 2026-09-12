@@ -1,0 +1,2324 @@
+{
+  "base": "1d5578a940b30911433b6483ba12356929b54084",
+  "mapping": {
+    "tests/architecture/test_inert_shared.py::test_v2_public_exports_and_signatures_match_frozen_contract_exactly": [
+      "tests/architecture/test_inert_shared.py::test_v2_public_exports_and_signatures_match_frozen_contract_exactly"
+    ],
+    "tests/architecture/test_inert_shared.py::test_v2_canonical_signature_digests_match_parallel_freeze": [
+      "tests/architecture/test_inert_shared.py::test_v2_canonical_signature_digests_match_parallel_freeze"
+    ],
+    "tests/architecture/test_inert_shared.py::test_v2_real_shared_package_is_closed_and_policy_free": [
+      "tests/architecture/test_inert_shared.py::test_v2_real_shared_package_is_closed_and_policy_free"
+    ],
+    "tests/architecture/test_inert_shared.py::test_v2_executable_shared_mutants_are_rejected": [
+      "tests/verification/test_inert_shared.py::test_v2_executable_shared_mutants_are_rejected"
+    ],
+    "tests/architecture/test_inert_shared.py::test_v2_substitution_after_initial_verification_is_detected": [
+      "tests/verification/test_inert_shared.py::test_v2_substitution_after_initial_verification_is_detected"
+    ],
+    "tests/architecture/test_inert_shared.py::test_v2_nested_plain_enum_bypass_is_rejected": [
+      "tests/verification/test_inert_shared.py::test_v2_nested_plain_enum_bypass_is_rejected"
+    ],
+    "tests/architecture/test_inert_shared.py::test_v2_import_time_call_bypass_is_rejected": [
+      "tests/verification/test_inert_shared.py::test_v2_import_time_call_bypass_is_rejected"
+    ],
+    "tests/architecture/test_inert_shared.py::test_v2_allowed_function_body_substitution_is_rejected": [
+      "tests/verification/test_inert_shared.py::test_v2_allowed_function_body_substitution_is_rejected"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_reference_is_non_vacuous_and_bound": [
+      "tests/verification/test_manifest_contract.py::test_reference_is_non_vacuous_and_bound"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_named_empty_production_generation_is_not_evidence": [
+      "tests/verification/test_manifest_contract.py::test_named_empty_production_generation_is_not_evidence"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_sparse_generation_cannot_self_certify_as_evidence": [
+      "tests/verification/test_manifest_contract.py::test_sparse_generation_cannot_self_certify_as_evidence"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_r1_signature_set_is_not_caller_selected": [
+      "tests/verification/test_manifest_contract.py::test_r1_signature_set_is_not_caller_selected"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_closed_registries_reject_omissions_and_additions": [
+      "tests/verification/test_manifest_contract.py::test_closed_registries_reject_omissions_and_additions"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_duplicate_and_reorder_are_distinct_failures": [
+      "tests/verification/test_manifest_contract.py::test_duplicate_and_reorder_are_distinct_failures"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_signature_alias_or_substitution_is_closed": [
+      "tests/verification/test_manifest_contract.py::test_signature_alias_or_substitution_is_closed"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_r1_export_cannot_self_certify_a_wrong_signature": [
+      "tests/verification/test_manifest_contract.py::test_r1_export_cannot_self_certify_a_wrong_signature"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_r1_export_set_cannot_self_certify_an_omission": [
+      "tests/verification/test_manifest_contract.py::test_r1_export_set_cannot_self_certify_an_omission"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_export_reference_and_declared_package_cannot_split": [
+      "tests/verification/test_manifest_contract.py::test_export_reference_and_declared_package_cannot_split"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_capability_package_cannot_self_certify_a_rival_owner": [
+      "tests/verification/test_manifest_contract.py::test_capability_package_cannot_self_certify_a_rival_owner"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_export_cannot_self_certify_a_rival_owner": [
+      "tests/verification/test_manifest_contract.py::test_export_cannot_self_certify_a_rival_owner"
+    ],
+    "tests/architecture/test_manifest_contract.py::test_evidence_classification_is_part_of_the_frozen_generation": [
+      "tests/verification/test_manifest_contract.py::test_evidence_classification_is_part_of_the_frozen_generation"
+    ],
+    "tests/architecture/test_manifest_mutants.py::test_cross_owner_record_conflict": [
+      "tests/verification/test_manifest_mutants.py::test_cross_owner_record_conflict"
+    ],
+    "tests/architecture/test_manifest_mutants.py::test_private_import_and_dynamic_resolution_escapes": [
+      "tests/verification/test_manifest_mutants.py::test_private_import_and_dynamic_resolution_escapes"
+    ],
+    "tests/architecture/test_manifest_mutants.py::test_adapter_to_adapter_and_capability_platform_edges": [
+      "tests/verification/test_manifest_mutants.py::test_adapter_to_adapter_and_capability_platform_edges"
+    ],
+    "tests/architecture/test_manifest_mutants.py::test_route_substitution_callback_and_scc": [
+      "tests/verification/test_manifest_mutants.py::test_route_substitution_callback_and_scc"
+    ],
+    "tests/architecture/test_manifest_mutants.py::test_generic_append_fallback_and_bootstrap_bypass": [
+      "tests/verification/test_manifest_mutants.py::test_generic_append_fallback_and_bootstrap_bypass"
+    ],
+    "tests/architecture/test_manifest_mutants.py::test_provider_and_bridge_owner_substitution": [
+      "tests/verification/test_manifest_mutants.py::test_provider_and_bridge_owner_substitution"
+    ],
+    "tests/architecture/test_manifest_mutants.py::test_bridge_and_provider_reject_private_ports": [
+      "tests/verification/test_manifest_mutants.py::test_bridge_and_provider_reject_private_ports"
+    ],
+    "tests/architecture/test_manifest_mutants.py::test_role_allow_matrix_rejects_domain_and_workflow_escapes": [
+      "tests/verification/test_manifest_mutants.py::test_role_allow_matrix_rejects_domain_and_workflow_escapes"
+    ],
+    "tests/architecture/test_manifest_mutants.py::test_unregistered_implementation_and_bootstrap_symbols": [
+      "tests/verification/test_manifest_mutants.py::test_unregistered_implementation_and_bootstrap_symbols"
+    ],
+    "tests/architecture/test_manifest_mutants.py::test_stale_generation_schema_and_lifecycle_order": [
+      "tests/verification/test_manifest_mutants.py::test_stale_generation_schema_and_lifecycle_order"
+    ],
+    "tests/architecture/test_r4_r5_freeze.py::test_r4_r5_freeze_is_closed_and_ordered": [
+      "tests/architecture/test_r4_r5_freeze.py::test_r4_r5_freeze_is_closed_and_ordered"
+    ],
+    "tests/architecture/test_r4_r5_freeze.py::test_frozen_signatures_bind_field_shape": [
+      "tests/architecture/test_r4_r5_freeze.py::test_frozen_signatures_bind_field_shape"
+    ],
+    "tests/architecture/test_r4_r5_freeze.py::test_record_type_and_schema_id_are_distinct_bindings": [
+      "tests/architecture/test_r4_r5_freeze.py::test_record_type_and_schema_id_are_distinct_bindings"
+    ],
+    "tests/architecture/test_r4_r5_freeze.py::test_duplicate_freeze_member_is_rejected": [
+      "tests/verification/test_r4_r5_freeze.py::test_duplicate_freeze_member_is_rejected"
+    ],
+    "tests/architecture/test_r4_r5_freeze.py::test_unknown_owner_is_rejected": [
+      "tests/verification/test_r4_r5_freeze.py::test_unknown_owner_is_rejected"
+    ],
+    "tests/architecture/test_r4_r5_freeze.py::test_each_exact_set_rejects_an_omission": [
+      "tests/verification/test_r4_r5_freeze.py::test_each_exact_set_rejects_an_omission"
+    ],
+    "tests/architecture/test_r4_r5_freeze.py::test_r2_manifest_is_the_same_frozen_universe": [
+      "tests/architecture/test_r4_r5_freeze.py::test_r2_manifest_is_the_same_frozen_universe"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_ports_are_structural_protocols": [
+      "tests/capabilities/planning/test_planning.py::test_ports_are_structural_protocols"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_owner_factory_publishes_complete_closed_manifest": [
+      "tests/capabilities/planning/test_planning.py::test_owner_factory_publishes_complete_closed_manifest"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_construction_rejects_foreign_wrong_source_and_forbidden_predecessor": [
+      "tests/capabilities/planning/test_planning.py::test_construction_rejects_foreign_wrong_source_and_forbidden_predecessor"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_create_intention_line_public_port_has_no_predecessor_escape_hatch": [
+      "tests/capabilities/planning/test_planning.py::test_create_intention_line_public_port_has_no_predecessor_escape_hatch"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_nonvalid_trust_is_a_typed_no_write": [
+      "tests/capabilities/planning/test_planning.py::test_nonvalid_trust_is_a_typed_no_write"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_exact_replay_returns_result_and_changed_replay_conflicts": [
+      "tests/capabilities/planning/test_planning.py::test_exact_replay_returns_result_and_changed_replay_conflicts"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_replay_revalidates_current_trust_and_withholds_result": [
+      "tests/capabilities/planning/test_planning.py::test_replay_revalidates_current_trust_and_withholds_result"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_stale_head_and_revalidation_race_write_nothing": [
+      "tests/capabilities/planning/test_planning.py::test_stale_head_and_revalidation_race_write_nothing"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_trust_revalidation_binds_exact_operation_and_allocation_subject": [
+      "tests/capabilities/planning/test_planning.py::test_trust_revalidation_binds_exact_operation_and_allocation_subject"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_two_allocations_can_share_one_still_valid_trust_reference": [
+      "tests/capabilities/planning/test_planning.py::test_two_allocations_can_share_one_still_valid_trust_reference"
+    ],
+    "tests/capabilities/test_r5_planning.py::test_repository_never_constructs_owner_records": [
+      "tests/capabilities/planning/test_planning.py::test_repository_never_constructs_owner_records"
+    ],
+    "tests/capabilities/test_r5_projection.py::test_projection_query_port_is_structural_and_tenant_scoped": [
+      "tests/capabilities/projections/test_projection.py::test_projection_query_port_is_structural_and_tenant_scoped"
+    ],
+    "tests/capabilities/test_r5_projection.py::test_projection_rebuild_is_deterministic_from_committed_publications": [
+      "tests/capabilities/projections/test_projection.py::test_projection_rebuild_is_deterministic_from_committed_publications"
+    ],
+    "tests/capabilities/test_r5_projection.py::test_invalid_checkpoint_falls_back_to_full_verified_rebuild": [
+      "tests/capabilities/projections/test_projection.py::test_invalid_checkpoint_falls_back_to_full_verified_rebuild"
+    ],
+    "tests/capabilities/test_r5_projection.py::test_unverified_committed_record_is_rejected": [
+      "tests/capabilities/projections/test_projection.py::test_unverified_committed_record_is_rejected"
+    ],
+    "tests/capabilities/test_r5_projection.py::test_projection_ignores_adapter_fields_side_channel": [
+      "tests/capabilities/projections/test_projection.py::test_projection_ignores_adapter_fields_side_channel"
+    ],
+    "tests/capabilities/test_r5_projection.py::test_projection_rejects_reciprocal_binding_mutants": [
+      "tests/capabilities/projections/test_projection.py::test_projection_rejects_reciprocal_binding_mutants"
+    ],
+    "tests/capabilities/test_r5_projection.py::test_projection_rejects_request_fingerprint_substitution": [
+      "tests/capabilities/projections/test_projection.py::test_projection_rejects_request_fingerprint_substitution"
+    ],
+    "tests/capabilities/test_r5_projection.py::test_projection_rejects_coherent_record_rewrite_against_original_batch_binding": [
+      "tests/capabilities/projections/test_projection.py::test_projection_rejects_coherent_record_rewrite_against_original_batch_binding"
+    ],
+    "tests/capabilities/test_r5_projection.py::test_projection_cannot_authorize_or_submit_a_command": [
+      "tests/capabilities/projections/test_projection.py::test_projection_cannot_authorize_or_submit_a_command"
+    ],
+    "tests/capabilities/test_r5_projection.py::test_r5_lane_has_no_dependency_on_r4_types": [
+      "tests/capabilities/projections/test_projection.py::test_r5_lane_has_no_dependency_on_r4_types"
+    ],
+    "tests/conformance/test_canonicalization.py::test_v1_golden_bytes_bind_every_producing_identity": [
+      "tests/domain_primitives/test_canonicalization.py::test_v1_golden_bytes_bind_every_producing_identity"
+    ],
+    "tests/conformance/test_canonicalization.py::test_v1_one_field_mutation_changes_bytes_and_fingerprint": [
+      "tests/domain_primitives/test_canonicalization.py::test_v1_one_field_mutation_changes_bytes_and_fingerprint"
+    ],
+    "tests/conformance/test_canonicalization.py::test_v1_historical_bytes_verify_with_producing_not_current_versions": [
+      "tests/domain_primitives/test_canonicalization.py::test_v1_historical_bytes_verify_with_producing_not_current_versions"
+    ],
+    "tests/conformance/test_canonicalization.py::test_v1_unknown_exact_version_holds_without_write": [
+      "tests/domain_primitives/test_canonicalization.py::test_v1_unknown_exact_version_holds_without_write"
+    ],
+    "tests/conformance/test_canonicalization.py::test_v1_runtime_admission_preserves_original_bytes_and_writes_once": [
+      "tests/domain_primitives/test_canonicalization.py::test_v1_runtime_admission_preserves_original_bytes_and_writes_once"
+    ],
+    "tests/contracts/test_r6_public_component.py::test_public_r6_component_passes_exact_authenticated_context_to_public_planning_port": [
+      "tests/composition/test_planning_journeys.py::test_runtime_records_authenticated_identity_and_exact_owner_inputs"
+    ],
+    "tests/contracts/test_r6_public_component.py::test_peer_credential_substitution_denies_before_public_planning_port": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_cli_peer_credential_is_durable_and_exact"
+    ],
+    "tests/contracts/test_r6_trust_bridge.py::test_public_r4_to_r5_bridge_revalidates_exact_reference_operation_and_subject": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_cli_authentication_and_complete_reference_revalidation",
+      "tests/capabilities/planning/test_planning.py::test_trust_revalidation_binds_exact_operation_and_allocation_subject"
+    ],
+    "tests/contracts/test_r6_trust_bridge.py::test_each_trust_reference_substitution_is_stale": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution"
+    ],
+    "tests/contracts/test_r6_trust_bridge.py::test_operation_or_payload_carried_subject_substitution_denies": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_cli_authentication_and_complete_reference_revalidation",
+      "tests/capabilities/planning/test_planning.py::test_trust_revalidation_binds_exact_operation_and_allocation_subject"
+    ],
+    "tests/contracts/test_r7_public_boundary.py::test_consumer_can_describe_r7_generation_through_public_contracts": [
+      "tests/composition/test_graph_contract.py::test_consumer_can_describe_r7_generation_through_public_contracts",
+      "tests/platform/test_broker_contract.py::test_broker_port_is_structural_protocol"
+    ],
+    "tests/contracts/test_r7_public_boundary.py::test_planning_dto_is_strict_frozen_and_rejects_unknown_fields": [
+      "tests/capabilities/planning/test_r7_boundary.py::test_planning_dto_is_strict_frozen_and_rejects_unknown_fields"
+    ],
+    "tests/contracts/test_r7_public_boundary.py::test_broker_call_contract_binds_identity_budget_and_closed_failure": [
+      "tests/platform/test_broker_contract.py::test_broker_call_contract_binds_identity_budget_and_closed_failure"
+    ],
+    "tests/contracts/test_r7_public_boundary.py::test_broker_budget_rejects_non_positive_values": [
+      "tests/platform/test_broker_contract.py::test_broker_budget_rejects_non_positive_values"
+    ],
+    "tests/contracts/test_r8_public_boundary.py::test_authority_contract_preserves_bytes_and_rejects_untracked_fields": [
+      "tests/capabilities/planning/test_r8_authority_contract.py::test_authority_contract_preserves_bytes_and_rejects_untracked_fields"
+    ],
+    "tests/contracts/test_r8_public_boundary.py::test_gate_contract_is_strict_and_has_no_third_permit_mode": [
+      "tests/platform/test_r8_gate_contract.py::test_gate_contract_is_strict_and_has_no_third_permit_mode"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_boundaries_are_protocols_and_adapters_are_structural": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_boundaries_are_protocols_and_adapters_are_structural"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_durable_record_discriminators_equal_the_freeze": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_durable_record_discriminators_equal_the_freeze"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_genesis_is_immutable_and_cross_tenant_relabel_is_denied": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_genesis_is_immutable_and_cross_tenant_relabel_is_denied"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_startup_requires_exact_signed_binding_and_materialized_head": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_startup_requires_exact_signed_binding_and_materialized_head"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_restart_rebuilds_principal_credentials_sources_replay_and_poll_state": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_restart_rebuilds_principal_credentials_sources_replay_and_poll_state"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_one_shot_bootstrap_replay_wrong_peer_expiry_and_second_principal": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_one_shot_bootstrap_replay_wrong_peer_expiry_and_second_principal"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_cli_authentication_and_complete_reference_revalidation": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_cli_authentication_and_complete_reference_revalidation"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_cli_peer_credential_is_durable_and_exact": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_cli_peer_credential_is_durable_and_exact"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_rotation_revokes_old_credential_and_sessions": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_rotation_revokes_old_credential_and_sessions"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_emergency_recovery_keeps_principal_and_rejects_wrong_secret": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_emergency_recovery_keeps_principal_and_rejects_wrong_secret"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_telegram_requires_broker_witness_and_replay_is_closed": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_telegram_requires_broker_witness_and_replay_is_closed"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_evidence_source_authentication_and_late_evidence": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_evidence_source_authentication_and_late_evidence"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_poll_cursor_is_durable_before_request_emission": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_poll_cursor_is_durable_before_request_emission"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_poll_page_has_closed_unique_member_dispositions": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_poll_page_has_closed_unique_member_dispositions"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_journal_decision_precedes_materialization_and_replays_after_rollback": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_journal_decision_precedes_materialization_and_replays_after_rollback"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_authenticated_no_decision_aborts_and_ambiguous_observation_holds": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_authenticated_no_decision_aborts_and_ambiguous_observation_holds"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_journal_rollback_and_fork_are_rejected": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_journal_rollback_and_fork_are_rejected"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_journal_entry_cannot_be_resigned_by_recomputing_public_hash": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_journal_entry_cannot_be_resigned_by_recomputing_public_hash"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_independent_database_rollback_replays_from_protected_journal": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_independent_database_rollback_replays_from_protected_journal"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_binding_and_journal_rotations_are_monotonic": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_binding_and_journal_rotations_are_monotonic"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_prepared_transition_blocks_work_and_ready_competes_with_abort": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_prepared_transition_blocks_work_and_ready_competes_with_abort"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_prepared_transition_can_abort_to_same_current_binding": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_prepared_transition_can_abort_to_same_current_binding"
+    ],
+    "tests/deployment_trust/test_deployment_trust.py::test_future_contour_holds_all_authentication": [
+      "tests/capabilities/deployment_trust/test_trust.py::test_future_contour_holds_all_authentication"
+    ],
+    "tests/evaluation/test_transcript_compiler.py::test_active_fixture_registry_matches_authored_files": [
+      "tests/evaluation/test_transcript_compiler.py::test_active_fixture_registry_matches_authored_files"
+    ],
+    "tests/evaluation/test_transcript_compiler.py::test_authored_transcript_compiles_with_two_level_identity": [
+      "tests/evaluation/test_transcript_compiler.py::test_authored_transcript_compiles_with_two_level_identity"
+    ],
+    "tests/evaluation/test_transcript_compiler.py::test_design_change_changes_source_but_not_compiled_bundle": [
+      "tests/evaluation/test_transcript_compiler.py::test_design_change_changes_source_but_not_compiled_bundle"
+    ],
+    "tests/evaluation/test_transcript_compiler.py::test_transcript_rejects_malformed_or_unknown_contract": [
+      "tests/evaluation/test_transcript_compiler.py::test_transcript_rejects_malformed_or_unknown_contract"
+    ],
+    "tests/evaluation/test_transcript_compiler.py::test_transcript_rejects_unknown_nested_field": [
+      "tests/evaluation/test_transcript_compiler.py::test_transcript_rejects_unknown_nested_field"
+    ],
+    "tests/evaluation/test_transcript_compiler.py::test_transcript_rejects_mixed_response_modalities": [
+      "tests/evaluation/test_transcript_compiler.py::test_transcript_rejects_mixed_response_modalities"
+    ],
+    "tests/evaluation/test_transcript_compiler.py::test_unknown_design_fields_fail_closed": [
+      "tests/evaluation/test_transcript_compiler.py::test_unknown_design_fields_fail_closed"
+    ],
+    "tests/evaluation/test_transcript_compiler.py::test_unterminated_contract_comment_fails_closed": [
+      "tests/evaluation/test_transcript_compiler.py::test_unterminated_contract_comment_fails_closed"
+    ],
+    "tests/integration/test_r1_r2_contract.py::test_runtime_r1_exports_equal_independently_frozen_r2_contract": [
+      "tests/architecture/test_r1_r2_contract.py::test_runtime_r1_exports_equal_independently_frozen_r2_contract"
+    ],
+    "tests/integration/test_r1_r2_contract.py::test_r1_field_shape_mutation_rejects": [
+      "tests/architecture/test_r1_r2_contract.py::test_r1_field_shape_mutation_rejects"
+    ],
+    "tests/integration/test_r1_r2_contract.py::test_r1_export_set_mutation_rejects": [
+      "tests/architecture/test_r1_r2_contract.py::test_r1_export_set_mutation_rejects"
+    ],
+    "tests/integration/test_r1_r2_contract.py::test_r2_signature_substitution_rejects": [
+      "tests/architecture/test_r1_r2_contract.py::test_r2_signature_substitution_rejects"
+    ],
+    "tests/integration/test_r4_r5_convergence.py::test_runtime_exports_equal_the_frozen_r4_r5_set": [
+      "tests/architecture/test_r4_r5_convergence.py::test_runtime_exports_equal_the_frozen_r4_r5_set"
+    ],
+    "tests/integration/test_r4_r5_convergence.py::test_runtime_export_shapes_equal_frozen_signature_digests": [
+      "tests/architecture/test_r4_r5_convergence.py::test_runtime_export_shapes_equal_frozen_signature_digests"
+    ],
+    "tests/integration/test_r4_r5_convergence.py::test_all_frozen_interfaces_are_typing_protocols": [
+      "tests/architecture/test_r4_r5_convergence.py::test_all_frozen_interfaces_are_typing_protocols"
+    ],
+    "tests/integration/test_r4_r5_convergence.py::test_frozen_value_exports_are_immutable_dataclasses_with_exact_fields": [
+      "tests/architecture/test_r4_r5_convergence.py::test_frozen_value_exports_are_immutable_dataclasses_with_exact_fields"
+    ],
+    "tests/integration/test_r4_r5_convergence.py::test_runtime_record_schema_and_projection_sets_equal_freeze": [
+      "tests/architecture/test_r4_r5_convergence.py::test_runtime_record_schema_and_projection_sets_equal_freeze"
+    ],
+    "tests/integration/test_r4_r5_convergence.py::test_private_adapters_structurally_implement_frozen_ports": [
+      "tests/architecture/test_r4_r5_convergence.py::test_private_adapters_structurally_implement_frozen_ports"
+    ],
+    "tests/integration/test_r4_r5_convergence.py::test_parallel_capabilities_have_no_direct_cross_imports": [
+      "tests/architecture/test_r4_r5_convergence.py::test_parallel_capabilities_have_no_direct_cross_imports"
+    ],
+    "tests/integration/test_r6_cli.py::test_cli_persists_multiple_commands_replays_and_renders_after_restart": [
+      "tests/composition/test_planning_journeys.py::test_authorized_planning_persists_multiple_commands_and_renders_after_restart"
+    ],
+    "tests/integration/test_r6_cli.py::test_cli_identity_substitutions_deny_without_planning_write": [
+      "tests/composition/test_planning_journeys.py::test_current_identity_substitution_denies_without_publication",
+      "tests/composition/test_r8_runtime.py::test_canonical_r8_runtime_traces_before_durable_planning_publication"
+    ],
+    "tests/integration/test_r6_cli.py::test_structurally_invalid_command_denies_without_any_authoritative_mutation": [
+      "tests/composition/test_planning_journeys.py::test_invalid_planning_command_leaves_authoritative_state_unchanged"
+    ],
+    "tests/integration/test_r6_cli.py::test_foreign_payload_identifier_denies_without_any_authoritative_mutation": [
+      "tests/composition/test_r8_runtime.py::test_canonical_r8_runtime_traces_before_durable_planning_publication"
+    ],
+    "tests/integration/test_r6_cli.py::test_commit_time_revalidation_denial_rolls_back_the_physical_publication": [
+      "tests/composition/test_r8_runtime.py::test_actual_publication_cut_rejects_changed_inputs_without_result"
+    ],
+    "tests/integration/test_r6_cli.py::test_cli_fails_loudly_on_corrupt_authoritative_record": [
+      "tests/cli/test_corrupt_store.py::test_canonical_cli_rejects_corrupt_authority_before_output"
+    ],
+    "tests/integration/test_r6_cli.py::test_r6_realized_call_graph_crosses_composed_boundaries": [
+      "tests/composition/test_planning_journeys.py::test_runtime_records_authenticated_identity_and_exact_owner_inputs"
+    ],
+    "tests/platform/test_deletion_provenance.py::test_fence_absence_lag_or_mismatch_blocks_publication": [
+      "tests/platform/test_deletion_provenance.py::test_fence_absence_lag_or_mismatch_blocks_publication"
+    ],
+    "tests/platform/test_deletion_provenance.py::test_fence_failure_blocks_ordinary_read": [
+      "tests/platform/test_deletion_provenance.py::test_fence_failure_blocks_ordinary_read"
+    ],
+    "tests/platform/test_deletion_provenance.py::test_stale_fence_blocks_replay_after_fence_advance": [
+      "tests/platform/test_deletion_provenance.py::test_stale_fence_blocks_replay_after_fence_advance"
+    ],
+    "tests/platform/test_deletion_provenance.py::test_exact_fence_install_is_idempotent_for_concurrent_bootstrap": [
+      "tests/platform/test_deletion_provenance.py::test_exact_fence_install_is_idempotent_for_concurrent_bootstrap"
+    ],
+    "tests/platform/test_deletion_provenance.py::test_guarded_read_has_only_pre_or_post_fence_serial_orders": [
+      "tests/platform/test_deletion_provenance.py::test_guarded_read_has_only_pre_or_post_fence_serial_orders"
+    ],
+    "tests/platform/test_deletion_provenance.py::test_missing_or_orphan_derivative_registry_rejects_admission": [
+      "tests/platform/test_deletion_provenance.py::test_missing_or_orphan_derivative_registry_rejects_admission"
+    ],
+    "tests/platform/test_deletion_provenance.py::test_missing_or_orphan_record_owner_registry_rejects_admission": [
+      "tests/platform/test_deletion_provenance.py::test_missing_or_orphan_record_owner_registry_rejects_admission"
+    ],
+    "tests/platform/test_deletion_provenance.py::test_derivative_requires_exact_existing_unique_provenance": [
+      "tests/platform/test_deletion_provenance.py::test_derivative_requires_exact_existing_unique_provenance"
+    ],
+    "tests/platform/test_evidence_inbox.py::test_inbox_materialization_and_local_ack_are_one_atomic_state": [
+      "tests/platform/test_evidence_inbox.py::test_inbox_materialization_and_local_ack_are_one_atomic_state"
+    ],
+    "tests/platform/test_evidence_inbox.py::test_every_inbox_commit_ack_cut_is_explicit": [
+      "tests/platform/test_evidence_inbox.py::test_every_inbox_commit_ack_cut_is_explicit"
+    ],
+    "tests/platform/test_evidence_inbox.py::test_non_redeliverable_failed_commit_surfaces_possible_loss": [
+      "tests/platform/test_evidence_inbox.py::test_non_redeliverable_failed_commit_surfaces_possible_loss"
+    ],
+    "tests/platform/test_evidence_inbox.py::test_closed_transport_followup_graph": [
+      "tests/platform/test_evidence_inbox.py::test_closed_transport_followup_graph"
+    ],
+    "tests/platform/test_evidence_inbox.py::test_poll_cursor_cannot_apply_before_authorization": [
+      "tests/platform/test_evidence_inbox.py::test_poll_cursor_cannot_apply_before_authorization"
+    ],
+    "tests/platform/test_evidence_inbox.py::test_same_evidence_id_across_sources_has_unambiguous_followup": [
+      "tests/platform/test_evidence_inbox.py::test_same_evidence_id_across_sources_has_unambiguous_followup"
+    ],
+    "tests/platform/test_evidence_inbox.py::test_reserved_lane_is_admitted_and_drains_ahead_of_ordinary_work": [
+      "tests/platform/test_evidence_inbox.py::test_reserved_lane_is_admitted_and_drains_ahead_of_ordinary_work"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_platform_public_surface_does_not_export_physical_writer": [
+      "tests/platform/test_sqlite_substrate.py::test_platform_public_surface_does_not_export_physical_writer"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_atomic_publication_replay_and_changed_fingerprint_conflict": [
+      "tests/platform/test_sqlite_substrate.py::test_atomic_publication_replay_and_changed_fingerprint_conflict"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_fault_before_commit_leaves_no_partial_publication": [
+      "tests/platform/test_sqlite_substrate.py::test_fault_before_commit_leaves_no_partial_publication"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_lost_commit_acknowledgement_replays_durable_result": [
+      "tests/platform/test_sqlite_substrate.py::test_lost_commit_acknowledgement_replays_durable_result"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_owner_or_schema_mismatch_writes_nothing": [
+      "tests/platform/test_sqlite_substrate.py::test_owner_or_schema_mismatch_writes_nothing"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_canonical_fingerprint_mismatch_writes_nothing": [
+      "tests/platform/test_sqlite_substrate.py::test_canonical_fingerprint_mismatch_writes_nothing"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_unknown_store_version_writes_nothing": [
+      "tests/platform/test_sqlite_substrate.py::test_unknown_store_version_writes_nothing"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_unknown_physical_table_rejects_startup": [
+      "tests/platform/test_sqlite_substrate.py::test_unknown_physical_table_rejects_startup"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_weakened_primary_key_and_not_null_schema_rejects_startup": [
+      "tests/platform/test_sqlite_substrate.py::test_weakened_primary_key_and_not_null_schema_rejects_startup"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_forged_writer_token_cannot_mutate": [
+      "tests/platform/test_sqlite_substrate.py::test_forged_writer_token_cannot_mutate"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_second_appender_for_one_materializer_is_rejected": [
+      "tests/platform/test_sqlite_substrate.py::test_second_appender_for_one_materializer_is_rejected"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_restart_rejects_persisted_record_without_registered_decoder": [
+      "tests/platform/test_sqlite_substrate.py::test_restart_rejects_persisted_record_without_registered_decoder"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_single_writer_exercises_both_cas_serial_orders": [
+      "tests/platform/test_sqlite_substrate.py::test_single_writer_exercises_both_cas_serial_orders"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_cancelled_close_does_not_cancel_drain": [
+      "tests/platform/test_sqlite_substrate.py::test_cancelled_close_does_not_cancel_drain"
+    ],
+    "tests/platform/test_sqlite_substrate.py::test_ordinary_lane_applies_bounded_backpressure": [
+      "tests/platform/test_sqlite_substrate.py::test_ordinary_lane_applies_bounded_backpressure"
+    ],
+    "tests/r7/test_authority_ledger.py::test_consumption_issue_and_response_slot_are_durable_before_execution": [
+      "tests/platform/test_authority_ledger.py::test_consumption_issue_and_response_slot_are_durable_before_execution"
+    ],
+    "tests/r7/test_authority_ledger.py::test_changed_replay_nonce_reuse_and_stale_epoch_are_denied": [
+      "tests/platform/test_authority_ledger.py::test_changed_replay_nonce_reuse_and_stale_epoch_are_denied"
+    ],
+    "tests/r7/test_authority_ledger.py::test_terminal_disposition_is_exact_and_never_reexecutes": [
+      "tests/platform/test_authority_ledger.py::test_terminal_disposition_is_exact_and_never_reexecutes"
+    ],
+    "tests/r7/test_authority_ledger.py::test_post_issue_crash_reduces_to_durable_unknown": [
+      "tests/platform/test_authority_ledger.py::test_post_issue_crash_reduces_to_durable_unknown"
+    ],
+    "tests/r7/test_authority_reads.py::test_verified_snapshot_releases_only_frozen_canonical_dto": [
+      "tests/platform/test_authority_reads.py::test_verified_snapshot_releases_only_frozen_canonical_dto"
+    ],
+    "tests/r7/test_authority_reads.py::test_same_head_raw_content_substitution_fails_full_amr_recomputation": [
+      "tests/platform/test_authority_reads.py::test_same_head_raw_content_substitution_fails_full_amr_recomputation"
+    ],
+    "tests/r7/test_authority_reads.py::test_prepared_query_edge_substitution_denies_before_result": [
+      "tests/platform/test_authority_reads.py::test_prepared_query_edge_substitution_denies_before_result"
+    ],
+    "tests/r7/test_authority_reads.py::test_publication_with_six_records_is_denied_before_release": [
+      "tests/platform/test_authority_reads.py::test_publication_with_six_records_is_denied_before_release"
+    ],
+    "tests/r7/test_authority_reads.py::test_duplicate_publication_sequence_is_denied_before_pagination": [
+      "tests/platform/test_authority_reads.py::test_duplicate_publication_sequence_is_denied_before_pagination"
+    ],
+    "tests/r7/test_authority_reads.py::test_invalidator_at_release_cut_suppresses_read_bytes": [
+      "tests/platform/test_authority_reads.py::test_invalidator_at_release_cut_suppresses_read_bytes"
+    ],
+    "tests/r7/test_broker_routing.py::test_authenticated_public_dto_routes_to_isolated_planning_owner": [
+      "tests/platform/test_broker_routing.py::test_authenticated_public_dto_routes_to_isolated_planning_owner"
+    ],
+    "tests/r7/test_broker_routing.py::test_stale_callee_and_exclusive_resource_hold_reject_before_delivery": [
+      "tests/platform/test_broker_routing.py::test_stale_callee_and_exclusive_resource_hold_reject_before_delivery"
+    ],
+    "tests/r7/test_compatibility_ledger.py::test_ledger_is_canonical_complete_and_bound": [
+      "tests/architecture/test_r7_compatibility.py::test_ledger_is_canonical_complete_and_bound"
+    ],
+    "tests/r7/test_compatibility_ledger.py::test_ledger_rejects_unknown_successor": [
+      "tests/verification/test_r7_compatibility.py::test_ledger_rejects_unknown_successor"
+    ],
+    "tests/r7/test_compatibility_ledger.py::test_ledger_rejects_missing_successor_evidence": [
+      "tests/verification/test_r7_compatibility.py::test_ledger_rejects_missing_successor_evidence"
+    ],
+    "tests/r7/test_compatibility_ledger.py::test_ledger_rejects_missing_duplicate_and_orphan_predecessors": [
+      "tests/verification/test_r7_compatibility.py::test_ledger_rejects_missing_duplicate_and_orphan_predecessors"
+    ],
+    "tests/r7/test_compatibility_ledger.py::test_every_predecessor_has_one_owned_successor_and_evidence": [
+      "tests/architecture/test_r7_compatibility.py::test_every_predecessor_has_one_owned_successor_and_evidence"
+    ],
+    "tests/r7/test_compatibility_ledger.py::test_parity_corpus_freezes_canonical_request_and_compared_artifacts": [
+      "tests/architecture/test_r7_compatibility.py::test_parity_corpus_freezes_canonical_request_and_compared_artifacts"
+    ],
+    "tests/r7/test_inert_owner_models.py::test_inert_schema_is_closed_and_owner_models_encode_identically": [
+      "tests/architecture/test_inert_owner_models.py::test_inert_schema_is_closed_and_owner_models_encode_identically"
+    ],
+    "tests/r7/test_inert_owner_models.py::test_owner_models_are_distinct_and_strict": [
+      "tests/platform/test_planning_boundary.py::test_owner_models_are_distinct_and_strict"
+    ],
+    "tests/r7/test_inert_owner_models.py::test_inert_schema_mutants_are_rejected": [
+      "tests/verification/test_inert_owner_models.py::test_inert_schema_mutants_are_rejected"
+    ],
+    "tests/r7/test_owner_process_isolation.py::test_owner_process_modules_import_no_foreign_chiplog_policy": [
+      "tests/architecture/test_owner_imports.py::test_owner_process_modules_import_no_foreign_chiplog_policy"
+    ],
+    "tests/r7/test_owner_process_isolation.py::test_broker_starts_one_distinct_dishka_graph_process_per_owner": [
+      "tests/composition/test_owner_process_isolation.py::test_broker_starts_one_distinct_dishka_graph_process_per_owner"
+    ],
+    "tests/r7/test_owner_process_isolation.py::test_generation_teardown_closes_all_owner_processes": [
+      "tests/composition/test_owner_process_isolation.py::test_generation_teardown_closes_all_owner_processes"
+    ],
+    "tests/r7/test_owner_process_isolation.py::test_exact_realized_graph_rejects_every_owner_and_leaf_identity_mutant": [
+      "tests/composition/test_owner_process_isolation.py::test_exact_realized_graph_rejects_every_owner_and_leaf_identity_mutant"
+    ],
+    "tests/r7/test_owner_process_isolation.py::test_one_owner_session_key_cannot_authenticate_as_another_owner": [
+      "tests/platform/test_broker_peer_authentication.py::test_one_owner_session_key_cannot_authenticate_as_another_owner"
+    ],
+    "tests/r7/test_owner_process_isolation.py::test_foreign_local_peer_uid_is_rejected_before_ipc": [
+      "tests/platform/test_broker_peer_authentication.py::test_foreign_local_peer_uid_is_rejected_before_ipc"
+    ],
+    "tests/r7/test_owner_process_isolation.py::test_same_uid_foreign_peer_pid_is_rejected_before_ipc": [
+      "tests/platform/test_broker_peer_authentication.py::test_same_uid_foreign_peer_pid_is_rejected_before_ipc"
+    ],
+    "tests/r7/test_r4_runtime_admission.py::test_supervisor_admits_generation_only_after_real_r4_recovery": [
+      "tests/composition/test_trust_admission.py::test_supervisor_admits_generation_only_after_real_r4_recovery"
+    ],
+    "tests/r7/test_r7_bypass_gate.py::test_production_entrypoint_has_no_direct_r6_bypass": [
+      "tests/architecture/test_canonical_entrypoint.py::test_production_entrypoint_has_no_direct_r6_bypass"
+    ],
+    "tests/r7/test_r7_bypass_gate.py::test_gate_rejects_every_registered_direct_in_process_bypass": [
+      "tests/verification/test_r7_bypass.py::test_gate_rejects_every_registered_direct_in_process_bypass"
+    ],
+    "tests/r7/test_r7_bypass_gate.py::test_gate_follows_helper_imports_to_transitive_r6_bypass": [
+      "tests/verification/test_r7_bypass.py::test_gate_follows_helper_imports_to_transitive_r6_bypass"
+    ],
+    "tests/r7/test_r7_bypass_gate.py::test_gate_follows_relative_helper_import": [
+      "tests/verification/test_r7_bypass.py::test_gate_follows_relative_helper_import"
+    ],
+    "tests/r7/test_r7_bypass_gate.py::test_gate_follows_relative_package_member_import": [
+      "tests/verification/test_r7_bypass.py::test_gate_follows_relative_package_member_import"
+    ],
+    "tests/r7/test_r7_bypass_gate.py::test_gate_follows_member_of_relative_subpackage": [
+      "tests/verification/test_r7_bypass.py::test_gate_follows_member_of_relative_subpackage"
+    ],
+    "tests/r7/test_r7_bypass_gate.py::test_gate_rejects_obscured_dynamic_bypass": [
+      "tests/verification/test_r7_bypass.py::test_gate_rejects_obscured_dynamic_bypass"
+    ],
+    "tests/r7/test_r7_planning_runtime.py::test_brokered_r7_create_replays_and_survives_restart": [
+      "tests/composition/test_r7_planning_runtime.py::test_brokered_r7_create_replays_and_survives_restart"
+    ],
+    "tests/r7/test_r7_planning_runtime.py::test_brokered_r7_identity_substitution_denies_without_write": [
+      "tests/composition/test_r7_planning_runtime.py::test_brokered_r7_identity_substitution_denies_without_write"
+    ],
+    "tests/r7/test_r7_planning_runtime.py::test_bootstrap_cannot_commit_when_quarantined_trust_owner_denies": [
+      "tests/composition/test_r7_planning_runtime.py::test_bootstrap_cannot_commit_when_quarantined_trust_owner_denies"
+    ],
+    "tests/r7/test_r7_planning_runtime.py::test_runtime_auth_and_reads_cross_isolated_owner_and_verified_release": [
+      "tests/composition/test_r7_planning_runtime.py::test_runtime_auth_and_reads_cross_isolated_owner_and_verified_release"
+    ],
+    "tests/r7/test_r7_planning_runtime.py::test_restart_rejects_offline_authority_storage_tampering": [
+      "tests/composition/test_r7_planning_runtime.py::test_restart_rejects_offline_authority_storage_tampering"
+    ],
+    "tests/r7/test_r7_planning_runtime.py::test_restart_rejects_missing_commitment_for_bootstrapped_empty_store": [
+      "tests/composition/test_r7_planning_runtime.py::test_restart_rejects_missing_commitment_for_bootstrapped_empty_store"
+    ],
+    "tests/r7/test_r7_planning_runtime.py::test_bounded_pages_remain_referentially_closed": [
+      "tests/composition/test_r7_planning_runtime.py::test_bounded_pages_remain_referentially_closed"
+    ],
+    "tests/r7/test_r7_planning_runtime.py::test_default_pages_cross_1000_and_1001_predecessor_boundaries": [
+      "tests/composition/test_r7_planning_runtime.py::test_default_pages_cross_1000_and_1001_predecessor_boundaries"
+    ],
+    "tests/r7/test_r7_planning_runtime.py::test_r6_and_r7_emit_identical_durable_bytes_and_rendering": [
+      "tests/composition/test_r7_planning_runtime.py::test_r6_and_r7_emit_identical_durable_bytes_and_rendering"
+    ],
+    "tests/r7/test_read_invalidation_manifest.py::test_independent_surface_equals_registry_bidirectionally": [
+      "tests/architecture/test_read_invalidation_manifest.py::test_independent_surface_equals_registry_bidirectionally"
+    ],
+    "tests/r7/test_read_invalidation_manifest.py::test_surface_mutants_reject_generation_publication": [
+      "tests/verification/test_read_invalidation.py::test_surface_mutants_reject_generation_publication"
+    ],
+    "tests/r7/test_read_invalidation_manifest.py::test_registry_mutant_cannot_self_certify_against_independent_surface": [
+      "tests/verification/test_read_invalidation.py::test_registry_mutant_cannot_self_certify_against_independent_surface"
+    ],
+    "tests/r7/test_read_release_order.py::test_release_winner_enqueues_exact_bytes_once_and_replay_is_disposition_only": [
+      "tests/platform/test_read_release_order.py::test_release_winner_enqueues_exact_bytes_once_and_replay_is_disposition_only"
+    ],
+    "tests/r7/test_read_release_order.py::test_invalidator_winner_suppresses_result_bytes": [
+      "tests/platform/test_read_release_order.py::test_invalidator_winner_suppresses_result_bytes"
+    ],
+    "tests/r7/test_read_release_order.py::test_fresh_attempt_after_invalidation_uses_new_state_and_identity": [
+      "tests/platform/test_read_release_order.py::test_fresh_attempt_after_invalidation_uses_new_state_and_identity"
+    ],
+    "tests/r7/test_runtime_manifest.py::test_runtime_manifest_has_one_authority_empty_process_per_owner": [
+      "tests/architecture/test_runtime_manifest.py::test_runtime_manifest_has_one_authority_empty_process_per_owner"
+    ],
+    "tests/r7/test_runtime_manifest.py::test_sync_route_cycle_is_rejected": [
+      "tests/architecture/test_runtime_manifest.py::test_sync_route_cycle_is_rejected"
+    ],
+    "tests/r7/test_runtime_manifest.py::test_raw_capability_in_owner_process_is_rejected": [
+      "tests/architecture/test_runtime_manifest.py::test_raw_capability_in_owner_process_is_rejected"
+    ],
+    "tests/r7/test_runtime_manifest.py::test_closed_manifest_rejects_missing_route_or_leaf": [
+      "tests/architecture/test_runtime_manifest.py::test_closed_manifest_rejects_missing_route_or_leaf"
+    ],
+    "tests/r7/test_runtime_manifest.py::test_production_and_evaluation_differ_only_by_registered_leaf_implementation": [
+      "tests/architecture/test_runtime_manifest.py::test_production_and_evaluation_differ_only_by_registered_leaf_implementation"
+    ],
+    "tests/r7/test_runtime_manifest.py::test_eval_cannot_change_security_profile_or_leaf_owner": [
+      "tests/architecture/test_runtime_manifest.py::test_eval_cannot_change_security_profile_or_leaf_owner"
+    ],
+    "tests/r7/test_runtime_restart.py::test_restart_rotates_epoch_kills_old_workers_and_reconciles_issued_operations": [
+      "tests/composition/test_runtime_restart.py::test_restart_rotates_epoch_kills_old_workers_and_reconciles_issued_operations"
+    ],
+    "tests/r7/test_runtime_restart.py::test_failed_trust_admission_closes_authority_empty_quarantine": [
+      "tests/composition/test_runtime_restart.py::test_failed_trust_admission_closes_authority_empty_quarantine"
+    ],
+    "tests/r7/test_runtime_restart.py::test_quarantine_runtime_is_not_published_as_an_admitted_generation": [
+      "tests/composition/test_runtime_restart.py::test_quarantine_runtime_is_not_published_as_an_admitted_generation"
+    ],
+    "tests/r7/test_runtime_restart.py::test_admission_promotes_the_validated_graph_snapshot_not_a_second_attestation": [
+      "tests/composition/test_runtime_restart.py::test_admission_promotes_the_validated_graph_snapshot_not_a_second_attestation"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_direct_principal_trace_requires_no_natural_language_adoption": [
+      "tests/capabilities/planning/test_r8_authority.py::test_direct_principal_trace_requires_no_natural_language_adoption"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_trace_rejects_incomplete_or_noncanonical_read_order": [
+      "tests/capabilities/planning/test_r8_authority.py::test_trace_rejects_incomplete_or_noncanonical_read_order"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_source_substitution_freshness_and_mixed_frontier_reject": [
+      "tests/capabilities/planning/test_r8_authority.py::test_source_substitution_freshness_and_mixed_frontier_reject"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_each_discovered_authority_dependency_is_reproduced": [
+      "tests/capabilities/planning/test_r8_authority.py::test_each_discovered_authority_dependency_is_reproduced"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_freshness_is_whole_binding_not_subset": [
+      "tests/capabilities/planning/test_r8_authority.py::test_freshness_is_whole_binding_not_subset"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_identical_proposal_bindings_still_require_valid_current_sources": [
+      "tests/capabilities/planning/test_r8_authority.py::test_identical_proposal_bindings_still_require_valid_current_sources"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_surface_inventory_equals_actual_current_boundaries": [
+      "tests/architecture/test_r8_current_surfaces.py::test_surface_inventory_equals_actual_current_boundaries"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_surface_inventory_mutants_reject": [
+      "tests/verification/test_r8_surface.py::test_surface_inventory_mutants_reject"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_reached_executable_mutants_reject": [
+      "tests/verification/test_r8_surface.py::test_reached_executable_mutants_reject"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_real_cli_has_no_development_entitlement_bypass": [
+      "tests/cli/test_r8_default_hold.py::test_real_cli_has_no_development_entitlement_bypass"
+    ],
+    "tests/r8/test_authority_and_surfaces.py::test_audited_implementation_identity_rejects_unreviewed_behavior": [
+      "tests/verification/test_r8_surface.py::test_audited_implementation_identity_rejects_unreviewed_behavior"
+    ],
+    "tests/r8/test_deployment_gate.py::test_absence_and_untrusted_authority_never_commit": [
+      "tests/platform/test_r8_deployment_gate.py::test_absence_and_untrusted_authority_never_commit"
+    ],
+    "tests/r8/test_deployment_gate.py::test_positive_decision_is_durable_and_identical_replay_cannot_emit_twice": [
+      "tests/platform/test_r8_deployment_gate.py::test_positive_decision_is_durable_and_identical_replay_cannot_emit_twice"
+    ],
+    "tests/r8/test_deployment_gate.py::test_every_eligibility_change_between_check_and_commit_blocks_handoff": [
+      "tests/platform/test_r8_deployment_gate.py::test_every_eligibility_change_between_check_and_commit_blocks_handoff"
+    ],
+    "tests/r8/test_deployment_gate.py::test_last_cap_slot_has_one_winner_and_revocation_does_not_recall_crossed_work": [
+      "tests/platform/test_r8_deployment_gate.py::test_last_cap_slot_has_one_winner_and_revocation_does_not_recall_crossed_work"
+    ],
+    "tests/r8/test_deployment_gate.py::test_evaluation_cannot_authorize_production_or_changed_payload": [
+      "tests/platform/test_r8_deployment_gate.py::test_evaluation_cannot_authorize_production_or_changed_payload"
+    ],
+    "tests/r8/test_deployment_gate.py::test_canonical_r8_runtime_traces_before_durable_planning_publication": [
+      "tests/composition/test_r8_runtime.py::test_canonical_r8_runtime_traces_before_durable_planning_publication"
+    ],
+    "tests/r8/test_deployment_gate.py::test_actual_render_releases_exact_bytes_only_with_current_entitlement": [
+      "tests/composition/test_r8_runtime.py::test_actual_render_releases_exact_bytes_only_with_current_entitlement"
+    ],
+    "tests/r8/test_deployment_gate.py::test_restoring_gate_cache_cannot_restore_revoked_authority_or_capacity": [
+      "tests/platform/test_r8_deployment_gate.py::test_restoring_gate_cache_cannot_restore_revoked_authority_or_capacity"
+    ],
+    "tests/r8/test_deployment_gate.py::test_future_surface_counterhistories_stop_without_entitlement": [
+      "tests/platform/test_r8_deployment_gate.py::test_future_surface_counterhistories_stop_without_entitlement"
+    ],
+    "tests/r8/test_deployment_gate.py::test_lost_decision_ack_is_reconciled_or_indeterminate_never_denied": [
+      "tests/platform/test_r8_deployment_gate.py::test_lost_decision_ack_is_reconciled_or_indeterminate_never_denied"
+    ],
+    "tests/r8/test_deployment_gate.py::test_cache_commit_error_after_decision_cannot_report_definite_denial": [
+      "tests/platform/test_r8_deployment_gate.py::test_cache_commit_error_after_decision_cannot_report_definite_denial"
+    ],
+    "tests/r8/test_deployment_gate.py::test_actual_publication_cut_rejects_changed_inputs_without_result": [
+      "tests/composition/test_r8_runtime.py::test_actual_publication_cut_rejects_changed_inputs_without_result"
+    ],
+    "tests/test_agents_integration.py::test_codex_hooks_are_wired_through_agents_adapter": [
+      "tests/tooling/test_agents_integration.py::test_codex_hooks_are_wired_through_agents_adapter"
+    ],
+    "tests/test_agents_integration.py::test_codex_hook_pins_match_current_executables": [
+      "tests/tooling/test_agents_integration.py::test_codex_hook_pins_match_current_executables"
+    ],
+    "tests/test_agents_integration.py::test_integration_skill_installs_codex_discoverable_skills": [
+      "tests/tooling/test_agents_integration.py::test_integration_skill_installs_codex_discoverable_skills"
+    ],
+    "tests/test_agents_integration.py::test_skill_installer_does_not_fetch_mutable_remote_state": [
+      "tests/tooling/test_agents_integration.py::test_skill_installer_does_not_fetch_mutable_remote_state"
+    ],
+    "tests/test_agents_integration.py::test_every_agent_skill_has_an_entrypoint": [
+      "tests/tooling/test_agents_integration.py::test_every_agent_skill_has_an_entrypoint"
+    ],
+    "tests/test_agents_integration.py::test_skill_installer_rejects_missing_tracked_support_file": [
+      "tests/tooling/test_agents_integration.py::test_skill_installer_rejects_missing_tracked_support_file"
+    ],
+    "tests/test_agents_integration.py::test_skill_installer_rejects_external_symlink_substitution": [
+      "tests/tooling/test_agents_integration.py::test_skill_installer_rejects_external_symlink_substitution"
+    ],
+    "tests/test_agents_integration.py::test_skill_installer_rejects_untracked_instruction_state": [
+      "tests/tooling/test_agents_integration.py::test_skill_installer_rejects_untracked_instruction_state"
+    ],
+    "tests/test_agents_integration.py::test_skill_installer_rejects_modified_tracked_instruction": [
+      "tests/tooling/test_agents_integration.py::test_skill_installer_rejects_modified_tracked_instruction"
+    ],
+    "tests/test_agents_integration.py::test_codex_hooks_resolve_project_from_nested_payload_cwd": [
+      "tests/tooling/test_agents_integration.py::test_codex_hooks_resolve_project_from_nested_payload_cwd"
+    ],
+    "tests/test_agents_integration.py::test_codex_hooks_handle_malformed_payload_shape": [
+      "tests/tooling/test_agents_integration.py::test_codex_hooks_handle_malformed_payload_shape"
+    ],
+    "tests/test_agents_integration.py::test_codex_edit_guard_rejects_payload_from_another_worktree": [
+      "tests/tooling/test_agents_integration.py::test_codex_edit_guard_rejects_payload_from_another_worktree"
+    ],
+    "tests/test_agents_integration.py::test_test_gate_clears_git_local_environment_before_verifiers": [
+      "tests/tooling/test_agents_integration.py::test_test_gate_clears_git_local_environment_before_verifiers"
+    ],
+    "tests/test_agents_integration.py::test_new_retro_supports_explicit_collision_safe_ids": [
+      "tests/tooling/test_agents_integration.py::test_new_retro_supports_explicit_collision_safe_ids"
+    ],
+    "tests/test_agents_integration.py::test_retro_skip_streak_uses_commit_order_not_same_day_filename_order": [
+      "tests/tooling/test_agents_integration.py::test_retro_skip_streak_uses_commit_order_not_same_day_filename_order"
+    ],
+    "tests/test_resource_contexts.py::test_resource_context_checker_distinguishes_manual_close": [
+      "tests/tooling/test_resource_contexts.py::test_resource_context_checker_distinguishes_manual_close"
+    ],
+    "tests/test_resource_contexts.py::test_resource_context_checker_accepts_with_lifetime": [
+      "tests/tooling/test_resource_contexts.py::test_resource_context_checker_accepts_with_lifetime"
+    ],
+    "tests/test_scaffold.py::test_package_exposes_entrypoint": [
+      "tests/tooling/test_scaffold.py::test_package_exposes_entrypoint"
+    ],
+    "tests/test_scaffold.py::test_runtime_and_journal_fallback_paths_are_ignored": [
+      "tests/tooling/test_scaffold.py::test_runtime_and_journal_fallback_paths_are_ignored"
+    ],
+    "tests/verification/test_invariant_registry.py::test_canonical_invariant_manifest_is_source_derived_and_complete": [
+      "tests/verification/test_invariant_registry.py::test_canonical_invariant_manifest_is_source_derived_and_complete"
+    ],
+    "tests/verification/test_invariant_registry.py::test_invariant_manifest_rejects_source_mutations": [
+      "tests/verification/test_invariant_registry.py::test_invariant_manifest_rejects_source_mutations"
+    ],
+    "tests/verification/test_invariant_registry.py::test_invariant_text_change_changes_entry_and_source_identity": [
+      "tests/verification/test_invariant_registry.py::test_invariant_text_change_changes_entry_and_source_identity"
+    ],
+    "tests/verification/test_primitives.py::test_fault_point_requires_observed_reachability": [
+      "tests/verification/test_primitives.py::test_fault_point_requires_observed_reachability"
+    ],
+    "tests/verification/test_primitives.py::test_state_observation_reports_change": [
+      "tests/verification/test_primitives.py::test_state_observation_reports_change"
+    ],
+    "tests/verification/test_profiles.py::test_fast_profile_pass_is_narrow_and_holds_all_eligibility": [
+      "tests/verification/test_profiles.py::test_fast_profile_pass_is_narrow_and_holds_all_eligibility"
+    ],
+    "tests/verification/test_profiles.py::test_unimplemented_profile_is_nonpassing_hold": [
+      "tests/verification/test_profiles.py::test_unimplemented_profile_is_nonpassing_hold"
+    ],
+    "tests/verification/test_profiles.py::test_stage0_evidences_r0_through_r8_and_holds_deployment_eligibility": [
+      "tests/verification/test_profiles.py::test_stage0_evidences_r0_through_r8_and_holds_deployment_eligibility"
+    ],
+    "tests/verification/test_profiles.py::test_stage0_rejects_empty_missing_duplicate_or_unknown_check_sets": [
+      "tests/verification/test_profiles.py::test_stage0_rejects_empty_missing_duplicate_or_unknown_check_sets"
+    ],
+    "tests/verification/test_profiles.py::test_unknown_profile_fails_closed": [
+      "tests/verification/test_profiles.py::test_unknown_profile_fails_closed"
+    ],
+    "tests/verification/test_profiles.py::test_stage0_cannot_promote_with_any_failed_increment": [
+      "tests/verification/test_profiles.py::test_stage0_cannot_promote_with_any_failed_increment"
+    ],
+    "tests/verification/test_profiles.py::test_stage0_rejects_missing_current_surface": [
+      "tests/verification/test_profiles.py::test_stage0_rejects_missing_current_surface"
+    ],
+    "tests/verification/test_profiles.py::test_artifact_identity_changes_with_bound_input": [
+      "tests/verification/test_profiles.py::test_artifact_identity_changes_with_bound_input"
+    ],
+    "tests/verification/test_profiles.py::test_artifact_is_content_addressed_and_never_overwritten": [
+      "tests/verification/test_profiles.py::test_artifact_is_content_addressed_and_never_overwritten"
+    ],
+    "tests/verification/test_profiles.py::test_fast_rejects_fixture_registry_dilution": [
+      "tests/verification/test_profiles.py::test_fast_rejects_fixture_registry_dilution"
+    ],
+    "tests/verification/test_profiles.py::test_input_identity_binds_dirty_file_bytes": [
+      "tests/verification/test_profiles.py::test_input_identity_binds_dirty_file_bytes"
+    ],
+    "tests/verification/test_profiles.py::test_fast_rejects_unknown_surface_registry": [
+      "tests/verification/test_profiles.py::test_fast_rejects_unknown_surface_registry"
+    ],
+    "tests/verification/test_profiles.py::test_fast_path_rejects_substituted_surface_registry": [
+      "tests/verification/test_profiles.py::test_fast_path_rejects_substituted_surface_registry"
+    ],
+    "tests/verification/test_profiles.py::test_artifact_publish_never_overwrites_racing_collision": [
+      "tests/verification/test_profiles.py::test_artifact_publish_never_overwrites_racing_collision"
+    ],
+    "tests/test_harness_preflight.py::test_test_adapter_preflight_order_and_exit_status": [
+      "tests/tooling/test_harness_preflight.py::test_test_adapter_preflight_order_and_exit_status"
+    ],
+    "tests/test_harness_preflight.py::test_preflight_rejects_unknown_arguments": [
+      "tests/tooling/test_harness_preflight.py::test_preflight_rejects_unknown_arguments"
+    ],
+    "tests/test_harness_preflight.py::test_gate_does_not_start_test_adapter_after_prior_failure": [
+      "tests/tooling/test_harness_preflight.py::test_gate_does_not_start_test_adapter_after_prior_failure"
+    ],
+    "tests/test_harness_preflight.py::test_lint_adapter_preserves_tool_failures": [
+      "tests/tooling/test_harness_preflight.py::test_lint_adapter_preserves_tool_failures"
+    ],
+    "tests/test_harness_preflight.py::test_fast_profile_has_real_good_and_bad_source_inputs": [
+      "tests/tooling/test_harness_preflight.py::test_fast_profile_has_real_good_and_bad_source_inputs"
+    ],
+    "tests/test_post_tool_checks.py::test_advisory_bad_good_bad_and_shell_edit": [
+      "tests/tooling/test_post_tool_checks.py::test_advisory_bad_good_bad_and_shell_edit"
+    ],
+    "tests/test_post_tool_checks.py::test_group_dispatch_and_unrelated_edits": [
+      "tests/tooling/test_post_tool_checks.py::test_group_dispatch_and_unrelated_edits"
+    ],
+    "tests/test_post_tool_checks.py::test_rule_can_be_completed_across_edits_and_empty_directory_detected": [
+      "tests/tooling/test_post_tool_checks.py::test_rule_can_be_completed_across_edits_and_empty_directory_detected"
+    ],
+    "tests/test_post_tool_checks.py::test_renamed_checker_is_detected": [
+      "tests/tooling/test_post_tool_checks.py::test_renamed_checker_is_detected"
+    ],
+    "tests/test_post_tool_checks.py::test_session_and_worktree_do_not_share_warning_suppression": [
+      "tests/tooling/test_post_tool_checks.py::test_session_and_worktree_do_not_share_warning_suppression"
+    ],
+    "tests/test_post_tool_checks.py::test_dependency_change_during_scan_is_not_cached": [
+      "tests/tooling/test_post_tool_checks.py::test_dependency_change_during_scan_is_not_cached"
+    ],
+    "tests/test_post_tool_checks.py::test_lock_contention_does_not_wait": [
+      "tests/tooling/test_post_tool_checks.py::test_lock_contention_does_not_wait"
+    ],
+    "tests/test_post_tool_checks.py::test_timeout_is_advisory_and_retried": [
+      "tests/tooling/test_post_tool_checks.py::test_timeout_is_advisory_and_retried"
+    ],
+    "tests/test_post_tool_checks.py::test_output_is_capped": [
+      "tests/tooling/test_post_tool_checks.py::test_output_is_capped"
+    ],
+    "tests/test_post_tool_checks.py::test_bad_payload_cannot_block": [
+      "tests/tooling/test_post_tool_checks.py::test_bad_payload_cannot_block"
+    ],
+    "tests/test_post_tool_checks.py::test_unknown_tool_does_not_run_and_git_environment_is_clean": [
+      "tests/tooling/test_post_tool_checks.py::test_unknown_tool_does_not_run_and_git_environment_is_clean"
+    ],
+    "tests/test_post_tool_checks.py::test_configured_command_delivers_advice_and_rejects_stale_pin": [
+      "tests/tooling/test_post_tool_checks.py::test_configured_command_delivers_advice_and_rejects_stale_pin"
+    ],
+    "tests/test_post_tool_checks.py::test_rule_fingerprint_includes_calendar_date": [
+      "tests/tooling/test_post_tool_checks.py::test_rule_fingerprint_includes_calendar_date"
+    ],
+    "tests/test_post_tool_checks.py::test_every_large_finding_is_visible_before_suppression": [
+      "tests/tooling/test_post_tool_checks.py::test_every_large_finding_is_visible_before_suppression"
+    ]
+  },
+  "semantic_replacements": {
+    "tests/contracts/test_r6_public_component.py::test_public_r6_component_passes_exact_authenticated_context_to_public_planning_port": {
+      "old_moved_nodes": [
+        "tests/composition/test_r6_component.py::test_public_r6_component_passes_exact_authenticated_context_to_public_planning_port"
+      ],
+      "successors": [
+        "tests/composition/test_planning_journeys.py::test_runtime_records_authenticated_identity_and_exact_owner_inputs"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/contracts/test_r6_public_component.py::test_peer_credential_substitution_denies_before_public_planning_port": {
+      "old_moved_nodes": [
+        "tests/composition/test_r6_component.py::test_peer_credential_substitution_denies_before_public_planning_port"
+      ],
+      "successors": [
+        "tests/capabilities/deployment_trust/test_trust.py::test_cli_peer_credential_is_durable_and_exact"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/contracts/test_r6_trust_bridge.py::test_public_r4_to_r5_bridge_revalidates_exact_reference_operation_and_subject": {
+      "old_moved_nodes": [
+        "tests/composition/test_r6_trust_bridge.py::test_public_r4_to_r5_bridge_revalidates_exact_reference_operation_and_subject"
+      ],
+      "successors": [
+        "tests/capabilities/deployment_trust/test_trust.py::test_cli_authentication_and_complete_reference_revalidation",
+        "tests/capabilities/planning/test_planning.py::test_trust_revalidation_binds_exact_operation_and_allocation_subject"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/contracts/test_r6_trust_bridge.py::test_each_trust_reference_substitution_is_stale": {
+      "old_moved_nodes": [
+        "tests/composition/test_r6_trust_bridge.py::test_each_trust_reference_substitution_is_stale"
+      ],
+      "successors": [
+        "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/contracts/test_r6_trust_bridge.py::test_operation_or_payload_carried_subject_substitution_denies": {
+      "old_moved_nodes": [
+        "tests/composition/test_r6_trust_bridge.py::test_operation_or_payload_carried_subject_substitution_denies"
+      ],
+      "successors": [
+        "tests/capabilities/deployment_trust/test_trust.py::test_cli_authentication_and_complete_reference_revalidation",
+        "tests/capabilities/planning/test_planning.py::test_trust_revalidation_binds_exact_operation_and_allocation_subject"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/integration/test_r6_cli.py::test_cli_persists_multiple_commands_replays_and_renders_after_restart": {
+      "old_moved_nodes": [
+        "tests/cli/test_r6_cli.py::test_cli_persists_multiple_commands_replays_and_renders_after_restart"
+      ],
+      "successors": [
+        "tests/composition/test_planning_journeys.py::test_authorized_planning_persists_multiple_commands_and_renders_after_restart"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/integration/test_r6_cli.py::test_cli_identity_substitutions_deny_without_planning_write": {
+      "old_moved_nodes": [
+        "tests/cli/test_r6_cli.py::test_cli_identity_substitutions_deny_without_planning_write"
+      ],
+      "successors": [
+        "tests/composition/test_planning_journeys.py::test_current_identity_substitution_denies_without_publication",
+        "tests/composition/test_r8_runtime.py::test_canonical_r8_runtime_traces_before_durable_planning_publication"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/integration/test_r6_cli.py::test_structurally_invalid_command_denies_without_any_authoritative_mutation": {
+      "old_moved_nodes": [
+        "tests/cli/test_r6_cli.py::test_structurally_invalid_command_denies_without_any_authoritative_mutation"
+      ],
+      "successors": [
+        "tests/composition/test_planning_journeys.py::test_invalid_planning_command_leaves_authoritative_state_unchanged"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/integration/test_r6_cli.py::test_foreign_payload_identifier_denies_without_any_authoritative_mutation": {
+      "old_moved_nodes": [
+        "tests/composition/test_r6_runtime.py::test_foreign_payload_identifier_denies_without_any_authoritative_mutation"
+      ],
+      "successors": [
+        "tests/composition/test_r8_runtime.py::test_canonical_r8_runtime_traces_before_durable_planning_publication"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/integration/test_r6_cli.py::test_commit_time_revalidation_denial_rolls_back_the_physical_publication": {
+      "old_moved_nodes": [
+        "tests/composition/test_r6_runtime.py::test_commit_time_revalidation_denial_rolls_back_the_physical_publication"
+      ],
+      "successors": [
+        "tests/composition/test_r8_runtime.py::test_actual_publication_cut_rejects_changed_inputs_without_result"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/integration/test_r6_cli.py::test_cli_fails_loudly_on_corrupt_authoritative_record": {
+      "old_moved_nodes": [
+        "tests/cli/test_r6_cli.py::test_cli_fails_loudly_on_corrupt_authoritative_record"
+      ],
+      "successors": [
+        "tests/cli/test_corrupt_store.py::test_canonical_cli_rejects_corrupt_authority_before_output"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    },
+    "tests/integration/test_r6_cli.py::test_r6_realized_call_graph_crosses_composed_boundaries": {
+      "old_moved_nodes": [
+        "tests/composition/test_r6_runtime.py::test_r6_realized_call_graph_crosses_composed_boundaries"
+      ],
+      "successors": [
+        "tests/composition/test_planning_journeys.py::test_runtime_records_authenticated_identity_and_exact_owner_inputs"
+      ],
+      "reason": "Historical R6 CLI substitution or deprecated in-process bridge; retained semantics now exercised at canonical R8/current capability ports. Historical implementation-specific call trace is retired, not claimed equivalent."
+    }
+  },
+  "split_functions": [
+    "tests/contracts/test_r7_public_boundary.py::test_consumer_can_describe_r7_generation_through_public_contracts"
+  ],
+  "validation": {
+    "baseline_commit": "1d5578a940b30911433b6483ba12356929b54084",
+    "integration_baseline_commit": "c324672dd18420607381729602f1fdf643bae2ea",
+    "integration_baseline_items": 37,
+    "baseline_items": 530,
+    "final_items": 538,
+    "unchanged_or_split_items": 505,
+    "baseline_parameter_suffixes": {
+      "tests/architecture/test_inert_shared.py::test_v2_public_exports_and_signatures_match_frozen_contract_exactly": [
+        ""
+      ],
+      "tests/architecture/test_inert_shared.py::test_v2_canonical_signature_digests_match_parallel_freeze": [
+        ""
+      ],
+      "tests/architecture/test_inert_shared.py::test_v2_real_shared_package_is_closed_and_policy_free": [
+        ""
+      ],
+      "tests/architecture/test_inert_shared.py::test_v2_executable_shared_mutants_are_rejected": [
+        "[extra.py-VALUE = 1\\n-exact-set]",
+        "[identity.py-\\ndef validate_record():\\n    return True\\n-unregistered shared function]",
+        "[identity.py-\\nfrom enum import Enum\\nclass State(Enum):\\n    OPEN = 1\\n-shared import exact-set]",
+        "[identity.py-\\nPOLICY_REGISTRY = {}\\n-shared binding exact-set]",
+        "[identity.py-\\nclass Lookup:\\n    @property\\n    def owner(self):\\n        return 'planning'\\n-shared class exact-set]",
+        "[identity.py-\\nresolve = lambda value: value\\n-shared binding exact-set]",
+        "[identity.py-\\nclass PlanningState:\\n    OPEN = 1\\n-shared class exact-set]",
+        "[identity.py-\\nfrom builtins import eval as check\\n-shared import exact-set]"
+      ],
+      "tests/architecture/test_inert_shared.py::test_v2_substitution_after_initial_verification_is_detected": [
+        ""
+      ],
+      "tests/architecture/test_inert_shared.py::test_v2_nested_plain_enum_bypass_is_rejected": [
+        ""
+      ],
+      "tests/architecture/test_inert_shared.py::test_v2_import_time_call_bypass_is_rejected": [
+        ""
+      ],
+      "tests/architecture/test_inert_shared.py::test_v2_allowed_function_body_substitution_is_rejected": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_reference_is_non_vacuous_and_bound": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_named_empty_production_generation_is_not_evidence": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_sparse_generation_cannot_self_certify_as_evidence": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_r1_signature_set_is_not_caller_selected": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_closed_registries_reject_omissions_and_additions": [
+        "[candidate0-UNKNOWN_REFERENCE]",
+        "[candidate1-CLOSED_SET]",
+        "[candidate2-UNKNOWN_EXPORT]",
+        "[candidate3-CLOSED_SET]",
+        "[candidate4-UNKNOWN_REFERENCE]",
+        "[candidate5-CLOSED_SET]",
+        "[candidate6-UNKNOWN_REFERENCE]",
+        "[candidate7-CLOSED_SET]",
+        "[candidate8-UNKNOWN_REFERENCE]",
+        "[candidate9-ROOT_COVERAGE]"
+      ],
+      "tests/architecture/test_manifest_contract.py::test_duplicate_and_reorder_are_distinct_failures": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_signature_alias_or_substitution_is_closed": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_r1_export_cannot_self_certify_a_wrong_signature": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_r1_export_set_cannot_self_certify_an_omission": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_export_reference_and_declared_package_cannot_split": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_capability_package_cannot_self_certify_a_rival_owner": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_export_cannot_self_certify_a_rival_owner": [
+        ""
+      ],
+      "tests/architecture/test_manifest_contract.py::test_evidence_classification_is_part_of_the_frozen_generation": [
+        ""
+      ],
+      "tests/architecture/test_manifest_mutants.py::test_cross_owner_record_conflict": [
+        ""
+      ],
+      "tests/architecture/test_manifest_mutants.py::test_private_import_and_dynamic_resolution_escapes": [
+        ""
+      ],
+      "tests/architecture/test_manifest_mutants.py::test_adapter_to_adapter_and_capability_platform_edges": [
+        ""
+      ],
+      "tests/architecture/test_manifest_mutants.py::test_route_substitution_callback_and_scc": [
+        ""
+      ],
+      "tests/architecture/test_manifest_mutants.py::test_generic_append_fallback_and_bootstrap_bypass": [
+        ""
+      ],
+      "tests/architecture/test_manifest_mutants.py::test_provider_and_bridge_owner_substitution": [
+        ""
+      ],
+      "tests/architecture/test_manifest_mutants.py::test_bridge_and_provider_reject_private_ports": [
+        ""
+      ],
+      "tests/architecture/test_manifest_mutants.py::test_role_allow_matrix_rejects_domain_and_workflow_escapes": [
+        ""
+      ],
+      "tests/architecture/test_manifest_mutants.py::test_unregistered_implementation_and_bootstrap_symbols": [
+        ""
+      ],
+      "tests/architecture/test_manifest_mutants.py::test_stale_generation_schema_and_lifecycle_order": [
+        ""
+      ],
+      "tests/architecture/test_r4_r5_freeze.py::test_r4_r5_freeze_is_closed_and_ordered": [
+        ""
+      ],
+      "tests/architecture/test_r4_r5_freeze.py::test_frozen_signatures_bind_field_shape": [
+        ""
+      ],
+      "tests/architecture/test_r4_r5_freeze.py::test_record_type_and_schema_id_are_distinct_bindings": [
+        ""
+      ],
+      "tests/architecture/test_r4_r5_freeze.py::test_duplicate_freeze_member_is_rejected": [
+        ""
+      ],
+      "tests/architecture/test_r4_r5_freeze.py::test_unknown_owner_is_rejected": [
+        ""
+      ],
+      "tests/architecture/test_r4_r5_freeze.py::test_each_exact_set_rejects_an_omission": [
+        "[R4_R5_PACKAGES]",
+        "[R4_R5_CAPABILITIES]",
+        "[R4_R5_EXPORTS]",
+        "[R4_R5_RECORDS]",
+        "[R4_R5_SURFACES]",
+        "[R4_R5_DERIVATIVE_SINKS]",
+        "[R4_R5_PROVIDERS]"
+      ],
+      "tests/architecture/test_r4_r5_freeze.py::test_r2_manifest_is_the_same_frozen_universe": [
+        ""
+      ],
+      "tests/capabilities/test_r5_planning.py::test_ports_are_structural_protocols": [
+        ""
+      ],
+      "tests/capabilities/test_r5_planning.py::test_owner_factory_publishes_complete_closed_manifest": [
+        ""
+      ],
+      "tests/capabilities/test_r5_planning.py::test_construction_rejects_foreign_wrong_source_and_forbidden_predecessor": [
+        "[bad_context0-bad_command0-foreign tenant]",
+        "[bad_context1-bad_command1-principal mismatch]",
+        "[bad_context2-bad_command2-forbidden actor]",
+        "[bad_context3-bad_command3-wrong direct-principal source]",
+        "[bad_context4-bad_command4-distinct]",
+        "[bad_context5-bad_command5-normalized]"
+      ],
+      "tests/capabilities/test_r5_planning.py::test_create_intention_line_public_port_has_no_predecessor_escape_hatch": [
+        ""
+      ],
+      "tests/capabilities/test_r5_planning.py::test_nonvalid_trust_is_a_typed_no_write": [
+        "[DENIED]",
+        "[STALE]",
+        "[INDETERMINATE]"
+      ],
+      "tests/capabilities/test_r5_planning.py::test_exact_replay_returns_result_and_changed_replay_conflicts": [
+        ""
+      ],
+      "tests/capabilities/test_r5_planning.py::test_replay_revalidates_current_trust_and_withholds_result": [
+        "[DENIED]",
+        "[STALE]",
+        "[INDETERMINATE]"
+      ],
+      "tests/capabilities/test_r5_planning.py::test_stale_head_and_revalidation_race_write_nothing": [
+        ""
+      ],
+      "tests/capabilities/test_r5_planning.py::test_trust_revalidation_binds_exact_operation_and_allocation_subject": [
+        ""
+      ],
+      "tests/capabilities/test_r5_planning.py::test_two_allocations_can_share_one_still_valid_trust_reference": [
+        ""
+      ],
+      "tests/capabilities/test_r5_planning.py::test_repository_never_constructs_owner_records": [
+        ""
+      ],
+      "tests/capabilities/test_r5_projection.py::test_projection_query_port_is_structural_and_tenant_scoped": [
+        ""
+      ],
+      "tests/capabilities/test_r5_projection.py::test_projection_rebuild_is_deterministic_from_committed_publications": [
+        ""
+      ],
+      "tests/capabilities/test_r5_projection.py::test_invalid_checkpoint_falls_back_to_full_verified_rebuild": [
+        "[mutation0]",
+        "[mutation1]",
+        "[mutation2]",
+        "[mutation3]",
+        "[mutation4]",
+        "[mutation5]",
+        "[mutation6]"
+      ],
+      "tests/capabilities/test_r5_projection.py::test_unverified_committed_record_is_rejected": [
+        ""
+      ],
+      "tests/capabilities/test_r5_projection.py::test_projection_ignores_adapter_fields_side_channel": [
+        ""
+      ],
+      "tests/capabilities/test_r5_projection.py::test_projection_rejects_reciprocal_binding_mutants": [
+        "[0-allocation_manifest-changed0]",
+        "[1-trust_reference-changed1]",
+        "[2-initial_revision_id-changed2]",
+        "[3-intention_line_id-changed3]",
+        "[4-command_id-changed4]",
+        "[4-commit_sequence-99]"
+      ],
+      "tests/capabilities/test_r5_projection.py::test_projection_rejects_request_fingerprint_substitution": [
+        ""
+      ],
+      "tests/capabilities/test_r5_projection.py::test_projection_rejects_coherent_record_rewrite_against_original_batch_binding": [
+        ""
+      ],
+      "tests/capabilities/test_r5_projection.py::test_projection_cannot_authorize_or_submit_a_command": [
+        ""
+      ],
+      "tests/capabilities/test_r5_projection.py::test_r5_lane_has_no_dependency_on_r4_types": [
+        ""
+      ],
+      "tests/conformance/test_canonicalization.py::test_v1_golden_bytes_bind_every_producing_identity": [
+        ""
+      ],
+      "tests/conformance/test_canonicalization.py::test_v1_one_field_mutation_changes_bytes_and_fingerprint": [
+        "[mutated0]",
+        "[mutated1]",
+        "[mutated2]",
+        "[mutated3]",
+        "[mutated4]",
+        "[mutated5]",
+        "[mutated6]",
+        "[mutated7]",
+        "[mutated8]"
+      ],
+      "tests/conformance/test_canonicalization.py::test_v1_historical_bytes_verify_with_producing_not_current_versions": [
+        ""
+      ],
+      "tests/conformance/test_canonicalization.py::test_v1_unknown_exact_version_holds_without_write": [
+        "[overrides0-unknown store version]",
+        "[overrides1-unknown schema version]",
+        "[overrides2-unknown codec version]",
+        "[overrides3-unknown canonicalization version]"
+      ],
+      "tests/conformance/test_canonicalization.py::test_v1_runtime_admission_preserves_original_bytes_and_writes_once": [
+        ""
+      ],
+      "tests/contracts/test_r6_public_component.py::test_public_r6_component_passes_exact_authenticated_context_to_public_planning_port": [
+        ""
+      ],
+      "tests/contracts/test_r6_public_component.py::test_peer_credential_substitution_denies_before_public_planning_port": [
+        ""
+      ],
+      "tests/contracts/test_r6_trust_bridge.py::test_public_r4_to_r5_bridge_revalidates_exact_reference_operation_and_subject": [
+        ""
+      ],
+      "tests/contracts/test_r6_trust_bridge.py::test_each_trust_reference_substitution_is_stale": [
+        "[<lambda>0]",
+        "[<lambda>1]",
+        "[<lambda>2]",
+        "[<lambda>3]",
+        "[<lambda>4]",
+        "[<lambda>5]",
+        "[<lambda>6]",
+        "[<lambda>7]",
+        "[<lambda>8]",
+        "[<lambda>9]"
+      ],
+      "tests/contracts/test_r6_trust_bridge.py::test_operation_or_payload_carried_subject_substitution_denies": [
+        "[DELETE_INTENTION_LINE-subject0]",
+        "[CREATE_INTENTION_LINE-subject1]"
+      ],
+      "tests/contracts/test_r7_public_boundary.py::test_consumer_can_describe_r7_generation_through_public_contracts": [
+        ""
+      ],
+      "tests/contracts/test_r7_public_boundary.py::test_planning_dto_is_strict_frozen_and_rejects_unknown_fields": [
+        ""
+      ],
+      "tests/contracts/test_r7_public_boundary.py::test_broker_call_contract_binds_identity_budget_and_closed_failure": [
+        ""
+      ],
+      "tests/contracts/test_r7_public_boundary.py::test_broker_budget_rejects_non_positive_values": [
+        "[remaining_calls]",
+        "[remaining_depth]",
+        "[absolute_deadline_ns]",
+        "[policy_version]"
+      ],
+      "tests/contracts/test_r8_public_boundary.py::test_authority_contract_preserves_bytes_and_rejects_untracked_fields": [
+        ""
+      ],
+      "tests/contracts/test_r8_public_boundary.py::test_gate_contract_is_strict_and_has_no_third_permit_mode": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_boundaries_are_protocols_and_adapters_are_structural": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_durable_record_discriminators_equal_the_freeze": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_genesis_is_immutable_and_cross_tenant_relabel_is_denied": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_startup_requires_exact_signed_binding_and_materialized_head": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_restart_rebuilds_principal_credentials_sources_replay_and_poll_state": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_one_shot_bootstrap_replay_wrong_peer_expiry_and_second_principal": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_cli_authentication_and_complete_reference_revalidation": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_cli_peer_credential_is_durable_and_exact": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_rotation_revokes_old_credential_and_sessions": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_emergency_recovery_keeps_principal_and_rejects_wrong_secret": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_telegram_requires_broker_witness_and_replay_is_closed": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_evidence_source_authentication_and_late_evidence": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_poll_cursor_is_durable_before_request_emission": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_poll_page_has_closed_unique_member_dispositions": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_journal_decision_precedes_materialization_and_replays_after_rollback": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_authenticated_no_decision_aborts_and_ambiguous_observation_holds": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_journal_rollback_and_fork_are_rejected": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_journal_entry_cannot_be_resigned_by_recomputing_public_hash": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_independent_database_rollback_replays_from_protected_journal": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_binding_and_journal_rotations_are_monotonic": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_prepared_transition_blocks_work_and_ready_competes_with_abort": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_prepared_transition_can_abort_to_same_current_binding": [
+        ""
+      ],
+      "tests/deployment_trust/test_deployment_trust.py::test_future_contour_holds_all_authentication": [
+        ""
+      ],
+      "tests/evaluation/test_transcript_compiler.py::test_active_fixture_registry_matches_authored_files": [
+        ""
+      ],
+      "tests/evaluation/test_transcript_compiler.py::test_authored_transcript_compiles_with_two_level_identity": [
+        "[registration0]",
+        "[registration1]",
+        "[registration2]"
+      ],
+      "tests/evaluation/test_transcript_compiler.py::test_design_change_changes_source_but_not_compiled_bundle": [
+        ""
+      ],
+      "tests/evaluation/test_transcript_compiler.py::test_transcript_rejects_malformed_or_unknown_contract": [
+        "[scenario:\\n  unknown: value-unknown scenario fields]",
+        "[mystery:\\n  value: one-unknown discriminator]",
+        "[scenario:\\n  id: one\\nexpect:\\n  state: {}-exactly one discriminator]",
+        "[scenario: scalar-body must be a map or list]"
+      ],
+      "tests/evaluation/test_transcript_compiler.py::test_transcript_rejects_unknown_nested_field": [
+        ""
+      ],
+      "tests/evaluation/test_transcript_compiler.py::test_transcript_rejects_mixed_response_modalities": [
+        ""
+      ],
+      "tests/evaluation/test_transcript_compiler.py::test_unknown_design_fields_fail_closed": [
+        ""
+      ],
+      "tests/evaluation/test_transcript_compiler.py::test_unterminated_contract_comment_fails_closed": [
+        ""
+      ],
+      "tests/integration/test_r1_r2_contract.py::test_runtime_r1_exports_equal_independently_frozen_r2_contract": [
+        ""
+      ],
+      "tests/integration/test_r1_r2_contract.py::test_r1_field_shape_mutation_rejects": [
+        ""
+      ],
+      "tests/integration/test_r1_r2_contract.py::test_r1_export_set_mutation_rejects": [
+        "[omit]",
+        "[add]"
+      ],
+      "tests/integration/test_r1_r2_contract.py::test_r2_signature_substitution_rejects": [
+        ""
+      ],
+      "tests/integration/test_r4_r5_convergence.py::test_runtime_exports_equal_the_frozen_r4_r5_set": [
+        ""
+      ],
+      "tests/integration/test_r4_r5_convergence.py::test_runtime_export_shapes_equal_frozen_signature_digests": [
+        ""
+      ],
+      "tests/integration/test_r4_r5_convergence.py::test_all_frozen_interfaces_are_typing_protocols": [
+        ""
+      ],
+      "tests/integration/test_r4_r5_convergence.py::test_frozen_value_exports_are_immutable_dataclasses_with_exact_fields": [
+        ""
+      ],
+      "tests/integration/test_r4_r5_convergence.py::test_runtime_record_schema_and_projection_sets_equal_freeze": [
+        ""
+      ],
+      "tests/integration/test_r4_r5_convergence.py::test_private_adapters_structurally_implement_frozen_ports": [
+        ""
+      ],
+      "tests/integration/test_r4_r5_convergence.py::test_parallel_capabilities_have_no_direct_cross_imports": [
+        ""
+      ],
+      "tests/integration/test_r6_cli.py::test_cli_persists_multiple_commands_replays_and_renders_after_restart": [
+        ""
+      ],
+      "tests/integration/test_r6_cli.py::test_cli_identity_substitutions_deny_without_planning_write": [
+        "[substitution0]",
+        "[substitution1]",
+        "[substitution2]",
+        "[substitution3]"
+      ],
+      "tests/integration/test_r6_cli.py::test_structurally_invalid_command_denies_without_any_authoritative_mutation": [
+        ""
+      ],
+      "tests/integration/test_r6_cli.py::test_foreign_payload_identifier_denies_without_any_authoritative_mutation": [
+        ""
+      ],
+      "tests/integration/test_r6_cli.py::test_commit_time_revalidation_denial_rolls_back_the_physical_publication": [
+        ""
+      ],
+      "tests/integration/test_r6_cli.py::test_cli_fails_loudly_on_corrupt_authoritative_record": [
+        ""
+      ],
+      "tests/integration/test_r6_cli.py::test_r6_realized_call_graph_crosses_composed_boundaries": [
+        ""
+      ],
+      "tests/platform/test_deletion_provenance.py::test_fence_absence_lag_or_mismatch_blocks_publication": [
+        "[absent-absent]",
+        "[lag-lags]",
+        "[generation-generation mismatch]",
+        "[frontier-frontier mismatch]"
+      ],
+      "tests/platform/test_deletion_provenance.py::test_fence_failure_blocks_ordinary_read": [
+        "[absent]",
+        "[lag]",
+        "[mismatch]"
+      ],
+      "tests/platform/test_deletion_provenance.py::test_stale_fence_blocks_replay_after_fence_advance": [
+        ""
+      ],
+      "tests/platform/test_deletion_provenance.py::test_exact_fence_install_is_idempotent_for_concurrent_bootstrap": [
+        ""
+      ],
+      "tests/platform/test_deletion_provenance.py::test_guarded_read_has_only_pre_or_post_fence_serial_orders": [
+        ""
+      ],
+      "tests/platform/test_deletion_provenance.py::test_missing_or_orphan_derivative_registry_rejects_admission": [
+        "[registered0-managed0]",
+        "[registered1-managed1]",
+        "[registered2-managed2]"
+      ],
+      "tests/platform/test_deletion_provenance.py::test_missing_or_orphan_record_owner_registry_rejects_admission": [
+        "[managed0]",
+        "[managed1]",
+        "[managed2]"
+      ],
+      "tests/platform/test_deletion_provenance.py::test_derivative_requires_exact_existing_unique_provenance": [
+        ""
+      ],
+      "tests/platform/test_evidence_inbox.py::test_inbox_materialization_and_local_ack_are_one_atomic_state": [
+        ""
+      ],
+      "tests/platform/test_evidence_inbox.py::test_every_inbox_commit_ack_cut_is_explicit": [
+        ""
+      ],
+      "tests/platform/test_evidence_inbox.py::test_non_redeliverable_failed_commit_surfaces_possible_loss": [
+        ""
+      ],
+      "tests/platform/test_evidence_inbox.py::test_closed_transport_followup_graph": [
+        "[PUSH-states0-None]",
+        "[POLL-states1-cursor-2]",
+        "[RECONCILIATION-states2-None]"
+      ],
+      "tests/platform/test_evidence_inbox.py::test_poll_cursor_cannot_apply_before_authorization": [
+        ""
+      ],
+      "tests/platform/test_evidence_inbox.py::test_same_evidence_id_across_sources_has_unambiguous_followup": [
+        ""
+      ],
+      "tests/platform/test_evidence_inbox.py::test_reserved_lane_is_admitted_and_drains_ahead_of_ordinary_work": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_platform_public_surface_does_not_export_physical_writer": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_atomic_publication_replay_and_changed_fingerprint_conflict": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_fault_before_commit_leaves_no_partial_publication": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_lost_commit_acknowledgement_replays_durable_result": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_owner_or_schema_mismatch_writes_nothing": [
+        "[invalid0]",
+        "[invalid1]"
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_canonical_fingerprint_mismatch_writes_nothing": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_unknown_store_version_writes_nothing": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_unknown_physical_table_rejects_startup": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_weakened_primary_key_and_not_null_schema_rejects_startup": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_forged_writer_token_cannot_mutate": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_second_appender_for_one_materializer_is_rejected": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_restart_rejects_persisted_record_without_registered_decoder": [
+        "[unknown-schema.v1]",
+        "[fixture-owner-unknown]"
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_single_writer_exercises_both_cas_serial_orders": [
+        "[True]",
+        "[False]"
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_cancelled_close_does_not_cancel_drain": [
+        ""
+      ],
+      "tests/platform/test_sqlite_substrate.py::test_ordinary_lane_applies_bounded_backpressure": [
+        ""
+      ],
+      "tests/r7/test_authority_ledger.py::test_consumption_issue_and_response_slot_are_durable_before_execution": [
+        "[ONE_SHOT]",
+        "[IDEMPOTENT_EXACT]"
+      ],
+      "tests/r7/test_authority_ledger.py::test_changed_replay_nonce_reuse_and_stale_epoch_are_denied": [
+        ""
+      ],
+      "tests/r7/test_authority_ledger.py::test_terminal_disposition_is_exact_and_never_reexecutes": [
+        ""
+      ],
+      "tests/r7/test_authority_ledger.py::test_post_issue_crash_reduces_to_durable_unknown": [
+        ""
+      ],
+      "tests/r7/test_authority_reads.py::test_verified_snapshot_releases_only_frozen_canonical_dto": [
+        ""
+      ],
+      "tests/r7/test_authority_reads.py::test_same_head_raw_content_substitution_fails_full_amr_recomputation": [
+        ""
+      ],
+      "tests/r7/test_authority_reads.py::test_prepared_query_edge_substitution_denies_before_result": [
+        ""
+      ],
+      "tests/r7/test_authority_reads.py::test_publication_with_six_records_is_denied_before_release": [
+        ""
+      ],
+      "tests/r7/test_authority_reads.py::test_duplicate_publication_sequence_is_denied_before_pagination": [
+        ""
+      ],
+      "tests/r7/test_authority_reads.py::test_invalidator_at_release_cut_suppresses_read_bytes": [
+        ""
+      ],
+      "tests/r7/test_broker_routing.py::test_authenticated_public_dto_routes_to_isolated_planning_owner": [
+        ""
+      ],
+      "tests/r7/test_broker_routing.py::test_stale_callee_and_exclusive_resource_hold_reject_before_delivery": [
+        ""
+      ],
+      "tests/r7/test_compatibility_ledger.py::test_ledger_is_canonical_complete_and_bound": [
+        ""
+      ],
+      "tests/r7/test_compatibility_ledger.py::test_ledger_rejects_unknown_successor": [
+        "[successor_id]",
+        "[successor_evidence]"
+      ],
+      "tests/r7/test_compatibility_ledger.py::test_ledger_rejects_missing_successor_evidence": [
+        ""
+      ],
+      "tests/r7/test_compatibility_ledger.py::test_ledger_rejects_missing_duplicate_and_orphan_predecessors": [
+        "[candidate0]",
+        "[candidate1]",
+        "[candidate2]"
+      ],
+      "tests/r7/test_compatibility_ledger.py::test_every_predecessor_has_one_owned_successor_and_evidence": [
+        ""
+      ],
+      "tests/r7/test_compatibility_ledger.py::test_parity_corpus_freezes_canonical_request_and_compared_artifacts": [
+        ""
+      ],
+      "tests/r7/test_inert_owner_models.py::test_inert_schema_is_closed_and_owner_models_encode_identically": [
+        ""
+      ],
+      "tests/r7/test_inert_owner_models.py::test_owner_models_are_distinct_and_strict": [
+        ""
+      ],
+      "tests/r7/test_inert_owner_models.py::test_inert_schema_mutants_are_rejected": [
+        "[extra]",
+        "[owner]",
+        "[type]",
+        "[order]"
+      ],
+      "tests/r7/test_owner_process_isolation.py::test_owner_process_modules_import_no_foreign_chiplog_policy": [
+        ""
+      ],
+      "tests/r7/test_owner_process_isolation.py::test_broker_starts_one_distinct_dishka_graph_process_per_owner": [
+        ""
+      ],
+      "tests/r7/test_owner_process_isolation.py::test_generation_teardown_closes_all_owner_processes": [
+        ""
+      ],
+      "tests/r7/test_owner_process_isolation.py::test_exact_realized_graph_rejects_every_owner_and_leaf_identity_mutant": [
+        ""
+      ],
+      "tests/r7/test_owner_process_isolation.py::test_one_owner_session_key_cannot_authenticate_as_another_owner": [
+        ""
+      ],
+      "tests/r7/test_owner_process_isolation.py::test_foreign_local_peer_uid_is_rejected_before_ipc": [
+        ""
+      ],
+      "tests/r7/test_owner_process_isolation.py::test_same_uid_foreign_peer_pid_is_rejected_before_ipc": [
+        ""
+      ],
+      "tests/r7/test_r4_runtime_admission.py::test_supervisor_admits_generation_only_after_real_r4_recovery": [
+        ""
+      ],
+      "tests/r7/test_r7_bypass_gate.py::test_production_entrypoint_has_no_direct_r6_bypass": [
+        ""
+      ],
+      "tests/r7/test_r7_bypass_gate.py::test_gate_rejects_every_registered_direct_in_process_bypass": [
+        "[from chiplog.composition.r6 import open_r6_runtime]",
+        "[from chiplog.capabilities.planning._planning import _PlanningUseCase]",
+        "[from chiplog.adapters.driven.planning_sqlite import SQLitePlanningRepository]",
+        "[from chiplog.platform._sqlite import EventAppender]"
+      ],
+      "tests/r7/test_r7_bypass_gate.py::test_gate_follows_helper_imports_to_transitive_r6_bypass": [
+        ""
+      ],
+      "tests/r7/test_r7_bypass_gate.py::test_gate_follows_relative_helper_import": [
+        ""
+      ],
+      "tests/r7/test_r7_bypass_gate.py::test_gate_follows_relative_package_member_import": [
+        ""
+      ],
+      "tests/r7/test_r7_bypass_gate.py::test_gate_follows_member_of_relative_subpackage": [
+        ""
+      ],
+      "tests/r7/test_r7_bypass_gate.py::test_gate_rejects_obscured_dynamic_bypass": [
+        "[getattr(__builtins__, \"__import__\")(\"chiplog.composition.r6\")]",
+        "[import importlib\\ngetattr(importlib, \"import_\" + \"module\")(\"chiplog.composition.r6\")]",
+        "[import importlib\\nloader = importlib.import_module\\nloader(\"chiplog.composition.\" + \"r6\")]",
+        "[exec(\"from chiplog.platform._sqlite import EventAppender\", {})]",
+        "[from builtins import __import__ as load\\nload(\"chiplog.composition.r6\")]"
+      ],
+      "tests/r7/test_r7_planning_runtime.py::test_brokered_r7_create_replays_and_survives_restart": [
+        ""
+      ],
+      "tests/r7/test_r7_planning_runtime.py::test_brokered_r7_identity_substitution_denies_without_write": [
+        ""
+      ],
+      "tests/r7/test_r7_planning_runtime.py::test_bootstrap_cannot_commit_when_quarantined_trust_owner_denies": [
+        ""
+      ],
+      "tests/r7/test_r7_planning_runtime.py::test_runtime_auth_and_reads_cross_isolated_owner_and_verified_release": [
+        ""
+      ],
+      "tests/r7/test_r7_planning_runtime.py::test_restart_rejects_offline_authority_storage_tampering": [
+        ""
+      ],
+      "tests/r7/test_r7_planning_runtime.py::test_restart_rejects_missing_commitment_for_bootstrapped_empty_store": [
+        ""
+      ],
+      "tests/r7/test_r7_planning_runtime.py::test_bounded_pages_remain_referentially_closed": [
+        ""
+      ],
+      "tests/r7/test_r7_planning_runtime.py::test_default_pages_cross_1000_and_1001_predecessor_boundaries": [
+        ""
+      ],
+      "tests/r7/test_r7_planning_runtime.py::test_r6_and_r7_emit_identical_durable_bytes_and_rendering": [
+        ""
+      ],
+      "tests/r7/test_read_invalidation_manifest.py::test_independent_surface_equals_registry_bidirectionally": [
+        ""
+      ],
+      "tests/r7/test_read_invalidation_manifest.py::test_surface_mutants_reject_generation_publication": [
+        "[missing]",
+        "[extra]",
+        "[owner]",
+        "[pathless]"
+      ],
+      "tests/r7/test_read_invalidation_manifest.py::test_registry_mutant_cannot_self_certify_against_independent_surface": [
+        ""
+      ],
+      "tests/r7/test_read_release_order.py::test_release_winner_enqueues_exact_bytes_once_and_replay_is_disposition_only": [
+        ""
+      ],
+      "tests/r7/test_read_release_order.py::test_invalidator_winner_suppresses_result_bytes": [
+        ""
+      ],
+      "tests/r7/test_read_release_order.py::test_fresh_attempt_after_invalidation_uses_new_state_and_identity": [
+        ""
+      ],
+      "tests/r7/test_runtime_manifest.py::test_runtime_manifest_has_one_authority_empty_process_per_owner": [
+        ""
+      ],
+      "tests/r7/test_runtime_manifest.py::test_sync_route_cycle_is_rejected": [
+        ""
+      ],
+      "tests/r7/test_runtime_manifest.py::test_raw_capability_in_owner_process_is_rejected": [
+        ""
+      ],
+      "tests/r7/test_runtime_manifest.py::test_closed_manifest_rejects_missing_route_or_leaf": [
+        "[routes]",
+        "[leaves]"
+      ],
+      "tests/r7/test_runtime_manifest.py::test_production_and_evaluation_differ_only_by_registered_leaf_implementation": [
+        ""
+      ],
+      "tests/r7/test_runtime_manifest.py::test_eval_cannot_change_security_profile_or_leaf_owner": [
+        ""
+      ],
+      "tests/r7/test_runtime_restart.py::test_restart_rotates_epoch_kills_old_workers_and_reconciles_issued_operations": [
+        ""
+      ],
+      "tests/r7/test_runtime_restart.py::test_failed_trust_admission_closes_authority_empty_quarantine": [
+        ""
+      ],
+      "tests/r7/test_runtime_restart.py::test_quarantine_runtime_is_not_published_as_an_admitted_generation": [
+        ""
+      ],
+      "tests/r7/test_runtime_restart.py::test_admission_promotes_the_validated_graph_snapshot_not_a_second_attestation": [
+        ""
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_direct_principal_trace_requires_no_natural_language_adoption": [
+        ""
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_trace_rejects_incomplete_or_noncanonical_read_order": [
+        "[missing]",
+        "[duplicate]",
+        "[reordered]",
+        "[extra]"
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_source_substitution_freshness_and_mixed_frontier_reject": [
+        "[source_id-projection.cache-TRUST]",
+        "[source_id-projection.cache-PLANNING]",
+        "[source_id-projection.cache-REGISTRY]",
+        "[source_version-unknown-TRUST]",
+        "[source_version-unknown-PLANNING]",
+        "[source_version-unknown-REGISTRY]",
+        "[generation-new-TRUST]",
+        "[generation-new-PLANNING]",
+        "[generation-new-REGISTRY]",
+        "[frontier-lagging-TRUST]",
+        "[frontier-lagging-PLANNING]",
+        "[frontier-lagging-REGISTRY]",
+        "[valid_until_ns-10-TRUST]",
+        "[valid_until_ns-10-PLANNING]",
+        "[valid_until_ns-10-REGISTRY]"
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_each_discovered_authority_dependency_is_reproduced": [
+        "[canonical_value-{\"value\":2}-TRUST]",
+        "[canonical_value-{\"value\":2}-PLANNING]",
+        "[canonical_value-{\"value\":2}-REGISTRY]",
+        "[head-h2-TRUST]",
+        "[head-h2-PLANNING]",
+        "[head-h2-REGISTRY]"
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_freshness_is_whole_binding_not_subset": [
+        "[proposal_id]",
+        "[display_digest]",
+        "[principal_id]",
+        "[adoption_act_id]",
+        "[ingress_id]",
+        "[interpretation_revision]",
+        "[command_digest]",
+        "[proposed_result_digest]"
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_identical_proposal_bindings_still_require_valid_current_sources": [
+        "[valid_until_ns-1]",
+        "[source_id-unknown]"
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_surface_inventory_equals_actual_current_boundaries": [
+        ""
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_surface_inventory_mutants_reject": [
+        "[missing]",
+        "[extra]",
+        "[duplicate]",
+        "[alias]",
+        "[downstream]"
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_reached_executable_mutants_reject": [
+        "[old-runtime]",
+        "[independent-replay]",
+        "[external-provider]"
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_real_cli_has_no_development_entitlement_bypass": [
+        ""
+      ],
+      "tests/r8/test_authority_and_surfaces.py::test_audited_implementation_identity_rejects_unreviewed_behavior": [
+        "[bootstrap-output]",
+        "[main-output]",
+        "[dead-gate]",
+        "[plain-helper]"
+      ],
+      "tests/r8/test_deployment_gate.py::test_absence_and_untrusted_authority_never_commit": [
+        ""
+      ],
+      "tests/r8/test_deployment_gate.py::test_positive_decision_is_durable_and_identical_replay_cannot_emit_twice": [
+        ""
+      ],
+      "tests/r8/test_deployment_gate.py::test_every_eligibility_change_between_check_and_commit_blocks_handoff": [
+        "[readiness_head]",
+        "[entitlement_head]",
+        "[evidence_cursors]",
+        "[freshness_leases]",
+        "[cohort_id]",
+        "[cap]",
+        "[purpose]",
+        "[instrumentation]",
+        "[stop_rules]",
+        "[readiness]",
+        "[status]",
+        "[open_causes]",
+        "[live_predicates]",
+        "[mode]",
+        "[expires_ns]"
+      ],
+      "tests/r8/test_deployment_gate.py::test_last_cap_slot_has_one_winner_and_revocation_does_not_recall_crossed_work": [
+        ""
+      ],
+      "tests/r8/test_deployment_gate.py::test_evaluation_cannot_authorize_production_or_changed_payload": [
+        ""
+      ],
+      "tests/r8/test_deployment_gate.py::test_canonical_r8_runtime_traces_before_durable_planning_publication": [
+        "[none-False]",
+        "[none-True]",
+        "[before_commit-False]",
+        "[before_commit-True]",
+        "[after_commit-False]",
+        "[after_commit-True]"
+      ],
+      "tests/r8/test_deployment_gate.py::test_actual_render_releases_exact_bytes_only_with_current_entitlement": [
+        "[False]",
+        "[True]"
+      ],
+      "tests/r8/test_deployment_gate.py::test_restoring_gate_cache_cannot_restore_revoked_authority_or_capacity": [
+        ""
+      ],
+      "tests/r8/test_deployment_gate.py::test_future_surface_counterhistories_stop_without_entitlement": [
+        "[calendar.intent]",
+        "[provider.dispatch]",
+        "[telegram.deliver]",
+        "[cli.deliver]",
+        "[scheduler.effect]",
+        "[compensation.dispatch]",
+        "[recovery.retransmit]",
+        "[adapter.new]"
+      ],
+      "tests/r8/test_deployment_gate.py::test_lost_decision_ack_is_reconciled_or_indeterminate_never_denied": [
+        "[False]",
+        "[True]"
+      ],
+      "tests/r8/test_deployment_gate.py::test_cache_commit_error_after_decision_cannot_report_definite_denial": [
+        ""
+      ],
+      "tests/r8/test_deployment_gate.py::test_actual_publication_cut_rejects_changed_inputs_without_result": [
+        "[planning-read]",
+        "[eligibility]"
+      ],
+      "tests/test_agents_integration.py::test_codex_hooks_are_wired_through_agents_adapter": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_codex_hook_pins_match_current_executables": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_integration_skill_installs_codex_discoverable_skills": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_skill_installer_does_not_fetch_mutable_remote_state": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_every_agent_skill_has_an_entrypoint": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_skill_installer_rejects_missing_tracked_support_file": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_skill_installer_rejects_external_symlink_substitution": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_skill_installer_rejects_untracked_instruction_state": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_skill_installer_rejects_modified_tracked_instruction": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_codex_hooks_resolve_project_from_nested_payload_cwd": [
+        "[session-start]",
+        "[healthcheck]",
+        "[guard-edit]"
+      ],
+      "tests/test_agents_integration.py::test_codex_hooks_handle_malformed_payload_shape": [
+        "[session-start-0-[]]",
+        "[session-start-0-null]",
+        "[session-start-0-\"text\"]",
+        "[session-start-0-42]",
+        "[session-start-0-{}]",
+        "[session-start-0-{\"cwd\": 42}]",
+        "[healthcheck-0-[]]",
+        "[healthcheck-0-null]",
+        "[healthcheck-0-\"text\"]",
+        "[healthcheck-0-42]",
+        "[healthcheck-0-{}]",
+        "[healthcheck-0-{\"cwd\": 42}]",
+        "[guard-edit-2-[]]",
+        "[guard-edit-2-null]",
+        "[guard-edit-2-\"text\"]",
+        "[guard-edit-2-42]",
+        "[guard-edit-2-{}]",
+        "[guard-edit-2-{\"cwd\": 42}]"
+      ],
+      "tests/test_agents_integration.py::test_codex_edit_guard_rejects_payload_from_another_worktree": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_test_gate_clears_git_local_environment_before_verifiers": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_new_retro_supports_explicit_collision_safe_ids": [
+        ""
+      ],
+      "tests/test_agents_integration.py::test_retro_skip_streak_uses_commit_order_not_same_day_filename_order": [
+        ""
+      ],
+      "tests/test_resource_contexts.py::test_resource_context_checker_distinguishes_manual_close": [
+        "[def f(resource):\\n    try:\\n        return resource\\n    finally:\\n        resource.close()\\n-1]",
+        "[def f(resource):\\n    # resource-contexts: justified-manual-close \\u2014 shutdown owner\\n    try:\\n        return resource\\n    finally:\\n        resource.close()\\n-0]"
+      ],
+      "tests/test_resource_contexts.py::test_resource_context_checker_accepts_with_lifetime": [
+        ""
+      ],
+      "tests/test_scaffold.py::test_package_exposes_entrypoint": [
+        ""
+      ],
+      "tests/test_scaffold.py::test_runtime_and_journal_fallback_paths_are_ignored": [
+        "[runtime/journal.jsonl]",
+        "[state/session.json]",
+        "[journal.jsonl]",
+        "[demo.journal.jsonl]"
+      ],
+      "tests/verification/test_invariant_registry.py::test_canonical_invariant_manifest_is_source_derived_and_complete": [
+        ""
+      ],
+      "tests/verification/test_invariant_registry.py::test_invariant_manifest_rejects_source_mutations": [
+        "[omit]",
+        "[duplicate]",
+        "[renumber]",
+        "[unknown]"
+      ],
+      "tests/verification/test_invariant_registry.py::test_invariant_text_change_changes_entry_and_source_identity": [
+        ""
+      ],
+      "tests/verification/test_primitives.py::test_fault_point_requires_observed_reachability": [
+        ""
+      ],
+      "tests/verification/test_primitives.py::test_state_observation_reports_change": [
+        ""
+      ],
+      "tests/verification/test_profiles.py::test_fast_profile_pass_is_narrow_and_holds_all_eligibility": [
+        ""
+      ],
+      "tests/verification/test_profiles.py::test_unimplemented_profile_is_nonpassing_hold": [
+        "[promotion]",
+        "[release]",
+        "[stage1]",
+        "[stage2-offline]"
+      ],
+      "tests/verification/test_profiles.py::test_stage0_evidences_r0_through_r8_and_holds_deployment_eligibility": [
+        ""
+      ],
+      "tests/verification/test_profiles.py::test_stage0_rejects_empty_missing_duplicate_or_unknown_check_sets": [
+        "[increments0-evidenced0]",
+        "[increments1-evidenced1]",
+        "[increments2-evidenced2]",
+        "[increments3-evidenced3]"
+      ],
+      "tests/verification/test_profiles.py::test_unknown_profile_fails_closed": [
+        ""
+      ],
+      "tests/verification/test_profiles.py::test_stage0_cannot_promote_with_any_failed_increment": [
+        "[R1]",
+        "[R2]",
+        "[R3]",
+        "[R4]",
+        "[R5]",
+        "[R6]",
+        "[R7]",
+        "[R8]"
+      ],
+      "tests/verification/test_profiles.py::test_stage0_rejects_missing_current_surface": [
+        ""
+      ],
+      "tests/verification/test_profiles.py::test_artifact_identity_changes_with_bound_input": [
+        ""
+      ],
+      "tests/verification/test_profiles.py::test_artifact_is_content_addressed_and_never_overwritten": [
+        ""
+      ],
+      "tests/verification/test_profiles.py::test_fast_rejects_fixture_registry_dilution": [
+        "[<lambda>0]",
+        "[<lambda>1]",
+        "[<lambda>2]"
+      ],
+      "tests/verification/test_profiles.py::test_input_identity_binds_dirty_file_bytes": [
+        ""
+      ],
+      "tests/verification/test_profiles.py::test_fast_rejects_unknown_surface_registry": [
+        "[UNKNOWN-surfaces0]",
+        "[R0_NO_PRODUCTION_SURFACES-surfaces1]"
+      ],
+      "tests/verification/test_profiles.py::test_fast_path_rejects_substituted_surface_registry": [
+        ""
+      ],
+      "tests/verification/test_profiles.py::test_artifact_publish_never_overwrites_racing_collision": [
+        ""
+      ],
+      "tests/test_harness_preflight.py::test_test_adapter_preflight_order_and_exit_status": [
+        "[-mode0]",
+        "[-mode1]",
+        "[self-test-mode0]",
+        "[self-test-mode1]",
+        "[reproducer-mode0]",
+        "[reproducer-mode1]",
+        "[pytest-mode0]",
+        "[pytest-mode1]"
+      ],
+      "tests/test_harness_preflight.py::test_preflight_rejects_unknown_arguments": [
+        "[args0]",
+        "[args1]"
+      ],
+      "tests/test_harness_preflight.py::test_gate_does_not_start_test_adapter_after_prior_failure": [
+        "[]",
+        "[rules_have_reproducers.py]",
+        "[fast]",
+        "[lint]",
+        "[test]"
+      ],
+      "tests/test_harness_preflight.py::test_lint_adapter_preserves_tool_failures": [
+        "[]",
+        "[ruff-check]",
+        "[ruff-format]",
+        "[mypy]",
+        "[resource_contexts.py]"
+      ],
+      "tests/test_harness_preflight.py::test_fast_profile_has_real_good_and_bad_source_inputs": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_advisory_bad_good_bad_and_shell_edit": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_group_dispatch_and_unrelated_edits": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_rule_can_be_completed_across_edits_and_empty_directory_detected": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_renamed_checker_is_detected": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_session_and_worktree_do_not_share_warning_suppression": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_dependency_change_during_scan_is_not_cached": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_lock_contention_does_not_wait": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_timeout_is_advisory_and_retried": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_output_is_capped": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_bad_payload_cannot_block": [
+        "[not json]",
+        "[[]]",
+        "[{}]"
+      ],
+      "tests/test_post_tool_checks.py::test_unknown_tool_does_not_run_and_git_environment_is_clean": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_configured_command_delivers_advice_and_rejects_stale_pin": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_rule_fingerprint_includes_calendar_date": [
+        ""
+      ],
+      "tests/test_post_tool_checks.py::test_every_large_finding_is_visible_before_suppression": [
+        ""
+      ]
+    },
+    "phase_outcomes": {
+      "scope": "Every baseline and final item; mapped stable/split nodes compared phase by phase; semantic replacements executed separately",
+      "setup": "passed",
+      "call": "passed",
+      "teardown": "passed",
+      "wasxfail": null,
+      "skip_or_failure_reason": null
+    },
+    "new_unmapped_nodeids": [
+      "tests/tooling/test_harness_preflight.py::test_gate_does_not_start_test_adapter_after_prior_failure[tests_layout.py]",
+      "tests/tooling/test_tests_layout.py::test_full_index_checks_unchanged_bad_path_and_staged_deletion",
+      "tests/tooling/test_tests_layout.py::test_missing_git_or_test_tree_is_not_empty_success",
+      "tests/tooling/test_tests_layout.py::test_real_gate_uses_full_index_and_propagates_layout_failure",
+      "tests/tooling/test_tests_layout.py::test_service_files_and_each_responsibility_are_accepted",
+      "tests/tooling/test_tests_layout.py::test_type_substitution_is_rejected[category-file]",
+      "tests/tooling/test_tests_layout.py::test_type_substitution_is_rejected[category-symlink]",
+      "tests/tooling/test_tests_layout.py::test_type_substitution_is_rejected[gitlink]",
+      "tests/tooling/test_tests_layout.py::test_type_substitution_is_rejected[nested-symlink]",
+      "tests/tooling/test_tests_layout.py::test_type_substitution_is_rejected[service-directory]",
+      "tests/tooling/test_tests_layout.py::test_type_substitution_is_rejected[service-symlink]",
+      "tests/tooling/test_tests_layout.py::test_unknown_or_root_test_is_rejected_then_accepted_after_move[tests/misc/test_new.py]",
+      "tests/tooling/test_tests_layout.py::test_unknown_or_root_test_is_rejected_then_accepted_after_move[tests/r9/test_new.py]",
+      "tests/tooling/test_tests_layout.py::test_unknown_or_root_test_is_rejected_then_accepted_after_move[tests/test_new.py]",
+      "tests/tooling/test_tests_layout.py::test_unstaged_deletion_and_ignored_cache_are_worktree_state"
+    ],
+    "lanes": {
+      "R1": {
+        "before": 16,
+        "after": 16,
+        "missing": [],
+        "added_nodeids": [],
+        "semantic_replacements": []
+      },
+      "R2": {
+        "before": 65,
+        "after": 65,
+        "missing": [],
+        "added_nodeids": [],
+        "semantic_replacements": []
+      },
+      "R3": {
+        "before": 44,
+        "after": 44,
+        "missing": [],
+        "added_nodeids": [],
+        "semantic_replacements": []
+      },
+      "R4": {
+        "before": 23,
+        "after": 33,
+        "missing": [],
+        "added_nodeids": [
+          "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution[contour]",
+          "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution[credential_head]",
+          "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution[freshness_sequence]",
+          "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution[materialization_head]",
+          "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution[peer_credential]",
+          "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution[principal_id]",
+          "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution[session_head]",
+          "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution[source_head]",
+          "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution[tenant_id]",
+          "tests/capabilities/deployment_trust/test_trust.py::test_current_reference_revalidation_rejects_each_binding_substitution[trust_head]"
+        ],
+        "semantic_replacements": []
+      },
+      "R5": {
+        "before": 48,
+        "after": 48,
+        "missing": [],
+        "added_nodeids": [],
+        "semantic_replacements": []
+      },
+      "R6": {
+        "before": 25,
+        "after": 28,
+        "missing": [],
+        "added_nodeids": [],
+        "semantic_replacements": [
+          "tests/contracts/test_r6_public_component.py::test_peer_credential_substitution_denies_before_public_planning_port",
+          "tests/contracts/test_r6_public_component.py::test_public_r6_component_passes_exact_authenticated_context_to_public_planning_port",
+          "tests/contracts/test_r6_trust_bridge.py::test_each_trust_reference_substitution_is_stale",
+          "tests/contracts/test_r6_trust_bridge.py::test_operation_or_payload_carried_subject_substitution_denies",
+          "tests/contracts/test_r6_trust_bridge.py::test_public_r4_to_r5_bridge_revalidates_exact_reference_operation_and_subject",
+          "tests/integration/test_r6_cli.py::test_cli_fails_loudly_on_corrupt_authoritative_record",
+          "tests/integration/test_r6_cli.py::test_cli_identity_substitutions_deny_without_planning_write",
+          "tests/integration/test_r6_cli.py::test_cli_persists_multiple_commands_replays_and_renders_after_restart",
+          "tests/integration/test_r6_cli.py::test_commit_time_revalidation_denial_rolls_back_the_physical_publication",
+          "tests/integration/test_r6_cli.py::test_foreign_payload_identifier_denies_without_any_authoritative_mutation",
+          "tests/integration/test_r6_cli.py::test_r6_realized_call_graph_crosses_composed_boundaries",
+          "tests/integration/test_r6_cli.py::test_structurally_invalid_command_denies_without_any_authoritative_mutation"
+        ]
+      },
+      "R7": {
+        "before": 86,
+        "after": 87,
+        "missing": [],
+        "added_nodeids": [],
+        "semantic_replacements": []
+      },
+      "R8": {
+        "before": 93,
+        "after": 100,
+        "missing": [],
+        "added_nodeids": [
+          "tests/cli/test_corrupt_store.py::test_canonical_cli_rejects_corrupt_authority_before_output",
+          "tests/composition/test_planning_journeys.py::test_authorized_planning_persists_multiple_commands_and_renders_after_restart",
+          "tests/composition/test_planning_journeys.py::test_current_identity_substitution_denies_without_publication[credential_id]",
+          "tests/composition/test_planning_journeys.py::test_current_identity_substitution_denies_without_publication[principal_id]",
+          "tests/composition/test_planning_journeys.py::test_current_identity_substitution_denies_without_publication[session_id]",
+          "tests/composition/test_planning_journeys.py::test_invalid_planning_command_leaves_authoritative_state_unchanged",
+          "tests/composition/test_planning_journeys.py::test_runtime_records_authenticated_identity_and_exact_owner_inputs"
+        ],
+        "semantic_replacements": []
+      }
+    },
+    "commands": {
+      "baseline": "PYTHONPATH=/tmp/chiplog-tests-implementation MIGRATION_REPORT=/tmp/chiplog-tests-implementation/baseline.json uv run pytest -q -p migration_observer",
+      "final": "PYTHONPATH=/tmp/chiplog-tests-implementation MIGRATION_REPORT=/tmp/chiplog-tests-implementation/final.json uv run pytest -q -p migration_observer",
+      "audit": "python3 /tmp/chiplog-tests-implementation/audit.py"
+    }
+  },
+  "integration": {
+    "commit": "c324672dd18420607381729602f1fdf643bae2ea",
+    "mapping": {
+      "tests/test_harness_preflight.py::test_test_adapter_preflight_order_and_exit_status": [
+        "tests/tooling/test_harness_preflight.py::test_test_adapter_preflight_order_and_exit_status"
+      ],
+      "tests/test_harness_preflight.py::test_preflight_rejects_unknown_arguments": [
+        "tests/tooling/test_harness_preflight.py::test_preflight_rejects_unknown_arguments"
+      ],
+      "tests/test_harness_preflight.py::test_gate_does_not_start_test_adapter_after_prior_failure": [
+        "tests/tooling/test_harness_preflight.py::test_gate_does_not_start_test_adapter_after_prior_failure"
+      ],
+      "tests/test_harness_preflight.py::test_lint_adapter_preserves_tool_failures": [
+        "tests/tooling/test_harness_preflight.py::test_lint_adapter_preserves_tool_failures"
+      ],
+      "tests/test_harness_preflight.py::test_fast_profile_has_real_good_and_bad_source_inputs": [
+        "tests/tooling/test_harness_preflight.py::test_fast_profile_has_real_good_and_bad_source_inputs"
+      ],
+      "tests/test_post_tool_checks.py::test_advisory_bad_good_bad_and_shell_edit": [
+        "tests/tooling/test_post_tool_checks.py::test_advisory_bad_good_bad_and_shell_edit"
+      ],
+      "tests/test_post_tool_checks.py::test_group_dispatch_and_unrelated_edits": [
+        "tests/tooling/test_post_tool_checks.py::test_group_dispatch_and_unrelated_edits"
+      ],
+      "tests/test_post_tool_checks.py::test_rule_can_be_completed_across_edits_and_empty_directory_detected": [
+        "tests/tooling/test_post_tool_checks.py::test_rule_can_be_completed_across_edits_and_empty_directory_detected"
+      ],
+      "tests/test_post_tool_checks.py::test_renamed_checker_is_detected": [
+        "tests/tooling/test_post_tool_checks.py::test_renamed_checker_is_detected"
+      ],
+      "tests/test_post_tool_checks.py::test_session_and_worktree_do_not_share_warning_suppression": [
+        "tests/tooling/test_post_tool_checks.py::test_session_and_worktree_do_not_share_warning_suppression"
+      ],
+      "tests/test_post_tool_checks.py::test_dependency_change_during_scan_is_not_cached": [
+        "tests/tooling/test_post_tool_checks.py::test_dependency_change_during_scan_is_not_cached"
+      ],
+      "tests/test_post_tool_checks.py::test_lock_contention_does_not_wait": [
+        "tests/tooling/test_post_tool_checks.py::test_lock_contention_does_not_wait"
+      ],
+      "tests/test_post_tool_checks.py::test_timeout_is_advisory_and_retried": [
+        "tests/tooling/test_post_tool_checks.py::test_timeout_is_advisory_and_retried"
+      ],
+      "tests/test_post_tool_checks.py::test_output_is_capped": [
+        "tests/tooling/test_post_tool_checks.py::test_output_is_capped"
+      ],
+      "tests/test_post_tool_checks.py::test_bad_payload_cannot_block": [
+        "tests/tooling/test_post_tool_checks.py::test_bad_payload_cannot_block"
+      ],
+      "tests/test_post_tool_checks.py::test_unknown_tool_does_not_run_and_git_environment_is_clean": [
+        "tests/tooling/test_post_tool_checks.py::test_unknown_tool_does_not_run_and_git_environment_is_clean"
+      ],
+      "tests/test_post_tool_checks.py::test_configured_command_delivers_advice_and_rejects_stale_pin": [
+        "tests/tooling/test_post_tool_checks.py::test_configured_command_delivers_advice_and_rejects_stale_pin"
+      ],
+      "tests/test_post_tool_checks.py::test_rule_fingerprint_includes_calendar_date": [
+        "tests/tooling/test_post_tool_checks.py::test_rule_fingerprint_includes_calendar_date"
+      ],
+      "tests/test_post_tool_checks.py::test_every_large_finding_is_visible_before_suppression": [
+        "tests/tooling/test_post_tool_checks.py::test_every_large_finding_is_visible_before_suppression"
+      ]
+    },
+    "adapted_function": "tests/test_harness_preflight.py::test_gate_does_not_start_test_adapter_after_prior_failure",
+    "reason": "Add tests_layout.py to dispatcher order and prior-failure parameters; retain all existing cases."
+  }
+}

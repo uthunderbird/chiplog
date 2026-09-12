@@ -8,7 +8,7 @@ from chiplog.verification.models import FixtureRegistration
 from chiplog.verification.registries import FIXTURES
 from chiplog.verification.transcripts import TranscriptCompileError, compile_transcript
 
-ROOT = Path(__file__).parents[2]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_active_fixture_registry_matches_authored_files() -> None:

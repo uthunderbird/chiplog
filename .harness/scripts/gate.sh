@@ -155,11 +155,17 @@ if [ "$SELFTEST" -eq 1 ]; then
     good_handoff() { rm -f "$TMP/.harness/handoff.md"; }
     pair "хвосты сессии" handoff_pending.py good_handoff
 
+    if ! sh .harness/scripts/clean-git-env.sh uv run pytest -q tests/tooling/test_tests_layout.py; then
+        echo "  FAIL  структура тестов: парные снимки не различены"
+        echo "    → сделай: почини tests_layout.py по провалившейся паре входов"
+        echo "    ✓ плохой снимок отклоняется, хороший проходит"
+        SELF_FAILED=1
+    fi
     if [ "$SELF_FAILED" -ne 0 ]; then exit 1; fi
-    echo "самотест пройден: 8 пар входов на семи проверках"
-    if ! uv run pytest -q tests/test_harness_preflight.py; then
+    echo "самотест пройден: базовые пары и снимки структуры тестов"
+    if ! uv run pytest -q tests/tooling/test_harness_preflight.py; then
         echo "→ сделай: почини парные проверки fast и контрактов адаптеров" >&2
-        echo "✓ uv run pytest -q tests/test_harness_preflight.py возвращает ноль" >&2
+        echo "✓ uv run pytest -q tests/tooling/test_harness_preflight.py возвращает ноль" >&2
         exit 1
     fi
     echo "fast и диспетчеры адаптеров проверены на успешных и отказных входах; полный набор здесь не запускается."
@@ -174,6 +180,7 @@ run "императив в провалах"   python3 .harness/scripts/checks/m
 run "проверки подключены"    python3 .harness/scripts/checks/checks_are_wired.py
 run "леса полировки"         python3 .harness/scripts/checks/polish_artifacts.py
 run "хвосты сессии"          python3 .harness/scripts/checks/handoff_pending.py
+run "структура тестов"       python3 .harness/scripts/checks/tests_layout.py --index
 run "R0 fast verification"   uv run python -m chiplog.verification fast
 run "разбор исходников"      sh .harness/scripts/lint.sh
 if [ "$FAILED" -eq 0 ]; then

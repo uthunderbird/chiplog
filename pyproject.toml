@@ -40,7 +40,7 @@ strict = true
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["test_scaffold"]
+module = ["tests.tooling.test_scaffold"]
 warn_unused_ignores = false
 
 [tool.pytest.ini_options]

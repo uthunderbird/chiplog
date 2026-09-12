@@ -94,32 +94,34 @@ PREDECESSOR_UNIVERSE = tuple(
 
 
 _INERT = (
-    "tests/r7/test_inert_owner_models.py::"
+    "tests/architecture/test_inert_owner_models.py::"
     "test_inert_schema_is_closed_and_owner_models_encode_identically"
 )
 _GRAPH = (
-    "tests/r7/test_owner_process_isolation.py::"
+    "tests/composition/test_owner_process_isolation.py::"
     "test_broker_starts_one_distinct_dishka_graph_process_per_owner"
 )
 _PARITY = (
-    "tests/r7/test_r7_planning_runtime.py::"
+    "tests/composition/test_r7_planning_runtime.py::"
     "test_r6_and_r7_emit_identical_durable_bytes_and_rendering"
 )
 _TRUST = (
-    "tests/r7/test_r4_runtime_admission.py::"
+    "tests/composition/test_trust_admission.py::"
     "test_supervisor_admits_generation_only_after_real_r4_recovery"
 )
 _READS = (
-    "tests/r7/test_authority_reads.py::"
+    "tests/platform/test_authority_reads.py::"
     "test_same_head_raw_content_substitution_fails_full_amr_recomputation"
 )
 _BYPASS = (
-    "tests/r7/test_r7_bypass_gate.py::test_gate_rejects_every_registered_direct_in_process_bypass"
+    "tests/verification/test_r7_bypass.py::"
+    "test_gate_rejects_every_registered_direct_in_process_bypass"
 )
 
 # These successors prove the changed runtime boundary. The predecessor fixtures
-# remain independently executed for their retained semantics, including primitives
-# (e.g. inbox) whose complete new business journey belongs to a later increment.
+# identify historical obligations. Retained semantics run at current entries;
+# deprecated R6 bridges/CLI substitution have explicit successors in
+# quality/test-migration.json. Primitive contracts remain independently executed.
 _FIXTURE_SUCCESSORS = {
     "tests/architecture/test_inert_shared.py": _INERT,
     "tests/architecture/test_manifest_contract.py": _GRAPH,
