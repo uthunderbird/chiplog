@@ -70,12 +70,17 @@ def _run(
 
 
 @pytest.mark.parametrize("mode", [(), ("--preflight",)])
-@pytest.mark.parametrize("failure", ["", "self-test", "reproducer", "pytest"])
+@pytest.mark.parametrize(
+    "failure", ["", "self-test", "reproducer", "self-test.py", "deferred-contract", "pytest"]
+)
 def test_test_adapter_preflight_order_and_exit_status(
     tmp_path: Path, mode: tuple[str, ...], failure: str
 ) -> None:
     scripts, env = _fixture(tmp_path)
     _stub(scripts / "gate.sh", "self-test")
+    deferred = tmp_path / ".harness/deferred"
+    deferred.mkdir()
+    _stub(deferred / "contract-test.sh", "deferred-contract")
     for name in ("active", "agent", "no-run"):
         directory = tmp_path / ".harness/reproducers" / name
         directory.mkdir(parents=True)
@@ -87,9 +92,12 @@ def test_test_adapter_preflight_order_and_exit_status(
     result, events = _run(scripts, env, "test.sh", *mode)
     expected = ["self-test", "reproducer"]
     if not mode and failure not in {"self-test", "reproducer"}:
-        expected.append("pytest")
+        for step in ("self-test.py", "deferred-contract", "pytest"):
+            expected.append(step)
+            if failure == step:
+                break
     assert events == expected
-    failed = failure in {"self-test", "reproducer"} or (not mode and failure == "pytest")
+    failed = failure in {"self-test", "reproducer"} or (not mode and bool(failure))
     assert result.returncode == (1 if failed else 0)
     if failed:
         assert "→" in result.stderr

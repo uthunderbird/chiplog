@@ -53,6 +53,15 @@ done
 # Предварительный успех не заменяет полный гейт коммита.
 [ "$PREFLIGHT" -eq 0 ] || exit 0
 
+if ! sh .harness/scripts/clean-git-env.sh python3 .harness/deferred/self-test.py; then
+    echo "    → команда: sh .harness/scripts/clean-git-env.sh python3 .harness/deferred/self-test.py" >&2
+    exit 1
+fi
+if ! sh .harness/deferred/contract-test.sh; then
+    echo "    → команда: sh .harness/deferred/contract-test.sh" >&2
+    exit 1
+fi
+
 if ! uv run pytest; then
     echo "    тесты Chiplog не прошли" >&2
     echo "    → команда: uv run pytest" >&2
