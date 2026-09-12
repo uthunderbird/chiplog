@@ -19,6 +19,13 @@ Source precedence is:
 
 ## Current baseline
 
+Planning status at the 2026-09-12 review: R0–R7 are complete; R8 is in progress.
+R7 is the implemented successor runtime, not future compatibility work. R8 working-tree
+contracts and gate implementation are partial work, not Stage-0 completion; its scope follows
+the authority-read and operation-gate contracts in [`NORMATIVE.md`](project-architecture/NORMATIVE.md).
+The current verification runner
+executes R1–R7 slices and explicitly holds R8. Status here does not upgrade historical evidence.
+
 R0–R6 are implemented under the predecessor in-process topology. The repository now has the
 verification runner and registries, canonical identities/bytes, boundary manifests, SQLite
 substrate, deployment-trust capability, planning/projection capabilities, their R4/R5 frozen seam,
@@ -157,6 +164,11 @@ The ledger records successor ownership; it never mutates a frozen predecessor co
 
 ## Increments
 
+Numbered subitems below partition an existing increment's work; they do not independently
+close its DoD or grant exposure. New owners and surfaces extend the current R7/R8 manifests
+and rerun their relevant contracts. Reuse physical mechanisms while re-evidencing each new
+owner, query, derivative and irreversible boundary; a predecessor pass is not successor evidence.
+
 ### R0 — Verification substrate and coverage registry
 
 **Depends on:** current scaffold. **Parallel after completion:** R1 and R2.
@@ -253,6 +265,20 @@ A14, A20, A23, A65–A84 and the Stage-0 runtime contract.
 
 Make the typed manifest-recording read capability the exclusive source of authority-sensitive proposal/commit inputs. Implement `DeploymentGatePort`, exact surface inventory, generation-fenced eligibility check and default `HOLD` at the last reversible boundary. Evaluation and production permits are namespace-separated.
 
+1. **R8.1 — authority trace and freshness:** extend R7 verified reads with the exclusive
+   recorder and transaction-local whole-binding reproduction. Preserve the direct-principal
+   CREATE row; natural-language adoption applies only to its registered rows.
+2. **R8.2 — current executable surfaces:** derive and classify the actual canonical
+   authority-use and handoff paths, including CLI, and wire enforcement through owner IPC
+   and the broker. Future journeys remain isolated boundary fixtures, not business features.
+3. **R8.3 — ordered eligibility and handoff:** bind independent current entitlement,
+   invalidation, capacity and exact payload in the common order; observe both durable decisions
+   and an isolated sink. Exercise individual eligibility mismatches with a current-generation
+   request as well as stale-generation races, so one early rejection cannot mask every predicate.
+4. **R8.4 — Stage-0 convergence:** wire the R8 evidence slice, current surface inventory and
+   R0–R8 aggregation into the canonical profile; retain the narrow historical `fast` claim,
+   reached bypass mutants and offline canaries. A green unit gate alone cannot close Stage 0.
+
 **DoD:** V0/V10 reject missing/orphan/downstream-misclassified surfaces; V5 rejects direct/injected/missing/extra/untracked proposal dependencies; V10 mutates generation, readiness, authorization/profile, cohort, cap, purpose, instrumentation, stop rule, cursor and lease immediately before commit and observes no handoff. Every development/test/provider/channel bypass mutant fails, and the offline profile proves structural non-reachability of real recipients/providers. Covers A06, A12, A24, A30, A33, A36, A60–A62 and the operation-level gate.
 
 **Stage-0 integration barrier:** `verification stage0` passes R0–R8 evidence against the promoted
@@ -265,6 +291,16 @@ claims and cannot substitute for the R7/R8 successor evidence.
 **Depends on:** R8. **Parallel with:** R10, R11.
 
 Implement one canonical tenant conversation, channel-scoped visibility inside the immutable contour, history tools, typed dashboard registry/builder/navigation/LRU/budget, disclosure-label propagation, and one authoritative frontier per workspace batch.
+
+1. **R9.1 — conversation and planning view:** bounded channel-scoped history and mandatory
+   `core.conversation`, plus `core.planning` over the existing planning query contract.
+2. **R9.2 — workspace projections:** typed family registry, immutable `DashboardScreen` /
+   `ScreenSnapshotRef`, navigation, LRU and budget behavior. Reuse the stateless
+   `agent-dashboard` boundary; Chiplog owns snapshot persistence, replay and transitions.
+   Journal/calendar families join through their R10/R11 ports at R12.
+3. **R9.3 — disclosure and deletion on current derivatives:** close the disclosure inventory,
+   provenance and R3 fence integration for history, screens and caches; deletion must exclude
+   current derivatives from ordinary reads/rebuilds/context. Full deletion UX remains R21.5.
 
 **DoD:** V4/V5/V7 prove mandatory conversation outside the three-family LRU, bounded eviction,
 lagging-screen non-authority, shared-frontier equality, background-refresh non-promotion,
@@ -279,13 +315,29 @@ and re-close that exact set before its new path executes. Covers A19, A21, A24, 
 
 Implement owner-authored `FactClaim`, candidate evidence, dispositions, journal projection/actions, exact displayed confirmation and receipt references while preserving Plan/Fact/candidate/provider separation. Direct fact admission uses the complete positive proof vector; ambiguity routes to confirmation.
 
-**DoD:** V5 plus transcript T02 prove a direct fact changes journal but not Plan; negative vectors cover question, request, command, wish, doubt, conditional, hypothetical, quote/mention, third-party attribution, correction/retraction, negation, ambiguous subject and model/provider inference. Confirmation binds immutable display and exact current heads. Covers A04, A22, A30–A32.
+1. **R10.1 — fact admission:** direct positive-proof grammar and exact displayed-confirmation
+   path, each with owner-authored immutable identities, complete fingerprints and replay/conflict.
+2. **R10.2 — current-head journal actions:** `record_fact`, `correct_claim`, `retract_claim`,
+   `confirm_candidate` and provenance/lineage reads; prove stale-head rejection, unresolved
+   competing successors and lost-ack replay. Defer the `REPLACE` command surface and complex
+   correlation/merge to R21.3; correction cannot emulate replacement.
+3. **R10.3 — T02 contract alignment:** version the authored scenario before executable use.
+   Its current “Я не ходил…” negation cannot directly append under the normative positive-proof
+   rule: show the exact claim and require confirmation, or retain clarification with no append.
+   Keep a separate affirmative direct-admission fixture and preserve zero Plan mutations.
+
+**DoD:** V5 and public-port component fixtures derived from the aligned T02 prove an authorized fact changes journal but not Plan; negative direct-admission vectors cover question, request, command, wish, doubt, conditional, hypothetical, quote/mention, third-party attribution, correction/retraction, negation, ambiguous subject and model/provider inference. Confirmation binds immutable display and exact current heads. These are component semantics, not a production-loop trajectory; full T02 execution joins R18/R19. Covers A04, A22, A30–A32.
 
 ### R11 — Read-only calendar boundary
 
 **Depends on:** R8. **Parallel with:** R9, R10.
 
 Implement agenda/detail observation through snapshot-bound bounded read ports. Provider state remains evidence; reads cannot write Plan or bypass the authority-read recorder.
+
+**R11.1 — calendar query specialization:** reuse R7 bounded read/release and R8 tracing contracts,
+extend exact query/owner/invalidation manifests, and add provider observation provenance and typed
+staleness. The current planning-publication reader is not a generic calendar/workspace reader.
+Use hermetic provider leaves for this barrier; real-provider exposure remains gated under R20/R21.1.
 
 **DoD:** V4/V5 prove current snapshot/context identity, lag/stale/indeterminate typed results, no write/no effect, no adapter shortcut and no projection/provider-as-authority. Broker invalidation before response yields current result or `STALE_OR_INDETERMINATE_READ`, not a replacement session. Covers A05, A24 and the read-only foundation later specialized by A49, A52 and A57.
 
@@ -295,13 +347,33 @@ Implement agenda/detail observation through snapshot-bound bounded read ports. P
 
 Integrate conversation, dashboard, journal and calendar observations through public ports. Relevant committed history must be read before a consequential proposal; every composed output preserves provenance and disclosure labels.
 
-**DoD:** `verification stage1` runs T02 and a read-before-proposal fixture through canonical composition; V5 forbids journal→Plan promotion, provider→Fact promotion, cross-frontier authority, stale candidate wording and label narrowing. Covers A19, A21–A32 applicable to the slice.
+**R12.1 — shared batch and Stage-1 evidence:** assemble internal conversation/family/policy
+reads in one transaction/frontier, mark external lag explicitly, and wire the Stage-1 profile.
+Run the aligned T02 component contract and read-before-proposal fixture through public ports
+in canonical composition. Do not create a temporary eval-only agent loop: production-loop
+scenario execution begins with R13 and converges at R18/R19.
+
+**DoD:** `verification stage1` proves that composed component contract; V5 forbids journal→Plan promotion, provider→Fact promotion, cross-frontier authority, stale candidate wording and label narrowing. Covers A19, A21–A32 applicable to the slice.
 
 ### R13 — Durable production-loop core and offline walking skeleton
 
 **Depends on:** R7, R8, R12.
 
 Implement the exact production `Run`, `Turn`, `ModelCallAttempt` state machines, orchestration events, bounded budgets, typed model/tool schemas and `CompleteAcceptance`. First run a hermetic deterministic or model-free proposal→exact adoption→intent proposal→receipt journey; it has no real provider/channel reachability and receives no cohort-visible permit.
+
+1. **R13.1 — prompt/schema artifact:** owned-static `promptstrings` integration with strict
+   placeholders, typed response schema and stable prompt ID/version/content hash; bind ordered
+   `ToolSpec`, generator/schema identities and exact rendered bytes to production/eval replay.
+   Golden tests compare rendering and failure behavior. A richer upstream API is optional and
+   cannot substitute a delegated source that loses the current validation contract.
+2. **R13.2 — smallest adopted Planning command:** connect immutable interpretation, exact
+   displayed proposal and adoption to the R8 recorder/committer for the chosen narrow operation.
+   Prove stale adoption requires redisplay and new adoption; never treat model output as authority.
+3. **R13.3 — single-loop scenario driver:** reuse the transcript compiler, artifact identities
+   and fault observer to drive the actual loop through registered hermetic leaves. The first
+   receipt reports only a committed local result; an intent proposal cannot claim provider success.
+   Executed effect/recovery receipts require R16–R18. R19 extends this driver rather than creating
+   another orchestrator.
 
 **DoD:** V2 proves one production/eval loop; V5 covers all legal/illegal transitions, exact Run/Turn
 heads, budget and completion joins, one durable `ModelCallAttemptLineage` per Turn/call slot, immutable
@@ -315,6 +387,20 @@ success. Covers A09, A13, A16, A20, A34 and owns A105.
 **Depends on:** R3, R7, R13. **Parallel contract work with:** R15–R17 after identities freeze.
 
 Implement closed recovery-frontier membership, immutable suspension baselines, `TERMINAL | READ_ONLY_RETRY_PENDING`, sealed fan-out, acceptance branches, terminal accounting versus continuation-ready joins, recovered outcomes, successor classification/publication, original-stream obligations and post-terminal recovery work.
+
+1. **R14.1 — call accounting:** sealed fan-out, exact acceptance branches, cancellation and
+   terminal/result/obligation joins with reached omission, rivalry and crash fixtures.
+2. **R14.2 — recovery evidence reduction:** resolver-only closure plus versioned
+   `SemanticEvidenceReduction` CAS. Both continuation consumers bind accepted witness/closure
+   and the current reduction head, not the latest raw append; compatible and rival post-closure
+   evidence must yield the allowed same-identity advance or typed hold.
+3. **R14.3 — resume and successor:** transaction-local frontier classification/publication,
+   same-Run admission and cross-successor read-only pending branch with a non-resettable budget.
+4. **R14.4 — worker and post-terminal fencing:** exact writer applicability registry, original
+   recovery streams and post-terminal work; freeze the R15–R17 seam before their recovery integration.
+5. **R14.5 — model-attempt recovery:** five-state lineage, lost response and proof-gated
+   no-exposure replacement, then the complete R14 convergence suite. Contracts may freeze early;
+   partial recovery evidence never closes R14.
 
 **DoD:** V5/V6 execute omission/addition/duplication/reordering/branch-mixing mutants; partial/rival
 fan-out; pre/post-accept cancellation; unknown/recovery results; evidence-before-closure races;
@@ -332,6 +418,14 @@ A15, A38–A47, A49–A52, A54–A57, A59 and owns A99 and A108.
 
 Implement revision-bound occurrence identity, `INDIVIDUAL | COALESCED | SKIPPED` disposition, canonical aggregate manifests, tagged lineage roots, leases/generations, takeover and exact scheduler successor fencing.
 
+1. **R15.1 — bounded interval decisions:** exact schedule/policy/bound heads, zero/one/N
+   occurrence algebra, monotone `SchedulerIntervalBoundHead` and complete eligible manifests.
+2. **R15.2 — overflow and resolution:** one active overflow hold blocks amendment; a sufficient
+   successor bound permits one `SchedulerIntervalResolutionDecision` that parents every sub-batch
+   and alone advances the boundary. Reject omitted/rival members, duplicate resolution and early amendment.
+3. **R15.3 — execution lineage:** materialization/disposition CAS, leases, takeover and physical
+   epoch rollover; integrate with R14 before claiming scheduler recovery.
+
 **DoD:** V5/V6 cover all three competing CAS serial orders, crash/restart around atomic skip/coalesce,
 stable replay, representative/namespace substitution, expiry without takeover,
 takeover-before-submit, lease/root/generation/clock mismatch, uint64 exhaustion without wrap/reset,
@@ -346,6 +440,11 @@ A17, A18, A40, A43, A47, A51, A53, A58 and owns A98; specializes the scheduler r
 
 Implement owner-produced effect intents, Plan/effect atomic publication, full version-bound `SEND_COMMITTED` reducer, immutable `DispatchSemanticBinding`, provider attempt/transmission/outcome, stable idempotency, outbox, ambiguity, reconciliation and separately authorized compensation.
 
+**R16.1 — specialize existing publication mechanics:** reuse R3/R7 broker-owned atomic records,
+fingerprints and replay, adding the effect owner, exact acceptance/intent envelope and gated fake
+dispatch/reconciliation. Do not rebuild the physical appender or defer the full dispatch reducer;
+R18 integrates its owner contracts with the complete loop.
+
 **DoD:** V5/V6 cover every named dispatch state/transition, crash edge, domain+intent atomicity, no provider inside the transaction, stale binding, the exact initialized-head `ToolCallAccepted` CAS with atomic intent publication, a reached pre-accept-dispatch mutant, unknown outcome without blind retry, exact reconciliation, changed/rival replay, compensation with fresh authority, and late evidence. T01 runs with a fake adapter; T03 reaches lost response and observes zero replacement attempts. Covers A06–A08, A30, A35, A37, A48.
 
 ### R17 — Durable inbox, delivery, and channel parity
@@ -353,6 +452,15 @@ Implement owner-produced effect intents, Plan/effect atomic publication, full ve
 **Depends on:** R8, R13. **Parallel with:** R15, R16.
 
 Specialize the R3/R4 authenticated durable inbox for Telegram witness/replay identity, then implement CLI/Telegram response delivery, outbox workers and evidence-bound deterministic consequential rendering. The common acknowledgement contract is reused, not reimplemented.
+
+1. **R17.1 — universal ingress custody:** extend and re-evidence the existing commit/ack
+   primitives over every actual ingress row, including destructive-read loss slots and exact bytes.
+2. **R17.2 — admission and recovery:** bounded FIFO/reserves, deadline-preserving rebase,
+   restart/drain joins and immutable quarantine/parser lineage.
+3. **R17.3 — delivery:** exact origin/recipient selection, disclosure revalidation,
+   deterministic evidence-bound rendering and ambiguous delivery without model rerun.
+4. **R17.4 — channel parity:** CLI/Telegram canonical-loop integration and the complete
+   ingress/delivery counterhistory suite. R17 remains broader than a Telegram adapter.
 
 **DoD:** V4/V6/V7 close `EvidenceIngressSurfaceManifest` over Telegram push/poll, CLI, provider
 callback/poll, reconciliation and tool-result paths and rerun the shared commit/ack contract against
@@ -375,6 +483,16 @@ A34, specializes A28, and owns A100–A104 and A107.
 
 Add named typed publications for Plan/effect, Mark done Plan/Fact, and provider receipt/candidate evidence. Owners construct immutable results independently; the coordinator only validates and commits the complete envelope/idempotency map.
 
+1. **R18.1 — bounded Planning lifecycle convergence:** extend the CREATE-only baseline with
+   exact-current-head amend/supersede/retract and the authority rows required by the Stage-2
+   journeys, preserving full atomic result/replay semantics. Register direct acts, exact bounded
+   mandates, adopted proposals and specialized stricter predicates without broad fallback;
+   the assessor-only representation row remains non-Plan. Rich root transformations remain R21.3.
+2. **R18.2 — atomic workflow and scenario barrier:** integrate the independently constructed
+   owner results with R14–R17; run T01–T04 through the R13 production-loop driver, including
+   the aligned T02. New owner-level authority maps and lost-ack reconciliation remain required
+   even though physical multi-record publication already exists.
+
 **DoD:** V5/V6 prove all-or-none publications, per-result authority map, owner/schema/fingerprint enforcement, unauthorized no-existence disclosure, lost-ack replay without owner rerun, and missing/corrupt result reconciliation. T01–T03 run offline through the exact production loop; T04 stale proposal is added and must redisplay rather than act. Covers A04, A06–A10, A22, A29–A35, A41, A46, A59.
 
 **Stage-2 semantic barrier:** `verification stage2-offline` passes R0–R18. All real Calendar, Telegram recipient, scheduler, disclosure, compensation and recovery-transmission surfaces still stop at `HOLD` without exact current entitlement.
@@ -384,6 +502,13 @@ Add named typed publications for Plan/effect, Mark done Plan/Fact, and provider 
 **Depends on:** R18.
 
 Complete transcript-to-bundle compilation, injectable boundary harness, trace/state/effect observation, deterministic feature extraction, LLM-judge artifacts, immutable verdict policy and retained reruns. Eval assembly substitutes registered leaves but preserves the production loop, broker, owner partition and security profile.
+
+1. **R19.1 — executable bundle coverage:** extend the R0 compiler and R13/R18 driver with
+   complete arrange/observe/assert-transition contracts, retained traces and dashboard sequences.
+2. **R19.2 — deterministic verdicts:** versioned feature vectors, reached hard forbids,
+   partial-order checks, offline canaries and replayable artifact binding.
+3. **R19.3 — judge and promotion runs:** independent seeded passes, disagreement retention
+   and immutable rerun identities. Judges cannot replace component or deterministic evidence.
 
 **DoD:** V8/V9 run T01–T04; an unused required fixture, hard forbid, partial-order violation,
 deterministic gate, unknown field or offline real-network reachability fails. Eval/model trace and
@@ -407,14 +532,28 @@ Implement capability-scoped coverage/applicability manifests, readiness evidence
 
 Add long-term capabilities only with a named user journey, exact VISION clauses, owner/public ports, surface inventory, negative counterhistory, scenario bundle and release evidence applicability. Recommended order follows dependency, not feature appeal:
 
-1. real Calendar creation and reconciliation under exact evaluation authorization;
-2. real Telegram owner ingress/delivery under exact evaluation authorization;
-3. recurrence and scheduler journey;
-4. correction/retraction and richer Plan/Fact/Journal journey;
-5. delegation and working agreements;
-6. multi-principal/multi-party privacy and affected-party rights;
-7. proactivity, compensation and additional providers;
-8. production authorization only after the independent VISION readiness/release process.
+1. **R21.1 — real adapters:** Calendar creation/reconciliation and Telegram owner ingress/delivery,
+   each under exact evaluation authorization and its own V11 external observations.
+2. **R21.2 — recurrence:** the bounded user journey over the R15 scheduler contract.
+3. **R21.3 — richer Plan/Fact/Journal:** replacement, correlation and root transformations beyond
+   the R10/R18 slices; do not repeat the already required basic correction/retraction work.
+4. **R21.4 — evidence divergence and reconciliation:** exact material claim/disposition
+   dependencies, `EVIDENCE_DIVERGED` views and separately authorized Planning reconciliation.
+   Any earlier journey using such dependencies must implement this contract before execution;
+   this entry cannot postpone its last-boundary checks.
+5. **R21.5 — complete logical-deletion journey:** privacy-safe dependency preview, content-minimal
+   receipt, transitive derivative/pending-action exclusion and retained-copy non-repopulation.
+   Reuse R3 fences and per-surface provenance; current-surface exclusion never waits for this UX.
+   Physical byte erasure remains separately held.
+6. **R21.6 — working agreements and delegation preparation:** single-principal policy and private
+   proposal/reference preparation only; no delegate acceptance or cross-principal authority.
+7. **R21.7 — multi-principal/multi-party prerequisites:** privacy, affected-party rights and exact
+   contour migration/attestation before a second-principal surface is admitted.
+8. **R21.8 — executable delegation:** depends on R21.7 and the relevant owned-root/undertaking
+   contracts; separately owned delegate target, delegate-authored acceptance and exact reconciliation.
+9. **R21.9 — additional action journeys:** proactivity, compensation and additional providers,
+   specializing the existing dispatch/recovery contract with fresh authority and surface evidence.
+10. **R21.10 — production authorization:** only after the independent VISION readiness/release process.
 
 **DoD:** each capability has a dedicated `verification <capability-profile>` extending V0–V12, at least one positive scenario and one discriminating counterhistory per governing clause/surface, exact external observation where real adapters are claimed, and a capability-scoped coverage fixed point. Passing semantic evidence does not clear adoption.
 
