@@ -14,6 +14,18 @@ from chiplog.capabilities.projections.r9_boundary import (
 )
 
 
+def latest_workspace_state(
+    store: SQLiteWorkspaceStore, tenant_id: str, channel_id: str
+) -> WorkspaceState | None:
+    """Read the latest display sequence, then use the existing integrity-checking port."""
+    with closing(sqlite3.connect(store.path)) as connection:
+        row = connection.execute(
+            "SELECT MAX(seq) FROM workspace WHERE tenant=? AND channel=?",
+            (tenant_id, channel_id),
+        ).fetchone()
+    return None if row is None or row[0] is None else store.load(tenant_id, channel_id, int(row[0]))
+
+
 class SQLiteWorkspaceStore:
     def __init__(self, path: Path) -> None:
         self.path = path

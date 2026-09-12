@@ -23,6 +23,7 @@ from .registries import (
     SURFACE_REGISTRY_GENERATION,
     SURFACES,
 )
+from .stage1 import STAGE1_INCREMENTS, STAGE1_SLICES, validate_stage1_registry
 from .transcripts import compile_transcript
 
 BOUND_INPUTS = (
@@ -220,7 +221,9 @@ def _validate_stage0_registry(
         raise ValueError("stage0 evidenced increment set silently omits or adds a stage")
 
 
-def _run_test_slice(root: Path, increment: str, paths: tuple[str, ...]) -> CheckResult:
+def _run_test_slice(
+    root: Path, increment: str, paths: tuple[str, ...], *, stage: str = "stage0"
+) -> CheckResult:
     completed = subprocess.run(
         ["uv", "run", "pytest", "-q", *paths],
         cwd=root,
@@ -229,7 +232,7 @@ def _run_test_slice(root: Path, increment: str, paths: tuple[str, ...]) -> Check
         text=True,
     )
     return CheckResult(
-        f"stage0.{increment.lower()}",
+        f"{stage}.{increment.lower()}",
         "PASS" if completed.returncode == 0 else "FAIL",
         f"{increment} implementation evidence passes its frozen test slice",
         {
@@ -352,6 +355,20 @@ def _check_stage0(root: Path) -> list[CheckResult]:
     return [*substrate, current_surfaces, *checks]
 
 
+def _check_stage1(root: Path) -> list[CheckResult]:
+    validate_stage1_registry(root, STAGE1_INCREMENTS, STAGE1_SLICES)
+    predecessor = _check_stage0(root)
+    checks = [
+        _run_test_slice(root, increment, STAGE1_SLICES[increment], stage="stage1")
+        for increment in STAGE1_INCREMENTS
+    ]
+    if tuple(check.check_id for check in checks) != tuple(
+        "stage1." + increment.lower() for increment in STAGE1_INCREMENTS
+    ):
+        raise RuntimeError("Stage1 aggregation differs from exact R9-R12 registry")
+    return [*predecessor, *checks]
+
+
 def run_profile(root: Path, profile: str) -> tuple[dict[str, object], Path]:
     if profile not in CLOSED_PROFILES:
         raise ValueError(f"unknown profile: {profile}")
@@ -372,7 +389,13 @@ def run_profile(root: Path, profile: str) -> tuple[dict[str, object], Path]:
             },
         }
         return result, write_artifact(root, result)
-    checks = _check_fast(root) if profile == "fast" else _check_stage0(root)
+    checks = (
+        _check_fast(root)
+        if profile == "fast"
+        else _check_stage1(root)
+        if profile == "stage1"
+        else _check_stage0(root)
+    )
     if not checks:
         raise RuntimeError("an implemented profile cannot contain zero checks")
     status = (
@@ -390,6 +413,8 @@ def run_profile(root: Path, profile: str) -> tuple[dict[str, object], Path]:
         "claim": (
             "R0 verifier substrate and compile-only transcript contracts only"
             if profile == "fast"
+            else "R0-R12 Stage-1 component evidence; production loop and deployment remain HOLD"
+            if profile == "stage1"
             else "R0-R8 Stage-0 implementation evidence; all deployment eligibility remains HOLD"
         ),
         "checks": [check.to_dict() for check in checks],

@@ -109,7 +109,7 @@ class R3ConversationStore:
         ):
             raise WorkspaceRejected("canonical conversation tenant mismatch")
         rows = self._materializer.guarded_records(
-            entry.tenant_id, self._context.deletion_fence_head, self._context.snapshot_frontier
+            entry.tenant_id, self._context.deletion_fence_head, self._fence_frontier
         )
         entry_bytes = entry.model_dump_json().encode()
         encoded = json.dumps(
@@ -148,7 +148,7 @@ class R3ConversationStore:
                 head,
                 self._context.deletion_fence_head,
                 self._fence_frontier,
-                self._context.snapshot_frontier,
+                self._fence_frontier,
                 (
                     PhysicalRecord(
                         entry.entry_id,
@@ -170,7 +170,7 @@ class R3ConversationStore:
         if tenant_id != self._context.tenant_id:
             raise WorkspaceRejected("foreign canonical conversation")
         rows = self._materializer.guarded_records(
-            tenant_id, self._context.deletion_fence_head, self._context.snapshot_frontier
+            tenant_id, self._context.deletion_fence_head, self._fence_frontier
         )
         result = []
         for row in rows:

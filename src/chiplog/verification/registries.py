@@ -11,7 +11,7 @@ CLOSED_PROFILES = (
     "release",
 )
 
-IMPLEMENTED_PROFILES = frozenset({"fast", "stage0"})
+IMPLEMENTED_PROFILES = frozenset({"fast", "stage0", "stage1"})
 
 STAGE0_INCREMENT_REGISTRY = (
     "R1",

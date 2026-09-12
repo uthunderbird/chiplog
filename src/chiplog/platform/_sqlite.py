@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from chiplog.platform.workspace_snapshot import read_connection
+
 STORE_VERSION = 1
 SCHEMA_SQL = """
 CREATE TABLE store_metadata (
@@ -462,8 +464,7 @@ class SQLiteMaterializer:
     def guarded_records(
         self, tenant_id: str, generation: str, minimum_frontier: int
     ) -> tuple[tuple[object, ...], ...]:
-        with contextlib.closing(sqlite3.connect(self._path)) as reader:
-            reader.execute("BEGIN")
+        with read_connection(self._path) as reader:
             row = reader.execute(
                 "SELECT generation, frontier FROM deletion_fences WHERE tenant_id = ?",
                 (tenant_id,),
@@ -480,7 +481,6 @@ class SQLiteMaterializer:
                    FROM records WHERE tenant_id = ? ORDER BY commit_sequence, record_id""",
                 (tenant_id,),
             ).fetchall()
-            reader.commit()
             return tuple(tuple(item) for item in rows)
 
     def _register_derivative(

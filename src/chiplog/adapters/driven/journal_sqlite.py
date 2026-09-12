@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Callable
-from contextlib import closing
 from pathlib import Path
 from typing import Literal
 
 from chiplog.capabilities.evidence_journal.commands import Disposition, JournalRecord, Snapshot
 from chiplog.platform._sqlite import EventAppender, PhysicalPublicationCommand, PhysicalRecord
+from chiplog.platform.workspace_snapshot import read_connection
 
 OWNER = "evidence_journal"
 SCHEMA = "chiplog.evidence_journal.record.v1"
@@ -38,8 +38,7 @@ class SQLiteJournal:
     def snapshot(self, tenant: str) -> Snapshot:
         record_id = "snapshot"
         try:
-            with closing(sqlite3.connect(self._database)) as connection:
-                connection.execute("BEGIN")
+            with read_connection(self._database) as connection:
                 head = connection.execute(
                     "SELECT head FROM tenant_heads WHERE tenant_id = ?", (tenant,)
                 ).fetchone()

@@ -39,7 +39,7 @@ def test_fast_profile_pass_is_narrow_and_holds_all_eligibility() -> None:
     assert json.loads(artifact.read_text()) == result
 
 
-@pytest.mark.parametrize("profile", sorted(set(CLOSED_PROFILES) - {"fast", "stage0"}))
+@pytest.mark.parametrize("profile", sorted(set(CLOSED_PROFILES) - {"fast", "stage0", "stage1"}))
 def test_unimplemented_profile_is_nonpassing_hold(profile: str) -> None:
     result, _ = run_profile(ROOT, profile)
 

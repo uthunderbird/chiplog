@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import sqlite3
 from collections.abc import Callable, Mapping
-from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
@@ -38,6 +36,7 @@ from chiplog.platform._sqlite import (
     PhysicalPublicationCommand,
     PhysicalRecord,
 )
+from chiplog.platform.workspace_snapshot import read_connection
 
 _T = TypeVar("_T")
 _OPERATION = "planning.create_intention_line"
@@ -223,7 +222,7 @@ class SQLitePlanningRepository:
         return guard
 
     def committed_publications(self, tenant_id: TenantId) -> tuple[_PlanningPublication, ...]:
-        with closing(sqlite3.connect(self._database)) as connection:
+        with read_connection(self._database) as connection:
             rows = connection.execute(
                 "SELECT idempotency_key, request_fingerprint, commit_sequence, record_ids "
                 "FROM publications WHERE tenant_id = ? AND operation_kind = ? "
