@@ -56,16 +56,24 @@ class R8PlanningRequest(_Frozen):
     command_bytes: bytes
     authority_trace_bytes: bytes
     observed_time_ns: int = Field(ge=0)
+    proposal_binding_bytes: bytes | None = None
+    display_bytes: bytes | None = None
 
     def canonical_bytes(self) -> bytes:
+        values: dict[str, object] = {
+            "command_bytes": base64.b64encode(self.command_bytes).decode("ascii"),
+            "authority_trace_bytes": base64.b64encode(self.authority_trace_bytes).decode("ascii"),
+            "observed_time_ns": self.observed_time_ns,
+        }
+        if self.proposal_binding_bytes is not None or self.display_bytes is not None:
+            if self.proposal_binding_bytes is None or self.display_bytes is None:
+                raise ValueError("adopted request requires both original binding and display")
+            values["proposal_binding_bytes"] = base64.b64encode(
+                self.proposal_binding_bytes
+            ).decode()
+            values["display_bytes"] = base64.b64encode(self.display_bytes).decode()
         return json.dumps(
-            {
-                "command_bytes": base64.b64encode(self.command_bytes).decode("ascii"),
-                "authority_trace_bytes": base64.b64encode(self.authority_trace_bytes).decode(
-                    "ascii"
-                ),
-                "observed_time_ns": self.observed_time_ns,
-            },
+            values,
             sort_keys=True,
             separators=(",", ":"),
         ).encode()

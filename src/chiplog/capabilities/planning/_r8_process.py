@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 
 from ._r7_owner import R7PlanningOwner
-from ._r8_authority import PlanningAuthorityRecorder, decode_trace, require_reproduced_trace
+from ._r8_authority import (
+    PlanningAuthorityRecorder,
+    decode_freshness,
+    decode_trace,
+    proposed_create_result,
+    require_reproduced_trace,
+    validate_proposal_freshness,
+)
 from .r7_boundary import R7PlanningCreateDTO
 from .r8_boundary import AuthorityRead, AuthorityReadKind, AuthorityTrace, R8PlanningRequest
 
@@ -38,6 +46,9 @@ def _dispatch(operation: str, payload: bytes) -> dict[str, object]:
     values = json.loads(payload)
     for key in ("command_bytes", "authority_trace_bytes"):
         values[key] = base64.b64decode(values[key], validate=True)
+    for key in ("proposal_binding_bytes", "display_bytes"):
+        if key in values:
+            values[key] = base64.b64decode(values[key], validate=True)
     request = R8PlanningRequest.model_validate(values)
     if request.canonical_bytes() != payload:
         raise ValueError("R8 request is noncanonical")
@@ -47,10 +58,13 @@ def _dispatch(operation: str, payload: bytes) -> dict[str, object]:
         tenant_id=original.tenant_id,
         principal_id=original.principal_id,
         now_ns=request.observed_time_ns,
+        adopted_proposal=request.proposal_binding_bytes is not None,
     )
     trust = recorder.read("TRUST")
     planning = recorder.read("PLANNING")
     recorder.read("REGISTRY")
+    if request.proposal_binding_bytes is not None:
+        recorder.read("ADOPTION")
     reproduced = recorder.finish()
     require_reproduced_trace(original, reproduced)
     command = json.loads(request.command_bytes)
@@ -65,6 +79,38 @@ def _dispatch(operation: str, payload: bytes) -> dict[str, object]:
         "authority_act_id",
     }:
         raise ValueError("R8 command contains untracked authority input")
+    replay_only = False
+    if request.proposal_binding_bytes is not None:
+        binding = decode_freshness(request.proposal_binding_bytes)
+        if (
+            request.display_bytes is None
+            or hashlib.sha256(request.display_bytes).hexdigest() != binding.display_digest
+            or binding.command_digest != hashlib.sha256(request.command_bytes).hexdigest()
+            or binding.proposed_result_digest
+            != hashlib.sha256(proposed_create_result(command)).hexdigest()
+            or binding.principal_id != original.principal_id
+            or binding.adoption_act_id != command["authority_act_id"]
+        ):
+            raise ValueError("adoption command/result differs from exact original display")
+        if (
+            original.reads[-1].canonical_value
+            != json.dumps(
+                binding.model_dump(exclude={"trace"}), sort_keys=True, separators=(",", ":")
+            ).encode()
+        ):
+            raise ValueError("adoption predicate differs from immutable binding")
+        snapshot = json.loads(planning.canonical_value)
+        replay_only = any(
+            row["command_id"] == command["command_id"] for row in snapshot["commands"]
+        )
+        if not replay_only:
+            reproduced_binding = binding.model_copy(update={"trace": reproduced})
+            validate_proposal_freshness(
+                binding,
+                reproduced_binding,
+                display_bytes=request.display_bytes,
+                now_ns=request.observed_time_ns,
+            )
     result = R7PlanningOwner().execute(
         R7PlanningCreateDTO(
             tenant_id=original.tenant_id,
@@ -74,6 +120,8 @@ def _dispatch(operation: str, payload: bytes) -> dict[str, object]:
             **command,
         )
     )
+    if replay_only and result.disposition == "COMMITTED":
+        raise ValueError("replay cannot create another semantic publication")
     return {
         "payload": base64.b64encode(result.canonical_bytes()).decode("ascii"),
         "schema_id": "chiplog.planning.public.result.v1",

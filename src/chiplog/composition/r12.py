@@ -236,7 +236,11 @@ class R12Workspace:
             raise WorkspaceRejected("unknown authenticated peer")
         self._identity = identity
         self._policy_payload = _policy_bytes(identity, channel, database_id)
-        self._policy_id = _policy_id(identity.tenant, identity.principal, channel)
+        self._policy_id = (
+            _policy_id(identity.tenant, identity.principal, channel)
+            + ":"
+            + hashlib.sha256(self._policy_payload).hexdigest()
+        )
         self._channel, self._database_id = channel, database_id
         self._fence_frontier = fence_frontier
         self._calendar, self._calendar_ledger = calendar, calendar_ledger
@@ -473,7 +477,9 @@ class R12Workspace:
                             raise WorkspaceRejected("planning physical/source identity mismatch")
                 projection = _PlanningProjectionRebuilder(
                     cast(_PlanningReadStore, repository)
-                ).rebuild(TenantId(identity.tenant))
+                ).rebuild(
+                    TenantId(identity.tenant), verified_tenant_frontier=context.snapshot_frontier
+                )
                 planning = await PlanningWorkspaceQueries(
                     projection, contexts, self._planning_sources
                 ).read(request.model_copy(update={"query": "PLANNING_VIEW"}))
@@ -816,7 +822,11 @@ async def _install_policy(
     fence_frontier: int,
 ) -> None:
     payload = _policy_bytes(identity, channel, database_id)
-    record_id = _policy_id(identity.tenant, identity.principal, channel)
+    record_id = (
+        _policy_id(identity.tenant, identity.principal, channel)
+        + ":"
+        + hashlib.sha256(payload).hexdigest()
+    )
     fingerprint = hashlib.sha256(payload).hexdigest()
     head = storage.snapshot(identity.tenant).head
     result = await appender.submit(

@@ -403,14 +403,25 @@ class _PlanningProjectionRebuilder:
         self._repository = repository
 
     def rebuild(
-        self, tenant_id: TenantId, checkpoint: _ProjectionCheckpoint | None = None
+        self,
+        tenant_id: TenantId,
+        checkpoint: _ProjectionCheckpoint | None = None,
+        *,
+        verified_tenant_frontier: int | None = None,
     ) -> _PlanningProjection:
         publications = self._repository.committed_publications(tenant_id)
+        previous_sequence = 0
         for index, publication in enumerate(publications, start=1):
-            if publication.tenant_id != tenant_id or publication.commit_sequence != index:
+            sequence_valid = publication.commit_sequence == index
+            if verified_tenant_frontier is not None:
+                sequence_valid = (
+                    previous_sequence < publication.commit_sequence <= verified_tenant_frontier
+                )
+            if publication.tenant_id != tenant_id or not sequence_valid:
                 raise ValueError("planning log is not a verified contiguous tenant stream")
             if not _verify_publication(publication):
                 raise ValueError("planning log contains an unverified publication")
+            previous_sequence = publication.commit_sequence
         rows: dict[str, _IntentionLineView] = {}
         frontier = 0
         checkpoint_valid = False

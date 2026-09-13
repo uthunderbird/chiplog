@@ -6,9 +6,9 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from chiplog.platform.workspace_snapshot import read_connection
 
@@ -683,6 +683,11 @@ class _AcceptedCommand:
     result: asyncio.Future[PublicationResult | EvidenceResult | PlatformMutationResult]
 
 
+class PublicationObserver(Protocol):
+    def decide_publication(self, command: PhysicalPublicationCommand, commitment: str) -> None: ...
+    def publication_committed(self, command: PhysicalPublicationCommand) -> None: ...
+
+
 class EventAppender:
     """Broker-owned bounded single writer with close-before-drain semantics."""
 
@@ -704,6 +709,12 @@ class EventAppender:
         self._accepting = True
         self._worker = asyncio.create_task(self._run())
         self._close_task: asyncio.Task[None] | None = None
+        self._publication_observer: PublicationObserver | None = None
+
+    def bind_publication_observer(self, observer: PublicationObserver) -> None:
+        if self._publication_observer is not None:
+            raise ValueError("publication observer already bound")
+        self._publication_observer = observer
 
     async def __aenter__(self) -> EventAppender:
         return self
@@ -712,6 +723,14 @@ class EventAppender:
         await self.close()
 
     async def submit(self, command: PhysicalPublicationCommand) -> PublicationResult:
+        observer = self._publication_observer if command.decision_guard is None else None
+        if observer is not None:
+            original = command
+
+            def decide(commitment: str) -> None:
+                observer.decide_publication(original, commitment)
+
+            command = replace(command, decision_guard=decide)
         loop = asyncio.get_running_loop()
         result: asyncio.Future[PublicationResult | EvidenceResult | PlatformMutationResult] = (
             loop.create_future()
@@ -726,6 +745,8 @@ class EventAppender:
             self._available.release()
         value = await asyncio.shield(result)
         assert isinstance(value, PublicationResult)
+        if observer is not None and value.disposition in ("COMMITTED", "REPLAY"):
+            observer.publication_committed(command)
         return value
 
     async def submit_evidence(

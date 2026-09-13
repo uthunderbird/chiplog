@@ -92,12 +92,20 @@ PLANNING_PUBLICATION_READ_EDGES = (
     ),
 )
 
+R13_PLANNING_PUBLICATION_READ_EDGES = tuple(
+    ReadEdge("PLANNING_PUBLICATIONS_R13", edge.table, edge.columns)
+    for edge in PLANNING_PUBLICATION_READ_EDGES
+)
+
 
 def authority_storage_surface_bytes() -> bytes:
     return json.dumps(
         {
             "members": [asdict(item) for item in AUTHORITY_STORAGE_MEMBERS],
-            "read_edges": [asdict(item) for item in PLANNING_PUBLICATION_READ_EDGES],
+            "read_edges": [
+                asdict(item)
+                for item in (*PLANNING_PUBLICATION_READ_EDGES, *R13_PLANNING_PUBLICATION_READ_EDGES)
+            ],
             "version": 1,
         },
         sort_keys=True,

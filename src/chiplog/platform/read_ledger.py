@@ -61,7 +61,7 @@ class BrokerReadState(_StrictModel):
 
 
 class ReadOperation(_StrictModel):
-    variant: Literal["PLANNING_PUBLICATIONS"]
+    variant: Literal["PLANNING_PUBLICATIONS", "PLANNING_PUBLICATIONS_R13"]
     request_id: str
     read_attempt_id: str
     tenant_id: str

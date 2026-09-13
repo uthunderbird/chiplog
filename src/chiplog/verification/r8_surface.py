@@ -214,6 +214,14 @@ def verify_offline_import_boundary(root: Path) -> None:
                 )
             for module in modules:
                 top = module.split(".")[0]
+                if relative == "chiplog/adapters/driven/loop_prompts.py" and isinstance(
+                    node, ast.ImportFrom
+                ):
+                    names = {alias.name for alias in node.names}
+                    if (
+                        module == "promptstrings" and names <= {"PromptContext", "promptstring"}
+                    ) or (module == "importlib.metadata" and names == {"version"}):
+                        continue
                 if top == "agent_dashboard":
                     if (
                         module != "agent_dashboard"

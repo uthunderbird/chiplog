@@ -45,6 +45,12 @@ FIXTURES = (
         "design-docs/transcripts/unknown-calendar-outcome.md",
     ),
     FixtureRegistration("T04", "stale-proposal-after-head-change", "RESERVED", None),
+    FixtureRegistration(
+        "R13-LOCAL",
+        "local-planning-receipt",
+        "ACTIVE",
+        "design-docs/transcripts/local-planning-receipt.md",
+    ),
 )
 
 # No production surface is implemented in R0. This named empty generation prevents

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import Protocol
 
 from .r8_boundary import (
@@ -147,6 +148,28 @@ def freshness_bytes(binding: ProposalFreshnessBinding) -> bytes:
     values = binding.model_dump(exclude={"trace"})
     values["trace"] = base64.b64encode(trace_bytes(binding.trace)).decode("ascii")
     return json.dumps(values, sort_keys=True, separators=(",", ":")).encode()
+
+
+def decode_freshness(payload: bytes) -> ProposalFreshnessBinding:
+    values = json.loads(payload)
+    values["trace"] = decode_trace(base64.b64decode(values["trace"], validate=True))
+    result = ProposalFreshnessBinding.model_validate(values)
+    if freshness_bytes(result) != payload:
+        raise AuthorityTraceViolation("noncanonical immutable proposal binding")
+    return result
+
+
+def proposed_create_result(command: Mapping[str, object]) -> bytes:
+    return json.dumps(
+        {
+            "operation": "CREATE_INTENTION_LINE",
+            "purpose": command["purpose"],
+            "intention_line_id": command["intention_line_id"],
+            "revision_id": command["revision_id"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
 
 
 def validate_proposal_freshness(

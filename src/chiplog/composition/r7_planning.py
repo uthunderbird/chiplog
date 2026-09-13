@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
 from chiplog.adapters.driven.deployment_trust import (
     IndependentTenantDecisionJournal,
@@ -117,6 +117,15 @@ def _decode_owner_result(payload: bytes) -> R7PlanningResultDTO:
 class R7PlanningRuntime:
     """The broker is the only object holding trust, SQLite, writer, and token authority."""
 
+    _record_contracts: ClassVar[dict[str, str]] = {"planning": _SCHEMA}
+    _derivative_contracts: ClassVar[tuple[str, ...]] = ()
+
+    def _bind_appender(self) -> None:
+        pass
+
+    _planning_read_variant: ClassVar[
+        Literal["PLANNING_PUBLICATIONS", "PLANNING_PUBLICATIONS_R13"]
+    ] = "PLANNING_PUBLICATIONS"
     _planning_operation = _OPERATION
     _planning_schema = "chiplog.planning.public.create.v1"
 
@@ -327,11 +336,12 @@ class R7PlanningRuntime:
         after_idempotency_key = ""
         publication_rows: list[list[object]] = []
         record_bytes: dict[str, bytes] = {}
+        verified_frontier: int | None = None
         while True:
             attempt = secrets.token_hex(16)
             released = self._reader.execute(
                 ReadOperation(
-                    variant="PLANNING_PUBLICATIONS",
+                    variant=self._planning_read_variant,
                     request_id=f"read:{attempt}",
                     read_attempt_id=attempt,
                     tenant_id=self._tenant_id,
@@ -351,6 +361,12 @@ class R7PlanningRuntime:
             if released.disposition != "RELEASED" or released.canonical_result_bytes is None:
                 raise RuntimeError("authority read was not released")
             raw = json.loads(released.canonical_result_bytes)
+            frontier = raw["tenant_frontier"]
+            if type(frontier) is not int or frontier < 0:
+                raise ValueError("missing verified tenant frontier")
+            if verified_frontier is not None and verified_frontier != frontier:
+                raise ValueError("authority frontier changed between bounded read pages")
+            verified_frontier = frontier
             page = cast(list[list[object]], raw["publications"])
             publication_rows.extend(page)
             record_bytes.update(
@@ -364,6 +380,7 @@ class R7PlanningRuntime:
             after_commit_sequence = cast(int, page[-1][4])
             after_operation_kind = str(page[-1][1])
             after_idempotency_key = str(page[-1][2])
+        self._verified_tenant_frontier = verified_frontier
         tenant = TenantId(self._tenant_id)
         return tuple(
             _publication(
@@ -390,7 +407,7 @@ class R7PlanningRuntime:
                     }
                     for item in publications
                 ],
-                "head": 0 if not publications else publications[-1].commit_sequence,
+                "head": self._verified_tenant_frontier,
                 "record_ids": [
                     record.record_id.value for item in publications for record in item.records
                 ],
@@ -734,6 +751,7 @@ async def _open_runtime(
     operator_secret: bytes,
     runtime_type: type[R7PlanningRuntime],
     manifest: RuntimeAssemblyManifest,
+    extra_leaves: Mapping[str, object] | None = None,
 ) -> AsyncIterator[R7PlanningRuntime]:
     journal = IndependentTenantDecisionJournal(
         database.with_suffix(database.suffix + ".trust-journal")
@@ -746,9 +764,14 @@ async def _open_runtime(
         database.with_suffix(database.suffix + ".broker.sqlite3"),
         manifest,
         R4RuntimeAdmission(trust, journal),
-        {"clock": ProductionClock(), "planning_store": planning_store},
+        {"clock": ProductionClock(), "planning_store": planning_store, **(extra_leaves or {})},
     )
-    with SQLiteMaterializer(database, record_contracts={"planning": _SCHEMA}) as store:
+    with SQLiteMaterializer(
+        database,
+        record_contracts=runtime_type._record_contracts,
+        derivative_contracts=runtime_type._derivative_contracts,
+        managed_derivative_sinks=runtime_type._derivative_contracts,
+    ) as store:
         async with EventAppender(store, capacity=4) as appender:
             read_ledger = BrokerReadLedger(database.with_suffix(database.suffix + ".reads.sqlite3"))
             commitment_journal = AuthorityCommitmentJournal(database, operator_secret)
@@ -762,6 +785,7 @@ async def _open_runtime(
                 appender,
                 supervisor,
             )
+            runtime._bind_appender()
             try:
                 trust_state = trust.verify()
                 if trust_state is not None and trust_state.phase == "ACTIVE":

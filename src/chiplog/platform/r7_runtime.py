@@ -111,7 +111,9 @@ class _OwnerService:
             "factory_ids": ("chiplog.platform.r7_runtime:_OwnerProvider.service",),
             "loaded_policy_modules": tuple(
                 sorted(
-                    name for name in sys.modules if name.endswith(("._r7_process", "._r8_process"))
+                    name
+                    for name in sys.modules
+                    if name.endswith(("._r7_process", "._r8_process", "._r13_process"))
                 )
             ),
             "routes": routes,
@@ -155,6 +157,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
     ):
         return "chiplog.capabilities.planning._r8_process"
     return {
+        "agent_loop": "chiplog.capabilities.agent_loop._r13_process",
         "deployment_trust": "chiplog.capabilities.deployment_trust._r7_process",
         "planning": "chiplog.capabilities.planning._r7_process",
         "projections": "chiplog.capabilities.projections._r7_process",
@@ -460,7 +463,9 @@ class AuthorityBrokerRuntime:
                 "socket_handle",
             ),
             application_loop_id=(
-                "chiplog.r8.application-loop.v1"
+                "chiplog.agent-loop.v1"
+                if "agent_loop" in self._identities
+                else "chiplog.r8.application-loop.v1"
                 if self._identities["planning"].capability_ids
                 == ("planning.r8_create_intention_line",)
                 else "chiplog.r7.application-loop.v1"

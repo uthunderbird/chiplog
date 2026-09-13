@@ -177,9 +177,14 @@ def _validate_fixture_registry(
             "design-docs/transcripts/unknown-calendar-outcome.md",
         ),
         "T04": ("stale-proposal-after-head-change", "RESERVED", None),
+        "R13-LOCAL": (
+            "local-planning-receipt",
+            "ACTIVE",
+            "design-docs/transcripts/local-planning-receipt.md",
+        ),
     }
     if len(fixtures) != len(expected):
-        raise ValueError("fixture registry must contain exactly T01-T04")
+        raise ValueError("fixture registry must contain exactly T01-T04 and R13-LOCAL")
     observed: dict[str, tuple[str, str, str | None]] = {}
     for item in fixtures:
         if item.fixture_id in observed:

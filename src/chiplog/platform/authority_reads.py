@@ -23,6 +23,7 @@ from chiplog.architecture.r7_storage_surface import (
     AUTHORITY_STORAGE_MEMBERS,
     AUTHORITY_STORAGE_SURFACE_DIGEST,
     PLANNING_PUBLICATION_READ_EDGES,
+    R13_PLANNING_PUBLICATION_READ_EDGES,
 )
 from chiplog.platform.read_ledger import BrokerReadLedger, BrokerReadState, ReadOperation
 from chiplog.verification.r7_read_surface import verify_surface_registry_equality
@@ -97,7 +98,7 @@ class VerifiedAuthorityReadSnapshot(_StrictModel):
 
 class PreparedReadEdgeAttestation(_StrictModel):
     read_attempt_id: str
-    query_variant: Literal["PLANNING_PUBLICATIONS"]
+    query_variant: Literal["PLANNING_PUBLICATIONS", "PLANNING_PUBLICATIONS_R13"]
     prepared_query_fingerprint: str
     actual_edges: tuple[tuple[str, tuple[str, ...]], ...]
     authority_surface_digest: str
@@ -294,17 +295,24 @@ class BrokerAuthorityReader:
         operation: ReadOperation,
         snapshot: VerifiedAuthorityReadSnapshot,
     ) -> tuple[bytes, PreparedReadEdgeAttestation]:
+        scope_sql = (
+            "AND operation_kind = 'planning.create_intention_line' "
+            if operation.variant == "PLANNING_PUBLICATIONS_R13"
+            else ""
+        )
         publication_sql = (
             "SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, "
             "commit_sequence, record_ids FROM publications WHERE tenant_id = ? "
-            "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
+            + scope_sql
+            + "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
             "ORDER BY commit_sequence, operation_kind, idempotency_key LIMIT ?"
         )
         record_sql = (
             "SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence "
             "FROM records WHERE tenant_id = ? AND commit_sequence IN ("
             "SELECT commit_sequence FROM publications WHERE tenant_id = ? "
-            "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
+            + scope_sql
+            + "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
             "ORDER BY commit_sequence, operation_kind, idempotency_key LIMIT ?"
             ") ORDER BY record_id LIMIT ?"
         )
@@ -348,9 +356,12 @@ class BrokerAuthorityReader:
                 ),
             ),
         )
-        manifested_edges = tuple(
-            (item.table, item.columns) for item in PLANNING_PUBLICATION_READ_EDGES
+        declared = (
+            R13_PLANNING_PUBLICATION_READ_EDGES
+            if operation.variant == "PLANNING_PUBLICATIONS_R13"
+            else PLANNING_PUBLICATION_READ_EDGES
         )
+        manifested_edges = tuple((item.table, item.columns) for item in declared)
         if actual_edges != manifested_edges:
             raise AuthorityReadFailure("prepared query edge differs from authority read graph")
         duplicate_sequence = connection.execute(
@@ -388,7 +399,7 @@ class BrokerAuthorityReader:
         ).hexdigest()
         attestation = PreparedReadEdgeAttestation(
             read_attempt_id=operation.read_attempt_id,
-            query_variant="PLANNING_PUBLICATIONS",
+            query_variant=operation.variant,
             prepared_query_fingerprint=prepared_fingerprint,
             actual_edges=actual_edges,
             authority_surface_digest=AUTHORITY_STORAGE_SURFACE_DIGEST,
@@ -396,6 +407,7 @@ class BrokerAuthorityReader:
             snapshot_id=snapshot.snapshot_id,
         )
         result = {
+            "tenant_frontier": snapshot.sqlite_snapshot_frontier,
             "publications": [[_canonical_scalar(value) for value in row] for row in publications],
             "records": [[_canonical_scalar(value) for value in row] for row in records],
         }

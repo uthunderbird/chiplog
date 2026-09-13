@@ -7,6 +7,8 @@ import pytest
 from chiplog.architecture.r7_runtime import (
     R7_EVALUATION_MANIFEST,
     R7_PRODUCTION_MANIFEST,
+    R13_EVALUATION_MANIFEST,
+    R13_PRODUCTION_MANIFEST,
     LeafBinding,
     RoutedCallDecl,
     RuntimeManifestViolation,
@@ -14,6 +16,28 @@ from chiplog.architecture.r7_runtime import (
     verify_runtime_manifest,
 )
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+
+
+def test_r13_production_and_evaluation_realize_the_same_loop_owner_partition() -> None:
+    verify_production_evaluation_equivalence(R13_PRODUCTION_MANIFEST, R13_EVALUATION_MANIFEST)
+    graphs = []
+    for manifest in (R13_PRODUCTION_MANIFEST, R13_EVALUATION_MANIFEST):
+        with AuthorityBrokerRuntime(
+            "hermetic-tenant", 1, "r13-parity", manifest, b"offline"
+        ) as runtime:
+            graphs.append(runtime.graph_generation())
+    assert graphs[0].application_loop_id == graphs[1].application_loop_id == "chiplog.agent-loop.v1"
+    assert graphs[0].routes == graphs[1].routes
+    assert graphs[0].broker_capabilities == graphs[1].broker_capabilities
+    assert [(owner.owner_id, owner.capability_ids) for owner in graphs[0].owners] == [
+        (owner.owner_id, owner.capability_ids) for owner in graphs[1].owners
+    ]
+    assert "agent_loop" in {owner.owner_id for owner in graphs[0].owners}
+    with pytest.raises(RuntimeManifestViolation):
+        verify_production_evaluation_equivalence(
+            R13_PRODUCTION_MANIFEST,
+            replace(R13_EVALUATION_MANIFEST, application_loop_id="evaluation-only-loop"),
+        )
 
 
 def test_runtime_manifest_has_one_authority_empty_process_per_owner() -> None:
