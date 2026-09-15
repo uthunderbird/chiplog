@@ -249,27 +249,9 @@ def _run_test_slice(
     )
 
 
-def _check_stage0(root: Path) -> list[CheckResult]:
-    _validate_stage0_registry()
-    substrate = _check_fast(root)
-    verify_r8_surfaces(root, R8_SURFACES)
-    verify_offline_import_boundary(root)
-    compatibility_digest = verify_r7_compatibility_ledger(evidence_root=root)
-    current_surfaces = CheckResult(
-        "V10.current-operation-surfaces",
-        "PASS",
-        "R8 executable surfaces match the inventory and contain no external adapter",
-        {
-            "generation": "R8_OPERATION_SURFACES_V1",
-            "surfaces": [
-                {**asdict(surface), "downstream": list(surface.downstream)}
-                for surface in R8_SURFACES
-            ],
-            "exposure": "HOLD",
-            "compatibility_ledger_digest": compatibility_digest,
-        },
-    )
-    slices = {
+def stage0_test_slices() -> dict[str, tuple[str, ...]]:
+    """Fresh selectors shared by stage0 execution and its outer test coverage."""
+    return {
         "R1": ("tests/domain_primitives/test_canonicalization.py",),
         "R2": (
             "tests/architecture/test_inert_shared.py",
@@ -342,6 +324,29 @@ def _check_stage0(root: Path) -> list[CheckResult]:
             "tests/verification/test_r8_surface.py",
         ),
     }
+
+
+def _check_stage0(root: Path) -> list[CheckResult]:
+    _validate_stage0_registry()
+    substrate = _check_fast(root)
+    verify_r8_surfaces(root, R8_SURFACES)
+    verify_offline_import_boundary(root)
+    compatibility_digest = verify_r7_compatibility_ledger(evidence_root=root)
+    current_surfaces = CheckResult(
+        "V10.current-operation-surfaces",
+        "PASS",
+        "R8 executable surfaces match the inventory and contain no external adapter",
+        {
+            "generation": "R8_OPERATION_SURFACES_V1",
+            "surfaces": [
+                {**asdict(surface), "downstream": list(surface.downstream)}
+                for surface in R8_SURFACES
+            ],
+            "exposure": "HOLD",
+            "compatibility_ledger_digest": compatibility_digest,
+        },
+    )
+    slices = stage0_test_slices()
     checks = [
         _run_test_slice(root, increment, slices[increment])
         for increment in STAGE0_INCREMENT_REGISTRY

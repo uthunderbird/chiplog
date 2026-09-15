@@ -12,12 +12,11 @@ from chiplog.composition.r6 import open_r6_runtime
 from chiplog.composition.r7_planning import open_r7_runtime
 from chiplog.domain_primitives import RecordId, TenantId
 from chiplog.platform.authority_reads import (
-    AuthorityCommitmentJournal,
     AuthorityReadResult,
-    capture_authority_storage_state,
 )
 from chiplog.platform.r7_trust import TrustOwnerResult
 from chiplog.platform.read_ledger import ReadOperation
+from tests.support.r7_boundary_seed import prepare_boundary_database
 
 
 def _command(tenant: TenantId, *, purpose: str = "Prepare release") -> CreateIntentionLine:
@@ -301,44 +300,7 @@ def test_default_pages_cross_1000_and_1001_predecessor_boundaries(tmp_path: Path
     database = tmp_path / "chiplog.sqlite3"
     tenant = TenantId("tenant-1")
     secret = b"boundary-secret"
-
-    async def seed_r6() -> None:
-        async with open_r6_runtime(database, operator_secret=secret) as runtime:
-            await runtime.bootstrap(
-                tenant_id=tenant.value,
-                database_instance_id="database-1",
-                principal_id="principal-1",
-                credential_id="credential-1",
-                session_id="session-1",
-                token="bootstrap-token-1",
-            )
-            for index in range(1, 1002):
-                outcome = await runtime.create(
-                    tenant_id=tenant.value,
-                    principal_id="principal-1",
-                    credential_id="credential-1",
-                    session_id="session-1",
-                    command=CreateIntentionLine(
-                        RecordId(tenant, f"command-{index:04d}"),
-                        RecordId(tenant, f"intention-{index:04d}"),
-                        RecordId(tenant, f"revision-{index:04d}"),
-                        f"purpose-{index:04d}",
-                        f"act-{index:04d}",
-                    ),
-                )
-                assert outcome.disposition == "COMMITTED"
-
-    asyncio.run(seed_r6())
-    for suffix in (
-        ".trust-journal",
-        ".trust-journal.head",
-        ".trust-journal.key",
-        ".trust-journal.lock",
-    ):
-        database.with_suffix(database.suffix + suffix).unlink(missing_ok=True)
-    database.with_suffix(database.suffix + ".trust.sqlite3").unlink(missing_ok=True)
-    commitment, _ = capture_authority_storage_state(database)
-    AuthorityCommitmentJournal(database, secret).commit(tenant.value, commitment)
+    prepare_boundary_database(database)
 
     async def cross_boundary_r7() -> None:
         async with open_r7_runtime(

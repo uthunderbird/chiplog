@@ -13,6 +13,7 @@ from chiplog.verification import CLOSED_PROFILES, run_profile
 from chiplog.verification.artifacts import write_artifact
 from chiplog.verification.models import FixtureRegistration
 from chiplog.verification.registries import FIXTURES
+from tests.support.stage0_delegation import confirm_reports, prepare_reports
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -49,7 +50,11 @@ def test_unimplemented_profile_is_nonpassing_hold(profile: str) -> None:
     assert eligibility["adoption"] == "HOLD_ADOPTION"
 
 
-def test_stage0_evidences_r0_through_r8_and_holds_deployment_eligibility() -> None:
+def test_stage0_evidences_r0_through_r8_and_holds_deployment_eligibility(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    reports = tmp_path / "stage0-children"
+    prepare_reports(request.config, monkeypatch, reports)
     result, artifact = run_profile(ROOT, "stage0")
 
     assert result["status"] == "PASS"
@@ -71,6 +76,7 @@ def test_stage0_evidences_r0_through_r8_and_holds_deployment_eligibility() -> No
         "adoption": "HOLD_ADOPTION",
     }
     assert json.loads(artifact.read_text()) == result
+    confirm_reports(request.config, result, reports)
 
 
 @pytest.mark.parametrize(
