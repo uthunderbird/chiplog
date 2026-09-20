@@ -25,6 +25,8 @@ async def run_scenario(source: Path, database: Path, artifact: Path) -> dict[str
     scenario = cast(dict[str, object], compiled.compiled["scenario"])
     arrange = cast(dict[str, str], scenario["arrange"])
     fixtures = cast(list[dict[str, str]], scenario["fixtures"])
+    if compiled.compiled["schema_version"] == 2:
+        _validate_local_steps(compiled.compiled)
     if scenario["allowed_outcomes"] != [
         "local committed receipt with provider HOLD"
     ] or compiled.compiled["forbid"] != [
@@ -37,7 +39,7 @@ async def run_scenario(source: Path, database: Path, artifact: Path) -> dict[str
         raise LoopRejected("unregistered verdict policy; scenario HOLD")
     if (
         compiled.scenario_id != "local-planning-receipt"
-        or scenario["version"] != 1
+        or scenario["version"] != (2 if compiled.compiled["schema_version"] == 2 else 1)
         or arrange
         != {
             "principal": "hermetic-principal",
@@ -80,6 +82,18 @@ async def run_scenario(source: Path, database: Path, artifact: Path) -> dict[str
         observed.hit()
         trace.append("proposal before authority")
         display = await loop.display(proposals[0])
+        if compiled.compiled["schema_version"] == 2:
+            displayed = loop.record(created.run_id)
+            request_state = {
+                "planning_changed": StateObservation(before, displayed.planning_receipts).changed,
+                "external_effects": sum(
+                    delivery.state != "PENDING_LOCAL" for delivery in displayed.deliveries
+                ),
+                "run": displayed.state,
+            }
+            expectations = cast(list[dict[str, object]], compiled.compiled["expect"])
+            if _eq_state(expectations[0]) != request_state:
+                raise LoopRejected("observed request state does not satisfy authored contract")
         receipt = await loop.adopt(
             "hermetic-ingress", display.display_id, display.display_digest, display.adoption_act_id
         )
@@ -97,9 +111,11 @@ async def run_scenario(source: Path, database: Path, artifact: Path) -> dict[str
         final = loop.record(created.run_id)
         observed.require_reached()
         expectations = cast(list[dict[str, object]], compiled.compiled["expect"])
-        if len(expectations) != 1:
+        if len(expectations) != (2 if compiled.compiled["schema_version"] == 2 else 1):
             raise LoopRejected("unsupported expectation policy")
-        expected = expectations[0]
+        expected = expectations[-1]
+        if compiled.compiled["schema_version"] == 2:
+            expected = {**expected, "state": _eq_state(expected)}
         response = cast(dict[str, str], expected["response"])
         dispatched = tuple(
             delivery for delivery in final.deliveries if delivery.state != "PENDING_LOCAL"
@@ -147,6 +163,73 @@ async def run_scenario(source: Path, database: Path, artifact: Path) -> dict[str
     if sha256_bytes(await asyncio.to_thread(artifact.read_bytes)) != sha256_bytes(payload):
         raise LoopRejected("result artifact readback mismatch")
     return result
+
+
+def _validate_local_steps(compiled: dict[str, object]) -> None:
+    scenario = cast(dict[str, object], compiled["scenario"])
+    if scenario.get("status") != "executable" or compiled["steps"] != [
+        {
+            "id": "request",
+            "input": {"kind": "message", "message_ref": "request"},
+            "end": "proposal.displayed",
+        },
+        {
+            "id": "accept",
+            "input": {
+                "kind": "authenticated_adoption",
+                "message_ref": "accept",
+                "peer": "hermetic-ingress",
+            },
+            "end": "run.succeeded",
+        },
+    ]:
+        raise LoopRejected("unsupported ordered step contract; scenario HOLD")
+    messages = cast(list[dict[str, str]], compiled["messages"])
+    inputs = {message["id"]: message for message in messages}
+    for identity, content in (
+        ("request", "Help me plan weekly swimming"),
+        ("accept", "Confirm this entry."),
+    ):
+        if inputs.get(identity) != {
+            "id": identity,
+            "role": "Пользователь",
+            "mode": "input",
+            "text": content,
+        }:
+            raise LoopRejected("unsupported canonical input; scenario HOLD")
+    expectations = cast(list[dict[str, object]], compiled["expect"])
+    if (
+        len(expectations) != 2
+        or set(expectations[0]) != {"step", "state"}
+        or expectations[0]["step"] != "request"
+        or set(expectations[1]) != {"step", "response", "trace", "state"}
+        or expectations[1]["step"] != "accept"
+    ):
+        raise LoopRejected("unsupported step expectation; scenario HOLD")
+    for expectation in expectations:
+        if set(_eq_state(expectation)) != {"planning_changed", "external_effects", "run"}:
+            raise LoopRejected("unsupported step state fields; scenario HOLD")
+    response = expectations[1]["response"]
+    if not isinstance(response, dict) or set(response) != {"exact"}:
+        raise LoopRejected("unsupported response expectation; scenario HOLD")
+    if list(inputs) != ["request", "accept", "receipt"] or inputs["receipt"] != {
+        "id": "receipt",
+        "role": "Chiplog",
+        "mode": "exact",
+        "text": response["exact"],
+    }:
+        raise LoopRejected("unsupported canonical message binding; scenario HOLD")
+
+
+def _eq_state(expectation: dict[str, object]) -> dict[str, object]:
+    predicates = cast(dict[str, dict[str, object]], expectation["state"])
+    if any(set(predicate) != {"eq"} for predicate in predicates.values()):
+        raise LoopRejected("unsupported state operator; scenario HOLD")
+    state = {key: predicate["eq"] for key, predicate in predicates.items()}
+    expected_types = {"planning_changed": bool, "external_effects": int, "run": str}
+    if any(key in state and type(state[key]) is not kind for key, kind in expected_types.items()):
+        raise LoopRejected("unsupported state predicate type; scenario HOLD")
+    return state
 
 
 def main() -> None:

@@ -214,6 +214,9 @@ def verify_offline_import_boundary(root: Path) -> None:
                 )
             for module in modules:
                 top = module.split(".")[0]
+                if module == "yaml" and relative == "chiplog/verification/transcript_yaml.py":
+                    # SafeLoader-only authored contract parsing; no adapter/transport surface.
+                    continue
                 if relative == "chiplog/adapters/driven/loop_prompts.py" and isinstance(
                     node, ast.ImportFrom
                 ):
