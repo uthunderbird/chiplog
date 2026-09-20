@@ -217,6 +217,8 @@ class AdmissionBound(IngressDTO):
     complete_ordered_predecessors: tuple[ReadyGeneration, ...]
     target: ReadyGeneration
     absolute_selection_deadline_slot: UInt64
+    # A rebase retains immutable origin/deadline but records its exact remaining cut.
+    evaluation_scheduler_slot: UInt64 | None = None
 
 
 class BlockedRebase(IngressDTO):
@@ -242,6 +244,13 @@ class DrainManifest(IngressDTO):
     bound_snapshots: tuple[AdmissionBound, ...]
     deficit_heads: tuple[Head, ...]
     producer_quiescence: Head | None
+    complete_inventory_fingerprint: Digest
+    quarantine_heads: tuple[Head, ...]
+    parser_remainder_fences: tuple[tuple[Head, Head], ...]
+    settled_token_heads: tuple[tuple[Head, Head], ...]
+    physical_occupancy: tuple[Head, ...]
+    ready_token_ids: tuple[str | None, ...]
+    blocked_token_ids: tuple[str | None, ...]
 
 
 class PollMember(IngressDTO):

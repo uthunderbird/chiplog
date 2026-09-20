@@ -153,6 +153,25 @@ class _OwnerProvider(Provider):
 
 
 def _owner_module(identity: OwnerProcessIdentity) -> str:
+    if identity.owner_id == "deployment_trust":
+        legacy = (
+            "deployment_trust.authenticate",
+            "deployment_trust.bootstrap",
+            "deployment_trust.revalidate",
+            "deployment_trust.runtime_admission",
+        )
+        if identity.capability_ids == legacy:
+            return "chiplog.capabilities.deployment_trust._r7_process"
+        if identity.capability_ids == tuple(
+            sorted(
+                (
+                    *legacy,
+                    "deployment_trust.normalize_telegram_candidate",
+                )
+            )
+        ):
+            return "chiplog.capabilities.deployment_trust._r17_process"
+        raise OwnerProcessFailure("unknown deployment-trust capability partition")
     if identity.owner_id == "agent_loop":
         if identity.capability_ids == ("agent_loop.validate_transition",):
             return "chiplog.capabilities.agent_loop._r13_process"
@@ -184,6 +203,12 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
 
 def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
     module = _owner_module(identity)
+    if module == "chiplog.capabilities.deployment_trust._r17_process":
+        return (
+            "chiplog.capabilities.deployment_trust._ingress_process",
+            "chiplog.capabilities.deployment_trust._r17_process",
+            "chiplog.capabilities.deployment_trust._r7_process",
+        )
     if module == "chiplog.capabilities.agent_loop._r14_process":
         return (
             "chiplog.capabilities.agent_loop._delivery_process",

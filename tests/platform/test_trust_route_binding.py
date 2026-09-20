@@ -4,7 +4,9 @@ import base64
 import json
 import time
 
-from chiplog.architecture.r7_runtime import R7_PRODUCTION_MANIFEST
+import pytest
+
+from chiplog.architecture.r7_runtime import R7_PRODUCTION_MANIFEST, R14_PRODUCTION_MANIFEST
 from chiplog.platform.broker import (
     BrokerSession,
     CallBudget,
@@ -19,7 +21,8 @@ def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def test_all_four_modes_follow_only_their_registered_isolated_route() -> None:
+@pytest.mark.parametrize("current", [False, True])
+def test_all_four_modes_follow_only_their_registered_isolated_route(current: bool) -> None:
     pairs = (
         ("deployment_trust.authenticate", "AUTHENTICATE"),
         ("deployment_trust.bootstrap", "BOOTSTRAP"),
@@ -27,7 +30,11 @@ def test_all_four_modes_follow_only_their_registered_isolated_route() -> None:
         ("deployment_trust.runtime_admission", "RUNTIME_ADMISSION"),
     )
     with AuthorityBrokerRuntime(
-        "tenant", 1, "generation", R7_PRODUCTION_MANIFEST, b"secret"
+        "tenant",
+        1,
+        "generation",
+        R14_PRODUCTION_MANIFEST if current else R7_PRODUCTION_MANIFEST,
+        b"secret",
     ) as runtime:
 
         def invoke(
