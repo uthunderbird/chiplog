@@ -214,6 +214,15 @@ def verify_offline_import_boundary(root: Path) -> None:
                 )
             for module in modules:
                 top = module.split(".")[0]
+                if (
+                    relative == "chiplog/composition/scheduler_source_registry.py"
+                    and isinstance(node, ast.ImportFrom)
+                    and module == "importlib.metadata"
+                    and {alias.name for alias in node.names} == {"version"}
+                ):
+                    # Read the installed serializer version; dynamic loading and
+                    # transport imports retain their ordinary rejection below.
+                    continue
                 if relative == "chiplog/adapters/driven/loop_prompts.py" and isinstance(
                     node, ast.ImportFrom
                 ):

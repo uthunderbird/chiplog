@@ -129,3 +129,38 @@ def test_offline_gate_rejects_unregistered_dashboard_and_transport_imports(
     # Exercise this gate directly: the separate source-hash gate must not mask it.
     with pytest.raises(R8SurfaceViolation):
         verify_offline_import_boundary(tmp_path)
+
+
+def test_offline_gate_accepts_only_registered_scheduler_version_query(tmp_path: Path) -> None:
+    target = tmp_path / "src/chiplog/composition/scheduler_source_registry.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("from importlib.metadata import version\n")
+    verify_offline_import_boundary(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "relative,statement",
+    [
+        ("new_adapter.py", "from importlib.metadata import version"),
+        ("composition/scheduler_source_registry.py", "import importlib"),
+        ("composition/scheduler_source_registry.py", "import importlib.metadata"),
+        ("composition/scheduler_source_registry.py", "from importlib import import_module"),
+        ("composition/scheduler_source_registry.py", "from importlib.metadata import *"),
+        (
+            "composition/scheduler_source_registry.py",
+            "from importlib.metadata import version, entry_points",
+        ),
+        ("composition/scheduler_source_registry.py", "import socket"),
+        ("composition/scheduler_source_registry.py", "import ssl"),
+        ("composition/scheduler_source_registry.py", "import ctypes"),
+        ("composition/scheduler_source_registry.py", "import openai"),
+    ],
+)
+def test_scheduler_profile_does_not_admit_dynamic_or_transport_imports(
+    tmp_path: Path, relative: str, statement: str
+) -> None:
+    target = tmp_path / "src/chiplog" / relative
+    target.parent.mkdir(parents=True)
+    target.write_text(statement + "\n")
+    with pytest.raises(R8SurfaceViolation):
+        verify_offline_import_boundary(tmp_path)
