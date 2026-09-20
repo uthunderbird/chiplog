@@ -88,6 +88,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="chiplog")
     parser.add_argument("--database", default="chiplog.sqlite3")
     sub = parser.add_subparsers(dest="action", required=True)
+    from chiplog.codex_cli import add_commands, run_command
+
+    add_commands(sub)
     bootstrap = sub.add_parser("bootstrap")
     _identity_arguments(bootstrap)
     bootstrap.add_argument("--database-instance", required=True)
@@ -102,7 +105,9 @@ def main() -> None:
     show = sub.add_parser("show")
     _identity_arguments(show)
     args = parser.parse_args()
-    if args.action == "bootstrap":
+    if args.action in {"auth", "chat"}:
+        run_command(args)
+    elif args.action == "bootstrap":
         asyncio.run(_bootstrap(args))
     elif args.action == "create":
         asyncio.run(_create(args))

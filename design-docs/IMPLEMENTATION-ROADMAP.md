@@ -463,6 +463,12 @@ Specialize the R3/R4 authenticated durable inbox for Telegram witness/replay ide
 4. **R17.4 — channel parity:** CLI/Telegram canonical-loop integration and the complete
    ingress/delivery counterhistory suite. R17 remains broader than a Telegram adapter.
 
+   **Early live CLI slice:** [Codex OAuth dialogue](CODEX-CLI-AGENT.md) connects the
+   existing AgentLoop to a direct model transport, with separate persistent OAuth
+   storage and default `gpt-5.6-terra` / `low`. This conversational/proposal slice
+   does not complete R17.4: Planning adoption, external delivery and R14 recovery
+   are not mounted; unknown model outcomes are retained without automatic replay.
+
 **DoD:** V4/V6/V7 close `EvidenceIngressSurfaceManifest` over Telegram push/poll, CLI, provider
 callback/poll, reconciliation and tool-result paths and rerun the shared commit/ack contract against
 every row. Before the earliest irreversible handoff each path has one durable receipt token; destructive

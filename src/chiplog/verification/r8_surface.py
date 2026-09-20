@@ -208,6 +208,13 @@ def verify_offline_import_boundary(root: Path) -> None:
                 modules = tuple(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
                 modules = (node.module,)
+            # Registered opt-in auth/model leaves, not part of the hermetic assembly.
+            if relative == "chiplog/adapters/driven/codex_auth.py" and all(
+                module in {"oauth_cli_kit", "oauth_cli_kit.models"} for module in modules
+            ):
+                continue
+            if relative == "chiplog/adapters/driven/codex_model.py" and modules == ("httpx",):
+                continue
             if any(module.split(".")[0] in forbidden for module in modules):
                 raise R8SurfaceViolation(
                     "offline graph acquired an external provider/channel import"

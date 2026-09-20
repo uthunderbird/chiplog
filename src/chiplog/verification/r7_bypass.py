@@ -10,6 +10,53 @@ class R7BypassViolation(ValueError):
     pass
 
 
+# R13 is now reachable from the CLI. Register its existing broker/storage facade
+# symbols exactly; this does not authorize arbitrary raw imports in CLI adapters.
+_LOOP_RAW_IMPORTS = {
+    ("chiplog.composition.r13_runtime", "chiplog.platform._sqlite"): {
+        "PhysicalPublicationCommand",
+        "PhysicalRecord",
+    },
+    ("chiplog.composition.r13_workspace", "chiplog.adapters.driven.planning_sqlite"): {
+        "SQLitePlanningRepository"
+    },
+    ("chiplog.composition.r12", "chiplog.adapters.driven.planning_sqlite"): {
+        "SQLitePlanningRepository"
+    },
+    ("chiplog.composition.r9", "chiplog.platform._sqlite"): {"EventAppender", "SQLiteMaterializer"},
+    ("chiplog.composition.r10", "chiplog.platform._sqlite"): {
+        "EventAppender",
+        "FenceAdvanceCommand",
+        "SQLiteMaterializer",
+    },
+    ("chiplog.composition.r12", "chiplog.platform._sqlite"): {
+        "EventAppender",
+        "FenceAdvanceCommand",
+        "PhysicalPublicationCommand",
+        "PhysicalRecord",
+        "SQLiteMaterializer",
+    },
+    ("chiplog.adapters.driven.r9_fence", "chiplog.platform._sqlite"): {
+        "DerivativeRegistration",
+        "DerivativeRegistrationCommand",
+        "EventAppender",
+        "PhysicalPublicationCommand",
+        "PhysicalRecord",
+        "SQLiteMaterializer",
+    },
+    ("chiplog.adapters.driven.journal_sqlite", "chiplog.platform._sqlite"): {
+        "EventAppender",
+        "PhysicalPublicationCommand",
+        "PhysicalRecord",
+    },
+    ("chiplog.adapters.driven.loop_sqlite", "chiplog.platform._sqlite"): {
+        "EventAppender",
+        "PhysicalPublicationCommand",
+        "PhysicalRecord",
+    },
+}
+
+
 def _module_path(source_root: Path, module: str) -> Path | None:
     relative = Path(*module.split("."))
     file_path = source_root / relative.with_suffix(".py")
@@ -130,9 +177,11 @@ def verify_canonical_r7_entrypoint(path: Path) -> None:
                     "chiplog.adapters.driven.planning_sqlite",
                     "chiplog.platform._sqlite",
                 } and importer not in {"chiplog.composition.r7_planning", "chiplog.composition.r8"}:
-                    raise R7BypassViolation(
-                        "raw planning authority bypasses the R7 broker boundary"
-                    )
+                    allowed = _LOOP_RAW_IMPORTS.get((importer, module), set())
+                    if not imported_names or not imported_names <= allowed:
+                        raise R7BypassViolation(
+                            "raw planning authority bypasses the R7 broker boundary"
+                        )
                 target = _module_path(source_root, module)
                 if target is not None and module not in {
                     "chiplog.adapters.driven.planning_sqlite",

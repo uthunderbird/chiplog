@@ -8,6 +8,36 @@
 - [Архив стримов на YouTube](https://www.youtube.com/@udthunderbird)
 ## Локальный запуск
 
+Диалог через Codex OAuth (без установленного Codex CLI):
+
+```sh
+uv run chiplog auth login
+uv run chiplog auth status
+uv run chiplog chat
+# Один запрос:
+uv run chiplog chat --message 'Помоги продумать план на неделю'
+uv run chiplog auth logout
+```
+
+Вход открывает браузер; OAuth-сессия сохраняется в `~/.chiplog/codex-oauth.json`
+с правами `0600`. Каталог задаётся через `CHIPLOG_HOME`. Личная сессия Codex
+не импортируется. Refresh выполняется перед запросом при истечении токена.
+По умолчанию используется `gpt-5.6-terra`, effort `low`; их можно изменить
+через `chat --model ... --effort ...`. Доступность модели зависит от аккаунта;
+автоматической подмены модели нет.
+
+`chat` запускает существующий цикл Chiplog с прямым Codex Responses адаптером.
+Контекст текущего диалога отправляется в OpenAI. `/exit` завершает сеанс.
+История внутри сеанса включается в следующие сообщения; новая команда `chat`
+начинает новый диалог. Run/Turn и принятые ответы сохраняются в отдельной SQLite
+в каталоге Chiplog. После обрыва запроса попытка не повторяется автоматически.
+Этот вход поддерживает разговор и предложения; применение планов, Calendar и
+Telegram через него пока не подключены. OAuth не разрешает старые операции R8.
+
+Транспорт использует backend Codex, по примеру локального проекта `operator`
+(`providers/codex.py`) и `oauth-cli-kit==0.1.3`. Это не публичный Responses API
+с API-ключом. Контракт и проверяемые границы: [CODEX-CLI-AGENT.md](design-docs/CODEX-CLI-AGENT.md).
+
 Справка по CLI:
 
 ```sh

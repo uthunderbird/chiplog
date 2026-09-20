@@ -256,6 +256,18 @@ R13_PRODUCTION_MANIFEST = replace(
 )
 R13_EVALUATION_MANIFEST = replace(R13_PRODUCTION_MANIFEST, environment="evaluation")
 
+# Explicit local dialogue composition; never a substitution inside the offline manifest.
+CODEX_CLI_MANIFEST = replace(
+    R13_PRODUCTION_MANIFEST,
+    manifest_version=4,
+    leaves=tuple(
+        replace(leaf, implementation="chiplog.adapters.driven.codex_model:CodexModel")
+        if leaf.leaf_id == "model"
+        else leaf
+        for leaf in R13_PRODUCTION_MANIFEST.leaves
+    ),
+)
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -267,12 +279,13 @@ def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
 
 
 def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
-    if manifest.manifest_version not in (1, 2, 3):
+    if manifest.manifest_version not in (1, 2, 3, 4):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
         1: R7_PRODUCTION_MANIFEST,
         2: R8_PRODUCTION_MANIFEST,
         3: R13_PRODUCTION_MANIFEST,
+        4: CODEX_CLI_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
@@ -303,7 +316,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         )
     if any(not item.implementation for item in manifest.leaves):
         raise RuntimeManifestViolation("registered leaf implementation is empty")
-    if manifest.manifest_version == 3 and manifest.leaves != expected_manifest.leaves:
+    if manifest.manifest_version in (3, 4) and manifest.leaves != expected_manifest.leaves:
         raise RuntimeManifestViolation("R13 admits only registered hermetic leaf implementations")
     route_callers = (*owner_ids, "broker")
     if any(route.caller_owner_id not in route_callers for route in manifest.routes) or any(

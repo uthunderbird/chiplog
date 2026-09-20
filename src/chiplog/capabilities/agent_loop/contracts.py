@@ -9,6 +9,8 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .live_contract import LiveModelBinding
+
 
 class Frozen(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -39,6 +41,9 @@ AttemptState = Literal[
 
 
 class BudgetPolicy(Frozen):
+    live_model: LiveModelBinding | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     kind: Literal["MAX_TURNS", "NO_POLICY"] = "MAX_TURNS"
     max_turns: int = Field(default=16, gt=0)
     max_request_bytes: int = Field(default=65536, gt=0)
@@ -69,7 +74,7 @@ class EndpointSelection(Frozen):
     ingress_binding_head: str = Field(min_length=1)
     endpoint_head: str = Field(min_length=1)
     endpoint_id: str = Field(min_length=1)
-    provider: Literal["hermetic-local"]
+    provider: Literal["hermetic-local", "local-cli"]
     recipient: str = Field(min_length=1)
     canonical_address: str = Field(min_length=1)
     credential_binding_head: str = Field(min_length=1)
@@ -147,8 +152,11 @@ class ModelAttempt(Frozen):
     head: str
     manifest: VisibilityManifest
     request: str
-    provider_contract: Literal["hermetic-model.v1"] = "hermetic-model.v1"
-    recipient: Literal["hermetic-model"] = "hermetic-model"
+    provider_contract: Literal["hermetic-model.v1", "codex-oauth.v1"] = "hermetic-model.v1"
+    recipient: Literal["hermetic-model", "openai-codex"] = "hermetic-model"
+    live_model: LiveModelBinding | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     worker_session: str
     response_base64: str | None = None
     receipt: str | None = None

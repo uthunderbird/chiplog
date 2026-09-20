@@ -166,7 +166,12 @@ def context_label(run: RunRecord) -> DisclosureLabel:
     return join_labels(
         (
             DisclosureLabel(
-                value="ENDPOINT_RESTRICTED", allowed_endpoints=(run.origin.endpoint_id,)
+                value="ENDPOINT_RESTRICTED",
+                allowed_endpoints=tuple(
+                    sorted((run.origin.endpoint_id, run.policy.live_model.recipient))
+                )
+                if run.policy.live_model is not None
+                else (run.origin.endpoint_id,),
             ),
             *(
                 attempt.manifest.joined_label
@@ -194,6 +199,15 @@ def prepare(run: RunRecord, manifest: VisibilityManifest) -> RunRecord:
     joined = join_labels(tuple(member.label for member in turn.accumulator))
     if manifest.joined_label != joined:
         raise LoopRejected("missing or narrower manifest label")
+    live = run.policy.live_model
+    if live is not None and (
+        run.origin.provider != "local-cli"
+        or joined.value == "DENY_ALL"
+        or (
+            joined.value == "ENDPOINT_RESTRICTED" and live.recipient not in joined.allowed_endpoints
+        )
+    ):
+        raise LoopRejected("context does not authorize the exact live model recipient")
     prompt_members = [member for member in manifest.members if member.surface == "prompt"]
     schema_members = [member for member in manifest.members if member.surface == "schema"]
     context_members = [member for member in manifest.members if member.surface == "context"]
@@ -232,6 +246,9 @@ def prepare(run: RunRecord, manifest: VisibilityManifest) -> RunRecord:
         manifest=manifest,
         request=request,
         worker_session=manifest.worker_session,
+        provider_contract=live.provider if live is not None else "hermetic-model.v1",
+        recipient=live.recipient if live is not None else "hermetic-model",
+        live_model=live,
     )
     return with_turn(
         run,

@@ -23,6 +23,8 @@ class HermeticModel:
         self.requests: list[ModelAttempt] = []
 
     async def invoke(self, attempt: ModelAttempt) -> tuple[bytes, str]:
+        if attempt.live_model is not None or attempt.provider_contract != "hermetic-model.v1":
+            raise LoopRejected("live attempt cannot use the hermetic model")
         if attempt.state != "EMITTED_OUTCOME_UNKNOWN":
             raise LoopRejected("request not durably marked emitted")
         if self.session is not None and attempt.worker_session != self.session.current_worker():

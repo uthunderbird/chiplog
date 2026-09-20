@@ -7,6 +7,22 @@ import pytest
 from chiplog.verification.r7_bypass import R7BypassViolation, verify_canonical_r7_entrypoint
 
 
+def test_registered_loop_facade_does_not_allow_extra_raw_symbols(tmp_path: Path) -> None:
+    package = tmp_path / "src/chiplog"
+    composition = package / "composition"
+    composition.mkdir(parents=True)
+    (package / "cli.py").write_text(
+        "from chiplog.composition.r8 import open_r8_runtime\n"
+        "from chiplog.composition.r13_runtime import R13Runtime\n"
+    )
+    facade = composition / "r13_runtime.py"
+    facade.write_text("from chiplog.platform._sqlite import PhysicalRecord\n")
+    verify_canonical_r7_entrypoint(package / "cli.py")
+    facade.write_text("from chiplog.platform._sqlite import PhysicalRecord, SQLiteMaterializer\n")
+    with pytest.raises(R7BypassViolation, match="raw planning authority"):
+        verify_canonical_r7_entrypoint(package / "cli.py")
+
+
 @pytest.mark.parametrize(
     "bypass",
     [
