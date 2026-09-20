@@ -105,7 +105,27 @@ if [ -f .harness/handoff.md ]; then
     grep '^- что:' .harness/handoff.md 2>/dev/null | sed 's/^- что:/   ·/' || true
     echo "   вопрос: попадала ли сюда одна формулировка дважды"
 else
-    echo "   файла нет — за человека ничего не решено и ничего не отложено"
+    echo "   файла нет — текущий журнал handoff отсутствует"
+fi
+echo "   DURABLE DEFECTS  .harness/deferred"
+if [ ! -d .harness/deferred ]; then
+    echo "   реестр отсутствует"
+else
+    FOUND=0
+    for entry in .harness/deferred/D-*.md; do
+        [ -f "$entry" ] || continue
+        FOUND=1
+        # Inventory only: keep unknown/duplicate statuses visible; admission and
+        # transition validation remain owned by deferred.py. Never read body labels.
+        STATUS=$(awk '
+            NR == 1 { if ($0 != "---") exit; next }
+            $0 == "---" { exit }
+            /^status:/ { sub(/^status:[[:space:]]*/, ""); print }
+        ' "$entry")
+        [ -n "$STATUS" ] || STATUS='неизвестен: поле status отсутствует'
+        printf '   · %s — status: %s\n' "$entry" "$STATUS"
+    done
+    [ "$FOUND" -ne 0 ] || echo "   записей нет"
 fi
 echo
 
