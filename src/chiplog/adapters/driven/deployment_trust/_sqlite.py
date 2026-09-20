@@ -2,14 +2,65 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
+
+from chiplog.platform.authority_gate import AuthorityGate, FileIdentity, checked_file_identity
 
 
 class SQLiteTrustMaterializer:
     """Idempotent materializer; it cannot decide authority."""
 
     def __init__(self, database: Path) -> None:
-        self._connection = sqlite3.connect(database)
+        self._initialize_bound(database, None)
+
+    @classmethod
+    def for_authority_bundle(
+        cls, database: Path, *, authority_gate: AuthorityGate
+    ) -> SQLiteTrustMaterializer:
+        if not isinstance(authority_gate, AuthorityGate):
+            raise TypeError("bound trust adapter requires an AuthorityGate")
+        instance = cls.__new__(cls)
+        instance._initialize_bound(database, authority_gate)
+        return instance
+
+    def _initialize_bound(self, database: Path, authority_gate: AuthorityGate | None) -> None:
+        self._authority_gate = authority_gate
+        self._lock = threading.RLock()
+        self._identity: FileIdentity | None = None
+        if authority_gate is not None and database.is_symlink():
+            raise RuntimeError("canonical trust sidecar cannot be a symbolic link")
+        self._path = database.resolve(strict=False)
+        with self._scope():
+            prior = checked_file_identity(self._path) if self._path.exists() else None
+            self._initialize(self._path)
+            try:
+                self._identity = checked_file_identity(self._path, prior)
+            except BaseException:
+                self._connection.close()
+                raise
+
+    @property
+    def authority_gate(self) -> AuthorityGate | None:
+        return self._authority_gate
+
+    @contextmanager
+    def _scope(self) -> Iterator[None]:
+        gate = nullcontext() if self._authority_gate is None else self._authority_gate.hold()
+        with gate, self._lock:
+            if self._identity is not None:
+                checked_file_identity(self._path, self._identity)
+            yield
+
+    def physical_identity(self) -> FileIdentity:
+        with self._scope():
+            assert self._identity is not None
+            return checked_file_identity(self._path, self._identity)
+
+    def _initialize(self, database: Path) -> None:
+        self._connection = sqlite3.connect(database, check_same_thread=False)
         self._connection.execute("PRAGMA foreign_keys = ON")
         with self._connection:
             self._connection.executescript(
@@ -28,6 +79,10 @@ class SQLiteTrustMaterializer:
             )
 
     def materialize(self, decision_id: str, records: tuple[bytes, ...]) -> str:
+        with self._scope():
+            return self._materialize(decision_id, records)
+
+    def _materialize(self, decision_id: str, records: tuple[bytes, ...]) -> str:
         digest = hashlib.sha256(b"\x00".join(records)).hexdigest()
         existing = self._connection.execute(
             "SELECT records_digest FROM trust_decisions WHERE decision_id = ?", (decision_id,)
@@ -48,6 +103,10 @@ class SQLiteTrustMaterializer:
         return "MATERIALIZED"
 
     def materialized(self, decision_id: str) -> bool:
+        with self._scope():
+            return self._materialized(decision_id)
+
+    def _materialized(self, decision_id: str) -> bool:
         return (
             self._connection.execute(
                 "SELECT 1 FROM trust_decisions WHERE decision_id = ?", (decision_id,)
@@ -56,6 +115,10 @@ class SQLiteTrustMaterializer:
         )
 
     def records(self) -> tuple[bytes, ...]:
+        with self._scope():
+            return self._records()
+
+    def _records(self) -> tuple[bytes, ...]:
         return tuple(
             bytes(row[0])
             for row in self._connection.execute(
@@ -64,4 +127,5 @@ class SQLiteTrustMaterializer:
         )
 
     def close(self) -> None:
-        self._connection.close()
+        with self._lock:
+            self._connection.close()

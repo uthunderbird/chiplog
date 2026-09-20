@@ -59,60 +59,64 @@ class R13Runtime(R8PlanningRuntime):
         self._appender.bind_publication_observer(self)
 
     def decide_publication(self, command: PhysicalPublicationCommand, commitment: str) -> None:
-        if self._replaying_publication:
-            return
-        if (
-            command.tenant_id != self._tenant_id
-            or command.operation_kind not in ("workspace.policy", "conversation.accept")
-            or self._pending()
-        ):
-            raise LoopRejected("unregistered auxiliary publication or pending decision")
-        predecessor = self._commitment_journal.load(self._tenant_id)
-        if predecessor is None:
-            raise LoopRejected("missing independent predecessor")
-        self._append_decision(
-            {
-                "version": 1,
-                "kind": "DECIDED",
-                "operation_id": command.idempotency_key,
-                "operation_kind": command.operation_kind,
-                "expected_head": command.expected_head,
-                "fingerprint": command.request_fingerprint,
-                "predecessor": predecessor,
-                "resulting": commitment,
-                "records": [
-                    {
-                        "record_id": row.record_id,
-                        "owner": row.owner,
-                        "schema": row.schema_id,
-                        "payload": base64.b64encode(row.canonical_bytes).decode(),
-                        "digest": row.fingerprint,
-                    }
-                    for row in command.records
-                ],
-            }
-        )
+        with self._authority_gate().hold():
+            if self._replaying_publication:
+                return
+            if (
+                command.tenant_id != self._tenant_id
+                or command.operation_kind not in ("workspace.policy", "conversation.accept")
+                or self._pending()
+            ):
+                raise LoopRejected("unregistered auxiliary publication or pending decision")
+            predecessor = self._commitment_journal.load(self._tenant_id)
+            if predecessor is None:
+                raise LoopRejected("missing independent predecessor")
+            self._append_decision(
+                {
+                    "version": 1,
+                    "kind": "DECIDED",
+                    "operation_id": command.idempotency_key,
+                    "operation_kind": command.operation_kind,
+                    "expected_head": command.expected_head,
+                    "fingerprint": command.request_fingerprint,
+                    "predecessor": predecessor,
+                    "resulting": commitment,
+                    "records": [
+                        {
+                            "record_id": row.record_id,
+                            "owner": row.owner,
+                            "schema": row.schema_id,
+                            "payload": base64.b64encode(row.canonical_bytes).decode(),
+                            "digest": row.fingerprint,
+                        }
+                        for row in command.records
+                    ],
+                }
+            )
 
     def publication_committed(self, command: PhysicalPublicationCommand) -> None:
         if not self._replaying_publication:
             self._finish_decision(command.idempotency_key)
 
     def refresh_derivative_observation(self) -> None:
-        actual, observation = capture_authority_storage_state(self._database)
-        if actual != self._commitment_journal.load(self._tenant_id):
-            raise LoopRejected("workspace read changed authoritative state")
-        state = self._read_ledger.current_state(self._tenant_id)
-        if state.file_wal_observation != observation:
-            self._read_ledger.invalidate_storage_mutation(
-                self._tenant_id, state.fingerprint(), actual, observation
-            )
+        with self._authority_gate().hold():
+            actual, observation = capture_authority_storage_state(self._database)
+            if actual != self._commitment_journal.load(self._tenant_id):
+                raise LoopRejected("workspace read changed authoritative state")
+            state = self._read_ledger.current_state(self._tenant_id)
+            if state.file_wal_observation != observation:
+                self._read_ledger.invalidate_storage_mutation(
+                    self._tenant_id, state.fingerprint(), actual, observation
+                )
 
     def _loop_decisions(self) -> IndependentTenantDecisionJournal:
-        if self._loop_journal is None:
-            self._loop_journal = IndependentTenantDecisionJournal(
-                self._database.with_suffix(self._database.suffix + ".loop-journal")
-            )
-        return self._loop_journal
+        with self._authority_gate().hold():
+            if self._loop_journal is None:
+                self._loop_journal = IndependentTenantDecisionJournal.for_authority_bundle(
+                    self._database.with_suffix(self._database.suffix + ".loop-journal"),
+                    authority_gate=self._authority_gate(),
+                )
+            return self._loop_journal
 
     def _pending(self) -> tuple[dict[str, object], ...]:
         pending: dict[str, dict[str, object]] = {}
@@ -141,13 +145,18 @@ class R13Runtime(R8PlanningRuntime):
         return tuple(pending.values())
 
     def _append_decision(self, value: object) -> None:
-        journal = self._loop_decisions()
-        entries = journal.entries()
-        journal.append(_canonical(value), entries[-1][0] if entries else None)
+        with self._authority_gate().hold():
+            journal = self._loop_decisions()
+            entries = journal.entries()
+            journal.append(_canonical(value), entries[-1][0] if entries else None)
 
     async def _prepare_startup(self) -> None:
         for pending in self._pending():
-            actual, _ = capture_authority_storage_state(self._database)
+            identity = str(pending["operation_id"])
+            with self._authority_gate().hold():
+                if self._loop_decision_materialized(identity, pending):
+                    continue
+                actual, _ = capture_authority_storage_state(self._database)
             if actual == pending["predecessor"]:
                 self._replaying_publication = True
                 try:
@@ -155,14 +164,11 @@ class R13Runtime(R8PlanningRuntime):
                 finally:
                     self._replaying_publication = False
                 if result.disposition not in ("COMMITTED", "REPLAY"):
+                    with self._authority_gate().hold():
+                        if self._loop_decision_materialized(identity, pending):
+                            continue
                     raise LoopRejected("decided loop publication recovery " + result.disposition)
-                actual, _ = capture_authority_storage_state(self._database)
-            if actual != pending["resulting"]:
-                raise LoopRejected("loop decision does not match actual materialization")
-            self._commitment_journal.commit(self._tenant_id, actual)
-            self._append_decision(
-                {"version": 1, "kind": "MATERIALIZED", "operation_id": pending["operation_id"]}
-            )
+            self._finish_decision(identity, expected=pending)
         await super()._prepare_startup()
 
     def _publication(self, entry: dict[str, object]) -> PhysicalPublicationCommand:
@@ -266,71 +272,102 @@ class R13Runtime(R8PlanningRuntime):
         commitment: str,
         companions: tuple[DurableCompanion, ...],
     ) -> None:
-        if self._pending():
-            raise LoopRejected("pending durable decision requires materialization before new work")
-        payload = record.canonical_bytes()
-        if companions != self.companions(record):
-            raise LoopRejected("conversation acceptance closure changed inside transaction")
-        predecessor = self._commitment_journal.load(self._tenant_id)
-        if predecessor is None:
-            raise LoopRejected("missing independent authoritative commitment")
-        self._append_decision(
-            {
-                "version": 1,
-                "kind": "DECIDED",
-                "operation_id": record.head,
-                "operation_kind": "agent_loop",
-                "expected_head": expected.tenant_head,
-                "fingerprint": hashlib.sha256(payload).hexdigest(),
-                "predecessor": predecessor,
-                "resulting": commitment,
-                "records": [
-                    {
-                        "record_id": record.head,
-                        "owner": OWNER,
-                        "schema": SCHEMA,
-                        "payload": base64.b64encode(payload).decode(),
-                        "digest": hashlib.sha256(payload).hexdigest(),
-                    },
-                    *(
+        with self._authority_gate().hold():
+            if self._pending():
+                raise LoopRejected(
+                    "pending durable decision requires materialization before new work"
+                )
+            payload = record.canonical_bytes()
+            if companions != self.companions(record):
+                raise LoopRejected("conversation acceptance closure changed inside transaction")
+            predecessor = self._commitment_journal.load(self._tenant_id)
+            if predecessor is None:
+                raise LoopRejected("missing independent authoritative commitment")
+            self._append_decision(
+                {
+                    "version": 1,
+                    "kind": "DECIDED",
+                    "operation_id": record.head,
+                    "operation_kind": "agent_loop",
+                    "expected_head": expected.tenant_head,
+                    "fingerprint": hashlib.sha256(payload).hexdigest(),
+                    "predecessor": predecessor,
+                    "resulting": commitment,
+                    "records": [
                         {
-                            "record_id": item.record_id,
-                            "owner": item.owner,
-                            "schema": item.schema_id,
-                            "payload": item.payload_base64,
-                            "digest": hashlib.sha256(
-                                base64.b64decode(item.payload_base64, validate=True)
-                            ).hexdigest(),
-                        }
-                        for item in companions
-                    ),
-                ],
-            }
-        )
+                            "record_id": record.head,
+                            "owner": OWNER,
+                            "schema": SCHEMA,
+                            "payload": base64.b64encode(payload).decode(),
+                            "digest": hashlib.sha256(payload).hexdigest(),
+                        },
+                        *(
+                            {
+                                "record_id": item.record_id,
+                                "owner": item.owner,
+                                "schema": item.schema_id,
+                                "payload": item.payload_base64,
+                                "digest": hashlib.sha256(
+                                    base64.b64decode(item.payload_base64, validate=True)
+                                ).hexdigest(),
+                            }
+                            for item in companions
+                        ),
+                    ],
+                }
+            )
 
     def committed(self, record: RunRecord) -> None:
         self._finish_decision(record.head)
 
-    def _finish_decision(self, operation_id: str) -> None:
-        pending = self._pending()
-        actual, observation = capture_authority_storage_state(self._database)
-        if not pending:
-            if self._commitment_journal.load(self._tenant_id) != actual:
-                raise LoopRejected("replayed loop publication has unknown current commitment")
-            return
-        if (
-            len(pending) != 1
-            or pending[0]["operation_id"] != operation_id
-            or pending[0]["resulting"] != actual
-        ):
-            raise LoopRejected("loop commit differs from independent decision")
-        self._commitment_journal.commit(self._tenant_id, actual)
-        state = self._read_ledger.current_state(self._tenant_id)
-        if state.materialization_commitment != actual or state.file_wal_observation != observation:
-            self._read_ledger.invalidate_storage_mutation(
-                self._tenant_id, state.fingerprint(), actual, observation
+    def _loop_decision_materialized(
+        self, operation_id: str, expected: dict[str, object] | None = None
+    ) -> bool:
+        with self._authority_gate().hold():
+            self._pending()  # Validate the complete authenticated marker sequence.
+            entries = [json.loads(payload) for _, _, payload in self._loop_decisions().entries()]
+            selected = [
+                entry
+                for entry in entries
+                if entry.get("kind") == "DECIDED" and entry.get("operation_id") == operation_id
+            ]
+            if len(selected) != 1 or (expected is not None and selected[0] != expected):
+                raise LoopRejected("missing or changed exact loop decision history")
+            return any(
+                entry.get("kind") == "MATERIALIZED" and entry.get("operation_id") == operation_id
+                for entry in entries
             )
-        self._append_decision({"version": 1, "kind": "MATERIALIZED", "operation_id": operation_id})
+
+    def _finish_decision(
+        self, operation_id: str, *, expected: dict[str, object] | None = None
+    ) -> None:
+        with self._authority_gate().hold():
+            if self._loop_decision_materialized(operation_id, expected):
+                return  # Historical completion cannot rewind a later authority anchor.
+            pending = self._pending()
+            if len(pending) != 1 or pending[0]["operation_id"] != operation_id:
+                raise LoopRejected("loop materialization differs from unique selected decision")
+            actual, observation = capture_authority_storage_state(self._database)
+            predecessor, resulting = pending[0]["predecessor"], pending[0]["resulting"]
+            anchored = self._commitment_journal.load(self._tenant_id)
+            state = self._read_ledger.current_state(self._tenant_id)
+            if (
+                actual != resulting
+                or anchored not in (predecessor, resulting)
+                or state.materialization_commitment not in (predecessor, resulting)
+            ):
+                raise LoopRejected("loop commit differs from selected predecessor/result")
+            self._commitment_journal.commit(self._tenant_id, actual)
+            if (
+                state.materialization_commitment != actual
+                or state.file_wal_observation != observation
+            ):
+                self._read_ledger.invalidate_storage_mutation(
+                    self._tenant_id, state.fingerprint(), actual, observation
+                )
+            self._append_decision(
+                {"version": 1, "kind": "MATERIALIZED", "operation_id": operation_id}
+            )
 
 
 @asynccontextmanager

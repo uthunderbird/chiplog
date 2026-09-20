@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import os
 import sqlite3
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -14,7 +18,7 @@ from chiplog.domain_primitives import RecordId, TenantId
 from chiplog.platform.authority_reads import (
     AuthorityReadResult,
 )
-from chiplog.platform.r7_trust import TrustOwnerResult
+from chiplog.platform.broker import PublicPortCall
 from chiplog.platform.read_ledger import ReadOperation
 from tests.support.r7_boundary_seed import prepare_boundary_database
 
@@ -127,14 +131,23 @@ def test_bootstrap_cannot_commit_when_quarantined_trust_owner_denies(
         async with open_r7_runtime(
             database, tenant_id="tenant-1", operator_secret=b"r7-test-secret"
         ) as runtime:
+            original_request = runtime._trust_call_request
+            reached: list[str] = []
 
-            async def denied(*_args: object, **_kwargs: object) -> TrustOwnerResult:
-                return TrustOwnerResult(
-                    disposition="DENIED", reference_bytes=None, reason="owner denied"
+            def mismatched_peer(
+                mode: Literal["AUTHENTICATE", "BOOTSTRAP", "REVALIDATE", "RUNTIME_ADMISSION"],
+                value: object,
+                *,
+                snapshot_bytes: bytes | None = None,
+            ) -> PublicPortCall:
+                assert mode == "BOOTSTRAP" and isinstance(value, dict)
+                reached.append(mode)
+                return original_request(
+                    mode, {**value, "peer": "uid:foreign"}, snapshot_bytes=snapshot_bytes
                 )
 
-            monkeypatch.setattr(runtime, "_trust_call", denied)
-            with pytest.raises(PermissionError, match="owner denied"):
+            monkeypatch.setattr(runtime, "_trust_call_request", mismatched_peer)
+            with pytest.raises(PermissionError, match=r"^bootstrap denied$"):
                 await runtime.bootstrap(
                     database_instance_id="database-1",
                     principal_id="principal-1",
@@ -142,6 +155,7 @@ def test_bootstrap_cannot_commit_when_quarantined_trust_owner_denies(
                     session_id="session-1",
                     token="bootstrap-token-1",
                 )
+            assert reached == ["BOOTSTRAP"]
             assert runtime._journal.entries() == ()
 
     asyncio.run(exercise())
@@ -453,5 +467,121 @@ def test_prepare_only_keeps_database_empty_then_legacy_create_replays(tmp_path: 
             )
             assert not isinstance(conflict, PreparedPlanningCandidate)
             assert conflict.disposition == "CONFLICT"
+
+    asyncio.run(exercise())
+
+
+def test_observed_trust_call_retains_exact_request_and_rejects_local_mutants(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    async def exercise() -> None:
+        async with open_r7_runtime(
+            tmp_path / "observed.sqlite3", tenant_id="tenant-1", operator_secret=b"test-secret"
+        ) as runtime:
+            await runtime.bootstrap(
+                database_instance_id="database-1",
+                principal_id="principal-1",
+                credential_id="credential-1",
+                session_id="session-1",
+                token="bootstrap-1",
+            )
+            observed = await runtime._observed_trust_call(
+                "AUTHENTICATE",
+                {
+                    "contour": "CLI",
+                    "credential_id": "credential-1",
+                    "peer_credential": f"uid:{os.getuid()}",
+                    "session_id": "session-1",
+                },
+            )
+            assert observed.result.disposition == "VALID"
+            sent = json.loads(observed.request.canonical_payload)
+            assert (
+                base64.b64decode(sent["snapshot_bytes"], validate=True)
+                == observed.observation.snapshot_bytes
+            )
+            assert observed.response.request_id == observed.request.request_id
+            assert observed.response.responder == observed.request.callee
+            assert runtime._trust_observation_guard(observed) is None
+            changed_source = replace(
+                observed, observation=replace(observed.observation, bundle_path="foreign-bundle")
+            )
+            assert runtime._trust_observation_guard(changed_source) == "STALE"
+            changed_session = replace(
+                observed,
+                request=observed.request.model_copy(
+                    update={
+                        "callee": observed.request.callee.model_copy(
+                            update={"session_id": "foreign"}
+                        )
+                    }
+                ),
+            )
+            assert runtime._trust_observation_guard(changed_session) == "STALE"
+            expired = replace(
+                observed,
+                request=observed.request.model_copy(
+                    update={
+                        "budget": observed.request.budget.model_copy(
+                            update={"absolute_deadline_ns": 1}
+                        )
+                    }
+                ),
+            )
+            assert runtime._trust_observation_guard(expired) == "STALE"
+
+    asyncio.run(exercise())
+
+
+def test_planning_publication_guard_uses_no_owner_ipc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from chiplog.platform._sqlite import (
+        EventAppender,
+        PhysicalPublicationCommand,
+        PublicationResult,
+    )
+
+    original_submit = EventAppender.submit
+    observed_guards: list[bool] = []
+
+    async def exercise() -> None:
+        async with open_r7_runtime(
+            tmp_path / "local-guard.sqlite3", tenant_id="tenant-1", operator_secret=b"test-secret"
+        ) as runtime:
+            await runtime.bootstrap(
+                database_instance_id="database-1",
+                principal_id="principal-1",
+                credential_id="credential-1",
+                session_id="session-1",
+                token="bootstrap-1",
+            )
+            owner_runtime = runtime._supervisor.runtime()
+
+            def forbidden(*args: object, **kwargs: object) -> None:
+                pytest.fail("publication guard attempted synchronous owner IPC")
+
+            monkeypatch.setattr(type(owner_runtime), "call_sync", forbidden)
+
+            async def submit(
+                appender: EventAppender, command: PhysicalPublicationCommand
+            ) -> PublicationResult:
+                if command.operation_kind == "planning.create_intention_line":
+                    assert command.admission_guard is not None
+                    observed_guards.append(command.admission_guard() is None)
+                return await original_submit(appender, command)
+
+            monkeypatch.setattr(EventAppender, "submit", submit)
+            result = await runtime.create(
+                principal_id="principal-1",
+                credential_id="credential-1",
+                session_id="session-1",
+                command=_command(TenantId("tenant-1")),
+            )
+            assert result.disposition == "COMMITTED"
+            assert observed_guards == [True]
 
     asyncio.run(exercise())

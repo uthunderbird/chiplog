@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from chiplog.platform.authority_gate import AuthorityGate, FileIdentity, checked_file_identity
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS authority_read_state (
@@ -113,13 +117,46 @@ class ReadLedgerConflict(RuntimeError):
 
 
 class BrokerReadLedger:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, authority_gate: AuthorityGate | None = None) -> None:
+        self._authority_gate = authority_gate
+        self._identity: FileIdentity | None = None
+        if authority_gate is not None and path.is_symlink():
+            raise ReadLedgerConflict("canonical read ledger cannot be a symbolic link")
+        path = path.resolve(strict=False) if authority_gate is not None else path
         self._path = path
-        with sqlite3.connect(path) as connection:
-            connection.executescript(_SCHEMA)
+        with self._authority_scope():
+            prior = (
+                checked_file_identity(path)
+                if authority_gate is not None and path.exists()
+                else None
+            )
+            with sqlite3.connect(path) as connection:
+                connection.executescript(_SCHEMA)
+            if authority_gate is not None:
+                self._identity = checked_file_identity(path, prior)
+
+    @property
+    def authority_gate(self) -> AuthorityGate | None:
+        return self._authority_gate
+
+    @contextlib.contextmanager
+    def _authority_scope(self) -> Iterator[None]:
+        gate = (
+            contextlib.nullcontext()
+            if self._authority_gate is None
+            else self._authority_gate.hold()
+        )
+        with gate:
+            if self._identity is not None:
+                checked_file_identity(self._path, self._identity)
+            try:
+                yield
+            finally:
+                if self._identity is not None:
+                    checked_file_identity(self._path, self._identity)
 
     def publish_initial_state(self, state: BrokerReadState) -> None:
-        with sqlite3.connect(self._path) as connection:
+        with self._authority_scope(), sqlite3.connect(self._path) as connection:
             try:
                 connection.execute(
                     "INSERT INTO authority_read_state VALUES (?, ?, ?)",
@@ -130,36 +167,44 @@ class BrokerReadLedger:
 
     def reconcile_generation(self, state: BrokerReadState) -> None:
         """Fence every old read attempt before publishing a restarted generation."""
-        with sqlite3.connect(self._path) as connection:
+        with self._authority_scope(), sqlite3.connect(self._path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """UPDATE authority_read_releases
-                   SET state = 'STALE_OR_INDETERMINATE_READ', result_digest = NULL,
-                       result_bytes = NULL, enqueued = 0
-                   WHERE tenant_id = ? AND state = 'PENDING'""",
+                       SET state = 'STALE_OR_INDETERMINATE_READ', result_digest = NULL,
+                           result_bytes = NULL, enqueued = 0
+                       WHERE tenant_id = ? AND state = 'PENDING'""",
                 (state.tenant_id,),
             )
             connection.execute(
                 """INSERT INTO authority_read_state VALUES (?, ?, ?)
-                   ON CONFLICT(tenant_id) DO UPDATE SET
-                     canonical_state = excluded.canonical_state,
-                     state_fingerprint = excluded.state_fingerprint""",
+                       ON CONFLICT(tenant_id) DO UPDATE SET
+                         canonical_state = excluded.canonical_state,
+                         state_fingerprint = excluded.state_fingerprint""",
                 (state.tenant_id, state.canonical_bytes(), state.fingerprint()),
             )
 
     def current_state(self, tenant_id: str) -> BrokerReadState:
-        with sqlite3.connect(self._path) as connection:
-            row = connection.execute(
-                "SELECT canonical_state, state_fingerprint FROM authority_read_state "
-                "WHERE tenant_id = ?",
-                (tenant_id,),
-            ).fetchone()
-        if row is None:
+        state = self.current_state_or_none(tenant_id)
+        if state is None:
             raise ReadLedgerConflict("authority read state is absent")
-        state = BrokerReadState.model_validate_json(bytes(row[0]))
-        if state.fingerprint() != str(row[1]):
-            raise ReadLedgerConflict("authority read state fingerprint mismatch")
         return state
+
+    def current_state_or_none(self, tenant_id: str) -> BrokerReadState | None:
+        """Absence before first bootstrap is distinct from corrupt durable state."""
+        with self._authority_scope():
+            with sqlite3.connect(self._path) as connection:
+                row = connection.execute(
+                    "SELECT canonical_state, state_fingerprint FROM authority_read_state "
+                    "WHERE tenant_id = ?",
+                    (tenant_id,),
+                ).fetchone()
+            if row is None:
+                return None
+            state = BrokerReadState.model_validate_json(bytes(row[0]))
+            if state.fingerprint() != str(row[1]):
+                raise ReadLedgerConflict("authority read state fingerprint mismatch")
+            return state
 
     def invalidate_storage_mutation(
         self, tenant_id: str, expected_fingerprint: str, commitment: str, observation: str
@@ -252,24 +297,25 @@ class BrokerReadLedger:
     def _replace_state(
         self, state: BrokerReadState, expected_fingerprint: str, changes: dict[str, object]
     ) -> BrokerReadState:
-        if state.fingerprint() != expected_fingerprint:
-            raise ReadLedgerConflict("stale authority read state predecessor")
-        successor = state.model_copy(update=changes)
-        with sqlite3.connect(self._path) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            changed = connection.execute(
-                """UPDATE authority_read_state SET canonical_state = ?, state_fingerprint = ?
-                   WHERE tenant_id = ? AND state_fingerprint = ?""",
-                (
-                    successor.canonical_bytes(),
-                    successor.fingerprint(),
-                    state.tenant_id,
-                    expected_fingerprint,
-                ),
-            ).rowcount
-            if changed != 1:
-                raise ReadLedgerConflict("rival authority read invalidator won")
-        return successor
+        with self._authority_scope():
+            if state.fingerprint() != expected_fingerprint:
+                raise ReadLedgerConflict("stale authority read state predecessor")
+            successor = state.model_copy(update=changes)
+            with sqlite3.connect(self._path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                changed = connection.execute(
+                    """UPDATE authority_read_state SET canonical_state = ?, state_fingerprint = ?
+                       WHERE tenant_id = ? AND state_fingerprint = ?""",
+                    (
+                        successor.canonical_bytes(),
+                        successor.fingerprint(),
+                        state.tenant_id,
+                        expected_fingerprint,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise ReadLedgerConflict("rival authority read invalidator won")
+            return successor
 
     def begin(self, operation: ReadOperation, state: BrokerReadState) -> ReadRelease:
         if operation.tenant_id != state.tenant_id:

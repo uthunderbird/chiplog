@@ -55,14 +55,19 @@ class R8PlanningRuntime(R7PlanningRuntime):
 
     def _configure_gate(self) -> None:
         if self._gate is None:
+            authority_gate = self._trust.authority_gate
+            if authority_gate is None:
+                raise RuntimeError("canonical deployment gate requires authority binding")
             self._gate = BrokerDeploymentGate(
                 self._database.with_suffix(self._database.suffix + ".gate.sqlite3"),
                 tenant_id=self._tenant_id,
                 surfaces=R8_SURFACES,
-                journal=IndependentTenantDecisionJournal(
-                    self._database.with_suffix(self._database.suffix + ".gate-journal")
+                journal=IndependentTenantDecisionJournal.for_authority_bundle(
+                    self._database.with_suffix(self._database.suffix + ".gate-journal"),
+                    authority_gate=authority_gate,
                 ),
                 clock=time.time_ns,
+                authority_gate=authority_gate,
             )
 
     async def _prepare_startup(self) -> None:
@@ -82,7 +87,10 @@ class R8PlanningRuntime(R7PlanningRuntime):
             ):
                 raise RuntimeError("unknown gate materialization decision")
             proposal = json.loads(base64.b64decode(decision["proposal"], validate=True))
-            actual, _ = capture_authority_storage_state(self._database)
+            with self._authority_gate().hold():
+                if self._gate_decision_materialized(operation_id, execution):
+                    continue
+                actual, _ = capture_authority_storage_state(self._database)
             if actual == decision["predecessor"]:
                 publication = await self._appender.submit(
                     PhysicalPublicationCommand(
@@ -109,20 +117,48 @@ class R8PlanningRuntime(R7PlanningRuntime):
                     )
                 )
                 if publication.disposition not in {"COMMITTED", "REPLAY"}:
+                    with self._authority_gate().hold():
+                        if self._gate_decision_materialized(operation_id, execution):
+                            continue
                     raise RuntimeError(
                         "decided planning batch has an unresolved materialization obligation"
                     )
-                actual, _ = capture_authority_storage_state(self._database)
-            if actual != decision["resulting"]:
-                raise RuntimeError(
-                    "gate materialization does not match exact decided authority content"
-                )
+            self._finish_gate_decision(operation_id, execution)
+
+    def _gate_decision_materialized(self, operation_id: str, execution: bytes) -> bool:
+        if self._gate is None:
+            raise RuntimeError("deployment decision journal is unavailable")
+        recorded = self._gate.recorded_execution(operation_id)
+        if recorded is None or recorded[0] != execution:
+            raise RuntimeError("missing or changed exact gate decision history")
+        return recorded[1]
+
+    def _finish_gate_decision(self, operation_id: str, execution: bytes) -> None:
+        with self._authority_gate().hold():
+            if self._gate_decision_materialized(operation_id, execution):
+                return
+            assert self._gate is not None
+            pending = tuple((identity, raw) for identity, raw in self._gate.pending() if raw)
+            if pending != ((operation_id, execution),):
+                raise RuntimeError("gate materialization differs from unique selected execution")
+            decision = json.loads(execution)
+            predecessor, resulting = decision["predecessor"], decision["resulting"]
+            actual, observation = capture_authority_storage_state(self._database)
+            anchored = self._commitment_journal.load(self._tenant_id)
+            state = self._read_ledger.current_state(self._tenant_id)
+            if (
+                actual != resulting
+                or anchored not in (predecessor, resulting)
+                or state.materialization_commitment not in (predecessor, resulting)
+            ):
+                raise RuntimeError("gate materialization differs from selected predecessor/result")
             self._commitment_journal.commit(self._tenant_id, actual)
-            read_state = self._read_ledger.current_state(self._tenant_id)
-            if read_state.materialization_commitment != actual:
-                _, observation = capture_authority_storage_state(self._database)
+            if (
+                state.materialization_commitment != actual
+                or state.file_wal_observation != observation
+            ):
                 self._read_ledger.invalidate_storage_mutation(
-                    self._tenant_id, read_state.fingerprint(), actual, observation
+                    self._tenant_id, state.fingerprint(), actual, observation
                 )
             self._gate.materialized(operation_id)
 
@@ -191,7 +227,10 @@ class R8PlanningRuntime(R7PlanningRuntime):
                 command=command,
             )
             if outcome.disposition == "COMMITTED":
-                self._gate.materialized(command.command_id.value)
+                recorded = self._gate.recorded_execution(command.command_id.value)
+                if recorded is None:
+                    raise RuntimeError("committed planning publication omitted its gate decision")
+                self._finish_gate_decision(command.command_id.value, recorded[0])
             return outcome
 
     def _trace(self, principal_id: str, trust_bytes: bytes, deadline: int) -> bytes:
