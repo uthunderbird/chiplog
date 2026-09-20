@@ -223,6 +223,7 @@ class SQLiteMaterializer:
         path: Path,
         *,
         record_contracts: dict[str, str],
+        record_schema_variants: tuple[tuple[str, str], ...] = (),
         managed_record_owners: tuple[str, ...] | None = None,
         derivative_contracts: tuple[str, ...] = (),
         managed_derivative_sinks: tuple[str, ...] = (),
@@ -232,6 +233,19 @@ class SQLiteMaterializer:
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._writer_token: _WriterToken | None = None
         self._record_contracts = dict(record_contracts)
+        primary_pairs = tuple(record_contracts.items())
+        all_pairs = (*primary_pairs, *record_schema_variants)
+        if (
+            len(set(all_pairs)) != len(all_pairs)
+            or any(owner not in record_contracts for owner, _ in record_schema_variants)
+            or any(
+                not owner or not schema or owner.strip() != owner or schema.strip() != schema
+                for owner, schema in all_pairs
+            )
+        ):
+            self._connection.close()
+            raise StoreAdmissionError("record owner/schema variant registry mismatch")
+        self._record_pairs = frozenset(all_pairs)
         if managed_record_owners is None:
             managed_record_owners = tuple(record_contracts)
         if len(managed_record_owners) != len(set(managed_record_owners)) or set(
@@ -294,7 +308,7 @@ class SQLiteMaterializer:
         for owner, schema_id in self._connection.execute(
             "SELECT DISTINCT owner, schema_id FROM records"
         ):
-            if self._record_contracts.get(str(owner)) != str(schema_id):
+            if (str(owner), str(schema_id)) not in self._record_pairs:
                 raise StoreAdmissionError("persisted record owner/schema has no decoder")
 
     def _publish(
@@ -305,8 +319,7 @@ class SQLiteMaterializer:
         if not record_ids or len(record_ids) != len(set(record_ids)):
             raise ValueError("publication records must be a non-empty unique set")
         for record in command.records:
-            expected_schema = self._record_contracts.get(record.owner)
-            if expected_schema is None or expected_schema != record.schema_id:
+            if (record.owner, record.schema_id) not in self._record_pairs:
                 raise ValueError("owner/schema contract mismatch")
             observed_fingerprint = hashlib.sha256(record.canonical_bytes).hexdigest()
             if record.fingerprint != observed_fingerprint:

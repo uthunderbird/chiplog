@@ -216,6 +216,52 @@ async def test_cancelled_close_does_not_cancel_drain(tmp_path: Path) -> None:
         await appender.submit(command(key="later", expected_head=1))
 
 
+async def test_registered_owner_schema_variants_apply_to_write_and_restart(tmp_path: Path) -> None:
+    path = tmp_path / "variants.sqlite"
+    variants = (("fixture-owner", "schema.extra.v1"),)
+    with SQLiteMaterializer(
+        path, record_contracts={"fixture-owner": "schema.v1"}, record_schema_variants=variants
+    ) as store:
+        async with EventAppender(store, capacity=2) as appender:
+            await appender.advance_fence(FenceAdvanceCommand("tenant-1", "fence-1", 0))
+            accepted = command(records=(record("extra", b"payload", schema="schema.extra.v1"),))
+            assert (await appender.submit(accepted)).disposition == "COMMITTED"
+            with pytest.raises(ValueError, match="owner/schema"):
+                await appender.submit(
+                    command(
+                        key="unknown",
+                        expected_head=1,
+                        records=(record("unknown", b"payload", schema="schema.unknown.v1"),),
+                    )
+                )
+    with pytest.raises(StoreAdmissionError, match="owner/schema"):
+        SQLiteMaterializer(path, record_contracts={"fixture-owner": "schema.v1"})
+    with SQLiteMaterializer(
+        path, record_contracts={"fixture-owner": "schema.v1"}, record_schema_variants=variants
+    ) as reopened:
+        assert len(reopened.durable_records()) == 1
+
+
+@pytest.mark.parametrize(
+    "variants",
+    [
+        (("fixture-owner", "schema.v1"),),
+        (("foreign-owner", "schema.extra.v1"),),
+        (("fixture-owner", "schema.extra.v1"), ("fixture-owner", "schema.extra.v1")),
+        (("fixture-owner", " schema.extra.v1"),),
+    ],
+)
+def test_duplicate_or_unregistered_owner_schema_pairs_reject_before_startup(
+    tmp_path: Path, variants: tuple[tuple[str, str], ...]
+) -> None:
+    with pytest.raises(StoreAdmissionError, match="variant registry"):
+        SQLiteMaterializer(
+            tmp_path / "invalid.sqlite",
+            record_contracts={"fixture-owner": "schema.v1"},
+            record_schema_variants=variants,
+        )
+
+
 async def test_ordinary_lane_applies_bounded_backpressure(tmp_path: Path) -> None:
     _, appender = await opened(tmp_path / "store.sqlite3", capacity=1)
     results = await asyncio.gather(

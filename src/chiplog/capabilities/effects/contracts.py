@@ -296,6 +296,9 @@ class CommitSendCommand(_Frozen):
     identity: CommandIdentity
     expected_attempt: ExactHead
     authorization: DispatchAuthorization
+    # Current execution holder; a safe later child retains its original
+    # authorization while independently proving this fence and complete coverage.
+    fence: WorkerFence
     transmission: Annotated[FirstTransmission | SafeRetransmission, Field(discriminator="kind")]
     current_time_ns: int = Field(ge=0)
 

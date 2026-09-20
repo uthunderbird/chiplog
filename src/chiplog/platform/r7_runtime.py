@@ -113,7 +113,8 @@ class _OwnerService:
                 sorted(
                     name
                     for name in sys.modules
-                    if name.endswith(("._r7_process", "._r8_process", "._r13_process"))
+                    if name.startswith("chiplog.capabilities.")
+                    and (name.endswith("_process") and name.rsplit(".", 1)[-1].startswith("_"))
                 )
             ),
             "routes": routes,
@@ -152,16 +153,42 @@ class _OwnerProvider(Provider):
 
 
 def _owner_module(identity: OwnerProcessIdentity) -> str:
+    if identity.owner_id == "agent_loop":
+        if identity.capability_ids == ("agent_loop.validate_transition",):
+            return "chiplog.capabilities.agent_loop._r13_process"
+        if identity.capability_ids == (
+            "agent_loop.validate_transition",
+            "scheduler.prepare_configuration",
+            "scheduler.prepare_interval",
+            "scheduler.prepare_lease",
+            "scheduler.prepare_rollover",
+        ):
+            return "chiplog.capabilities.agent_loop._r14_process"
+        raise OwnerProcessFailure("unknown agent-loop capability partition")
+    if identity.owner_id == "effects":
+        if identity.capability_ids == ("effects.prepare_transition",):
+            return "chiplog.capabilities.effects._process"
+        raise OwnerProcessFailure("unknown effects capability partition")
     if identity.owner_id == "planning" and identity.capability_ids == (
         "planning.r8_create_intention_line",
     ):
         return "chiplog.capabilities.planning._r8_process"
     return {
-        "agent_loop": "chiplog.capabilities.agent_loop._r13_process",
         "deployment_trust": "chiplog.capabilities.deployment_trust._r7_process",
         "planning": "chiplog.capabilities.planning._r7_process",
         "projections": "chiplog.capabilities.projections._r7_process",
     }[identity.owner_id]
+
+
+def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
+    module = _owner_module(identity)
+    if module == "chiplog.capabilities.agent_loop._r14_process":
+        return (
+            "chiplog.capabilities.agent_loop._r13_process",
+            "chiplog.capabilities.agent_loop._r14_process",
+            "chiplog.capabilities.agent_loop._scheduler_process",
+        )
+    return (module,)
 
 
 def _load_owner_handler(
@@ -403,7 +430,7 @@ class AuthorityBrokerRuntime:
                 or value.get("filesystem_denied") is not True
                 or value.get("network_denied") is not True
                 or value.get("process_spawn_denied") is not True
-                or tuple(value.get("loaded_policy_modules", ())) != (_owner_module(identity),)
+                or tuple(value.get("loaded_policy_modules", ())) != _owner_module_closure(identity)
             ):
                 raise OwnerProcessFailure("owner attestation identity mismatch")
             attestations.append(

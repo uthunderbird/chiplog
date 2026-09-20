@@ -118,6 +118,14 @@ class AuthorityReadFailure(RuntimeError):
     pass
 
 
+class AuthoritySnapshotIntegrityError(AuthorityReadFailure):
+    def __init__(self, tenant_id: str) -> None:
+        super().__init__(
+            "authority snapshot integrity: operation=capture_authority_snapshot_commitment "
+            f"tenant={tenant_id} record=authority_storage"
+        )
+
+
 def _canonical_scalar(value: object) -> object:
     if isinstance(value, bytes):
         return {"base64": base64.b64encode(value).decode("ascii")}
@@ -139,7 +147,7 @@ def _file_wal_observation(path: Path) -> str:
 
 def _schema_members(connection: sqlite3.Connection) -> tuple[tuple[str, tuple[str, ...]], ...]:
     rows = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
+        "SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
         "ORDER BY name"
     ).fetchall()
     return tuple(
@@ -147,7 +155,7 @@ def _schema_members(connection: sqlite3.Connection) -> tuple[tuple[str, tuple[st
             str(row[0]),
             tuple(
                 str(column[1])
-                for column in connection.execute(f'PRAGMA table_info("{row[0]}")').fetchall()
+                for column in connection.execute(f'PRAGMA main.table_info("{row[0]}")').fetchall()
             ),
         )
         for row in rows
@@ -162,7 +170,7 @@ def _authority_commitment(connection: sqlite3.Connection) -> str:
         columns = ", ".join(f'"{column}"' for column in member.columns)
         order = ", ".join(str(index) for index in range(1, len(member.columns) + 1))
         rows = connection.execute(
-            f'SELECT {columns} FROM "{member.table}" ORDER BY {order}'
+            f'SELECT {columns} FROM main."{member.table}" ORDER BY {order}'
         ).fetchall()
         materialized.append(
             {
@@ -174,6 +182,23 @@ def _authority_commitment(connection: sqlite3.Connection) -> str:
     return hashlib.sha256(
         json.dumps(materialized, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def capture_authority_snapshot_commitment(connection: sqlite3.Connection, tenant_id: str) -> str:
+    """Hash physical main AMR in the caller's existing transaction.
+
+    This neither authorizes a read nor verifies an independent journal anchor or
+    database path identity. It leaves the caller's transaction and connection open.
+    """
+    try:
+        if not connection.in_transaction:
+            raise ValueError("authority snapshot requires an active transaction")
+        expected = tuple((item.table, item.columns) for item in AUTHORITY_STORAGE_MEMBERS)
+        if _schema_members(connection) != expected:
+            raise ValueError("authority storage surface differs from physical schema")
+        return _authority_commitment(connection)
+    except (sqlite3.Error, ValueError, TypeError) as error:
+        raise AuthoritySnapshotIntegrityError(tenant_id) from error
 
 
 def capture_authority_storage_state(database: Path) -> tuple[str, str]:
@@ -419,8 +444,10 @@ __all__ = [
     "AuthorityCommitmentJournal",
     "AuthorityReadFailure",
     "AuthorityReadResult",
+    "AuthoritySnapshotIntegrityError",
     "BrokerAuthorityReader",
     "PreparedReadEdgeAttestation",
     "VerifiedAuthorityReadSnapshot",
+    "capture_authority_snapshot_commitment",
     "capture_authority_storage_state",
 ]

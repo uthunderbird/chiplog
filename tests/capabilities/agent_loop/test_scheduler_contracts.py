@@ -9,12 +9,15 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
     Absent,
     CoalescedSubject,
     ExecutionLineageBinding,
+    FirstPublication,
     IndividualSubject,
     PhysicalRootBinding,
+    PreRootDecisionFence,
     Present,
     RolloverPredecessor,
 )
 from chiplog.capabilities.agent_loop.scheduler_contracts import (
+    DecideIntervalCommand,
     DueCoordinate,
     ExecutionRootLeaseState,
     GenesisLease,
@@ -41,6 +44,39 @@ from chiplog.capabilities.agent_loop.scheduler_contracts import (
 )
 
 DIGEST = "a" * 64
+
+
+def test_decide_command_accepts_exact_streaming_witness_without_member_tuple() -> None:
+    command = DecideIntervalCommand(
+        identity=SchedulerCommandIdentity(
+            command_id="stream", schema_version="1", canonicalization_version="1"
+        ),
+        boundary=boundary(),
+        bound_head=bound_head(),
+        manifest=StreamingEligibilityEvidence(
+            manifest_digest=DIGEST,
+            member_count=300,
+            first_member=present("first"),
+            last_member=present("last"),
+            order_contract_version="1",
+            enumeration_completeness_proof=present("proof"),
+        ),
+        publication_fence=PreRootDecisionFence(
+            command_id="stream",
+            disposition=FirstPublication(
+                decision=Absent(), expected_canonical_absence_manifest="absence"
+            ),
+            scheduler_authority_head="authority",
+            broker_generation="broker",
+            runtime_generation="runtime",
+        ),
+    )
+    restored = DecideIntervalCommand.model_validate_json(command.canonical_bytes())
+    assert restored == command and isinstance(restored.manifest, StreamingEligibilityEvidence)
+    values = command.model_dump(mode="json")
+    values["manifest"]["kind"] = "TRUNCATED_SUCCESS"
+    with pytest.raises(ValidationError):
+        DecideIntervalCommand.model_validate(values)
 
 
 def present(head: str = "head") -> Present:
