@@ -186,3 +186,37 @@ resume/successor and model-attempt recovery; exact-prefix materialization recove
 canonical broker integration, all reached milestone counterhistories and cross-milestone
 convergence; final cold result review; R14 retro and explicitly authorized commits.
 No milestone completion claim is made.
+
+The additive `R14PlanningRuntime` now binds selected owner decisions to the existing
+physical database identity, independent authority commitment, and durable read ledger.
+All three journal families block fresh selection until their selected publication is
+materialized. Startup enumerates competing pending families before replay, reproduces
+selected bytes with an exact resulting-commitment guard, and updates the anchor and
+read ledger before marking materialization. Recovery does not call a live semantic owner.
+
+`uv run pytest -q tests/composition/test_owner_runtime_recovery.py --tb=short`:
+8 passed. Reached histories cover bootstrap/reopen; crashes after selection, physical
+commit, anchor update, and read-ledger update; reciprocal pending legacy and actual
+planning-gate barriers; corrupted physical bytes with a contextual chained integrity
+error; and historical marker replay after a later publication without rewinding the
+anchor. Owner records in these lifecycle tests deliberately use inert semantic fixtures;
+the planning-gate case uses the actual planning producer and an independent test
+entitlement. Neither establishes fresh owner invocation issuance or deployment authority.
+The runtime received an independent source review with zero confirmed P0/P1 before
+source inventory admission; exact reviewed pins and evidence limits are recorded in
+`.artifacts/r14/delivery-runtime-boundary-review.json`. A subsequent competing-journal
+mutant bypasses composition selection to seed two pending families and verifies that
+startup rejects them before changing physical state; the focused legacy selector
+passes both its normal and rival cases. The complete command registry, actual
+scheduler/effects/ingress publishers, canonical
+entrypoint wiring, and all remaining milestone scenarios above remain outstanding.
+
+The staged review found a parser-selection defect: generic transition validation
+could accept legacy completion bytes under a captured delivery generator. The
+original accepted transition is retained as a regression fixture. Both continuation
+and legacy completion now parse the captured bytes through the artifact's registered
+generator and exact schema. The pure legacy parser moved into the capability; its
+AST and all four generated tool schemas remain unchanged. Actual isolated IPC checks
+the incompatible completion and continuation generator/schema cases, including both
+singleton tool subsets. The repair's source review closed the original P1; exact
+reviewed source hashes are recorded in the corresponding parser-review artifact.

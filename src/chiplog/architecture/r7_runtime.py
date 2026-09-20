@@ -268,7 +268,18 @@ _SCHEDULER_ROUTES = tuple(
     )
     for kind in ("configuration", "interval", "lease", "rollover")
 )
+_DELIVERY_ROUTES = tuple(
+    RoutedCallDecl(
+        f"agent_loop.{operation}_delivery_completion",
+        "broker",
+        "agent_loop",
+        f"chiplog.delivery.{operation}-completion.v1",
+        "chiplog.agent-loop.record.v1",
+    )
+    for operation in ("prepare", "validate")
+)
 _LOOP_PREPARATION_OPERATIONS = (
+    *(route.operation_id for route in _DELIVERY_ROUTES),
     "agent_loop.validate_transition",
     *(route.operation_id for route in _SCHEDULER_ROUTES),
 )
@@ -302,6 +313,7 @@ R14_PRODUCTION_MANIFEST = replace(
         sorted(
             (
                 R13_PRODUCTION_MANIFEST.routes[0],
+                *_DELIVERY_ROUTES,
                 *_SCHEDULER_ROUTES,
                 RoutedCallDecl(
                     "effects.prepare_transition",
