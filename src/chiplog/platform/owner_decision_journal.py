@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -17,6 +18,7 @@ from chiplog.platform._owner_publication_contracts import (
     RegisteredPublication,
     UInt64,
 )
+from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.owner_publications import (
     OwnerPublicationPending,
     PreparedOwnerPublication,
@@ -124,6 +126,14 @@ class IndependentOwnerDecisionJournal:
         self._tenant = tenant_id
         self._scan("open", "journal")
 
+    @property
+    def authority_gate(self) -> AuthorityGate | None:
+        return self._raw.authority_gate
+
+    def _authority_scope(self) -> AbstractContextManager[None]:
+        gate = self.authority_gate
+        return nullcontext() if gate is None else gate.hold()
+
     def _scan(self, operation: str, record: str) -> _Scan:
         try:
             entries = self._raw.entries()
@@ -196,42 +206,43 @@ class IndependentOwnerDecisionJournal:
         request = prepared.request
         command = request.identity.command_id
         try:
-            entry = _Selected(
-                request=request,
-                issuance_id=prepared.issuance_id,
-                fence_generation=prepared.fence_generation,
-                fence_frontier=prepared.fence_frontier,
-                predecessor_commitment=prepared.predecessor_commitment,
-                resulting_commitment=resulting_commitment,
-            )
-            payload = _canonical(entry)
-            # Validate reconstructed bytes before any durable append, including
-            # nested DTOs built using Pydantic's intentionally unchecked copy API.
-            _CODEC.validate_json(payload)
-            _validate_bytes(request)
-            if (
-                request.identity.tenant_id != self._tenant
-                or request.expected.tenant_id != self._tenant
-                or prepared.predecessor_commitment
-                != request.expected.expected_materialization_commitment
-                or request.expected.tenant_frontier == 2**64 - 1
-            ):
-                raise ValueError("invalid tenant, predecessor or exhausted frontier")
-            scan = self._scan("select", command)
-            historical = scan.selected.get(command)
-            if historical is not None:
+            with self._authority_scope():
+                entry = _Selected(
+                    request=request,
+                    issuance_id=prepared.issuance_id,
+                    fence_generation=prepared.fence_generation,
+                    fence_frontier=prepared.fence_frontier,
+                    predecessor_commitment=prepared.predecessor_commitment,
+                    resulting_commitment=resulting_commitment,
+                )
+                payload = _canonical(entry)
+                # Validate reconstructed bytes before any durable append, including
+                # nested DTOs built using Pydantic's intentionally unchecked copy API.
+                _CODEC.validate_json(payload)
+                _validate_bytes(request)
                 if (
-                    historical.prepared != prepared
-                    or historical.resulting_commitment != resulting_commitment
+                    request.identity.tenant_id != self._tenant
+                    or request.expected.tenant_id != self._tenant
+                    or prepared.predecessor_commitment
+                    != request.expected.expected_materialization_commitment
+                    or request.expected.tenant_frontier == 2**64 - 1
                 ):
-                    raise ValueError("changed selected decision")
-                return historical
-            _validate_successor(request, scan.selected, scan.materialized)
-            self._raw.append(payload, scan.head)
-            result = self._scan("select", command).selected.get(command)
-            if result is None:
-                raise ValueError("selected decision absent after append")
-            return result
+                    raise ValueError("invalid tenant, predecessor or exhausted frontier")
+                scan = self._scan("select", command)
+                historical = scan.selected.get(command)
+                if historical is not None:
+                    if (
+                        historical.prepared != prepared
+                        or historical.resulting_commitment != resulting_commitment
+                    ):
+                        raise ValueError("changed selected decision")
+                    return historical
+                _validate_successor(request, scan.selected, scan.materialized)
+                self._raw.append(payload, scan.head)
+                result = self._scan("select", command).selected.get(command)
+                if result is None:
+                    raise ValueError("selected decision absent after append")
+                return result
         except OwnerJournalIntegrityError, OwnerPublicationPending:
             raise
         except (OSError, RuntimeError, ValueError, TypeError) as error:
@@ -240,20 +251,21 @@ class IndependentOwnerDecisionJournal:
     def materialized(self, decision: SelectedOwnerDecision) -> None:
         command = decision.prepared.request.identity.command_id
         try:
-            scan = self._scan("materialized", command)
-            if scan.selected.get(command) != decision:
-                raise ValueError("materialization does not bind exact selected decision")
-            if command in scan.materialized:
-                return
-            marker = _Materialized(
-                tenant_id=self._tenant,
-                command_id=command,
-                decision_id=decision.decision_id,
-                decision_fingerprint=decision.decision_fingerprint,
-                resulting_commitment=decision.resulting_commitment,
-            )
-            self._raw.append(_canonical(marker), scan.head)
-            self._scan("materialized", command)
+            with self._authority_scope():
+                scan = self._scan("materialized", command)
+                if scan.selected.get(command) != decision:
+                    raise ValueError("materialization does not bind exact selected decision")
+                if command in scan.materialized:
+                    return
+                marker = _Materialized(
+                    tenant_id=self._tenant,
+                    command_id=command,
+                    decision_id=decision.decision_id,
+                    decision_fingerprint=decision.decision_fingerprint,
+                    resulting_commitment=decision.resulting_commitment,
+                )
+                self._raw.append(_canonical(marker), scan.head)
+                self._scan("materialized", command)
         except OwnerJournalIntegrityError:
             raise
         except (OSError, RuntimeError, ValueError, TypeError) as error:
