@@ -9,8 +9,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import sqlite3
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
@@ -18,12 +19,16 @@ from typing import ClassVar, Literal, cast
 
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
-from chiplog.architecture.r7_runtime import R14_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import R14_FANOUT_PRODUCTION_MANIFEST
 from chiplog.capabilities.agent_loop.contracts import DurableCompanion, LoopSnapshot, RunRecord
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r13_planning import R13PlanningRuntime
+from chiplog.composition.r14_fanout_contracts import INITIALIZED_SCHEMA, SEAL_SCHEMA
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
-from chiplog.platform.authority_reads import capture_authority_storage_state
+from chiplog.platform.authority_reads import (
+    capture_authority_snapshot_commitment,
+    capture_authority_storage_state,
+)
 from chiplog.platform.owner_decision_journal import (
     IndependentOwnerDecisionJournal,
     OwnerJournalIntegrityError,
@@ -33,6 +38,7 @@ from chiplog.platform.owner_publications import (
     PreparedOwnerPublication,
     SelectedOwnerDecision,
 )
+from chiplog.platform.publication_readback import inspect_publication
 
 
 class AnchoredOwnerDecisionJournal(IndependentOwnerDecisionJournal):
@@ -114,6 +120,11 @@ class R14PlanningRuntime(R13PlanningRuntime):
         **R13PlanningRuntime._record_contracts,
         "effects": "chiplog.effects.record.v1",
     }
+    _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = (
+        *R13PlanningRuntime._record_schema_variants,
+        ("agent_loop", SEAL_SCHEMA),
+        ("agent_loop", INITIALIZED_SCHEMA),
+    )
     _owner_journal: AnchoredOwnerDecisionJournal | None = None
     _database_identity: tuple[str, int, int]
 
@@ -202,6 +213,48 @@ class R14PlanningRuntime(R13PlanningRuntime):
                     self._tenant_id, state.fingerprint(), resulting, observation
                 )
 
+    def _loop_snapshot(self) -> LoopSnapshot:
+        from chiplog.composition.r14_loop_history import read_loop_snapshot
+
+        return read_loop_snapshot(self)
+
+    def _selected_physical_state(
+        self, command: PhysicalPublicationCommand
+    ) -> tuple[str, str, str | None]:
+        """Fresh gated cut; never join a caller's potentially stale workspace snapshot."""
+        with self._authority_gate().hold():
+            self._check_database_identity()
+            with closing(
+                sqlite3.connect(
+                    self._database.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None
+                )
+            ) as connection:
+                connection.execute("BEGIN")
+                actual = capture_authority_snapshot_commitment(connection, self._tenant_id)
+                state = inspect_publication(connection, command, command.expected_head + 1)
+                anchored = self._commitment_journal.load(self._tenant_id)
+                self._check_database_identity()
+                return state, actual, anchored
+
+    def _loop_decision_materialized(
+        self, operation_id: str, expected: dict[str, object] | None = None
+    ) -> bool:
+        with self._authority_gate().hold():
+            if not super()._loop_decision_materialized(operation_id, expected):
+                return False
+            entries = [json.loads(payload) for _, _, payload in self._loop_decisions().entries()]
+            entry = next(
+                item
+                for item in entries
+                if item.get("kind") == "DECIDED" and item.get("operation_id") == operation_id
+            )
+            state, actual, anchored = self._selected_physical_state(self._publication(entry))
+            if state != "COMPLETE" or actual != anchored:
+                raise OwnerJournalIntegrityError(
+                    "recover_history_physical", self._tenant_id, operation_id
+                ) from ValueError("selected history or current physical anchor differs")
+            return True
+
     async def _recover_exact(
         self,
         command: PhysicalPublicationCommand,
@@ -210,42 +263,45 @@ class R14PlanningRuntime(R13PlanningRuntime):
         *,
         is_materialized: Callable[[], bool],
     ) -> None:
-        with self._authority_gate().hold():
-            if is_materialized():
-                return
-            self._check_database_identity()
-            actual, _ = capture_authority_storage_state(self._database)
-            if self._commitment_journal.load(self._tenant_id) not in (predecessor, resulting):
-                raise OwnerJournalIntegrityError(
-                    "recover_anchor", self._tenant_id, command.idempotency_key
-                ) from ValueError("independent anchor differs from selected predecessor/result")
-        if actual == predecessor:
-
-            def guard() -> Literal["INDETERMINATE"] | None:
-                self._check_database_identity()
-                if (
-                    is_materialized()
-                    or capture_authority_storage_state(self._database)[0] != predecessor
-                ):
-                    return "INDETERMINATE"
-                return None
-
-            def selected_bytes(commitment: str) -> None:
-                if commitment != resulting:
+        def classify() -> str:
+            with self._authority_gate().hold():
+                historical = is_materialized()
+                state, actual, anchored = self._selected_physical_state(command)
+                if historical:
+                    valid = state == "COMPLETE" and actual == anchored
+                elif state == "ABSENT":
+                    valid = actual == predecessor and anchored == predecessor
+                else:
+                    valid = (
+                        state == "COMPLETE"
+                        and actual == resulting
+                        and anchored in (predecessor, resulting)
+                    )
+                if not valid:
                     raise OwnerJournalIntegrityError(
-                        "recover_result", self._tenant_id, command.idempotency_key
-                    ) from ValueError("exact selected records produce a different commitment")
+                        "recover_physical", self._tenant_id, command.idempotency_key
+                    ) from ValueError("selected membership or physical/independent anchor differs")
+                return state
 
-            outcome = await self._appender.submit(
-                replace(command, admission_guard=guard, decision_guard=selected_bytes)
-            )
-            if outcome.disposition not in ("COMMITTED", "REPLAY"):
-                with self._authority_gate().hold():
-                    if is_materialized():
-                        return
-                raise OwnerPublicationPending("selected recovery: " + outcome.disposition)
-        # The history-first finalizer re-reads physical state under its own hold.
-        # Another process may have completed this decision and advanced since submit.
+        if classify() == "COMPLETE":
+            return
+
+        def guard() -> Literal["INDETERMINATE"] | None:
+            return None if classify() == "ABSENT" else "INDETERMINATE"
+
+        def selected_bytes(commitment: str) -> None:
+            if commitment != resulting:
+                raise OwnerJournalIntegrityError(
+                    "recover_result", self._tenant_id, command.idempotency_key
+                ) from ValueError("exact selected records produce a different commitment")
+
+        outcome = await self._appender.submit(
+            replace(command, admission_guard=guard, decision_guard=selected_bytes)
+        )
+        # REPLAY bypasses writer guards. Re-read history and exact physical membership,
+        # allowing a different process to have completed and advanced the anchor.
+        if classify() != "COMPLETE":
+            raise OwnerPublicationPending("selected recovery: " + outcome.disposition)
 
     def _owner_decision_materialized(self, decision: SelectedOwnerDecision) -> bool:
         with self._authority_gate().hold():
@@ -391,7 +447,7 @@ async def open_r14_runtime(
         tenant_id="hermetic-tenant",
         operator_secret=b"r13-hermetic-only",
         runtime_type=R14PlanningRuntime,
-        manifest=R14_PRODUCTION_MANIFEST,
+        manifest=R14_FANOUT_PRODUCTION_MANIFEST,
         extra_leaves={"model": model if model is not None else HermeticModel()},
     ) as opened:
         runtime = cast(R14PlanningRuntime, opened)
