@@ -456,6 +456,16 @@ def read_materialized_effects(
     run_id: str | None = None,
 ) -> MaterializedEffectsCut:
     """Prove complete effects membership against independently selected decisions."""
+    return _read_materialized_effects_with_history(runtime, journal, run_id=run_id)[0]
+
+
+def _read_materialized_effects_with_history(
+    runtime: R13PlanningRuntime,
+    journal: IndependentOwnerDecisionJournal,
+    *,
+    run_id: str | None = None,
+) -> tuple[MaterializedEffectsCut, OwnerJournalSnapshot]:
+    """Prove complete effects membership against independently selected decisions."""
     tenant = runtime._tenant_id
     identity = "full-effects-manifest"
     try:
@@ -558,7 +568,7 @@ def read_materialized_effects(
                 or (stat.st_dev, stat.st_ino) != physical.identity
             ):
                 raise ValueError("physical authority database changed during acquisition")
-            return MaterializedEffectsCut(
+            cut = MaterializedEffectsCut(
                 tenant,
                 frontier,
                 commitment,
@@ -570,6 +580,7 @@ def read_materialized_effects(
                 worker,
                 latest_runs,
             )
+            return cut, before
     except EffectsCurrentWorkerHold, EffectsIntegrityError:
         raise
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as error:

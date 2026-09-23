@@ -100,8 +100,6 @@ class R16PlanEffectAuthority:
     ) -> None:
         runtime = self._runtime
         with runtime._authority_gate().hold():
-            if capture_sources(runtime, adoption, self._registry) != sources:
-                raise LoopRejected("effect sources changed before issuance")
             proof = batch.authentication.invocation
             invocation = self._invocations.get(proof.issuance_id)
             if invocation is None or invocation.reference != proof:
@@ -170,6 +168,8 @@ class R16PlanEffectAuthority:
                 if capture_sources(self._runtime, entry.adoption, self._registry) != entry.sources:
                     return "STALE"
             except LoopRejected, ValueError, RuntimeError:
+                return "STALE"
+            if time.monotonic_ns() >= entry.sent.budget.absolute_deadline_ns:
                 return "STALE"
             return None
 
