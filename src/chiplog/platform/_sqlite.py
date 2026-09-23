@@ -5,11 +5,12 @@ import contextlib
 import hashlib
 import json
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol
 
+from chiplog.platform.authority_gate import AuthorityGate, FileIdentity, checked_file_identity
 from chiplog.platform.workspace_snapshot import read_connection
 
 STORE_VERSION = 1
@@ -228,44 +229,78 @@ class SQLiteMaterializer:
         derivative_contracts: tuple[str, ...] = (),
         managed_derivative_sinks: tuple[str, ...] = (),
         store_version: int = STORE_VERSION,
+        authority_gate: AuthorityGate | None = None,
     ) -> None:
+        self._authority_gate = authority_gate
+        self._identity: FileIdentity | None = None
+        if authority_gate is not None and path.resolve(strict=False) != authority_gate.database:
+            raise StoreAdmissionError("materializer authority gate binding mismatch")
+        path = path.resolve(strict=False) if authority_gate is not None else path
         self._path = path
-        self._connection = sqlite3.connect(path, check_same_thread=False)
-        self._writer_token: _WriterToken | None = None
-        self._record_contracts = dict(record_contracts)
-        primary_pairs = tuple(record_contracts.items())
-        all_pairs = (*primary_pairs, *record_schema_variants)
-        if (
-            len(set(all_pairs)) != len(all_pairs)
-            or any(owner not in record_contracts for owner, _ in record_schema_variants)
-            or any(
-                not owner or not schema or owner.strip() != owner or schema.strip() != schema
-                for owner, schema in all_pairs
+        with self._authority_scope():
+            prior = (
+                checked_file_identity(path)
+                if authority_gate is not None and path.exists()
+                else None
             )
-        ):
-            self._connection.close()
-            raise StoreAdmissionError("record owner/schema variant registry mismatch")
-        self._record_pairs = frozenset(all_pairs)
-        if managed_record_owners is None:
-            managed_record_owners = tuple(record_contracts)
-        if len(managed_record_owners) != len(set(managed_record_owners)) or set(
-            managed_record_owners
-        ) != set(record_contracts):
-            self._connection.close()
-            raise StoreAdmissionError("record owner registry exact-set mismatch")
-        if len(derivative_contracts) != len(set(derivative_contracts)) or set(
-            derivative_contracts
-        ) != set(managed_derivative_sinks):
-            self._connection.close()
-            raise StoreAdmissionError("derivative registry exact-set mismatch")
-        self._derivative_contracts = frozenset(derivative_contracts)
-        try:
-            self._admit(store_version)
-        except BaseException:
-            self._connection.close()
-            raise
-        self._connection.execute("PRAGMA foreign_keys = ON")
-        self._connection.execute("PRAGMA journal_mode = WAL")
+            self._connection = sqlite3.connect(path, check_same_thread=False)
+            self._writer_token: _WriterToken | None = None
+            self._record_contracts = dict(record_contracts)
+            primary_pairs = tuple(record_contracts.items())
+            all_pairs = (*primary_pairs, *record_schema_variants)
+            if (
+                len(set(all_pairs)) != len(all_pairs)
+                or any(owner not in record_contracts for owner, _ in record_schema_variants)
+                or any(
+                    not owner or not schema or owner.strip() != owner or schema.strip() != schema
+                    for owner, schema in all_pairs
+                )
+            ):
+                self._connection.close()
+                raise StoreAdmissionError("record owner/schema variant registry mismatch")
+            self._record_pairs = frozenset(all_pairs)
+            if managed_record_owners is None:
+                managed_record_owners = tuple(record_contracts)
+            if len(managed_record_owners) != len(set(managed_record_owners)) or set(
+                managed_record_owners
+            ) != set(record_contracts):
+                self._connection.close()
+                raise StoreAdmissionError("record owner registry exact-set mismatch")
+            if len(derivative_contracts) != len(set(derivative_contracts)) or set(
+                derivative_contracts
+            ) != set(managed_derivative_sinks):
+                self._connection.close()
+                raise StoreAdmissionError("derivative registry exact-set mismatch")
+            self._derivative_contracts = frozenset(derivative_contracts)
+            try:
+                self._admit(store_version)
+            except BaseException:
+                self._connection.close()
+                raise
+            self._connection.execute("PRAGMA foreign_keys = ON")
+            self._connection.execute("PRAGMA journal_mode = WAL")
+            if authority_gate is not None:
+                self._identity = checked_file_identity(path, prior)
+
+    @property
+    def authority_gate(self) -> AuthorityGate | None:
+        return self._authority_gate
+
+    @contextlib.contextmanager
+    def _authority_scope(self) -> Iterator[None]:
+        gate = (
+            contextlib.nullcontext()
+            if self._authority_gate is None
+            else self._authority_gate.hold()
+        )
+        with gate:
+            if self._identity is not None:
+                checked_file_identity(self._path, self._identity)
+            try:
+                yield
+            finally:
+                if self._identity is not None:
+                    checked_file_identity(self._path, self._identity)
 
     def __enter__(self) -> SQLiteMaterializer:
         return self
@@ -314,99 +349,101 @@ class SQLiteMaterializer:
     def _publish(
         self, token: _WriterToken, command: PhysicalPublicationCommand
     ) -> PublicationResult:
-        self._require_writer(token)
-        record_ids = tuple(record.record_id for record in command.records)
-        if not record_ids or len(record_ids) != len(set(record_ids)):
-            raise ValueError("publication records must be a non-empty unique set")
-        for record in command.records:
-            if (record.owner, record.schema_id) not in self._record_pairs:
-                raise ValueError("owner/schema contract mismatch")
-            observed_fingerprint = hashlib.sha256(record.canonical_bytes).hexdigest()
-            if record.fingerprint != observed_fingerprint:
-                raise ValueError("canonical record fingerprint mismatch")
-        self.require_fence(
-            command.tenant_id,
-            command.fence_generation,
-            command.minimum_fence_frontier,
-            exact_frontier=command.expected_fence_frontier,
-        )
-
-        try:
-            self._connection.execute("BEGIN IMMEDIATE")
-            existing = self._connection.execute(
-                """SELECT request_fingerprint, commit_sequence, record_ids
-                   FROM publications
-                   WHERE tenant_id = ? AND operation_kind = ? AND idempotency_key = ?""",
-                (command.tenant_id, command.operation_kind, command.idempotency_key),
-            ).fetchone()
-            if existing is not None:
-                self._connection.rollback()
-                if existing[0] != command.request_fingerprint:
-                    return PublicationResult("CONFLICT", existing[1], ())
-                return PublicationResult("REPLAY", existing[1], tuple(existing[2].split("\n")))
-            if command.admission_guard is not None:
-                disposition = command.admission_guard()
-                if disposition is not None:
-                    self._connection.rollback()
-                    return PublicationResult(disposition, None, ())
-            row = self._connection.execute(
-                "SELECT head FROM tenant_heads WHERE tenant_id = ?", (command.tenant_id,)
-            ).fetchone()
-            current_head = 0 if row is None else int(row[0])
-            if current_head != command.expected_head:
-                self._connection.rollback()
-                return PublicationResult("STALE", None, ())
-            commit_sequence = current_head + 1
+        with self._authority_scope():
+            self._require_writer(token)
+            record_ids = tuple(record.record_id for record in command.records)
+            if not record_ids or len(record_ids) != len(set(record_ids)):
+                raise ValueError("publication records must be a non-empty unique set")
             for record in command.records:
+                if (record.owner, record.schema_id) not in self._record_pairs:
+                    raise ValueError("owner/schema contract mismatch")
+                observed_fingerprint = hashlib.sha256(record.canonical_bytes).hexdigest()
+                if record.fingerprint != observed_fingerprint:
+                    raise ValueError("canonical record fingerprint mismatch")
+            self.require_fence(
+                command.tenant_id,
+                command.fence_generation,
+                command.minimum_fence_frontier,
+                exact_frontier=command.expected_fence_frontier,
+            )
+
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                existing = self._connection.execute(
+                    """SELECT request_fingerprint, commit_sequence, record_ids
+                       FROM publications
+                       WHERE tenant_id = ? AND operation_kind = ? AND idempotency_key = ?""",
+                    (command.tenant_id, command.operation_kind, command.idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    self._connection.rollback()
+                    if existing[0] != command.request_fingerprint:
+                        return PublicationResult("CONFLICT", existing[1], ())
+                    return PublicationResult("REPLAY", existing[1], tuple(existing[2].split("\n")))
+                if command.admission_guard is not None:
+                    disposition = command.admission_guard()
+                    if disposition is not None:
+                        self._connection.rollback()
+                        return PublicationResult(disposition, None, ())
+                row = self._connection.execute(
+                    "SELECT head FROM tenant_heads WHERE tenant_id = ?", (command.tenant_id,)
+                ).fetchone()
+                current_head = 0 if row is None else int(row[0])
+                if current_head != command.expected_head:
+                    self._connection.rollback()
+                    return PublicationResult("STALE", None, ())
+                commit_sequence = current_head + 1
+                for record in command.records:
+                    self._connection.execute(
+                        """INSERT INTO records(
+                               tenant_id, record_id, owner, schema_id,
+                               canonical_bytes, commit_sequence
+                           ) VALUES (?, ?, ?, ?, ?, ?)""",
+                        (
+                            command.tenant_id,
+                            record.record_id,
+                            record.owner,
+                            record.schema_id,
+                            record.canonical_bytes,
+                            commit_sequence,
+                        ),
+                    )
                 self._connection.execute(
-                    """INSERT INTO records(
-                           tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence
+                    """INSERT INTO publications(
+                           tenant_id, operation_kind, idempotency_key, request_fingerprint,
+                           commit_sequence, record_ids
                        ) VALUES (?, ?, ?, ?, ?, ?)""",
                     (
                         command.tenant_id,
-                        record.record_id,
-                        record.owner,
-                        record.schema_id,
-                        record.canonical_bytes,
+                        command.operation_kind,
+                        command.idempotency_key,
+                        command.request_fingerprint,
                         commit_sequence,
+                        "\n".join(record_ids),
                     ),
                 )
-            self._connection.execute(
-                """INSERT INTO publications(
-                       tenant_id, operation_kind, idempotency_key, request_fingerprint,
-                       commit_sequence, record_ids
-                   ) VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    command.tenant_id,
-                    command.operation_kind,
-                    command.idempotency_key,
-                    command.request_fingerprint,
-                    commit_sequence,
-                    "\n".join(record_ids),
-                ),
-            )
-            self._connection.execute(
-                """INSERT INTO tenant_heads(tenant_id, head) VALUES (?, ?)
-                   ON CONFLICT(tenant_id) DO UPDATE SET head = excluded.head""",
-                (command.tenant_id, commit_sequence),
-            )
-            if command.decision_guard is not None:
-                from .authority_reads import _authority_commitment
+                self._connection.execute(
+                    """INSERT INTO tenant_heads(tenant_id, head) VALUES (?, ?)
+                       ON CONFLICT(tenant_id) DO UPDATE SET head = excluded.head""",
+                    (command.tenant_id, commit_sequence),
+                )
+                if command.decision_guard is not None:
+                    from .authority_reads import _authority_commitment
 
-                disposition = command.decision_guard(_authority_commitment(self._connection))
-                if disposition is not None:
+                    disposition = command.decision_guard(_authority_commitment(self._connection))
+                    if disposition is not None:
+                        self._connection.rollback()
+                        return PublicationResult(disposition, None, ())
+                if command.fault == "before_commit":
+                    raise RuntimeError("injected fault before commit")
+                self._connection.commit()
+            except BaseException:
+                if self._connection.in_transaction:
                     self._connection.rollback()
-                    return PublicationResult(disposition, None, ())
-            if command.fault == "before_commit":
-                raise RuntimeError("injected fault before commit")
-            self._connection.commit()
-        except BaseException:
-            if self._connection.in_transaction:
-                self._connection.rollback()
-            raise
-        if command.fault == "after_commit":
-            raise LostCommitAcknowledgement("injected lost commit acknowledgement")
-        return PublicationResult("COMMITTED", commit_sequence, record_ids)
+                raise
+            if command.fault == "after_commit":
+                raise LostCommitAcknowledgement("injected lost commit acknowledgement")
+            return PublicationResult("COMMITTED", commit_sequence, record_ids)
 
     def durable_records(self) -> tuple[tuple[object, ...], ...]:
         rows = self._connection.execute(
@@ -434,25 +471,26 @@ class SQLiteMaterializer:
         *,
         allow_exact_replay: bool = False,
     ) -> PlatformMutationResult:
-        self._require_writer(token)
-        if frontier < 0 or not generation:
-            raise ValueError("invalid deletion fence")
-        with self._connection:
-            current = self._connection.execute(
-                "SELECT generation, frontier FROM deletion_fences WHERE tenant_id = ?",
-                (tenant_id,),
-            ).fetchone()
-            if current == (generation, frontier) and allow_exact_replay:
-                return PlatformMutationResult("REPLAY", f"fence:{tenant_id}:{generation}")
-            if current is not None and (frontier < current[1] or generation == current[0]):
-                raise ValueError("deletion fence must advance generation and not regress")
-            self._connection.execute(
-                """INSERT INTO deletion_fences(tenant_id, generation, frontier) VALUES (?, ?, ?)
-                   ON CONFLICT(tenant_id) DO UPDATE SET
-                       generation = excluded.generation, frontier = excluded.frontier""",
-                (tenant_id, generation, frontier),
-            )
-        return PlatformMutationResult("COMMITTED", f"fence:{tenant_id}:{generation}")
+        with self._authority_scope():
+            self._require_writer(token)
+            if frontier < 0 or not generation:
+                raise ValueError("invalid deletion fence")
+            with self._connection:
+                current = self._connection.execute(
+                    "SELECT generation, frontier FROM deletion_fences WHERE tenant_id = ?",
+                    (tenant_id,),
+                ).fetchone()
+                if current == (generation, frontier) and allow_exact_replay:
+                    return PlatformMutationResult("REPLAY", f"fence:{tenant_id}:{generation}")
+                if current is not None and (frontier < current[1] or generation == current[0]):
+                    raise ValueError("deletion fence must advance generation and not regress")
+                self._connection.execute(
+                    """INSERT INTO deletion_fences(tenant_id, generation, frontier) VALUES (?, ?, ?)
+                       ON CONFLICT(tenant_id) DO UPDATE SET
+                           generation = excluded.generation, frontier = excluded.frontier""",
+                    (tenant_id, generation, frontier),
+                )
+            return PlatformMutationResult("COMMITTED", f"fence:{tenant_id}:{generation}")
 
     def require_fence(
         self,
@@ -504,173 +542,176 @@ class SQLiteMaterializer:
         *,
         fence_generation: str,
     ) -> PlatformMutationResult:
-        self._require_writer(token)
-        if registration.sink not in self._derivative_contracts:
-            raise ValueError("unknown derivative sink")
-        if not registration.source_record_ids or len(registration.source_record_ids) != len(
-            set(registration.source_record_ids)
-        ):
-            raise ValueError("derivative provenance must be a non-empty unique source set")
-        self.require_fence(
-            tenant_id,
-            fence_generation,
-            registration.source_epoch,
-            exact_frontier=registration.source_epoch,
-        )
-        placeholders = ",".join("?" for _ in registration.source_record_ids)
-        rows = self._connection.execute(
-            f"""SELECT record_id FROM records
-                WHERE tenant_id = ? AND record_id IN ({placeholders})""",
-            (tenant_id, *registration.source_record_ids),
-        ).fetchall()
-        if {str(row[0]) for row in rows} != set(registration.source_record_ids):
-            raise ValueError("derivative provenance source set is missing or foreign")
-        canonical = json.dumps(
-            {
-                "tenant_id": tenant_id,
-                "sink": registration.sink,
-                "derivative_id": registration.derivative_id,
-                "source_record_ids": registration.source_record_ids,
-                "source_epoch": registration.source_epoch,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        if hashlib.sha256(canonical).hexdigest() != registration.provenance_fingerprint:
-            raise ValueError("derivative provenance fingerprint mismatch")
-        with self._connection:
-            existing = self._connection.execute(
-                """SELECT source_record_ids, source_epoch, provenance_fingerprint
-                   FROM derivatives WHERE tenant_id = ? AND sink = ? AND derivative_id = ?""",
-                (tenant_id, registration.sink, registration.derivative_id),
-            ).fetchone()
-            binding = (
-                "\n".join(registration.source_record_ids),
+        with self._authority_scope():
+            self._require_writer(token)
+            if registration.sink not in self._derivative_contracts:
+                raise ValueError("unknown derivative sink")
+            if not registration.source_record_ids or len(registration.source_record_ids) != len(
+                set(registration.source_record_ids)
+            ):
+                raise ValueError("derivative provenance must be a non-empty unique source set")
+            self.require_fence(
+                tenant_id,
+                fence_generation,
                 registration.source_epoch,
-                registration.provenance_fingerprint,
+                exact_frontier=registration.source_epoch,
             )
-            if existing is not None:
-                if tuple(existing) != binding:
-                    raise ValueError("derivative identity reused with changed provenance")
-                return PlatformMutationResult("REPLAY", registration.derivative_id)
-            self._connection.execute(
-                """INSERT INTO derivatives(
-                       tenant_id, sink, derivative_id, source_record_ids, source_epoch,
-                       provenance_fingerprint
-                   ) VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    tenant_id,
-                    registration.sink,
-                    registration.derivative_id,
+            placeholders = ",".join("?" for _ in registration.source_record_ids)
+            rows = self._connection.execute(
+                f"""SELECT record_id FROM records
+                    WHERE tenant_id = ? AND record_id IN ({placeholders})""",
+                (tenant_id, *registration.source_record_ids),
+            ).fetchall()
+            if {str(row[0]) for row in rows} != set(registration.source_record_ids):
+                raise ValueError("derivative provenance source set is missing or foreign")
+            canonical = json.dumps(
+                {
+                    "tenant_id": tenant_id,
+                    "sink": registration.sink,
+                    "derivative_id": registration.derivative_id,
+                    "source_record_ids": registration.source_record_ids,
+                    "source_epoch": registration.source_epoch,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            if hashlib.sha256(canonical).hexdigest() != registration.provenance_fingerprint:
+                raise ValueError("derivative provenance fingerprint mismatch")
+            with self._connection:
+                existing = self._connection.execute(
+                    """SELECT source_record_ids, source_epoch, provenance_fingerprint
+                       FROM derivatives WHERE tenant_id = ? AND sink = ? AND derivative_id = ?""",
+                    (tenant_id, registration.sink, registration.derivative_id),
+                ).fetchone()
+                binding = (
                     "\n".join(registration.source_record_ids),
                     registration.source_epoch,
                     registration.provenance_fingerprint,
-                ),
-            )
-        return PlatformMutationResult("COMMITTED", registration.derivative_id)
+                )
+                if existing is not None:
+                    if tuple(existing) != binding:
+                        raise ValueError("derivative identity reused with changed provenance")
+                    return PlatformMutationResult("REPLAY", registration.derivative_id)
+                self._connection.execute(
+                    """INSERT INTO derivatives(
+                           tenant_id, sink, derivative_id, source_record_ids, source_epoch,
+                           provenance_fingerprint
+                       ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        tenant_id,
+                        registration.sink,
+                        registration.derivative_id,
+                        "\n".join(registration.source_record_ids),
+                        registration.source_epoch,
+                        registration.provenance_fingerprint,
+                    ),
+                )
+            return PlatformMutationResult("COMMITTED", registration.derivative_id)
 
     def _admit_evidence(
         self, token: _WriterToken, command: EvidenceIngressCommand
     ) -> EvidenceResult:
-        self._require_writer(token)
-        existing = self._connection.execute(
-            """SELECT fingerprint, state FROM evidence_inbox
-               WHERE tenant_id = ? AND source_id = ? AND evidence_id = ?""",
-            (command.tenant_id, command.source_id, command.evidence_id),
-        ).fetchone()
-        if existing is not None:
-            if existing[0] != command.fingerprint:
-                return EvidenceResult("CONFLICT", command.evidence_id, str(existing[1]))
-            return EvidenceResult("REPLAY", command.evidence_id, str(existing[1]))
-        try:
-            self._connection.execute("BEGIN IMMEDIATE")
-            self._connection.execute(
-                """INSERT INTO evidence_inbox(
-                       tenant_id, source_id, evidence_id, fingerprint, canonical_bytes,
-                       followup_kind, state
-                   ) VALUES (?, ?, ?, ?, ?, ?, 'LOCAL_ACK_AUTHORIZED')""",
-                (
-                    command.tenant_id,
-                    command.source_id,
-                    command.evidence_id,
-                    command.fingerprint,
-                    command.canonical_bytes,
-                    command.followup_kind,
-                ),
-            )
-            if command.fault == "before_commit":
-                raise RuntimeError("injected evidence fault before commit")
-            self._connection.commit()
-        except BaseException as error:
-            if self._connection.in_transaction:
-                self._connection.rollback()
-            if not command.redelivery_supported:
-                raise EvidencePossibleLoss("non-redeliverable evidence may be lost") from error
-            raise
-        if command.fault == "after_commit":
-            raise LostCommitAcknowledgement("injected lost evidence commit acknowledgement")
-        return EvidenceResult("COMMITTED", command.evidence_id, "LOCAL_ACK_AUTHORIZED")
+        with self._authority_scope():
+            self._require_writer(token)
+            existing = self._connection.execute(
+                """SELECT fingerprint, state FROM evidence_inbox
+                   WHERE tenant_id = ? AND source_id = ? AND evidence_id = ?""",
+                (command.tenant_id, command.source_id, command.evidence_id),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != command.fingerprint:
+                    return EvidenceResult("CONFLICT", command.evidence_id, str(existing[1]))
+                return EvidenceResult("REPLAY", command.evidence_id, str(existing[1]))
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                self._connection.execute(
+                    """INSERT INTO evidence_inbox(
+                           tenant_id, source_id, evidence_id, fingerprint, canonical_bytes,
+                           followup_kind, state
+                       ) VALUES (?, ?, ?, ?, ?, ?, 'LOCAL_ACK_AUTHORIZED')""",
+                    (
+                        command.tenant_id,
+                        command.source_id,
+                        command.evidence_id,
+                        command.fingerprint,
+                        command.canonical_bytes,
+                        command.followup_kind,
+                    ),
+                )
+                if command.fault == "before_commit":
+                    raise RuntimeError("injected evidence fault before commit")
+                self._connection.commit()
+            except BaseException as error:
+                if self._connection.in_transaction:
+                    self._connection.rollback()
+                if not command.redelivery_supported:
+                    raise EvidencePossibleLoss("non-redeliverable evidence may be lost") from error
+                raise
+            if command.fault == "after_commit":
+                raise LostCommitAcknowledgement("injected lost evidence commit acknowledgement")
+            return EvidenceResult("COMMITTED", command.evidence_id, "LOCAL_ACK_AUTHORIZED")
 
     def _advance_evidence(
         self, token: _WriterToken, command: EvidenceFollowupCommand
     ) -> EvidenceResult:
-        self._require_writer(token)
-        row = self._connection.execute(
-            """SELECT source_id, followup_kind, state, attempt_id, transport_version, cursor
-               FROM evidence_inbox
-               WHERE tenant_id = ? AND source_id = ? AND evidence_id = ?""",
-            (command.tenant_id, command.source_id, command.evidence_id),
-        ).fetchone()
-        if row is None:
-            raise ValueError("unknown evidence inbox subject")
-        source_id, followup_kind, state, attempt_id, transport_version, cursor = row
-        if state == command.next_state:
-            if (attempt_id, transport_version, cursor) == (
-                command.attempt_id,
-                command.transport_version,
-                command.cursor,
-            ):
-                return EvidenceResult("REPLAY", command.evidence_id, command.next_state)
-            return EvidenceResult("CONFLICT", command.evidence_id, str(state))
-        allowed = {
-            "PUSH": {
-                ("LOCAL_ACK_AUTHORIZED", "PUSH_RESPONSE_ATTEMPT_ISSUED"),
-                ("PUSH_RESPONSE_ATTEMPT_ISSUED", "PUSH_RESPONSE_LOCAL_COMPLETION_OBSERVED"),
-                ("PUSH_RESPONSE_LOCAL_COMPLETION_OBSERVED", "PROVIDER_RECEIPT_OBSERVED"),
-            },
-            "POLL": {
-                ("LOCAL_ACK_AUTHORIZED", "POLL_CURSOR_ADVANCE_AUTHORIZED"),
-                ("POLL_CURSOR_ADVANCE_AUTHORIZED", "POLL_CURSOR_APPLIED"),
-            },
-            "RECONCILIATION": {
-                ("LOCAL_ACK_AUTHORIZED", "RECONCILIATION_RELEASE_AUTHORIZED"),
-                ("RECONCILIATION_RELEASE_AUTHORIZED", "RECONCILIATION_OBLIGATION_RELEASED"),
-            },
-        }
-        transition = (command.expected_state, command.next_state)
-        if state != command.expected_state or transition not in allowed[str(followup_kind)]:
-            raise ValueError("illegal evidence follow-up transition")
-        if followup_kind == "POLL" and command.cursor is None:
-            raise ValueError("polling transition requires a durable cursor")
-        with self._connection:
-            changed = self._connection.execute(
-                """UPDATE evidence_inbox
-                   SET state = ?, attempt_id = ?, transport_version = ?, cursor = ?
-                   WHERE tenant_id = ? AND source_id = ? AND evidence_id = ? AND state = ?""",
-                (
-                    command.next_state,
+        with self._authority_scope():
+            self._require_writer(token)
+            row = self._connection.execute(
+                """SELECT source_id, followup_kind, state, attempt_id, transport_version, cursor
+                   FROM evidence_inbox
+                   WHERE tenant_id = ? AND source_id = ? AND evidence_id = ?""",
+                (command.tenant_id, command.source_id, command.evidence_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("unknown evidence inbox subject")
+            source_id, followup_kind, state, attempt_id, transport_version, cursor = row
+            if state == command.next_state:
+                if (attempt_id, transport_version, cursor) == (
                     command.attempt_id,
                     command.transport_version,
                     command.cursor,
-                    command.tenant_id,
-                    source_id,
-                    command.evidence_id,
-                    command.expected_state,
-                ),
-            ).rowcount
-            if changed != 1:
-                raise RuntimeError("evidence state CAS lost")
-        return EvidenceResult("COMMITTED", command.evidence_id, command.next_state)
+                ):
+                    return EvidenceResult("REPLAY", command.evidence_id, command.next_state)
+                return EvidenceResult("CONFLICT", command.evidence_id, str(state))
+            allowed = {
+                "PUSH": {
+                    ("LOCAL_ACK_AUTHORIZED", "PUSH_RESPONSE_ATTEMPT_ISSUED"),
+                    ("PUSH_RESPONSE_ATTEMPT_ISSUED", "PUSH_RESPONSE_LOCAL_COMPLETION_OBSERVED"),
+                    ("PUSH_RESPONSE_LOCAL_COMPLETION_OBSERVED", "PROVIDER_RECEIPT_OBSERVED"),
+                },
+                "POLL": {
+                    ("LOCAL_ACK_AUTHORIZED", "POLL_CURSOR_ADVANCE_AUTHORIZED"),
+                    ("POLL_CURSOR_ADVANCE_AUTHORIZED", "POLL_CURSOR_APPLIED"),
+                },
+                "RECONCILIATION": {
+                    ("LOCAL_ACK_AUTHORIZED", "RECONCILIATION_RELEASE_AUTHORIZED"),
+                    ("RECONCILIATION_RELEASE_AUTHORIZED", "RECONCILIATION_OBLIGATION_RELEASED"),
+                },
+            }
+            transition = (command.expected_state, command.next_state)
+            if state != command.expected_state or transition not in allowed[str(followup_kind)]:
+                raise ValueError("illegal evidence follow-up transition")
+            if followup_kind == "POLL" and command.cursor is None:
+                raise ValueError("polling transition requires a durable cursor")
+            with self._connection:
+                changed = self._connection.execute(
+                    """UPDATE evidence_inbox
+                       SET state = ?, attempt_id = ?, transport_version = ?, cursor = ?
+                       WHERE tenant_id = ? AND source_id = ? AND evidence_id = ? AND state = ?""",
+                    (
+                        command.next_state,
+                        command.attempt_id,
+                        command.transport_version,
+                        command.cursor,
+                        command.tenant_id,
+                        source_id,
+                        command.evidence_id,
+                        command.expected_state,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("evidence state CAS lost")
+            return EvidenceResult("COMMITTED", command.evidence_id, command.next_state)
 
     def evidence_state(self, tenant_id: str, source_id: str, evidence_id: str) -> str | None:
         row = self._connection.execute(

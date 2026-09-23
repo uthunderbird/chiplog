@@ -11,7 +11,7 @@ import secrets
 import sqlite3
 import time
 from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
@@ -22,7 +22,10 @@ from chiplog.adapters.driven.deployment_trust import (
 )
 from chiplog.adapters.driven.planning_sqlite import _publication
 from chiplog.architecture.r7_runtime import R7_PRODUCTION_MANIFEST, RuntimeAssemblyManifest
-from chiplog.architecture.r7_storage_surface import AUTHORITY_STORAGE_SURFACE_DIGEST
+from chiplog.architecture.r7_storage_surface import (
+    AUTHORITY_STORAGE_MEMBERS,
+    AUTHORITY_STORAGE_SURFACE_DIGEST,
+)
 from chiplog.capabilities.planning import (
     CreateIntentionLine,
     PlanningCommittedResult,
@@ -43,6 +46,7 @@ from chiplog.platform._sqlite import (
     PhysicalRecord,
     SQLiteMaterializer,
 )
+from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.authority_ledger import OperationDisposition, OperationToken
 from chiplog.platform.authority_reads import (
     AMR_FINGERPRINT,
@@ -50,10 +54,16 @@ from chiplog.platform.authority_reads import (
     BrokerAuthorityReader,
     capture_authority_storage_state,
 )
-from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortRejected
+from chiplog.platform.broker import (
+    BrokerSession,
+    CallBudget,
+    PublicPortCall,
+    PublicPortRejected,
+    PublicPortResult,
+)
 from chiplog.platform.r7_leaves import ProductionClock, ProductionPlanningStore
 from chiplog.platform.r7_trust import TrustOwnerCall, TrustOwnerResult, encode_trust_journal
-from chiplog.platform.r7_trust_durability import BrokerTrustDurability
+from chiplog.platform.r7_trust_durability import BrokerTrustDurability, FrozenTrustObservation
 from chiplog.platform.read_ledger import BrokerReadLedger, BrokerReadState, ReadOperation
 
 from .r7_supervisor import R4RuntimeAdmission, R7RuntimeSupervisor
@@ -115,6 +125,14 @@ def _decode_owner_result(payload: bytes) -> R7PlanningResultDTO:
 
 
 @dataclass(frozen=True)
+class ObservedTrustCall:
+    observation: FrozenTrustObservation
+    request: PublicPortCall
+    response: PublicPortResult
+    result: TrustOwnerResult
+
+
+@dataclass(frozen=True)
 class PreparedPlanningCandidate:
     """Isolated owner output, not a publication or durable planning receipt."""
 
@@ -166,10 +184,41 @@ class R7PlanningRuntime:
         self._generation_counter = 0
         self._planning_lane = asyncio.Lock()
 
+    def _authority_gate(self) -> AuthorityGate:
+        gate = self._trust.authority_gate
+        if gate is None or self._commitment_journal.authority_gate != gate:
+            raise RuntimeError("runtime journal authority binding is unavailable or inconsistent")
+        return gate
+
+    def _finalize_planning_commitment(self, predecessor: str, resulting: str) -> None:
+        with self._authority_gate().hold():
+            actual, observation = capture_authority_storage_state(self._database)
+            anchored = self._commitment_journal.load(self._tenant_id)
+            if actual != resulting:
+                if anchored == actual:
+                    return  # A later independently anchored publication is already current.
+                raise RuntimeError("selected planning result requires materialization recovery")
+            state = self._read_ledger.current_state(self._tenant_id)
+            if anchored not in (predecessor, resulting) or state.materialization_commitment not in (
+                predecessor,
+                resulting,
+            ):
+                raise RuntimeError("planning finalization predecessor changed")
+            self._commitment_journal.commit(self._tenant_id, resulting)
+            if (
+                state.materialization_commitment != resulting
+                or state.file_wal_observation != observation
+            ):
+                self._read_ledger.invalidate_storage_mutation(
+                    self._tenant_id, state.fingerprint(), resulting, observation
+                )
+
     def _trust_call_request(
         self,
         mode: Literal["AUTHENTICATE", "BOOTSTRAP", "REVALIDATE", "RUNTIME_ADMISSION"],
         value: object,
+        *,
+        snapshot_bytes: bytes | None = None,
     ) -> PublicPortCall:
         callee = (
             self._supervisor.quarantined_trust_session()
@@ -178,7 +227,11 @@ class R7PlanningRuntime:
         )
         payload = TrustOwnerCall(
             mode=mode,
-            snapshot_bytes=encode_trust_journal(self._trust.owner_snapshot_entries()),
+            snapshot_bytes=(
+                encode_trust_journal(self._trust.owner_snapshot_entries())
+                if snapshot_bytes is None
+                else snapshot_bytes
+            ),
             request_bytes=_canonical(value),
         )
         return PublicPortCall(
@@ -212,31 +265,58 @@ class R7PlanningRuntime:
             raise ValueError("deployment-trust owner returned non-canonical bytes")
         return result
 
+    async def _observed_trust_call(
+        self,
+        mode: Literal["AUTHENTICATE", "BOOTSTRAP", "REVALIDATE", "RUNTIME_ADMISSION"],
+        value: object,
+    ) -> ObservedTrustCall:
+        observation = self._trust.capture_verified_observation()
+        request = self._trust_call_request(mode, value, snapshot_bytes=observation.snapshot_bytes)
+        if mode == "BOOTSTRAP":
+            response = await self._supervisor.call_quarantined_trust(request)
+        else:
+            response = await self._supervisor.runtime().call(request)
+        if response.request_id != request.request_id or response.responder != request.callee:
+            raise ValueError("trust owner response identity differs from sent request")
+        if isinstance(response, PublicPortRejected):
+            result = TrustOwnerResult(
+                disposition="INDETERMINATE", reference_bytes=None, reason=response.failure.reason
+            )
+        else:
+            if response.schema_id != "chiplog.deployment-trust.owner-result.v1":
+                raise ValueError("trust owner response schema differs from registered schema")
+            result = self._decode_trust_result(response.canonical_payload)
+        return ObservedTrustCall(observation, request, response, result)
+
     async def _trust_call(
         self,
         mode: Literal["AUTHENTICATE", "BOOTSTRAP", "REVALIDATE", "RUNTIME_ADMISSION"],
         value: object,
     ) -> TrustOwnerResult:
-        request = self._trust_call_request(mode, value)
-        if mode == "BOOTSTRAP":
-            response = await self._supervisor.call_quarantined_trust(request)
-        else:
-            response = await self._supervisor.runtime().call(request)
-        if isinstance(response, PublicPortRejected):
-            return TrustOwnerResult(
-                disposition="INDETERMINATE", reference_bytes=None, reason=response.failure.reason
-            )
-        return self._decode_trust_result(response.canonical_payload)
+        return (await self._observed_trust_call(mode, value)).result
 
-    def _trust_call_sync(self, value: object) -> TrustOwnerResult:
-        response = self._supervisor.runtime().call_sync(
-            self._trust_call_request("REVALIDATE", value)
-        )
-        if isinstance(response, PublicPortRejected):
-            return TrustOwnerResult(
-                disposition="INDETERMINATE", reference_bytes=None, reason=response.failure.reason
-            )
-        return self._decode_trust_result(response.canonical_payload)
+    def _trust_observation_guard(
+        self, observed: ObservedTrustCall
+    ) -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
+        if observed.result.disposition != "VALID":
+            return observed.result.disposition
+        if observed.result.reference_bytes is None:
+            return "INDETERMINATE"
+        if time.monotonic_ns() >= observed.request.budget.absolute_deadline_ns:
+            return "STALE"
+        current_session = self._supervisor.runtime().session("deployment_trust")
+        if current_session != observed.request.callee:
+            return "STALE"
+        read_state = self._read_ledger.current_state(self._tenant_id)
+        if (
+            read_state.owner_draining
+            or read_state.broker_epoch != current_session.broker_epoch
+            or read_state.owner_generation != current_session.generation_id
+        ):
+            return "STALE"
+        if self._trust.capture_verified_observation() != observed.observation:
+            return "STALE"
+        return None
 
     def _start_generation(self) -> None:
         self._generation_counter += 1
@@ -244,6 +324,13 @@ class R7PlanningRuntime:
         self._reconcile_read_generation()
 
     def _reconcile_read_generation(self) -> None:
+        gate = self._trust.authority_gate
+        if gate is None:
+            raise RuntimeError("read generation reconciliation requires the authority gate")
+        with gate.hold():
+            self._locked_reconcile_read_generation()
+
+    def _locked_reconcile_read_generation(self) -> None:
         runtime = self._supervisor.runtime()
         session = runtime.session("planning")
         commitment, observation = capture_authority_storage_state(self._database)
@@ -301,6 +388,34 @@ class R7PlanningRuntime:
             )
         )
 
+    def _bootstrap_storage_binding(
+        self,
+    ) -> tuple[tuple[tuple[str, tuple[tuple[object, ...], ...]], ...], tuple[object, ...] | None]:
+        """Exact authority rows, excluding only this bootstrap's expected fence row."""
+        binding: list[tuple[str, tuple[tuple[object, ...], ...]]] = []
+        own_fence: tuple[object, ...] | None = None
+        with closing(sqlite3.connect(self._database)) as connection:
+            connection.execute("BEGIN")
+            for member in AUTHORITY_STORAGE_MEMBERS:
+                if not member.authority_bearing:
+                    continue
+                columns = ", ".join(f'"{column}"' for column in member.columns)
+                order = ", ".join(str(index) for index in range(1, len(member.columns) + 1))
+                rows = tuple(
+                    tuple(row)
+                    for row in connection.execute(
+                        f'SELECT {columns} FROM main."{member.table}" ORDER BY {order}'
+                    )
+                )
+                if member.table == "deletion_fences":
+                    own = tuple(row for row in rows if row[0] == self._tenant_id)
+                    if len(own) > 1:
+                        raise RuntimeError("duplicate bootstrap fence")
+                    own_fence = own[0] if own else None
+                    rows = tuple(row for row in rows if row[0] != self._tenant_id)
+                binding.append((member.table, rows))
+        return tuple(binding), own_fence
+
     async def bootstrap(
         self,
         *,
@@ -312,7 +427,7 @@ class R7PlanningRuntime:
     ) -> None:
         self._supervisor.start_quarantine(f"r7-bootstrap:{secrets.token_hex(8)}")
         peer = f"uid:{os.getuid()}"
-        bootstrap_decision = await self._trust_call(
+        observed = await self._observed_trust_call(
             "BOOTSTRAP",
             {
                 "credential_id": credential_id,
@@ -325,16 +440,51 @@ class R7PlanningRuntime:
                 "token_fingerprint": hashlib.sha256(token.encode()).hexdigest(),
             },
         )
+        bootstrap_decision = observed.result
         if bootstrap_decision.disposition != "VALID":
             raise PermissionError(bootstrap_decision.reason or "bootstrap denied by trust owner")
         if bootstrap_decision.reference_bytes is None:
             raise RuntimeError("trust owner omitted authorized durable decision bytes")
-        self._trust.apply_authorized(bootstrap_decision.reference_bytes)
+        gate = self._trust.authority_gate
+        if gate is None:
+            raise RuntimeError("bootstrap publication requires the authority gate")
+        with gate.hold():
+            if (
+                self._supervisor.quarantined_trust_session() != observed.request.callee
+                or time.monotonic_ns() >= observed.request.budget.absolute_deadline_ns
+                or self._trust.capture_verified_observation() != observed.observation
+            ):
+                raise PermissionError("bootstrap response is no longer current")
+            prior_anchor = self._commitment_journal.load(self._tenant_id)
+            before_binding, _ = self._bootstrap_storage_binding()
+            if prior_anchor is None:
+                if any(rows for table, rows in before_binding if table != "store_metadata"):
+                    raise RuntimeError("bootstrap cannot anchor preexisting authority data")
+            elif capture_authority_storage_state(self._database)[0] != prior_anchor:
+                raise RuntimeError("bootstrap requires already anchored authority data")
+            self._trust.apply_authorized(bootstrap_decision.reference_bytes)
+            applied_observation = self._trust.capture_verified_observation()
         await self._appender.advance_fence(
             FenceAdvanceCommand(self._tenant_id, _FENCE, 0, allow_exact_replay=True)
         )
-        commitment, _ = capture_authority_storage_state(self._database)
-        self._commitment_journal.commit(self._tenant_id, commitment)
+        with self._authority_gate().hold():
+            if (
+                self._supervisor.quarantined_trust_session() != observed.request.callee
+                or self._trust.capture_verified_observation() != applied_observation
+            ):
+                raise RuntimeError("bootstrap finalization requires current applied trust state")
+            after_binding, own_fence = self._bootstrap_storage_binding()
+            if (
+                after_binding != before_binding
+                or own_fence != (self._tenant_id, _FENCE, 0)
+                or self._commitment_journal.load(self._tenant_id) != prior_anchor
+            ):
+                raise RuntimeError("bootstrap authority storage changed beyond its exact fence")
+            commitment, _ = capture_authority_storage_state(self._database)
+            if prior_anchor is None:
+                self._commitment_journal.commit(self._tenant_id, commitment)
+            elif commitment != prior_anchor:
+                raise RuntimeError("bootstrap replay changed anchored authority data")
         self._start_generation()
 
     def restart_generation(self) -> None:
@@ -561,6 +711,15 @@ class R7PlanningRuntime:
             }
         )
         request = self._planning_request(command, principal_id, trust_bytes)
+        return await self._prepare_planning_request(command, request, decision.reference_bytes)
+
+    async def _prepare_planning_request(
+        self,
+        command: CreateIntentionLine,
+        request: R7PlanningCreateDTO | R8PlanningRequest,
+        trust_reference_bytes: bytes,
+    ) -> PreparedPlanningCandidate | PlanningOutcome:
+        """Invoke only; request construction and caller authentication stay outside."""
         runtime = self._supervisor.runtime()
         callee = runtime.session("planning")
         caller = BrokerSession(
@@ -611,7 +770,7 @@ class R7PlanningRuntime:
                 }
             ),
             request_bytes=request.canonical_bytes(),
-            trust_reference_bytes=decision.reference_bytes,
+            trust_reference_bytes=trust_reference_bytes,
             owner_result_bytes=owner_result.canonical_result_bytes,
             owner_session=callee,
             expected_tenant_head=int(proposal["commit_sequence"]) - 1,
@@ -637,6 +796,17 @@ class R7PlanningRuntime:
         callee = prepared.owner_session
         proposal = json.loads(prepared.owner_result_bytes)
         result = _committed_result(proposal["result"], TenantId(self._tenant_id))
+        observed = await self._observed_trust_call(
+            "REVALIDATE",
+            {
+                "operation": "CREATE_INTENTION_LINE",
+                "reference": reference,
+                "subject_id": result.intention_line_id.value,
+            },
+        )
+        refusal = self._trust_observation_guard(observed)
+        if refusal is not None:
+            return PlanningOutcome(refusal, None, observed.result.reason)
         payload_fingerprint = hashlib.sha256(prepared.owner_result_bytes).hexdigest()
         token = OperationToken(
             mode="IDEMPOTENT_EXACT",
@@ -663,16 +833,22 @@ class R7PlanningRuntime:
             return self._recorded_outcome(admitted)
 
         def guard() -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
-            current = self._trust_call_sync(
-                {
-                    "operation": "CREATE_INTENTION_LINE",
-                    "reference": reference,
-                    "subject_id": result.intention_line_id.value,
-                }
-            )
-            if current.disposition != "VALID":
-                return current.disposition
-            return self._publication_authority_guard(current.reference_bytes)
+            refusal = self._trust_observation_guard(observed)
+            if refusal is not None:
+                return refusal
+            return self._publication_authority_guard(observed.result.reference_bytes)
+
+        selected_commitments: tuple[str, str] | None = None
+
+        def decide(commitment: str) -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
+            nonlocal selected_commitments
+            predecessor = self._commitment_journal.load(self._tenant_id)
+            if predecessor is None:
+                return "INDETERMINATE"
+            disposition = self._publication_decision_guard(prepared.owner_result_bytes, commitment)
+            if disposition is None:
+                selected_commitments = (predecessor, commitment)
+            return disposition
 
         try:
             publication = await self._appender.submit(
@@ -696,9 +872,7 @@ class R7PlanningRuntime:
                         for item in proposal["records"]
                     ),
                     admission_guard=guard,
-                    decision_guard=lambda commitment: self._publication_decision_guard(
-                        prepared.owner_result_bytes, commitment
-                    ),
+                    decision_guard=decide,
                 )
             )
         except BaseException:
@@ -717,15 +891,9 @@ class R7PlanningRuntime:
             None if publication.disposition == "COMMITTED" else "broker publication rejected",
         )
         if publication.disposition == "COMMITTED":
-            read_state = self._read_ledger.current_state(self._tenant_id)
-            commitment, observation = capture_authority_storage_state(self._database)
-            self._commitment_journal.commit(self._tenant_id, commitment)
-            self._read_ledger.invalidate_storage_mutation(
-                self._tenant_id,
-                read_state.fingerprint(),
-                commitment,
-                observation,
-            )
+            if selected_commitments is None:
+                raise RuntimeError("committed planning publication omitted its selected commitment")
+            self._finalize_planning_commitment(*selected_commitments)
         outcome_bytes = _canonical(asdict(outcome))
         self._supervisor.authority_ledger.finish(
             admitted.model_copy(
@@ -805,29 +973,41 @@ async def _open_runtime(
     manifest: RuntimeAssemblyManifest,
     extra_leaves: Mapping[str, object] | None = None,
 ) -> AsyncIterator[R7PlanningRuntime]:
-    journal = IndependentTenantDecisionJournal(
-        database.with_suffix(database.suffix + ".trust-journal")
+    authority_gate = AuthorityGate.for_database(database)
+    database = authority_gate.database
+    journal = IndependentTenantDecisionJournal.for_authority_bundle(
+        database.with_suffix(database.suffix + ".trust-journal"), authority_gate=authority_gate
     )
-    trust_store = SQLiteTrustMaterializer(database.with_suffix(database.suffix + ".trust.sqlite3"))
+    trust_store = SQLiteTrustMaterializer.for_authority_bundle(
+        database.with_suffix(database.suffix + ".trust.sqlite3"), authority_gate=authority_gate
+    )
     trust = BrokerTrustDurability(journal, trust_store, operator_secret)
     planning_store = ProductionPlanningStore(database)
+    read_ledger = BrokerReadLedger(
+        database.with_suffix(database.suffix + ".reads.sqlite3"), authority_gate=authority_gate
+    )
     supervisor = R7RuntimeSupervisor(
         tenant_id,
         database.with_suffix(database.suffix + ".broker.sqlite3"),
         manifest,
         R4RuntimeAdmission(trust, journal),
         {"clock": ProductionClock(), "planning_store": planning_store, **(extra_leaves or {})},
+        authority_gate=authority_gate,
+        read_ledger=read_ledger,
+        trust=trust,
     )
     with SQLiteMaterializer(
         database,
         record_contracts=runtime_type._record_contracts,
+        authority_gate=authority_gate,
         record_schema_variants=runtime_type._record_schema_variants,
         derivative_contracts=runtime_type._derivative_contracts,
         managed_derivative_sinks=runtime_type._derivative_contracts,
     ) as store:
         async with EventAppender(store, capacity=4) as appender:
-            read_ledger = BrokerReadLedger(database.with_suffix(database.suffix + ".reads.sqlite3"))
-            commitment_journal = AuthorityCommitmentJournal(database, operator_secret)
+            commitment_journal = AuthorityCommitmentJournal(
+                database, operator_secret, authority_gate=authority_gate
+            )
             runtime = runtime_type(
                 tenant_id,
                 trust,

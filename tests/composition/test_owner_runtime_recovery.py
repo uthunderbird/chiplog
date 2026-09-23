@@ -306,7 +306,7 @@ async def test_selected_recovery_converges_after_each_durable_cut(tmp_path: Path
             async with open_r14_runtime(database):
                 pytest.fail("corrupted selected publication must not open")
         assert failure.value.__cause__ is not None
-        assert "operation=recover_physical" in str(failure.value)
+        assert "operation=anchor_materialization" in str(failure.value)
         assert "tenant=hermetic-tenant" in str(failure.value)
         assert "record=mechanical-command" in str(failure.value)
         return

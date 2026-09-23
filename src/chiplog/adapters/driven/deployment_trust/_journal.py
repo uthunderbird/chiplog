@@ -5,10 +5,12 @@ import hmac
 import json
 import os
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal
+
+from chiplog.platform.authority_gate import AuthorityGate, FileIdentity, checked_file_identity
 
 
 @contextmanager
@@ -34,6 +36,33 @@ class IndependentTenantDecisionJournal:
     """Append-only hash-chain file intentionally separate from SQLite backups."""
 
     def __init__(self, path: Path) -> None:
+        self._initialize_bound(path, None)
+
+    @classmethod
+    def for_authority_bundle(
+        cls, path: Path, *, authority_gate: AuthorityGate
+    ) -> IndependentTenantDecisionJournal:
+        if not isinstance(authority_gate, AuthorityGate):
+            raise TypeError("bound trust adapter requires an AuthorityGate")
+        instance = cls.__new__(cls)
+        instance._initialize_bound(path, authority_gate)
+        return instance
+
+    def _initialize_bound(self, path: Path, authority_gate: AuthorityGate | None) -> None:
+        self._authority_gate = authority_gate
+        if authority_gate is not None and path.is_symlink():
+            raise RuntimeError("canonical journal sidecar cannot be a symbolic link")
+        with self._authority_scope():
+            self._initialize(path.resolve(strict=False))
+
+    @property
+    def authority_gate(self) -> AuthorityGate | None:
+        return self._authority_gate
+
+    def _authority_scope(self) -> AbstractContextManager[None]:
+        return nullcontext() if self._authority_gate is None else self._authority_gate.hold()
+
+    def _initialize(self, path: Path) -> None:
         self._path = path
         self._head_path = path.with_suffix(path.suffix + ".head")
         self._key_path = path.with_suffix(path.suffix + ".key")
@@ -53,10 +82,22 @@ class IndependentTenantDecisionJournal:
             if path.stat().st_size:
                 raise RuntimeError("non-empty journal has no protected head")
             self._head_path.write_text("", encoding="ascii")
+        self._body_identity = checked_file_identity(self._path)
+        self._key_identity = checked_file_identity(self._key_path)
         self.entries()
 
+    def physical_sources(self) -> tuple[FileIdentity, FileIdentity, FileIdentity]:
+        with self._authority_scope():
+            body = checked_file_identity(self._path, self._body_identity)
+            key = checked_file_identity(self._key_path, self._key_identity)
+            head = checked_file_identity(self._head_path)
+            if not hmac.compare_digest(self._key_path.read_bytes(), self._key):
+                raise RuntimeError("journal authentication key changed after opening")
+            return body, key, head
+
     def append(self, decision: bytes, predecessor: str | None) -> str:
-        with _lock(self._lock_path, fcntl.LOCK_EX):
+        with self._authority_scope(), _lock(self._lock_path, fcntl.LOCK_EX):
+            self.physical_sources()
             entries = self._entries()
             current = entries[-1][0] if entries else None
             if predecessor != current:
@@ -92,7 +133,8 @@ class IndependentTenantDecisionJournal:
             return decision_id
 
     def entries(self) -> tuple[tuple[str, str | None, bytes], ...]:
-        with _lock(self._lock_path, fcntl.LOCK_SH):
+        with self._authority_scope(), _lock(self._lock_path, fcntl.LOCK_SH):
+            self.physical_sources()
             return self._entries()
 
     def _entries(self) -> tuple[tuple[str, str | None, bytes], ...]:
