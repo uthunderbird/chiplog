@@ -166,6 +166,31 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             "scheduler.prepare_rollover",
         ):
             return "chiplog.capabilities.agent_loop._r14_process"
+        if identity.capability_ids == (
+            "agent_loop.prepare_consequential_acceptance",
+            "agent_loop.prepare_delivery_completion",
+            "agent_loop.prepare_pre_accept_cancellation",
+            "agent_loop.validate_delivery_completion",
+            "agent_loop.validate_transition",
+            "scheduler.prepare_configuration",
+            "scheduler.prepare_interval",
+            "scheduler.prepare_lease",
+            "scheduler.prepare_rollover",
+        ):
+            return "chiplog.capabilities.agent_loop._r14_calls_process"
+        if identity.capability_ids == (
+            "agent_loop.prepare_captured_fan_out",
+            "agent_loop.prepare_consequential_acceptance",
+            "agent_loop.prepare_delivery_completion",
+            "agent_loop.prepare_pre_accept_cancellation",
+            "agent_loop.validate_delivery_completion",
+            "agent_loop.validate_transition",
+            "scheduler.prepare_configuration",
+            "scheduler.prepare_interval",
+            "scheduler.prepare_lease",
+            "scheduler.prepare_rollover",
+        ):
+            return "chiplog.capabilities.agent_loop._r14_fanout_process"
         raise OwnerProcessFailure("unknown agent-loop capability partition")
     if identity.owner_id == "effects":
         if identity.capability_ids == ("effects.prepare_transition",):
@@ -184,6 +209,26 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
 
 def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
     module = _owner_module(identity)
+    if module == "chiplog.capabilities.agent_loop._r14_fanout_process":
+        return (
+            "chiplog.capabilities.agent_loop._call_process",
+            "chiplog.capabilities.agent_loop._delivery_process",
+            "chiplog.capabilities.agent_loop._fan_out_process",
+            "chiplog.capabilities.agent_loop._r13_process",
+            "chiplog.capabilities.agent_loop._r14_calls_process",
+            "chiplog.capabilities.agent_loop._r14_fanout_process",
+            "chiplog.capabilities.agent_loop._r14_process",
+            "chiplog.capabilities.agent_loop._scheduler_process",
+        )
+    if module == "chiplog.capabilities.agent_loop._r14_calls_process":
+        return (
+            "chiplog.capabilities.agent_loop._call_process",
+            "chiplog.capabilities.agent_loop._delivery_process",
+            "chiplog.capabilities.agent_loop._r13_process",
+            "chiplog.capabilities.agent_loop._r14_calls_process",
+            "chiplog.capabilities.agent_loop._r14_process",
+            "chiplog.capabilities.agent_loop._scheduler_process",
+        )
     if module == "chiplog.capabilities.agent_loop._r14_process":
         return (
             "chiplog.capabilities.agent_loop._delivery_process",

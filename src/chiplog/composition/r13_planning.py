@@ -14,6 +14,7 @@ from chiplog.adapters.driven.loop_sqlite import SQLiteLoopStore
 from chiplog.capabilities.agent_loop.contracts import (
     LocalPlanningReceipt,
     LoopRejected,
+    LoopSnapshot,
     ProposalDisplay,
     RunRecord,
 )
@@ -74,12 +75,11 @@ class R13PlanningRuntime(R13Runtime):
                 displays.append(display)
         return tuple(displays)
 
+    def _loop_snapshot(self) -> LoopSnapshot:
+        return SQLiteLoopStore(self._database, self._appender, self._tenant_id, "r6").snapshot()
+
     def _proposal(self, proposal_id: str) -> tuple[RunRecord, str]:
-        rows = (
-            SQLiteLoopStore(self._database, self._appender, self._tenant_id, "r6")
-            .snapshot()
-            .records
-        )
+        rows = self._loop_snapshot().records
         latest = {row.run_id: row for row in rows}
         matches = [
             (run, outcome.call.text)

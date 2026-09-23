@@ -343,6 +343,81 @@ R14_PRODUCTION_MANIFEST = replace(
 R14_EVALUATION_MANIFEST = replace(R14_PRODUCTION_MANIFEST, environment="evaluation")
 
 
+_CALL_PREPARATION_ROUTES = (
+    RoutedCallDecl(
+        "agent_loop.prepare_consequential_acceptance",
+        "broker",
+        "agent_loop",
+        "chiplog.call.acceptance-preparation.v1",
+        "chiplog.call.preparation-result.v1",
+    ),
+    RoutedCallDecl(
+        "agent_loop.prepare_pre_accept_cancellation",
+        "broker",
+        "agent_loop",
+        "chiplog.call.cancellation-preparation.v1",
+        "chiplog.call.preparation-result.v1",
+    ),
+)
+_CALL_PREPARATION_OPERATIONS = tuple(
+    sorted((*_LOOP_PREPARATION_OPERATIONS, *(row.operation_id for row in _CALL_PREPARATION_ROUTES)))
+)
+R14_CALLS_PRODUCTION_MANIFEST = replace(
+    R14_PRODUCTION_MANIFEST,
+    manifest_version=5,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_CALL_PREPARATION_OPERATIONS,
+            public_operations=_CALL_PREPARATION_OPERATIONS,
+            target_ids=("chiplog.capabilities.agent_loop._r14_calls_process:dispatch",),
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (*R14_PRODUCTION_MANIFEST.routes, *_CALL_PREPARATION_ROUTES),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_CALLS_EVALUATION_MANIFEST = replace(R14_CALLS_PRODUCTION_MANIFEST, environment="evaluation")
+
+
+_FANOUT_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_captured_fan_out",
+    "broker",
+    "agent_loop",
+    "chiplog.call.captured-fanout-preparation.v1",
+    "chiplog.call.captured-fanout-result.v1",
+)
+_FANOUT_OPERATIONS = tuple(sorted((*_CALL_PREPARATION_OPERATIONS, _FANOUT_ROUTE.operation_id)))
+R14_FANOUT_PRODUCTION_MANIFEST = replace(
+    R14_CALLS_PRODUCTION_MANIFEST,
+    manifest_version=6,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_FANOUT_OPERATIONS,
+            public_operations=_FANOUT_OPERATIONS,
+            target_ids=("chiplog.capabilities.agent_loop._r14_fanout_process:dispatch",),
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_CALLS_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (*R14_CALLS_PRODUCTION_MANIFEST.routes, _FANOUT_ROUTE),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_FANOUT_EVALUATION_MANIFEST = replace(R14_FANOUT_PRODUCTION_MANIFEST, environment="evaluation")
+
+
 class RuntimeManifestViolation(ValueError):
     pass
 
@@ -353,13 +428,15 @@ def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
 
 
 def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
-    if manifest.manifest_version not in (1, 2, 3, 4, 8):
+    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 8):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
         1: R7_PRODUCTION_MANIFEST,
         2: R8_PRODUCTION_MANIFEST,
         3: R13_PRODUCTION_MANIFEST,
         4: R14_PRODUCTION_MANIFEST,
+        5: R14_CALLS_PRODUCTION_MANIFEST,
+        6: R14_FANOUT_PRODUCTION_MANIFEST,
         8: CODEX_CLI_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
@@ -391,7 +468,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         )
     if any(not item.implementation for item in manifest.leaves):
         raise RuntimeManifestViolation("registered leaf implementation is empty")
-    if manifest.manifest_version in (3, 4, 8) and manifest.leaves != expected_manifest.leaves:
+    if manifest.manifest_version in (3, 4, 5, 6, 8) and manifest.leaves != expected_manifest.leaves:
         raise RuntimeManifestViolation("R13 admits only registered hermetic leaf implementations")
     route_callers = (*owner_ids, "broker")
     if any(route.caller_owner_id not in route_callers for route in manifest.routes) or any(
