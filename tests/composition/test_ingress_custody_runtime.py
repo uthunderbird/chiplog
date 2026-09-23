@@ -81,12 +81,15 @@ async def test_actual_token_stage_retry_retains_source_and_exact_restart_replay(
         observed_transfers: tuple[RetainedSourceTransfer, ...] = tuple(source.transfers)
         assert len(observed_transfers) == 1
         record = runtime.ingress_history().records[-1]
+        assert isinstance(record, CustodyRecord)
         assert observed_transfers[0].token_id == record.command.token.token_id
         assert record.resulting_entry.staged_bytes == b"untrusted CLI bytes"
         assert record.command.token.source.endpoint_account_binding.kind == "UNKNOWN_PRE_AUTH"
         retry = await runtime.retry_receipt("slot")
         assert retry.kind == "COMMITTED"
-        custody = runtime.ingress_history().records[-1].resulting_entry.custody
+        retry_record = runtime.ingress_history().records[-1]
+        assert isinstance(retry_record, CustodyRecord)
+        custody = retry_record.resulting_entry.custody
         assert custody is not None and custody.kind == "RETRY_WITH_SOURCE_CUSTODY"
         assert source.verify(source.observe("slot"))
         with closing(sqlite3.connect(database)) as connection:

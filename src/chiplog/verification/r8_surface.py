@@ -255,6 +255,11 @@ def verify_offline_import_boundary(root: Path) -> None:
                 if (
                     top in {"socket", "ssl", "ctypes", "importlib"}
                     and relative != "chiplog/platform/r7_runtime.py"
+                    and not (
+                        relative == "chiplog/adapters/driven/cli_custody_socket.py"
+                        and module in {"socket", "ctypes"}
+                        and isinstance(node, ast.Import)
+                    )
                 ):
                     raise R8SurfaceViolation("unregistered raw transport or dynamic adapter")
                 if top == "subprocess" and relative not in {

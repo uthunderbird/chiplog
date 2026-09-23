@@ -13,6 +13,7 @@ from chiplog.composition.r17_ingress_history import (
     IngressHistory,
     read_ingress_history,
     read_manifest,
+    record_head,
     wire_record,
 )
 from chiplog.platform._ingress_contracts import ReceiptToken
@@ -206,7 +207,7 @@ class IngressAuthority:
                 operation=operation,
                 command_id=subject_id(profile, self.observed.slot_id, operation),
                 profile=profile,
-                predecessor=records[-1].head() if records else None,
+                predecessor=record_head(records[-1]) if records else None,
                 token=token,
                 retention=self.claim,
                 raw_bytes=raw_bytes,
