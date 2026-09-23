@@ -24,7 +24,8 @@ from chiplog.composition.r14_fanout_records import (
     reference,
 )
 from chiplog.platform.broker import BrokerSession
-from tests.capabilities.agent_loop.test_fan_out_preparation import _bind_run, _fixture
+from tests.support.captured_fan_out import bind_run as _bind_run
+from tests.support.captured_fan_out import fixture as _fixture
 
 
 def _hash(value: RecoveryDTO, field: str) -> str:

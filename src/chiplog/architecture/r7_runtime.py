@@ -576,6 +576,61 @@ R17_CUSTODY_PRODUCTION_MANIFEST = replace(
 R17_CUSTODY_EVALUATION_MANIFEST = replace(R17_CUSTODY_PRODUCTION_MANIFEST, environment="evaluation")
 
 
+_EXECUTION_FANOUT_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_execution_captured_fan_out",
+    "broker",
+    "agent_loop",
+    "chiplog.call.execution-captured-fanout-preparation.v2",
+    "chiplog.call.execution-captured-fanout-result.v2",
+)
+_EXECUTION_OPERATIONS = tuple(sorted((*_FANOUT_OPERATIONS, _EXECUTION_FANOUT_ROUTE.operation_id)))
+_EXECUTION_OWNER_PROFILES = {
+    "effects": R16_DISPATCH_PRODUCTION_MANIFEST,
+    "deployment_trust": R17_CUSTODY_PRODUCTION_MANIFEST,
+}
+R14_R17_EXECUTION_PRODUCTION_MANIFEST = replace(
+    R14_FANOUT_PRODUCTION_MANIFEST,
+    manifest_version=11,
+    leaves=R16_DISPATCH_PRODUCTION_MANIFEST.leaves,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_EXECUTION_OPERATIONS,
+            public_operations=_EXECUTION_OPERATIONS,
+            target_ids=("chiplog.capabilities.agent_loop._execution_process:dispatch",),
+        )
+        if owner.owner_id == "agent_loop"
+        else next(
+            candidate
+            for candidate in _EXECUTION_OWNER_PROFILES.get(
+                owner.owner_id, R14_FANOUT_PRODUCTION_MANIFEST
+            ).owners
+            if candidate.owner_id == owner.owner_id
+        )
+        for owner in R14_FANOUT_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *(
+                    route
+                    for owner in R14_FANOUT_PRODUCTION_MANIFEST.owners
+                    for route in _EXECUTION_OWNER_PROFILES.get(
+                        owner.owner_id, R14_FANOUT_PRODUCTION_MANIFEST
+                    ).routes
+                    if route.callee_owner_id == owner.owner_id
+                ),
+                _EXECUTION_FANOUT_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_R17_EXECUTION_EVALUATION_MANIFEST = replace(
+    R14_R17_EXECUTION_PRODUCTION_MANIFEST, environment="evaluation"
+)
+
+
 class RuntimeManifestViolation(ValueError):
     pass
 
@@ -586,7 +641,7 @@ def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
 
 
 def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
-    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
         1: R7_PRODUCTION_MANIFEST,
@@ -599,6 +654,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         8: CODEX_CLI_MANIFEST,
         9: R17_CUSTODY_PRODUCTION_MANIFEST,
         10: R16_DISPATCH_PRODUCTION_MANIFEST,
+        11: R14_R17_EXECUTION_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
@@ -630,7 +686,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
     if any(not item.implementation for item in manifest.leaves):
         raise RuntimeManifestViolation("registered leaf implementation is empty")
     if (
-        manifest.manifest_version in (3, 4, 5, 6, 7, 8, 9, 10)
+        manifest.manifest_version in (3, 4, 5, 6, 7, 8, 9, 10, 11)
         and manifest.leaves != expected_manifest.leaves
     ):
         raise RuntimeManifestViolation("R13 admits only registered hermetic leaf implementations")

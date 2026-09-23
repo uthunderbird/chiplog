@@ -233,9 +233,10 @@ def verify_offline_import_boundary(root: Path) -> None:
                     # Read the installed serializer version; dynamic loading and
                     # transport imports retain their ordinary rejection below.
                     continue
-                if relative == "chiplog/adapters/driven/loop_prompts.py" and isinstance(
-                    node, ast.ImportFrom
-                ):
+                if relative in {
+                    "chiplog/adapters/driven/loop_prompts.py",
+                    "chiplog/adapters/driven/execution_prompts.py",
+                } and isinstance(node, ast.ImportFrom):
                     names = {alias.name for alias in node.names}
                     if (
                         module == "promptstrings" and names <= {"PromptContext", "promptstring"}

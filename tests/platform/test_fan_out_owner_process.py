@@ -30,8 +30,8 @@ from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
 from tests.capabilities.agent_loop.test_call_acceptance_preparation import (
     _requests as call_requests,
 )
-from tests.capabilities.agent_loop.test_fan_out_preparation import _fixture
 from tests.platform.test_call_owner_process import _request as call_request
+from tests.support.captured_fan_out import fixture as _fixture
 
 _OPERATION = "agent_loop.prepare_captured_fan_out"
 _REQUEST_SCHEMA = "chiplog.call.captured-fanout-preparation.v1"

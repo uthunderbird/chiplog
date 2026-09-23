@@ -194,3 +194,43 @@ def test_scheduler_profile_does_not_admit_dynamic_or_transport_imports(
     target.write_text(statement + "\n")
     with pytest.raises(R8SurfaceViolation):
         verify_offline_import_boundary(tmp_path)
+
+
+@pytest.mark.parametrize("leaf", ["loop_prompts.py", "execution_prompts.py"])
+def test_prompt_leaves_admit_only_the_owned_renderer_and_version_query(
+    tmp_path: Path, leaf: str
+) -> None:
+    target = tmp_path / "src/chiplog/adapters/driven" / leaf
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from promptstrings import PromptContext, promptstring\n"
+        "from importlib.metadata import version\n"
+    )
+    verify_offline_import_boundary(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "leaf,statement",
+    [
+        ("execution_prompts.py", "import promptstrings"),
+        ("execution_prompts.py", "from promptstrings import *"),
+        ("execution_prompts.py", "from promptstrings import unknown"),
+        ("execution_prompts.py", "from promptstrings.unknown import promptstring"),
+        ("execution_prompts.py", "import importlib"),
+        ("execution_prompts.py", "from importlib.metadata import entry_points"),
+        ("execution_prompts.py", "from importlib.metadata import version, entry_points"),
+        ("execution_prompts.py", "import httpx"),
+        ("execution_prompts.py", "import socket"),
+        ("other_prompts.py", "from promptstrings import promptstring"),
+        ("other_prompts.py", "from importlib.metadata import version"),
+    ],
+)
+def test_execution_prompt_registration_does_not_expand_other_imports(
+    tmp_path: Path, leaf: str, statement: str
+) -> None:
+    target = tmp_path / "src/chiplog/adapters/driven" / leaf
+    target.parent.mkdir(parents=True)
+    target.write_text(statement + "\n")
+    # Direct negative input: rejection must come from this boundary, not catalog drift.
+    with pytest.raises(R8SurfaceViolation):
+        verify_offline_import_boundary(tmp_path)
