@@ -46,6 +46,7 @@ class R16DispatchRuntime(R16PlanningRuntime):
     _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = (
         *R16PlanningRuntime._record_schema_variants,
         ("effects", "chiplog.effects.dispatch-record.v2"),
+        ("effects", "chiplog.effects.dispatch-outcome-record.v2"),
     )
 
     def _bind_appender(self) -> None:
@@ -132,6 +133,20 @@ class R16DispatchRuntime(R16PlanningRuntime):
             validate_selected_dispatch_sources(self)
             validate_consumptions(self)
         await super()._prepare_startup()
+
+    async def observe_dispatch_outcome(
+        self, intent_id: str, raw_receipt: bytes | None = None
+    ) -> BrokerPublicationResult:
+        from chiplog.composition.r16_dispatch_outcomes import observe_outcome
+
+        return await observe_outcome(self, intent_id, raw_receipt)
+
+    async def resolve_dispatch_outcome(
+        self, peer: str, intent_id: str, act_id: str
+    ) -> BrokerPublicationResult:
+        from chiplog.composition.r16_dispatch_outcomes import resolve_outcome
+
+        return await resolve_outcome(self, peer, intent_id, act_id)
 
     async def emit_committed(self, peer: str, intent_id: str) -> bytes | None:
         from chiplog.composition.r16_dispatch_outbox import consume_and_emit

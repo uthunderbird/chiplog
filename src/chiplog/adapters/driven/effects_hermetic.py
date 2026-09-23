@@ -7,10 +7,14 @@ journal. A ticket DTO by itself is not proof of issuance.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import hmac
 import json
+import os
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -211,6 +215,7 @@ class HermeticEffectsProvider:
             Literal["CONFIRM", "PERMANENT_NO_EFFECT", "LOST_RESPONSE_AFTER_EFFECT", "MIXED"], ...
         ],
         maximum_payload_bytes: int = 65536,
+        journal_path: Path | None = None,
     ) -> None:
         if not receipt_key or maximum_payload_bytes <= 0:
             raise ValueError("independent fixture receipt key and positive raw bound required")
@@ -218,9 +223,74 @@ class HermeticEffectsProvider:
         self._scenarios = scenarios
         self._maximum_payload_bytes = maximum_payload_bytes
         self._transfers: list[HermeticTransfer] = []
+        self._journal_path = journal_path
+        self._load_transfers()
+
+    def _load_transfers(self) -> None:
+        if self._journal_path is None:
+            return
+        if not self._journal_path.exists():
+            self._transfers = []
+            return
+        rows: list[HermeticTransfer] = []
+        for line in self._journal_path.read_bytes().splitlines():
+            value = json.loads(line)
+            body = value["ticket"]
+            body["payload"] = bytes.fromhex(body["payload"])
+            body["canonical_address"] = bytes.fromhex(body["canonical_address"])
+            body["bundle_members"] = tuple(body["bundle_members"])
+            ticket = IssuedEffectSendTicket(**body)
+            receipt = bytes.fromhex(value["receipt"])
+            observation = verify_hermetic_receipt(
+                ticket, receipt, registered_receipt_key=self._receipt_key
+            )
+            if observation.sequence != len(rows) or any(
+                row.ticket.transmission_id == ticket.transmission_id for row in rows
+            ):
+                raise ValueError("durable provider receipt order or identity differs")
+            rows.append(
+                HermeticTransfer(
+                    observation.sequence,
+                    ticket,
+                    observation.occurred_members,
+                    observation.permanently_incapable_members,
+                    receipt,
+                )
+            )
+        self._transfers = rows
+
+    def _persist_transfer(self, transfer: HermeticTransfer) -> None:
+        if self._journal_path is None:
+            return
+        body = asdict(transfer.ticket)
+        body["payload"] = transfer.ticket.payload.hex()
+        body["canonical_address"] = transfer.ticket.canonical_address.hex()
+        raw = (
+            json.dumps(
+                {"ticket": body, "receipt": transfer.signed_receipt.hex()},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
+        descriptor = os.open(self._journal_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(descriptor, "ab") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            self._load_transfers()
+            if transfer.sequence != len(self._transfers):
+                raise ValueError("concurrent provider transfer sequence differs")
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+            with ExitStack() as resources:
+                directory = os.open(self._journal_path.parent, os.O_RDONLY)
+                resources.callback(os.close, directory)
+                os.fsync(directory)
+            fcntl.flock(stream, fcntl.LOCK_UN)
 
     @property
     def transfers(self) -> tuple[HermeticTransfer, ...]:
+        self._load_transfers()
         return tuple(self._transfers)
 
     async def emit_issued(self, ticket: IssuedEffectSendTicket) -> bytes:
@@ -241,6 +311,7 @@ class HermeticEffectsProvider:
             or hashlib.sha256(ticket.payload).hexdigest() != ticket.payload_fingerprint
         ):
             raise ValueError("unregistered offline tuple, malformed ticket or changed exact bytes")
+        self._load_transfers()
         if any(row.ticket.transmission_id == ticket.transmission_id for row in self._transfers):
             raise ValueError("broker attempted to reenqueue an already observed transmission")
         sequence = len(self._transfers)
@@ -262,13 +333,16 @@ class HermeticEffectsProvider:
             observation_hex=raw.hex(),
             signature=hmac.digest(self._receipt_key, _RECEIPT_DOMAIN + raw, "sha256").hex(),
         ).canonical_bytes()
-        self._transfers.append(HermeticTransfer(sequence, ticket, occurred, incapable, receipt))
+        transfer = HermeticTransfer(sequence, ticket, occurred, incapable, receipt)
+        self._persist_transfer(transfer)
+        self._transfers.append(transfer)
         if scenario == "LOST_RESPONSE_AFTER_EFFECT":
             raise HermeticResponseLost("provider effect observed; response unavailable")
         return receipt
 
     def reconcile(self, transmission_id: str) -> bytes | None:
         """Provider read only: no new send; absence is not permanent no-effect proof."""
+        self._load_transfers()
         matches = [
             row.signed_receipt
             for row in self._transfers

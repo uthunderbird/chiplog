@@ -179,13 +179,22 @@ def require_dispatch_scope(
     # The closed self-only policy uses the same affected-party/resource scope as
     # its v1 predecessor; only latest attempts decide whether work is unresolved.
     from chiplog.capabilities.effects.contracts import EffectRecord
+    from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 
     latest_states: dict[str, str] = {}
     v2_by_record = {row.record: row for row in captured.history.v2_records}
     for member in captured.history.members:
         retained = v2_by_record.get(member.record)
         if retained is not None:
-            latest_states[member.intent.subject_id] = retained.snapshot.state
+            latest_states[member.intent.subject_id] = (
+                "OUTCOME_UNKNOWN"
+                if isinstance(retained, DispatchOutcomeRecordV2)
+                and (
+                    retained.snapshot.obligation.state == "OPEN"
+                    or retained.snapshot.conflicting_evidence
+                )
+                else retained.snapshot.state
+            )
         else:
             legacy = EffectRecord.model_validate_json(member.record_bytes)
             latest_states[member.intent.subject_id] = legacy.snapshot.state

@@ -16,7 +16,6 @@ from chiplog.composition.r16_dispatch_runtime import (
     open_dispatch_loop,
     open_dispatch_runtime,
 )
-from chiplog.composition.r16_effects import HermeticEffectProposal
 from chiplog.platform._owner_publication_contracts import (
     JournalSelectedPublication,
     PublicationRejected,
@@ -25,27 +24,7 @@ from chiplog.platform._owner_publication_contracts import (
     WorkerAuthentication,
 )
 from chiplog.platform.owner_publications import PreparedOwnerPublication
-
-
-def _response() -> bytes:
-    proposal = HermeticEffectProposal(
-        schema_id="chiplog.hermetic-effect-proposal.v1",
-        purpose="My action",
-        payload_base64=base64.b64encode(b"exact payload").decode(),
-        bundle_members=("self-action",),
-    )
-    return json.dumps(
-        {
-            "kind": "Continue",
-            "tool_calls": [
-                {
-                    "call_id": "effect",
-                    "tool": "propose_intent",
-                    "text": proposal.canonical_bytes().decode(),
-                }
-            ],
-        }
-    ).encode()
+from tests.support.dispatch import _response as _response
 
 
 @pytest.mark.parametrize("crash_before_leaf", (False, True))
@@ -177,6 +156,25 @@ async def test_actual_adoption_first_send_consumes_once(
         assert len(resources._provider.transfers) == (0 if crash_before_leaf else 1)
         assert await runtime.emit_committed("hermetic-ingress", intent_id) is None
         assert len(resources._provider.transfers) == (0 if crash_before_leaf else 1)
+        if crash_before_leaf:
+            from chiplog.capabilities.agent_loop.contracts import LoopRejected
+            from chiplog.capabilities.effects.dispatch_outcome_contracts import (
+                DispatchOutcomeRecordV2,
+            )
+
+            observed_absence = await runtime.observe_dispatch_outcome(intent_id)
+            assert isinstance(observed_absence, JournalSelectedPublication)
+            absence = DispatchOutcomeRecordV2.model_validate_json(
+                observed_absence.complete_records[0].canonical_bytes
+            )
+            assert absence.snapshot.state == "OUTCOME_UNKNOWN"
+            assert absence.snapshot.obligation.state == "OPEN"
+            assert absence.snapshot.evidence[-1].observation == "ABSENCE_OBSERVED"
+            with pytest.raises(LoopRejected):
+                await runtime.resolve_dispatch_outcome(
+                    "hermetic-ingress", intent_id, "unsafe-close"
+                )
+            assert len(resources._provider.transfers) == 0
         if not crash_before_leaf:
             from chiplog.capabilities.agent_loop.contracts import LoopRejected
 

@@ -404,6 +404,13 @@ R16_EVALUATION_MANIFEST = replace(R16_PRODUCTION_MANIFEST, environment="evaluati
 
 _DISPATCH_V2_ROUTES = (
     RoutedCallDecl(
+        "effects.prepare_dispatch_outcome_v2",
+        "broker",
+        "effects",
+        "chiplog.effects.dispatch-outcome-preparation.v2",
+        "chiplog.effects.dispatch-outcome-record.v2",
+    ),
+    RoutedCallDecl(
         "effects.evaluate_dispatch_mandate_v2",
         "broker",
         "effects",

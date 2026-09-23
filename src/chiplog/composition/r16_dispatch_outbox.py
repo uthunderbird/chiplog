@@ -71,7 +71,11 @@ def _send(
     cut = read_materialized_effects(runtime, runtime._owner_decisions())
     history = verify_dispatch_history(cut, journal)
     selected = tuple(
-        row for row in history.v2_records if row.snapshot.intent.intent_id == intent_id
+        row
+        for row in history.v2_records
+        if row.snapshot.intent.intent_id == intent_id
+        and isinstance(row, DispatchRecordV2)
+        and row.kind == "SEND_COMMITTED"
     )
     if (
         not selected
@@ -279,6 +283,13 @@ class _ConsumeAuthority:
 
 async def consume_and_emit(runtime: R16DispatchRuntime, peer: str, intent_id: str) -> bytes | None:
     observed = await authenticate(runtime, peer)
+    from chiplog.composition.r16_dispatch_outcomes import observe_outcome
+
+    # The original OPEN obligation is selected before any consumption or provider I/O.
+    opening = await observe_outcome(runtime, intent_id, boundary=True)
+    if not isinstance(opening, JournalSelectedPublication):
+        return None
+    observed = await authenticate(runtime, peer)
     authority = _ConsumeAuthority(runtime, observed)
     coordinator = BrokerPublicationCoordinator(
         runtime._appender, authority, runtime._owner_decisions()
@@ -361,4 +372,10 @@ async def _emit(runtime: R16DispatchRuntime, permit: object) -> bytes:
     # This does not renew authorization or require ACTIVE after selected SEND.
     provider = runtime._require_dispatch_resources().require_original_provider()
     # Permit removed before awaiting external I/O; no SQL transaction is held.
-    return await provider.emit_issued(ticket)
+    raw = await provider.emit_issued(ticket)
+    from chiplog.composition.r16_dispatch_outcomes import observe_outcome
+
+    selected = await observe_outcome(runtime, ticket.intent_id, raw)
+    if not isinstance(selected, JournalSelectedPublication):
+        raise ValueError("provider receipt not durably selected; original obligation remains OPEN")
+    return raw
