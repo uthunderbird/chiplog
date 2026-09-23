@@ -16,9 +16,12 @@ from pydantic import BaseModel, ConfigDict, Field
 Identity = Annotated[str, Field(min_length=1)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 UInt64 = Annotated[int, Field(ge=0, le=2**64 - 1)]
-Owner = Literal["agent_loop", "effects", "planning", "broker_ingress", "conversation"]
+Owner = Literal[
+    "agent_loop", "effects", "planning", "broker_ingress", "broker_dispatch", "conversation"
+]
 
 BrokerOperation = Literal[
+    "dispatch.consume_effect_send",
     "recovery.seal_response",
     "recovery.accept_call",
     "recovery.cancel_call",

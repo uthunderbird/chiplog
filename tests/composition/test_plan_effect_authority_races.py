@@ -218,3 +218,52 @@ async def test_changed_actual_prepared_issuance_is_denied_by_writer(
         assert isinstance(result, PublicationRejected), result
         assert result.kind == "DENIED"
         _assert_no_plan_effect(runtime)
+
+
+async def test_writer_rejects_lease_expiring_during_final_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+    from typing import Literal
+
+    from chiplog.composition import r16_effects_authority as module
+    from chiplog.composition.r16_effects import PreparedEffectAdoption
+    from chiplog.composition.r16_effects_inputs import EffectSources, capture_sources
+    from chiplog.composition.r16_effects_registry import HermeticPlanEffectRegistry
+
+    reached = []
+    original_check = R16PlanEffectAuthority.check_prepared
+    original_capture = capture_sources
+
+    def check(
+        authority: R16PlanEffectAuthority, prepared: PreparedOwnerPublication
+    ) -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
+        entry = authority._prepared[prepared.issuance_id]
+
+        def capture(
+            runtime: R14PlanningRuntime,
+            adoption: PreparedEffectAdoption,
+            registry: HermeticPlanEffectRegistry,
+        ) -> EffectSources:
+            actual = original_capture(runtime, adoption, registry)
+            assert actual == entry.sources
+            deadline = entry.sent.budget.absolute_deadline_ns
+            assert time.monotonic_ns() < deadline
+            reached.append(deadline)
+            time.sleep((deadline - time.monotonic_ns()) / 1_000_000_000 + 0.01)
+            return actual
+
+        with monkeypatch.context() as patch:
+            patch.setattr(module, "capture_sources", capture)
+            return original_check(authority, prepared)
+
+    async with open_r14_loop(tmp_path / "expiry.sqlite", responses=(_response(),)) as loop:
+        runtime, display = await _display(loop)
+        monkeypatch.setattr(R16PlanEffectAuthority, "check_prepared", check)
+        result = await runtime.publish_effect(
+            "hermetic-ingress", display.display_id, display.display_digest, display.adoption_act_id
+        )
+        assert len(reached) == 1
+        assert isinstance(result, PublicationRejected), result
+        assert result.kind == "STALE"
+        _assert_no_plan_effect(runtime)

@@ -107,6 +107,10 @@ def validate_plan_effect_records(
     This pure check issues no authority and does not consult live owners or renew
     old leases. The broker independently authenticates the supplied batch.
     """
+    if batch.effects_command.schema_id == "chiplog.effects.dispatch-preparation.v2":
+        from chiplog.composition.r16_dispatch_history import validate_dispatch_plan_effect
+
+        return validate_dispatch_plan_effect(batch, tenant, commit_sequence)
     if not isinstance(batch, PlanEffectBatch) or batch.identity.tenant_id != tenant:
         raise ValueError("foreign or non-PlanEffect selection")
     planning, effects = batch.planning_command, batch.effects_command
