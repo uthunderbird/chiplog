@@ -1,0 +1,55 @@
+{
+  "canonicalization": "sorted-compact-utf8-json-no-ascii-escaping-v1",
+  "format": "chiplog.scheduler.source-profile.v1",
+  "lock_sha256": "4e2662735c5efc76894eb4b0e5fb91f13a5de216657d3c341d793fe4b50fc062",
+  "packages": {
+    "annotated-types": {
+      "tree_sha256": "d0a06ca4cc2bd1ed415e7c317d95526c10a0a2c82232bc6ec0f51ffd496fab87",
+      "version": "0.8.0"
+    },
+    "pydantic": {
+      "tree_sha256": "ce2e70a213e723dc0a0516dbd5b3b27233e5689f94a825881da1b2463078ca67",
+      "version": "2.13.5"
+    },
+    "pydantic-core": {
+      "tree_sha256": "d524bcf8c6c4a283bc371c40b4be61ca7a9dfe6becf74f705b6510d18a48fe22",
+      "version": "2.46.5"
+    },
+    "typing-extensions": {
+      "tree_sha256": "d1b7961121366a969e4ac2e5056c71a0d9a16b574fe64cf1e0b68780a9ca4362",
+      "version": "4.16.0"
+    },
+    "typing-inspection": {
+      "tree_sha256": "8a298e4374dae473ff6c80b3ead77461fdedb51066e816c776aaadf21cd4313c",
+      "version": "0.4.4"
+    }
+  },
+  "runtime": {
+    "cache_tag": "cpython-314",
+    "executable_sha256": "eefb9dbdcc06706fd3477b2cef7a3818ae5352a3ddc37965e8be7bd96f1dfb65",
+    "implementation": "cpython",
+    "platform": "darwin",
+    "shared_library_sha256": "c4c6820b96a0a20ffbccfb7f7491f4b21e26fd5849132c35af74e7059ed403f0",
+    "soabi": "cpython-314-darwin",
+    "stdlib_tree_sha256": "902df98181fa60610516bca34037aff9f1fe32bc9c4c3bc8f66c34619a061898",
+    "version": "3.14.5 (main, Jun  2 2026, 22:28:56) [Clang 22.1.3 ]"
+  },
+  "sources": {
+    "chiplog.capabilities.agent_loop.contracts": "8073d9d47b9a8edc118c3e79888c0128c2a3651f5c20fc855db801d48a60c0fd",
+    "chiplog.capabilities.agent_loop.delivery_contracts": "f4d7c44d6cda972299a0808b820c5fff5263bba3b0113537f31b269e5a1b64cb",
+    "chiplog.capabilities.agent_loop.delivery_preparation": "6c0e8cea695e1441077ea4b5fb1183423877aa004dd7ef6b5449b2a8e615434b",
+    "chiplog.capabilities.agent_loop.domain": "67a979ce70c4ebf8005b8a8436205605dcb5cf991466f085f15f101ad7dd080f",
+    "chiplog.capabilities.agent_loop.live_contract": "b71ca96d73b3ddd0494a444653cb80fac8adb6e18c89c850ff186e2bd70eb5d7",
+    "chiplog.capabilities.agent_loop.recovery_contracts": "f68ff6d770b309ad0fde53823d86c0149a8dc0b92bf108157ec6df24980bb251",
+    "chiplog.capabilities.agent_loop.response_parsing": "7aaec930e06dcbace1bed940d025b2e0957b241fd5ec1c9a13dc61e0911a3a45",
+    "chiplog.capabilities.agent_loop.scheduler_configuration": "768e9b079fce4d15bc7e8dde357a183bff4741d614a30776671d1185a8f8b437",
+    "chiplog.capabilities.agent_loop.scheduler_contracts": "1c0d219ae6cfdf259b9379f87419175f7d3652f5130f1a0acb1d38794449d0be",
+    "chiplog.capabilities.agent_loop.scheduler_domain": "86136caf6862c464a99272e0c6e96dbf7ef4638b2a32a59c70b798be0549a875",
+    "chiplog.capabilities.agent_loop.scheduler_leases": "960a26d1b2edeef8f02146ea05c6261dcfef28999f497f0f08f835480d8bb4d2",
+    "chiplog.capabilities.agent_loop.scheduler_materialization": "5c7132730d4c80e4d104e45fee9ac086195e35f5af3146c0d03599ff30f671cf",
+    "chiplog.capabilities.agent_loop.scheduler_preparation": "0b6610999b227867050b3126bd8467100bcacfc50310ddc17442b7aeaac49519",
+    "chiplog.capabilities.agent_loop.scheduler_rollover": "09437eab8eb19d40a26f7437f71471b013be95971126833c810eec1a4dd30fcb",
+    "chiplog.capabilities.agent_loop.scheduler_startup": "79667135a2d29c7ce681518dc4407923910bd4f370fe5e5dd7809e2119c07134",
+    "chiplog.verification.scheduler_schema": "1f2ea074b6c6417c273d8f8e7505ceb212b5c0b89cdea3aa14305449f7f41e5d"
+  }
+}

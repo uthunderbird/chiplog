@@ -224,6 +224,15 @@ def verify_offline_import_boundary(root: Path) -> None:
                 if module == "yaml" and relative == "chiplog/verification/transcript_yaml.py":
                     # SafeLoader-only authored contract parsing; no adapter/transport surface.
                     continue
+                if (
+                    relative == "chiplog/composition/scheduler_source_registry.py"
+                    and isinstance(node, ast.ImportFrom)
+                    and module == "importlib.metadata"
+                    and {alias.name for alias in node.names} == {"version"}
+                ):
+                    # Read the installed serializer version; dynamic loading and
+                    # transport imports retain their ordinary rejection below.
+                    continue
                 if relative == "chiplog/adapters/driven/loop_prompts.py" and isinstance(
                     node, ast.ImportFrom
                 ):
