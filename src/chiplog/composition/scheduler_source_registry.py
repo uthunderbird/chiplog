@@ -184,6 +184,10 @@ def _require_historical_equality(
     """Historical equality only: computed bytes never become recovery outputs."""
     request = original.preparation
     try:
+        if original.selection.prepared.request.operation == "scheduler.decide_interval":
+            from chiplog.composition.r15_tick_evidence import validate_selected_tick
+
+            validate_selected_tick(original.selection)
         if isinstance(request, ConfigurationPreparationRequest):
             records = prepare_configuration(request).records
         elif isinstance(request, IntervalPreparationRequest):
