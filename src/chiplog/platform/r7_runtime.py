@@ -171,6 +171,16 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             )
         ):
             return "chiplog.capabilities.deployment_trust._r17_process"
+        if identity.capability_ids == tuple(
+            sorted(
+                (
+                    *legacy,
+                    "deployment_trust.normalize_telegram_candidate",
+                    "deployment_trust.authenticate_cli_custody",
+                )
+            )
+        ):
+            return "chiplog.capabilities.deployment_trust._cli_custody_process"
         raise OwnerProcessFailure("unknown deployment-trust capability partition")
     if identity.owner_id == "agent_loop":
         if identity.capability_ids == ("agent_loop.validate_transition",):
@@ -254,6 +264,13 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
         return (
             "chiplog.capabilities.effects._process",
             "chiplog.capabilities.effects._r16_process",
+        )
+    if module == "chiplog.capabilities.deployment_trust._cli_custody_process":
+        return (
+            "chiplog.capabilities.deployment_trust._cli_custody_process",
+            "chiplog.capabilities.deployment_trust._ingress_process",
+            "chiplog.capabilities.deployment_trust._r17_process",
+            "chiplog.capabilities.deployment_trust._r7_process",
         )
     if module == "chiplog.capabilities.deployment_trust._r17_process":
         return (

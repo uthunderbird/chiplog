@@ -9,14 +9,14 @@ import stat
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import ClassVar, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, cast
 
 from chiplog.adapters.driven.ingress_retained_source import (
     RetainedSourceAdapter,
     RetainedSourceObservation,
 )
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
-from chiplog.architecture.r7_runtime import R14_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import R17_CUSTODY_PRODUCTION_MANIFEST
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r14_runtime import R14PlanningRuntime
 from chiplog.composition.r17_ingress_authority import IngressAuthority
@@ -26,7 +26,7 @@ from chiplog.composition.r17_ingress_history import (
     read_ingress_history,
 )
 from chiplog.composition.r17_ingress_registry import retained_cli_profile
-from chiplog.platform._ingress_contracts import ReceiptToken, SourceBinding, UnknownEndpoint
+from chiplog.platform._ingress_contracts import Head, ReceiptToken, SourceBinding, UnknownEndpoint
 from chiplog.platform._owner_publication_contracts import (
     BrokerPublicationResult,
     ExactReplayQuery,
@@ -35,6 +35,7 @@ from chiplog.platform._owner_publication_contracts import (
     PublicationRejected,
     SingleOwnerBatch,
 )
+from chiplog.platform.ingress_authenticated_contracts import AdmittedInboxObservation
 from chiplog.platform.ingress_custody_records import (
     CustodyCommand,
     CustodyProfile,
@@ -43,6 +44,9 @@ from chiplog.platform.ingress_custody_records import (
     subject_id,
 )
 from chiplog.platform.owner_publications import BrokerPublicationCoordinator
+
+if TYPE_CHECKING:
+    from chiplog.composition.r17_authenticated_custody import AuthenticatedIngressAuthority
 
 _SOURCE_SECRET = b"r17-hermetic-retained-source-only-v1"
 _Operation = Literal[
@@ -69,6 +73,10 @@ def _descriptor(fd: int) -> Iterator[int]:
 
 
 class R17IngressRuntime(R14PlanningRuntime):
+    _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = (
+        *R14PlanningRuntime._record_schema_variants,
+        ("broker_ingress", "chiplog.ingress.authenticated-record.v2"),
+    )
     _record_contracts: ClassVar[dict[str, str]] = {
         **R14PlanningRuntime._record_contracts,
         "broker_ingress": "chiplog.ingress.custody-record.v1",
@@ -173,6 +181,47 @@ class R17IngressRuntime(R14PlanningRuntime):
                 and allocations[0].token.receive_slot == observed.slot_id
             )
 
+    @asynccontextmanager
+    async def cli_custody(self, slot_id: str) -> AsyncIterator[AuthenticatedIngressAuthority]:
+        """Open one real-peer control exchange for already retained staged bytes."""
+        from chiplog.composition.r17_authenticated_custody import AuthenticatedIngressAuthority
+
+        authority = AuthenticatedIngressAuthority(self, slot_id)
+        async with authority.socket:
+            yield authority
+
+    def read_admitted_inbox(self, token_id: str) -> AdmittedInboxObservation | None:
+        from chiplog.composition.r17_ingress_history import record_head
+        from chiplog.platform.ingress_authenticated_contracts import (
+            AdmittedInboxObservation,
+            AuthenticatedCustodyRecord,
+        )
+
+        history = self.ingress_history()
+        matches = [
+            r
+            for r in history.records
+            if isinstance(r, AuthenticatedCustodyRecord) and r.command.token.token_id == token_id
+        ]
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise ValueError("multiple selected admitted inboxes")
+        record = matches[0]
+        selected = self._owner_decisions().lookup(self._tenant_id, record.command.command_id)
+        if selected is None:
+            raise ValueError("selected inbox decision disappeared")
+        return AdmittedInboxObservation(
+            selected_decision=Head(
+                identity=selected.decision_id,
+                head=selected.decision_head,
+                fingerprint=selected.decision_fingerprint,
+            ),
+            physical_record=record_head(record),
+            commit_sequence=selected.tenant_commit_sequence,
+            record=record,
+        )
+
     def ingress_history(self) -> IngressHistory:
         return read_ingress_history(self)
 
@@ -202,6 +251,13 @@ class R17IngressRuntime(R14PlanningRuntime):
                 batch = selected.prepared.request
                 if not isinstance(batch, SingleOwnerBatch):
                     raise ValueError("selected retained custody has another batch kind")
+                if batch.command.schema_id != "chiplog.ingress.retained-command.v1":
+                    return PublicationRejected(
+                        kind="CONFLICT",
+                        tenant_id=self._tenant_id,
+                        command_id=command_id,
+                        reason="receipt already has another immutable successor",
+                    )
                 original = CustodyCommand.model_validate_json(batch.command.canonical_bytes)
                 if (
                     original.operation != operation
@@ -317,7 +373,7 @@ async def open_r17_runtime(
         tenant_id="hermetic-tenant",
         operator_secret=b"r13-hermetic-only",
         runtime_type=R17IngressRuntime,
-        manifest=R14_PRODUCTION_MANIFEST,
+        manifest=R17_CUSTODY_PRODUCTION_MANIFEST,
         extra_leaves={"model": model if model is not None else HermeticModel()},
     ) as opened:
         runtime = cast(R17IngressRuntime, opened)

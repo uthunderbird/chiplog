@@ -7,10 +7,14 @@ import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from chiplog.composition.r17_authenticated_records import COMMAND_SCHEMA as AUTH_COMMAND_SCHEMA
+from chiplog.composition.r17_authenticated_records import RECORD_SCHEMA as AUTH_RECORD_SCHEMA
+from chiplog.composition.r17_authenticated_records import prepare_authenticated_custody
 from chiplog.composition.r17_ingress_registry import (
     require_registered_profile,
     retained_cli_profile,
 )
+from chiplog.platform._ingress_contracts import Head
 from chiplog.platform._ingress_domain import CustodySnapshot
 from chiplog.platform._owner_publication_contracts import (
     AuthoritativeReadManifest,
@@ -21,12 +25,17 @@ from chiplog.platform._owner_publication_contracts import (
     SingleOwnerBatch,
 )
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+from chiplog.platform.ingress_authenticated_contracts import (
+    AuthenticatedCustodyCommand,
+    AuthenticatedCustodyRecord,
+)
 from chiplog.platform.ingress_custody_records import (
     CustodyCommand,
     CustodyRecord,
     canonical,
     digest,
     prepare_custody,
+    reference,
 )
 from chiplog.platform.owner_decision_journal import OwnerJournalIntegrityError, OwnerJournalSnapshot
 from chiplog.platform.owner_publications import SelectedOwnerDecision, source_commands
@@ -40,29 +49,41 @@ COMMAND_SCHEMA = "chiplog.ingress.retained-command.v1"
 RECORD_SCHEMA = "chiplog.ingress.custody-record.v1"
 
 
-def wire_record(record: CustodyRecord) -> OwnerRecordBytes:
+type HistoryRecord = CustodyRecord | AuthenticatedCustodyRecord
+type HistoryCommand = CustodyCommand | AuthenticatedCustodyCommand
+
+
+def record_head(record: HistoryRecord) -> Head:
+    return reference(record.command.command_id + "/record", canonical(record))
+
+
+def wire_record(record: HistoryRecord) -> OwnerRecordBytes:
     raw = canonical(record)
     return OwnerRecordBytes(
         owner="broker_ingress",
-        record_kind="ingress.custody",
-        record_id=record.head().head,
-        schema_id=RECORD_SCHEMA,
+        record_kind="ingress.custody"
+        if isinstance(record, CustodyRecord)
+        else "ingress.authenticated_custody",
+        record_id=record_head(record).head,
+        schema_id=RECORD_SCHEMA if isinstance(record, CustodyRecord) else AUTH_RECORD_SCHEMA,
         canonical_bytes=raw,
         fingerprint=digest(raw),
     )
 
 
 def read_manifest(
-    command: CustodyCommand, records: tuple[CustodyRecord, ...]
+    command: HistoryCommand, records: tuple[HistoryRecord, ...]
 ) -> AuthoritativeReadManifest:
     state = BrokerReadState.model_validate_json(command.read_state_bytes)
     heads = tuple(
         ObservedPresence(
             head=ExactRecordHead(
                 owner="broker_ingress",
-                record_kind="ingress.custody",
+                record_kind="ingress.custody"
+                if isinstance(record, CustodyRecord)
+                else "ingress.authenticated_custody",
                 subject_id=record.command.token.token_id,
-                record_id=record.head().head,
+                record_id=record_head(record).head,
                 fingerprint=digest(canonical(record)),
             )
         )
@@ -93,7 +114,11 @@ def _retained_schema(raw: bytes) -> bool:
         body = json.loads(raw)
     except ValueError, UnicodeDecodeError:
         return False
-    return isinstance(body, dict) and body.get("schema_id") in (COMMAND_SCHEMA, RECORD_SCHEMA)
+    return (
+        isinstance(body, dict)
+        and isinstance(body.get("schema_id"), str)
+        and body["schema_id"].startswith("chiplog.ingress.")
+    )
 
 
 def is_ingress(decision: SelectedOwnerDecision) -> bool:
@@ -102,13 +127,13 @@ def is_ingress(decision: SelectedOwnerDecision) -> bool:
         batch.operation.startswith("ingress.")
         or any(
             command.owner == "broker_ingress"
-            or command.schema_id == COMMAND_SCHEMA
+            or command.schema_id.startswith("chiplog.ingress.")
             or _retained_schema(command.canonical_bytes)
             for command in source_commands(batch)
         )
         or any(
             row.owner == "broker_ingress"
-            or row.schema_id == RECORD_SCHEMA
+            or row.schema_id.startswith("chiplog.ingress.")
             or _retained_schema(row.canonical_bytes)
             for row in batch.complete_records
         )
@@ -117,11 +142,11 @@ def is_ingress(decision: SelectedOwnerDecision) -> bool:
 
 def validate_selected_ingress(
     history: OwnerJournalSnapshot,
-) -> tuple[tuple[CustodyRecord, ...], CustodySnapshot]:
+) -> tuple[tuple[HistoryRecord, ...], CustodySnapshot]:
     """No current source access: independently selected bytes bind original authority."""
     from chiplog.adapters.driven.ingress_retained_source import decode_retained_observation
 
-    records: list[CustodyRecord] = []
+    records: list[HistoryRecord] = []
     snapshot = retained_cli_profile(history.tenant_id, "hermetic-database").empty()
     identity = "complete-ingress-history"
     try:
@@ -130,9 +155,16 @@ def validate_selected_ingress(
                 continue  # Other owner operations are outside the closed ingress slice.
             batch = decision.prepared.request
             identity = batch.identity.command_id
-            if not isinstance(batch, SingleOwnerBatch) or batch.command.schema_id != COMMAND_SCHEMA:
+            if not isinstance(batch, SingleOwnerBatch) or batch.command.schema_id not in (
+                COMMAND_SCHEMA,
+                AUTH_COMMAND_SCHEMA,
+            ):
                 raise ValueError("unregistered selected custody batch")
-            command = CustodyCommand.model_validate_json(batch.command.canonical_bytes)
+            command = (
+                CustodyCommand.model_validate_json(batch.command.canonical_bytes)
+                if batch.command.schema_id == COMMAND_SCHEMA
+                else AuthenticatedCustodyCommand.model_validate_json(batch.command.canonical_bytes)
+            )
             require_registered_profile(command.profile)
             observation = decode_retained_observation(command.retention.observation_bytes)
             scope = json.loads(observation.signed_metadata_bytes)["value"]["scope"]
@@ -216,11 +248,12 @@ def validate_selected_ingress(
                 or command.token.source.broker_session != session.session_id
             ):
                 raise ValueError("original allocated token used another broker session")
-            record, snapshot = prepare_custody(
-                command,
-                records[-1].head() if records else None,
-                snapshot,
-            )
+            previous = record_head(records[-1]) if records else None
+            record: HistoryRecord
+            if isinstance(command, CustodyCommand):
+                record, snapshot = prepare_custody(command, previous, snapshot)
+            else:
+                record, snapshot = prepare_authenticated_custody(command, previous, snapshot)
             wire = wire_record(record)
             if batch.complete_records != (wire,) or batch.complete_batch_fingerprint != digest(
                 json.dumps(
@@ -239,7 +272,7 @@ def validate_selected_ingress(
 
 @dataclass(frozen=True)
 class IngressHistory:
-    records: tuple[CustodyRecord, ...]
+    records: tuple[HistoryRecord, ...]
     custody: CustodySnapshot
     tenant_frontier: int
     commitment: str
@@ -359,7 +392,7 @@ def read_ingress_history(
                         (runtime._tenant_id,),
                     )
                     if row[1] == "broker_ingress"
-                    or row[2] == RECORD_SCHEMA
+                    or str(row[2]).startswith("chiplog.ingress.")
                     or _retained_schema(row[3])
                 }
                 if observed_ids != expected_ids:
