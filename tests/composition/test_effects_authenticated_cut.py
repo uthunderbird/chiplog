@@ -9,7 +9,13 @@ import pytest
 
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.adapters.driven.effects_broker import EffectsIntegrityError
-from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopRejected
+from chiplog.capabilities.agent_loop.contracts import (
+    BudgetPolicy,
+    DeliveryAcceptanceReference,
+    LoopRejected,
+    RunRecord,
+)
+from chiplog.capabilities.agent_loop.domain import validate_record
 from chiplog.composition.r13 import open_r13_loop
 from chiplog.composition.r13_planning import R13PlanningRuntime
 from chiplog.composition.r14 import open_r14_loop
@@ -42,6 +48,65 @@ def _response() -> bytes:
             ],
         }
     ).encode()
+
+
+async def test_legacy_validation_reuses_only_exact_pairs_and_bounds_retained_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chiplog.composition import r16_effects
+
+    async with open_r14_loop(tmp_path / "legacy-cache.sqlite", responses=()) as loop:
+        await loop.create("r", "Original", BudgetPolicy())
+        created = loop.record("r")
+        await loop.activate("r", created.head)
+        active = loop.record("r")
+        await loop.create("other", "Other", BudgetPolicy())
+        other = loop.record("other")
+        r16_effects._cached_legacy_run_check.cache_clear()
+        checks = 0
+
+        def counted(previous: RunRecord | None, record: RunRecord) -> None:
+            nonlocal checks
+            checks += 1
+            validate_record(previous, record)
+
+        monkeypatch.setattr(r16_effects, "validate_record", counted)
+        previous, raw = created.canonical_bytes(), active.canonical_bytes()
+        r16_effects._validate_legacy_run_bytes(previous, raw)
+        r16_effects._validate_legacy_run_bytes(previous, raw)
+        assert checks == 1
+        changed = active.model_copy(update={"prompt": "Changed", "head": "pending"})
+        changed = changed.model_copy(update={"head": "loop:" + changed.digest()})
+        for old, new in ((other.canonical_bytes(), raw), (previous, changed.canonical_bytes())):
+            for _ in range(2):
+                before = checks
+                with pytest.raises(LoopRejected):
+                    r16_effects._validate_legacy_run_bytes(old, new)
+                assert checks == before + 1  # Failed validation is never cached.
+        with pytest.raises(ValueError, match="canonical legacy"):
+            r16_effects._validate_legacy_run_bytes(previous, b" " + raw)
+        expanded = active.model_copy(
+            update={
+                "accepted_delivery_binding": DeliveryAcceptanceReference(
+                    acceptance_identity="delivery",
+                    acceptance_head="delivery-head",
+                    acceptance_fingerprint="a" * 64,
+                    proposal_canonical_base64="eA==",
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="canonical legacy"):
+            r16_effects._validate_legacy_run_bytes(previous, expanded.canonical_bytes())
+        large = created.model_copy(update={"prompt": "x" * (256 * 1024), "head": "pending"})
+        large = large.model_copy(update={"head": "loop:" + large.digest()})
+        large_raw = large.canonical_bytes()
+        assert len(large_raw) > 256 * 1024
+        size = r16_effects._cached_legacy_run_check.cache_info().currsize
+        before = checks
+        r16_effects._validate_legacy_run_bytes(None, large_raw)
+        r16_effects._validate_legacy_run_bytes(None, large_raw)
+        assert checks == before + 2
+        assert r16_effects._cached_legacy_run_check.cache_info().currsize == size
 
 
 async def test_composite_preview_adoption_is_exact_and_still_unpublished(tmp_path: Path) -> None:
@@ -155,7 +220,7 @@ async def test_composite_ipc_is_unlocked_and_does_not_replace_legacy_trace(
                     ).valid_until_ns
                     assert isinstance(result, PreparedPlanningCandidate)
                     request_value = json.loads(result.request_bytes)
-                    assert request_value["observed_time_ns"] + 5_000_000_000 > deadline
+                    assert request_value["observed_time_ns"] + 5_000_000_000 == deadline
                     monkeypatch.setattr(
                         r16_effects, "time", SimpleNamespace(monotonic_ns=lambda: deadline + 1)
                     )

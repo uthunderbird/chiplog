@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Literal
+from typing import Literal, Protocol
 
 from .contracts import (
     AcceptEffectCommand,
@@ -158,8 +158,15 @@ def _require_no_replacement(
         )
 
 
+class _RecordSource(Protocol):
+    @property
+    def identity(self) -> CommandIdentity: ...
+
+    def canonical_bytes(self) -> bytes: ...
+
+
 def _bind_record(
-    command: EffectCommand,
+    command: _RecordSource,
     expected: EffectStoreSnapshot,
     previous: EffectRecord | None,
     snapshot: EffectSnapshot,

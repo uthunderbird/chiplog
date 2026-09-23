@@ -31,6 +31,7 @@ from chiplog.capabilities.effects.contracts import (
     PreparedEffectPublication,
     PublishPlanEffectCommand,
 )
+from chiplog.capabilities.effects.denial import prepare_denial
 from chiplog.capabilities.effects.fences import NonSchedulerFence, NotApplicable
 from chiplog.platform._owner_publication_contracts import (
     AuthoritativeReadManifest,
@@ -42,10 +43,96 @@ from chiplog.platform._owner_publication_contracts import (
     WorkerAuthentication,
 )
 from tests.support.effects import head, intent
+from tests.support.effects_denial import make_denial_request
 
 
 def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.parametrize("alias_predecessor", [False, True])
+def test_snapshot_reads_denial_history_and_rejects_rehashed_predecessor_alias(
+    alias_predecessor: bool,
+) -> None:
+    queries, _, _ = _fixture()
+    original = EffectRecord.model_validate_json(queries.cut.rows[0].record.canonical_bytes)
+    snapshot = original.snapshot
+    reference = ExactHead(
+        subject_id=snapshot.intent.intent_id,
+        head=snapshot.intent.intent_id + "/" + snapshot.intent.fingerprint,
+        fingerprint=snapshot.intent.fingerprint,
+    )
+    template = make_denial_request()
+    authority = template.command.authority.model_copy(
+        update={
+            "intent": reference,
+            "expected_attempt": snapshot.attempt,
+        }
+    )
+    command = template.command.model_copy(
+        update={
+            "intent": reference,
+            "expected_attempt": snapshot.attempt,
+            "authority": authority,
+        }
+    )
+    request = template.model_copy(
+        update={
+            "command": command,
+            "current": template.current.model_copy(update={"authority": authority}),
+            "expected": EffectStoreSnapshot(tenant_id="tenant", tenant_head=1, records=(original,)),
+        }
+    )
+    record = prepare_denial(request).record
+    if alias_predecessor:
+        command = command.model_copy(
+            update={
+                "expected_attempt": head("alias"),
+                "authority": authority.model_copy(update={"expected_attempt": head("alias")}),
+            }
+        )
+        record = record.model_copy(update={"source_command": command.canonical_bytes()})
+        body = {
+            "command": record.command.model_dump(mode="json"),
+            "predecessor": original.record.model_dump(mode="json"),
+            "kind": record.kind,
+            "snapshot": record.snapshot.model_dump(mode="json"),
+            "source_command": record.source_command.hex(),
+        }
+        digest = _hash(
+            json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        )
+        subject = "effects/" + record.command.command_id
+        record = record.model_copy(
+            update={
+                "record": ExactHead(
+                    subject_id=subject,
+                    head=subject + "/" + digest,
+                    fingerprint=digest,
+                )
+            }
+        )
+    raw = record.canonical_bytes()
+    row = StoredEffectRow(
+        2,
+        0,
+        (record.record.head,),
+        OwnerRecordBytes(
+            owner="effects",
+            record_kind="effects." + record.kind,
+            record_id=record.record.head,
+            schema_id="chiplog.effects.record.v1",
+            canonical_bytes=raw,
+            fingerprint=_hash(raw),
+        ),
+    )
+    queries = replace(queries, cut=replace(queries.cut, rows=(queries.cut.rows[0], row)))
+    if alias_predecessor:
+        with pytest.raises(EffectsIntegrityError) as error:
+            queries.effects_snapshot()
+        assert "predecessor attempt" in str(error.value.__cause__)
+    else:
+        assert queries.effects_snapshot().records == (original, record)
 
 
 def _fixture(

@@ -143,6 +143,8 @@ class PreparedPlanningCandidate:
     owner_session: BrokerSession
     expected_tenant_head: int
     disposition: Literal["PREPARED"] = "PREPARED"
+    sent_call: PublicPortCall | None = None
+    returned_result: PublicPortResult | None = None
 
 
 class R7PlanningRuntime:
@@ -729,24 +731,27 @@ class R7PlanningRuntime:
             owner_id="broker",
             session_id=f"broker:{callee.generation_id}",
         )
-        response = await runtime.call(
-            PublicPortCall(
-                operation_id=self._planning_operation,
-                request_id=f"planning:{command.command_id.value}:{secrets.token_hex(8)}",
-                caller=caller,
-                callee=callee,
-                schema_id=self._planning_schema,
-                canonical_payload=request.canonical_bytes(),
-                budget=CallBudget(
-                    remaining_calls=1,
-                    remaining_depth=1,
-                    absolute_deadline_ns=time.monotonic_ns() + 5_000_000_000,
-                    policy_version=1,
-                ),
-            )
+        sent_call = PublicPortCall(
+            operation_id=self._planning_operation,
+            request_id=f"planning:{command.command_id.value}:{secrets.token_hex(8)}",
+            caller=caller,
+            callee=callee,
+            schema_id=self._planning_schema,
+            canonical_payload=request.canonical_bytes(),
+            budget=CallBudget(
+                remaining_calls=1,
+                remaining_depth=1,
+                absolute_deadline_ns=time.monotonic_ns() + 5_000_000_000,
+                policy_version=1,
+            ),
         )
+        response = await runtime.call(sent_call)
+        if response.request_id != sent_call.request_id or response.responder != sent_call.callee:
+            raise ValueError("planning owner response identity differs from sent request")
         if isinstance(response, PublicPortRejected):
             return PlanningOutcome("INDETERMINATE", None, response.failure.reason)
+        if response.schema_id != "chiplog.planning.public.result.v1":
+            raise ValueError("planning owner response schema differs from registered schema")
         owner_result = _decode_owner_result(response.canonical_payload)
         if owner_result.disposition != "COMMITTED":
             result = None
@@ -774,6 +779,8 @@ class R7PlanningRuntime:
             owner_result_bytes=owner_result.canonical_result_bytes,
             owner_session=callee,
             expected_tenant_head=int(proposal["commit_sequence"]) - 1,
+            sent_call=sent_call,
+            returned_result=response,
         )
 
     async def _create(
