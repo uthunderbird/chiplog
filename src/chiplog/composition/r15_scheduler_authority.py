@@ -72,6 +72,7 @@ class SchedulerPublicationAuthority:
         self._runtime = runtime
         self._observed = observed
         self._adoption = adoption
+        self._is_genesis = isinstance(adoption, SchedulerGenesisAdoption)
         self._operations = (
             (GENESIS_OPERATION,)
             if isinstance(adoption, SchedulerGenesisAdoption)
@@ -117,7 +118,7 @@ class SchedulerPublicationAuthority:
                     cut.physical_inode,
                 ) != runtime._database_identity:
                     raise LoopRejected("scheduler cut belongs to another physical database")
-                if isinstance(self._adoption, SchedulerGenesisAdoption):
+                if self._is_genesis:
                     if cut.selected or cut.materialized or startup.index.selected_record_ids:
                         raise LoopRejected(
                             "scheduler GENESIS requires empty global scheduler history"
@@ -191,6 +192,21 @@ class SchedulerPublicationAuthority:
         )
         self._invocations[issuance] = (proof, identity, command, original.operation)
         return proof
+
+    def _matches_original(self, request: SingleOwnerBatch) -> bool:
+        """Closed configuration interpretation; other issuers override explicitly."""
+        original = ConfigurationPreparationRequest.model_validate_json(
+            request.command.canonical_bytes
+        )
+        return (
+            request.identity.command_fingerprint == _digest(self._adoption.command_bytes)
+            and original.operation == request.operation
+            and original.command_bytes == self._adoption.command_bytes
+            and original.canonical_bytes() == request.command.canonical_bytes
+            and request.command.owner == "agent_loop"
+            and request.command.schema_id == "chiplog.scheduler.configuration-preparation.v1"
+            and request.command.fingerprint == _digest(request.command.canonical_bytes)
+        )
 
     def authenticate_replay(self, query: ExactReplayQuery) -> PublicationRejected | None:
         issued = self._invocations.get(query.current_invocation.issuance_id)
@@ -277,26 +293,16 @@ class SchedulerPublicationAuthority:
                 request.identity.tenant_id != runtime._tenant_id
                 or request.operation not in self._operations
                 or request.identity.command_id != self._command_id
-                or request.identity.command_fingerprint != _digest(self._adoption.command_bytes)
                 or journal.lookup(runtime._tenant_id, request.identity.command_id) != decision
             ):
                 return "CONFLICT"
             if not isinstance(request, SingleOwnerBatch):
                 return "CONFLICT"
             try:
-                original = ConfigurationPreparationRequest.model_validate_json(
-                    request.command.canonical_bytes
-                )
+                matches = self._matches_original(request)
             except ValueError:
                 return "CONFLICT"
-            if (
-                original.operation != request.operation
-                or original.command_bytes != self._adoption.command_bytes
-                or original.canonical_bytes() != request.command.canonical_bytes
-                or request.command.owner != "agent_loop"
-                or request.command.schema_id != "chiplog.scheduler.configuration-preparation.v1"
-                or request.command.fingerprint != _digest(request.command.canonical_bytes)
-            ):
+            if not matches:
                 return "CONFLICT"
             snapshot = journal.snapshot()
             anchored = runtime._commitment_journal.load(runtime._tenant_id)

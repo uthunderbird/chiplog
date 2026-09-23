@@ -6,6 +6,7 @@ current authority anchor. COMPLETE establishes none of those on its own.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import sqlite3
@@ -223,15 +224,28 @@ def read_loop_snapshot(runtime: R14PlanningRuntime) -> LoopSnapshot:
                     raise ValueError("only one global scheduler GENESIS is registered")
                 expected_ids: set[str] = set()
                 expected_publications: set[tuple[str, str]] = set()
+                scheduler_runs: list[tuple[int, RunRecord]] = []
                 for batch, historical in zip(
                     startup.cut.selected, startup.cut.historical_requests, strict=True
                 ):
                     identity = batch.command_id
-                    if (
-                        batch.operation not in _CONFIGURATION_SCHEMAS
-                        or tuple(member.schema_id for member in batch.records)
-                        != _CONFIGURATION_SCHEMAS[batch.operation]
-                    ):
+                    if batch.operation in _CONFIGURATION_SCHEMAS:
+                        if (
+                            tuple(member.schema_id for member in batch.records)
+                            != _CONFIGURATION_SCHEMAS[batch.operation]
+                        ):
+                            raise ValueError("configuration scheduler schema differs")
+                    elif batch.operation == "scheduler.decide_interval":
+                        for member in batch.records:
+                            if member.record_kind == "agent_loop.run":
+                                run = RunRecord.model_validate_json(
+                                    base64.b64decode(member.canonical_base64, validate=True)
+                                )
+                                validate_record(None, run)
+                                scheduler_runs.append(
+                                    (historical.selection.tenant_commit_sequence, run)
+                                )
+                    else:
                         raise ValueError("unregistered scheduler history requires explicit mapper")
                     command = runtime._owner_command(historical.selection)
                     if (
@@ -251,8 +265,11 @@ def read_loop_snapshot(runtime: R14PlanningRuntime) -> LoopSnapshot:
                 ).fetchone()
                 if fence != ("r6", 0):
                     raise ValueError("missing or stale loop deletion fence")
-                records: list[RunRecord] = []
-                latest: dict[str, RunRecord] = {}
+                records: list[RunRecord] = [run for _, run in scheduler_runs]
+                record_sequences = {run.head: sequence for sequence, run in scheduler_runs}
+                latest: dict[str, RunRecord] = {run.run_id: run for _, run in scheduler_runs}
+                if len(latest) != len(scheduler_runs):
+                    raise ValueError("duplicate scheduler initial Run identity")
                 for command in selected:
                     identity = command.idempotency_key
                     if (
@@ -296,6 +313,7 @@ def read_loop_snapshot(runtime: R14PlanningRuntime) -> LoopSnapshot:
                     expected_publications.add((command.operation_kind, identity))
                     latest[record.run_id] = record
                     records.append(record)
+                    record_sequences[record.head] = command.expected_head + 1
                 physical_ids = {
                     row[0]
                     for row in connection.execute(
@@ -319,6 +337,7 @@ def read_loop_snapshot(runtime: R14PlanningRuntime) -> LoopSnapshot:
                 ):
                     raise ValueError("independent loop authority changed during read")
                 runtime._check_database_identity()
+                records.sort(key=lambda record: record_sequences[record.head])
                 return LoopSnapshot(tenant_head=startup.cut.tenant_frontier, records=tuple(records))
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
         raise LoopIntegrityError(
