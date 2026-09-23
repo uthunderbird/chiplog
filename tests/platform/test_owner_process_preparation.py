@@ -4,6 +4,7 @@ import hashlib
 import json
 import socket
 import time
+from pathlib import Path
 from typing import Literal
 
 import pytest
@@ -63,6 +64,98 @@ from chiplog.platform.broker import (
     PublicPortSuccess,
 )
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+
+
+async def test_generic_owner_uses_captured_parser_for_completion_and_continuation() -> None:
+    from chiplog.capabilities.agent_loop import domain
+    from chiplog.capabilities.agent_loop.contracts import Continue, ToolCall, TransitionRequest
+    from chiplog.capabilities.agent_loop.delivery_preparation import DELIVERY_TOOLS
+    from tests.support.delivery_completion import _captured
+
+    with AuthorityBrokerRuntime(
+        "t", 1, "generation", R14_PRODUCTION_MANIFEST, b"secret"
+    ) as runtime:
+
+        def invoke(payload: bytes, identity: str) -> PublicPortSuccess | PublicPortRejected:
+            return runtime.call_sync(
+                PublicPortCall(
+                    operation_id="agent_loop.validate_transition",
+                    request_id=identity,
+                    caller=BrokerSession(
+                        tenant_id="t",
+                        broker_epoch=1,
+                        generation_id="generation",
+                        owner_id="broker",
+                        session_id="broker",
+                    ),
+                    callee=runtime.session("agent_loop"),
+                    schema_id="chiplog.agent-loop.transition.v1",
+                    canonical_payload=payload,
+                    budget=CallBudget(
+                        remaining_calls=1,
+                        remaining_depth=1,
+                        absolute_deadline_ns=time.monotonic_ns() + 10_000_000_000,
+                        policy_version=1,
+                    ),
+                )
+            )
+
+        fixture = Path(__file__).parents[1] / (
+            "capabilities/agent_loop/fixtures/delivery_generator_legacy_completion.json"
+        )
+        assert isinstance(invoke(fixture.read_bytes(), "legacy-completion"), PublicPortRejected)
+        subsets = (DELIVERY_TOOLS, (DELIVERY_TOOLS[0],), (DELIVERY_TOOLS[1],))
+        for index, tools in enumerate(subsets):
+            captured, _ = await _captured(tools=tools)
+            turn, attempt = captured.turns[-1], captured.turns[-1].attempts[-1]
+            emitted = captured.model_copy(
+                update={
+                    "turns": (
+                        turn.model_copy(
+                            update={
+                                "attempts": (
+                                    attempt.model_copy(
+                                        update={
+                                            "state": "EMITTED_OUTCOME_UNKNOWN",
+                                            "response_base64": None,
+                                            "receipt": None,
+                                        }
+                                    ),
+                                ),
+                            }
+                        ),
+                    )
+                }
+            )
+            response = Continue(
+                kind="Continue",
+                tool_calls=(ToolCall(call_id="call", tool=tools[0].name, text="proposal"),),
+            )
+            previous = domain.capture(emitted, response.canonical_bytes(), "captured")
+            proposed = domain.accept_tools(previous, response)
+            frame = TransitionRequest(previous=previous, proposed=proposed)
+            assert isinstance(invoke(frame.canonical_bytes(), f"valid-{index}"), PublicPortSuccess)
+            for field, value, reason in (
+                ("generator_version", "unknown-generator", "generator_version"),
+                ("generator_version", "chiplog.turn-schema.v1", "schema bytes differ"),
+                ("response_schema_json", "{}", "wrong captured delivery response schema"),
+            ):
+                old_turn = previous.turns[-1]
+                old_attempt = old_turn.attempts[-1]
+                artifact = old_attempt.manifest.artifact.model_copy(update={field: value})
+                manifest = old_attempt.manifest.model_copy(update={"artifact": artifact})
+                changed_attempt = old_attempt.model_copy(update={"manifest": manifest})
+                changed = previous.model_copy(
+                    update={
+                        "turns": (old_turn.model_copy(update={"attempts": (changed_attempt,)}),)
+                    }
+                )
+                rejected = invoke(
+                    TransitionRequest(previous=changed, proposed=proposed).canonical_bytes(),
+                    f"invalid-{index}-{field}-{value}",
+                )
+                assert isinstance(rejected, PublicPortRejected)
+                assert reason in rejected.failure.reason
 
 
 @pytest.mark.parametrize(
@@ -259,6 +352,7 @@ def test_scheduler_preparation_crosses_real_isolated_process_and_keeps_exact_clo
             )
         owners = {item.identity.owner_id: item for item in runtime.attest()}
         assert owners["agent_loop"].loaded_policy_modules == (
+            "chiplog.capabilities.agent_loop._delivery_process",
             "chiplog.capabilities.agent_loop._r13_process",
             "chiplog.capabilities.agent_loop._r14_process",
             "chiplog.capabilities.agent_loop._scheduler_process",
@@ -457,3 +551,118 @@ def test_effect_preparation_returns_atomic_companions_through_real_owner_process
         )
         owners = {item.identity.owner_id: item for item in runtime.attest()}
         assert owners["effects"].loaded_policy_modules == ("chiplog.capabilities.effects._process",)
+
+
+@pytest.mark.parametrize("tool_subset", [0, 1, 2])
+async def test_delivery_routes_cross_isolated_owner_and_reject_protocol_and_history(
+    tool_subset: int,
+) -> None:
+    from chiplog.capabilities.agent_loop.contracts import RunRecord
+    from chiplog.capabilities.agent_loop.delivery_preparation import (
+        DELIVERY_TOOLS,
+        DeliveryPrepareRequest,
+        DeliveryValidateRequest,
+    )
+    from tests.support.delivery_completion import _captured
+
+    tools = DELIVERY_TOOLS if tool_subset == 2 else (DELIVERY_TOOLS[tool_subset],)
+    captured, observation = await _captured(tools=tools)
+    request = DeliveryPrepareRequest(previous=captured, observation=observation)
+    with AuthorityBrokerRuntime(
+        "t", 1, "generation", R14_PRODUCTION_MANIFEST, b"secret"
+    ) as runtime:
+        call = PublicPortCall(
+            operation_id="agent_loop.prepare_delivery_completion",
+            request_id="delivery",
+            caller=BrokerSession(
+                tenant_id="t",
+                broker_epoch=1,
+                generation_id="generation",
+                owner_id="broker",
+                session_id="broker",
+            ),
+            callee=runtime.session("agent_loop"),
+            schema_id="chiplog.delivery.prepare-completion.v1",
+            canonical_payload=request.canonical_bytes(),
+            budget=CallBudget(
+                remaining_calls=30,
+                remaining_depth=2,
+                absolute_deadline_ns=time.monotonic_ns() + 10_000_000_000,
+                policy_version=1,
+            ),
+        )
+        result = runtime.call_sync(call)
+        assert isinstance(result, PublicPortSuccess)
+        accepted = RunRecord.model_validate_json(result.canonical_payload)
+        assert accepted.canonical_bytes() == result.canonical_payload
+        assert accepted.state == "SUCCEEDED"
+        assert accepted.predecessor == captured.head
+        validation = DeliveryValidateRequest(
+            previous=captured, proposed=accepted, observation=observation
+        )
+        validate_call = call.model_copy(
+            update={
+                "operation_id": "agent_loop.validate_delivery_completion",
+                "schema_id": "chiplog.delivery.validate-completion.v1",
+                "canonical_payload": validation.canonical_bytes(),
+            }
+        )
+        validated = runtime.call_sync(validate_call)
+        assert isinstance(validated, PublicPortSuccess)
+        assert validated.canonical_payload == result.canonical_payload
+        for base in (call, validate_call):
+            for mutation in (
+                {"schema_id": "unregistered"},
+                {"operation_id": "agent_loop.unknown"},
+                {"callee": base.callee.model_copy(update={"session_id": "stale"})},
+                {"canonical_payload": base.canonical_payload + b" "},
+            ):
+                assert isinstance(
+                    runtime.call_sync(base.model_copy(update=mutation)), PublicPortRejected
+                )
+        bad_observation = observation.model_copy(update={"history": ()})
+        bad_prepare = request.model_copy(update={"observation": bad_observation})
+        bad_validate = validation.model_copy(update={"observation": bad_observation})
+        for base, payload in ((call, bad_prepare), (validate_call, bad_validate)):
+            assert isinstance(
+                runtime.call_sync(
+                    base.model_copy(
+                        update={
+                            "canonical_payload": payload.canonical_bytes(),
+                        }
+                    )
+                ),
+                PublicPortRejected,
+            )
+        legacy, legacy_observation = await _captured(legacy=True)
+        prior = captured.turns[0].model_copy(update={"turn_id": "previous"})
+        unfinished = captured.model_copy(update={"turns": (prior, captured.turns[0])})
+        for base, payload in (
+            (call, request.model_copy(update={"previous": unfinished})),
+            (validate_call, validation.model_copy(update={"previous": unfinished})),
+        ):
+            rejected = runtime.call_sync(
+                base.model_copy(
+                    update={
+                        "canonical_payload": payload.canonical_bytes(),
+                    }
+                )
+            )
+            assert isinstance(rejected, PublicPortRejected)
+        legacy_request = DeliveryPrepareRequest(previous=legacy, observation=legacy_observation)
+        assert isinstance(
+            runtime.call_sync(
+                call.model_copy(
+                    update={
+                        "canonical_payload": legacy_request.canonical_bytes(),
+                    }
+                )
+            ),
+            PublicPortRejected,
+        )
+        assert (
+            "chiplog.capabilities.agent_loop._delivery_process"
+            in {item.identity.owner_id: item for item in runtime.attest()}[
+                "agent_loop"
+            ].loaded_policy_modules
+        )

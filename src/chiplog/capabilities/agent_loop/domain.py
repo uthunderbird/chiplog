@@ -5,6 +5,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .delivery_preparation import DeliveryObservation
 
 from .contracts import (
     AcceptedDelivery,
@@ -23,6 +27,7 @@ from .contracts import (
     VisibilityManifest,
     VisibilityMember,
 )
+from .response_parsing import parse_captured_response
 
 
 def successor(run: RunRecord, event: str, **changes: object) -> RunRecord:
@@ -334,7 +339,9 @@ def accept_tools(run: RunRecord, response: Continue) -> RunRecord:
     attempt = current_attempt(run, "RESPONSE_CAPTURED")
     if (
         attempt.response_base64 is None
-        or Continue.model_validate_json(base64.b64decode(attempt.response_base64, validate=True))
+        or parse_captured_response(
+            base64.b64decode(attempt.response_base64, validate=True), attempt.manifest.artifact
+        )
         != response
     ):
         raise LoopRejected("response differs from captured bytes")
@@ -380,7 +387,9 @@ def complete(run: RunRecord, response: Complete) -> RunRecord:
     attempt = current_attempt(run, "RESPONSE_CAPTURED")
     if (
         attempt.response_base64 is None
-        or Complete.model_validate_json(base64.b64decode(attempt.response_base64, validate=True))
+        or parse_captured_response(
+            base64.b64decode(attempt.response_base64, validate=True), attempt.manifest.artifact
+        )
         != response
     ):
         raise LoopRejected("completion differs from selected captured bytes")
@@ -487,7 +496,11 @@ def observe_receipt(run: RunRecord, receipt: LocalPlanningReceipt) -> RunRecord:
     )
 
 
-def validate_record(previous: RunRecord | None, record: RunRecord) -> None:
+def validate_record(
+    previous: RunRecord | None,
+    record: RunRecord,
+    delivery_observation: DeliveryObservation | None = None,
+) -> None:
     """Verify immutable ancestry and the exact owner transition, not a cached status."""
     if record.head != "loop:" + record.model_copy(update={"head": "pending"}).digest():
         raise LoopRejected("content-derived Run head mismatch")
@@ -500,10 +513,15 @@ def validate_record(previous: RunRecord | None, record: RunRecord) -> None:
             or record.deliveries
             or record.accepted_text
             or record.planning_receipts
+            or record.accepted_delivery_binding != "LEGACY_R13"
         ):
             raise LoopRejected("invalid Run genesis")
         return
     event = record.event
+    if previous.accepted_delivery_binding != "LEGACY_R13":
+        raise LoopRejected("accepted delivery Run is terminal and immutable")
+    if record.accepted_delivery_binding != "LEGACY_R13" and event != "CompleteAcceptance":
+        raise LoopRejected("delivery reference is only valid at CompleteAcceptance")
     if event == "PlanningReceiptObserved":
         if not record.planning_receipts:
             raise LoopRejected("missing planning receipt")
@@ -546,6 +564,12 @@ def validate_record(previous: RunRecord | None, record: RunRecord) -> None:
         raw = base64.b64decode(attempt.response_base64, validate=True)
         if event == "ModelResponseReceived":
             expected = accept_tools(previous, Continue.model_validate_json(raw))
+        elif record.accepted_delivery_binding != "LEGACY_R13":
+            from .delivery_preparation import complete_delivery
+
+            if delivery_observation is None:
+                raise LoopRejected("expanded acceptance requires independent delivery observation")
+            expected = complete_delivery(previous, delivery_observation)
         else:
             expected = complete(previous, Complete.model_validate_json(raw))
     elif event == "ToolTerminal":

@@ -4,6 +4,9 @@ import base64
 
 from .contracts import TransitionRequest
 from .domain import validate_record
+from .response_parsing import prewarm_registered_response_schemas
+
+prewarm_registered_response_schemas()
 
 ROUTES = (
     (

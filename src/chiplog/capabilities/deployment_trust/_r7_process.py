@@ -257,13 +257,17 @@ def _evaluate(call: _TrustOwnerCall) -> _TrustOwnerResult:
     )
 
 
+_OPERATION_MODES = {
+    "deployment_trust.authenticate": "AUTHENTICATE",
+    "deployment_trust.bootstrap": "BOOTSTRAP",
+    "deployment_trust.revalidate": "REVALIDATE",
+    "deployment_trust.runtime_admission": "RUNTIME_ADMISSION",
+}
+
+
 def dispatch(operation: str, payload: bytes) -> dict[str, object]:
-    if operation not in {
-        "deployment_trust.authenticate",
-        "deployment_trust.bootstrap",
-        "deployment_trust.revalidate",
-        "deployment_trust.runtime_admission",
-    }:
+    expected_mode = _OPERATION_MODES.get(operation)
+    if expected_mode is None:
         return {"failure": "UNAVAILABLE", "reason": "trust operation has no handler"}
     values = json.loads(payload)
     values["request_bytes"] = b64decode(values["request_bytes"])
@@ -271,6 +275,8 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
     call = _TrustOwnerCall.model_validate(values)
     if call.canonical_bytes() != payload:
         return {"failure": "PROTOCOL_REJECTED", "reason": "payload is not canonical"}
+    if call.mode != expected_mode:
+        return {"failure": "PROTOCOL_REJECTED", "reason": "payload mode differs from trust route"}
     result = _evaluate(call)
     return {
         "payload": b64encode(result.canonical_bytes()).decode("ascii"),

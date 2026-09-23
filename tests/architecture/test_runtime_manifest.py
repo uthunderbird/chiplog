@@ -54,6 +54,7 @@ def test_preparation_manifest_realizes_exact_production_and_evaluation_graphs() 
             )
             attestations = {item.identity.owner_id: item for item in runtime.attest()}
             assert attestations["agent_loop"].loaded_policy_modules == (
+                "chiplog.capabilities.agent_loop._delivery_process",
                 "chiplog.capabilities.agent_loop._r13_process",
                 "chiplog.capabilities.agent_loop._r14_process",
                 "chiplog.capabilities.agent_loop._scheduler_process",
@@ -188,3 +189,29 @@ def test_eval_cannot_change_security_profile_or_leaf_owner() -> None:
     )
     with pytest.raises(RuntimeManifestViolation, match="original owner"):
         verify_production_evaluation_equivalence(R7_PRODUCTION_MANIFEST, moved)
+
+
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_delivery_routes_cannot_be_omitted_or_mixed_with_legacy_partition(hybrid: bool) -> None:
+    routes = tuple(
+        route
+        for route in R14_PRODUCTION_MANIFEST.routes
+        if route.operation_id != "agent_loop.prepare_delivery_completion"
+    )
+    candidate = replace(R14_PRODUCTION_MANIFEST, routes=routes)
+    if hybrid:
+        candidate = replace(
+            R14_PRODUCTION_MANIFEST,
+            owners=tuple(
+                replace(
+                    owner,
+                    capability_ids=("agent_loop.validate_transition",),
+                    public_operations=("agent_loop.validate_transition",),
+                )
+                if owner.owner_id == "agent_loop"
+                else owner
+                for owner in R14_PRODUCTION_MANIFEST.owners
+            ),
+        )
+    with pytest.raises(RuntimeManifestViolation):
+        verify_runtime_manifest(candidate)

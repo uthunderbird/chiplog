@@ -157,6 +157,8 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
         if identity.capability_ids == ("agent_loop.validate_transition",):
             return "chiplog.capabilities.agent_loop._r13_process"
         if identity.capability_ids == (
+            "agent_loop.prepare_delivery_completion",
+            "agent_loop.validate_delivery_completion",
             "agent_loop.validate_transition",
             "scheduler.prepare_configuration",
             "scheduler.prepare_interval",
@@ -184,6 +186,7 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
     module = _owner_module(identity)
     if module == "chiplog.capabilities.agent_loop._r14_process":
         return (
+            "chiplog.capabilities.agent_loop._delivery_process",
             "chiplog.capabilities.agent_loop._r13_process",
             "chiplog.capabilities.agent_loop._r14_process",
             "chiplog.capabilities.agent_loop._scheduler_process",

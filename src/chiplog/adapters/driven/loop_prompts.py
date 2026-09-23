@@ -4,21 +4,32 @@ from __future__ import annotations
 
 import hashlib
 import json
-from functools import lru_cache
 from importlib.metadata import version
-from types import GenericAlias
-from typing import Literal, cast
+from typing import cast
 
 from promptstrings import PromptContext, promptstring
-from pydantic import Field, TypeAdapter, create_model
+from pydantic import TypeAdapter
 
 from chiplog.capabilities.agent_loop.contracts import (
     Complete,
     Continue,
     LoopRejected,
     PromptArtifact,
-    ToolCall,
     ToolSpec,
+)
+from chiplog.capabilities.agent_loop.delivery_preparation import (
+    DeliveryCompletion,
+    delivery_response_adapter,
+    parse_delivery_response,
+)
+from chiplog.capabilities.agent_loop.response_parsing import (
+    TOOLS as TOOLS,
+)
+from chiplog.capabilities.agent_loop.response_parsing import (
+    parse_response as parse_response,
+)
+from chiplog.capabilities.agent_loop.response_parsing import (
+    response_adapter as response_adapter,
 )
 
 
@@ -28,28 +39,6 @@ def _turn_prompt(context: str, tools: str) -> Continue | Complete:
     Context: {context}
     Ordered tools: {tools}"""
     return cast("Continue | Complete", None)
-
-
-TOOLS = (
-    ToolSpec(name="propose_planning", schema_id="chiplog.propose-planning.v1"),
-    ToolSpec(name="propose_intent", schema_id="chiplog.propose-intent.v1"),
-)
-
-
-@lru_cache(maxsize=4)
-def response_adapter(tools: tuple[ToolSpec, ...]) -> TypeAdapter[Continue | Complete]:
-    if not tools or len({tool.name for tool in tools}) != len(tools):
-        raise LoopRejected("empty or duplicate ToolSpec set")
-    if any(tool not in TOOLS for tool in tools):
-        raise LoopRejected("unknown ToolSpec identity/version")
-    names = tuple(tool.name for tool in tools)
-    bound_call = create_model("BoundToolCall", __base__=ToolCall, tool=(Literal[names], ...))
-    bound_continue = create_model(
-        "BoundContinue",
-        __base__=Continue,
-        tool_calls=(GenericAlias(tuple, (bound_call, Ellipsis)), Field(min_length=1)),
-    )
-    return TypeAdapter(bound_continue | Complete)
 
 
 async def render_prompt(context: str, tools: tuple[ToolSpec, ...] = TOOLS) -> PromptArtifact:
@@ -89,27 +78,61 @@ async def render_prompt(context: str, tools: tuple[ToolSpec, ...] = TOOLS) -> Pr
     )
 
 
-def parse_response(raw: bytes, artifact: PromptArtifact) -> Continue | Complete:
-    adapter = response_adapter(artifact.tools)
-    if artifact.response_schema_json != json.dumps(
-        adapter.json_schema(), sort_keys=True, separators=(",", ":")
-    ):
-        raise LoopRejected("schema bytes differ from exact versioned generator")
-    response = adapter.validate_json(raw)
-    if isinstance(response, Continue):
-        names = {tool.name for tool in artifact.tools}
-        if any(call.tool not in names for call in response.tool_calls):
-            raise LoopRejected("tool absent from exact Turn schema")
-        ids = [call.call_id for call in response.tool_calls]
-        if len(ids) != len(set(ids)):
-            raise LoopRejected("duplicate sealed call identity")
-        return Continue.model_validate_json(response.canonical_bytes())
-    return response
-
-
 class OwnedStaticPrompts:
     async def render(self, context: str) -> PromptArtifact:
         return await render_prompt(context)
 
     def parse(self, raw: bytes, artifact: PromptArtifact) -> Continue | Complete:
         return parse_response(raw, artifact)
+
+
+async def render_delivery_prompt(
+    context: str,
+    tools: tuple[ToolSpec, ...] = TOOLS,
+) -> PromptArtifact:
+    if type(context) is not str:
+        raise LoopRejected("prompt context must be exact text")
+    adapter = delivery_response_adapter(tools)
+
+    def bound_prompt(context: str, tools: str) -> Continue | DeliveryCompletion:
+        """Propose tools or typed delivery completion; output grants no authority.
+        Use stable Run and Turn identities. Assertions cite exact observed query evidence.
+        Free prose is UNVERIFIED MODEL COMMENTARY, never an authoritative result.
+        Context: {context}
+        Ordered tools: {tools}"""
+        return cast("Continue | DeliveryCompletion", None)
+
+    template = bound_prompt.__doc__ or ""
+    bound_prompt.__annotations__ = {"context": str, "tools": str, "return": adapter._type}
+    owned = promptstring(bound_prompt, strict=True)
+    schema = TypeAdapter(owned.response_schema).json_schema()
+    if schema != adapter.json_schema():
+        raise LoopRejected("delivery prompt schema differs from registered owner parser")
+    rendered = await owned.render(
+        PromptContext(
+            values={
+                "context": context,
+                "tools": json.dumps([tool.model_dump() for tool in tools], sort_keys=True),
+            }
+        )
+    )
+    return PromptArtifact(
+        content_hash=hashlib.sha256(template.encode()).hexdigest(),
+        library_version=version("promptstrings"),
+        tools=tools,
+        generator_version="chiplog.turn-schema.delivery.v1",
+        response_schema_json=json.dumps(
+            schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ),
+        rendered=rendered,
+    )
+
+
+class DeliveryStaticPrompts:
+    """Separate registered parser; canonical assembly explicitly selects this port."""
+
+    async def render(self, context: str) -> PromptArtifact:
+        return await render_delivery_prompt(context)
+
+    def parse(self, raw: bytes, artifact: PromptArtifact) -> Continue | DeliveryCompletion:
+        return parse_delivery_response(raw, artifact)

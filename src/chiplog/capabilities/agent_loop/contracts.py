@@ -125,7 +125,9 @@ class PromptArtifact(Frozen):
     version: Literal["1"] = "1"
     content_hash: str
     library_version: str
-    generator_version: Literal["chiplog.turn-schema.v1"] = "chiplog.turn-schema.v1"
+    generator_version: Literal["chiplog.turn-schema.v1", "chiplog.turn-schema.delivery.v1"] = (
+        "chiplog.turn-schema.v1"
+    )
     tools: tuple[ToolSpec, ...]
     response_schema_json: str
     rendered: str
@@ -252,6 +254,25 @@ class SchedulerRootReference(Frozen):
         return value
 
 
+class DeliveryAcceptanceReference(Frozen):
+    kind: Literal["R17_DELIVERY_ACCEPTANCE"] = "R17_DELIVERY_ACCEPTANCE"
+    acceptance_identity: str = Field(min_length=1)
+    acceptance_head: str = Field(min_length=1)
+    acceptance_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    proposal_canonical_base64: str = Field(min_length=1)
+    schema_id: Literal["chiplog.delivery-acceptance-proposal.v1"] = (
+        "chiplog.delivery-acceptance-proposal.v1"
+    )
+
+    @field_validator("proposal_canonical_base64")
+    @classmethod
+    def exact_base64(cls, value: str) -> str:
+        raw = base64.b64decode(value, validate=True)
+        if not raw or base64.b64encode(raw).decode("ascii") != value:
+            raise ValueError("noncanonical or empty delivery proposal encoding")
+        return value
+
+
 class RunRecord(Frozen):
     tenant: str
     principal: str
@@ -266,6 +287,9 @@ class RunRecord(Frozen):
     policy_head: str
     worker_session: str
     root_binding: Literal["NOT_APPLICABLE"] | SchedulerRootReference = "NOT_APPLICABLE"
+    accepted_delivery_binding: Literal["LEGACY_R13"] | DeliveryAcceptanceReference = Field(
+        default="LEGACY_R13", exclude_if=lambda value: value == "LEGACY_R13"
+    )
     turns: tuple[Turn, ...] = ()
     deliveries: tuple[AcceptedDelivery, ...] = ()
     accepted_text: tuple[str, ...] = ()
