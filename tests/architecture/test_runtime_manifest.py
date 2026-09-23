@@ -11,6 +11,8 @@ from chiplog.architecture.r7_runtime import (
     R13_PRODUCTION_MANIFEST,
     R14_EVALUATION_MANIFEST,
     R14_PRODUCTION_MANIFEST,
+    R16_EVALUATION_MANIFEST,
+    R16_PRODUCTION_MANIFEST,
     LeafBinding,
     RoutedCallDecl,
     RuntimeManifestViolation,
@@ -18,6 +20,59 @@ from chiplog.architecture.r7_runtime import (
     verify_runtime_manifest,
 )
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+
+
+def test_denial_manifest_realizes_new_exact_owner_partition_without_changing_legacy() -> None:
+    verify_production_evaluation_equivalence(R16_PRODUCTION_MANIFEST, R16_EVALUATION_MANIFEST)
+    assert R14_PRODUCTION_MANIFEST.manifest_version == 4
+    assert next(
+        owner for owner in R14_PRODUCTION_MANIFEST.owners if owner.owner_id == "effects"
+    ).capability_ids == ("effects.prepare_transition",)
+    for manifest in (R16_PRODUCTION_MANIFEST, R16_EVALUATION_MANIFEST):
+        assert manifest.manifest_version == 7
+        with AuthorityBrokerRuntime("tenant", 1, "denial", manifest, b"offline") as runtime:
+            assert runtime.graph_generation().routes == tuple(
+                (
+                    r.operation_id,
+                    r.caller_owner_id,
+                    r.callee_owner_id,
+                    r.request_schema_id,
+                    r.result_schema_id,
+                )
+                for r in manifest.routes
+            )
+            effects = next(row for row in runtime.attest() if row.identity.owner_id == "effects")
+            assert effects.identity.capability_ids == (
+                "effects.prepare_denial",
+                "effects.prepare_transition",
+            )
+            assert effects.loaded_policy_modules == (
+                "chiplog.capabilities.effects._process",
+                "chiplog.capabilities.effects._r16_process",
+            )
+
+
+def test_denial_manifest_cannot_substitute_leaf_or_downgrade_owner_target() -> None:
+    changed_leaf = replace(
+        R16_PRODUCTION_MANIFEST,
+        leaves=(
+            replace(R16_PRODUCTION_MANIFEST.leaves[0], implementation="external:Live"),
+            *R16_PRODUCTION_MANIFEST.leaves[1:],
+        ),
+    )
+    with pytest.raises(RuntimeManifestViolation, match="hermetic"):
+        verify_runtime_manifest(changed_leaf)
+    changed_owner = replace(
+        R16_PRODUCTION_MANIFEST,
+        owners=tuple(
+            replace(owner, target_ids=("chiplog.capabilities.effects._process:dispatch",))
+            if owner.owner_id == "effects"
+            else owner
+            for owner in R16_PRODUCTION_MANIFEST.owners
+        ),
+    )
+    with pytest.raises(RuntimeManifestViolation, match="capabilities or public operations"):
+        verify_runtime_manifest(changed_owner)
 
 
 def test_preparation_manifest_realizes_exact_production_and_evaluation_graphs() -> None:

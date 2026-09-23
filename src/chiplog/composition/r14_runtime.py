@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
@@ -22,11 +22,13 @@ from chiplog.architecture.r7_runtime import R14_PRODUCTION_MANIFEST
 from chiplog.capabilities.agent_loop.contracts import DurableCompanion, LoopSnapshot, RunRecord
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r13_planning import R13PlanningRuntime
+from chiplog.platform._owner_publication_contracts import BrokerPublicationResult
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.owner_decision_journal import (
     IndependentOwnerDecisionJournal,
     OwnerJournalIntegrityError,
+    OwnerJournalSnapshot,
 )
 from chiplog.platform.owner_publications import (
     OwnerPublicationPending,
@@ -34,12 +36,18 @@ from chiplog.platform.owner_publications import (
     SelectedOwnerDecision,
 )
 
+if TYPE_CHECKING:
+    from chiplog.composition.r16_denial_registry import DenialIngress
+
 
 class AnchoredOwnerDecisionJournal(IndependentOwnerDecisionJournal):
     """Private composition binding; accepting a request here grants no authority."""
 
     def __init__(self, runtime: R14PlanningRuntime) -> None:
         self._runtime = runtime
+        self._snapshot_cache: (
+            tuple[tuple[tuple[str, str | None, bytes], ...], OwnerJournalSnapshot] | None
+        ) = None
         super().__init__(
             IndependentTenantDecisionJournal.for_authority_bundle(
                 runtime._database.with_suffix(runtime._database.suffix + ".owners-journal"),
@@ -47,6 +55,29 @@ class AnchoredOwnerDecisionJournal(IndependentOwnerDecisionJournal):
             ),
             runtime._tenant_id,
         )
+
+    def snapshot(self) -> OwnerJournalSnapshot:
+        # Reuse only immutable semantic decoding. Every call still authenticates
+        # the complete physical journal, key, chain and independent anchored head.
+        with self._runtime._authority_gate().hold():
+            try:
+                entries = self._raw.entries()
+                cached = self._snapshot_cache
+                if cached is not None and cached[0] == entries:
+                    return cached[1]
+                snapshot = super().snapshot()
+                if self._raw.entries() != entries or snapshot.head != (
+                    entries[-1][0] if entries else None
+                ):
+                    raise ValueError("owner journal changed across semantic snapshot")
+                self._snapshot_cache = (entries, snapshot)
+                return snapshot
+            except OwnerJournalIntegrityError:
+                raise
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+                raise OwnerJournalIntegrityError(
+                    "snapshot_anchored", self._runtime._tenant_id, "journal"
+                ) from error
 
     def select(
         self, prepared: PreparedOwnerPublication, resulting_commitment: str
@@ -116,6 +147,39 @@ class R14PlanningRuntime(R13PlanningRuntime):
     }
     _owner_journal: AnchoredOwnerDecisionJournal | None = None
     _database_identity: tuple[str, int, int]
+
+    async def publish_effect(
+        self, peer: str, display_id: str, digest: str, adoption_act_id: str
+    ) -> BrokerPublicationResult:
+        from chiplog.composition.r16_effects_publication import publish_plan_effect
+
+        return await publish_plan_effect(self, peer, display_id, digest, adoption_act_id)
+
+    async def dispose_effect(
+        self, peer: str, worker_run_id: str, ingress: DenialIngress
+    ) -> BrokerPublicationResult:
+        from chiplog.composition.r16_denial_publication import publish_denial
+
+        return await publish_denial(self, peer, worker_run_id, ingress)
+
+    def _verified_publications(
+        self, owner_id: Literal["planning", "projections"]
+    ) -> tuple[Any, ...]:
+        from chiplog.adapters.driven.planning_sqlite import PlanningProjectionIntegrityError
+        from chiplog.composition.r16_planning_reads import (
+            merge_planning_publications,
+            read_plan_effect_publications,
+        )
+
+        with self._authority_gate().hold():
+            legacy = super()._verified_publications(owner_id)
+            effects, frontier = read_plan_effect_publications(self)
+            if self._verified_tenant_frontier != frontier:
+                raise PlanningProjectionIntegrityError(
+                    "planning subsets have different authenticated frontiers"
+                )
+            self._verified_tenant_frontier = frontier
+            return merge_planning_publications(legacy, effects)
 
     def _bind_appender(self) -> None:
         path = self._database.resolve(strict=True)
@@ -299,6 +363,9 @@ class R14PlanningRuntime(R13PlanningRuntime):
 
     async def _prepare_startup(self) -> None:
         with self._authority_gate().hold():
+            from chiplog.composition.r16_denial_history import validate_selected_denials
+
+            validate_selected_denials(self._owner_decisions().snapshot())
             owners, loops, gates = (
                 self._pending_owners(),
                 self._pending(),

@@ -25,11 +25,51 @@ from chiplog.capabilities.effects.contracts import (
     EffectCommand,
     EffectRecord,
     EffectStoreSnapshot,
+    ExactHead,
     PreparedEffectPublication,
 )
+from chiplog.capabilities.effects.denial_contracts import BeforeSendDispositionV2Command
 from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
 
 _COMMAND: TypeAdapter[EffectCommand] = TypeAdapter(EffectCommand)
+
+
+def _decode_retained_command(raw: bytes) -> EffectCommand | BeforeSendDispositionV2Command:
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("effects retained command is not an object")
+    if "schema_id" not in value:
+        command: EffectCommand | BeforeSendDispositionV2Command = _COMMAND.validate_json(raw)
+    elif value["schema_id"] == "chiplog.effects.before-send-command.v2":
+        command = BeforeSendDispositionV2Command.model_validate_json(raw)
+    else:
+        raise ValueError("unknown effects retained command schema")
+    if command.canonical_bytes() != raw:
+        raise ValueError("noncanonical retained effects command")
+    return command
+
+
+def _validate_denial_predecessor(record: EffectRecord, previous: EffectRecord | None) -> None:
+    """Mechanical source/output links only; selected issuer provenance is separate."""
+    command = _decode_retained_command(record.source_command)
+    if not isinstance(command, BeforeSendDispositionV2Command):
+        return
+    if (
+        previous is None
+        or record.predecessor != previous.record
+        or command.expected_attempt != previous.snapshot.attempt
+        or record.snapshot.model_dump(exclude={"state", "attempt"})
+        != previous.snapshot.model_dump(exclude={"state", "attempt"})
+    ):
+        raise ValueError(
+            "denying record differs from exact predecessor attempt or retained history"
+        )
+    retired = command.authorization_to_retire
+    if previous.snapshot.state == "DISPATCH_AUTHORIZED":
+        if not previous.snapshot.authorizations or retired != previous.snapshot.authorizations[-1]:
+            raise ValueError("denying record retires another authorization")
+    elif retired is not None:
+        raise ValueError("denying record has no current authorization to retire")
 
 
 def _digest(value: object) -> str:
@@ -50,9 +90,27 @@ def _decode_row(raw: OwnerRecordBytes, tenant: str) -> EffectRecord:
         or record.snapshot.intent.authority.tenant_id != tenant
     ):
         raise ValueError("effects physical/logical identity or canonical bytes mismatch")
-    command = _COMMAND.validate_json(record.source_command)
+    command = _decode_retained_command(record.source_command)
     if command.canonical_bytes() != record.source_command or command.identity != record.command:
         raise ValueError("effects original command bytes or identity mismatch")
+    if isinstance(command, BeforeSendDispositionV2Command):
+        original = record.snapshot.intent
+        reference = ExactHead(
+            subject_id=original.intent_id,
+            head=original.intent_id + "/" + original.fingerprint,
+            fingerprint=original.fingerprint,
+        )
+        if (
+            record.kind != "BEFORE_SEND_DISPOSITION"
+            or record.predecessor is None
+            or record.snapshot.state != command.authority.decision.kind
+            or command.intent != reference
+            or command.authority.intent != reference
+            or command.expected_attempt != command.authority.expected_attempt
+            or command.authority.tenant_id != original.authority.tenant_id
+            or command.authority.principal_id != original.authority.principal_id
+        ):
+            raise ValueError("denying source command differs from retained disposition or subject")
     body = {
         "command": record.command.model_dump(mode="json"),
         "predecessor": None
@@ -190,6 +248,7 @@ class BoundEffectsQueries(ReplayEffectsQueries):
                     )
                 ):
                     raise ValueError("effects duplicate, omitted predecessor or rival intent chain")
+                _validate_denial_predecessor(record, predecessor)
                 record_ids.add(identity)
                 command_ids.add(record.command.command_id)
                 latest[record.snapshot.intent.intent_id] = record

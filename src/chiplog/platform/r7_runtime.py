@@ -170,6 +170,8 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
     if identity.owner_id == "effects":
         if identity.capability_ids == ("effects.prepare_transition",):
             return "chiplog.capabilities.effects._process"
+        if identity.capability_ids == ("effects.prepare_denial", "effects.prepare_transition"):
+            return "chiplog.capabilities.effects._r16_process"
         raise OwnerProcessFailure("unknown effects capability partition")
     if identity.owner_id == "planning" and identity.capability_ids == (
         "planning.r8_create_intention_line",
@@ -184,6 +186,11 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
 
 def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
     module = _owner_module(identity)
+    if module == "chiplog.capabilities.effects._r16_process":
+        return (
+            "chiplog.capabilities.effects._process",
+            "chiplog.capabilities.effects._r16_process",
+        )
     if module == "chiplog.capabilities.agent_loop._r14_process":
         return (
             "chiplog.capabilities.agent_loop._delivery_process",

@@ -13,6 +13,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,7 +31,7 @@ from chiplog.capabilities.effects.fences import NonSchedulerFence, NotApplicable
 from chiplog.capabilities.planning import CreateIntentionLine
 from chiplog.capabilities.planning._r8_authority import decode_trace
 from chiplog.capabilities.planning.r8_boundary import R8PlanningRequest
-from chiplog.composition.r7_planning import PreparedPlanningCandidate
+from chiplog.composition.r7_planning import ObservedTrustCall, PreparedPlanningCandidate
 from chiplog.composition.r8 import R8PlanningRuntime, command_bytes
 from chiplog.composition.r13_planning import R13PlanningRuntime, _trust_payload
 from chiplog.domain_primitives import RecordId, TenantId
@@ -116,6 +117,7 @@ class PreparedEffectAdoption:
     binding: EffectPreviewBinding
     planning: PreparedPlanningCandidate
     ingress: EffectAdoptionIngress
+    observed_trust: ObservedTrustCall
     disposition: Literal["PREPARED"] = "PREPARED"
 
 
@@ -167,8 +169,14 @@ class R16EffectsProducer:
         )
 
     async def _prepare(self, command: CreateIntentionLine) -> PreparedPlanningCandidate:
+        candidate, _ = await self._prepare_observed(command)
+        return candidate
+
+    async def _prepare_observed(
+        self, command: CreateIntentionLine, original: R8PlanningRequest | None = None
+    ) -> tuple[PreparedPlanningCandidate, ObservedTrustCall]:
         runtime = self._runtime
-        decision = await runtime._trust_call(
+        observed = await runtime._observed_trust_call(
             "AUTHENTICATE",
             {
                 "contour": "CLI",
@@ -177,6 +185,7 @@ class R16EffectsProducer:
                 "session_id": "hermetic-session",
             },
         )
+        decision = observed.result
         if decision.disposition != "VALID" or decision.reference_bytes is None:
             raise LoopRejected("effect preparation has no authenticated principal")
         reference = json.loads(decision.reference_bytes)
@@ -187,29 +196,52 @@ class R16EffectsProducer:
             reference["peer_credential"],
         ) != (runtime._tenant_id, "hermetic-principal", "CLI", f"uid:{os.getuid()}"):
             raise LoopRejected("foreign effect preparation principal")
-        now = time.monotonic_ns()
-        # Explicit base implementation: no ambient R13 adoption or shared trace slots.
-        trace = R8PlanningRuntime._trace(
-            runtime, "hermetic-principal", _trust_payload(reference), now + 5_000_000_000
-        )
-        request = R8PlanningRequest(
-            command_bytes=command_bytes(command),
-            authority_trace_bytes=trace,
-            observed_time_ns=now,
-        )
+        with runtime._authority_gate().hold():
+            self._require_observed_trust(observed)
+            now = time.monotonic_ns()
+            # Explicit base implementation: no ambient R13 adoption or shared trace slots.
+            request = original
+            if request is None:
+                trace = R8PlanningRuntime._trace(
+                    runtime, "hermetic-principal", _trust_payload(reference), now + 5_000_000_000
+                )
+                request = R8PlanningRequest(
+                    command_bytes=command_bytes(command),
+                    authority_trace_bytes=trace,
+                    observed_time_ns=now,
+                )
+            if request.command_bytes != command_bytes(command):
+                raise LoopRejected("effect original command differs")
+            self._require_current_request(request, decision.reference_bytes)
         candidate = await runtime._prepare_planning_request(
             command, request, decision.reference_bytes
         )
-        if not isinstance(candidate, PreparedPlanningCandidate):
-            raise LoopRejected("effect composite preparation: " + candidate.disposition)
-        return candidate
+        with runtime._authority_gate().hold():
+            self._require_observed_trust(observed)
+            if not isinstance(candidate, PreparedPlanningCandidate):
+                raise LoopRejected("effect composite preparation: " + candidate.disposition)
+            if candidate.request_bytes != request.canonical_bytes():
+                raise LoopRejected("effect prepared request differs from sent request")
+            self._require_current_preparation(candidate)
+        return candidate, observed
+
+    def _require_observed_trust(self, observed: ObservedTrustCall) -> None:
+        if self._runtime._trust_observation_guard(observed) is not None:
+            raise LoopRejected("effect authentication source changed or expired during IPC")
 
     def _require_current_preparation(self, prepared: PreparedPlanningCandidate) -> None:
-        original = decode_trace(_decode_request(prepared.request_bytes).authority_trace_bytes)
+        self._require_current_request(
+            _decode_request(prepared.request_bytes), prepared.trust_reference_bytes
+        )
+
+    def _require_current_request(
+        self, request: R8PlanningRequest, trust_reference_bytes: bytes
+    ) -> None:
+        original = decode_trace(request.authority_trace_bytes)
         deadline = min(read.valid_until_ns for read in original.reads)
         if time.monotonic_ns() >= deadline:
             raise LoopRejected("effect preparation expired; redisplay required")
-        reference = json.loads(prepared.trust_reference_bytes)
+        reference = json.loads(trust_reference_bytes)
         trust = self._runtime._trust.verify()
         if trust is None or (
             trust.tenant_id,
@@ -238,68 +270,71 @@ class R16EffectsProducer:
         revision = len(existing) + 1
         display_id = f"{proposal_id}/effect-display/{revision}"
         command = self._command(display_id, proposal_id, proposal.purpose, run.tenant)
-        prepared = await self._prepare(command)
+        prepared, observed = await self._prepare_observed(command)
         async with runtime._planning_lane:
-            if (
-                self._proposal(proposal_id) != (run, proposal)
-                or [d for d in runtime._displays() if d.proposal_id == proposal_id] != existing
-            ):
-                raise LoopRejected("effect preview source changed during IPC")
-            self._require_current_preparation(prepared)
-            request = _decode_request(prepared.request_bytes)
-            trace = decode_trace(request.authority_trace_bytes)
-            deadline = min(read.valid_until_ns for read in trace.reads)
-            binding = EffectPreviewBinding(
-                schema_id="chiplog.hermetic-effect-preview.v1",
-                proposal=proposal,
-                proposal_id=proposal_id,
-                run_id=run.run_id,
-                run_head=run.head,
-                principal=run.principal,
-                tenant=run.tenant,
-                planning_command_base64=base64.b64encode(prepared.command_bytes).decode(),
-                planning_result_base64=base64.b64encode(prepared.owner_result_bytes).decode(),
-                planning_request_base64=base64.b64encode(prepared.request_bytes).decode(),
-                expected_tenant_head=prepared.expected_tenant_head,
-                provider="hermetic-effects",
-                account="hermetic-account",
-                recipient="hermetic-principal",
-                canonical_address="hermetic://effects/hermetic-principal",
-                adapter_contract="chiplog.hermetic-effects.v1",
-                policy="chiplog.hermetic-self-effect-policy.v1",
-                valid_until_ns=deadline,
-            )
-            rendered = _canonical(
-                {
-                    "operation": "CREATE_PLAN_AND_HERMETIC_EFFECT",
-                    "binding": binding.model_dump(mode="json"),
-                    "consequence": "Create a planning intention and emit the exact payload "
-                    "to the independent hermetic provider account. Delivery may become unknown; "
-                    "adoption does not authorize a blind retry or a replacement intent.",
-                }
-            ).decode()
-            display = ProposalDisplay(
-                display_id=display_id,
-                proposal_id=proposal_id,
-                revision=revision,
-                run_id=run.run_id,
-                tenant=run.tenant,
-                principal=run.principal,
-                adoption_act_id=command.authority_act_id,
-                canonical_command=binding.canonical_bytes().decode(),
-                display_text=rendered,
-                display_digest=hashlib.sha256(rendered.encode()).hexdigest(),
-                original_binding_base64=base64.b64encode(binding.canonical_bytes()).decode(),
-            )
-            runtime._append_decision(
-                {
-                    "version": 1,
-                    "kind": "DISPLAY",
-                    "operation_id": display_id,
-                    "display": display.model_dump_json(),
-                }
-            )
-            return display
+            with runtime._authority_gate().hold():
+                self._require_observed_trust(observed)
+                if (
+                    self._proposal(proposal_id) != (run, proposal)
+                    or [d for d in runtime._displays() if d.proposal_id == proposal_id] != existing
+                ):
+                    raise LoopRejected("effect preview source changed during IPC")
+                self._require_current_preparation(prepared)
+                request = _decode_request(prepared.request_bytes)
+                trace = decode_trace(request.authority_trace_bytes)
+                deadline = min(read.valid_until_ns for read in trace.reads)
+                binding = EffectPreviewBinding(
+                    schema_id="chiplog.hermetic-effect-preview.v1",
+                    proposal=proposal,
+                    proposal_id=proposal_id,
+                    run_id=run.run_id,
+                    run_head=run.head,
+                    principal=run.principal,
+                    tenant=run.tenant,
+                    planning_command_base64=base64.b64encode(prepared.command_bytes).decode(),
+                    planning_result_base64=base64.b64encode(prepared.owner_result_bytes).decode(),
+                    planning_request_base64=base64.b64encode(prepared.request_bytes).decode(),
+                    expected_tenant_head=prepared.expected_tenant_head,
+                    provider="hermetic-effects",
+                    account="hermetic-account",
+                    recipient="hermetic-principal",
+                    canonical_address="hermetic://effects/hermetic-principal",
+                    adapter_contract="chiplog.hermetic-effects.v1",
+                    policy="chiplog.hermetic-self-effect-policy.v1",
+                    valid_until_ns=deadline,
+                )
+                rendered = _canonical(
+                    {
+                        "operation": "CREATE_PLAN_AND_HERMETIC_EFFECT",
+                        "binding": binding.model_dump(mode="json"),
+                        "consequence": "Create a planning intention and emit the exact payload "
+                        "to the independent hermetic provider account. "
+                        "Delivery may become unknown; "
+                        "adoption does not authorize a blind retry or a replacement intent.",
+                    }
+                ).decode()
+                display = ProposalDisplay(
+                    display_id=display_id,
+                    proposal_id=proposal_id,
+                    revision=revision,
+                    run_id=run.run_id,
+                    tenant=run.tenant,
+                    principal=run.principal,
+                    adoption_act_id=command.authority_act_id,
+                    canonical_command=binding.canonical_bytes().decode(),
+                    display_text=rendered,
+                    display_digest=hashlib.sha256(rendered.encode()).hexdigest(),
+                    original_binding_base64=base64.b64encode(binding.canonical_bytes()).decode(),
+                )
+                runtime._append_decision(
+                    {
+                        "version": 1,
+                        "kind": "DISPLAY",
+                        "operation_id": display_id,
+                        "display": display.model_dump_json(),
+                    }
+                )
+                return display
 
     async def adopt_effect(
         self, peer: str, display_id: str, digest: str, adoption_act_id: str
@@ -331,59 +366,49 @@ class R16EffectsProducer:
         ):
             raise LoopRejected("effect interpretation changed; redisplay required")
         command = self._command(display_id, display.proposal_id, proposal.purpose, run.tenant)
-        prepared = await self._prepare(command)
+        original = _decode_request(base64.b64decode(binding.planning_request_base64, validate=True))
+        prepared, observed = await self._prepare_observed(command, original)
         async with runtime._planning_lane:
-            if self._proposal(display.proposal_id) != (run, proposal) or [
-                d for d in runtime._displays() if d.display_id == display_id
-            ] != [display]:
-                raise LoopRejected("effect adoption source changed during IPC")
-            self._require_current_preparation(prepared)
-            original = _decode_request(
-                base64.b64decode(binding.planning_request_base64, validate=True)
-            )
-            original_trace = decode_trace(original.authority_trace_bytes)
-            if time.monotonic_ns() >= min(
-                binding.valid_until_ns, *(read.valid_until_ns for read in original_trace.reads)
-            ):
-                raise LoopRejected("effect display expired during IPC; redisplay required")
-            current = _decode_request(prepared.request_bytes)
-            before, after = (
-                decode_trace(original.authority_trace_bytes),
-                decode_trace(current.authority_trace_bytes),
-            )
-            if len(before.reads) != len(after.reads):
-                raise LoopRejected("effect authority source set changed")
-            normalized = after.model_copy(
-                update={
-                    "reads": tuple(
-                        new.model_copy(update={"valid_until_ns": old.valid_until_ns})
-                        for old, new in zip(before.reads, after.reads, strict=True)
-                    )
-                }
-            )
-            if (
-                normalized != before
-                or prepared.command_bytes
-                != base64.b64decode(binding.planning_command_base64, validate=True)
-                or prepared.owner_result_bytes
-                != base64.b64decode(binding.planning_result_base64, validate=True)
-                or prepared.expected_tenant_head != binding.expected_tenant_head
-            ):
-                raise LoopRejected("effect authority or result changed; redisplay required")
-            reference = json.loads(prepared.trust_reference_bytes)
-            ingress = EffectAdoptionIngress(
-                schema_id="chiplog.hermetic-effect-adoption-observation.v1",
-                display_id=display.display_id,
-                display_digest=digest,
-                adoption_act_id=adoption_act_id,
-                tenant=reference["tenant_id"],
-                principal=reference["principal_id"],
-                session_head=reference["session_head"],
-                peer_credential=reference["peer_credential"],
-                contour="CLI",
-                trust_reference_base64=base64.b64encode(prepared.trust_reference_bytes).decode(),
-            )
-            return PreparedEffectAdoption(display, binding, prepared, ingress)
+            with runtime._authority_gate().hold():
+                self._require_observed_trust(observed)
+                if self._proposal(display.proposal_id) != (run, proposal) or [
+                    d for d in runtime._displays() if d.display_id == display_id
+                ] != [display]:
+                    raise LoopRejected("effect adoption source changed during IPC")
+                self._require_current_preparation(prepared)
+                original = _decode_request(
+                    base64.b64decode(binding.planning_request_base64, validate=True)
+                )
+                original_trace = decode_trace(original.authority_trace_bytes)
+                if time.monotonic_ns() >= min(
+                    binding.valid_until_ns, *(read.valid_until_ns for read in original_trace.reads)
+                ):
+                    raise LoopRejected("effect display expired during IPC; redisplay required")
+                if (
+                    prepared.request_bytes != original.canonical_bytes()
+                    or prepared.command_bytes
+                    != base64.b64decode(binding.planning_command_base64, validate=True)
+                    or prepared.owner_result_bytes
+                    != base64.b64decode(binding.planning_result_base64, validate=True)
+                    or prepared.expected_tenant_head != binding.expected_tenant_head
+                ):
+                    raise LoopRejected("effect authority or result changed; redisplay required")
+                reference = json.loads(prepared.trust_reference_bytes)
+                ingress = EffectAdoptionIngress(
+                    schema_id="chiplog.hermetic-effect-adoption-observation.v1",
+                    display_id=display.display_id,
+                    display_digest=digest,
+                    adoption_act_id=adoption_act_id,
+                    tenant=reference["tenant_id"],
+                    principal=reference["principal_id"],
+                    session_head=reference["session_head"],
+                    peer_credential=reference["peer_credential"],
+                    contour="CLI",
+                    trust_reference_base64=base64.b64encode(
+                        prepared.trust_reference_bytes
+                    ).decode(),
+                )
+                return PreparedEffectAdoption(display, binding, prepared, ingress, observed)
 
 
 def _decode_request(raw: bytes) -> R8PlanningRequest:
@@ -440,6 +465,9 @@ def read_materialized_effects(
     identity = "full-effects-manifest"
     try:
         before = journal.snapshot()
+        from chiplog.composition.r16_denial_history import validate_selected_denials
+
+        validate_selected_denials(before)
         if before.tenant_id != tenant:
             raise ValueError("foreign independent owner journal")
         if {d.prepared.request.identity.command_id for d in before.decisions} != set(
@@ -570,6 +598,32 @@ def _reconstruct_runs(
         ) from error
 
 
+def _check_legacy_run_bytes(previous_raw: bytes | None, raw: bytes) -> None:
+    record = RunRecord.model_validate_json(raw)
+    previous = None if previous_raw is None else RunRecord.model_validate_json(previous_raw)
+    if (
+        record.accepted_delivery_binding != "LEGACY_R13"
+        or record.canonical_bytes() != raw
+        or (previous is not None and previous.canonical_bytes() != previous_raw)
+    ):
+        raise ValueError("legacy Run validation requires canonical legacy bytes")
+    validate_record(previous, record)
+
+
+_cached_legacy_run_check = lru_cache(maxsize=32)(_check_legacy_run_bytes)
+
+
+def _validate_legacy_run_bytes(previous_raw: bytes | None, raw: bytes) -> None:
+    # Only pure historical semantics are reused, keyed by the entire pair. Large
+    # records still validate, but cannot retain an unbounded amount of cache memory.
+    check = (
+        _cached_legacy_run_check
+        if len(raw) + (0 if previous_raw is None else len(previous_raw)) <= 256 * 1024
+        else _check_legacy_run_bytes
+    )
+    check(previous_raw, raw)
+
+
 def _reconstruct_run_rows(
     connection: sqlite3.Connection, tenant: str, journal: OwnerJournalSnapshot
 ) -> tuple[RunRecord, ...]:
@@ -618,23 +672,23 @@ def _reconstruct_run_rows(
         if identity not in positions:
             raise ValueError("Run lacks physical publication membership")
     latest: dict[str, RunRecord] = {}
+    latest_bytes: dict[str, bytes] = {}
     for identity, raw, sequence in sorted(physical, key=lambda row: positions[row[0]]):
         record = RunRecord.model_validate_json(raw)
-        if (
-            record.canonical_bytes() != raw
-            or record.head != identity
-            or record.tenant != tenant
-            or positions[identity][0] != sequence
-        ):
+        if record.head != identity or record.tenant != tenant or positions[identity][0] != sequence:
             raise ValueError("Run physical/logical identity differs")
         previous = latest.get(record.run_id)
-        observation = None
-        if record.accepted_delivery_binding != "LEGACY_R13":
+        if record.accepted_delivery_binding == "LEGACY_R13":
+            _validate_legacy_run_bytes(latest_bytes.get(record.run_id), raw)
+        else:
+            if record.canonical_bytes() != raw:
+                raise ValueError("Run physical/logical identity differs")
             observation = _historical_delivery_observation(
                 connection, journal, previous, record, positions[identity]
             )
-        validate_record(previous, record, observation)
+            validate_record(previous, record, observation)
         latest[record.run_id] = record
+        latest_bytes[record.run_id] = raw
     return tuple(latest.values())
 
 
