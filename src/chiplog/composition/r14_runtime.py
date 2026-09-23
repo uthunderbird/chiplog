@@ -431,10 +431,14 @@ class R14PlanningRuntime(R13PlanningRuntime):
 
     async def _prepare_startup(self) -> None:
         with self._authority_gate().hold():
-            from chiplog.composition.r14_loop_history import validate_selected_cancellations
+            from chiplog.composition.r14_loop_history import (
+                validate_selected_cancellations,
+                validate_selected_executions,
+            )
             from chiplog.composition.r16_denial_history import validate_selected_denials
 
             validate_selected_cancellations(self)
+            validate_selected_executions(self)
             validate_selected_denials(self._owner_decisions().snapshot())
             owners, loops, gates = (
                 self._pending_owners(),

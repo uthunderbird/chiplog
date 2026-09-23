@@ -32,8 +32,8 @@ from chiplog.composition.r14_cancellation_records import (
     cancellation_command,
     cancellation_identity,
 )
-from chiplog.composition.r14_fanout_records import inventory_from_history, reference
-from chiplog.composition.r14_loop_history import read_call_history
+from chiplog.composition.r14_fanout_records import reference
+from chiplog.composition.r14_loop_history import read_call_history, read_call_inventory
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 
 if TYPE_CHECKING:
@@ -152,7 +152,7 @@ async def cancel_call(
             or submission.current_run.revision != Present(head=run.head, fingerprint=run.digest())
         ):
             raise LoopRejected("cancellation Run or worker is stale or unsupported")
-        inventory = inventory_from_history(runtime._tenant_id, snapshot, fanout, cancellations)
+        inventory = read_call_inventory(runtime)
         rows = [
             row
             for row in inventory.ordered_calls

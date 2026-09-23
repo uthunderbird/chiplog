@@ -3,6 +3,7 @@
 import hashlib
 
 from chiplog.capabilities.agent_loop.contracts import LoopRejected, ModelAttempt, WorkerSessionPort
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionModelAttempt
 
 
 class HermeticModel:
@@ -20,9 +21,9 @@ class HermeticModel:
             raise LoopRejected("invalid hermetic matcher set")
         self._matches = matches
         self.session: WorkerSessionPort | None = None
-        self.requests: list[ModelAttempt] = []
+        self.requests: list[ModelAttempt | ExecutionModelAttempt] = []
 
-    async def invoke(self, attempt: ModelAttempt) -> tuple[bytes, str]:
+    async def invoke(self, attempt: ModelAttempt | ExecutionModelAttempt) -> tuple[bytes, str]:
         if attempt.live_model is not None or attempt.provider_contract != "hermetic-model.v1":
             raise LoopRejected("live attempt cannot use the hermetic model")
         if attempt.state != "EMITTED_OUTCOME_UNKNOWN":

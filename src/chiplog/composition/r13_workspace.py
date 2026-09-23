@@ -23,6 +23,7 @@ from chiplog.capabilities.agent_loop.contracts import (
     VisibilityMember,
 )
 from chiplog.capabilities.agent_loop.domain import join_labels
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.calendar_observations.contracts import CalendarBatch
 from chiplog.capabilities.calendar_observations.observations import source_heads_digest
 from chiplog.capabilities.evidence_journal.boundary import SourceReference as JournalSource
@@ -301,7 +302,7 @@ class R13Workspace:
         if result not in ("COMMITTED", "REPLAY"):
             raise LoopRejected("conversation ingress " + result)
 
-    async def context(self, run: RunRecord) -> VisibilityMember:
+    async def context(self, run: RunRecord | ExecutionRunRecord) -> VisibilityMember:
         workspace = await self._workspace()
         batch = await workspace.read_batch()
         context = workspace.proposal_context(batch)
