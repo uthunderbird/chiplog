@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from collections.abc import Callable
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .live_contract import LiveModelBinding
 
@@ -232,6 +233,25 @@ class AcceptedDelivery(Frozen):
     state: Literal["PENDING_LOCAL"] = "PENDING_LOCAL"
 
 
+class SchedulerRootReference(Frozen):
+    """Immutable reference; broker verifies original canonical subject/root bytes."""
+
+    kind: Literal["SCHEDULER_LINEAGE"] = "SCHEDULER_LINEAGE"
+    root_id: str = Field(min_length=1)
+    subject_canonical_base64: str = Field(min_length=1)
+    subject_schema_version: Literal["chiplog.execution-lineage-subject.v1"]
+    root_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    initial_run_id: str = Field(min_length=1)
+
+    @field_validator("subject_canonical_base64")
+    @classmethod
+    def exact_base64(cls, value: str) -> str:
+        raw = base64.b64decode(value, validate=True)
+        if not raw or base64.b64encode(raw).decode("ascii") != value:
+            raise ValueError("noncanonical or empty scheduler subject encoding")
+        return value
+
+
 class RunRecord(Frozen):
     tenant: str
     principal: str
@@ -245,7 +265,7 @@ class RunRecord(Frozen):
     contour_head: str
     policy_head: str
     worker_session: str
-    root_binding: Literal["NOT_APPLICABLE"] = "NOT_APPLICABLE"
+    root_binding: Literal["NOT_APPLICABLE"] | SchedulerRootReference = "NOT_APPLICABLE"
     turns: tuple[Turn, ...] = ()
     deliveries: tuple[AcceptedDelivery, ...] = ()
     accepted_text: tuple[str, ...] = ()
