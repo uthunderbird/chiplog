@@ -10,10 +10,11 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from pathlib import Path
 from typing import Literal, Protocol
 
+from .authority_gate import AuthorityGate, AuthorityGateError, FileIdentity, checked_file_identity
 from .deployment_gate import (
     CurrentEntitlement,
     DeploymentGateRequest,
@@ -66,10 +67,19 @@ class BrokerDeploymentGate:
         authenticate: Callable[[bytes, bytes], bool] | None = None,
         journal: GateDecisionJournal | None = None,
         clock: Callable[[], int],
+        authority_gate: AuthorityGate | None = None,
     ) -> None:
         if len({surface for surface, _ in surfaces}) != len(surfaces):
             raise ValueError("duplicate deployment surface")
-        self._database = database
+        if getattr(journal, "authority_gate", None) != authority_gate:
+            raise GateIntegrityError("deployment gate and journal authority binding mismatch")
+        if authority_gate is not None and journal is None:
+            raise GateIntegrityError("bound deployment gate requires an independent journal")
+        if authority_gate is not None and database.is_symlink():
+            raise GateIntegrityError("bound deployment database cannot be a symbolic link")
+        self._authority_gate = authority_gate
+        self._identity: FileIdentity | None = None
+        self._database = database.resolve(strict=False) if authority_gate is not None else database
         self._tenant_id = tenant_id
         self._surfaces = dict(surfaces)
         self._authenticate = authenticate
@@ -77,30 +87,55 @@ class BrokerDeploymentGate:
         self._journal_head: str | None = None
         self._initialized = False
         self._clock = clock
-        with self._transaction() as connection:
-            connection.executescript(
-                "CREATE TABLE IF NOT EXISTS gate_current ("
-                "tenant TEXT PRIMARY KEY, payload BLOB NOT NULL, proof BLOB NOT NULL);"
-                "CREATE TABLE IF NOT EXISTS gate_handoffs ("
-                "tenant TEXT NOT NULL, operation TEXT NOT NULL, request BLOB NOT NULL,"
-                "payload BLOB NOT NULL, entitlement TEXT NOT NULL, mode TEXT NOT NULL,"
-                "execution BLOB NOT NULL, disposition TEXT NOT NULL,"
-                "sequence INTEGER PRIMARY KEY AUTOINCREMENT, UNIQUE(tenant,operation));"
-            )
-        self._initialized = True
-        with self._transaction():
-            pass
+        with self._authority_scope():
+            with self._transaction() as connection:
+                connection.executescript(
+                    "CREATE TABLE IF NOT EXISTS gate_current ("
+                    "tenant TEXT PRIMARY KEY, payload BLOB NOT NULL, proof BLOB NOT NULL);"
+                    "CREATE TABLE IF NOT EXISTS gate_handoffs ("
+                    "tenant TEXT NOT NULL, operation TEXT NOT NULL, request BLOB NOT NULL,"
+                    "payload BLOB NOT NULL, entitlement TEXT NOT NULL, mode TEXT NOT NULL,"
+                    "execution BLOB NOT NULL, disposition TEXT NOT NULL,"
+                    "sequence INTEGER PRIMARY KEY AUTOINCREMENT, UNIQUE(tenant,operation));"
+                )
+            self._initialized = True
+            with self._transaction():
+                pass
+
+    @property
+    def authority_gate(self) -> AuthorityGate | None:
+        return self._authority_gate
+
+    def _check_identity(self) -> None:
+        if self._authority_gate is not None:
+            self._identity = checked_file_identity(self._database, self._identity)
+
+    @contextmanager
+    def _authority_scope(self) -> Iterator[None]:
+        try:
+            with self._authority_gate.hold() if self._authority_gate is not None else nullcontext():
+                if self._identity is not None or self._database.exists():
+                    self._check_identity()
+                yield
+                self._check_identity()
+        except AuthorityGateError as error:
+            raise GateIntegrityError(
+                "deployment authority source unavailable or replaced"
+            ) from error
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         with (
+            self._authority_scope(),
             closing(sqlite3.connect(self._database, isolation_level=None)) as connection,
             connection,
         ):
+            self._check_identity()
             connection.execute("BEGIN IMMEDIATE")
             if self._initialized:
                 self._synchronize(connection)
             yield connection
+            self._check_identity()
 
     def _synchronize(self, connection: sqlite3.Connection) -> None:
         if self._journal is None:
@@ -339,20 +374,26 @@ class BrokerDeploymentGate:
                 request_digest=_digest(request),
                 reason="handoff payload substitution",
             )
-        durable_decision = False
+        decision_may_exist = False
         try:
             with self._transaction() as connection:
                 result = self._evaluate(connection, request)
                 if result.disposition != "HOLD":
-                    self._decide(
-                        {
-                            "kind": "HANDOFF",
-                            "request": canonical_request(request).hex(),
-                            "payload": payload.hex(),
-                            "execution": execution.hex(),
-                        }
-                    )
-                    durable_decision = True
+                    try:
+                        self._decide(
+                            {
+                                "kind": "HANDOFF",
+                                "request": canonical_request(request).hex(),
+                                "payload": payload.hex(),
+                                "execution": execution.hex(),
+                            }
+                        )
+                    except GateDecisionIndeterminate:
+                        # Preserve uncertainty before context cleanup can replace
+                        # this exception with a source/lock identity failure.
+                        decision_may_exist = True
+                        raise
+                    decision_may_exist = True
                     connection.execute(
                         "INSERT INTO gate_handoffs"
                         "(tenant,operation,request,payload,entitlement,mode,execution,disposition) "
@@ -370,9 +411,9 @@ class BrokerDeploymentGate:
                     )
                 return result
         except (ValueError, OSError, sqlite3.Error, GateIntegrityError) as error:
-            if durable_decision:
+            if decision_may_exist:
                 raise GateDecisionIndeterminate(
-                    "exact handoff decided; cache acknowledgement unavailable"
+                    "handoff may be decided; acknowledgement unavailable"
                 ) from error
             return DeploymentGateResult(
                 disposition="HOLD", request_digest=_digest(request), reason="handoff not authorized"
@@ -385,6 +426,15 @@ class BrokerDeploymentGate:
                 (self._tenant_id, operation_id),
             ).fetchone()
             return None if row is None else (bytes(row[0]), bytes(row[1]))
+
+    def recorded_execution(self, operation_id: str) -> tuple[bytes, bool] | None:
+        """Exact authenticated execution and whether its materialization is historical."""
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT execution,disposition FROM gate_handoffs WHERE tenant=? AND operation=?",
+                (self._tenant_id, operation_id),
+            ).fetchone()
+            return None if row is None else (bytes(row[0]), row[1] == "MATERIALIZED")
 
     def pending(self) -> tuple[tuple[str, bytes], ...]:
         with self._transaction() as connection:
