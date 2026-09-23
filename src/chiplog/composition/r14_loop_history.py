@@ -10,6 +10,16 @@ from chiplog.adapters.driven.loop_sqlite import OWNER, SCHEMA, LoopIntegrityErro
 from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER, CONVERSATION_SCHEMA
 from chiplog.capabilities.agent_loop.contracts import LoopSnapshot, RunRecord
 from chiplog.capabilities.agent_loop.domain import validate_record
+from chiplog.composition.r14_cancellation_contracts import (
+    CANCELLATION_OPERATION,
+    CANCELLATION_SCHEMA,
+    NOT_EXECUTED_SCHEMA,
+    RetainedCancellationPreparation,
+)
+from chiplog.composition.r14_cancellation_records import (
+    build_cancellation_envelope,
+    cancellation_command,
+)
 from chiplog.composition.r14_fanout_contracts import FANOUT_OPERATION, RetainedFanOutPreparation
 from chiplog.composition.r14_fanout_records import (
     build_envelope,
@@ -24,9 +34,15 @@ if TYPE_CHECKING:
     from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 
-def read_loop_history(
+def _read_call_history(
     runtime: R14PlanningRuntime,
-) -> tuple[LoopSnapshot, tuple[RetainedFanOutPreparation, ...]]:
+    *,
+    selected_only: bool = False,
+) -> tuple[
+    LoopSnapshot,
+    tuple[RetainedFanOutPreparation, ...],
+    tuple[RetainedCancellationPreparation, ...],
+]:
     """Authenticate the caller's read cut, including a joined workspace snapshot.
 
     Historical reads use selected bytes, never a current owner or reconstructed
@@ -35,7 +51,10 @@ def read_loop_history(
     identity = "<enumeration>"
     try:
         with runtime._authority_gate().hold():
-            runtime._require_no_pending()
+            if selected_only:
+                runtime._pending()  # Authenticate the original journal before semantic replay.
+            else:
+                runtime._require_no_pending()
             tenant = runtime._tenant_id
             entries = [json.loads(raw) for _, _, raw in runtime._loop_decisions().entries()]
             decisions = [entry for entry in entries if entry.get("kind") == "DECIDED"]
@@ -50,7 +69,7 @@ def read_loop_history(
             selected.sort(key=lambda item: item[0].expected_head)
             with read_connection(runtime._database) as connection:
                 actual = capture_authority_snapshot_commitment(connection, tenant)
-                if actual != runtime._commitment_journal.load(tenant):
+                if not selected_only and actual != runtime._commitment_journal.load(tenant):
                     raise ValueError("loop read cut differs from current independent anchor")
                 fence = connection.execute(
                     "SELECT generation, frontier FROM deletion_fences WHERE tenant_id=?", (tenant,)
@@ -79,13 +98,19 @@ def read_loop_history(
                 records: list[RunRecord] = []
                 latest: dict[str, RunRecord] = {}
                 preparations: list[RetainedFanOutPreparation] = []
+                cancellations: list[RetainedCancellationPreparation] = []
                 captured_heads: set[str] = set()
                 for command, entry in selected:
                     identity = command.idempotency_key
-                    if command.operation_kind not in ("agent_loop", FANOUT_OPERATION):
+                    if command.operation_kind not in (
+                        "agent_loop",
+                        FANOUT_OPERATION,
+                        CANCELLATION_OPERATION,
+                    ):
                         raise ValueError("unregistered loop publication envelope")
                     if (
-                        inspect_publication(connection, command, command.expected_head + 1)
+                        not selected_only
+                        and inspect_publication(connection, command, command.expected_head + 1)
                         != "COMPLETE"
                     ):
                         raise ValueError("selected loop publication is not exactly materialized")
@@ -96,11 +121,39 @@ def read_loop_history(
                         or first.schema_id != SCHEMA
                         or first.record_id != record.head
                         or record.tenant != tenant
-                        or record.head != identity
+                        or (
+                            command.operation_kind != CANCELLATION_OPERATION
+                            and record.head != identity
+                        )
                         or first.canonical_bytes != record.canonical_bytes()
                     ):
                         raise ValueError("selected Run identity or canonical bytes differ")
-                    if command.operation_kind == FANOUT_OPERATION:
+                    if command.operation_kind == CANCELLATION_OPERATION:
+                        raw = entry["cancellation_preparation"]
+                        cancellation = RetainedCancellationPreparation.model_validate_json(raw)
+                        if cancellation.canonical_bytes().decode() != raw:
+                            raise ValueError("noncanonical retained cancellation")
+                        cancelled_envelope = build_cancellation_envelope(cancellation)
+                        prior = LoopSnapshot(
+                            tenant_head=command.expected_head, records=tuple(records)
+                        )
+                        if (
+                            cancelled_envelope.canonical_bytes().decode()
+                            != entry["cancellation_envelope"]
+                            or cancellation_command(cancellation) != command
+                            or cancellation.run_companion != record
+                            or cancellation.run_predecessor != latest.get(record.run_id)
+                            or cancellation.request.cut.materialization_commitment
+                            != entry["predecessor"]
+                            or cancellation.expected_snapshot_fingerprint != prior.digest()
+                            or cancellation.request.cut.predecessor_inventory
+                            != inventory_from_history(
+                                tenant, prior, tuple(preparations), tuple(cancellations)
+                            )
+                        ):
+                            raise ValueError("selected cancellation differs from original history")
+                        cancellations.append(cancellation)
+                    elif command.operation_kind == FANOUT_OPERATION:
                         raw = entry["fanout_preparation"]
                         evidence = RetainedFanOutPreparation.model_validate_json(raw)
                         if evidence.canonical_bytes().decode() != raw:
@@ -119,7 +172,9 @@ def read_loop_history(
                             != entry["predecessor"]
                             or evidence.expected_snapshot_fingerprint != prior.digest()
                             or evidence.request.request.cut.predecessor_inventory
-                            != inventory_from_history(tenant, prior, tuple(preparations))
+                            != inventory_from_history(
+                                tenant, prior, tuple(preparations), tuple(cancellations)
+                            )
                         ):
                             raise ValueError("selected fanout differs from exact retained history")
                         if capture.head in captured_heads:
@@ -144,7 +199,9 @@ def read_loop_history(
                     expected_publications.add((command.operation_kind, identity))
                     latest[record.run_id] = record
                     records.append(record)
-                if physical_ids != expected_ids or physical_publications != expected_publications:
+                if not selected_only and (
+                    physical_ids != expected_ids or physical_publications != expected_publications
+                ):
                     raise ValueError("orphaned, missing or unknown loop publication members")
                 runtime._check_database_identity()
                 return (
@@ -152,6 +209,7 @@ def read_loop_history(
                         tenant_head=0 if head is None else head[0], records=tuple(records)
                     ),
                     tuple(preparations),
+                    tuple(cancellations),
                 )
     except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
         raise LoopIntegrityError(
@@ -159,5 +217,45 @@ def read_loop_history(
         ) from error
 
 
+def read_call_history(
+    runtime: R14PlanningRuntime,
+) -> tuple[
+    LoopSnapshot, tuple[RetainedFanOutPreparation, ...], tuple[RetainedCancellationPreparation, ...]
+]:
+    return _read_call_history(runtime)
+
+
+def read_loop_history(
+    runtime: R14PlanningRuntime,
+) -> tuple[LoopSnapshot, tuple[RetainedFanOutPreparation, ...]]:
+    snapshot, fanout, _ = read_call_history(runtime)
+    return snapshot, fanout
+
+
+def validate_selected_cancellations(runtime: R14PlanningRuntime) -> None:
+    """Validate original semantics before any selected cancellation can be recovered."""
+    runtime._pending()
+    found = False
+    for _, _, raw in runtime._loop_decisions().entries():
+        entry = json.loads(raw)
+        if entry.get("kind") != "DECIDED":
+            continue
+        command = runtime._publication(entry)
+        claims_cancellation = (
+            command.operation_kind == CANCELLATION_OPERATION
+            or "cancellation_preparation" in entry
+            or any(
+                record.schema_id in (CANCELLATION_SCHEMA, NOT_EXECUTED_SCHEMA)
+                for record in command.records
+            )
+        )
+        if claims_cancellation:
+            if command.operation_kind != CANCELLATION_OPERATION:
+                raise LoopIntegrityError("cancellation publication has a substituted operation")
+            found = True
+    if found:
+        _read_call_history(runtime, selected_only=True)
+
+
 def read_loop_snapshot(runtime: R14PlanningRuntime) -> LoopSnapshot:
-    return read_loop_history(runtime)[0]
+    return read_call_history(runtime)[0]

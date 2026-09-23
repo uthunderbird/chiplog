@@ -48,7 +48,7 @@ from chiplog.composition.r14_fanout_records import (
     physical_command,
     reference,
 )
-from chiplog.composition.r14_loop_history import read_loop_history
+from chiplog.composition.r14_loop_history import read_call_history
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 
 if TYPE_CHECKING:
@@ -152,7 +152,7 @@ async def publish_fanout(
         return
 
     with runtime._authority_gate().hold():
-        snapshot, preparations = read_loop_history(runtime)
+        snapshot, preparations, cancellations = read_call_history(runtime)
         if snapshot != expected or record.tenant != runtime._tenant_id:
             raise LoopRejected("stale or foreign fanout predecessor")
         runs = [row for row in snapshot.records if row.run_id == record.run_id]
@@ -179,7 +179,9 @@ async def publish_fanout(
         deadline = observed + 5_000_000_000
         registry, bound = _registry(captured)
         registry_ref = reference(registry.registry_id, registry)
-        inventory = inventory_from_history(runtime._tenant_id, snapshot, preparations)
+        inventory = inventory_from_history(
+            runtime._tenant_id, snapshot, preparations, cancellations
+        )
         capture = CallSubjectHead(
             subject_id=captured.run_id,
             revision=Present(head=captured.head, fingerprint=captured.digest()),

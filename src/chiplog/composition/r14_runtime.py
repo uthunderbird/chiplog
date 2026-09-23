@@ -23,6 +23,11 @@ from chiplog.architecture.r7_runtime import R14_FANOUT_PRODUCTION_MANIFEST
 from chiplog.capabilities.agent_loop.contracts import DurableCompanion, LoopSnapshot, RunRecord
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r13_planning import R13PlanningRuntime
+from chiplog.composition.r14_cancellation_contracts import (
+    CANCELLATION_SCHEMA,
+    NOT_EXECUTED_SCHEMA,
+    CancelCallSubmission,
+)
 from chiplog.composition.r14_fanout_contracts import INITIALIZED_SCHEMA, SEAL_SCHEMA
 from chiplog.platform._owner_publication_contracts import BrokerPublicationResult
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
@@ -155,9 +160,16 @@ class R14PlanningRuntime(R13PlanningRuntime):
         *R13PlanningRuntime._record_schema_variants,
         ("agent_loop", SEAL_SCHEMA),
         ("agent_loop", INITIALIZED_SCHEMA),
+        ("agent_loop", CANCELLATION_SCHEMA),
+        ("agent_loop", NOT_EXECUTED_SCHEMA),
     )
     _owner_journal: AnchoredOwnerDecisionJournal | None = None
     _database_identity: tuple[str, int, int]
+
+    async def cancel_call(self, peer: str, submission: CancelCallSubmission) -> RunRecord:
+        from chiplog.composition.r14_cancellation import cancel_call
+
+        return await cancel_call(self, peer, submission)
 
     async def publish_effect(
         self, peer: str, display_id: str, digest: str, adoption_act_id: str
@@ -419,8 +431,10 @@ class R14PlanningRuntime(R13PlanningRuntime):
 
     async def _prepare_startup(self) -> None:
         with self._authority_gate().hold():
+            from chiplog.composition.r14_loop_history import validate_selected_cancellations
             from chiplog.composition.r16_denial_history import validate_selected_denials
 
+            validate_selected_cancellations(self)
             validate_selected_denials(self._owner_decisions().snapshot())
             owners, loops, gates = (
                 self._pending_owners(),

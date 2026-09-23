@@ -312,6 +312,13 @@ class AgentLoop:
         if isinstance(response, Continue):
             for call in response.tool_calls:
                 current = self.record(run_id)
+                outcomes = domain.current_turn(current).sealed_calls or ()
+                selected = [outcome for outcome in outcomes if outcome.call.call_id == call.call_id]
+                if len(selected) != 1:
+                    raise LoopRejected("sealed call disappeared before terminalization")
+                if selected[0].state == "TERMINAL":
+                    # A competing exact-head publication already accounted for this call.
+                    continue
                 # Proposal text is never a command or evidence of provider success.
                 result = json.dumps(
                     {"kind": "PROPOSAL_ONLY", "tool": call.tool, "text": call.text}, sort_keys=True
