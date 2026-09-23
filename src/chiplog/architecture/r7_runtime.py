@@ -259,7 +259,7 @@ R13_EVALUATION_MANIFEST = replace(R13_PRODUCTION_MANIFEST, environment="evaluati
 # Explicit local dialogue composition; never a substitution inside the offline manifest.
 CODEX_CLI_MANIFEST = replace(
     R13_PRODUCTION_MANIFEST,
-    manifest_version=4,
+    manifest_version=8,
     leaves=tuple(
         replace(leaf, implementation="chiplog.adapters.driven.codex_model:CodexModel")
         if leaf.leaf_id == "model"
@@ -267,6 +267,68 @@ CODEX_CLI_MANIFEST = replace(
         for leaf in R13_PRODUCTION_MANIFEST.leaves
     ),
 )
+
+_SCHEDULER_ROUTES = tuple(
+    RoutedCallDecl(
+        f"scheduler.prepare_{kind}",
+        "broker",
+        "agent_loop",
+        f"chiplog.scheduler.{kind}-preparation.v1",
+        "chiplog.scheduler.prepared-lease.v1"
+        if kind == "lease"
+        else "chiplog.scheduler.prepared-batch.v1",
+    )
+    for kind in ("configuration", "interval", "lease", "rollover")
+)
+_LOOP_PREPARATION_OPERATIONS = (
+    "agent_loop.validate_transition",
+    *(route.operation_id for route in _SCHEDULER_ROUTES),
+)
+R14_PRODUCTION_MANIFEST = replace(
+    R13_PRODUCTION_MANIFEST,
+    manifest_version=4,
+    owners=tuple(
+        sorted(
+            (
+                replace(
+                    R13_PRODUCTION_MANIFEST.owners[0],
+                    capability_ids=_LOOP_PREPARATION_OPERATIONS,
+                    public_operations=_LOOP_PREPARATION_OPERATIONS,
+                    target_ids=("chiplog.capabilities.agent_loop._r14_process:dispatch",),
+                ),
+                OwnerProcessDecl(
+                    "effects",
+                    ("effects.prepare_transition",),
+                    ("effects.prepare_transition",),
+                    ("chiplog.platform.r7_runtime:_OwnerProvider",),
+                    ("chiplog.capabilities.effects._process:dispatch",),
+                    ("chiplog.platform.r7_runtime:_OwnerProvider.service",),
+                    ("APP",),
+                ),
+                *R8_PRODUCTION_MANIFEST.owners,
+            ),
+            key=lambda owner: owner.owner_id,
+        )
+    ),
+    routes=tuple(
+        sorted(
+            (
+                R13_PRODUCTION_MANIFEST.routes[0],
+                *_SCHEDULER_ROUTES,
+                RoutedCallDecl(
+                    "effects.prepare_transition",
+                    "broker",
+                    "effects",
+                    "chiplog.effects.prepare.v1",
+                    "chiplog.effects.prepared-publication.v1",
+                ),
+                *R8_PRODUCTION_MANIFEST.routes,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_EVALUATION_MANIFEST = replace(R14_PRODUCTION_MANIFEST, environment="evaluation")
 
 
 class RuntimeManifestViolation(ValueError):
@@ -279,13 +341,14 @@ def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
 
 
 def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
-    if manifest.manifest_version not in (1, 2, 3, 4):
+    if manifest.manifest_version not in (1, 2, 3, 4, 8):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
         1: R7_PRODUCTION_MANIFEST,
         2: R8_PRODUCTION_MANIFEST,
         3: R13_PRODUCTION_MANIFEST,
-        4: CODEX_CLI_MANIFEST,
+        4: R14_PRODUCTION_MANIFEST,
+        8: CODEX_CLI_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
@@ -316,7 +379,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         )
     if any(not item.implementation for item in manifest.leaves):
         raise RuntimeManifestViolation("registered leaf implementation is empty")
-    if manifest.manifest_version in (3, 4) and manifest.leaves != expected_manifest.leaves:
+    if manifest.manifest_version in (3, 4, 8) and manifest.leaves != expected_manifest.leaves:
         raise RuntimeManifestViolation("R13 admits only registered hermetic leaf implementations")
     route_callers = (*owner_ids, "broker")
     if any(route.caller_owner_id not in route_callers for route in manifest.routes) or any(

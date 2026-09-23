@@ -5,10 +5,13 @@ from dataclasses import replace
 import pytest
 
 from chiplog.architecture.r7_runtime import (
+    CODEX_CLI_MANIFEST,
     R7_EVALUATION_MANIFEST,
     R7_PRODUCTION_MANIFEST,
     R13_EVALUATION_MANIFEST,
     R13_PRODUCTION_MANIFEST,
+    R14_EVALUATION_MANIFEST,
+    R14_PRODUCTION_MANIFEST,
     LeafBinding,
     RoutedCallDecl,
     RuntimeManifestViolation,
@@ -16,6 +19,60 @@ from chiplog.architecture.r7_runtime import (
     verify_runtime_manifest,
 )
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+
+
+def test_cli_and_preparation_profiles_reject_cross_profile_substitution() -> None:
+    assert CODEX_CLI_MANIFEST.manifest_version != R14_PRODUCTION_MANIFEST.manifest_version
+    for manifest, other in (
+        (CODEX_CLI_MANIFEST, R14_PRODUCTION_MANIFEST),
+        (R14_PRODUCTION_MANIFEST, CODEX_CLI_MANIFEST),
+    ):
+        assert verify_runtime_manifest(manifest)
+        with pytest.raises(RuntimeManifestViolation):
+            verify_runtime_manifest(replace(manifest, manifest_version=other.manifest_version))
+        with pytest.raises(RuntimeManifestViolation):
+            verify_runtime_manifest(replace(manifest, leaves=other.leaves))
+
+
+def test_preparation_manifest_realizes_exact_production_and_evaluation_graphs() -> None:
+    verify_production_evaluation_equivalence(R14_PRODUCTION_MANIFEST, R14_EVALUATION_MANIFEST)
+    for manifest in (R14_PRODUCTION_MANIFEST, R14_EVALUATION_MANIFEST):
+        with AuthorityBrokerRuntime("tenant", 1, "preparation", manifest, b"offline") as runtime:
+            graph = runtime.graph_generation()
+            assert graph.routes == tuple(
+                (
+                    r.operation_id,
+                    r.caller_owner_id,
+                    r.callee_owner_id,
+                    r.request_schema_id,
+                    r.result_schema_id,
+                )
+                for r in manifest.routes
+            )
+            assert tuple((owner.owner_id, owner.capability_ids) for owner in graph.owners) == tuple(
+                (owner.owner_id, owner.capability_ids) for owner in manifest.owners
+            )
+            attestations = {item.identity.owner_id: item for item in runtime.attest()}
+            assert attestations["agent_loop"].loaded_policy_modules == (
+                "chiplog.capabilities.agent_loop._r13_process",
+                "chiplog.capabilities.agent_loop._r14_process",
+                "chiplog.capabilities.agent_loop._scheduler_process",
+            )
+            assert attestations["effects"].loaded_policy_modules == (
+                "chiplog.capabilities.effects._process",
+            )
+
+
+def test_preparation_manifest_rejects_replaced_hermetic_leaf() -> None:
+    candidate = replace(
+        R14_PRODUCTION_MANIFEST,
+        leaves=(
+            replace(R14_PRODUCTION_MANIFEST.leaves[0], implementation="unregistered:Clock"),
+            *R14_PRODUCTION_MANIFEST.leaves[1:],
+        ),
+    )
+    with pytest.raises(RuntimeManifestViolation, match="hermetic"):
+        verify_runtime_manifest(candidate)
 
 
 def test_r13_production_and_evaluation_realize_the_same_loop_owner_partition() -> None:

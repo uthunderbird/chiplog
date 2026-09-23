@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from chiplog.capabilities.effects.contracts import (
     ClosedEffectObligation,
+    CommitSendCommand,
     CurrentEffectInputs,
     DeliverySendBinding,
     DispatchSemanticBinding,
@@ -54,6 +55,12 @@ def test_delivery_consumer_preserves_exact_explicit_origin_tuple() -> None:
         )
     with pytest.raises(ValidationError):
         DeliverySendBinding.model_validate({**delivery.model_dump(), "selection": None})
+
+
+def test_send_command_requires_explicit_current_execution_fence() -> None:
+    schema = CommitSendCommand.model_json_schema()
+    assert "fence" in schema["required"]
+    assert schema["properties"]["fence"]["discriminator"]["propertyName"] == "kind"
 
 
 def test_semantic_binding_requires_every_version_and_rejects_unknown_fields() -> None:

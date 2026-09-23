@@ -12,7 +12,7 @@ import sqlite3
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
@@ -114,10 +114,24 @@ def _decode_owner_result(payload: bytes) -> R7PlanningResultDTO:
     return result
 
 
+@dataclass(frozen=True)
+class PreparedPlanningCandidate:
+    """Isolated owner output, not a publication or durable planning receipt."""
+
+    command_bytes: bytes
+    request_bytes: bytes
+    trust_reference_bytes: bytes
+    owner_result_bytes: bytes
+    owner_session: BrokerSession
+    expected_tenant_head: int
+    disposition: Literal["PREPARED"] = "PREPARED"
+
+
 class R7PlanningRuntime:
     """The broker is the only object holding trust, SQLite, writer, and token authority."""
 
     _record_contracts: ClassVar[dict[str, str]] = {"planning": _SCHEMA}
+    _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = ()
     _derivative_contracts: ClassVar[tuple[str, ...]] = ()
 
     def _bind_appender(self) -> None:
@@ -502,14 +516,15 @@ class R7PlanningRuntime:
                 command=command,
             )
 
-    async def _create(
+    async def _prepare_create(
         self,
         *,
         principal_id: str,
         credential_id: str,
         session_id: str,
         command: CreateIntentionLine,
-    ) -> PlanningOutcome:
+    ) -> PreparedPlanningCandidate | PlanningOutcome:
+        """Authenticate and invoke the owner without issuing a physical publication."""
         peer = f"uid:{os.getuid()}"
         decision = await self._trust_call(
             "AUTHENTICATE",
@@ -584,8 +599,45 @@ class R7PlanningRuntime:
             return PlanningOutcome(owner_result.disposition, result, owner_result.reason)
         assert owner_result.canonical_result_bytes is not None
         proposal = json.loads(owner_result.canonical_result_bytes)
+        _committed_result(proposal["result"], TenantId(self._tenant_id))
+        return PreparedPlanningCandidate(
+            command_bytes=_canonical(
+                {
+                    "command_id": command.command_id.value,
+                    "intention_line_id": command.intention_line_id.value,
+                    "revision_id": command.revision_id.value,
+                    "purpose": command.purpose,
+                    "authority_act_id": command.authority_act_id,
+                }
+            ),
+            request_bytes=request.canonical_bytes(),
+            trust_reference_bytes=decision.reference_bytes,
+            owner_result_bytes=owner_result.canonical_result_bytes,
+            owner_session=callee,
+            expected_tenant_head=int(proposal["commit_sequence"]) - 1,
+        )
+
+    async def _create(
+        self,
+        *,
+        principal_id: str,
+        credential_id: str,
+        session_id: str,
+        command: CreateIntentionLine,
+    ) -> PlanningOutcome:
+        prepared = await self._prepare_create(
+            principal_id=principal_id,
+            credential_id=credential_id,
+            session_id=session_id,
+            command=command,
+        )
+        if isinstance(prepared, PlanningOutcome):
+            return prepared
+        reference = json.loads(prepared.trust_reference_bytes)
+        callee = prepared.owner_session
+        proposal = json.loads(prepared.owner_result_bytes)
         result = _committed_result(proposal["result"], TenantId(self._tenant_id))
-        payload_fingerprint = hashlib.sha256(owner_result.canonical_result_bytes).hexdigest()
+        payload_fingerprint = hashlib.sha256(prepared.owner_result_bytes).hexdigest()
         token = OperationToken(
             mode="IDEMPOTENT_EXACT",
             tenant_id=self._tenant_id,
@@ -645,7 +697,7 @@ class R7PlanningRuntime:
                     ),
                     admission_guard=guard,
                     decision_guard=lambda commitment: self._publication_decision_guard(
-                        owner_result.canonical_result_bytes, commitment
+                        prepared.owner_result_bytes, commitment
                     ),
                 )
             )
@@ -769,6 +821,7 @@ async def _open_runtime(
     with SQLiteMaterializer(
         database,
         record_contracts=runtime_type._record_contracts,
+        record_schema_variants=runtime_type._record_schema_variants,
         derivative_contracts=runtime_type._derivative_contracts,
         managed_derivative_sinks=runtime_type._derivative_contracts,
     ) as store:

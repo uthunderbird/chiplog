@@ -114,7 +114,7 @@ class DecideIntervalCommand(RecoveryDTO):
     identity: SchedulerCommandIdentity
     boundary: SchedulerEligibilityBoundary
     bound_head: SchedulerIntervalBoundHead
-    manifest: SchedulerEligibilityManifest
+    manifest: SchedulerEligibilityManifest | StreamingEligibilityEvidence
     publication_fence: PreRootDecisionFence
 
 
@@ -141,6 +141,10 @@ class StreamingEligibilityEvidence(RecoveryDTO):
     last_member: Annotated[Absent | Present, Field(discriminator="kind")]
     order_contract_version: Identity
     enumeration_completeness_proof: Present
+
+
+# The closed command union includes the streaming witness declared below it.
+DecideIntervalCommand.model_rebuild()
 
 
 class OverflowActive(RecoveryDTO):

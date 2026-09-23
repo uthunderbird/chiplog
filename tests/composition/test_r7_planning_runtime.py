@@ -398,3 +398,60 @@ def test_r6_and_r7_emit_identical_durable_bytes_and_rendering(tmp_path: Path) ->
     with sqlite3.connect(r6_database) as r6, sqlite3.connect(r7_database) as r7:
         query = "SELECT * FROM records ORDER BY tenant_id, record_id"
         assert r7.execute(query).fetchall() == r6.execute(query).fetchall()
+
+
+def test_prepare_only_keeps_database_empty_then_legacy_create_replays(tmp_path: Path) -> None:
+    """The actual isolated owner may prepare bytes without publishing authority."""
+    import json
+
+    from chiplog.composition.r7_planning import PreparedPlanningCandidate
+
+    database = tmp_path / "prepare.sqlite3"
+    tenant = TenantId("tenant-1")
+
+    async def exercise() -> None:
+        async with open_r7_runtime(
+            database, tenant_id=tenant.value, operator_secret=b"prepare-test-secret"
+        ) as runtime:
+            await runtime.bootstrap(
+                database_instance_id="database-1",
+                principal_id="principal-1",
+                credential_id="credential-1",
+                session_id="session-1",
+                token="bootstrap-token-1",
+            )
+            kwargs = dict(
+                principal_id="principal-1", credential_id="credential-1", session_id="session-1"
+            )
+            candidate = await runtime._prepare_create(**kwargs, command=_command(tenant))
+            assert isinstance(candidate, PreparedPlanningCandidate)
+            assert candidate.disposition == "PREPARED"
+            assert candidate.expected_tenant_head == 0
+            assert json.loads(candidate.command_bytes)["command_id"] == "command-1"
+            assert json.loads(candidate.request_bytes)["command_id"] == "command-1"
+            proposal = json.loads(candidate.owner_result_bytes)
+            assert len(proposal["records"]) == 5
+            with sqlite3.connect(database) as connection:
+                assert connection.execute("SELECT COUNT(*) FROM records").fetchone() == (0,)
+                assert connection.execute("SELECT COUNT(*) FROM publications").fetchone() == (0,)
+            committed = await runtime.create(**kwargs, command=_command(tenant))
+            assert committed.disposition == "COMMITTED"
+            with sqlite3.connect(database) as connection:
+                actual = dict(connection.execute("SELECT record_id, canonical_bytes FROM records"))
+            import base64
+
+            assert actual == {
+                row["record_id"]: base64.b64decode(row["canonical_bytes"], validate=True)
+                for row in proposal["records"]
+            }
+            replay = await runtime._prepare_create(**kwargs, command=_command(tenant))
+            assert not isinstance(replay, PreparedPlanningCandidate)
+            assert replay.disposition == "REPLAY"
+            assert replay.result == committed.result
+            conflict = await runtime._prepare_create(
+                **kwargs, command=_command(tenant, purpose="changed")
+            )
+            assert not isinstance(conflict, PreparedPlanningCandidate)
+            assert conflict.disposition == "CONFLICT"
+
+    asyncio.run(exercise())
