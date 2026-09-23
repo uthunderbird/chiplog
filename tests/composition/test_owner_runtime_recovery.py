@@ -2,10 +2,12 @@
 
 import hashlib
 import hmac
+import json
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -13,9 +15,15 @@ from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJo
 from chiplog.capabilities.planning import CreateIntentionLine
 from chiplog.composition.r8 import R8_SURFACES, command_bytes
 from chiplog.composition.r14_runtime import R14PlanningRuntime, open_r14_runtime
+from chiplog.composition.r17_ingress_runtime import open_r17_runtime
 from chiplog.domain_primitives import RecordId, TenantId
 from chiplog.platform._owner_publication_contracts import SingleOwnerBatch
-from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord, PublicationResult
+from chiplog.platform._sqlite import (
+    EventAppender,
+    PhysicalPublicationCommand,
+    PhysicalRecord,
+    PublicationResult,
+)
 from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.owner_decision_journal import (
     IndependentOwnerDecisionJournal,
@@ -113,12 +121,17 @@ async def test_runtime_bootstrap_and_reopen_preserve_authority_anchor(tmp_path: 
         reopened._require_no_pending()
 
 
+@pytest.mark.parametrize("reopen_with_ingress", (False, True))
+@pytest.mark.parametrize("fault", ("before_commit", "after_commit"))
 @pytest.mark.parametrize("inject_rival", [False, True])
 async def test_pending_legacy_publication_blocks_owner_selection_and_recovers(
     tmp_path: Path,
     inject_rival: bool,
+    reopen_with_ingress: bool,
+    fault: Literal["before_commit", "after_commit"],
 ) -> None:
     database = tmp_path / "runtime.sqlite"
+    open_recovery = open_r17_runtime if reopen_with_ingress else open_r14_runtime
     async with open_r14_runtime(database) as runtime:
         prepared = _mechanical_preparation(runtime)
         payload = b'{"fixture":"legacy-mechanics"}'
@@ -140,9 +153,11 @@ async def test_pending_legacy_publication_blocks_owner_selection_and_recovers(
                     hashlib.sha256(payload).hexdigest(),
                 ),
             ),
-            fault="before_commit",
+            fault=fault,
         )
-        with pytest.raises(RuntimeError, match="injected fault before commit"):
+        with pytest.raises(
+            RuntimeError, match=r"injected (fault before commit|lost commit acknowledgement)"
+        ):
             await runtime._appender.submit(command)
         pending = runtime._pending()
         assert len(pending) == 1
@@ -158,23 +173,35 @@ async def test_pending_legacy_publication_blocks_owner_selection_and_recovers(
             unchanged = capture_authority_storage_state(database)[0]
     if inject_rival:
         with pytest.raises(
-            OwnerJournalIntegrityError, match="operation=startup_pending"
+            OwnerJournalIntegrityError,
+            match="operation=ingress_materialization"
+            if reopen_with_ingress
+            else "operation=startup_pending",
         ) as failure:
-            async with open_r14_runtime(database):
+            async with open_recovery(database):
                 pytest.fail("competing journal families must not open")
         assert failure.value.__cause__ is not None
         assert capture_authority_storage_state(database)[0] == unchanged
         return
-    async with open_r14_runtime(database) as reopened:
+    async with open_recovery(database) as reopened:
         assert reopened._pending() == ()
         assert capture_authority_storage_state(database)[0] == pending[0]["resulting"]
         reopened._require_no_pending()
 
 
+@pytest.mark.parametrize("fault", ("before_commit", "after_commit"))
+@pytest.mark.parametrize(
+    "reopen_with_ingress,malformed", ((False, False), (True, False), (True, True))
+)
 async def test_pending_actual_planning_gate_blocks_owner_selection_and_recovers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reopen_with_ingress: bool,
+    malformed: bool,
+    fault: Literal["before_commit", "after_commit"],
 ) -> None:
     database = tmp_path / "runtime.sqlite"
+    open_recovery = open_r17_runtime if reopen_with_ingress else open_r14_runtime
     async with open_r14_runtime(database) as runtime:
         prepared = _mechanical_preparation(runtime)
         tenant = TenantId(runtime._tenant_id)
@@ -217,12 +244,14 @@ async def test_pending_actual_planning_gate_blocks_owner_selection_and_recovers(
         )
         submit = runtime._appender.submit
 
-        async def fail_before_commit(command: PhysicalPublicationCommand) -> PublicationResult:
-            return await submit(replace(command, fault="before_commit"))
+        async def fail_at_cut(command: PhysicalPublicationCommand) -> PublicationResult:
+            return await submit(replace(command, fault=fault))
 
         with monkeypatch.context() as context:
-            context.setattr(runtime._appender, "submit", fail_before_commit)
-            with pytest.raises(RuntimeError, match="injected fault before commit"):
+            context.setattr(runtime._appender, "submit", fail_at_cut)
+            with pytest.raises(
+                RuntimeError, match=r"injected (fault before commit|lost commit acknowledgement)"
+            ):
                 await runtime.create(
                     principal_id="hermetic-principal",
                     credential_id="hermetic-credential",
@@ -234,7 +263,34 @@ async def test_pending_actual_planning_gate_blocks_owner_selection_and_recovers(
         with pytest.raises(OwnerPublicationPending):
             runtime._owner_decisions().select(prepared, prepared.predecessor_commitment)
         assert runtime._owner_decisions().snapshot().decisions == ()
-    async with open_r14_runtime(database) as reopened:
+    if malformed:
+        unchanged = capture_authority_storage_state(database)[0]
+        pending_gate = R14PlanningRuntime._pending_gate_publications
+
+        def malformed_gate(self: R14PlanningRuntime) -> tuple[tuple[str, bytes], ...]:
+            rows = pending_gate(self)
+            assert len(rows) == 1
+            identity, raw = rows[0]
+            entry = json.loads(raw)
+            entry["version"] = 2
+            return ((identity, json.dumps(entry).encode()),)
+
+        async def no_recovery_write(
+            self: EventAppender, command: PhysicalPublicationCommand
+        ) -> PublicationResult:
+            pytest.fail("malformed gate history reached recovery submission")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(R14PlanningRuntime, "_pending_gate_publications", malformed_gate)
+            patch.setattr(EventAppender, "submit", no_recovery_write)
+            with pytest.raises(
+                OwnerJournalIntegrityError, match="operation=ingress_materialization"
+            ):
+                async with open_recovery(database):
+                    pytest.fail("malformed gate envelope must not open")
+        assert capture_authority_storage_state(database)[0] == unchanged
+        return
+    async with open_recovery(database) as reopened:
         assert reopened._pending_gate_publications() == ()
         with read_connection(database) as connection:
             assert connection.execute(

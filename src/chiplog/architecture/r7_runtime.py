@@ -295,6 +295,21 @@ _LOOP_PREPARATION_OPERATIONS = (
     "agent_loop.validate_transition",
     *(route.operation_id for route in _SCHEDULER_ROUTES),
 )
+_TELEGRAM_CANDIDATE_ROUTE = RoutedCallDecl(
+    "deployment_trust.normalize_telegram_candidate",
+    "broker",
+    "deployment_trust",
+    "chiplog.telegram.normalize.v1",
+    "chiplog.telegram.normalized-candidate.v1",
+)
+_TRUST_CANDIDATE_OPERATIONS = tuple(
+    sorted(
+        (
+            *R8_PRODUCTION_MANIFEST.owners[0].public_operations,
+            _TELEGRAM_CANDIDATE_ROUTE.operation_id,
+        )
+    )
+)
 R14_PRODUCTION_MANIFEST = replace(
     R13_PRODUCTION_MANIFEST,
     manifest_version=4,
@@ -316,7 +331,17 @@ R14_PRODUCTION_MANIFEST = replace(
                     ("chiplog.platform.r7_runtime:_OwnerProvider.service",),
                     ("APP",),
                 ),
-                *R8_PRODUCTION_MANIFEST.owners,
+                *(
+                    replace(
+                        owner,
+                        capability_ids=_TRUST_CANDIDATE_OPERATIONS,
+                        public_operations=_TRUST_CANDIDATE_OPERATIONS,
+                        target_ids=("chiplog.capabilities.deployment_trust._r17_process:dispatch",),
+                    )
+                    if owner.owner_id == "deployment_trust"
+                    else owner
+                    for owner in R8_PRODUCTION_MANIFEST.owners
+                ),
             ),
             key=lambda owner: owner.owner_id,
         )
@@ -326,6 +351,7 @@ R14_PRODUCTION_MANIFEST = replace(
             (
                 R13_PRODUCTION_MANIFEST.routes[0],
                 *_DELIVERY_ROUTES,
+                _TELEGRAM_CANDIDATE_ROUTE,
                 *_SCHEDULER_ROUTES,
                 RoutedCallDecl(
                     "effects.prepare_transition",
