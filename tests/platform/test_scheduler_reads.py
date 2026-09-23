@@ -7,8 +7,7 @@ import base64
 import hashlib
 import sqlite3
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,7 +62,7 @@ from chiplog.platform.scheduler_reads import (
     SchedulerReadIntegrityError,
     read_materialized_scheduler,
 )
-from chiplog.platform.workspace_snapshot import ReadSnapshot, workspace_snapshot
+from chiplog.platform.workspace_snapshot import workspace_snapshot
 
 
 def digest(raw: bytes) -> str:
@@ -442,25 +441,105 @@ async def test_cut_rejects_changed_independent_identity_after_reads(
     assert "changed during cut acquisition" in str(caught.value.__cause__)
 
 
-async def test_temp_shadow_cannot_replace_main_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_temp_shadow_cannot_replace_main_authority(tmp_path: Path) -> None:
     fixture = await materialized(tmp_path)
-    original_snapshot = workspace_snapshot
-
-    @contextmanager
-    def shadow(path: Path) -> Iterator[ReadSnapshot]:
-        with original_snapshot(path) as physical:
-            physical.connection.execute("PRAGMA query_only = OFF")
-            physical.connection.execute("CREATE TEMP TABLE records (record_id TEXT)")
-            physical.connection.execute("PRAGMA query_only = ON")
-            yield physical
-
-    monkeypatch.setattr(reader_module, "workspace_snapshot", shadow)
-    cut = read_materialized_scheduler(fixture.database, "tenant", fixture.journal, fixture.anchor)
+    with workspace_snapshot(fixture.database) as physical:
+        physical.connection.execute("PRAGMA query_only = OFF")
+        physical.connection.execute("CREATE TEMP TABLE records (record_id TEXT)")
+        physical.connection.execute("PRAGMA query_only = ON")
+        cut = read_materialized_scheduler(
+            fixture.database, "tenant", fixture.journal, fixture.anchor
+        )
     assert tuple(row.record.record_id for row in cut.materialized) == tuple(
         record.record_id for record in fixture.selected.prepared.request.complete_records
     )
+
+
+async def test_scheduler_reader_joins_and_leaves_the_callers_transaction_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = await materialized(tmp_path)
+    standalone = read_materialized_scheduler(
+        fixture.database, "tenant", fixture.journal, fixture.anchor
+    )
+    observed: list[sqlite3.Connection] = []
+
+    def capture(connection: sqlite3.Connection, tenant: str) -> str:
+        observed.append(connection)
+        return capture_authority_snapshot_commitment(connection, tenant)
+
+    monkeypatch.setattr(reader_module, "capture_authority_snapshot_commitment", capture)
+    with workspace_snapshot(fixture.database) as physical:
+        joined = read_materialized_scheduler(
+            fixture.database, "tenant", fixture.journal, fixture.anchor
+        )
+        assert observed == [physical.connection]
+        assert physical.connection.in_transaction
+        assert joined == standalone
+
+
+async def test_scheduler_reader_rejects_old_workspace_cut_after_reanchored_commit(
+    tmp_path: Path,
+) -> None:
+    fixture = await materialized(tmp_path)
+    with closing(sqlite3.connect(fixture.database)) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        with workspace_snapshot(fixture.database) as physical:
+            previous = physical.connection.execute(
+                "SELECT head FROM main.tenant_heads WHERE tenant_id='tenant'"
+            ).fetchone()
+            writer.execute("UPDATE tenant_heads SET head=head+1 WHERE tenant_id='tenant'")
+            writer.commit()
+            # Compute the new anchor on the writer's current cut, not the ambient old cut.
+            writer.execute("BEGIN")
+            commitment = capture_authority_snapshot_commitment(writer, "tenant")
+            writer.rollback()
+            fixture.anchor.commit("tenant", commitment)
+            assert (
+                physical.connection.execute(
+                    "SELECT head FROM main.tenant_heads WHERE tenant_id='tenant'"
+                ).fetchone()
+                == previous
+            )
+            with pytest.raises(SchedulerReadIntegrityError) as caught:
+                read_materialized_scheduler(
+                    fixture.database, "tenant", fixture.journal, fixture.anchor
+                )
+            assert "independent AMR anchor" in str(caught.value.__cause__)
+        current = read_materialized_scheduler(
+            fixture.database, "tenant", fixture.journal, fixture.anchor
+        )
+        assert previous is not None
+        assert current.tenant_frontier == previous[0] + 1
+
+
+@pytest.mark.parametrize("invalid", ["foreign_database", "ended_transaction", "replaced_database"])
+async def test_scheduler_reader_rejects_invalid_ambient_cut(tmp_path: Path, invalid: str) -> None:
+    fixture = await materialized(tmp_path)
+    database = fixture.database
+    with workspace_snapshot(database) as physical:
+        if invalid == "foreign_database":
+            database = tmp_path / "other.sqlite"
+            database.write_bytes(fixture.database.read_bytes())
+        elif invalid == "ended_transaction":
+            physical.connection.rollback()
+        else:
+            replacement = tmp_path / "replacement.sqlite"
+            replacement.write_bytes(database.read_bytes())
+            replacement.replace(database)
+        with pytest.raises(SchedulerReadIntegrityError) as caught:
+            read_materialized_scheduler(database, "tenant", fixture.journal, fixture.anchor)
+        expected = "ended early" if invalid == "ended_transaction" else "another physical"
+        assert expected in str(caught.value.__cause__)
+
+
+async def test_missing_database_is_not_created_by_scheduler_reader(tmp_path: Path) -> None:
+    fixture = await materialized(tmp_path)
+    missing = tmp_path / "missing.sqlite"
+    with pytest.raises(SchedulerReadIntegrityError) as caught:
+        read_materialized_scheduler(missing, "tenant", fixture.journal, fixture.anchor)
+    assert isinstance(caught.value.__cause__, FileNotFoundError)
+    assert not missing.exists()
 
 
 async def test_registered_actual_producer_history_is_source_admitted(tmp_path: Path) -> None:
@@ -476,6 +555,11 @@ async def test_registered_actual_producer_history_is_source_admitted(tmp_path: P
         row.record_id for row in fixture.selected.prepared.request.complete_records
     )
     assert result.cut.historical_requests[0].preparation == fixture.original
+    with workspace_snapshot(fixture.database):
+        joined = read_admitted_scheduler_startup(
+            fixture.database, "tenant", fixture.journal, fixture.anchor
+        )
+        assert joined == result
 
 
 async def test_unknown_selected_registry_stays_unresolved(tmp_path: Path) -> None:

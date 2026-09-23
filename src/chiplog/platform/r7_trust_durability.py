@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 
 from chiplog.adapters.driven.deployment_trust import (
     IndependentTenantDecisionJournal,
     SQLiteTrustMaterializer,
 )
+from chiplog.platform.authority_gate import AuthorityGate, FileIdentity
+from chiplog.platform.r7_trust import encode_trust_journal
 
 _SCHEMA = "chiplog.deployment_trust.record.v1"
 _TYPES = {
@@ -38,6 +41,16 @@ def _has_string_fields(value: dict[str, object], fields: set[str]) -> bool:
 
 
 @dataclass(frozen=True)
+class FrozenTrustObservation:
+    """Exact local inputs retained with a separately evaluated owner response."""
+
+    snapshot_bytes: bytes
+    journal_head: str | None
+    bundle_path: str
+    sources: tuple[FileIdentity, ...]
+
+
+@dataclass(frozen=True)
 class TrustDurabilityObservation:
     tenant_id: str
     database_instance_id: str
@@ -59,8 +72,61 @@ class BrokerTrustDurability:
         self._journal = journal
         self._materializer = materializer
         self._operator_secret = operator_secret
+        if journal.authority_gate != materializer.authority_gate:
+            raise RuntimeError("trust durability authority gate binding mismatch")
+        self._authority_gate = journal.authority_gate
+
+    @property
+    def authority_gate(self) -> AuthorityGate | None:
+        return self._authority_gate
+
+    def _authority_scope(self) -> AbstractContextManager[None]:
+        return nullcontext() if self._authority_gate is None else self._authority_gate.hold()
+
+    def capture_verified_observation(self) -> FrozenTrustObservation:
+        gate = self._authority_gate
+        if gate is None:
+            raise RuntimeError("verified trust observation requires a bound authority gate")
+        with gate.hold():
+            sources = (*self._journal.physical_sources(), self._materializer.physical_identity())
+            entries = self._journal.entries()
+            self.verify()
+            expected_records: list[bytes] = []
+            for decision_id, _, raw in entries:
+                envelope = json.loads(raw)
+                kind, payload = envelope["kind"], envelope["payload"]
+                expected_records.extend(
+                    _canonical(
+                        {
+                            "decision_id": decision_id,
+                            "operation_kind": kind,
+                            "record_type_id": record_type,
+                            "schema_id": _SCHEMA,
+                            **payload,
+                        }
+                    )
+                    for record_type in ("chiplog.deployment_trust.tenant_decision", *_TYPES[kind])
+                )
+            if self._materializer.records() != tuple(expected_records):
+                raise RuntimeError("trust materialization differs from authenticated journal")
+            snapshot = encode_trust_journal(self.owner_snapshot_entries())
+            if entries != self._journal.entries() or sources != (
+                *self._journal.physical_sources(),
+                self._materializer.physical_identity(),
+            ):
+                raise RuntimeError("trust sources changed during observation")
+            return FrozenTrustObservation(
+                snapshot_bytes=snapshot,
+                journal_head=entries[-1][0] if entries else None,
+                bundle_path=str(gate.database),
+                sources=sources,
+            )
 
     def _append(self, kind: str, payload: dict[str, object]) -> str:
+        with self._authority_scope():
+            return self._locked_append(kind, payload)
+
+    def _locked_append(self, kind: str, payload: dict[str, object]) -> str:
         entries = self._journal.entries()
         journal_predecessor = entries[-1][0] if entries else None
         logical_predecessor = self._logical_head(entries)
@@ -107,6 +173,10 @@ class BrokerTrustDurability:
         return logical
 
     def owner_snapshot_entries(self) -> tuple[tuple[str, str | None, bytes], ...]:
+        with self._authority_scope():
+            return self._locked_owner_snapshot_entries()
+
+    def _locked_owner_snapshot_entries(self) -> tuple[tuple[str, str | None, bytes], ...]:
         """Expose authenticated decisions under predecessor-compatible logical identities."""
         entries = self._journal.entries()
         self._verify_operator_authentication(entries)
@@ -150,6 +220,10 @@ class BrokerTrustDurability:
                 raise RuntimeError("trust decision authentication failed")
 
     def apply_authorized(self, authorized_bytes: bytes) -> tuple[str, ...]:
+        with self._authority_scope():
+            return self._locked_apply_authorized(authorized_bytes)
+
+    def _locked_apply_authorized(self, authorized_bytes: bytes) -> tuple[str, ...]:
         """Persist owner bytes; only the secret signature slot is broker-filled."""
         value = json.loads(authorized_bytes)
         if _canonical(value) != authorized_bytes:
@@ -265,6 +339,10 @@ class BrokerTrustDurability:
         return tuple(committed)
 
     def verify(self) -> TrustDurabilityObservation | None:
+        with self._authority_scope():
+            return self._locked_verify()
+
+    def _locked_verify(self) -> TrustDurabilityObservation | None:
         entries = self._journal.entries()
         if not entries:
             return None

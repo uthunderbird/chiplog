@@ -8,7 +8,9 @@ import hmac
 import json
 import os
 import sqlite3
-from contextlib import closing
+import stat
+import tempfile
+from contextlib import ExitStack, closing, nullcontext
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +27,7 @@ from chiplog.architecture.r7_storage_surface import (
     PLANNING_PUBLICATION_READ_EDGES,
     R13_PLANNING_PUBLICATION_READ_EDGES,
 )
+from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.read_ledger import BrokerReadLedger, BrokerReadState, ReadOperation
 from chiplog.verification.r7_read_surface import verify_surface_registry_equality
 
@@ -41,26 +44,107 @@ AMR_FINGERPRINT = hashlib.sha256(
 ).hexdigest()
 
 
+class AuthorityCommitmentIndeterminateError(RuntimeError):
+    """The anchor was replaced but durability or identity is unconfirmed."""
+
+
 class AuthorityCommitmentJournal:
     """Independent authenticated anchor for the exact current authority materialization."""
 
-    def __init__(self, database: Path, secret: bytes) -> None:
+    def __init__(
+        self, database: Path, secret: bytes, *, authority_gate: AuthorityGate | None = None
+    ) -> None:
+        database = database.resolve(strict=False)
+        if authority_gate is not None and database != authority_gate.database:
+            raise ValueError("authority commitment journal database differs from authority gate")
         self._path = database.with_suffix(database.suffix + ".r7-authority-commitment.json")
         self._secret = secret
+        self._authority_gate = authority_gate
+
+    @property
+    def authority_gate(self) -> AuthorityGate | None:
+        return self._authority_gate
+
+    def _check_descriptor(self, descriptor: int) -> os.stat_result:
+        actual = os.fstat(descriptor)
+        named = self._path.lstat()
+        if (
+            self._path.resolve(strict=True) != self._path
+            or not stat.S_ISREG(actual.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or actual.st_nlink != 1
+            or named.st_nlink != 1
+            or (actual.st_dev, actual.st_ino) != (named.st_dev, named.st_ino)
+        ):
+            raise RuntimeError("authority commitment journal replaced or aliased")
+        return actual
+
+    @staticmethod
+    def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate journal key")
+            result[key] = value
+        return result
 
     def load(self, tenant_id: str) -> str | None:
-        if not self._path.exists():
+        with self._authority_gate.hold() if self._authority_gate is not None else nullcontext():
+            return self._load(tenant_id)
+
+    def _load(self, tenant_id: str) -> str | None:
+        try:
+            metadata = self._path.lstat()
+        except FileNotFoundError:
+            if self._path.resolve(strict=False) != self._path:
+                raise RuntimeError("authority commitment journal path redirected") from None
             return None
-        envelope = json.loads(self._path.read_bytes())
-        payload = json.dumps(envelope["payload"], sort_keys=True, separators=(",", ":")).encode()
-        expected = hmac.new(self._secret, payload, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(str(envelope.get("mac")), expected):
-            raise RuntimeError("authority commitment journal authentication failed")
-        if envelope["payload"]["tenant_id"] != tenant_id:
-            raise RuntimeError("authority commitment journal tenant mismatch")
-        return str(envelope["payload"]["commitment"])
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise RuntimeError("authority commitment journal must be regular and unaliased")
+        descriptor = os.open(self._path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = self._check_descriptor(stream.fileno())
+            if (before.st_dev, before.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise RuntimeError("authority commitment journal changed before read")
+            raw = stream.read()
+            after = self._check_descriptor(stream.fileno())
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                raise RuntimeError("authority commitment journal changed during read")
+        try:
+            envelope = json.loads(raw, object_pairs_hook=self._unique_object)
+            if not isinstance(envelope, dict) or set(envelope) != {"payload", "mac"}:
+                raise ValueError("invalid envelope")
+            value = envelope["payload"]
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"tenant_id", "commitment"}
+                or not isinstance(value["tenant_id"], str)
+                or not isinstance(value["commitment"], str)
+                or not isinstance(envelope["mac"], str)
+            ):
+                raise ValueError("invalid payload")
+            payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+            expected = hmac.new(self._secret, payload, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(envelope["mac"], expected):
+                raise ValueError("authentication failed")
+            if value["tenant_id"] != tenant_id:
+                raise ValueError("tenant mismatch")
+            return str(value["commitment"])
+        except (ValueError, TypeError, UnicodeError) as error:
+            raise RuntimeError("authority commitment journal invalid or unauthenticated") from error
 
     def commit(self, tenant_id: str, commitment: str) -> None:
+        with self._authority_gate.hold() if self._authority_gate is not None else nullcontext():
+            self._commit(tenant_id, commitment)
+
+    def _commit(self, tenant_id: str, commitment: str) -> None:
+        if not isinstance(tenant_id, str) or not isinstance(commitment, str):
+            raise TypeError("authority commitment journal requires string payload fields")
+        self._load(tenant_id)
         payload_value = {"commitment": commitment, "tenant_id": tenant_id}
         payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":")).encode()
         envelope = json.dumps(
@@ -71,9 +155,41 @@ class AuthorityCommitmentJournal:
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
-        temporary = self._path.with_suffix(self._path.suffix + ".tmp")
-        temporary.write_bytes(envelope)
-        os.replace(temporary, self._path)
+        descriptor, name = tempfile.mkstemp(
+            prefix=self._path.name + ".", suffix=".tmp", dir=self._path.parent
+        )
+        temporary = Path(name)
+        replaced = False
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(envelope)
+                stream.flush()
+                os.fsync(stream.fileno())
+                actual, named = os.fstat(stream.fileno()), temporary.lstat()
+                if (
+                    not stat.S_ISREG(named.st_mode)
+                    or actual.st_nlink != 1
+                    or (actual.st_dev, actual.st_ino) != (named.st_dev, named.st_ino)
+                ):
+                    raise RuntimeError("authority commitment journal temporary replaced or aliased")
+                self._load(tenant_id)
+                os.replace(temporary, self._path)
+                replaced = True
+                self._check_descriptor(stream.fileno())
+                with ExitStack() as resources:
+                    directory = os.open(self._path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                    resources.callback(os.close, directory)
+                    os.fsync(directory)
+        except Exception as error:
+            if replaced:
+                raise AuthorityCommitmentIndeterminateError(
+                    "authority commitment journal replacement occurred; durability or identity "
+                    "indeterminate; reconcile the visible anchor"
+                ) from error
+            raise
+        finally:
+            if not replaced:
+                temporary.unlink(missing_ok=True)
 
 
 class _StrictModel(BaseModel):

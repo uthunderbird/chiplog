@@ -43,7 +43,7 @@ from chiplog.platform.authority_reads import (
 )
 from chiplog.platform.owner_decision_journal import IndependentOwnerDecisionJournal
 from chiplog.platform.owner_publications import SelectedOwnerDecision
-from chiplog.platform.workspace_snapshot import workspace_snapshot
+from chiplog.platform.workspace_snapshot import read_connection
 
 Preparation = (
     ConfigurationPreparationRequest
@@ -204,14 +204,16 @@ def read_materialized_scheduler(
     """Extract exact history; source admission and action release remain unavailable."""
     identity = "complete-scheduler-cut"
     try:
+        physical_path = database.resolve(strict=True)
+        stat = physical_path.stat()
+        physical_identity = (stat.st_dev, stat.st_ino)
         before = journal.snapshot()
         if before.tenant_id != tenant_id or {
             decision.prepared.request.identity.command_id for decision in before.decisions
         } != set(before.materialized_command_ids):
             raise ValueError("foreign or pending independent selected history")
         anchored = commitments.load(tenant_id)
-        with workspace_snapshot(database) as physical:
-            connection = physical.connection
+        with read_connection(database) as connection:
             commitment = capture_authority_snapshot_commitment(connection, tenant_id)
             if anchored is None or commitment != anchored:
                 raise ValueError("physical authority differs from independent AMR anchor")
@@ -234,7 +236,7 @@ def read_materialized_scheduler(
             physical_rows: list[MaterializedSchedulerRow] = []
             batches: list[SelectedSchedulerBatch] = []
             historical: list[HistoricalSchedulerRequest] = []
-            physical_id = f"{physical.path}:{physical.identity[0]}:{physical.identity[1]}"
+            physical_id = f"{physical_path}:{physical_identity[0]}:{physical_identity[1]}"
             for decision in before.decisions:
                 request = decision.prepared.request
                 identity = request.identity.command_id
@@ -341,8 +343,8 @@ def read_materialized_scheduler(
                 raise ValueError("independent authority changed during cut acquisition")
             stat = database.stat()
             if (
-                database.resolve(strict=True) != physical.path
-                or (stat.st_dev, stat.st_ino) != physical.identity
+                database.resolve(strict=True) != physical_path
+                or (stat.st_dev, stat.st_ino) != physical_identity
             ):
                 raise ValueError("physical database changed during cut acquisition")
             return SchedulerSourceAdmissionUnresolved(
@@ -350,9 +352,9 @@ def read_materialized_scheduler(
                 frontier,
                 commitment,
                 before.head,
-                str(physical.path),
-                physical.identity[0],
-                physical.identity[1],
+                str(physical_path),
+                physical_identity[0],
+                physical_identity[1],
                 before.decisions,
                 tuple(historical),
                 tuple(batches),
