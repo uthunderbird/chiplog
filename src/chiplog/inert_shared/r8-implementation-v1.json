@@ -263,6 +263,7 @@
   "platform/ingress_runtime_snapshot.py": "bded82516711a3969073ce81468f236b08d5421007fe356172fedb0f11793248",
   "platform/ingress_source_contracts.py": "8824fa205a16bbba380f8ac6340918bc7d901e97c93ba01163204b843f1c010a",
   "platform/ingress_transition_contracts.py": "106167afa6aae77a8b0f3e4a2ff98aa2ec4ec076bd7de7f7904e699b43071cb1",
+  "platform/operation_registry_contracts.py": "023fd6011d0f4a56f5a9b906559f3646eaa34717c28bd5afe6e5c54f1de3c0b3",
   "platform/owner_decision_journal.py": "4bfa472ae56c44fbf0c85cab4884ba62fe5c5bcd0354deceadab438769554dd3",
   "platform/owner_publications.py": "1c7638660db80c0a9c6f480ce1b6a35bb591a9a8d7fc8e4476583f0191027432",
   "platform/publication_inspection.py": "123185c5cb56c85253657c1e9878fde5244ac1e61dea3eb036e68b46fef6ffe4",

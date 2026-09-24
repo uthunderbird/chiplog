@@ -517,6 +517,28 @@ Administrative source issuance/interpretation, request/result publication joins,
 registered operation mounting, current authority, CAS and durable lifecycle
 execution remain OPEN; these wire consumers do not prove those mechanisms.
 
+## Operation registry declaration grammar
+
+`platform.operation_registry_contracts` declares versioned operation keys, wire
+and record references, explicit C_OPEN/UNMOUNTED inventory entries, preparation
+and selected-decoding ports. Descriptor lookup and mount status are separate.
+Prepared structural expansions bind ordered command roles/ordinals to an equal
+sequence of owner-result fingerprint slots and declared record schemas.
+
+Record patterns support singleton, optional and repeated roles plus interleaved
+repeated groups. A work group keeps SUBJECT(i), EPOCH(i), SELECTOR(i), LEASE(i)
+together; flattening each record family into its own repeated block is rejected.
+The same group descriptor accepts zero, one and multiple groups. Expansion
+provenance and the required count from actual obligations remain owner/broker
+verification duties, not authority supplied by the structural expansion itself.
+
+Evidence: `uv run pytest -q tests/platform/test_operation_registry_contracts.py`
+passed 13 tests; source and consumer pass Ruff and mypy. These consumers use
+synthetic descriptor symbols and establish grammar/structural consistency only.
+They are not registrations of the named production operations. Concrete family
+envelopes, operation/result matrices, record decoding/applicability declarations,
+adapters, mount discovery and current writer validation remain OPEN.
+
 ## Publication discipline
 
 New contract files, their consumer tests, this inventory and exact source catalog
