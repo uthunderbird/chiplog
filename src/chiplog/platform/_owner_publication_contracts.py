@@ -13,6 +13,8 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .recovery_diagnostic_refs import BrokerDiagnosticSourceRefV1
+
 Identity = Annotated[str, Field(min_length=1)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 UInt64 = Annotated[int, Field(ge=0, le=2**64 - 1)]
@@ -40,6 +42,7 @@ BrokerOperation = Literal[
     "recovery.work_takeover",
     "recovery.work_rollover",
     "recovery.work_close",
+    "recovery.publish_terminal_fault",
     "recovery.replace_model_attempt",
     "scheduler.genesis",
     "scheduler.amend_schedule",
@@ -135,6 +138,38 @@ class InvocationProofRef(BrokerDTO):
     operation_subject: Identity
 
 
+class BrokerRecoveryDiagnosticAuthenticationV1(BrokerDTO):
+    """Broker issuance for the one terminal recovery-fault publication shape."""
+
+    kind: Literal["BROKER_RECOVERY_DIAGNOSTIC"] = "BROKER_RECOVERY_DIAGNOSTIC"
+    operation: Literal["recovery.publish_terminal_fault"] = "recovery.publish_terminal_fault"
+    invocation: InvocationProofRef
+    observer_registry: BrokerDiagnosticSourceRefV1
+    diagnostic_observation: BrokerDiagnosticSourceRefV1
+    issuance: BrokerDiagnosticSourceRefV1
+    original_run: ExactRecordHead
+    diagnostic_cut_fingerprint: Digest
+    source_capture_inventory_fingerprint: Digest
+    observation_subject_fingerprint: Digest
+    final_request_fingerprint: Digest
+
+    @model_validator(mode="after")
+    def exact_broker_source_roles(self) -> BrokerRecoveryDiagnosticAuthenticationV1:
+        if (
+            self.observer_registry.source_kind != "FAULT_OBSERVER_REGISTRY"
+            or self.diagnostic_observation.source_kind != "FAULT_OBSERVATION"
+            or self.issuance.source_kind != "FAULT_ISSUANCE"
+        ):
+            raise ValueError("diagnostic authentication source kinds differ from fixed roles")
+        if self.original_run.owner != "agent_loop" or self.original_run.record_kind != "Run":
+            raise ValueError("diagnostic authentication original run differs from agent_loop Run")
+        if self.invocation.operation_subject != self.observation_subject_fingerprint:
+            raise ValueError(
+                "diagnostic authentication invocation subject differs from observation"
+            )
+        return self
+
+
 class WorkerAuthentication(BrokerDTO):
     kind: Literal["WORKER"] = "WORKER"
     invocation: InvocationProofRef
@@ -178,7 +213,8 @@ PublicationAuthentication = Annotated[
     WorkerAuthentication
     | IndependentEvidenceAuthentication
     | BrokerIngressAuthentication
-    | BrokerTransportObservationAuthentication,
+    | BrokerTransportObservationAuthentication
+    | BrokerRecoveryDiagnosticAuthenticationV1,
     Field(discriminator="kind"),
 ]
 
@@ -215,6 +251,31 @@ class SingleOwnerBatch(BrokerDTO):
     command: OwnerCommandBytes
     complete_records: tuple[OwnerRecordBytes, ...] = Field(min_length=1)
     complete_batch_fingerprint: Digest
+
+    @model_validator(mode="after")
+    def diagnostic_authentication_has_only_its_fixed_publication_shape(self) -> SingleOwnerBatch:
+        if not isinstance(self.authentication, BrokerRecoveryDiagnosticAuthenticationV1):
+            return self
+        if self.operation != "recovery.publish_terminal_fault" or len(self.complete_records) != 1:
+            raise ValueError("diagnostic authentication requires its singleton fault publication")
+        if (
+            self.command.owner != "agent_loop"
+            or self.command.schema_id != "chiplog.execution.prepare-terminal-recovery-fault.v1"
+        ):
+            raise ValueError("diagnostic authentication requires the fixed terminal fault command")
+        record = self.complete_records[0]
+        if (
+            record.owner != "agent_loop"
+            or record.record_kind != "TERMINAL_RECOVERY_FAULT"
+            or record.schema_id != "chiplog.execution.terminal-recovery-fault.v1"
+        ):
+            raise ValueError("diagnostic authentication requires the fixed terminal fault record")
+        if (
+            self.identity.command_fingerprint != self.command.fingerprint
+            or self.command.fingerprint != self.authentication.final_request_fingerprint
+        ):
+            raise ValueError("diagnostic authentication final request fingerprint differs")
+        return self
 
 
 class PlanEffectBatch(BrokerDTO):

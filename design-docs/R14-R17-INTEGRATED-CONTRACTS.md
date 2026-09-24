@@ -571,6 +571,38 @@ This is pure preparation/representation evidence. Actual owner preparation,
 registered publication, source authentication, writer CAS and replay remain T/I;
 the overall contract graph remains OPEN.
 
+## Native source and diagnostic authority checkpoint
+
+`execution_run_record_contracts` decodes physical v2/v3 Run members in all seven
+native states, checks canonical bytes, full hash and native head, and joins an
+owner result to the retained member. It does not validate state transitions.
+`recovery_fault_rule_contracts` checks exact selected registry bytes and decision
+references, classifier/version and precise rule head/code/relation membership;
+it does not execute the rule predicate or authenticate its selection.
+
+`scheduler_seed_producer_contracts` declares the fresh automatic seed exchange
+and a closed eleven-row source decoder. Its source projection binds native
+schedule, missed-policy and bound identities to mandate scope, clock, budget and
+pre-root cut. Missed-policy uses its own native policy subject. Selected replay
+is outside fresh preparation. Ordinary zero/one/many cuts and full/streamed
+overflow primitive helpers have consumers; the prepared-result roundtrip covers
+the ordinary branch. Source authentication, actual seed preparation and replay
+remain required integration work.
+
+Broker diagnostic source references remain outside the physical owner domain.
+The new diagnostic authentication branch is structurally restricted to the fixed
+terminal-fault command and one loop-owned fault record. It binds the invocation
+subject and declared final-request fingerprints. These guards do not verify the
+request byte preimage, retained issuance, source authenticity or current writer
+cut. The diagnostic broker and fault preparation contracts remain OPEN; no fault
+operation is registered or mounted by this checkpoint.
+
+Evidence: the four selected new test modules for execution Run records, fault
+rules, scheduler seed and diagnostic authentication pass 71 tests. Ruff, format
+and mypy cover their six source files, four consumers and scheduler support.
+The checkpoint command carries the exact pytest selectors; no full regression
+or implementation red-team was run. Overall Phase C remains OPEN.
+
 ## Publication discipline
 
 New contract files, their consumer tests, this inventory and exact source catalog

@@ -21,7 +21,11 @@ from .runtime_surface_contracts import ExecutableSymbol, RuntimeSurfaceCut, Work
 
 CardinalityV1 = Literal["ONE", "CONDITIONAL_ONE", "ORDERED_MANY"]
 AuthenticationKindV1 = Literal[
-    "WORKER", "INDEPENDENT_EVIDENCE", "BROKER_INGRESS", "BROKER_TRANSPORT_OBSERVATION"
+    "WORKER",
+    "INDEPENDENT_EVIDENCE",
+    "BROKER_INGRESS",
+    "BROKER_TRANSPORT_OBSERVATION",
+    "BROKER_RECOVERY_DIAGNOSTIC",
 ]
 ResultDispositionV1 = Literal["REJECT", "CLASSIFY", "PREPARED", "SELECTED"]
 InventoryStateV1 = Literal["C_OPEN", "UNMOUNTED"]
