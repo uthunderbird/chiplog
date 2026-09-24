@@ -20,7 +20,7 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 | Joint histories / required boundary | Existing request/result surface | Remaining Phase-C work |
 |---|---|---|
 | J1: all ingress classes, custody/release | `_ingress_contracts` retained; `ingress_transition_contracts` preparation/publication ports now separate prepared, selected and uncertain results | Bind each source-specific authenticator/transport to registered record interpretation and earliest handoff; interface presence does not prove runtime loss-slot or release behavior |
-| J1: admission/page/quarantine | `ingress_runtime_snapshot` plus closed ingress transition requests/results retain queue, drain, parser and page/cursor state | Complete consumer coverage for nonempty lineage/page/drain joins and registered durable record interpretation; FIFO, CAS, restart and handoff runtime remain T/I |
+| J1: admission/page/quarantine | `ingress_runtime_snapshot`, closed transition requests/results and `ingress_record_contracts` retain queue, drain, parser and page/cursor state; nonempty lineage/page/drain consumers exist | Central registration and source authentication remain C/T/I joins; FIFO, CAS, restart and handoff runtime remain T/I |
 | J1→J3: selected inbox → Run | `agent_loop.execution_initialization_contracts` admitted and scheduled requests retain original source preimages and distinct creation cuts | Complete scheduled-materialization consumer and conversation-owner companion join; runtime must consume selected input rather than rebuilding prompt ingress |
 | J2: scheduler decisions and execution | `agent_loop.scheduler_contracts.SchedulerPort`, DecideIntervalCommand, ResolveIntervalCommand, LeaseTransitionCommand, PhysicalRootRolloverCommand → SchedulerResult | Public automatic service-authority contract beyond one-delivery TickPolicy; executable Run materialization and lease joins must not fall back to legacy RunRecord |
 | J3: seal/accept/cancel | ExecutionCapturedFanOutRequest/Result; composition CallAcceptancePort; ExecutionCallCancellationPort → ExecutionCancelledCallReceipt | Import cancellation boundary; retain two-record execution cancellation versus three-record legacy cancellation. Runtime authentication and both CAS orders remain Phase T/I work |
@@ -366,6 +366,32 @@ root reran this focused set. Targeted formatting, Ruff and mypy passed. This
 establishes record representation and local graph consistency, not authenticated
 selection, clocks, live lease CAS, original obligation closure or atomic work
 creation. Concrete central routing and joint runtime histories remain OPEN.
+
+## Concrete ingress records and retained sources
+
+`platform.ingress_record_contracts` defines a closed table of physical record
+schemas and decodes supplied member bytes with exact kind, schema, identity,
+canonicalization and fingerprint checks. Distinct bound/rebase and handoff/cursor
+authorization records retain their own schemas. Consumers build nonempty page,
+parser/quarantine, queue/rebase and drain examples rather than only empty wrappers.
+
+`platform.ingress_source_contracts` fixes source class/reader/schema combinations
+and retains the existing hermetic CLI decoder. The latter now checks the original
+metadata's tenant/database against the expected binding; a receipt slot is not
+equated with a deployed source identity. Handoff observation records distinguish
+local completion/failure/uncertainty, authenticated provider receipt with retained
+raw custody, and reconciliation release. Unsupported command/result combinations
+are rejected before publication; decoding does not authenticate the provider.
+
+Evidence: `uv run pytest -q tests/platform/test_ingress_record_contracts.py
+tests/platform/test_ingress_lineage_contracts.py
+tests/platform/test_ingress_handoff_contracts.py
+tests/platform/test_ingress_transition_contracts.py` passed 56 tests. Targeted
+Ruff and mypy on the two new source modules and three new consumers passed.
+Root inspected the source and reran the focused tests. Fixture-level graph joins
+are representation evidence; owner runtime enumeration, proof verification,
+journal selection, restart behavior and transport handoff remain unimplemented
+by these additions. Central operation/source mounting remains OPEN.
 
 ## Publication discipline
 
