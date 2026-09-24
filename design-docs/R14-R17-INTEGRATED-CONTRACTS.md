@@ -624,6 +624,34 @@ Selected-source wrappers, combined terminal attempt assembly, registered
 runtime readers and atomic publication remain inside the full R14–R17 goal.
 Phase C remains OPEN.
 
+## Successor source and recovery wire checkpoint
+
+`recovery_wire_contracts` provides five fixed external request/result families,
+retains exact canonical bytes and checks the nineteen request/success pairs.
+Classified execution results apply only to resume and successor requests.
+Work rejection retains its existing shape; this codec does not invent a missing
+request fingerprint for that historical variant.
+
+`successor_record_contracts` decodes retained native scheduler genesis and
+rollover sources and joins the exact baseline, pair, Runs, initialization,
+lineage advance and epoch observation. The original suspension baseline and
+pair keep their historical cut; the successor request uses the later current
+cut naming the SUSPENDED Run. Repeated succession retains the prior selected
+observation and a complete native Run ancestry exchange. The ancestry codec
+checks endpoints, adjacent predecessors, identity, schema and selected sequence
+ordering. Its reader protocol still requires a registered implementation;
+caller-supplied selection references are not proof of journal membership.
+Rollover source checks bind retained native bodies and cross-references, but
+cannot rederive a producer decision identity whose preimage is not retained.
+
+Evidence: the three new consumers `test_recovery_wire_contracts.py`,
+`test_successor_ancestry_contracts.py` and `test_successor_record_contracts.py`
+under `tests/capabilities/agent_loop/` pass 84 tests with `uv run pytest -q`.
+Ruff, format and mypy cover their three sources, three consumers and shared
+`tests/support/successor_records.py`. Fixtures cover native v2/v3 and repeated
+genesis/rollover succession. Runtime preparation, authenticated source readers,
+publication-time checks and replay remain joint T/I work; Phase C remains OPEN.
+
 ## Publication discipline
 
 New contract files, their consumer tests, this inventory and exact source catalog
