@@ -24,8 +24,8 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 | J1→J3: selected inbox → Run | `agent_loop.execution_initialization_contracts` admitted and scheduled requests retain original source preimages and distinct creation cuts | Complete scheduled-materialization consumer and conversation-owner companion join; runtime must consume selected input rather than rebuilding prompt ingress |
 | J2: scheduler decisions and execution | `agent_loop.scheduler_contracts.SchedulerPort`, DecideIntervalCommand, ResolveIntervalCommand, LeaseTransitionCommand, PhysicalRootRolloverCommand → SchedulerResult | Public automatic service-authority contract beyond one-delivery TickPolicy; executable Run materialization and lease joins must not fall back to legacy RunRecord |
 | J3: seal/accept/cancel | ExecutionCapturedFanOutRequest/Result; composition CallAcceptancePort; ExecutionCallCancellationPort → ExecutionCancelledCallReceipt | Import cancellation boundary; retain two-record execution cancellation versus three-record legacy cancellation. Runtime authentication and both CAS orders remain Phase T/I work |
-| J4: effect dispatch/retry/delivery/compensation | effects DispatchMandateV2, ExternalActionIntentV2, AuthorizeDispatchV2, CommitFirstSendV2; DispatchOutcomeCommandV2/RecordV2; legacy SafeRetransmission and purpose unions | A versioned full lifecycle contract must join safe retransmission/all-child proofs, separately scoped compensation and delivery to immutable v2 mandates without reinterpreting legacy intents |
-| J4→J5: original-stream reduction | `agent_loop.original_recovery_contracts` original resolver and loop-owned semantic reduction preparation port; legacy EvidenceReduction/OriginalObligationBinding retained | Effects-owned semantic reduction producer and registered source decoding/operation routes remain OPEN; loop consumes selected foreign records and cannot write their streams; resolver/continuation runtime joins remain T/I |
+| J4: effect dispatch/retry/delivery/compensation | `effects.lifecycle_transition_contracts` all-child cut, separate safe-retry proof/request and atomic SEND decision/child/parent proposal; immutable v2 mandate retained | Fresh versioned origins for compensation, delivery and AUTHORIZE_DUPLICATE_RISK; full lifecycle registered source/record interpretation and operation routing remain C work; last-boundary proof and dispatch runtime remain T/I |
+| J4→J5: original-stream reduction | `agent_loop.original_recovery_contracts` loop-owned resolver/reduction plus `effects.lifecycle_transition_contracts` effects-owned reduction producer | Registered source decoding, selected foreign reduction interpretation and operation routes remain OPEN; each owner writes only its own streams; resolver/continuation runtime joins remain T/I |
 | J5: frontier/suspend/resume/successor | `execution_recovery_observations` complete cut, weak/strong joins and noncircular suspension v2; `execution_recovery_contracts` executable preparation port includes suspend/resume/successor/next-Turn/abort/cancel | Consumer coverage now covers current sources, mandatory suspension pair and distinct commands; complete successor participant interpretation and terminal/work record routing remain C work; runtime classification/CAS remain T/I |
 | J5: read-only branch | `readonly_execution_contracts` preparation port, distinct unfinished attempt/outcome/pending/reduction records and registered proof preimages; existing frontier types retained | Versioned executable response/artifact registration of the new history-tool wire and end-to-end consumer; positive no-mutation/runtime proofs and full counter/pending CAS remain T/I |
 | J6: writer applicability/discovery | `platform.runtime_surface_contracts` registry and independent discovery DTOs; six worker fence variants retained | Concrete registered operation bindings and record interpretation; independent discovery and both-direction equality remain T/I, not established by source hashes |
@@ -206,7 +206,7 @@ anchors; a separate producer record also represents the pre-closure state.
 
 All mutation families apply. Owner identity, complete evidence enumeration, source
 authentication and same-writer CAS are runtime obligations. Effects-owned semantic
-reduction producer contracts remain OPEN; the loop port cannot substitute for them.
+reduction uses its separate lifecycle producer below; the loop port cannot substitute for it.
 
 Consumer command: `uv run pytest -q
 tests/capabilities/agent_loop/test_original_recovery_contracts.py` — 23 passed.
@@ -215,6 +215,29 @@ members and foreign stream ownership, retains binary selected source preimages,
 and covers unresolved anchors plus every typed reduction-hold reason. Explicit
 mypy on the new source and consumer passed. No runtime closure or Phase-C
 completion is claimed.
+
+## Effects all-child lifecycle boundary (J4)
+
+| Claim | Owner / exact data | Independent observable | Forbidden substitute | Boundary fixture / evidence |
+|---|---|---|---|---|
+| Safe retry retains original intent | Effects immutable v2 intent/authorization, exact parent revision, full ordered children and new ordinal | Consumer retains original bytes and all children; result pairs new child with parent successor | New intent/key/payload/recipient or refreshed mandate | missing/extra/reordered/duplicate child, altered exact effect, stale revision; J4 |
+| Coverage includes next send | Registered provider-idempotency or every-prior-child permanent-incapability proof, new transmission identity, exact effect/key/recipient and coverage interval | Separate closed proof variants with retained selected preimages; fresh authority/clock evaluated independently | Absence-at-read, timeout, bool safe, old authorization alone | uncovered child/new send, expiry/unverifiable clock, substituted provider fence; J4 |
+| Ambiguity is not reset | Parent successor remains SEND_COMMITTED, SENT or OUTCOME_UNKNOWN and retains all prior children | One prepared parent/child result; final writer selects both | Retry from PARTIAL/terminal, state reset or child-only append | both race orders, ordinal replay/conflict and crash boundaries; J4 |
+| Effects owns its reduction | Complete evidence/child cut, immutable original closure when present and current reduction predecessor | Effects-only producer port, typed HOLD/consumable result, no SEND output | Loop writer for effects, latest timestamp, old consumable head | mixed/rival/incomplete children, changed reducer, old witness versus refinement; J4→J5 |
+
+All standard mutation families apply; runtime proof issuance, source completeness,
+atomicity and exact intent equality remain T/I. Compensation, delivery and
+AUTHORIZE_DUPLICATE_RISK need fresh versioned origin/authority contracts and remain
+OPEN; none is encoded as safe retransmission or silently added to legacy v2 origin.
+
+Consumer command: `uv run pytest -q
+tests/capabilities/effects/test_lifecycle_transition_contracts.py` — 21 passed.
+Explicit mypy on the new producer boundary and consumer passed. The result uses
+the acyclic SEND decision → child → parent → batch graph: the child's send_commit
+references the primitive decision, and that decision contains no output child or
+parent fingerprint. The writer must select all members together. Consumers retain
+original intent bytes and verify closed proof/state variants; they do not prove
+coverage validity, actual child completeness or current authority.
 
 ## Publication discipline
 

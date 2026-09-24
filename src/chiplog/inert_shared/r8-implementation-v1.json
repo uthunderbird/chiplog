@@ -113,6 +113,7 @@
   "capabilities/effects/dispatch_v2_contracts.py": "5b5df169fac8ababf5fce0c3797002aaa0e980cb94e5075d4db11dec31a9bd68",
   "capabilities/effects/domain.py": "d0ba1cff8af829eb216ab49861076668a272fe7641298b1cae8e9bd61829b2e9",
   "capabilities/effects/fences.py": "aaf54d5541067ffc24f89a95797aa91607d5da923d3b908589a8788071890fbc",
+  "capabilities/effects/lifecycle_transition_contracts.py": "efa9e041f6e4e6d77167d457e733bbb74c3c640241c212fb83243e354b4e2ba5",
   "capabilities/evidence_journal/__init__.py": "073f9d330efe8bf9fefd645cc8f4ea1d02d461db0329c8003fbc0ae37cf025aa",
   "capabilities/evidence_journal/boundary.py": "8ce790342bac5a14707b8f902960bc6b5c6ab0a833c10acbd6fb168715272712",
   "capabilities/evidence_journal/commands.py": "613b71d2686f294fe8ec51e5f5aa82b8a6baaea99306136d0aa2c9b22f2ffb6c",
