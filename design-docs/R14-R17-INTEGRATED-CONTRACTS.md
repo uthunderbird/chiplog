@@ -673,6 +673,18 @@ CLI custody/inbox to native Run creation in one writer-backed runtime, followed
 by terminal completion and reopen/replay. The remaining R14–R17 requirements
 remain in scope; neither this checkpoint nor the first path closes the milestone.
 
+The H0 implementation now mounts one common R17/R14 runtime and one writer:
+selected retained CLI socket input is interpreted by the isolated inbox
+initialization owner, then published as a native v2 `CREATED` Run. Its selected
+decision, physical Run, signed dispatch recipient and original inbox are read
+again for exact `drive_input`/`lookup_execution` replay after reopen. The focused
+socket, owner and manifest suite passes 29 tests. This proves initialization and
+replay only; the Run has not yet been completed or delivered by this path.
+
+The adjacent read-only source, obligation and assembly contracts and scheduler
+service-acceptance contract remain preparatory interfaces. Their 53 focused
+consumer tests pass, but none of these contracts is a mounted runtime writer.
+
 ## Terminal recovery fault representation checkpoint
 
 The fault owner exchange now retains the exact native SUSPENDED Run, diagnostic

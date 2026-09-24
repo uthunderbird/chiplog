@@ -681,6 +681,42 @@ R14_R16_CALL_EVALUATION_MANIFEST = replace(
     R14_R16_CALL_PRODUCTION_MANIFEST, environment="evaluation"
 )
 
+# H0 keeps the already assembled R17 custody and R16 dispatch graph, adding only
+# the owner-local preparation route for a selected CLI inbox.  The broker still
+# owns admission and publication; this route produces inert native Run bytes.
+_INBOX_INITIALIZATION_ROUTE = RoutedCallDecl(
+    "agent_loop.initialize_inbox.v1",
+    "broker",
+    "agent_loop",
+    "chiplog.execution.inbox-initialization.v1",
+    "chiplog.execution.inbox-initialization-result.v1",
+)
+_H0_EXECUTION_OPERATIONS = tuple(
+    sorted((*_EXECUTION_LIFECYCLE_OPERATIONS, _INBOX_INITIALIZATION_ROUTE.operation_id))
+)
+R14_R17_H0_PRODUCTION_MANIFEST = replace(
+    R14_R16_CALL_PRODUCTION_MANIFEST,
+    manifest_version=14,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_H0_EXECUTION_OPERATIONS,
+            public_operations=_H0_EXECUTION_OPERATIONS,
+            target_ids=("chiplog.capabilities.agent_loop._execution_h0_process:dispatch",),
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_R16_CALL_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (*R14_R16_CALL_PRODUCTION_MANIFEST.routes, _INBOX_INITIALIZATION_ROUTE),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_R17_H0_EVALUATION_MANIFEST = replace(R14_R17_H0_PRODUCTION_MANIFEST, environment="evaluation")
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -692,7 +728,7 @@ def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
 
 
 def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
-    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
+    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
         1: R7_PRODUCTION_MANIFEST,
@@ -708,6 +744,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         11: R14_R17_EXECUTION_PRODUCTION_MANIFEST,
         12: R14_EXECUTION_LIFECYCLE_PRODUCTION_MANIFEST,
         13: R14_R16_CALL_PRODUCTION_MANIFEST,
+        14: R14_R17_H0_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
@@ -739,7 +776,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
     if any(not item.implementation for item in manifest.leaves):
         raise RuntimeManifestViolation("registered leaf implementation is empty")
     if (
-        manifest.manifest_version in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+        manifest.manifest_version in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
         and manifest.leaves != expected_manifest.leaves
     ):
         raise RuntimeManifestViolation("R13 admits only registered hermetic leaf implementations")

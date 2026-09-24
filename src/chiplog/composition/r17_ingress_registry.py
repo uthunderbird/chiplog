@@ -2,6 +2,8 @@
 
 from chiplog.platform.ingress_custody_records import CustodyProfile
 
+RETAINED_CLI_READER_ID = "r17-retained-cli-reader.v1"
+
 
 def retained_cli_profile(tenant_id: str, database_id: str) -> CustodyProfile:
     if (tenant_id, database_id) != ("hermetic-tenant", "hermetic-database"):

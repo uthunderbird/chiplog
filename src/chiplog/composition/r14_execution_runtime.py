@@ -9,7 +9,7 @@ import json
 import os
 import secrets
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -38,6 +38,11 @@ from chiplog.capabilities.agent_loop.execution_contracts import (
     ExecutionRunRecord,
     ExecutionVisibilityManifest,
 )
+from chiplog.capabilities.agent_loop.execution_initialization_contracts import (
+    ExecutionInitializationResult,
+    PreparedExecutionInitialization,
+    PrepareInboxExecution,
+)
 from chiplog.capabilities.agent_loop.execution_preparation import execution_context_label
 from chiplog.capabilities.agent_loop.execution_transition_contracts import (
     AccumulateExecutionVisibility,
@@ -51,11 +56,16 @@ from chiplog.capabilities.agent_loop.execution_transition_contracts import (
     PrepareExecutionRequest,
     StartInitialExecutionTurn,
 )
+from chiplog.composition.r16_dispatch_registry import ResourceObservation
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 
 from .r7_planning import ObservedTrustCall, _open_runtime
 from .r13_workspace import R13Workspace, _history
 from .r14_execution_fanout_contracts import EXECUTION_RUN_SCHEMA
+from .r14_execution_inbox_records import (
+    RetainedInboxExecutionInitialization,
+    inbox_initialization_command,
+)
 from .r14_execution_transition_records import (
     ExecutionHistorySnapshot,
     RetainedExecutionTransition,
@@ -303,6 +313,155 @@ class R14ExecutionRuntime(R14PlanningRuntime):
         if proposal.run not in current.records:
             raise LoopRejected("selected execution output absent after publication")
         return proposal.run
+
+    async def _publish_selected_inbox_initialization(
+        self,
+        peer: str,
+        request: PrepareInboxExecution,
+        *,
+        driver_request_bytes: bytes,
+        driver_request_fingerprint: str,
+        dispatch_observation: ResourceObservation,
+        source_guard: Callable[[], bool],
+    ) -> ExecutionRunRecord:
+        """Publish a native Create from an independently reread selected inbox."""
+        observed = await self._execution_actor(peer)
+        with self._authority_gate().hold():
+            self._check_execution_actor(observed)
+            snapshot = read_execution_history(self)
+            if (
+                not source_guard()
+                or any(run.run_id == request.create.run_id for run in snapshot.records)
+                or request.cut.tenant_commit_sequence != snapshot.tenant_head
+                or request.cut.worker_session_id != self.current_worker()
+            ):
+                raise LoopRejected("selected inbox source, Run absence, or worker differs")
+            predecessor = self._commitment_journal.load(self._tenant_id)
+            if predecessor is None:
+                raise LoopRejected("execution anchor absent")
+            engine = self._supervisor.runtime()
+            callee = engine.session("agent_loop")
+            caller = BrokerSession(
+                tenant_id=self._tenant_id,
+                broker_epoch=callee.broker_epoch,
+                generation_id=callee.generation_id,
+                owner_id="broker",
+                session_id=f"broker:{callee.generation_id}",
+            )
+            deadline = observed.request.budget.absolute_deadline_ns
+        sent = PublicPortCall(
+            operation_id="agent_loop.initialize_inbox.v1",
+            request_id="inbox-initialization:" + secrets.token_hex(16),
+            caller=caller,
+            callee=callee,
+            schema_id="chiplog.execution.inbox-initialization.v1",
+            canonical_payload=request.canonical_bytes(),
+            budget=CallBudget(
+                remaining_calls=1,
+                remaining_depth=1,
+                policy_version=1,
+                absolute_deadline_ns=deadline,
+            ),
+        )
+        returned = await engine.call(sent)
+        if (
+            not isinstance(returned, PublicPortSuccess)
+            or returned.request_id != sent.request_id
+            or returned.responder != callee
+            or returned.schema_id != "chiplog.execution.inbox-initialization-result.v1"
+        ):
+            raise LoopRejected("inbox initialization owner exchange rejected or changed identity")
+        result: ExecutionInitializationResult = TypeAdapter(
+            ExecutionInitializationResult
+        ).validate_json(returned.canonical_payload)
+        if (
+            not isinstance(result, PreparedExecutionInitialization)
+            or result.canonical_bytes() != returned.canonical_payload
+            or result.source_request_fingerprint != request.digest()
+            or result.run.run_id != request.create.run_id
+        ):
+            raise LoopRejected("inbox initialization owner rejected selected Create")
+        fields = (
+            dispatch_observation.grant_bytes,
+            dispatch_observation.credential_bytes,
+            dispatch_observation.endpoint_bytes,
+            dispatch_observation.clock_epoch,
+            dispatch_observation.signature,
+        )
+        evidence = RetainedInboxExecutionInitialization(
+            driver_request_bytes=driver_request_bytes,
+            driver_request_fingerprint=driver_request_fingerprint,
+            dispatch_grant_bytes=fields[0],
+            dispatch_credential_bytes=fields[1],
+            dispatch_endpoint_bytes=fields[2],
+            dispatch_clock_epoch=fields[3],
+            dispatch_signature=fields[4],
+            request=request,
+            proposal=result,
+            expected_head=snapshot.tenant_head,
+            predecessor_commitment=predecessor,
+            caller=caller,
+            callee=callee,
+            request_id=sent.request_id,
+            deadline_ns=deadline,
+        )
+        command = inbox_initialization_command(evidence)
+
+        def guard() -> Literal["STALE"] | None:
+            with self._authority_gate().hold():
+                try:
+                    self._check_execution_actor(observed)
+                    if (
+                        not source_guard()
+                        or read_execution_history(self) != snapshot
+                        or self.current_worker() != request.cut.worker_session_id
+                        or engine.session("agent_loop") != callee
+                        or time.monotonic_ns() >= deadline
+                        or self._commitment_journal.load(self._tenant_id) != predecessor
+                        or inbox_initialization_command(evidence) != command
+                    ):
+                        return "STALE"
+                except LoopRejected, ValueError:
+                    return "STALE"
+                return None
+
+        def decide(resulting: str) -> None:
+            with self._authority_gate().hold():
+                self._require_no_pending()
+                self._append_decision(
+                    {
+                        "version": 1,
+                        "kind": "DECIDED",
+                        "operation_id": command.idempotency_key,
+                        "operation_kind": command.operation_kind,
+                        "expected_head": command.expected_head,
+                        "fingerprint": command.request_fingerprint,
+                        "predecessor": predecessor,
+                        "resulting": resulting,
+                        "records": [
+                            {
+                                "record_id": row.record_id,
+                                "owner": row.owner,
+                                "schema": row.schema_id,
+                                "payload": base64.b64encode(row.canonical_bytes).decode(),
+                                "digest": row.fingerprint,
+                            }
+                            for row in command.records
+                        ],
+                        "inbox_initialization": evidence.canonical_bytes().decode(),
+                    }
+                )
+
+        published = await self._appender.submit(
+            replace(command, admission_guard=guard, decision_guard=decide)
+        )
+        if published.disposition not in ("COMMITTED", "REPLAY"):
+            raise LoopRejected("inbox initialization publication " + published.disposition)
+        self._finish_decision(command.idempotency_key)
+        current = read_execution_history(self)
+        if result.run not in current.records:
+            raise LoopRejected("selected inbox Run absent after publication")
+        return result.run
 
     async def capture_execution(
         self, peer: str, run_id: str, expected_head: str

@@ -35,6 +35,11 @@ from chiplog.composition.r14_execution_fanout_records import (
 from chiplog.composition.r14_execution_fanout_records import (
     physical_command as execution_command,
 )
+from chiplog.composition.r14_execution_inbox_records import (
+    EXECUTION_INBOX_INITIALIZATION_OPERATION,
+    RetainedInboxExecutionInitialization,
+    inbox_initialization_command,
+)
 from chiplog.composition.r14_execution_inventory import execution_inventory
 from chiplog.composition.r14_execution_transition_records import (
     EXECUTION_TRANSITION_OPERATION,
@@ -160,6 +165,7 @@ def _read_call_history(
                         FANOUT_OPERATION,
                         CANCELLATION_OPERATION,
                         EXECUTION_TRANSITION_OPERATION,
+                        EXECUTION_INBOX_INITIALIZATION_OPERATION,
                         EXECUTION_FANOUT_OPERATION,
                         "effects.accept_call",
                     ):
@@ -250,31 +256,69 @@ def _read_call_history(
                         continue
                     if (
                         first.schema_id == EXECUTION_RUN_SCHEMA
+                        or command.operation_kind == EXECUTION_INBOX_INITIALIZATION_OPERATION
                         or command.operation_kind == EXECUTION_TRANSITION_OPERATION
                         or "execution_transition" in entry
                     ):
+                        if (
+                            command.operation_kind == EXECUTION_INBOX_INITIALIZATION_OPERATION
+                            or "inbox_initialization" in entry
+                        ):
+                            if command.operation_kind != EXECUTION_INBOX_INITIALIZATION_OPERATION:
+                                raise ValueError("inbox initialization has a substituted operation")
+                            retained_raw = entry["inbox_initialization"]
+                            retained_init = (
+                                RetainedInboxExecutionInitialization.model_validate_json(
+                                    retained_raw
+                                )
+                            )
+                            execution = retained_init.proposal.run
+                            if not isinstance(execution, ExecutionRunRecord):
+                                raise ValueError("inbox initialization is not a native v2 Run")
+                            if (
+                                retained_init.canonical_bytes().decode() != retained_raw
+                                or inbox_initialization_command(retained_init) != command
+                                or execution.tenant != tenant
+                                or retained_init.predecessor_commitment != entry["predecessor"]
+                                or latest.get(execution.run_id) is not None
+                            ):
+                                raise ValueError(
+                                    "selected inbox initialization differs from history"
+                                )
+                            expected_ids.update(
+                                row.record_id for row in command.records if row.owner == OWNER
+                            )
+                            expected_publications.add((command.operation_kind, identity))
+                            latest[execution.run_id] = execution
+                            mixed_records.append(execution)
+                            continue
                         if command.operation_kind != EXECUTION_TRANSITION_OPERATION:
                             raise ValueError("execution transition has a substituted operation")
                         retained_raw = entry["execution_transition"]
-                        retained = RetainedExecutionTransition.model_validate_json(retained_raw)
-                        execution = retained.proposal.run
+                        retained_transition = RetainedExecutionTransition.model_validate_json(
+                            retained_raw
+                        )
+                        execution = retained_transition.proposal.run
+                        if not isinstance(execution, ExecutionRunRecord):
+                            raise ValueError("execution transition is not a native v2 Run")
                         execution_prior = ExecutionHistorySnapshot(
                             tenant_head=command.expected_head, records=tuple(mixed_records)
                         )
                         previous_execution = latest.get(execution.run_id)
                         if (
-                            retained.canonical_bytes().decode() != retained_raw
-                            or transition_command(retained) != command
+                            retained_transition.canonical_bytes().decode() != retained_raw
+                            or transition_command(retained_transition) != command
                             or execution.tenant != tenant
-                            or retained.predecessor_commitment != entry["predecessor"]
-                            or retained.expected_snapshot_fingerprint != execution_prior.digest()
+                            or retained_transition.predecessor_commitment != entry["predecessor"]
+                            or retained_transition.expected_snapshot_fingerprint
+                            != execution_prior.digest()
                             or (
-                                isinstance(retained.request, CreateExecutionRun)
+                                isinstance(retained_transition.request, CreateExecutionRun)
                                 and previous_execution is not None
                             )
                             or (
-                                not isinstance(retained.request, CreateExecutionRun)
-                                and retained.request.run != previous_execution
+                                not isinstance(retained_transition.request, CreateExecutionRun)
+                                and retained_transition.request.run != previous_execution
                             )
                         ):
                             raise ValueError("selected execution differs from original history")
@@ -453,15 +497,22 @@ def validate_selected_executions(runtime: R14PlanningRuntime) -> None:
             continue
         command = runtime._publication(entry)
         claimed = (
-            command.operation_kind in (EXECUTION_TRANSITION_OPERATION, EXECUTION_FANOUT_OPERATION)
+            command.operation_kind
+            in (
+                EXECUTION_TRANSITION_OPERATION,
+                EXECUTION_FANOUT_OPERATION,
+                EXECUTION_INBOX_INITIALIZATION_OPERATION,
+            )
             or "execution_transition" in entry
             or "execution_fanout" in entry
+            or "inbox_initialization" in entry
             or any(record.schema_id == EXECUTION_RUN_SCHEMA for record in command.records)
         )
         if claimed:
             if command.operation_kind not in (
                 EXECUTION_TRANSITION_OPERATION,
                 EXECUTION_FANOUT_OPERATION,
+                EXECUTION_INBOX_INITIALIZATION_OPERATION,
             ):
                 raise LoopIntegrityError(
                     f"operation=startup_execution tenant={runtime._tenant_id} "
