@@ -472,6 +472,31 @@ Root inspected the source and new chains and reran this set. Ruff and mypy passe
 on both source modules, the three consumers and their shared fixture. No full
 regression or checkpoint red-team was run.
 
+## Scheduler execution preparation wires
+
+`agent_loop.scheduler_execution_contracts` separates ordinary 0/1/N seed
+preparation from streamed overflow holds, Run preparation from finalization,
+and selected records from proposed outputs. The new mandate schema is v2;
+its immutable expiry uses Unix nanoseconds and an exclusive deadline. Ordinary
+interval accounting carries (1,N,0); overflow has charged and explicit zero-debit
+safety branches. Each branch has a fixed dependency edge set.
+
+The concrete WHOLE body binds the ordered non-envelope descriptors and bytes,
+seed cardinality, materializations and outcome. Finalization also checks the
+ordinary resulting boundary and overflow primitive reference against that body.
+Negative consumers rebuild valid envelope bytes and hashes before changing a
+join, so rejection exercises the relationship rather than a stale hash.
+
+Evidence: `uv run pytest -q
+tests/capabilities/agent_loop/test_scheduler_execution_contracts.py
+tests/capabilities/agent_loop/test_scheduler_execution_batch_contracts.py` passed
+28 tests. Ruff and mypy passed on the source, both tests and both support files.
+These tests establish wire and local consistency checks; the prepared results
+are fixtures, not a running scheduler or a complete physical publication recipe.
+Public cycle issuance, seed production, mandate lifecycle, service acquisition,
+operator resolution, full owner-record decoding and atomic runtime publication
+remain OPEN. Phase C is not frozen by this checkpoint.
+
 ## Publication discipline
 
 New contract files, their consumer tests, this inventory and exact source catalog
