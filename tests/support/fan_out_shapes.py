@@ -3,9 +3,9 @@
 import base64
 import json
 
-from chiplog.capabilities.agent_loop import call_acceptance_contracts as call
+import chiplog.capabilities.agent_loop.call_acceptance_contracts as call
+import chiplog.capabilities.agent_loop.fan_out_contracts as fan
 from chiplog.capabilities.agent_loop import contracts as loop
-from chiplog.capabilities.agent_loop import fan_out_contracts as fan
 from chiplog.capabilities.agent_loop.recovery_contracts import (
     Absent,
     NonSchedulerFence,

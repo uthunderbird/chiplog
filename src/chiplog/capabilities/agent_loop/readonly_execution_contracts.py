@@ -7,7 +7,7 @@ applicability at the sole writer. A model tool name never proves no mutation.
 
 from typing import Annotated, Literal, Protocol
 
-from pydantic import ConfigDict, Field
+from pydantic import Field
 
 from .call_acceptance_contracts import (
     CallAuthorityObservation,
@@ -15,14 +15,23 @@ from .call_acceptance_contracts import (
     CallSubjectHead,
     InitializedCallRecord,
 )
-from .execution_contracts import ExecutionRunRecord
+from .execution_run_versions import ExecutionRun
+from .readonly_history_tool_contracts import (
+    ConversationHistoryQuery as ConversationHistoryQuery,
+)
+from .readonly_history_tool_contracts import ReadOnlyDTO
+from .readonly_history_tool_contracts import (
+    ReadOnlyHistoryToolCall as ReadOnlyHistoryToolCall,
+)
+from .readonly_history_tool_contracts import (
+    ReadOnlyHistoryToolSpec as ReadOnlyHistoryToolSpec,
+)
 from .recovery_contracts import (
     Absent,
     Digest,
     Identity,
     OriginalObligationBinding,
     Present,
-    RecoveryDTO,
     RunExecutionFence,
     UInt64,
     WorkerCommitApplicability,
@@ -32,31 +41,6 @@ from .recovery_frontier_contracts import (
     ReadOnlyRetryLineage,
     TerminalCallFrontier,
 )
-
-
-class ReadOnlyDTO(RecoveryDTO):
-    model_config = ConfigDict(ser_json_bytes="base64", val_json_bytes="base64")
-
-
-class ConversationHistoryQuery(ReadOnlyDTO):
-    """Model arguments only; the broker supplies principal and snapshot authority."""
-
-    limit: int = Field(strict=True, gt=0, le=2**64 - 1)
-    after_cursor: Identity | None
-
-
-class ReadOnlyHistoryToolSpec(RecoveryDTO):
-    name: Literal["read_conversation_history"] = "read_conversation_history"
-    version: Literal["1"] = "1"
-    schema_id: Literal["chiplog.read-conversation-history.v1"] = (
-        "chiplog.read-conversation-history.v1"
-    )
-
-
-class ReadOnlyHistoryToolCall(ReadOnlyDTO):
-    call_id: Identity
-    tool: Literal["read_conversation_history"]
-    arguments: ConversationHistoryQuery
 
 
 class RegisteredReadOnlyProof(ReadOnlyDTO):
@@ -210,7 +194,7 @@ class SuccessorReadOnlyAttempt(ReadOnlyDTO):
 class PrepareReadOnlyAttempt(ReadOnlyDTO):
     kind: Literal["PREPARE_READONLY_ATTEMPT_V1"] = "PREPARE_READONLY_ATTEMPT_V1"
     command_id: Identity
-    run: ExecutionRunRecord
+    run: ExecutionRun
     observed: ReadOnlyLineageSnapshot
     proof: RegisteredReadOnlyProof
     route: Annotated[SameRunReadOnlyAttempt | SuccessorReadOnlyAttempt, Field(discriminator="kind")]
@@ -232,7 +216,7 @@ class PrepareReadOnlyOutcome(ReadOnlyDTO):
 class PrepareReadOnlyPending(ReadOnlyDTO):
     kind: Literal["PREPARE_READONLY_PENDING_V1"] = "PREPARE_READONLY_PENDING_V1"
     command_id: Identity
-    run: ExecutionRunRecord
+    run: ExecutionRun
     observed: ReadOnlyLineageSnapshot
     current_proof: RegisteredReadOnlyProof
     crossed_binding_heads: tuple[CallSubjectHead, ...] = Field(min_length=1)

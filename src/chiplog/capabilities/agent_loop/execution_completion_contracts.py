@@ -11,20 +11,20 @@ from pydantic import Field
 
 from .call_acceptance_contracts import CallPreparationRejected, CallSubjectHead
 from .delivery_preparation import DeliveryAcceptanceProposal, DeliveryObservation
-from .execution_contracts import ExecutionRunRecord
 from .execution_recovery_observations import (
     ContinuationReadyRecord,
     ExecutionRecoveryCut,
     ExecutionRecoveryDTO,
     ExecutionTerminalManifest,
 )
+from .execution_run_versions import ExecutionRun
 from .recovery_contracts import Digest, Identity, RunExecutionFence, UInt64
 
 
 class PrepareExecutionCompletion(ExecutionRecoveryDTO):
     kind: Literal["PREPARE_EXECUTION_COMPLETION_V1"] = "PREPARE_EXECUTION_COMPLETION_V1"
     command_id: Identity
-    run: ExecutionRunRecord
+    run: ExecutionRun
     selected_attempt: CallSubjectHead
     selector_generation: UInt64
     visibility_manifest: CallSubjectHead
@@ -48,7 +48,7 @@ class PreparedExecutionCompletion(ExecutionRecoveryDTO):
     complete_earlier_continuations: tuple[ContinuationReadyRecord, ...]
     delivery: DeliveryAcceptanceProposal
     terminal_manifest: ExecutionTerminalManifest
-    run: ExecutionRunRecord
+    run: ExecutionRun
     complete_owner_commitment: Digest
 
 
@@ -73,7 +73,7 @@ class PreparedExecutionCompletionReject(ExecutionRecoveryDTO):
         ],
         ...,
     ] = Field(min_length=1)
-    run: ExecutionRunRecord
+    run: ExecutionRun
     complete_owner_commitment: Digest
 
 

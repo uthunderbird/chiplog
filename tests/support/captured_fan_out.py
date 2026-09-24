@@ -3,10 +3,10 @@
 import base64
 import hashlib
 
+import chiplog.capabilities.agent_loop.call_acceptance_contracts as call
+import chiplog.capabilities.agent_loop.fan_out_contracts as fan
 from chiplog.adapters.driven.loop_prompts import render_delivery_prompt, render_prompt
-from chiplog.capabilities.agent_loop import call_acceptance_contracts as call
 from chiplog.capabilities.agent_loop import contracts as loop
-from chiplog.capabilities.agent_loop import fan_out_contracts as fan
 from chiplog.capabilities.agent_loop.delivery_preparation import (
     Commentary,
     DeliveryCompletion,

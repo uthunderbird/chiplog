@@ -10,7 +10,7 @@ from typing import Annotated, Literal, Protocol
 from pydantic import ConfigDict, Field
 
 from .call_acceptance_contracts import CallPreparationRejected, CallSubjectHead
-from .execution_contracts import ExecutionRunRecord
+from .execution_run_versions import ExecutionRun
 from .recovery_contracts import Digest, Identity, RecoveryDTO, RunExecutionFence, UInt64
 
 
@@ -42,7 +42,7 @@ class RegisteredModelNoExposure(RecoveryDTO):
 class ReplaceExecutionModelAttempt(RecoveryDTO):
     kind: Literal["REPLACE_EXECUTION_MODEL_ATTEMPT_V1"] = "REPLACE_EXECUTION_MODEL_ATTEMPT_V1"
     command_id: Identity
-    run: ExecutionRunRecord
+    run: ExecutionRun
     selected_attempt: CallSubjectHead
     expected_selector: UInt64
     no_exposure: RegisteredModelNoExposure
@@ -82,7 +82,7 @@ class PreparedModelAttemptReplacement(RecoveryDTO):
     original_attempt: CallSubjectHead
     superseded_attempt: CallSubjectHead
     replacement_attempt: CallSubjectHead
-    run: ExecutionRunRecord
+    run: ExecutionRun
     proposal_fingerprint: Digest
 
 

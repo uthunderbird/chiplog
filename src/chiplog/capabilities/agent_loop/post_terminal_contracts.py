@@ -10,7 +10,7 @@ from typing import Annotated, Literal, Protocol
 from pydantic import ConfigDict, Field
 
 from .call_acceptance_contracts import CallSubjectHead
-from .execution_contracts import ExecutionRunRecord
+from .execution_run_versions import ExecutionRun
 from .recovery_contracts import (
     Absent,
     Digest,
@@ -92,7 +92,7 @@ class PrepareTerminalWork(RecoveryDTO):
 
     kind: Literal["PREPARE_TERMINAL_WORK_V1"] = "PREPARE_TERMINAL_WORK_V1"
     identity: WorkCommandIdentity
-    terminal_run: ExecutionRunRecord
+    terminal_run: ExecutionRun
     original_terminalization_request: bytes = Field(min_length=1)
     terminal_manifest: CallSubjectHead
     ordered_open_obligations: tuple[OriginalObligationBinding, ...]

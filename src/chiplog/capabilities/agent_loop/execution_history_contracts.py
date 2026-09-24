@@ -30,7 +30,7 @@ from .delivery_contracts import OriginSelection
 from .delivery_preparation import DeliveryCompletion
 from .execution_contracts import ConsequentialToolCall, ConsequentialToolSpec
 from .live_contract import LiveModelBinding
-from .readonly_execution_contracts import ReadOnlyHistoryToolCall, ReadOnlyHistoryToolSpec
+from .readonly_history_tool_contracts import ReadOnlyHistoryToolCall, ReadOnlyHistoryToolSpec
 from .recovery_contracts import Digest, Identity, OriginalObligationBinding, UInt64
 
 EXECUTION_GENERATOR_V3: Literal["chiplog.turn-schema.execution.v3"] = (

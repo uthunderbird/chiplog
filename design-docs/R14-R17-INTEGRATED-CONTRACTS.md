@@ -320,13 +320,30 @@ Targeted Ruff and mypy passed for the three source files and the consumer. Root
 inspected the definitions and consumers and reran the new tests. No full regression
 or checkpoint red-team was run.
 
-This is not global Phase-C readiness. Shared OPEN feature contracts still need
-the v2/v3 Run/create joins, with history-tool leaves extracted to avoid an import
-cycle. Concrete parser/renderer behavior and physical publication/readback are
+This is not global Phase-C readiness. Shared OPEN feature contracts now use
+discriminated v2/v3 Run/create joins, with history-tool leaves extracted to avoid
+an import cycle. Concrete parser/renderer behavior and physical publication/readback are
 still absent for v3. Phase C must register their interfaces before T/I supplies
 the behavior; query execution, no-mutation proof, counters, CAS and replay remain
 joint behavioral work. Scheduler and completion must use the same joined version
 family rather than remaining separate v2-only islands.
+
+`execution_run_versions` is the common representation boundary. Initialization,
+readonly preparation, recovery cuts and transitions, completion, model-attempt
+recovery and terminal-work requests carry the tagged Run family. These are OPEN
+feature-only outer contracts; the historical concrete v2 Run and create DTOs are
+not rewritten. `readonly_history_tool_contracts` holds the unchanged tool leaves,
+reexported from their original module to preserve existing imports.
+
+Evidence: `uv run pytest -q
+tests/capabilities/agent_loop/test_execution_run_versions.py` passed 31 tests.
+The consumers roundtrip nonempty v3 payloads through public preparation/result
+unions and retain v2 canonical bytes; schema introspection additionally checks
+all embedded version discriminators. These tests establish representation,
+not valid recovery state transitions, proof authenticity or terminal publication.
+Scheduler and conversation consumers are reviewed separately before their own
+checkpoint; central operation registration and all joint runtime histories remain
+OPEN.
 
 ## Post-terminal durable record interpretation
 

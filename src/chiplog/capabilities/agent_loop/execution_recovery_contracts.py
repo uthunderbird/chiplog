@@ -5,7 +5,6 @@ from typing import Annotated, Literal, Protocol
 from pydantic import Field
 
 from .call_acceptance_contracts import CallPreparationRejected, CallSubjectHead
-from .execution_contracts import ExecutionRunRecord
 from .execution_recovery_observations import (
     ContinuationReadyRecord,
     ExecutionRecoveryCut,
@@ -17,7 +16,7 @@ from .execution_recovery_observations import (
     SealedAccountingRecord,
     SelectedExecutionSuspension,
 )
-from .execution_transition_contracts import CreateExecutionRun
+from .execution_run_versions import CreateExecutionRunVersion, ExecutionRun
 from .post_terminal_contracts import PreparedPostTerminalWork
 from .recovery_contracts import Digest, Identity, RunExecutionFence, UInt64
 from .recovery_frontier_contracts import ObligationObservation, RecoveryProofDisposition
@@ -39,7 +38,7 @@ class PrepareExecutionContinuation(ExecutionRecoveryDTO):
 class PrepareExecutionSuspension(ExecutionRecoveryDTO):
     kind: Literal["PREPARE_EXECUTION_SUSPENSION_V2"] = "PREPARE_EXECUTION_SUSPENSION_V2"
     command_id: Identity
-    run: ExecutionRunRecord
+    run: ExecutionRun
     cut: ExecutionRecoveryCut
     activation_blocking_predicates: tuple[CallSubjectHead, ...]
     fence: RunExecutionFence
@@ -48,7 +47,7 @@ class PrepareExecutionSuspension(ExecutionRecoveryDTO):
 class PrepareExecutionResume(ExecutionRecoveryDTO):
     kind: Literal["PREPARE_EXECUTION_RESUME_V2"] = "PREPARE_EXECUTION_RESUME_V2"
     command_id: Identity
-    run: ExecutionRunRecord
+    run: ExecutionRun
     original_suspension: SelectedExecutionSuspension
     cut: ExecutionRecoveryCut
     disposition_version: Identity
@@ -59,11 +58,11 @@ class PrepareExecutionResume(ExecutionRecoveryDTO):
 class PrepareExecutionSuccessor(ExecutionRecoveryDTO):
     kind: Literal["PREPARE_EXECUTION_SUCCESSOR_V2"] = "PREPARE_EXECUTION_SUCCESSOR_V2"
     command_id: Identity
-    run: ExecutionRunRecord
+    run: ExecutionRun
     original_suspension: SelectedExecutionSuspension
     cut: ExecutionRecoveryCut
     disposition_version: Identity
-    successor: CreateExecutionRun
+    successor: CreateExecutionRunVersion
     fence: RunExecutionFence
 
 
@@ -72,7 +71,7 @@ class PrepareNextExecutionTurn(ExecutionRecoveryDTO):
 
     kind: Literal["PREPARE_NEXT_EXECUTION_TURN_V1"] = "PREPARE_NEXT_EXECUTION_TURN_V1"
     command_id: Identity
-    run: ExecutionRunRecord
+    run: ExecutionRun
     cut: ExecutionRecoveryCut
     immediately_preceding_response: CallSubjectHead
     expected_current_turn: CallSubjectHead
@@ -86,7 +85,7 @@ class PrepareAbortCancelExecution(ExecutionRecoveryDTO):
 
     kind: Literal["PREPARE_ABORT_CANCEL_EXECUTION_V1"] = "PREPARE_ABORT_CANCEL_EXECUTION_V1"
     command_id: Identity
-    run: ExecutionRunRecord
+    run: ExecutionRun
     target: Literal["ABORTED", "CANCELLED"]
     authenticated_cause: RecoverySourceRecord
     cut: ExecutionRecoveryCut
@@ -122,7 +121,7 @@ class PreparedExecutionSuspension(ExecutionRecoveryDTO):
     kind: Literal["PREPARED_EXECUTION_SUSPENSION_V2"] = "PREPARED_EXECUTION_SUSPENSION_V2"
     source_request_fingerprint: Digest
     baseline: ExecutionSuspensionBaseline
-    run: ExecutionRunRecord
+    run: ExecutionRun
     pair: ExecutionSuspensionPair
     complete_batch_fingerprint: Digest
 
@@ -131,7 +130,7 @@ class PreparedExecutionResume(ExecutionRecoveryDTO):
     kind: Literal["PREPARED_EXECUTION_RESUME_V2"] = "PREPARED_EXECUTION_RESUME_V2"
     source_request_fingerprint: Digest
     original_pair: CallSubjectHead
-    run: ExecutionRunRecord
+    run: ExecutionRun
     complete_batch_fingerprint: Digest
 
 
@@ -172,8 +171,8 @@ class ExecutionSuccessorEdge(ExecutionRecoveryDTO):
 class PreparedExecutionSuccessor(ExecutionRecoveryDTO):
     kind: Literal["PREPARED_EXECUTION_SUCCESSOR_V2"] = "PREPARED_EXECUTION_SUCCESSOR_V2"
     source_request_fingerprint: Digest
-    superseded_run: ExecutionRunRecord
-    successor_run: ExecutionRunRecord
+    superseded_run: ExecutionRun
+    successor_run: ExecutionRun
     edge: ExecutionSuccessorEdge
     lineage_advance: Annotated[
         NonSchedulerSuccessor | SchedulerSuccessorAdvance, Field(discriminator="kind")
@@ -185,7 +184,7 @@ class PreparedExecutionSuccessor(ExecutionRecoveryDTO):
 class PreparedNextExecutionTurn(ExecutionRecoveryDTO):
     kind: Literal["PREPARED_NEXT_EXECUTION_TURN_V1"] = "PREPARED_NEXT_EXECUTION_TURN_V1"
     source_request_fingerprint: Digest
-    run: ExecutionRunRecord
+    run: ExecutionRun
     continuation: ContinuationReadyRecord
     complete_batch_fingerprint: Digest
 
@@ -194,7 +193,7 @@ class PreparedExecutionTerminal(ExecutionRecoveryDTO):
     kind: Literal["PREPARED_EXECUTION_TERMINAL_V1"] = "PREPARED_EXECUTION_TERMINAL_V1"
     source_request_fingerprint: Digest
     manifest: ExecutionTerminalManifest
-    run: ExecutionRunRecord
+    run: ExecutionRun
     work: PreparedPostTerminalWork
     complete_batch_fingerprint: Digest
 

@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 from pydantic import ConfigDict, Field
 
 from .call_acceptance_contracts import CallSubjectHead, SealedResponseRecord
-from .execution_contracts import ExecutionRunRecord
+from .execution_run_versions import ExecutionRun
 from .recovery_contracts import (
     Absent,
     Digest,
@@ -81,7 +81,7 @@ class ExecutionRecoveryCut(ExecutionRecoveryDTO):
     tenant_commit_sequence: UInt64
     materialization_commitment: Digest
     current_run: CallSubjectHead
-    complete_ordered_run_lineage: tuple[ExecutionRunRecord, ...] = Field(min_length=1)
+    complete_ordered_run_lineage: tuple[ExecutionRun, ...] = Field(min_length=1)
     complete_ordered_responses: tuple[SealedResponseRecoveryView, ...]
     frontier: RecoveryFrontier
     current_bindings: FrozenRunBindings

@@ -15,8 +15,7 @@ from .call_acceptance_contracts import (
     CallSubjectHead,
 )
 from .delivery_contracts import OriginSelection
-from .execution_contracts import ExecutionRunRecord
-from .execution_transition_contracts import CreateExecutionRun
+from .execution_run_versions import CreateExecutionRunVersion, ExecutionRun
 from .recovery_contracts import Absent, Digest, Identity, PreRootDecisionFence, RecoveryDTO, UInt64
 from .scheduler_contracts import MaterializationCommitment
 
@@ -78,7 +77,7 @@ class ExecutionInitializationCut(RecoveryDTO):
 
 class PrepareInboxExecution(ExecutionInputDTO):
     kind: Literal["PREPARE_INBOX_EXECUTION_V1"] = "PREPARE_INBOX_EXECUTION_V1"
-    create: CreateExecutionRun
+    create: CreateExecutionRunVersion
     admitted: SelectedAdmittedRunInput
     cut: ExecutionInitializationCut
 
@@ -103,7 +102,7 @@ class SchedulerExecutionSource(ExecutionInputDTO):
 
 class PrepareScheduledExecution(ExecutionInputDTO):
     kind: Literal["PREPARE_SCHEDULED_EXECUTION_V1"] = "PREPARE_SCHEDULED_EXECUTION_V1"
-    create: CreateExecutionRun
+    create: CreateExecutionRunVersion
     source: SchedulerExecutionSource
     cut: ExecutionInitializationCut
 
@@ -130,7 +129,7 @@ class ScheduledExecutionBinding(RecoveryDTO):
 class PreparedExecutionInitialization(RecoveryDTO):
     kind: Literal["PREPARED_EXECUTION_INITIALIZATION_V1"] = "PREPARED_EXECUTION_INITIALIZATION_V1"
     source_request_fingerprint: Digest
-    run: ExecutionRunRecord
+    run: ExecutionRun
     input_binding: Annotated[
         AdmittedExecutionBinding | ScheduledExecutionBinding, Field(discriminator="kind")
     ]
