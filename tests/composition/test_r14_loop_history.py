@@ -1,6 +1,8 @@
 """Canonical R14 history reads authenticate selected bytes, not a storage marker."""
 
 import sqlite3
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -9,10 +11,20 @@ import pytest
 from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
 from chiplog.capabilities.agent_loop.application import AgentLoop
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopRejected, RunRecord
+from chiplog.composition.h1_completion_issuance import SCHEMA as H1_ISSUANCE_SCHEMA
 from chiplog.composition.r14 import open_r14_loop
+from chiplog.composition.r14_execution_completion_records import (
+    RetainedCompleteAcceptanceExchangeV1,
+    complete_acceptance_command,
+)
+from chiplog.composition.r14_loop_history import (
+    _completion_v2_schema_dispatch,
+    completion_v2_terminal_run,
+)
 from chiplog.composition.r14_runtime import R14PlanningRuntime
 from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.workspace_snapshot import workspace_snapshot
+from tests.support.completion_assembly import accepted_completion_fixture
 
 _CONTINUE = (
     b'{"kind":"Continue","tool_calls":[{"call_id":"plan",'
@@ -20,6 +32,97 @@ _CONTINUE = (
 )
 _COMPLETE = b'{"kind":"Complete","deliveries":[{"kind":"NonAuthoritativeText","text":"Ready"}]}'
 _PROPOSAL = "run/turn/1/proposal/plan"
+
+
+async def test_selected_complete_delivery_v2_projects_its_native_terminal_run() -> None:
+    """A real closed owner fixture yields the one terminal Run in batch order."""
+    fixture = await accepted_completion_fixture("v2")
+    command = complete_acceptance_command(
+        RetainedCompleteAcceptanceExchangeV1(
+            assembly=fixture.assembly,
+            batch=fixture.batch,
+            expected_head=fixture.batch.expected.tenant_frontier,
+            predecessor_commitment=fixture.batch.expected.expected_materialization_commitment,
+        )
+    )
+
+    terminal = completion_v2_terminal_run(command)
+
+    assert terminal == fixture.assembly.prepared_completion.run
+    assert terminal.state == "SUCCEEDED"
+    assert terminal.predecessor == fixture.assembly.original_completion_request.run.head
+
+
+async def test_complete_delivery_v2_applicability_schema_dispatch_is_total() -> None:
+    fixture = await accepted_completion_fixture("v2")
+
+    with pytest.raises(ValueError, match="unsupported complete delivery v2 applicability schema"):
+        _completion_v2_schema_dispatch(fixture.batch)
+
+    h1 = fixture.batch.model_copy(
+        update={
+            "authentication": fixture.batch.authentication.model_copy(
+                update={"applicability_schema": H1_ISSUANCE_SCHEMA}
+            )
+        }
+    )
+    assert _completion_v2_schema_dispatch(h1) == "H1"
+
+
+def test_historical_trust_reader_returns_the_canonical_gated_durability() -> None:
+    class Gate:
+        entered = 0
+
+        @contextmanager
+        def hold(self):
+            self.entered += 1
+            yield
+
+    runtime = object.__new__(R14PlanningRuntime)
+    trust = object()
+    gate = Gate()
+    runtime._trust = trust
+    runtime._authority_gate = lambda: gate  # type: ignore[method-assign]
+
+    assert runtime._h1_historical_trust_reader() is trust
+    assert gate.entered == 1
+
+
+@pytest.mark.parametrize("damage", ("remove_run", "corrupt_run"))
+async def test_selected_complete_delivery_v2_rejects_corrupt_native_physical_member(
+    damage: str,
+) -> None:
+    fixture = await accepted_completion_fixture("v2")
+    command = complete_acceptance_command(
+        RetainedCompleteAcceptanceExchangeV1(
+            assembly=fixture.assembly,
+            batch=fixture.batch,
+            expected_head=fixture.batch.expected.tenant_frontier,
+            predecessor_commitment=fixture.batch.expected.expected_materialization_commitment,
+        )
+    )
+    run_index = next(
+        index
+        for index, record in enumerate(command.records)
+        if record.schema_id == "chiplog.agent-loop.execution-record.v2"
+    )
+    if damage == "remove_run":
+        damaged = replace(
+            command, records=command.records[:run_index] + command.records[run_index + 1 :]
+        )
+    else:
+        run = command.records[run_index]
+        damaged = replace(
+            command,
+            records=(
+                *command.records[:run_index],
+                replace(run, canonical_bytes=b"{}"),
+                *command.records[run_index + 1 :],
+            ),
+        )
+
+    with pytest.raises(ValueError):
+        completion_v2_terminal_run(damaged)
 
 
 async def _finish(loop: AgentLoop) -> RunRecord:

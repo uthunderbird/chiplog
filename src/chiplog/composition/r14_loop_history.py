@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 from chiplog.adapters.driven.loop_sqlite import OWNER, SCHEMA, LoopIntegrityError
 from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER, CONVERSATION_SCHEMA
@@ -12,6 +12,10 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallInvent
 from chiplog.capabilities.agent_loop.contracts import LoopSnapshot, RunRecord
 from chiplog.capabilities.agent_loop.domain import validate_record
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+from chiplog.capabilities.agent_loop.execution_run_record_contracts import (
+    ExecutionRunCanonicalMember,
+    decode_execution_run_member,
+)
 from chiplog.capabilities.agent_loop.execution_transition_contracts import CreateExecutionRun
 from chiplog.composition.r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
 from chiplog.composition.r14_cancellation_contracts import (
@@ -29,6 +33,10 @@ from chiplog.composition.r14_execution_complete_seal_records import (
     RetainedExecutionCompleteSeal,
     build_complete_seal_envelope,
     complete_seal_physical_command,
+)
+from chiplog.composition.r14_execution_completion_records import (
+    COMPLETE_ACCEPTANCE_OPERATION,
+    complete_acceptance_command,
 )
 from chiplog.composition.r14_execution_fanout_contracts import (
     EXECUTION_FANOUT_OPERATION,
@@ -58,12 +66,100 @@ from chiplog.composition.r14_fanout_records import (
     build_envelope,
     physical_command,
 )
+from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
+from chiplog.platform._sqlite import PhysicalPublicationCommand
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
     from chiplog.composition.r14_runtime import R14PlanningRuntime
+
+
+def completion_v2_terminal_run(command: PhysicalPublicationCommand) -> ExecutionRunRecord:
+    """Decode the sole native-v2 terminal Run in a selected V2 completion batch.
+
+    The surrounding selected-issuance verifier establishes the batch's owner
+    exchanges. This small projection keeps the history reader from treating a
+    schema-compatible non-Run companion as the terminal state.
+    """
+    members = tuple(
+        record
+        for record in command.records
+        if record.owner == OWNER and record.schema_id == EXECUTION_RUN_SCHEMA
+    )
+    if len(members) != 1:
+        raise ValueError("selected complete delivery has no unique native terminal Run")
+    record = members[0]
+    decoded = decode_execution_run_member(
+        ExecutionRunCanonicalMember(
+            record_id=record.record_id,
+            schema_id=cast(
+                "Literal['chiplog.agent-loop.execution-record.v2', "
+                "'chiplog.agent-loop.execution-record.v3']",
+                record.schema_id,
+            ),
+            canonical_record_bytes=record.canonical_bytes,
+            fingerprint=record.fingerprint,
+        )
+    )
+    if not isinstance(decoded.run, ExecutionRunRecord) or decoded.run.state != "SUCCEEDED":
+        raise ValueError("selected complete delivery Run is not a native succeeded terminal")
+    return decoded.run
+
+
+def _completion_v2_schema_dispatch(batch: CompleteDeliveryBatchV2) -> Literal["H1"]:
+    """Route every V2 applicability schema once, for startup and history reads."""
+    from chiplog.composition.h1_completion_issuance import SCHEMA
+
+    if batch.authentication.applicability_schema == SCHEMA:
+        return "H1"
+    raise ValueError(
+        "unsupported complete delivery v2 applicability schema: "
+        + batch.authentication.applicability_schema
+    )
+
+
+def _selected_h1_completion(
+    runtime: R14PlanningRuntime, decision: object
+) -> tuple[PhysicalPublicationCommand, ExecutionRunRecord, ExecutionRunRecord]:
+    """Authenticate and project one owners-journal H1 completion selection.
+
+    The issuance validator reads the selected source journals directly.  It is
+    deliberately called before the transient command projection, so no
+    schema-valid batch can stand in for retained owner evidence.
+    """
+    import chiplog.composition.h1_completion_issuance as h1_issuance
+    import chiplog.composition.h1_historical_selected_sources as historical_sources
+    from chiplog.platform.owner_publications import SelectedOwnerDecision
+
+    if not isinstance(decision, SelectedOwnerDecision):
+        raise ValueError("selected H1 completion lacks an owner-journal decision")
+    batch = decision.prepared.request
+    if not isinstance(batch, CompleteDeliveryBatchV2):
+        raise ValueError("selected H1 completion has a substituted owner batch")
+    if _completion_v2_schema_dispatch(batch) != "H1":  # pragma: no cover - total dispatcher
+        raise ValueError("selected complete delivery did not route to H1")
+    bound = historical_sources.bind_selected_h1_completion(batch, runtime)
+    if bound.decision != decision:
+        raise ValueError("selected H1 completion differs from authenticated owner decision")
+    issuance = bound.issuance
+    expected = complete_acceptance_command(h1_issuance.h1_completion_exchange(batch))
+    command = runtime._owner_command(decision)
+    if (
+        command != expected
+        or decision.tenant_commit_sequence != command.expected_head + 1
+        or decision.prepared.predecessor_commitment
+        != batch.expected.expected_materialization_commitment
+        or decision.prepared.fence_generation != "r6"
+        or decision.prepared.fence_frontier != 0
+    ):
+        raise ValueError("selected H1 completion header differs from retained issuance")
+    terminal = completion_v2_terminal_run(command)
+    predecessor = issuance.assembly.original_completion_request.run
+    if terminal != issuance.assembly.prepared_completion.run:
+        raise ValueError("selected H1 terminal Run differs from retained issuance")
+    return command, terminal, predecessor
 
 
 def _read_call_history(
@@ -105,6 +201,22 @@ def _read_call_history(
             for decision in runtime._owner_decisions().snapshot().decisions:
                 batch = decision.prepared.request
                 if batch.kind != "CALL_EFFECT_ATOMIC":
+                    if isinstance(batch, CompleteDeliveryBatchV2):
+                        route = _completion_v2_schema_dispatch(batch)
+                        if batch.operation != COMPLETE_ACCEPTANCE_OPERATION:
+                            raise ValueError("complete delivery v2 has an unregistered operation")
+                        if route != "H1":  # pragma: no cover - total dispatcher
+                            raise ValueError("complete delivery v2 has an unsupported route")
+                        command, terminal, predecessor = _selected_h1_completion(runtime, decision)
+                        selected.append(
+                            (
+                                command,
+                                {
+                                    "h1_completion_terminal": terminal,
+                                    "h1_completion_predecessor": predecessor,
+                                },
+                            )
+                        )
                     continue
                 from chiplog.composition.r14_call_issuance import validate_call_issuance
                 from chiplog.composition.r16_dispatch_runtime import ExecutionDispatchRuntime
@@ -175,6 +287,7 @@ def _read_call_history(
                         EXECUTION_FANOUT_OPERATION,
                         EXECUTION_COMPLETE_SEAL_OPERATION,
                         "effects.accept_call",
+                        COMPLETE_ACCEPTANCE_OPERATION,
                     ):
                         raise ValueError("unregistered loop publication envelope")
                     if (
@@ -210,6 +323,29 @@ def _read_call_history(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
                         expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if command.operation_kind == COMPLETE_ACCEPTANCE_OPERATION:
+                        terminal = entry.get("h1_completion_terminal")
+                        predecessor = entry.get("h1_completion_predecessor")
+                        if not isinstance(terminal, ExecutionRunRecord) or not isinstance(
+                            predecessor, ExecutionRunRecord
+                        ):
+                            raise ValueError("H1 completion lacks its retained native Run lineage")
+                        if (
+                            terminal.predecessor != predecessor.head
+                            or latest.get(terminal.run_id) != predecessor
+                            or predecessor.event != "ModelCompletionPrepared"
+                            or terminal.event != "ExecutionCompleted"
+                        ):
+                            raise ValueError(
+                                "selected H1 completion differs from selected sealed predecessor"
+                            )
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        latest[terminal.run_id] = terminal
+                        mixed_records.append(terminal)
                         continue
                     first, *companions = command.records
                     if (
@@ -583,6 +719,37 @@ def validate_selected_executions(runtime: R14PlanningRuntime) -> None:
             found = True
     if found:
         _read_call_history(runtime, selected_only=True)
+
+
+def validate_selected_h1_completions(runtime: R14PlanningRuntime) -> None:
+    """Fail closed on retained H1 selection before owner recovery can write SQL.
+
+    A wholly absent selected batch is the only recoverable pending state.  The
+    readback inspector classifies any prefix, altered companion, or conflicting
+    publication as ``CONFLICT``; it must never reach ``_recover_exact``.
+    """
+    runtime._pending()
+    for decision in runtime._owner_decisions().snapshot().decisions:
+        batch = decision.prepared.request
+        if not isinstance(batch, CompleteDeliveryBatchV2):
+            continue
+        _completion_v2_schema_dispatch(batch)
+        if batch.operation != COMPLETE_ACCEPTANCE_OPERATION:
+            raise LoopIntegrityError(
+                f"operation=startup_h1_completion tenant={runtime._tenant_id} "
+                f"record_id={batch.identity.command_id}"
+            ) from ValueError("unregistered complete delivery v2 operation")
+        try:
+            command, _, _ = _selected_h1_completion(runtime, decision)
+            with read_connection(runtime._database) as connection:
+                state = inspect_publication(connection, command, decision.tenant_commit_sequence)
+            if state == "CONFLICT":
+                raise ValueError("selected H1 completion has partial or corrupt physical members")
+        except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
+            raise LoopIntegrityError(
+                f"operation=startup_h1_completion tenant={runtime._tenant_id} "
+                f"record_id={batch.identity.command_id}"
+            ) from error
 
 
 def read_loop_history(

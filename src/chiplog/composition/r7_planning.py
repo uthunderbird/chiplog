@@ -10,7 +10,7 @@ import os
 import secrets
 import sqlite3
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -979,6 +979,7 @@ async def _open_runtime(
     runtime_type: type[R7PlanningRuntime],
     manifest: RuntimeAssemblyManifest,
     extra_leaves: Mapping[str, object] | None = None,
+    runtime_setup: Callable[[R7PlanningRuntime], None] | None = None,
 ) -> AsyncIterator[R7PlanningRuntime]:
     authority_gate = AuthorityGate.for_database(database)
     database = authority_gate.database
@@ -1025,6 +1026,8 @@ async def _open_runtime(
                 appender,
                 supervisor,
             )
+            if runtime_setup is not None:
+                runtime_setup(runtime)
             runtime._bind_appender()
             try:
                 trust.recover_materialization()

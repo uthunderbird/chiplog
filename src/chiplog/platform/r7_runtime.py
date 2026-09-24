@@ -153,6 +153,11 @@ class _OwnerProvider(Provider):
 
 
 def _owner_module(identity: OwnerProcessIdentity) -> str:
+    if (
+        identity.owner_id == "effects"
+        and "effects.prepare_h1_local_commentary" in identity.capability_ids
+    ):
+        return "chiplog.capabilities.effects._h1_local_process"
     if identity.owner_id == "deployment_trust":
         legacy = (
             "deployment_trust.authenticate",
@@ -407,6 +412,13 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
     if module == "chiplog.capabilities.effects._dispatch_process":
         return (
             "chiplog.capabilities.effects._dispatch_process",
+            "chiplog.capabilities.effects._process",
+            "chiplog.capabilities.effects._r16_process",
+        )
+    if module == "chiplog.capabilities.effects._h1_local_process":
+        return (
+            "chiplog.capabilities.effects._dispatch_process",
+            "chiplog.capabilities.effects._h1_local_process",
             "chiplog.capabilities.effects._process",
             "chiplog.capabilities.effects._r16_process",
         )

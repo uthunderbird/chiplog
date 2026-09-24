@@ -48,6 +48,7 @@ def test_complete_batch_reconstructs_one_exact_ordered_physical_command() -> Non
         reconstructed = records.RetainedCompleteAcceptanceExchangeV1.model_validate_json(
             evidence.canonical_bytes()
         )
+        assert reconstructed.canonical_bytes() == evidence.canonical_bytes()
         assert records.complete_acceptance_command(reconstructed) == command
 
     asyncio.run(exercise())

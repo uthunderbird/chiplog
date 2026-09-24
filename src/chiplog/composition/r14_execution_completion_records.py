@@ -13,6 +13,7 @@ from typing import Literal
 from chiplog.capabilities.agent_loop.recovery_contracts import Digest, RecoveryDTO, UInt64
 from chiplog.composition.completion_publication_contracts import (
     PrepareCompleteAcceptanceAssemblyV1,
+    PrepareH1CompleteAcceptanceAssemblyV1,
     validate_complete_acceptance_batch,
 )
 from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
@@ -32,7 +33,7 @@ class RetainedCompleteAcceptanceExchangeV1(RecoveryDTO):
     kind: Literal["R14_RETAINED_COMPLETE_ACCEPTANCE_EXCHANGE_V1"] = (
         "R14_RETAINED_COMPLETE_ACCEPTANCE_EXCHANGE_V1"
     )
-    assembly: PrepareCompleteAcceptanceAssemblyV1
+    assembly: PrepareCompleteAcceptanceAssemblyV1 | PrepareH1CompleteAcceptanceAssemblyV1
     batch: CompleteDeliveryBatchV2
     expected_head: UInt64
     predecessor_commitment: Digest

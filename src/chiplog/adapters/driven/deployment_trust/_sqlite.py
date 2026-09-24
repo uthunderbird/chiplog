@@ -148,6 +148,16 @@ class SQLiteTrustMaterializer:
         with self._scope():
             return self._records()
 
+    def decision_ids(self) -> tuple[str, ...]:
+        """Enumerate every materialized decision, including zero-record rows."""
+        with self._scope():
+            return tuple(
+                str(row[0])
+                for row in self._connection.execute(
+                    "SELECT decision_id FROM trust_decisions ORDER BY rowid"
+                )
+            )
+
     def _records(self) -> tuple[bytes, ...]:
         return tuple(
             bytes(row[0])

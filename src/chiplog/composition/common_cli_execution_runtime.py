@@ -8,11 +8,12 @@ import json
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
-from chiplog.architecture.r7_runtime import R14_R17_H1_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallAuthorityObservation,
     CallSubjectHead,
@@ -77,7 +78,13 @@ from chiplog.composition.r17_authenticated_records import decode_authentication
 from chiplog.composition.r17_ingress_registry import RETAINED_CLI_READER_ID
 from chiplog.composition.r17_ingress_runtime import R17IngressRuntime
 from chiplog.platform._ingress_contracts import Head
-from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
+from chiplog.platform.broker import (
+    BrokerSession,
+    CallBudget,
+    PublicPortCall,
+    PublicPortResult,
+    PublicPortSuccess,
+)
 from chiplog.platform.ingress_custody_records import canonical, reference
 from chiplog.platform.ingress_transition_contracts import RetainedIngressSource
 from chiplog.platform.r7_trust import TrustOwnerCall
@@ -87,6 +94,17 @@ R17_RETAINED_READER_ID = RETAINED_CLI_READER_ID
 
 class _DriverConflict(Exception):
     pass
+
+
+_H1ScopeRole = Literal["scope_issue", "scope_current"]
+
+
+@dataclass(frozen=True, slots=True)
+class _H1ScopeWireKey:
+    role: _H1ScopeRole
+    request_id: str
+    caller: BrokerSession
+    callee: BrokerSession
 
 
 def _call_head(value: Head) -> CallSubjectHead:
@@ -115,6 +133,83 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             )
         )
     )
+    # Invocation-local wire captures are consumed only by the private H1
+    # publication authority.  The public scope methods still return their
+    # domain DTOs; callers never receive broker frames as authority evidence.
+    _h1_scope_wires: dict[_H1ScopeWireKey, tuple[PublicPortCall, PublicPortResult] | None]
+
+    @staticmethod
+    def _purge_expired_h1_scope_wires(
+        wires: dict[_H1ScopeWireKey, tuple[PublicPortCall, PublicPortResult] | None],
+    ) -> None:
+        now = time.monotonic_ns()
+        for key in tuple(wires):
+            captured = wires[key]
+            if captured is not None and captured[0].budget.absolute_deadline_ns <= now:
+                del wires[key]
+
+    @staticmethod
+    def _h1_scope_key(role: _H1ScopeRole, call: PublicPortCall) -> _H1ScopeWireKey:
+        expected_operation = {
+            "scope_issue": "deployment_trust.issue_hermetic_output_scope",
+            "scope_current": "deployment_trust.read_current_hermetic_output_scope",
+        }[role]
+        if call.operation_id != expected_operation:
+            raise LoopRejected("H1 scope capture has a substituted owner operation")
+        if call.schema_id != "chiplog.deployment-trust.owner-call.v1":
+            raise LoopRejected("H1 scope capture has a substituted owner schema")
+        return _H1ScopeWireKey(role, call.request_id, call.caller, call.callee)
+
+    def _reserve_h1_scope_wire(self, role: _H1ScopeRole, call: PublicPortCall) -> _H1ScopeWireKey:
+        key = self._h1_scope_key(role, call)
+        wires = getattr(self, "_h1_scope_wires", None)
+        if wires is None:
+            wires = {}
+            self._h1_scope_wires = wires
+        self._purge_expired_h1_scope_wires(wires)
+        if key in wires:
+            raise LoopRejected("H1 scope capture request is already in flight")
+        if len(wires) >= 64:
+            raise LoopRejected("H1 scope capture ledger is full")
+        wires[key] = None
+        return key
+
+    def _record_h1_scope_wire(
+        self, key: _H1ScopeWireKey, call: PublicPortCall, result: PublicPortResult
+    ) -> None:
+        wires = self._h1_scope_wires
+        if wires.get(key, "missing") is not None or key != self._h1_scope_key(key.role, call):
+            raise LoopRejected("H1 scope capture reservation differs")
+        if result.request_id != call.request_id or result.responder != call.callee:
+            raise LoopRejected("H1 scope capture response differs from sent frame")
+        wires[key] = (call, result)
+
+    def _discard_h1_scope_wire(self, key: _H1ScopeWireKey) -> None:
+        getattr(self, "_h1_scope_wires", {}).pop(key, None)
+
+    def _take_h1_scope_wire(
+        self,
+        role: _H1ScopeRole,
+        *,
+        request_id: str,
+        caller: BrokerSession,
+        callee: BrokerSession,
+    ) -> tuple[PublicPortCall, PublicPortResult]:
+        """Consume one exact private H1 scope exchange without cross-call reuse."""
+        key = _H1ScopeWireKey(role, request_id, caller, callee)
+        wires: dict[_H1ScopeWireKey, tuple[PublicPortCall, PublicPortResult] | None] = getattr(
+            self, "_h1_scope_wires", {}
+        )
+        self._purge_expired_h1_scope_wires(wires)
+        captured = wires.pop(key, None)
+        if captured is None:
+            raise LoopRejected("H1 scope capture is absent or still in flight")
+        call, result = captured
+        if key != self._h1_scope_key(role, call):
+            raise LoopRejected("H1 scope capture key differs from its sent frame")
+        if result.request_id != call.request_id or result.responder != call.callee:
+            raise LoopRejected("H1 scope capture response differs from sent frame")
+        return captured
 
     async def issue_hermetic_output_scope(
         self, intent: IssueHermeticOutputScopeV1, *, request_id: str
@@ -205,7 +300,16 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 policy_version=1,
             ),
         )
-        response = await self._supervisor.runtime().call(request)
+        try:
+            capture_key = self._reserve_h1_scope_wire("scope_issue", request)
+        except LoopRejected:
+            return NonIssuedHermeticOutputScopeV1(disposition="STALE")
+        try:
+            response = await self._supervisor.runtime().call(request)
+        except BaseException:
+            self._discard_h1_scope_wire(capture_key)
+            raise
+        self._record_h1_scope_wire(capture_key, request, response)
         if (
             not isinstance(response, PublicPortSuccess)
             or response.request_id != request_id
@@ -351,7 +455,16 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 policy_version=1,
             ),
         )
-        owner_response = await self._supervisor.runtime().call(broker_call)
+        try:
+            capture_key = self._reserve_h1_scope_wire("scope_current", broker_call)
+        except LoopRejected:
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        try:
+            owner_response = await self._supervisor.runtime().call(broker_call)
+        except BaseException:
+            self._discard_h1_scope_wire(capture_key)
+            raise
+        self._record_h1_scope_wire(capture_key, broker_call, owner_response)
         if (
             not isinstance(owner_response, PublicPortSuccess)
             or owner_response.request_id != broker_call.request_id
@@ -1000,11 +1113,14 @@ async def open_common_cli_execution_runtime(
             tenant_id="hermetic-tenant",
             operator_secret=b"r13-hermetic-only",
             runtime_type=CommonCliExecutionRuntime,
-            manifest=R14_R17_H1_PRODUCTION_MANIFEST,
+            manifest=R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
             extra_leaves={
                 "model": model,
                 "effects_transport": resources.require_original_provider(),
             },
+            runtime_setup=lambda opened: cast(
+                CommonCliExecutionRuntime, opened
+            )._bind_h1_historical_custody_path(resources._custody_path),
         ) as opened:
             runtime = cast(CommonCliExecutionRuntime, opened)
             runtime._execution_model = model

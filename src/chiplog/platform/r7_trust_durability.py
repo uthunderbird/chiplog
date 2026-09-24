@@ -12,6 +12,9 @@ from chiplog.adapters.driven.deployment_trust import (
     IndependentTenantDecisionJournal,
     SQLiteTrustMaterializer,
 )
+from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+    HermeticTrustObservationV1,
+)
 from chiplog.platform.authority_gate import AuthorityGate, FileIdentity
 from chiplog.platform.r7_trust import encode_trust_journal
 
@@ -61,6 +64,29 @@ class TrustDurabilityObservation:
     phase: str
 
 
+@dataclass(frozen=True, slots=True)
+class HistoricalTrustRecord:
+    """One exact materialized row, bound to its signed physical decision."""
+
+    physical_decision_id: str
+    physical_predecessor: str | None
+    envelope_bytes: bytes
+    envelope_fingerprint: str
+    logical_decision_id: str
+    logical_predecessor: str | None
+    record_ordinal: int
+    record_bytes: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalTrustPrefix:
+    """Authenticated physical cut and its canonical logical owner snapshot."""
+
+    observation: HermeticTrustObservationV1
+    snapshot_bytes: bytes
+    physical_entries: tuple[tuple[str, str | None, bytes], ...]
+
+
 class BrokerTrustDurability:
     """Applies owner-authorized bytes and verifies their authenticated durable envelope."""
 
@@ -83,6 +109,253 @@ class BrokerTrustDurability:
 
     def _authority_scope(self) -> AbstractContextManager[None]:
         return nullcontext() if self._authority_gate is None else self._authority_gate.hold()
+
+    def historical_record(self, decision_id: str, ordinal: int) -> HistoricalTrustRecord:
+        """Read an exact historical row after authenticating all durable trust state."""
+        if type(decision_id) is not str or not decision_id:
+            raise ValueError("decision_id must be a nonempty physical decision id")
+        if type(ordinal) is not int or not 0 <= ordinal < 2**63:
+            raise ValueError("ordinal must be a nonnegative SQLite integer")
+        self._require_historical_gate()
+        with self._authority_scope():
+            entries, logical_entries = self._authenticated_historical_entries()
+            for index, (physical_id, predecessor, raw) in enumerate(entries):
+                if physical_id == decision_id:
+                    record = self._materializer.record(decision_id, ordinal)
+                    if record is None:
+                        raise RuntimeError("historical materialized record is absent")
+                    logical_id, logical_predecessor, _ = logical_entries[index]
+                    return HistoricalTrustRecord(
+                        physical_decision_id=physical_id,
+                        physical_predecessor=predecessor,
+                        envelope_bytes=raw,
+                        envelope_fingerprint=hashlib.sha256(raw).hexdigest(),
+                        logical_decision_id=logical_id,
+                        logical_predecessor=logical_predecessor,
+                        record_ordinal=ordinal,
+                        record_bytes=record,
+                    )
+        raise RuntimeError("historical physical decision id is absent")
+
+    def historical_prefix(self, observation: HermeticTrustObservationV1) -> HistoricalTrustPrefix:
+        """Return the logical owner snapshot at an exact authenticated physical head."""
+        if not isinstance(observation, HermeticTrustObservationV1):
+            raise TypeError("historical prefix requires HermeticTrustObservationV1")
+        self._require_historical_gate()
+        with self._authority_scope():
+            entries, logical_entries = self._authenticated_historical_entries()
+            physical = observation.physical_journal_head
+            if physical.identity != "deployment-trust/journal":
+                raise RuntimeError("historical physical journal identity differs")
+            for index, (decision_id, _, raw) in enumerate(entries):
+                if decision_id != physical.head:
+                    continue
+                if hashlib.sha256(raw).hexdigest() != physical.fingerprint:
+                    raise RuntimeError("historical physical journal fingerprint differs")
+                if logical_entries[index][0] != observation.logical_snapshot_head:
+                    raise RuntimeError("historical logical snapshot head differs")
+                return HistoricalTrustPrefix(
+                    observation=observation,
+                    snapshot_bytes=encode_trust_journal(logical_entries[: index + 1]),
+                    physical_entries=entries[: index + 1],
+                )
+        raise RuntimeError("historical physical journal head is absent")
+
+    def _require_historical_gate(self) -> None:
+        if self._authority_gate is None:
+            raise RuntimeError("historical trust reads require a bound authority gate")
+
+    def _authenticated_historical_entries(
+        self,
+    ) -> tuple[
+        tuple[tuple[str, str | None, bytes], ...],
+        tuple[tuple[str, str | None, bytes], ...],
+    ]:
+        """Authenticate the complete source before exposing any historical cut."""
+        sources = (*self._journal.physical_sources(), self._materializer.physical_identity())
+        entries = self._journal.entries()
+        if not entries:
+            raise RuntimeError("historical trust journal is empty")
+        expected_all: list[bytes] = []
+        logical_entries: list[tuple[str, str | None, bytes]] = []
+        physical_predecessor: str | None = None
+        logical_predecessor: str | None = None
+        first_envelope: dict[str, object] | None = None
+        for index, (decision_id, predecessor, raw) in enumerate(entries):
+            if predecessor != physical_predecessor:
+                raise RuntimeError("historical physical predecessor differs")
+            if (
+                decision_id
+                != hashlib.sha256((predecessor or "GENESIS").encode() + b"\x00" + raw).hexdigest()
+            ):
+                raise RuntimeError("historical physical decision id differs")
+            envelope = self._strict_historical_envelope(raw)
+            if index == 0:
+                first_envelope = envelope
+            kind = envelope["kind"]
+            payload = envelope["payload"]
+            assert isinstance(kind, str)
+            assert isinstance(payload, dict)
+            self._validate_historical_payload(kind, payload)
+            unsigned = {"kind": kind, "payload": payload, "predecessor": envelope["predecessor"]}
+            if envelope["predecessor"] != logical_predecessor:
+                raise RuntimeError("historical logical predecessor differs")
+            logical_id = hashlib.sha256(
+                (logical_predecessor or "GENESIS").encode() + b"\x00" + _canonical(unsigned)
+            ).hexdigest()
+            expected = self._expected_records(decision_id, kind, payload)
+            actual = tuple(
+                self._materializer.record(decision_id, ordinal) for ordinal in range(len(expected))
+            )
+            if (
+                actual != expected
+                or self._materializer.record(decision_id, len(expected)) is not None
+            ):
+                raise RuntimeError(
+                    "historical trust materialization differs from authenticated journal"
+                )
+            expected_all.extend(expected)
+            logical_entries.append((logical_id, logical_predecessor, _canonical(unsigned)))
+            physical_predecessor = decision_id
+            logical_predecessor = logical_id
+        if self._materializer.records() != tuple(expected_all):
+            raise RuntimeError(
+                "historical trust materialization differs from authenticated journal"
+            )
+        if self._materializer.decision_ids() != tuple(decision_id for decision_id, _, _ in entries):
+            raise RuntimeError(
+                "historical trust materialization decisions differ from authenticated journal"
+            )
+        assert first_envelope is not None
+        self._verify_historical_genesis(first_envelope)
+        if entries != self._journal.entries() or sources != (
+            *self._journal.physical_sources(),
+            self._materializer.physical_identity(),
+        ):
+            raise RuntimeError("historical trust sources changed during read")
+        return entries, tuple(logical_entries)
+
+    def _strict_historical_envelope(self, raw: bytes) -> dict[str, object]:
+        try:
+            envelope = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as error:
+            raise RuntimeError("historical trust envelope is malformed") from error
+        if (
+            not isinstance(envelope, dict)
+            or set(envelope) != {"kind", "operator_authentication", "payload", "predecessor"}
+            or _canonical(envelope) != raw
+            or not isinstance(envelope["kind"], str)
+            or envelope["kind"] not in _TYPES
+            or not isinstance(envelope["payload"], dict)
+            or (
+                envelope["predecessor"] is not None and not isinstance(envelope["predecessor"], str)
+            )
+            or not isinstance(envelope["operator_authentication"], str)
+        ):
+            raise RuntimeError("historical trust envelope is incomplete")
+        unsigned = {
+            "kind": envelope["kind"],
+            "payload": envelope["payload"],
+            "predecessor": envelope["predecessor"],
+        }
+        expected = hmac.new(self._operator_secret, _canonical(unsigned), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(envelope["operator_authentication"], expected):
+            raise RuntimeError("historical trust decision authentication failed")
+        return envelope
+
+    @staticmethod
+    def _validate_historical_payload(kind: str, payload: dict[str, object]) -> None:
+        if kind == "INITIALIZE":
+            binding, genesis = payload.get("binding"), payload.get("genesis")
+            if (
+                set(payload) != {"binding", "genesis"}
+                or not isinstance(binding, dict)
+                or not isinstance(genesis, dict)
+                or set(binding)
+                != {
+                    "database_instance_id",
+                    "genesis_digest",
+                    "journal_epoch",
+                    "journal_identity",
+                    "operator_key_id",
+                    "predecessor",
+                    "signature",
+                    "tenant_id",
+                }
+                or set(genesis) != {"database_instance_id", "genesis_version", "tenant_id"}
+                or not _has_string_fields(
+                    binding,
+                    {
+                        "database_instance_id",
+                        "genesis_digest",
+                        "journal_identity",
+                        "operator_key_id",
+                        "signature",
+                        "tenant_id",
+                    },
+                )
+                or type(binding["journal_epoch"]) is not int
+                or binding["journal_epoch"] != 1
+                or binding["predecessor"] is not None
+                or not _has_string_fields(genesis, {"database_instance_id", "tenant_id"})
+                or type(genesis["genesis_version"]) is not int
+                or genesis["genesis_version"] != 1
+            ):
+                raise RuntimeError("historical INITIALIZE payload is invalid")
+        elif kind == "BOOTSTRAP":
+            credential = payload.get("credential")
+            if (
+                set(payload)
+                != {"credential", "principal_id", "recovery_verifier", "token_fingerprint"}
+                or not isinstance(credential, dict)
+                or set(credential)
+                != {
+                    "credential_id",
+                    "head",
+                    "peer_credential",
+                    "revoked",
+                    "session_head",
+                    "session_id",
+                }
+                or not _has_string_fields(
+                    payload, {"principal_id", "recovery_verifier", "token_fingerprint"}
+                )
+                or not _has_string_fields(
+                    credential,
+                    {"credential_id", "head", "peer_credential", "session_head", "session_id"},
+                )
+                or not isinstance(credential["revoked"], bool)
+            ):
+                raise RuntimeError("historical BOOTSTRAP payload is invalid")
+        else:
+            from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+                HermeticOutputScopeV1,
+            )
+
+            scope_value = payload.get("scope")
+            if set(payload) != {"scope"} or not isinstance(scope_value, dict):
+                raise RuntimeError("historical H1 scope payload is invalid")
+            try:
+                scope = HermeticOutputScopeV1.model_validate(scope_value)
+            except ValueError as error:
+                raise RuntimeError("historical H1 scope payload is invalid") from error
+            if scope.model_dump(mode="json") != scope_value:
+                raise RuntimeError("historical H1 scope payload is not canonical")
+
+    def _verify_historical_genesis(self, envelope: dict[str, object]) -> None:
+        if envelope["kind"] != "INITIALIZE":
+            raise RuntimeError("historical trust journal lacks INITIALIZE genesis")
+        payload = envelope["payload"]
+        assert isinstance(payload, dict)
+        binding, genesis = payload["binding"], payload["genesis"]
+        assert isinstance(binding, dict)
+        assert isinstance(genesis, dict)
+        unsigned = {key: value for key, value in binding.items() if key != "signature"}
+        expected = hmac.new(self._operator_secret, _canonical(unsigned), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(str(binding["signature"]), expected):
+            raise RuntimeError("historical trust binding authentication failed")
+        if binding["genesis_digest"] != hashlib.sha256(_canonical(genesis)).hexdigest():
+            raise RuntimeError("historical trust genesis binding mismatch")
 
     def capture_verified_observation(self) -> FrozenTrustObservation:
         gate = self._authority_gate
@@ -392,7 +665,11 @@ class BrokerTrustDurability:
     def _locked_verify(self) -> TrustDurabilityObservation | None:
         entries = self._journal.entries()
         if not entries:
+            if self._materializer.decision_ids():
+                raise RuntimeError("trust materialization differs from authenticated journal")
             return None
+        if self._materializer.decision_ids() != tuple(decision_id for decision_id, _, _ in entries):
+            raise RuntimeError("trust materialization differs from authenticated journal")
         self._verify_operator_authentication(entries)
         for decision_id, _, raw in entries:
             if not self._materializer.materialized(decision_id):

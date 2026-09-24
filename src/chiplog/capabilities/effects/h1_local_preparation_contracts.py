@@ -121,6 +121,53 @@ class PrepareH1LocalCommentaryV1(DispatchObservationDTO):
     fence: WorkerFence
 
 
+class H1LocalCommentaryRouteV1(DispatchObservationDTO):
+    """The broker-owned mount identity for the one local preparation call.
+
+    This value binds a call to a live broker route; it is deliberately not an
+    authority assertion that a caller may mint outside the mounted IPC route.
+    """
+
+    tenant_id: Identity
+    database_id: Identity
+    worker_session_id: Identity
+    broker_epoch: int = Field(ge=0, le=2**64 - 1)
+    runtime_generation: Identity
+    broker_session_id: Identity
+    owner_session_id: Identity
+    request_id: Identity
+    caller_owner: Literal["broker"] = "broker"
+    callee_owner: Literal["effects"] = "effects"
+    operation: Literal["effects.prepare_h1_local_commentary"] = (
+        "effects.prepare_h1_local_commentary"
+    )
+
+
+class H1LocalCommentaryOwnerCallV1(DispatchObservationDTO):
+    """The only public effects-owner input for H1 local preparation."""
+
+    schema_id: Literal["chiplog.effects.h1-local-commentary-owner-call.v1"] = (
+        "chiplog.effects.h1-local-commentary-owner-call.v1"
+    )
+    route: H1LocalCommentaryRouteV1
+    request: PrepareH1LocalCommentaryV1
+    request_digest: Digest
+
+    @model_validator(mode="after")
+    def exact_request(self) -> Self:
+        if _sha256(self.request.canonical_bytes()) != self.request_digest:
+            raise ValueError("H1 local owner request digest differs")
+        if (
+            self.route.tenant_id != self.request.original_completion_request.run.tenant
+            or self.route.database_id != self.request.original_completion_request.source.database_id
+            or self.route.worker_session_id
+            != self.request.original_completion_request.run.worker_session
+            or self.route.request_id != self.request.identity.command_id
+        ):
+            raise ValueError("H1 local owner route differs from request")
+        return self
+
+
 class H1LocalPreparedCommentaryIntentV1(DispatchObservationDTO):
     """Durable local receipt shape, explicitly outside external action schemas."""
 

@@ -785,6 +785,25 @@ _H1_CONVERSATION_COMPLETION_ROUTE = RoutedCallDecl(
     "chiplog.conversation.prepare-completion.v1",
     "chiplog.conversation.prepared-completion-result.v1",
 )
+_H1_LOCAL_EFFECTS_ROUTE = RoutedCallDecl(
+    "effects.prepare_h1_local_commentary",
+    "broker",
+    "effects",
+    "chiplog.effects.h1-local-commentary-owner-call.v1",
+    "chiplog.effects.prepared-h1-local-commentary.v1",
+)
+_H1_EFFECTS_OPERATIONS = tuple(
+    sorted(
+        (
+            *next(
+                owner.capability_ids
+                for owner in R14_R17_H0_PRODUCTION_MANIFEST.owners
+                if owner.owner_id == "effects"
+            ),
+            _H1_LOCAL_EFFECTS_ROUTE.operation_id,
+        )
+    )
+)
 _H1_PROJECTION_OPERATIONS = tuple(
     sorted(
         (
@@ -819,7 +838,9 @@ R14_R17_H1_PRODUCTION_MANIFEST = replace(
             owner,
             capability_ids=_H1_PROJECTION_OPERATIONS,
             public_operations=_H1_PROJECTION_OPERATIONS,
-            target_ids=("chiplog.capabilities.projections._conversation_completion_process:dispatch",),
+            target_ids=(
+                "chiplog.capabilities.projections._conversation_completion_process:dispatch",
+            ),
         )
         if owner.owner_id == "projections"
         else owner
@@ -841,6 +862,33 @@ R14_R17_H1_PRODUCTION_MANIFEST = replace(
 )
 R14_R17_H1_EVALUATION_MANIFEST = replace(R14_R17_H1_PRODUCTION_MANIFEST, environment="evaluation")
 
+# H1 local effects keeps every prior effects route and adds only the mounted,
+# preparation-only Commentary receipt route.  It cannot SEND or publish itself.
+R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST = replace(
+    R14_R17_H1_PRODUCTION_MANIFEST,
+    manifest_version=18,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_H1_EFFECTS_OPERATIONS,
+            public_operations=_H1_EFFECTS_OPERATIONS,
+            target_ids=("chiplog.capabilities.effects._h1_local_process:dispatch",),
+        )
+        if owner.owner_id == "effects"
+        else owner
+        for owner in R14_R17_H1_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (*R14_R17_H1_PRODUCTION_MANIFEST.routes, _H1_LOCAL_EFFECTS_ROUTE),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_R17_H1_LOCAL_EFFECTS_EVALUATION_MANIFEST = replace(
+    R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST, environment="evaluation"
+)
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -852,7 +900,26 @@ def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
 
 
 def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
-    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
+    if manifest.manifest_version not in (
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+    ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
         1: R7_PRODUCTION_MANIFEST,
@@ -870,6 +937,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         13: R14_R16_CALL_PRODUCTION_MANIFEST,
         14: R14_R17_H0_PRODUCTION_MANIFEST,
         17: R14_R17_H1_PRODUCTION_MANIFEST,
+        18: R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")

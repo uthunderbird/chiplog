@@ -38,6 +38,28 @@ def test_completion_assembly_schemas_and_fixed_role_labels_are_public() -> None:
     assert completion.WORK_SCHEMA.startswith("chiplog.agent-loop.")
 
 
+def test_h1_local_assembly_is_a_separate_closed_variant_from_legacy_acceptance() -> None:
+    assert (
+        completion.H1LocalDeliveryEffectsExchangeV1.model_fields["schema_id"].default
+        == "chiplog.composition.h1-local-delivery-effects-exchange.v1"
+    )
+    assert (
+        completion.PrepareH1CompleteAcceptanceAssemblyV1.model_fields["schema_id"].default
+        == "chiplog.composition.h1-complete-acceptance-assembly.v1"
+    )
+    effects = completion.PrepareH1CompleteAcceptanceAssemblyV1.model_fields["ordered_effects"]
+    assert effects.metadata[0].min_length == 1
+    assert effects.metadata[1].max_length == 1
+    assert {
+        "work_source",
+        "terminal_work_request",
+        "terminal_work_result",
+    } <= completion.PrepareH1CompleteAcceptanceAssemblyV1.model_fields.keys()
+    # H1 adds a distinct branch; the established V1 field and wire stay stable.
+    legacy_effects = completion.PrepareCompleteAcceptanceAssemblyV1.model_fields["ordered_effects"]
+    assert legacy_effects.annotation != effects.annotation
+
+
 def test_complete_acceptance_closes_v2_and_v3_two_delivery_owner_exchanges() -> None:
     async def exercise() -> None:
         for run_schema in ("v2", "v3"):

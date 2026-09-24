@@ -19,9 +19,9 @@ from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     CliCustodyOffer,
     CliCustodyResponse,
 )
-from chiplog.capabilities.effects.scoped_intent_contracts import ExternalActionIntentV3
-from chiplog.capabilities.projections.conversation_preparation_contracts import (
-    ACCEPTED_ENTRY_SCHEMA,
+from chiplog.capabilities.effects.h1_local_preparation_record_contracts import (
+    H1LocalPreparedCommentaryCanonicalMemberV1,
+    decode_h1_local_prepared_commentary_member,
 )
 from chiplog.composition.common_cli_execution_runtime import (
     R17_RETAINED_READER_ID,
@@ -36,10 +36,15 @@ from chiplog.composition.common_execution_driver_contracts import (
     LookupExecutionRequestV1,
     SelectedExecutionReceiptV1,
 )
+from chiplog.composition.r14_execution_completion_records import (
+    COMPLETE_ACCEPTANCE_OPERATION,
+)
 from chiplog.composition.r14_execution_inbox_records import (
     EXECUTION_INBOX_INITIALIZATION_OPERATION,
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
+from chiplog.platform._sqlite import PhysicalPublicationCommand
 from chiplog.platform.ingress_transition_contracts import (
     IngressCommandIdentity,
     RetainedIngressSource,
@@ -131,6 +136,71 @@ def _physical_snapshot(database: Path) -> tuple[tuple[object, ...], ...]:
         )
 
 
+class H1TerminalBoundaryUnavailable(Exception):
+    """The public H1 terminal boundary has not selected its owner publication."""
+
+
+def _require_h1_terminal_boundary(receipt: SelectedExecutionReceiptV1) -> None:
+    if receipt.phase == "RUNNING":
+        raise H1TerminalBoundaryUnavailable(
+            "H1 terminal owner publication not implemented: receipt phase RUNNING at terminal "
+            "boundary; expected TERMINAL"
+        )
+
+
+def _assert_h1_local_prepared_commentary_record(
+    rows: list[tuple[str, str, str, bytes]],
+    complete: bytes,
+    batch: CompleteDeliveryBatchV2,
+    command: PhysicalPublicationCommand,
+) -> None:
+    assert len(rows) == len(command.records) == len(batch.complete_records)
+    assert batch.terminal_work_command.owner == "agent_loop"
+    assert batch.terminal_work_command.schema_id == "chiplog.agent-loop.prepare-terminal-work.v1"
+    local_rows = [
+        row
+        for row in rows
+        if row[1] == "effects"
+        and row[2] == "chiplog.effects.h1-local-prepared-commentary-intent.v1"
+    ]
+    assert len(local_rows) == 1
+    local_row = local_rows[0]
+    completion = DeliveryCompletion.model_validate_json(complete)
+    assert len(completion.deliveries) == 1
+    assert len(completion.deliveries[0].payload) == 1
+    commentary = completion.deliveries[0].payload[0]
+    assert isinstance(commentary, Commentary)
+    member = H1LocalPreparedCommentaryCanonicalMemberV1(
+        record_id=local_row[0],
+        canonical_record_bytes=local_row[3],
+        fingerprint=hashlib.sha256(local_row[3]).hexdigest(),
+    )
+    intent = decode_h1_local_prepared_commentary_member(member)
+    assert intent.canonical_bytes() == local_row[3]
+    assert intent.external_delivery is False
+    assert intent.delivery.rendered_bytes == commentary.text.encode()
+
+
+def _selected_h1_owner_command(
+    runtime: CommonCliExecutionRuntime, receipt: SelectedExecutionReceiptV1
+) -> tuple[CompleteDeliveryBatchV2, PhysicalPublicationCommand]:
+    selected = [
+        decision
+        for decision in runtime._owner_decisions().snapshot().decisions
+        if isinstance(decision.prepared.request, CompleteDeliveryBatchV2)
+        and decision.prepared.request.operation == COMPLETE_ACCEPTANCE_OPERATION
+    ]
+    assert len(selected) == 1
+    decision = selected[0]
+    batch = decision.prepared.request
+    assert isinstance(batch, CompleteDeliveryBatchV2)
+    assert decision.decision_head == receipt.selected_journal_decision.head
+    command = runtime._owner_command(decision)
+    assert command.operation_kind == COMPLETE_ACCEPTANCE_OPERATION
+    assert receipt.commit_sequence == decision.tenant_commit_sequence == command.expected_head + 1
+    return batch, command
+
+
 def _advance(
     initial: SelectedExecutionReceiptV1, request: DriveInputRequestV1
 ) -> AdvanceExecutionRequestV1:
@@ -213,6 +283,11 @@ async def test_socket_selected_inbox_creates_native_run_and_reopens(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    raises=H1TerminalBoundaryUnavailable,
+    reason="H1 terminal owner publication not implemented",
+)
 async def test_socket_complete_selects_native_terminal_batch(tmp_path: Path) -> None:
     database = tmp_path / "h1-complete.sqlite"
     custody = tmp_path / "dispatch-custody"
@@ -230,6 +305,7 @@ async def test_socket_complete_selects_native_terminal_batch(tmp_path: Path) -> 
 
         receipt = await runtime.advance_execution(_advance(initial, request))
         assert receipt.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        _require_h1_terminal_boundary(receipt)
         assert receipt.phase == "TERMINAL"
         assert receipt.selected_run_state == "SUCCEEDED"
         assert receipt.terminal_detail is not None
@@ -239,14 +315,7 @@ async def test_socket_complete_selects_native_terminal_batch(tmp_path: Path) -> 
         assert receipt.commit_sequence > initial.commit_sequence
         assert len(runtime._execution_model.requests) == 1
 
-        decision = next(
-            json.loads(raw)
-            for decision_id, _, raw in runtime._loop_decisions().entries()
-            if decision_id == receipt.selected_journal_decision.head
-        )
-        command = runtime._publication(decision)
-        assert command.operation_kind == "agent_loop.complete_acceptance.v2"
-        assert receipt.commit_sequence == command.expected_head + 1
+        batch, command = _selected_h1_owner_command(runtime, receipt)
         with sqlite3.connect(database) as connection:
             rows = connection.execute(
                 "SELECT record_id, owner, schema_id, canonical_bytes FROM records "
@@ -257,23 +326,21 @@ async def test_socket_complete_selects_native_terminal_batch(tmp_path: Path) -> 
             (member.record_id, member.owner, member.schema_id, member.canonical_bytes)
             for member in command.records
         ]
-        assert [(row[1], row[2]) for row in rows[:5]] == [
-            ("agent_loop", "chiplog.agent-loop.delivery-acceptance-record.v1"),
-            ("agent_loop", "chiplog.agent-loop.execution-terminal-manifest.v1"),
-            ("agent_loop", "chiplog.agent-loop.execution-record.v2"),
-            ("conversation", ACCEPTED_ENTRY_SCHEMA),
-            ("effects", "chiplog.effects.external-action-intent.v3"),
-        ]
+        _assert_h1_local_prepared_commentary_record(rows, complete, batch, command)
         terminal_run = ExecutionRunRecord.model_validate_json(rows[2][3])
         assert terminal_run.state == "SUCCEEDED"
         assert terminal_run.turns[-1].state == "ACCEPTED"
         assert terminal_run.turns[-1].attempts[-1].state == "TERMINAL_ACCEPTED"
-        intent = ExternalActionIntentV3.model_validate_json(rows[4][3])
-        assert intent.mandate.origin.kind == "PREPARED_DELIVERY"
         assert json.loads(rows[3][3])["source_kind"] == "COMPLETION"
+        assert resources.require_original_provider().transfers == ()
 
 
 @pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    raises=H1TerminalBoundaryUnavailable,
+    reason="H1 terminal owner publication not implemented",
+)
 async def test_terminal_drive_reopens_without_second_decision_or_model_call(tmp_path: Path) -> None:
     database = tmp_path / "h1-replay.sqlite"
     custody = tmp_path / "dispatch-custody"
@@ -290,11 +357,26 @@ async def test_terminal_drive_reopens_without_second_decision_or_model_call(tmp_
         advance = _advance(initial, request)
         committed = await runtime.advance_execution(advance)
         assert committed.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        _require_h1_terminal_boundary(committed)
         assert committed.phase == "TERMINAL"
         assert committed.selected_run_state == "SUCCEEDED"
         assert len(runtime._execution_model.requests) == 1
-        decisions = runtime._loop_decisions().entries()
+        loop_decisions = runtime._loop_decisions().entries()
+        owner_decisions = runtime._owner_decisions().snapshot()
+        batch, command = _selected_h1_owner_command(runtime, committed)
         records = _physical_snapshot(database)
+        with sqlite3.connect(database) as connection:
+            rows = connection.execute(
+                "SELECT record_id, owner, schema_id, canonical_bytes FROM records "
+                "WHERE commit_sequence=? ORDER BY rowid",
+                (committed.commit_sequence,),
+            ).fetchall()
+        assert rows == [
+            (member.record_id, member.owner, member.schema_id, member.canonical_bytes)
+            for member in command.records
+        ]
+        _assert_h1_local_prepared_commentary_record(rows, complete, batch, command)
+        assert resources.require_original_provider().transfers == ()
 
     reopened_resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=custody
@@ -320,16 +402,24 @@ async def test_terminal_drive_reopens_without_second_decision_or_model_call(tmp_
         assert lookup.model_dump(exclude={"disposition"}) == committed.model_dump(
             exclude={"disposition"}
         )
+        assert admission_replay.kind == "SELECTED_EXECUTION_RECEIPT_V1"
         assert admission_replay.disposition == "EXACT_REPLAY"
         assert admission_replay.model_dump(exclude={"disposition"}) == initial.model_dump(
             exclude={"disposition"}
         )
         assert runtime._execution_model.requests == []
-        assert runtime._loop_decisions().entries() == decisions
+        assert runtime._loop_decisions().entries() == loop_decisions
+        assert runtime._owner_decisions().snapshot() == owner_decisions
         assert _physical_snapshot(database) == records
+        assert reopened_resources.require_original_provider().transfers == ()
 
 
 @pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    raises=H1TerminalBoundaryUnavailable,
+    reason="H1 terminal owner publication not implemented",
+)
 async def test_prepared_complete_seal_reopens_and_publishes_once(tmp_path: Path) -> None:
     database = tmp_path / "h1-prepared-replay.sqlite"
     custody = tmp_path / "dispatch-custody"
@@ -357,9 +447,11 @@ async def test_prepared_complete_seal_reopens_and_publishes_once(tmp_path: Path)
         assert sealed.event == "ModelCompletionPrepared"
         assert len(runtime._execution_model.requests) == 1
         assert not any(
-            json.loads(raw).get("operation_kind") == "agent_loop.complete_acceptance.v2"
-            for _, _, raw in runtime._loop_decisions().entries()
+            isinstance(decision.prepared.request, CompleteDeliveryBatchV2)
+            and decision.prepared.request.operation == COMPLETE_ACCEPTANCE_OPERATION
+            for decision in runtime._owner_decisions().snapshot().decisions
         )
+        assert resources.require_original_provider().transfers == ()
 
     reopened_resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=custody
@@ -368,23 +460,16 @@ async def test_prepared_complete_seal_reopens_and_publishes_once(tmp_path: Path)
         terminal = await runtime.advance_execution(advance)
 
         assert terminal.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        _require_h1_terminal_boundary(terminal)
         assert terminal.phase == "TERMINAL"
         assert terminal.selected_run_state == "SUCCEEDED"
         assert terminal.terminal_detail is not None
         assert terminal.terminal_detail.kind == "ACCEPTED"
         assert runtime._execution_model.requests == []
 
-        decisions = runtime._loop_decisions().entries()
-        selected = [
-            (decision_id, json.loads(raw))
-            for decision_id, _, raw in decisions
-            if json.loads(raw).get("operation_kind") == "agent_loop.complete_acceptance.v2"
-        ]
-        assert len(selected) == 1
-        decision_id, decision = selected[0]
-        assert decision_id == terminal.selected_journal_decision.head
-        command = runtime._publication(decision)
-        assert terminal.commit_sequence == command.expected_head + 1
+        loop_decisions = runtime._loop_decisions().entries()
+        owner_decisions = runtime._owner_decisions().snapshot()
+        batch, command = _selected_h1_owner_command(runtime, terminal)
         with sqlite3.connect(database) as connection:
             rows = connection.execute(
                 "SELECT record_id, owner, schema_id, canonical_bytes FROM records "
@@ -395,13 +480,8 @@ async def test_prepared_complete_seal_reopens_and_publishes_once(tmp_path: Path)
             (member.record_id, member.owner, member.schema_id, member.canonical_bytes)
             for member in command.records
         ]
-        assert [(row[1], row[2]) for row in rows[:5]] == [
-            ("agent_loop", "chiplog.agent-loop.delivery-acceptance-record.v1"),
-            ("agent_loop", "chiplog.agent-loop.execution-terminal-manifest.v1"),
-            ("agent_loop", "chiplog.agent-loop.execution-record.v2"),
-            ("conversation", ACCEPTED_ENTRY_SCHEMA),
-            ("effects", "chiplog.effects.external-action-intent.v3"),
-        ]
+        _assert_h1_local_prepared_commentary_record(rows, complete, batch, command)
+        assert reopened_resources.require_original_provider().transfers == ()
 
         records = _physical_snapshot(database)
         replay = await runtime.advance_execution(advance)
@@ -411,8 +491,10 @@ async def test_prepared_complete_seal_reopens_and_publishes_once(tmp_path: Path)
             exclude={"disposition"}
         )
         assert runtime._execution_model.requests == []
-        assert runtime._loop_decisions().entries() == decisions
+        assert runtime._loop_decisions().entries() == loop_decisions
+        assert runtime._owner_decisions().snapshot() == owner_decisions
         assert _physical_snapshot(database) == records
+        assert reopened_resources.require_original_provider().transfers == ()
 
 
 @pytest.mark.asyncio

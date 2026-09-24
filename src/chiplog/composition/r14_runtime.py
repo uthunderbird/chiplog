@@ -21,7 +21,7 @@ from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJo
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import R14_FANOUT_PRODUCTION_MANIFEST
 from chiplog.capabilities.agent_loop.contracts import DurableCompanion, LoopSnapshot, RunRecord
-from chiplog.composition.r7_planning import _open_runtime
+from chiplog.composition.r7_planning import R7PlanningRuntime, _open_runtime
 from chiplog.composition.r13_planning import R13PlanningRuntime
 from chiplog.composition.r14_cancellation_contracts import (
     CANCELLATION_SCHEMA,
@@ -165,6 +165,31 @@ class R14PlanningRuntime(R13PlanningRuntime):
     )
     _owner_journal: AnchoredOwnerDecisionJournal | None = None
     _database_identity: tuple[str, int, int]
+    _h1_historical_custody_path: Path | None = None
+
+    def _bind_h1_historical_custody_path(self, path: Path | None) -> None:
+        """Install only composition-provided H1 custody before startup recovery."""
+        with self._authority_gate().hold():
+            if path is not None and not isinstance(path, Path):
+                raise TypeError("H1 historical custody path must be a Path or None")
+            self._h1_historical_custody_path = path
+
+    def _h1_historical_custody(self) -> object:
+        """Open an existing trusted custody file; never create a live resource."""
+        with self._authority_gate().hold():
+            path = self._h1_historical_custody_path
+            if path is None:
+                raise ValueError("selected H1 completion has no historical custody binding")
+            from chiplog.composition.r16_dispatch_custody import (
+                load_existing_historical_custody,
+            )
+
+            return load_existing_historical_custody(path)
+
+    def _h1_historical_trust_reader(self) -> object:
+        """Expose the canonical gated trust durability for raw historical reads."""
+        with self._authority_gate().hold():
+            return self._trust
 
     async def cancel_call(self, peer: str, submission: CancelCallSubmission) -> RunRecord:
         from chiplog.composition.r14_cancellation import cancel_call
@@ -434,9 +459,11 @@ class R14PlanningRuntime(R13PlanningRuntime):
             from chiplog.composition.r14_loop_history import (
                 validate_selected_cancellations,
                 validate_selected_executions,
+                validate_selected_h1_completions,
             )
             from chiplog.composition.r16_denial_history import validate_selected_denials
 
+            validate_selected_h1_completions(self)
             validate_selected_cancellations(self)
             validate_selected_executions(self)
             validate_selected_denials(self._owner_decisions().snapshot())
@@ -525,8 +552,16 @@ class R14PlanningRuntime(R13PlanningRuntime):
 
 @asynccontextmanager
 async def open_r14_runtime(
-    database: Path, *, model: HermeticModel | None = None
+    database: Path,
+    *,
+    model: HermeticModel | None = None,
+    historical_custody_path: Path | None = None,
 ) -> AsyncIterator[R14PlanningRuntime]:
+    def bind_historical_custody(opened: R7PlanningRuntime) -> None:
+        if not isinstance(opened, R14PlanningRuntime):
+            raise TypeError("R14 opener received a substituted runtime")
+        opened._bind_h1_historical_custody_path(historical_custody_path)
+
     async with _open_runtime(
         database,
         tenant_id="hermetic-tenant",
@@ -534,6 +569,7 @@ async def open_r14_runtime(
         runtime_type=R14PlanningRuntime,
         manifest=R14_FANOUT_PRODUCTION_MANIFEST,
         extra_leaves={"model": model if model is not None else HermeticModel()},
+        runtime_setup=bind_historical_custody,
     ) as opened:
         runtime = cast(R14PlanningRuntime, opened)
         if runtime._trust.verify() is None:

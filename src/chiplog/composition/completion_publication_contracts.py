@@ -48,6 +48,18 @@ from chiplog.capabilities.agent_loop.rejected_completion_terminalization_contrac
     manifest_ref,
     rejected_terminalization_request_fingerprint,
 )
+from chiplog.capabilities.effects.h1_local_preparation_contracts import (
+    PREPARE_SCHEMA as H1_LOCAL_PREPARE_SCHEMA,
+)
+from chiplog.capabilities.effects.h1_local_preparation_contracts import (
+    H1LocalCommentaryOwnerCallV1,
+    PreparedH1LocalCommentaryV1,
+)
+from chiplog.capabilities.effects.h1_local_preparation_record_contracts import (
+    H1LocalPreparedCommentaryCanonicalMemberV1,
+    decode_h1_local_prepared_commentary_member,
+    h1_local_complete_owner_commitment,
+)
 from chiplog.capabilities.effects.scoped_intent_contracts import (
     PreparedDeliveryAuthority,
     PreparedDeliveryBasisV3,
@@ -115,6 +127,23 @@ class DeliveryEffectsExchangeV1(Frozen):
     retained_sources: tuple[RetainedOriginalSourceV3, ...]
 
 
+class H1LocalDeliveryEffectsExchangeV1(Frozen):
+    """Closed one-member H1-local effects exchange.
+
+    This pure assembly verifies reproducible typed joins and physical record
+    bytes.  The mounted effects owner remains responsible for authenticating
+    the route and retained sources.
+    """
+
+    kind: Literal["H1_LOCAL_DELIVERY_EFFECTS_EXCHANGE_V1"] = "H1_LOCAL_DELIVERY_EFFECTS_EXCHANGE_V1"
+    schema_id: Literal["chiplog.composition.h1-local-delivery-effects-exchange.v1"] = (
+        "chiplog.composition.h1-local-delivery-effects-exchange.v1"
+    )
+    owner_call: H1LocalCommentaryOwnerCallV1
+    owner_result: PreparedH1LocalCommentaryV1
+    local_member: H1LocalPreparedCommentaryCanonicalMemberV1
+
+
 class PrepareCompleteAcceptanceAssemblyV1(Frozen):
     kind: Literal["PREPARE_COMPLETE_ACCEPTANCE_ASSEMBLY_V1"] = (
         "PREPARE_COMPLETE_ACCEPTANCE_ASSEMBLY_V1"
@@ -127,6 +156,31 @@ class PrepareCompleteAcceptanceAssemblyV1(Frozen):
     conversation_request: PrepareConversationCompletionV1
     conversation_result: PreparedConversationCompletionV1
     ordered_effects: tuple[DeliveryEffectsExchangeV1, ...] = Field(min_length=1)
+    work_source: AcceptedCompletionWorkSourceV1
+    terminal_work_request: PrepareTerminalWork
+    terminal_work_result: PreparedPostTerminalWork
+
+
+class PrepareH1CompleteAcceptanceAssemblyV1(Frozen):
+    """Closed first-path acceptance assembly with one inert local effects receipt.
+
+    This is separate from ``PrepareCompleteAcceptanceAssemblyV1`` so the
+    established multi-delivery exchange and its byte representation stay fixed.
+    """
+
+    kind: Literal["PREPARE_H1_COMPLETE_ACCEPTANCE_ASSEMBLY_V1"] = (
+        "PREPARE_H1_COMPLETE_ACCEPTANCE_ASSEMBLY_V1"
+    )
+    schema_id: Literal["chiplog.composition.h1-complete-acceptance-assembly.v1"] = (
+        "chiplog.composition.h1-complete-acceptance-assembly.v1"
+    )
+    original_completion_request: PrepareExecutionCompletionFirstPathV2
+    prepared_completion: PreparedExecutionCompletion
+    conversation_request: PrepareConversationCompletionV1
+    conversation_result: PreparedConversationCompletionV1
+    ordered_effects: tuple[H1LocalDeliveryEffectsExchangeV1, ...] = Field(
+        min_length=1, max_length=1
+    )
     work_source: AcceptedCompletionWorkSourceV1
     terminal_work_request: PrepareTerminalWork
     terminal_work_result: PreparedPostTerminalWork
@@ -267,6 +321,197 @@ def _effects_record(member: ScopedIntentCanonicalMemberV3) -> OwnerRecordBytes:
         member.canonical_record_bytes,
         member.fingerprint,
     )
+
+
+def _h1_local_effects_record(
+    member: H1LocalPreparedCommentaryCanonicalMemberV1,
+) -> OwnerRecordBytes:
+    return _owner_record(
+        "effects",
+        member.record_kind,
+        member.record_id,
+        member.schema_id,
+        member.canonical_record_bytes,
+        member.fingerprint,
+    )
+
+
+def h1_local_effects_commands(
+    exchange: H1LocalDeliveryEffectsExchangeV1,
+) -> tuple[OwnerCommandBytes, ...]:
+    """Reconstruct the sole physical effects command for the H1-local exchange."""
+    request = exchange.owner_call.request
+    return (_command("effects", H1_LOCAL_PREPARE_SCHEMA, request.canonical_bytes()),)
+
+
+def expected_h1_local_effects_records(
+    exchange: H1LocalDeliveryEffectsExchangeV1,
+) -> tuple[OwnerRecordBytes, ...]:
+    """Reconstruct the sole physical effects record without authenticating sources."""
+    _validate_h1_local_effects_exchange(exchange)
+    return (_h1_local_effects_record(exchange.local_member),)
+
+
+def _validate_h1_local_effects_exchange(exchange: H1LocalDeliveryEffectsExchangeV1) -> None:
+    """Join a pinned H1 owner call, result, and its single canonical member.
+
+    Re-decoding the call/member makes copied-but-mutated Pydantic values pass
+    their own strict validators again.  This is structural integrity only; no
+    source or route authentication is asserted here.
+    """
+    call = H1LocalCommentaryOwnerCallV1.model_validate_json(exchange.owner_call.canonical_bytes())
+    if call != exchange.owner_call:
+        raise _CompletionExchangeError("H1 local owner call differs after canonical re-decode")
+    request = call.request
+    result = exchange.owner_result
+    if result.source_request_fingerprint != _sha(request.canonical_bytes()):
+        raise _CompletionExchangeError("H1 local result differs from owner request")
+    intent = decode_h1_local_prepared_commentary_member(exchange.local_member)
+    if intent != result.intent:
+        raise _CompletionExchangeError("H1 local physical member differs from owner result")
+    commitment = h1_local_complete_owner_commitment(exchange.local_member)
+    if result.complete_owner_commitment != commitment:
+        raise _CompletionExchangeError("H1 local owner commitment differs from physical member")
+
+
+def validate_h1_local_delivery_effects_exchange(
+    exchange: H1LocalDeliveryEffectsExchangeV1,
+    commands: tuple[OwnerCommandBytes, ...],
+    records: tuple[OwnerRecordBytes, ...],
+) -> CompletionPublicationAssemblyFailureV1 | None:
+    """Require exactly one reconstructed local command and one physical member.
+
+    It intentionally proves no source authentication.  That belongs to the
+    mounted effects owner, before this pure composition boundary is entered.
+    """
+    try:
+        expected_commands = h1_local_effects_commands(exchange)
+        expected_records = expected_h1_local_effects_records(exchange)
+    except (_CompletionExchangeError, ValueError) as error:
+        return _failure("EXCHANGE", str(error))
+    if commands != expected_commands:
+        return _failure("ROLE", "H1 local effects command differs from pinned owner call")
+    if records != expected_records:
+        return _failure("RECORDS", "H1 local effects record differs from pinned owner result")
+    return None
+
+
+def h1_complete_acceptance_commands(
+    assembly: PrepareH1CompleteAcceptanceAssemblyV1,
+) -> tuple[OwnerCommandBytes, ...]:
+    """Reconstruct the fixed first-path, conversation, and sole local command."""
+    return (
+        _command(
+            "agent_loop",
+            assembly.original_completion_request.schema_id,
+            assembly.original_completion_request.canonical_bytes(),
+        ),
+        _command(
+            "conversation",
+            assembly.conversation_request.schema_id,
+            assembly.conversation_request.canonical_json_bytes(),
+        ),
+        *h1_local_effects_commands(assembly.ordered_effects[0]),
+        _command("agent_loop", WORK_SCHEMA, assembly.terminal_work_request.canonical_bytes()),
+    )
+
+
+def expected_h1_complete_acceptance_records(
+    assembly: PrepareH1CompleteAcceptanceAssemblyV1,
+) -> tuple[OwnerRecordBytes, ...]:
+    """Reproduce the exact accepted H1 record set without source authentication."""
+    request = assembly.original_completion_request
+    prepared = assembly.prepared_completion
+    exchange = assembly.ordered_effects[0]
+    if prepared.source_request_fingerprint != _sha(request.canonical_bytes()):
+        raise _CompletionExchangeError("H1 prepared completion differs from first-path request")
+    if (
+        exchange.owner_call.request.original_completion_request != request
+        or exchange.owner_call.request.prepared_completion != prepared
+    ):
+        raise _CompletionExchangeError("H1 local owner call differs from accepted loop exchange")
+    deliveries = prepared.delivery.manifest.ordered_deliveries
+    if len(deliveries) != 1 or exchange.owner_result.intent.delivery != deliveries[0]:
+        raise _CompletionExchangeError("H1 local result differs from sole accepted delivery")
+    if (
+        assembly.work_source.original_completion_request_bytes != request.canonical_bytes()
+        or assembly.work_source.prepared_completion_bytes != prepared.canonical_bytes()
+        or assembly.work_source.terminal_run != prepared.run
+        or assembly.work_source.terminal_manifest != prepared.terminal_manifest
+    ):
+        raise _CompletionExchangeError(
+            "H1 terminal-work source differs from accepted loop exchange"
+        )
+    conversation_fingerprint = conversation_source_request_fingerprint(
+        assembly.conversation_request
+    )
+    if (
+        assembly.conversation_request.original_completion_request_bytes != request.canonical_bytes()
+        or assembly.conversation_request.loop_preparation_bytes != prepared.canonical_bytes()
+        or assembly.conversation_result.source_request_fingerprint != conversation_fingerprint
+    ):
+        raise _CompletionExchangeError(
+            "H1 conversation exchange differs from accepted loop exchange"
+        )
+    conversation = tuple(
+        _conversation_record(member) for member in assembly.conversation_result.ordered_members
+    )
+    local = expected_h1_local_effects_records(exchange)
+    _validate_terminal_work_source_join(assembly.work_source, assembly.terminal_work_request)
+    work = _work_records(assembly.terminal_work_request, assembly.terminal_work_result)
+    return (
+        _completion_record(make_prepared_delivery_acceptance_member(request, prepared)),
+        _completion_record(make_terminal_manifest_member(prepared.terminal_manifest)),
+        _completion_record(make_terminal_run_member(prepared.run)),
+        *conversation,
+        *local,
+        *work,
+    )
+
+
+def validate_h1_complete_acceptance_assembly(
+    assembly: PrepareH1CompleteAcceptanceAssemblyV1,
+    commands: tuple[OwnerCommandBytes, ...],
+    records: tuple[OwnerRecordBytes, ...],
+) -> CompletionPublicationAssemblyFailureV1 | None:
+    """Check the H1 accepted assembly's sole local exchange and exact output."""
+    try:
+        expected_commands = h1_complete_acceptance_commands(assembly)
+        expected_records = expected_h1_complete_acceptance_records(assembly)
+    except (_CompletionExchangeError, ValueError) as error:
+        return _failure("EXCHANGE", str(error))
+    if commands != expected_commands:
+        return _failure("ROLE", "H1 acceptance commands differ from typed owner exchanges")
+    if records != expected_records:
+        return _failure("RECORDS", "H1 acceptance records differ from typed owner exchanges")
+    return None
+
+
+def validate_h1_complete_acceptance_batch(
+    assembly: PrepareH1CompleteAcceptanceAssemblyV1, batch: CompleteDeliveryBatchV2
+) -> CompletionPublicationAssemblyFailureV1 | None:
+    """Validate H1 through the unchanged CompleteDeliveryBatchV2 physical shape."""
+    try:
+        expected_commands = h1_complete_acceptance_commands(assembly)
+        actual = (
+            batch.loop_command,
+            batch.conversation_command,
+            *batch.prepared_effects_commands,
+            batch.terminal_work_command,
+        )
+        if actual != expected_commands:
+            return _failure("ROLE", "H1 acceptance commands differ from typed owner exchanges")
+        source_bytes = completion_terminal_work_source_bytes(assembly.work_source)
+        if assembly.terminal_work_request.original_terminalization_request != source_bytes:
+            return _failure("SOURCE", "H1 terminal work does not use its accepted source")
+        expected_records = expected_h1_complete_acceptance_records(assembly)
+    except (_CompletionExchangeError, ValueError) as error:
+        return _failure("EXCHANGE", str(error))
+    if batch.complete_records != expected_records:
+        return _failure("RECORDS", "H1 acceptance records differ from typed owner exchanges")
+    if batch.complete_batch_fingerprint != completion_batch_fingerprint(batch):
+        return _failure("RECORDS", "H1 acceptance batch fingerprint differs")
+    return None
 
 
 def _work_records(
@@ -483,8 +728,11 @@ def expected_completion_records(
 
 
 def validate_complete_acceptance_batch(
-    assembly: PrepareCompleteAcceptanceAssemblyV1, batch: CompleteDeliveryBatchV2
+    assembly: PrepareCompleteAcceptanceAssemblyV1 | PrepareH1CompleteAcceptanceAssemblyV1,
+    batch: CompleteDeliveryBatchV2,
 ) -> CompletionPublicationAssemblyFailureV1 | None:
+    if isinstance(assembly, PrepareH1CompleteAcceptanceAssemblyV1):
+        return validate_h1_complete_acceptance_batch(assembly, batch)
     try:
         expected = acceptance_commands(assembly)
         actual = (

@@ -36,6 +36,7 @@ from chiplog.capabilities.effects.dispatch_v2 import canonical, digest, referenc
 from chiplog.platform.authority_gate import AuthorityGate
 
 from .r14_call_dispatch_policy import policy_reference as call_policy_reference
+from .r16_dispatch_custody import HistoricalDispatchCustody
 
 CLOCK = "chiplog.dispatch.monotonic.v2"
 POLICY_ID = "chiplog.effects.hermetic-self-send-policy.v2"
@@ -91,6 +92,45 @@ class ResourceObservation:
     signature: str
 
 
+def verify_historical_observation(
+    custody: HistoricalDispatchCustody, observation: ResourceObservation
+) -> bool:
+    """Verify original R16 evidence without a provider, clock, or current grant state."""
+    try:
+        payload = canonical(
+            [
+                observation.grant_bytes.hex(),
+                observation.credential_bytes.hex(),
+                observation.endpoint_bytes.hex(),
+                observation.clock_epoch,
+            ]
+        )
+        expected = hmac.digest(
+            custody.issuer_key, b"dispatch-resources.v1\x00" + payload, "sha256"
+        ).hex()
+        return type(observation.signature) is str and hmac.compare_digest(
+            observation.signature, expected
+        )
+    except AttributeError, TypeError, ValueError:
+        return False
+
+
+def historical_recipient(
+    custody: HistoricalDispatchCustody, observation: ResourceObservation
+) -> ProviderRecipient:
+    """Derive the original recipient after authenticating its retained observation."""
+    if not verify_historical_observation(custody, observation):
+        raise ValueError("historical offline recipient observation is unauthentic")
+    return ProviderRecipient(
+        provider="hermetic-effects",
+        account="hermetic-account",
+        recipient="hermetic-principal",
+        endpoint=reference("hermetic-effects-endpoint", observation.endpoint_bytes),
+        canonical_address=b"hermetic://effects/hermetic-principal",
+        credential_binding=reference(custody.credential_id, observation.credential_bytes),
+    )
+
+
 class HermeticDispatchResources:
     """Independent offline leaf/grant custody, never an injectable permission DTO."""
 
@@ -108,6 +148,7 @@ class HermeticDispatchResources:
         from chiplog.composition.r16_dispatch_custody import load_or_create
 
         retained = None if custody_path is None else load_or_create(custody_path, scenarios, cap)
+        self._custody_path = custody_path
         self._key = (
             secrets.token_bytes(32)
             if retained is None
@@ -291,17 +332,14 @@ class HermeticDispatchResources:
             )
 
     def verify_historical(self, observation: ResourceObservation) -> bool:
-        payload = canonical(
-            [
-                observation.grant_bytes.hex(),
-                observation.credential_bytes.hex(),
-                observation.endpoint_bytes.hex(),
-                observation.clock_epoch,
-            ]
-        )
-        return hmac.compare_digest(
-            observation.signature,
-            hmac.digest(self._key, b"dispatch-resources.v1\x00" + payload, "sha256").hex(),
+        return verify_historical_observation(
+            HistoricalDispatchCustody(
+                issuer_key=self._key,
+                credential_id=self._credential_id,
+                grant_id=self._grant_id,
+                cap=self._cap,
+            ),
+            observation,
         )
 
     def recipient(self, observation: ResourceObservation) -> ProviderRecipient:
@@ -311,15 +349,14 @@ class HermeticDispatchResources:
 
     def historical_recipient(self, observation: ResourceObservation) -> ProviderRecipient:
         """Read an originally signed recipient without renewing its current authority."""
-        if not self.verify_historical(observation):
-            raise ValueError("historical offline recipient observation is unauthentic")
-        return ProviderRecipient(
-            provider="hermetic-effects",
-            account="hermetic-account",
-            recipient="hermetic-principal",
-            endpoint=reference("hermetic-effects-endpoint", observation.endpoint_bytes),
-            canonical_address=b"hermetic://effects/hermetic-principal",
-            credential_binding=reference(self._credential_id, observation.credential_bytes),
+        return historical_recipient(
+            HistoricalDispatchCustody(
+                issuer_key=self._key,
+                credential_id=self._credential_id,
+                grant_id=self._grant_id,
+                cap=self._cap,
+            ),
+            observation,
         )
 
     def clock(self) -> tuple[str, int]:
