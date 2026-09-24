@@ -673,6 +673,23 @@ CLI custody/inbox to native Run creation in one writer-backed runtime, followed
 by terminal completion and reopen/replay. The remaining R14–R17 requirements
 remain in scope; neither this checkpoint nor the first path closes the milestone.
 
+## Terminal recovery fault representation checkpoint
+
+The fault owner exchange now retains the exact native SUSPENDED Run, diagnostic
+inventory, frontier and selected rule bytes. Worker fences bind the selected Run;
+observer requests require retained capture, observation and issuance sources.
+Decoded frontiers share the diagnostic coordinates, and valid canonical frontiers
+cannot masquerade as undecodable input. Findings bind the registered source roles
+and counts. Broker fresh/historical verification carriers retain and compare the
+original request, selected fault record and diagnostic references.
+
+Focused consumers are `test_terminal_recovery_fault_contracts.py`,
+`test_terminal_fault_observer_sources.py`, `test_terminal_fault_frontier_contracts.py`
+and `tests/platform/test_recovery_diagnostic_contracts.py`. These representation
+checks do not authenticate journal membership or implement the runtime classifier,
+publication-time fault/continuation race, terminal accounting or recovery blocking.
+Those remain required work in the common runtime.
+
 ## Publication discipline
 
 New contract files, their consumer tests, this inventory and exact source catalog
