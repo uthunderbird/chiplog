@@ -19,18 +19,18 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 
 | Joint histories / required boundary | Existing request/result surface | Remaining Phase-C work |
 |---|---|---|
-| J1: all ingress classes, custody/release | `platform._ingress_contracts`: ReceiptToken, TokenState, CustodyState, AuthenticationBinding; `composition.r17_ingress_registry` retained CLI commands | Callable source-specific handoff, release and custody transition requests/results for Telegram push/poll, CLI, provider callback/poll, reconciliation and tool result; preserve actual source authentication and loss-slot requirements |
-| J1: admission/page/quarantine | Same broker module: AdmissionBound, BlockedRebase, DrainManifest, PollPageManifest, PollMemberDisposition, ParserAttempt; `_ingress_domain` pure functions | Durable command/result contracts for queue selection, complete rebase, restart/drain, parser CAS and page/cursor/ack. Pure snapshots are not public runtime ports |
-| J1→J3: selected inbox → Run | `agent_loop.execution_transition_contracts.CreateExecutionRun` → ExecutionTransitionProposal | Separate admitted-input creation request retaining selected inbox/raw/authentication/origin and scheduler initialization, rather than rebuilding ingress from prompt text |
+| J1: all ingress classes, custody/release | `_ingress_contracts` retained; `ingress_transition_contracts` preparation/publication ports now separate prepared, selected and uncertain results | Bind each source-specific authenticator/transport to registered record interpretation and earliest handoff; interface presence does not prove runtime loss-slot or release behavior |
+| J1: admission/page/quarantine | `ingress_runtime_snapshot` plus closed ingress transition requests/results retain queue, drain, parser and page/cursor state | Complete consumer coverage for nonempty lineage/page/drain joins and registered durable record interpretation; FIFO, CAS, restart and handoff runtime remain T/I |
+| J1→J3: selected inbox → Run | `agent_loop.execution_initialization_contracts` admitted and scheduled requests retain original source preimages and distinct creation cuts | Complete scheduled-materialization consumer and conversation-owner companion join; runtime must consume selected input rather than rebuilding prompt ingress |
 | J2: scheduler decisions and execution | `agent_loop.scheduler_contracts.SchedulerPort`, DecideIntervalCommand, ResolveIntervalCommand, LeaseTransitionCommand, PhysicalRootRolloverCommand → SchedulerResult | Public automatic service-authority contract beyond one-delivery TickPolicy; executable Run materialization and lease joins must not fall back to legacy RunRecord |
 | J3: seal/accept/cancel | ExecutionCapturedFanOutRequest/Result; composition CallAcceptancePort; ExecutionCallCancellationPort → ExecutionCancelledCallReceipt | Import cancellation boundary; retain two-record execution cancellation versus three-record legacy cancellation. Runtime authentication and both CAS orders remain Phase T/I work |
 | J4: effect dispatch/retry/delivery/compensation | effects DispatchMandateV2, ExternalActionIntentV2, AuthorizeDispatchV2, CommitFirstSendV2; DispatchOutcomeCommandV2/RecordV2; legacy SafeRetransmission and purpose unions | A versioned full lifecycle contract must join safe retransmission/all-child proofs, separately scoped compensation and delivery to immutable v2 mandates without reinterpreting legacy intents |
 | J4→J5: original-stream reduction | agent_loop EvidenceReduction, OriginalObligationBinding, TerminalCallFrontier; effects DispatchObligationV2 | Callable original resolver and evidence-reduction CAS requests/results; bridge owner-produced outcome/closure/current reduction into loop terminal records without caller-created success or stream transfer |
 | J5: frontier/suspend/resume/successor | RecoveryFrontier, SuspensionBaseline, ResumeCommand/SuccessorCommand → RecoveryResult; RecoveryPort | Executable Run preparation requests/results for suspension, both continuation consumers (TurnStarted and CompleteAcceptance), same-Run resume and atomic successor; exact complete inventory and source cut |
-| J5: read-only branch | ReadOnlyRetryLineage, ReadOnlyAttemptMember, PendingCallFrontier, ReadOnlyAcceptedCall; FanOutToolPolicy READ_ONLY | Callable acceptance/attempt/pending/reduction requests, registered executable read-only tool wire and positive no-mutation proof; existing execution tool set contains only proposal tools and request_self_effect |
-| J6: writer applicability/discovery | WorkerCommitApplicability has six closed fence variants; broker WorkerAuthentication | Concrete registry rows and discovery observation contracts for command/handler/schema/record/applicability, checked in both directions; a source hash catalog is not this registry |
+| J5: read-only branch | `readonly_execution_contracts` preparation port, distinct unfinished attempt/outcome/pending/reduction records and registered proof preimages; existing frontier types retained | Versioned executable response/artifact registration of the new history-tool wire and end-to-end consumer; positive no-mutation/runtime proofs and full counter/pending CAS remain T/I |
+| J6: writer applicability/discovery | `platform.runtime_surface_contracts` registry and independent discovery DTOs; six worker fence variants retained | Concrete registered operation bindings and record interpretation; independent discovery and both-direction equality remain T/I, not established by source hashes |
 | J6: post-terminal work | WorkSubjectBinding, WorkEpochBinding, PostTerminalWorkFence, WorkEpochRolloverFence | Materialize the closed work-lease state, owner preparation requests/results, terminal-manifest work creation, exact close and monotone rollover boundary; consumers preserve original obligation/evidence references |
-| J6: model-attempt recovery | ExecutionModelAttempt has five states; legacy NoExposureProof only describes hermetic pre-emission CAS | Separate executable replacement request/result retaining complete Run/attempt/selector and registered no-exposure proof; distinguish authenticated late evidence from selected response capture |
+| J6: model-attempt recovery | `model_attempt_recovery_contracts` executable replacement and separate late-evidence request/result/port | Registered source/record interpretation and operation bindings; authenticity, race handling and immutable late evidence remain T/I |
 | J7: completion/delivery/channel driver | DeliveryCompletion + DeliveryObservation → DeliveryAcceptanceProposal; DeliveryPublicationPort → PreparedDeliveryPublication; broker CompleteDeliveryBatch | Executable CompleteAcceptance consumes actual captured response and current continuation proof, with owner-produced effect companions. Public common driver/receipts for CLI/Telegram preserve distinct authentication and same committed projection |
 
 These are work packages within one contract phase. No missing row is moved to
@@ -128,6 +128,34 @@ it does not require the head or live lease of a Run that does not exist yet.
 All mutation families remain applicable: omission, addition/unknown, substitution,
 duplicate/reorder, stale/race, numeric/byte boundary and logical/physical mismatch.
 Shape tests do not discharge runtime authenticity, FIFO progress or atomicity.
+
+## Read-only execution boundary (J3/J5)
+
+`agent_loop.readonly_execution_contracts` adds separate nonterminal attempt
+acceptance, observed per-attempt outcomes, a complete lineage snapshot, and
+preparation ports for attempts, outcome ingestion, pending and reduction. It does
+not reuse the already-terminal `ReadOnlyAcceptedCall` as an unfinished attempt.
+Original lineage and counter identity survive the distinct successor-pending route.
+
+| Claim | Owned decision/data | Independent observable | Forbidden substitute | Boundary fixture / planned evidence |
+|---|---|---|---|---|
+| Positive read-only classification | Registered tool implementation/proof and exact query/snapshot preimages | Consumer preserves binary source; runtime checks registered implementation and denies writes | `readonly=True`, model tool name or caller's digest | unknown tool/proof/version, hidden write/effect, substituted snapshot; new consumer then J3/J5 |
+| One bounded lineage | Original initialization, frozen reducer/budget, complete ordered attempts and shared counter | Counter and original call unchanged across current Run changes; ordinal advances only with predecessor outcome | New lineage/counter on resume, restart or successor | missing/extra/reordered attempts, stale counter, max/max+1, unknown outcome; J5 |
+| Separate immutable attempt outcome | Typed success, retryable/final definite failure, unknown or exact obligation | Owner output binds original accepted attempt and independent evidence bytes | Caller supplies retry permission or attempt result substitutes for call terminal | wrong source/attempt, hybrid outcome, open obligation retry; consumer then J5 |
+| Pending keeps an owner | Exact old pending head and complete replacement branch selected together | Successor route retains predecessor, initialization and inherited reference; one closure and replacement | same-Run pending consumption, branchless interval or copied pending lineage | stale/rival pending, alias, failed validation, successor/current fence mismatch; J5 |
+| Complete reduction closes once | Complete ordered outcome heads, selected result, call outcome, terminal frontier and closed counter in one proposal | Both call-level members and original lineage survive wire; writer compares full cut | Last attempt alone, rewriting prior attempt, success flag | incomplete lineage, duplicate terminal, budget-exhausted provenance, changed reducer; J5 |
+
+All mutation families remain required: omission, addition/unknown, substitution,
+duplicate/reorder, stale/race, numeric/byte boundary and logical/physical identity.
+The history-tool model wire is declared separately. Registration in an explicitly
+versioned executable response/artifact and its end-to-end model/driver consumer
+remains OPEN; adding its name to the old v2 union would change a frozen schema.
+These consumers do not prove positive no-mutation, retry eligibility or atomicity.
+
+Consumer command: `uv run pytest -q
+tests/capabilities/agent_loop/test_readonly_execution_contracts.py` — 19 passed.
+Explicit mypy on the new source and consumer passed. The legacy executable Run
+schema fingerprint is unchanged. This checkpoint does not complete Phase C.
 
 ## Publication discipline
 
