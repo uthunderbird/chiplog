@@ -25,7 +25,7 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 | J2: scheduler decisions and execution | `agent_loop.scheduler_contracts.SchedulerPort`, DecideIntervalCommand, ResolveIntervalCommand, LeaseTransitionCommand, PhysicalRootRolloverCommand → SchedulerResult | Public automatic service-authority contract beyond one-delivery TickPolicy; executable Run materialization and lease joins must not fall back to legacy RunRecord |
 | J3: seal/accept/cancel | ExecutionCapturedFanOutRequest/Result; composition CallAcceptancePort; ExecutionCallCancellationPort → ExecutionCancelledCallReceipt | Import cancellation boundary; retain two-record execution cancellation versus three-record legacy cancellation. Runtime authentication and both CAS orders remain Phase T/I work |
 | J4: effect dispatch/retry/delivery/compensation | effects DispatchMandateV2, ExternalActionIntentV2, AuthorizeDispatchV2, CommitFirstSendV2; DispatchOutcomeCommandV2/RecordV2; legacy SafeRetransmission and purpose unions | A versioned full lifecycle contract must join safe retransmission/all-child proofs, separately scoped compensation and delivery to immutable v2 mandates without reinterpreting legacy intents |
-| J4→J5: original-stream reduction | agent_loop EvidenceReduction, OriginalObligationBinding, TerminalCallFrontier; effects DispatchObligationV2 | Callable original resolver and evidence-reduction CAS requests/results; bridge owner-produced outcome/closure/current reduction into loop terminal records without caller-created success or stream transfer |
+| J4→J5: original-stream reduction | `agent_loop.original_recovery_contracts` original resolver and loop-owned semantic reduction preparation port; legacy EvidenceReduction/OriginalObligationBinding retained | Effects-owned semantic reduction producer and registered source decoding/operation routes remain OPEN; loop consumes selected foreign records and cannot write their streams; resolver/continuation runtime joins remain T/I |
 | J5: frontier/suspend/resume/successor | `execution_recovery_observations` complete cut, weak/strong joins and noncircular suspension v2; `execution_recovery_contracts` executable preparation port includes suspend/resume/successor/next-Turn/abort/cancel | Consumer coverage now covers current sources, mandatory suspension pair and distinct commands; complete successor participant interpretation and terminal/work record routing remain C work; runtime classification/CAS remain T/I |
 | J5: read-only branch | `readonly_execution_contracts` preparation port, distinct unfinished attempt/outcome/pending/reduction records and registered proof preimages; existing frontier types retained | Versioned executable response/artifact registration of the new history-tool wire and end-to-end consumer; positive no-mutation/runtime proofs and full counter/pending CAS remain T/I |
 | J6: writer applicability/discovery | `platform.runtime_surface_contracts` registry and independent discovery DTOs; six worker fence variants retained | Concrete registered operation bindings and record interpretation; independent discovery and both-direction equality remain T/I, not established by source hashes |
@@ -189,6 +189,32 @@ Explicit mypy on the three new source modules and consumer passed.
 The completion result is explicitly loop-owned only. Complete conversation,
 effects and work assembly remains OPEN in the graph, as does original-stream
 resolver/reduction preparation. Those gaps cannot be deferred beyond Phase C.
+
+## Original loop-stream recovery (J4→J5)
+
+The `original_recovery_contracts` producer boundary is explicitly loop-owned. Foreign effects evidence and
+reductions are independently selected inputs, never loop-writable streams. The
+existing `EvidenceReduction` remains a continuation observation with resolved
+anchors; a separate producer record also represents the pre-closure state.
+
+| Claim | Owner / exact data | Independent observable | Forbidden substitute | Boundary fixture / evidence |
+|---|---|---|---|---|
+| Two-commit original resolver | Loop owns original call obligation; evidence owner already selected immutable source bytes | Resolver request retains original stream, physical record and selection; result contains no evidence append | Cross-owner atomic closure, supplied success or successor-owned copy | wrong owner/original identity, evidence present but obligation open, stale CAS; J4→J5 |
+| Closure and outcome selected together | Primitive resolver basis → original closure → recovered outcome → resolver batch | Complete proposal retains both records and their original identities without reverse hash edges | Outcome alone, new obligation or reciprocal whole-record hashes | missing/rival member, changed witness/resolver, replay conflict; consumer then J5 |
+| Current semantic reduction | Registered loop-owned stream, fixed reducer, full ordered evidence preimages and prior head | New producer handles unresolved/resolved anchors and typed non-consumable states | Writing effects stream, newest timestamp, old consumable projection | append/refinement/rival/reorder/duplicate, unknown class/version and stale head; J5 |
+| Independent recovery lifetime | Independent registered authority or exact leased work applicability | Request has no mandatory live original Run | Terminal/superseded Run suppresses original recovery | late evidence, terminal original Run, wrong work subject/epoch; J5/J6 |
+
+All mutation families apply. Owner identity, complete evidence enumeration, source
+authentication and same-writer CAS are runtime obligations. Effects-owned semantic
+reduction producer contracts remain OPEN; the loop port cannot substitute for them.
+
+Consumer command: `uv run pytest -q
+tests/capabilities/agent_loop/test_original_recovery_contracts.py` — 23 passed.
+The consumer hashes basis → closure → outcome → batch, rejects missing resolver
+members and foreign stream ownership, retains binary selected source preimages,
+and covers unresolved anchors plus every typed reduction-hold reason. Explicit
+mypy on the new source and consumer passed. No runtime closure or Phase-C
+completion is claimed.
 
 ## Publication discipline
 
