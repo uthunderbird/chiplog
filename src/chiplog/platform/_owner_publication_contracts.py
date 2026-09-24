@@ -11,7 +11,7 @@ proves none of it.
 
 from typing import Annotated, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Identity = Annotated[str, Field(min_length=1)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -263,8 +263,71 @@ class CompleteDeliveryBatch(BrokerDTO):
     complete_batch_fingerprint: Digest
 
 
+class CompleteDeliveryBatchV2(BrokerDTO):
+    """Versioned completion assembly; v1 remains an immutable historical wire."""
+
+    kind: Literal["COMPLETE_DELIVERY_ATOMIC_V2"] = "COMPLETE_DELIVERY_ATOMIC_V2"
+    schema_id: Literal["chiplog.owner-publication.complete-delivery.v2"] = (
+        "chiplog.owner-publication.complete-delivery.v2"
+    )
+    operation: Literal["agent_loop.complete_acceptance.v2"] = "agent_loop.complete_acceptance.v2"
+    identity: PublicationIdentity
+    authentication: WorkerAuthentication
+    expected: AuthoritativeReadManifest
+    loop_command: OwnerCommandBytes
+    conversation_command: OwnerCommandBytes
+    terminal_work_command: OwnerCommandBytes
+    prepared_effects_commands: tuple[OwnerCommandBytes, ...] = Field(min_length=1)
+    complete_records: tuple[OwnerRecordBytes, ...] = Field(min_length=1)
+    complete_batch_fingerprint: Digest
+
+    @model_validator(mode="after")
+    def exact_owner_roles(self) -> CompleteDeliveryBatchV2:
+        if (
+            self.loop_command.owner != "agent_loop"
+            or self.conversation_command.owner != "conversation"
+            or self.terminal_work_command.owner != "agent_loop"
+            or any(command.owner != "effects" for command in self.prepared_effects_commands)
+        ):
+            raise ValueError("complete delivery v2 command owners differ from fixed roles")
+        return self
+
+
+class RejectedCompletionBatchV1(BrokerDTO):
+    kind: Literal["REJECTED_COMPLETION_ATOMIC_V1"] = "REJECTED_COMPLETION_ATOMIC_V1"
+    schema_id: Literal["chiplog.owner-publication.rejected-completion.v1"] = (
+        "chiplog.owner-publication.rejected-completion.v1"
+    )
+    operation: Literal["agent_loop.reject_completion.v1"] = "agent_loop.reject_completion.v1"
+    identity: PublicationIdentity
+    authentication: WorkerAuthentication
+    expected: AuthoritativeReadManifest
+    loop_rejection_command: OwnerCommandBytes
+    rejected_terminalization_command: OwnerCommandBytes
+    conversation_no_change_command: OwnerCommandBytes
+    terminal_work_command: OwnerCommandBytes
+    complete_records: tuple[OwnerRecordBytes, ...] = Field(min_length=1)
+    complete_batch_fingerprint: Digest
+
+    @model_validator(mode="after")
+    def exact_owner_roles(self) -> RejectedCompletionBatchV1:
+        if (
+            self.loop_rejection_command.owner != "agent_loop"
+            or self.rejected_terminalization_command.owner != "agent_loop"
+            or self.conversation_no_change_command.owner != "conversation"
+            or self.terminal_work_command.owner != "agent_loop"
+        ):
+            raise ValueError("rejected completion command owners differ from fixed roles")
+        return self
+
+
 RegisteredPublication = Annotated[
-    SingleOwnerBatch | PlanEffectBatch | CallEffectBatch | CompleteDeliveryBatch,
+    SingleOwnerBatch
+    | PlanEffectBatch
+    | CallEffectBatch
+    | CompleteDeliveryBatch
+    | CompleteDeliveryBatchV2
+    | RejectedCompletionBatchV1,
     Field(discriminator="kind"),
 ]
 
@@ -304,7 +367,11 @@ class ExactReplayQuery(BrokerDTO):
     operation: (
         BrokerOperation
         | Literal[
-            "effects.accept_call", "effects.publish_plan_effect", "agent_loop.complete_acceptance"
+            "effects.accept_call",
+            "effects.publish_plan_effect",
+            "agent_loop.complete_acceptance",
+            "agent_loop.complete_acceptance.v2",
+            "agent_loop.reject_completion.v1",
         ]
     )
     current_invocation: InvocationProofRef

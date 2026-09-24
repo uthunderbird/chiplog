@@ -22,6 +22,8 @@ def test_closed_batch_variants_separate_multiowner_publication() -> None:
         "PLAN_EFFECT_ATOMIC",
         "CALL_EFFECT_ATOMIC",
         "COMPLETE_DELIVERY_ATOMIC",
+        "COMPLETE_DELIVERY_ATOMIC_V2",
+        "REJECTED_COMPLETION_ATOMIC_V1",
     }
     # Acceptance and completion must not enter the single-owner escape hatch.
     for operation in (

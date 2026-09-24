@@ -107,6 +107,20 @@ def source_commands(request: RegisteredPublication) -> tuple[OwnerCommandBytes, 
                 else ()
             ),
         )
+    if request.kind == "COMPLETE_DELIVERY_ATOMIC_V2":
+        return (
+            request.loop_command,
+            request.conversation_command,
+            *request.prepared_effects_commands,
+            request.terminal_work_command,
+        )
+    if request.kind == "REJECTED_COMPLETION_ATOMIC_V1":
+        return (
+            request.loop_rejection_command,
+            request.rejected_terminalization_command,
+            request.conversation_no_change_command,
+            request.terminal_work_command,
+        )
     return (request.loop_command, *request.prepared_effects_commands)
 
 
