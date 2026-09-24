@@ -437,6 +437,41 @@ ordered batch-byte comparison and result/request fingerprint joins remain OPEN.
 The independently useful driver/conversation/broker wire can be reviewed without
 treating the unfinished assembly validator as evidence of atomic publication.
 
+## Recovery physical records and proof sources
+
+`agent_loop.recovery_record_contracts` closes sixteen physical record rows.
+Rows with an explicit unique record ID retain it; newly registered rows without
+one use their schema and canonical content hash. Physical IDs, logical subjects
+and journal decision heads remain distinct. Fixed decoders preserve supplied
+bytes and reject unknown owner/kind/schema, noncanonical JSON, wrong IDs and
+fingerprints. Companion consumers cover suspension, original resolution,
+accounting/continuation and readonly reduction. Readonly acceptance and terminal
+reduction use separate open and closed counter revisions; terminal accounting
+compares the full ordered sequence rather than checking membership.
+
+`agent_loop.recovery_source_contracts` defines two separate broker-source wires,
+`readonly-history-proof-v1` and `model-pre-emission-cas-v1`. Their envelope cannot
+be used as a writable owner record. Decoders require external tenant/database
+expectations (plus readonly principal/contour), exact original query/attempt
+references and proof-body equality. A selected snapshot/CAS decision is a separate
+reference from the new source proof. These checks prove representation only;
+immutable-query execution, permanent emission fencing and issuer authentication
+remain joint T/I obligations.
+
+The new chain fixture constructs every registered row and calls the pure joins
+with canonical records. Successor initialization and scheduler companions have
+their own pending consumer review; these rows do not establish successor runtime
+or the complete central operation registry. Completion record conversion remains
+separate work even where it reuses the terminal-manifest decoder.
+
+Evidence: `uv run pytest -q
+tests/capabilities/agent_loop/test_recovery_record_contracts.py
+tests/capabilities/agent_loop/test_recovery_record_chains.py
+tests/capabilities/agent_loop/test_recovery_source_contracts.py` passed 33 tests.
+Root inspected the source and new chains and reran this set. Ruff and mypy passed
+on both source modules, the three consumers and their shared fixture. No full
+regression or checkpoint red-team was run.
+
 ## Publication discipline
 
 New contract files, their consumer tests, this inventory and exact source catalog

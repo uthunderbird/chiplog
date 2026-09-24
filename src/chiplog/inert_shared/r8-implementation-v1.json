@@ -81,6 +81,8 @@
   "capabilities/agent_loop/recovery_contracts.py": "f68ff6d770b309ad0fde53823d86c0149a8dc0b92bf108157ec6df24980bb251",
   "capabilities/agent_loop/recovery_domain.py": "66e9d6f591c8e93ea12b6169cc81e66519fd21b12dcee644957cda9d14b3057e",
   "capabilities/agent_loop/recovery_frontier_contracts.py": "dbc0cbebb723770d370279fddbeb4ee389c2090d6578609904dba498ad9a2951",
+  "capabilities/agent_loop/recovery_record_contracts.py": "a13f8ff0de6f729df6d53a3a288de906ee748c0cee9315b7194da99ee437f3fd",
+  "capabilities/agent_loop/recovery_source_contracts.py": "3f79b58b8f99256247a99fb4d07025591a080e35fc9c2b932bac41691dfd1b89",
   "capabilities/agent_loop/response_parsing.py": "7aaec930e06dcbace1bed940d025b2e0957b241fd5ec1c9a13dc61e0911a3a45",
   "capabilities/agent_loop/scheduler_configuration.py": "768e9b079fce4d15bc7e8dde357a183bff4741d614a30776671d1185a8f8b437",
   "capabilities/agent_loop/scheduler_contracts.py": "1c0d219ae6cfdf259b9379f87419175f7d3652f5130f1a0acb1d38794449d0be",
