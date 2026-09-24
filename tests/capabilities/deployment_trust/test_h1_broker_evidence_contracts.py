@@ -11,17 +11,22 @@ from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     H1_CALL_MAX_BYTES,
     BrokerSelectedH1EvidenceV1,
     H1BrokerRouteBindingV1,
+    H1CurrentBrokerRouteV1,
     H1OwnerCandidateCallV1,
     H1OwnerCandidateV1,
+    H1OwnerCurrentCallV1,
+    H1OwnerCurrentCandidateV1,
     H1RetainedSelectedWrapperV1,
     decode_h1_candidate_call,
 )
 from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+    CurrentHermeticExecutionScopeV1,
+    H1AuthenticatedCliStateV1,
     HermeticOutputScopeV1,
     IssueHermeticOutputScopeV1,
 )
 from tests.capabilities.deployment_trust.test_hermetic_output_scope_contracts import scope
-from tests.capabilities.deployment_trust.test_output_scope_owner_seam import request
+from tests.capabilities.deployment_trust.test_output_scope_owner_seam import read_request, request
 
 
 def call() -> H1OwnerCandidateCallV1:
@@ -72,11 +77,22 @@ def call() -> H1OwnerCandidateCallV1:
 
 
 def candidate(value: H1OwnerCandidateCallV1) -> H1OwnerCandidateV1:
+    pinned = value.evidence
+    intent = IssueHermeticOutputScopeV1.model_validate_json(pinned.selected_request_bytes)
+    proposed = scope().model_copy(
+        update={
+            "authenticated_cli_state": H1AuthenticatedCliStateV1(
+                trust_binding_digest=intent.authenticated_cli_ref.trust_head,
+                credential_head=intent.authenticated_cli_ref.credential_head,
+                session_head=intent.authenticated_cli_ref.session_head,
+            )
+        }
+    )
     return H1OwnerCandidateV1(
         route=value.evidence.route,
         request_digest=value.evidence.request_digest,
         evidence_digest=value.evidence_digest,
-        scope=scope(),
+        scope=proposed,
     )
 
 
@@ -198,6 +214,41 @@ def test_noncanonical_wire_and_changed_fixed_policy_are_rejected() -> None:
     data["ordered_mandates"] = (scope().admitted_authentication,)
     with pytest.raises(ValidationError):
         HermeticOutputScopeV1.model_validate(data)
+
+
+def test_swapped_owner_current_candidate_is_rejected_against_pinned_read() -> None:
+    read = read_request()
+    route = H1CurrentBrokerRouteV1(
+        tenant_id="hermetic-tenant",
+        broker_epoch=1,
+        runtime_generation="generation",
+        broker_session_id="broker-session",
+        owner_session_id="owner-session",
+        request_id="current-request",
+    )
+    pinned = H1OwnerCurrentCallV1(
+        route=route,
+        read_request_bytes=read.canonical_bytes(),
+        request_digest=hashlib.sha256(read.canonical_bytes()).hexdigest(),
+    )
+    current = CurrentHermeticExecutionScopeV1(
+        disposition="CURRENT",
+        scope_ref=read.expected_scope_ref,
+        source_anchor=read.source_anchor,
+        selector_generation=0,
+        ordered_current_source_refs=(
+            read.admitted_authentication_ref,
+            read.source_anchor.decision,
+            read.source_anchor.record,
+        ),
+    )
+    candidate = H1OwnerCurrentCandidateV1(
+        route=route, request_digest=pinned.request_digest, current=current
+    )
+    candidate.check_pinned_call(pinned)
+    swapped = candidate.model_copy(update={"request_digest": "0" * 64})
+    with pytest.raises(ValueError, match="pinned broker call"):
+        swapped.check_pinned_call(pinned)
     policy = json.loads(scope().disclosure_policy.canonical_source_bytes)
     policy["external_delivery"] = True
     data = scope().model_dump()

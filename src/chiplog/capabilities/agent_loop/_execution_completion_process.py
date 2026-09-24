@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 
-from . import _execution_h0_process
+from . import _execution_h0_process, _terminal_work_process
 from .execution_completion_contracts import PrepareExecutionCompletion
 from .execution_completion_preparation import (
     prepare_execution_completion,
@@ -25,6 +25,7 @@ ROUTES = tuple(
     sorted(
         (
             *_execution_h0_process.ROUTES,
+            *_terminal_work_process.ROUTES,
             (OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
             (
                 FIRST_PATH_OPERATION,
@@ -39,6 +40,8 @@ ROUTES = tuple(
 
 
 def dispatch(operation: str, payload: bytes) -> dict[str, object]:
+    if operation == _terminal_work_process.OPERATION:
+        return _terminal_work_process.dispatch(operation, payload)
     if operation not in {OPERATION, FIRST_PATH_OPERATION}:
         return _execution_h0_process.dispatch(operation, payload)
     try:

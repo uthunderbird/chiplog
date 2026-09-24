@@ -9,8 +9,22 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from .h1_broker_evidence_contracts import decode_h1_candidate_call
-from .hermetic_output_scope_contracts import ReadCurrentHermeticExecutionScopeV1
+from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
+
+from .h1_broker_evidence_contracts import (
+    H1OwnerCandidateV1,
+    H1OwnerCurrentCallV1,
+    H1OwnerCurrentCandidateV1,
+    decode_h1_candidate_call,
+)
+from .hermetic_output_scope_contracts import (
+    CurrentHermeticExecutionScopeV1,
+    H1AuthenticatedCliStateV1,
+    HermeticOutputPolicyV1,
+    HermeticOutputScopeV1,
+    HermeticOutputSourceV1,
+    ReadCurrentHermeticExecutionScopeV1,
+)
 
 _H1_ROUTES = (
     (
@@ -108,6 +122,85 @@ class _TrustOwnerResult(BaseModel):
 
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _h1_candidate(raw: bytes, snapshot_bytes: bytes) -> H1OwnerCandidateV1:
+    """Make the fixed H1 policy proposal; the broker alone can make it durable."""
+    call = decode_h1_candidate_call(raw)
+    evidence = call.evidence
+    request = evidence.selected_request_bytes
+    from .hermetic_output_scope_contracts import IssueHermeticOutputScopeV1
+
+    intent = IssueHermeticOutputScopeV1.model_validate_json(request)
+    ref = intent.authenticated_cli_ref
+    snapshot = _snapshot(snapshot_bytes)
+    credential = snapshot["credential"]
+    if (
+        snapshot["phase"] != "ACTIVE"
+        or snapshot["tenant_id"] != ref.tenant_id.value
+        or snapshot["principal_id"] != ref.principal_id.value
+        or not isinstance(credential, dict)
+        or credential.get("revoked")
+        or credential.get("head") != ref.credential_head
+        or credential.get("session_head") != ref.session_head
+        or snapshot["trust_head"] != ref.trust_head
+        or snapshot["freshness"] != ref.freshness_sequence
+        or credential.get("peer_credential") != ref.peer_credential
+        or ref.contour != "CLI"
+    ):
+        raise ValueError("H1 authenticated CLI state is not current")
+    policy = HermeticOutputPolicyV1(
+        endpoint_ref=evidence.recipient.endpoint,
+        selected_resource_observation_ref=intent.selected_resource_observation_ref,
+        selection="ORIGIN_EXACT",
+        ingress_class="AUTHENTICATED_R17_CLI",
+        payload_class="NonAuthoritativeText",
+        purpose="H1_LOCAL_COMMENTARY",
+        external_delivery=False,
+        attempt_ordinal=0,
+        call_count=0,
+    )
+    policy_bytes = policy.canonical_bytes()
+    scope = HermeticOutputScopeV1(
+        issuer="deployment_trust",
+        source_profile=evidence.source_profile,
+        slot=intent.slot_id,
+        tenant_id="hermetic-tenant",
+        database_id=intent.database_id,
+        scope_id=intent.scope_id,
+        revision=intent.expected_revision,
+        predecessor=intent.expected_scope_predecessor,
+        principal_id="hermetic-principal",
+        worker_session_id=intent.worker_session_id,
+        contour_head=ref.contour,
+        admitted_authentication=intent.admitted_authentication_ref,
+        authenticated_cli_state=H1AuthenticatedCliStateV1(
+            trust_binding_digest=ref.trust_head,
+            credential_head=ref.credential_head,
+            session_head=ref.session_head,
+        ),
+        recipient=evidence.recipient,
+        selected_resource_observation_ref=intent.selected_resource_observation_ref,
+        disclosure_policy=HermeticOutputSourceV1(
+            field_path="disclosure_policy",
+            ref=ExactHead(
+                identity="h1-disclosure-policy",
+                head="h1-disclosure-policy/" + hashlib.sha256(policy_bytes).hexdigest(),
+                fingerprint=hashlib.sha256(policy_bytes).hexdigest(),
+            ),
+            canonical_source_bytes=policy_bytes,
+        ),
+        mandate_applicability="HERMETIC_EFFECTS_ORIGIN_NO_EXTERNAL_ACTION_V1",
+        mandate_profile="h1-cli-effects-origin-zero-call-v1",
+        mandate_inventory_complete=True,
+        ordered_mandates=(),
+    )
+    return H1OwnerCandidateV1(
+        route=evidence.route,
+        request_digest=evidence.request_digest,
+        evidence_digest=call.evidence_digest,
+        scope=scope,
+    )
 
 
 def _snapshot(raw_entries: bytes) -> dict[str, object]:
@@ -355,12 +448,72 @@ def _dispatch(operation: str, payload: bytes) -> dict[str, object]:
                     raise ValueError("H1 snapshot is not canonical")
                 if predecessor != evidence.trust_observation.logical_snapshot_head:
                     raise ValueError("H1 outer logical snapshot head differs")
+                proposal = _h1_candidate(call.request_bytes, call.snapshot_bytes)
+                route = next(route for route in _H1_ROUTES if route[0] == operation)
+                return {
+                    "payload": b64encode(proposal.canonical_bytes()).decode("ascii"),
+                    "schema_id": route[4],
+                }
             else:
+                try:
+                    current_call = H1OwnerCurrentCallV1.model_validate_json(call.request_bytes)
+                except ValueError:
+                    # Legacy direct read wire remains a non-authoritative unsupported route.
+                    legacy = ReadCurrentHermeticExecutionScopeV1.model_validate_json(
+                        call.request_bytes
+                    )
+                    if legacy.canonical_bytes() != call.request_bytes:
+                        raise ValueError("H1 request is not canonical") from None
+                    route = next(route for route in _H1_ROUTES if route[0] == operation)
+                    return {
+                        "payload": b64encode(_canonical({"disposition": "UNSUPPORTED"})).decode(
+                            "ascii"
+                        ),
+                        "schema_id": route[4],
+                    }
+                if current_call.canonical_bytes() != call.request_bytes:
+                    raise ValueError("H1 current wrapper is not canonical")
                 request = ReadCurrentHermeticExecutionScopeV1.model_validate_json(
-                    call.request_bytes
+                    current_call.read_request_bytes
                 )
-                if request.canonical_bytes() != call.request_bytes:
-                    raise ValueError("H1 request is not canonical")
+                ref = request.authenticated_cli_ref
+                snapshot = _snapshot(call.snapshot_bytes)
+                credential = snapshot["credential"]
+                if (
+                    snapshot["phase"] != "ACTIVE"
+                    or snapshot["tenant_id"] != ref.tenant_id.value
+                    or snapshot["principal_id"] != ref.principal_id.value
+                    or not isinstance(credential, dict)
+                    or credential.get("revoked")
+                    or credential.get("head") != ref.credential_head
+                    or credential.get("session_head") != ref.session_head
+                    or snapshot["trust_head"] != ref.trust_head
+                    or snapshot["freshness"] != ref.freshness_sequence
+                    or credential.get("peer_credential") != ref.peer_credential
+                    or ref.contour != "CLI"
+                ):
+                    raise ValueError("H1 authenticated CLI state is not current")
+                current = CurrentHermeticExecutionScopeV1(
+                    disposition="CURRENT",
+                    scope_ref=request.expected_scope_ref,
+                    source_anchor=request.source_anchor,
+                    selector_generation=0,
+                    ordered_current_source_refs=(
+                        request.admitted_authentication_ref,
+                        request.source_anchor.decision,
+                        request.source_anchor.record,
+                    ),
+                )
+                current_candidate = H1OwnerCurrentCandidateV1(
+                    route=current_call.route,
+                    request_digest=current_call.request_digest,
+                    current=current,
+                )
+                route = next(route for route in _H1_ROUTES if route[0] == operation)
+                return {
+                    "payload": b64encode(current_candidate.canonical_bytes()).decode("ascii"),
+                    "schema_id": route[4],
+                }
         except (ValueError, TypeError) as error:
             return {"failure": "PROTOCOL_REJECTED", "reason": str(error)}
         # Contract-only: no snapshot reduction, issuer, journal write or current permit.

@@ -61,6 +61,15 @@ class HermeticOutputSourceV1(CliCustodyDTO):
         return self
 
 
+class H1AuthenticatedCliStateV1(CliCustodyDTO):
+    """Pinned R7 logical state, deliberately not a physical record locator."""
+
+    kind: Literal["H1_AUTHENTICATED_CLI_STATE_V1"] = "H1_AUTHENTICATED_CLI_STATE_V1"
+    trust_binding_digest: Digest
+    credential_head: Identity
+    session_head: Identity
+
+
 class HermeticOutputScopeV1(CliCustodyDTO):
     schema_id: Literal["chiplog.deployment-trust.hermetic-execution-scope.v1"] = (
         "chiplog.deployment-trust.hermetic-execution-scope.v1"
@@ -78,9 +87,7 @@ class HermeticOutputScopeV1(CliCustodyDTO):
     worker_session_id: Identity
     contour_head: Identity
     admitted_authentication: ExactHead
-    trust_state: ExactHead
-    credential_state: ExactHead
-    session_state: ExactHead
+    authenticated_cli_state: H1AuthenticatedCliStateV1
     recipient: ProviderRecipient
     selected_resource_observation_ref: SelectedHermeticResourceObservationRefV1
     disclosure_policy: HermeticOutputSourceV1

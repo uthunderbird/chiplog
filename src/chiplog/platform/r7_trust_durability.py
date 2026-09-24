@@ -29,6 +29,7 @@ _TYPES = {
         "chiplog.deployment_trust.session_head",
         "chiplog.deployment_trust.tenant_principal_contour",
     ),
+    "HERMETIC_OUTPUT_SCOPE_V1": ("chiplog.deployment_trust.hermetic_output_scope",),
 }
 
 
@@ -126,6 +127,41 @@ class BrokerTrustDurability:
         with self._authority_scope():
             return self._locked_append(kind, payload)
 
+    def append_hermetic_output_scope(self, scope_bytes: bytes) -> tuple[str, int, bytes]:
+        """Append one broker-fenced owner proposal to the existing trust lineage."""
+        from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+            HermeticOutputScopeV1,
+        )
+
+        scope = HermeticOutputScopeV1.model_validate_json(scope_bytes)
+        if scope.canonical_bytes() != scope_bytes:
+            raise RuntimeError("H1 scope bytes are not canonical")
+        with self._authority_scope():
+            decision_id = self._locked_append(
+                "HERMETIC_OUTPUT_SCOPE_V1", {"scope": scope.model_dump(mode="json")}
+            )
+            records = self._expected_records(
+                decision_id, "HERMETIC_OUTPUT_SCOPE_V1", {"scope": scope.model_dump(mode="json")}
+            )
+            return decision_id, len(records) - 1, records[-1]
+
+    @staticmethod
+    def _expected_records(
+        decision_id: str, kind: str, payload: dict[str, object]
+    ) -> tuple[bytes, ...]:
+        return tuple(
+            _canonical(
+                {
+                    "decision_id": decision_id,
+                    "operation_kind": kind,
+                    "record_type_id": record_type,
+                    "schema_id": _SCHEMA,
+                    **payload,
+                }
+            )
+            for record_type in ("chiplog.deployment_trust.tenant_decision", *_TYPES[kind])
+        )
+
     def _locked_append(self, kind: str, payload: dict[str, object]) -> str:
         entries = self._journal.entries()
         journal_predecessor = entries[-1][0] if entries else None
@@ -140,18 +176,7 @@ class BrokerTrustDurability:
             }
         )
         decision_id = self._journal.append(raw, journal_predecessor)
-        records = tuple(
-            _canonical(
-                {
-                    "decision_id": decision_id,
-                    "operation_kind": kind,
-                    "record_type_id": record_type,
-                    "schema_id": _SCHEMA,
-                    **payload,
-                }
-            )
-            for record_type in ("chiplog.deployment_trust.tenant_decision", *_TYPES[kind])
-        )
+        records = self._expected_records(decision_id, kind, payload)
         self._materializer.materialize(decision_id, records)
         return decision_id
 
@@ -342,6 +367,28 @@ class BrokerTrustDurability:
         with self._authority_scope():
             return self._locked_verify()
 
+    def recover_materialization(self) -> None:
+        """Replay only authenticated, exact missing materialization after a crash."""
+        with self._authority_scope():
+            entries = self._journal.entries()
+            self._verify_operator_authentication(entries)
+            for decision_id, _, raw in entries:
+                envelope = json.loads(raw)
+                expected = self._expected_records(
+                    decision_id, envelope["kind"], envelope["payload"]
+                )
+                actual = tuple(
+                    self._materializer.record(decision_id, ordinal)
+                    for ordinal in range(len(expected))
+                )
+                if any(value is None for value in actual):
+                    if any(value is not None for value in actual):
+                        raise RuntimeError("partial trust materialization cannot be recovered")
+                    self._materializer.materialize(decision_id, expected)
+                elif actual != expected:
+                    raise RuntimeError("trust materialization differs from authenticated journal")
+            self._locked_verify()
+
     def _locked_verify(self) -> TrustDurabilityObservation | None:
         entries = self._journal.entries()
         if not entries:
@@ -353,6 +400,15 @@ class BrokerTrustDurability:
             envelope = json.loads(raw)
             if envelope["kind"] not in _TYPES:
                 raise RuntimeError("unsupported R7 trust durability record")
+            expected_records = self._expected_records(
+                decision_id, envelope["kind"], envelope["payload"]
+            )
+            actual = tuple(
+                self._materializer.record(decision_id, ordinal)
+                for ordinal in range(len(expected_records))
+            )
+            if actual != expected_records:
+                raise RuntimeError("trust materialization differs from authenticated journal")
         logical_head = self._logical_head(entries)
         first = json.loads(entries[0][2])
         genesis = first["payload"]["genesis"]

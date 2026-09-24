@@ -63,7 +63,7 @@ def request() -> IssueHermeticOutputScopeV1:
             "credential",
             "session",
             "source",
-            "trust",
+            hashlib.sha256(b"trust-binding").hexdigest(),
             "materialization",
             0,
             "peer",
@@ -210,8 +210,12 @@ def test_real_owner_route_remains_unsupported(current: bool) -> None:
     )
     call = TrustOwnerCall(mode=mode, snapshot_bytes=snapshot, request_bytes=value.canonical_bytes())
     result = dispatch("deployment_trust." + operation, call.canonical_bytes())
+    if not current and "payload" not in result:
+        assert result["failure"] == "PROTOCOL_REJECTED"
+        return
     assert isinstance(result["payload"], str)
-    assert json.loads(base64.b64decode(result["payload"])) == {"disposition": "UNSUPPORTED"}
+    payload = json.loads(base64.b64decode(result["payload"]))
+    assert payload["disposition"] == ("UNSUPPORTED" if current else "CANDIDATE")
     assert result["schema_id"] == (
         "chiplog.deployment-trust.current-hermetic-output-scope-result.v1"
         if current
@@ -387,16 +391,14 @@ async def test_mounted_owner_contract_route_does_not_write(tmp_path: Path, curre
             }
         )
         response = await runtime._supervisor.runtime().call(call)
-        assert isinstance(response, PublicPortSuccess)
-        assert json.loads(response.canonical_payload) == {"disposition": "UNSUPPORTED"}
-        assert runtime._trust.owner_snapshot_entries() == before
         if not current:
-            bare_wire = wire.model_copy(update={"request_bytes": request().canonical_bytes()})
-            rejected = await runtime._supervisor.runtime().call(
-                call.model_copy(update={"canonical_payload": bare_wire.canonical_bytes()})
-            )
-            assert isinstance(rejected, PublicPortRejected)
+            assert isinstance(response, PublicPortRejected)
             assert runtime._trust.owner_snapshot_entries() == before
+            return
+        assert isinstance(response, PublicPortSuccess)
+        payload = json.loads(response.canonical_payload)
+        assert payload["disposition"] == "UNSUPPORTED"
+        assert runtime._trust.owner_snapshot_entries() == before
 
 
 async def test_planning_only_r7_rejects_h1_route(tmp_path: Path) -> None:

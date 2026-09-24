@@ -11,7 +11,11 @@ from tests.support.execution_fan_out import bind_run, fixture
 
 from chiplog.capabilities.agent_loop import _execution_completion_process as process
 from chiplog.capabilities.agent_loop import execution_first_path_completion_contracts as contracts
+from chiplog.capabilities.agent_loop import terminal_work_preparation
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.completion_terminal_work_sources import (
+    AcceptedCompletionWorkSourceV1,
+)
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
 from chiplog.capabilities.agent_loop.execution_completion_contracts import (
     ExecutionCompletionResult,
@@ -29,6 +33,11 @@ from chiplog.capabilities.agent_loop.execution_initialization_contracts import (
 )
 from chiplog.capabilities.agent_loop.execution_lifecycle import create_ingress_execution_run
 from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+from chiplog.capabilities.agent_loop.post_terminal_contracts import (
+    PreparedPostTerminalWork,
+    PrepareTerminalWork,
+    WorkCommandIdentity,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import (
     Absent,
     NonSchedulerFence,
@@ -43,6 +52,10 @@ from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import
     RECOVERY_FRONTIER_REGISTRY_SCHEMA,
     execution_zero_call_frontier_registry,
     frontier_registry_reference,
+)
+from chiplog.capabilities.agent_loop.rejected_completion_terminalization_contracts import (
+    manifest_ref,
+    run_ref,
 )
 
 
@@ -257,6 +270,40 @@ async def test_roundtrip_discriminant_fingerprints_and_frozen_wire() -> None:
     wire["selector_generation"] = "0"
     with pytest.raises(ValidationError):
         contracts.PrepareExecutionCompletionFirstPathV2.model_validate_json(json.dumps(wire))
+
+
+async def test_first_path_terminal_work_retains_accepted_source_bytes_without_obligations() -> None:
+    original = await request(canonical_response=True)
+    reply = process.dispatch(process.FIRST_PATH_OPERATION, original.canonical_bytes())
+    payload = reply["payload"]
+    assert isinstance(payload, str)
+    prepared: ExecutionCompletionResult = TypeAdapter(ExecutionCompletionResult).validate_json(
+        base64.b64decode(payload)
+    )
+    assert isinstance(prepared, PreparedExecutionCompletion)
+    source = AcceptedCompletionWorkSourceV1(
+        original_completion_request_bytes=original.canonical_bytes(),
+        prepared_completion_bytes=prepared.canonical_bytes(),
+        terminal_run=prepared.run,
+        terminal_run_head=run_ref(prepared.run),
+        terminal_manifest=prepared.terminal_manifest,
+        terminal_manifest_head=manifest_ref(prepared.terminal_manifest),
+        ordered_open_obligations=(),
+    )
+    terminal_work = PrepareTerminalWork(
+        identity=WorkCommandIdentity(tenant_id=prepared.run.tenant, command_id=original.command_id),
+        terminal_run=prepared.run,
+        original_terminalization_request=source.canonical_bytes(),
+        terminal_manifest=source.terminal_manifest_head,
+        ordered_open_obligations=(),
+    )
+
+    result = terminal_work_preparation.prepare_h1_terminal_work(terminal_work)
+
+    assert isinstance(result, PreparedPostTerminalWork)
+    assert terminal_work.original_terminalization_request == source.canonical_bytes()
+    assert result.ordered_work == ()
+    assert result.complete_records == ()
 
 
 @pytest.mark.parametrize(

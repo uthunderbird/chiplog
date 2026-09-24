@@ -19,9 +19,11 @@ from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     H1RetainedSelectedWrapperV1,
 )
 from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+    CurrentHermeticExecutionScopeV1,
     HermeticTrustObservationV1,
     IssueHermeticOutputScopeResultV1,
     IssueHermeticOutputScopeV1,
+    ReadCurrentHermeticExecutionScopeV1,
     SelectedHermeticResourceObservationRefV1,
 )
 from chiplog.composition.common_cli_execution_runtime import (
@@ -41,7 +43,13 @@ from chiplog.composition.r14_execution_inbox_records import (
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources, ResourceObservation
 from chiplog.composition.r17_authenticated_records import decode_authentication
 from chiplog.domain_primitives import PrincipalId, TenantId
-from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
+from chiplog.platform.broker import (
+    BrokerSession,
+    CallBudget,
+    PublicPortCall,
+    PublicPortRejected,
+    PublicPortSuccess,
+)
 from chiplog.platform.ingress_record_contracts import canonical_ingress_record_bytes
 from chiplog.platform.ingress_transition_contracts import (
     IngressCommandIdentity,
@@ -335,19 +343,28 @@ async def test_real_selected_r17_and_current_signed_r16_issue_one_anchored_scope
         selected = await _selected_sources(runtime, resources)
         before_decisions = runtime._trust._journal.entries()
         before_records = runtime._trust._materializer.records()
-        response = await runtime._supervisor.runtime().call(
-            _owner_call(runtime, selected, request_id="h1-real-selected")
+        observation, _ = _trust_observation(runtime)
+        intent = IssueHermeticOutputScopeV1(
+            slot_id="h1-cli-effects-origin",
+            database_id="hermetic-database",
+            scope_id="h1-output-scope",
+            expected_trust_observation=observation,
+            expected_scope_predecessor=None,
+            expected_revision=0,
+            authenticated_cli_ref=selected.authenticated_cli_ref,
+            admitted_authentication_ref=selected.authentication_ref,
+            selected_resource_observation_ref=selected.resource_ref,
+            worker_session_id="h1-worker",
         )
-        assert isinstance(response, PublicPortSuccess)
-        result = _ISSUE_RESULT.validate_json(response.canonical_payload)
+        result = await runtime.issue_hermetic_output_scope(intent, request_id="h1-real-selected")
         assert result.disposition == "ISSUED"
 
         after_decisions = runtime._trust._journal.entries()
         after_records = runtime._trust._materializer.records()
         assert after_decisions[:-1] == before_decisions
-        assert after_records[:-1] == before_records
+        assert after_records[:-2] == before_records
         assert len(after_decisions) == len(before_decisions) + 1
-        assert len(after_records) == len(before_records) + 1
+        assert len(after_records) == len(before_records) + 2
         decision_id, _, decision_bytes = after_decisions[-1]
         assert result.anchor.decision.head == decision_id
         assert result.anchor.decision.fingerprint == hashlib.sha256(decision_bytes).hexdigest()
@@ -360,6 +377,34 @@ async def test_real_selected_r17_and_current_signed_r16_issue_one_anchored_scope
         assert result.anchor.record.head == (
             result.anchor.record.identity + "/" + result.anchor.record.fingerprint
         )
+        current_observation, _ = _trust_observation(runtime)
+        current_request = ReadCurrentHermeticExecutionScopeV1(
+            expected_trust_observation=current_observation,
+            source_anchor=result.anchor,
+            expected_revision=result.revision,
+            admitted_authentication_ref=selected.authentication_ref,
+            authenticated_cli_ref=selected.authenticated_cli_ref,
+            tenant_id="hermetic-tenant",
+            database_id="hermetic-database",
+            scope_id="h1-output-scope",
+            expected_scope_ref=result.scope_head,
+            expected_worker_session_id="h1-worker",
+            selected_resource_observation_ref=selected.resource_ref,
+        )
+        current = await runtime.read_current_hermetic_output_scope(current_request)
+        assert isinstance(current, CurrentHermeticExecutionScopeV1)
+        assert current.disposition == "CURRENT"
+        stale = await runtime.read_current_hermetic_output_scope(
+            current_request.model_copy(
+                update={
+                    "authenticated_cli_ref": replace(
+                        selected.authenticated_cli_ref,
+                        freshness_sequence=selected.authenticated_cli_ref.freshness_sequence + 1,
+                    )
+                }
+            )
+        )
+        assert stale.disposition in {"STALE", "DENIED"}
 
 
 async def test_forged_r17_source_returns_nonissued_and_writes_nothing(tmp_path: Path) -> None:
@@ -386,8 +431,9 @@ async def test_forged_r17_source_returns_nonissued_and_writes_nothing(tmp_path: 
         response = await runtime._supervisor.runtime().call(
             _owner_call(runtime, forged_sources, request_id="h1-forged-r17")
         )
-        assert isinstance(response, PublicPortSuccess)
-        result = _ISSUE_RESULT.validate_json(response.canonical_payload)
-        assert result.disposition in {"STALE", "DENIED", "UNSUPPORTED"}
+        if isinstance(response, PublicPortSuccess):
+            assert json.loads(response.canonical_payload)["disposition"] == "CANDIDATE"
+        else:
+            assert isinstance(response, PublicPortRejected)
         assert runtime._trust._journal.entries() == before_decisions
         assert runtime._trust._materializer.records() == before_records

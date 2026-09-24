@@ -9,6 +9,7 @@ from pydantic import TypeAdapter, ValidationError
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead, ProviderRecipient
 from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
     CurrentHermeticExecutionScopeResultV1,
+    H1AuthenticatedCliStateV1,
     HermeticOutputPolicyV1,
     HermeticOutputScopeV1,
     HermeticOutputSourceV1,
@@ -54,9 +55,11 @@ def scope() -> HermeticOutputScopeV1:
         worker_session_id="worker",
         contour_head="contour",
         admitted_authentication=head("auth"),
-        trust_state=head("trust"),
-        credential_state=head("credential"),
-        session_state=head("session"),
+        authenticated_cli_state=H1AuthenticatedCliStateV1(
+            trust_binding_digest=hashlib.sha256(b"trust-binding").hexdigest(),
+            credential_head="credential:1",
+            session_head="session:1",
+        ),
         recipient=ProviderRecipient(
             provider_id="hermetic-effects",
             account_id="hermetic-account",
@@ -84,6 +87,16 @@ def test_canonical_roundtrip_preserves_original_sources() -> None:
     assert restored == value
     assert restored.canonical_bytes() == value.canonical_bytes()
     assert restored.selected_resource_observation_ref == value.selected_resource_observation_ref
+
+
+def test_trust_state_labels_are_logical_and_reject_synthetic_fingerprints() -> None:
+    value = scope()
+    assert value.authenticated_cli_state.credential_head == "credential:1"
+    assert value.authenticated_cli_state.session_head == "session:1"
+    data = value.model_dump(mode="json")
+    data["authenticated_cli_state"]["fingerprint"] = "0" * 64
+    with pytest.raises(ValidationError):
+        HermeticOutputScopeV1.model_validate(data)
 
 
 @pytest.mark.parametrize(

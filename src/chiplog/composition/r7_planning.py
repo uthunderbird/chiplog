@@ -1027,6 +1027,7 @@ async def _open_runtime(
             )
             runtime._bind_appender()
             try:
+                trust.recover_materialization()
                 trust_state = trust.verify()
                 if trust_state is not None and trust_state.phase == "ACTIVE":
                     await appender.advance_fence(

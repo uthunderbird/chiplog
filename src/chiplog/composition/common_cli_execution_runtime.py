@@ -30,6 +30,29 @@ from chiplog.capabilities.agent_loop.execution_initialization_contracts import (
 )
 from chiplog.capabilities.agent_loop.execution_transition_contracts import CreateExecutionRun
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
+from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
+    BrokerSelectedH1EvidenceV1,
+    H1BrokerRouteBindingV1,
+    H1CurrentBrokerRouteV1,
+    H1OwnerCandidateCallV1,
+    H1OwnerCandidateV1,
+    H1OwnerCurrentCallV1,
+    H1OwnerCurrentCandidateV1,
+    H1RetainedSelectedWrapperV1,
+)
+from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+    CurrentHermeticExecutionScopeResultV1,
+    CurrentHermeticExecutionScopeV1,
+    HermeticOutputScopeAnchorV1,
+    HermeticOutputScopeV1,
+    HermeticTrustObservationV1,
+    IssuedHermeticOutputScopeV1,
+    IssueHermeticOutputScopeResultV1,
+    IssueHermeticOutputScopeV1,
+    NonCurrentHermeticExecutionScopeV1,
+    NonIssuedHermeticOutputScopeV1,
+    ReadCurrentHermeticExecutionScopeV1,
+)
 from chiplog.composition.common_execution_driver_contracts import (
     AdvanceExecutionRequestV1,
     CommonExecutionResultV1,
@@ -54,8 +77,10 @@ from chiplog.composition.r17_authenticated_records import decode_authentication
 from chiplog.composition.r17_ingress_registry import RETAINED_CLI_READER_ID
 from chiplog.composition.r17_ingress_runtime import R17IngressRuntime
 from chiplog.platform._ingress_contracts import Head
+from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 from chiplog.platform.ingress_custody_records import canonical, reference
 from chiplog.platform.ingress_transition_contracts import RetainedIngressSource
+from chiplog.platform.r7_trust import TrustOwnerCall
 
 R17_RETAINED_READER_ID = RETAINED_CLI_READER_ID
 
@@ -90,6 +115,360 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             )
         )
     )
+
+    async def issue_hermetic_output_scope(
+        self, intent: IssueHermeticOutputScopeV1, *, request_id: str
+    ) -> IssueHermeticOutputScopeResultV1:
+        """Broker-only two-phase H1 issue path; no caller-built evidence is authority."""
+        gate = self._authority_gate()
+        from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSources
+
+        sources = H1SelectedOutputSources(self)
+        with gate.hold():
+            frozen = self._trust.capture_verified_observation()
+            entries = self._trust._journal.entries()
+            if not entries:
+                return NonIssuedHermeticOutputScopeV1(disposition="STALE")
+            decision_id, _, decision_bytes = entries[-1]
+            logical = self._trust.owner_snapshot_entries()[-1][0]
+            observation = HermeticTrustObservationV1(
+                physical_journal_head=ExactHead(
+                    identity="deployment-trust/journal",
+                    head=decision_id,
+                    fingerprint=hashlib.sha256(decision_bytes).hexdigest(),
+                ),
+                logical_snapshot_head=logical,
+            )
+            if intent.expected_trust_observation != observation:
+                return NonIssuedHermeticOutputScopeV1(disposition="STALE")
+            captured = sources.capture_selected_current(
+                intent.selected_resource_observation_ref,
+                intent.admitted_authentication_ref,
+                intent.authenticated_cli_ref,
+            )
+            if captured is None:
+                return NonIssuedHermeticOutputScopeV1(disposition="STALE")
+            callee = self._supervisor.runtime().session("deployment_trust")
+            route = H1BrokerRouteBindingV1(
+                tenant_id="hermetic-tenant",
+                database_id=intent.database_id,
+                worker_session_id=intent.worker_session_id,
+                broker_epoch=callee.broker_epoch,
+                runtime_generation=callee.generation_id,
+                broker_session_id="broker:" + callee.generation_id,
+                owner_session_id=callee.session_id,
+                request_id=request_id,
+            )
+            retained = H1RetainedSelectedWrapperV1(
+                initialization_envelope_bytes=captured.initialization_envelope_bytes,
+                admitted_record_bytes=captured.admitted_record_bytes,
+                selected_admitted_record_ref=captured.selected_admitted_record_ref,
+                authentication_result_bytes=captured.authentication_result_bytes,
+                admitted_record_digest=hashlib.sha256(captured.admitted_record_bytes).hexdigest(),
+            )
+            evidence = BrokerSelectedH1EvidenceV1(
+                route=route,
+                selected_request_bytes=intent.canonical_bytes(),
+                request_digest=hashlib.sha256(intent.canonical_bytes()).hexdigest(),
+                retained=retained,
+                retained_wrapper_digest=hashlib.sha256(retained.canonical_bytes()).hexdigest(),
+                recipient=captured.verified.recipient,
+                trust_observation=observation,
+                trust_snapshot_digest=hashlib.sha256(frozen.snapshot_bytes).hexdigest(),
+            )
+            call = H1OwnerCandidateCallV1(
+                evidence=evidence,
+                evidence_digest=hashlib.sha256(evidence.canonical_bytes()).hexdigest(),
+            )
+        wire = TrustOwnerCall(
+            mode="ISSUE_HERMETIC_OUTPUT_SCOPE_V1",
+            snapshot_bytes=frozen.snapshot_bytes,
+            request_bytes=call.canonical_bytes(),
+        )
+        request = PublicPortCall(
+            operation_id="deployment_trust.issue_hermetic_output_scope",
+            request_id=request_id,
+            caller=BrokerSession(
+                tenant_id="hermetic-tenant",
+                broker_epoch=callee.broker_epoch,
+                generation_id=callee.generation_id,
+                owner_id="broker",
+                session_id="broker:" + callee.generation_id,
+            ),
+            callee=callee,
+            schema_id="chiplog.deployment-trust.owner-call.v1",
+            canonical_payload=wire.canonical_bytes(),
+            budget=CallBudget(
+                remaining_calls=1,
+                remaining_depth=1,
+                absolute_deadline_ns=time.monotonic_ns() + 5_000_000_000,
+                policy_version=1,
+            ),
+        )
+        response = await self._supervisor.runtime().call(request)
+        if (
+            not isinstance(response, PublicPortSuccess)
+            or response.request_id != request_id
+            or response.responder != callee
+        ):
+            return NonIssuedHermeticOutputScopeV1(disposition="STALE")
+        try:
+            candidate = H1OwnerCandidateV1.model_validate_json(response.canonical_payload)
+            if candidate.canonical_bytes() != response.canonical_payload:
+                raise ValueError("noncanonical owner result")
+            candidate.check_pinned_call(call)
+        except ValueError:
+            return NonIssuedHermeticOutputScopeV1(disposition="DENIED")
+        with gate.hold():
+            if self._trust.capture_verified_observation() != frozen:
+                return NonIssuedHermeticOutputScopeV1(disposition="STALE")
+            current = sources.capture_selected_current(
+                intent.selected_resource_observation_ref,
+                intent.admitted_authentication_ref,
+                intent.authenticated_cli_ref,
+            )
+            if (
+                current != captured
+                or self._supervisor.runtime().session("deployment_trust") != callee
+            ):
+                return NonIssuedHermeticOutputScopeV1(disposition="STALE")
+            for existing_id, _, raw in self._trust._journal.entries():
+                envelope = json.loads(raw)
+                if envelope.get("kind") != "HERMETIC_OUTPUT_SCOPE_V1":
+                    continue
+                existing = HermeticOutputScopeV1.model_validate(envelope["payload"]["scope"])
+                if (
+                    existing.database_id == candidate.scope.database_id
+                    and existing.scope_id == candidate.scope.scope_id
+                    and existing.revision == candidate.scope.revision
+                ):
+                    if existing != candidate.scope:
+                        return NonIssuedHermeticOutputScopeV1(disposition="DENIED")
+                    return self._issued_h1_result(existing_id, existing, disposition="REPLAY")
+            decision_id, _, _ = self._trust.append_hermetic_output_scope(
+                candidate.scope.canonical_bytes()
+            )
+            return self._issued_h1_result(decision_id, candidate.scope, disposition="ISSUED")
+
+    def _issued_h1_result(
+        self,
+        decision_id: str,
+        scope: HermeticOutputScopeV1,
+        *,
+        disposition: Literal["ISSUED", "REPLAY"],
+    ) -> IssuedHermeticOutputScopeV1:
+        decision = next(
+            raw
+            for current_id, _, raw in self._trust._journal.entries()
+            if current_id == decision_id
+        )
+        ordinal = 1
+        record = self._trust._materializer.record(decision_id, ordinal)
+        if record is None:
+            raise RuntimeError("issued H1 scope has no materialized scope record")
+        anchor = HermeticOutputScopeAnchorV1(
+            owner_id="deployment_trust",
+            decision=ExactHead(
+                identity="deployment-trust/journal",
+                head=decision_id,
+                fingerprint=hashlib.sha256(decision).hexdigest(),
+            ),
+            record_ordinal=ordinal,
+            record_type_id="chiplog.deployment_trust.hermetic_output_scope",
+            schema_id="chiplog.deployment_trust.record.v1",
+            record=ExactHead(
+                identity="trust-record:" + decision_id + ":" + str(ordinal),
+                head="trust-record:"
+                + decision_id
+                + ":"
+                + str(ordinal)
+                + "/"
+                + hashlib.sha256(record).hexdigest(),
+                fingerprint=hashlib.sha256(record).hexdigest(),
+            ),
+            scope_revision=scope.revision,
+            predecessor=scope.predecessor,
+            selected_resource_observation_ref=scope.selected_resource_observation_ref,
+        )
+        scope_bytes = scope.canonical_bytes()
+        return IssuedHermeticOutputScopeV1(
+            disposition=disposition,
+            anchor=anchor,
+            scope_head=ExactHead(
+                identity=scope.scope_id,
+                head=scope.scope_id + "/" + hashlib.sha256(scope_bytes).hexdigest(),
+                fingerprint=hashlib.sha256(scope_bytes).hexdigest(),
+            ),
+            revision=scope.revision,
+        )
+
+    async def read_current_hermetic_output_scope(
+        self, request: ReadCurrentHermeticExecutionScopeV1
+    ) -> CurrentHermeticExecutionScopeResultV1:
+        """Authenticate a physical scope record and its selected sources at one fence."""
+        gate = self._authority_gate()
+        from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSources
+
+        with gate.hold():
+            snapshot = self._trust.capture_verified_observation().snapshot_bytes
+            callee = self._supervisor.runtime().session("deployment_trust")
+            request_id = "h1-current:" + hashlib.sha256(request.canonical_bytes()).hexdigest()
+            route = H1CurrentBrokerRouteV1(
+                tenant_id="hermetic-tenant",
+                broker_epoch=callee.broker_epoch,
+                runtime_generation=callee.generation_id,
+                broker_session_id="broker:" + callee.generation_id,
+                owner_session_id=callee.session_id,
+                request_id=request_id,
+            )
+            current_call = H1OwnerCurrentCallV1(
+                route=route,
+                read_request_bytes=request.canonical_bytes(),
+                request_digest=hashlib.sha256(request.canonical_bytes()).hexdigest(),
+            )
+        owner_call = TrustOwnerCall(
+            mode="READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1",
+            snapshot_bytes=snapshot,
+            request_bytes=current_call.canonical_bytes(),
+        )
+        broker_call = PublicPortCall(
+            operation_id="deployment_trust.read_current_hermetic_output_scope",
+            request_id=request_id,
+            caller=BrokerSession(
+                tenant_id="hermetic-tenant",
+                broker_epoch=callee.broker_epoch,
+                generation_id=callee.generation_id,
+                owner_id="broker",
+                session_id="broker:" + callee.generation_id,
+            ),
+            callee=callee,
+            schema_id="chiplog.deployment-trust.owner-call.v1",
+            canonical_payload=owner_call.canonical_bytes(),
+            budget=CallBudget(
+                remaining_calls=1,
+                remaining_depth=1,
+                absolute_deadline_ns=time.monotonic_ns() + 5_000_000_000,
+                policy_version=1,
+            ),
+        )
+        owner_response = await self._supervisor.runtime().call(broker_call)
+        if (
+            not isinstance(owner_response, PublicPortSuccess)
+            or owner_response.request_id != broker_call.request_id
+            or owner_response.responder != callee
+        ):
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        try:
+            owner_candidate = H1OwnerCurrentCandidateV1.model_validate_json(
+                owner_response.canonical_payload
+            )
+            if owner_candidate.canonical_bytes() != owner_response.canonical_payload:
+                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            owner_candidate.check_pinned_call(current_call)
+        except ValueError:
+            return NonCurrentHermeticExecutionScopeV1(disposition="DENIED")
+        with gate.hold():
+            frozen = self._trust.capture_verified_observation()
+            if not self._matches_h1_trust_observation(request.expected_trust_observation):
+                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            anchor = request.source_anchor
+            decision = next(
+                (
+                    raw
+                    for decision_id, _, raw in self._trust._journal.entries()
+                    if decision_id == anchor.decision.head
+                ),
+                None,
+            )
+            if (
+                decision is None
+                or hashlib.sha256(decision).hexdigest() != anchor.decision.fingerprint
+            ):
+                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            record = self._trust._materializer.record(anchor.decision.head, anchor.record_ordinal)
+            if record is None or hashlib.sha256(record).hexdigest() != anchor.record.fingerprint:
+                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            record_identity = (
+                "trust-record:" + anchor.decision.head + ":" + str(anchor.record_ordinal)
+            )
+            if (
+                anchor.record.identity != record_identity
+                or anchor.record.head != record_identity + "/" + anchor.record.fingerprint
+            ):
+                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            try:
+                envelope = json.loads(record)
+                if (
+                    envelope.get("record_type_id") != anchor.record_type_id
+                    or envelope.get("schema_id") != anchor.schema_id
+                    or envelope.get("decision_id") != anchor.decision.head
+                    or envelope.get("operation_kind") != "HERMETIC_OUTPUT_SCOPE_V1"
+                ):
+                    raise ValueError("scope record type differs")
+                scope = HermeticOutputScopeV1.model_validate_json(
+                    json.dumps(envelope["scope"], sort_keys=True, separators=(",", ":"))
+                )
+            except KeyError, TypeError, ValueError:
+                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            scope_bytes = scope.canonical_bytes()
+            scope_ref = ExactHead(
+                identity=scope.scope_id,
+                head=scope.scope_id + "/" + hashlib.sha256(scope_bytes).hexdigest(),
+                fingerprint=hashlib.sha256(scope_bytes).hexdigest(),
+            )
+            if (
+                scope_ref != request.expected_scope_ref
+                or scope.revision != request.expected_revision
+                or scope.database_id != request.database_id
+                or scope.scope_id != request.scope_id
+                or scope.worker_session_id != request.expected_worker_session_id
+                or scope.admitted_authentication != request.admitted_authentication_ref
+                or scope.selected_resource_observation_ref
+                != request.selected_resource_observation_ref
+                or scope.authenticated_cli_state.trust_binding_digest
+                != request.authenticated_cli_ref.trust_head
+                or scope.authenticated_cli_state.credential_head
+                != request.authenticated_cli_ref.credential_head
+                or scope.authenticated_cli_state.session_head
+                != request.authenticated_cli_ref.session_head
+            ):
+                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            current = H1SelectedOutputSources(self).capture_selected_current(
+                request.selected_resource_observation_ref,
+                request.admitted_authentication_ref,
+                request.authenticated_cli_ref,
+            )
+            if current is None or self._trust.capture_verified_observation() != frozen:
+                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            if scope.recipient != current.verified.recipient:
+                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            if self._supervisor.runtime().session("deployment_trust") != callee:
+                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            return CurrentHermeticExecutionScopeV1(
+                disposition="CURRENT",
+                scope_ref=scope_ref,
+                source_anchor=anchor,
+                selector_generation=0,
+                ordered_current_source_refs=(
+                    current.verified.admitted_authentication_ref,
+                    current.verified.recipient.endpoint,
+                    current.verified.recipient.credential_binding,
+                ),
+            )
+
+    def _matches_h1_trust_observation(self, expected: HermeticTrustObservationV1) -> bool:
+        entries = self._trust._journal.entries()
+        if not entries:
+            return False
+        decision_id, _, raw = entries[-1]
+        return expected == HermeticTrustObservationV1(
+            physical_journal_head=ExactHead(
+                identity="deployment-trust/journal",
+                head=decision_id,
+                fingerprint=hashlib.sha256(raw).hexdigest(),
+            ),
+            logical_snapshot_head=self._trust.owner_snapshot_entries()[-1][0],
+        )
 
     def _selected_input(
         self,

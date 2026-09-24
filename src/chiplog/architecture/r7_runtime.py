@@ -733,12 +733,20 @@ _FIRST_PATH_EXECUTION_COMPLETION_ROUTE = RoutedCallDecl(
     "chiplog.execution.first-path-completion.v2",
     "chiplog.agent-loop.prepared-execution-completion-result.v1",
 )
+_TERMINAL_WORK_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_terminal_work",
+    "broker",
+    "agent_loop",
+    "chiplog.agent-loop.prepare-terminal-work.v1",
+    "chiplog.agent-loop.prepared-post-terminal-work-result.v1",
+)
 _H1_EXECUTION_OPERATIONS = tuple(
     sorted(
         (
             *_H0_EXECUTION_OPERATIONS,
             _EXECUTION_COMPLETION_ROUTE.operation_id,
             _FIRST_PATH_EXECUTION_COMPLETION_ROUTE.operation_id,
+            _TERMINAL_WORK_ROUTE.operation_id,
         )
     )
 )
@@ -770,9 +778,28 @@ _H1_TRUST_OPERATIONS = tuple(
         )
     )
 )
+_H1_CONVERSATION_COMPLETION_ROUTE = RoutedCallDecl(
+    "projections.prepare_conversation_completion",
+    "broker",
+    "projections",
+    "chiplog.conversation.prepare-completion.v1",
+    "chiplog.conversation.prepared-completion-result.v1",
+)
+_H1_PROJECTION_OPERATIONS = tuple(
+    sorted(
+        (
+            *next(
+                owner.capability_ids
+                for owner in R14_R17_H0_PRODUCTION_MANIFEST.owners
+                if owner.owner_id == "projections"
+            ),
+            _H1_CONVERSATION_COMPLETION_ROUTE.operation_id,
+        )
+    )
+)
 R14_R17_H1_PRODUCTION_MANIFEST = replace(
     R14_R17_H0_PRODUCTION_MANIFEST,
-    manifest_version=15,
+    manifest_version=17,
     owners=tuple(
         replace(
             owner,
@@ -788,6 +815,13 @@ R14_R17_H1_PRODUCTION_MANIFEST = replace(
             target_ids=("chiplog.capabilities.deployment_trust._h1_process:dispatch",),
         )
         if owner.owner_id == "deployment_trust"
+        else replace(
+            owner,
+            capability_ids=_H1_PROJECTION_OPERATIONS,
+            public_operations=_H1_PROJECTION_OPERATIONS,
+            target_ids=("chiplog.capabilities.projections._conversation_completion_process:dispatch",),
+        )
+        if owner.owner_id == "projections"
         else owner
         for owner in R14_R17_H0_PRODUCTION_MANIFEST.owners
     ),
@@ -797,7 +831,9 @@ R14_R17_H1_PRODUCTION_MANIFEST = replace(
                 *R14_R17_H0_PRODUCTION_MANIFEST.routes,
                 _EXECUTION_COMPLETION_ROUTE,
                 _FIRST_PATH_EXECUTION_COMPLETION_ROUTE,
+                _TERMINAL_WORK_ROUTE,
                 *_H1_TRUST_ROUTES,
+                _H1_CONVERSATION_COMPLETION_ROUTE,
             ),
             key=lambda route: (route.callee_owner_id, route.operation_id),
         )
@@ -816,7 +852,7 @@ def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
 
 
 def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
-    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
+    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
         1: R7_PRODUCTION_MANIFEST,
@@ -833,7 +869,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         12: R14_EXECUTION_LIFECYCLE_PRODUCTION_MANIFEST,
         13: R14_R16_CALL_PRODUCTION_MANIFEST,
         14: R14_R17_H0_PRODUCTION_MANIFEST,
-        15: R14_R17_H1_PRODUCTION_MANIFEST,
+        17: R14_R17_H1_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")

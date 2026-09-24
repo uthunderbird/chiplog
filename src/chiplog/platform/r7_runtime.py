@@ -287,6 +287,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             "agent_loop.prepare_execution_transition",
             "agent_loop.prepare_first_path_completion",
             "agent_loop.prepare_pre_accept_cancellation",
+            "agent_loop.prepare_terminal_work",
             "agent_loop.validate_delivery_completion",
             "agent_loop.validate_transition",
             "scheduler.prepare_configuration",
@@ -296,6 +297,11 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
         ):
             return "chiplog.capabilities.agent_loop._execution_completion_process"
         raise OwnerProcessFailure("unknown agent-loop capability partition")
+    if identity.owner_id == "projections" and identity.capability_ids == (
+        "projections.prepare_conversation_completion",
+        "projections.render_planning",
+    ):
+        return "chiplog.capabilities.projections._conversation_completion_process"
     if identity.owner_id == "effects":
         if identity.capability_ids == ("effects.prepare_transition",):
             return "chiplog.capabilities.effects._process"
@@ -337,6 +343,7 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
             "chiplog.capabilities.agent_loop._r14_fanout_process",
             "chiplog.capabilities.agent_loop._r14_process",
             "chiplog.capabilities.agent_loop._scheduler_process",
+            "chiplog.capabilities.agent_loop._terminal_work_process",
         )
     if module == "chiplog.capabilities.agent_loop._execution_h0_process":
         return (
@@ -415,6 +422,11 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
             "chiplog.capabilities.deployment_trust._ingress_process",
             "chiplog.capabilities.deployment_trust._r17_process",
             "chiplog.capabilities.deployment_trust._r7_process",
+        )
+    if module == "chiplog.capabilities.projections._conversation_completion_process":
+        return (
+            "chiplog.capabilities.projections._conversation_completion_process",
+            "chiplog.capabilities.projections._r7_process",
         )
     if module == "chiplog.capabilities.deployment_trust._cli_custody_process":
         return (

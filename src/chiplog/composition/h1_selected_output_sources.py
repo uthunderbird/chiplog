@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from dataclasses import dataclass
 
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead, ProviderRecipient
@@ -19,6 +20,18 @@ from chiplog.composition.r14_execution_inbox_records import (
 from chiplog.composition.r16_dispatch_registry import ResourceObservation
 from chiplog.composition.r17_authenticated_records import decode_authentication
 from chiplog.domain_primitives import PrincipalId, TenantId
+from chiplog.platform.ingress_record_contracts import canonical_ingress_record_bytes
+
+
+@dataclass(frozen=True, slots=True)
+class H1SelectedOutputCapture:
+    """Gate-held broker observation retained for the H1 candidate/fence comparison."""
+
+    verified: VerifiedH1SelectedSources
+    initialization_envelope_bytes: bytes
+    admitted_record_bytes: bytes
+    selected_admitted_record_ref: ExactHead
+    authentication_result_bytes: bytes
 
 
 class H1SelectedOutputSources:
@@ -122,6 +135,46 @@ class H1SelectedOutputSources:
                 authenticated_cli_ref=derived_authentication,
                 admitted_authentication_ref=admitted_authentication_ref,
                 selected_resource_observation_ref=resource_ref,
+            )
+
+    def capture_selected_current(
+        self,
+        resource_ref: SelectedHermeticResourceObservationRefV1,
+        admitted_authentication_ref: ExactHead,
+        authenticated_cli_ref: TrustReference,
+    ) -> H1SelectedOutputCapture | None:
+        """Return exact broker-owned evidence, never a caller reconstruction."""
+        with self._gate.hold():
+            verified = self.resolve_selected_current(
+                resource_ref, admitted_authentication_ref, authenticated_cli_ref
+            )
+            if verified is None:
+                return None
+            selected = self._selected_initialization(resource_ref)
+            if selected is None:
+                return None
+            evidence, decision_id = selected
+            raw = next(
+                raw
+                for current_id, _, raw in self._runtime._loop_decisions().entries()
+                if current_id == decision_id
+            )
+            wire = DriveInputRequestV1.model_validate_json(evidence.driver_request_bytes)
+            admitted = self._runtime.read_admitted_inbox(
+                wire.identity.original_ingress_identity.command_id
+            )
+            if admitted is None:
+                return None
+            record_bytes = canonical_ingress_record_bytes(admitted.record)
+            selected_ref = ExactHead(**admitted.physical_record.model_dump())
+            if selected_ref.fingerprint != hashlib.sha256(record_bytes).hexdigest():
+                return None
+            return H1SelectedOutputCapture(
+                verified=verified,
+                initialization_envelope_bytes=raw,
+                admitted_record_bytes=record_bytes,
+                selected_admitted_record_ref=selected_ref,
+                authentication_result_bytes=admitted.record.command.authentication_result_bytes,
             )
 
     def _selected_initialization(

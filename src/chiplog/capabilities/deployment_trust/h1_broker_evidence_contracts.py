@@ -17,10 +17,12 @@ from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead, Provid
 
 from .cli_custody_contracts import CliCustodyDTO, Digest, Identity, UInt64
 from .hermetic_output_scope_contracts import (
+    CurrentHermeticExecutionScopeV1,
     HermeticOutputPolicyV1,
     HermeticOutputScopeV1,
     HermeticTrustObservationV1,
     IssueHermeticOutputScopeV1,
+    ReadCurrentHermeticExecutionScopeV1,
 )
 
 # Bounds apply before JSON parsing at the IPC boundary, and again to decoded
@@ -193,11 +195,65 @@ class H1OwnerCandidateV1(CliCustodyDTO):
             or scope.selected_resource_observation_ref != request.selected_resource_observation_ref
             or scope.recipient != evidence.recipient
             or policy.endpoint_ref != evidence.recipient.endpoint
-            or scope.trust_state.head != request.authenticated_cli_ref.trust_head
-            or scope.credential_state.head != request.authenticated_cli_ref.credential_head
-            or scope.session_state.head != request.authenticated_cli_ref.session_head
+            or scope.authenticated_cli_state.trust_binding_digest
+            != request.authenticated_cli_ref.trust_head
+            or scope.authenticated_cli_state.credential_head
+            != request.authenticated_cli_ref.credential_head
+            or scope.authenticated_cli_state.session_head
+            != request.authenticated_cli_ref.session_head
         ):
             raise ValueError("H1 candidate differs from pinned broker call")
+
+
+class H1CurrentBrokerRouteV1(CliCustodyDTO):
+    tenant_id: Literal["hermetic-tenant"]
+    broker_epoch: UInt64
+    runtime_generation: Identity
+    broker_session_id: Identity
+    owner_session_id: Identity
+    request_id: Identity
+    operation: Literal["deployment_trust.read_current_hermetic_output_scope"] = (
+        "deployment_trust.read_current_hermetic_output_scope"
+    )
+
+
+class H1OwnerCurrentCallV1(CliCustodyDTO):
+    """Pinned broker read request; compatibility is retained at the outer wire."""
+
+    schema_id: Literal["chiplog.h1.owner-current-call.v1"] = "chiplog.h1.owner-current-call.v1"
+    route: H1CurrentBrokerRouteV1
+    read_request_bytes: Annotated[bytes, Field(min_length=1, max_length=65_536)]
+    request_digest: Digest
+
+    @model_validator(mode="after")
+    def exact_request(self) -> Self:
+        request = ReadCurrentHermeticExecutionScopeV1.model_validate_json(self.read_request_bytes)
+        if (
+            request.canonical_bytes() != self.read_request_bytes
+            or hashlib.sha256(self.read_request_bytes).hexdigest() != self.request_digest
+        ):
+            raise ValueError("H1 current request differs from its digest")
+        return self
+
+
+class H1OwnerCurrentCandidateV1(CliCustodyDTO):
+    schema_id: Literal["chiplog.h1.owner-current-candidate.v1"] = (
+        "chiplog.h1.owner-current-candidate.v1"
+    )
+    disposition: Literal["CANDIDATE"] = "CANDIDATE"
+    route: H1CurrentBrokerRouteV1
+    request_digest: Digest
+    current: CurrentHermeticExecutionScopeV1
+
+    def check_pinned_call(self, call: H1OwnerCurrentCallV1) -> None:
+        request = ReadCurrentHermeticExecutionScopeV1.model_validate_json(call.read_request_bytes)
+        if (
+            self.route != call.route
+            or self.request_digest != call.request_digest
+            or self.current.scope_ref != request.expected_scope_ref
+            or self.current.source_anchor != request.source_anchor
+        ):
+            raise ValueError("H1 current candidate differs from pinned broker call")
 
 
 def decode_h1_candidate_call(raw: bytes) -> H1OwnerCandidateCallV1:
