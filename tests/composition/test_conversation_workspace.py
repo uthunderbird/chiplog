@@ -15,6 +15,7 @@ from chiplog.adapters.driven.r9_fence import (
 )
 from chiplog.capabilities.projections.conversation import ConversationHistory
 from chiplog.capabilities.projections.disclosure import CurrentDisclosureGuard
+from chiplog.capabilities.projections.provenance import ProvenanceBinding, ProvenanceSubject
 from chiplog.capabilities.projections.r9_boundary import (
     BudgetPolicy,
     ConversationEntry,
@@ -31,7 +32,10 @@ from tests.support.planning_workspace import empty_planning
 from tests.support.workspace import IssuedContext, context, envelope, request, source
 
 
-async def test_canonical_appender_history_cursor_replay_and_fence(tmp_path: Path) -> None:
+@pytest.mark.parametrize("bound", (False, True))
+async def test_canonical_appender_history_cursor_replay_and_fence(
+    tmp_path: Path, bound: bool
+) -> None:
     with SQLiteMaterializer(
         tmp_path / "canonical.db",
         record_contracts={"ingress": "ingress.v1", CONVERSATION_OWNER: CONVERSATION_SCHEMA},
@@ -86,9 +90,25 @@ async def test_canonical_appender_history_cursor_replay_and_fence(tmp_path: Path
                 materializer,
                 contexts,
                 {("ingress", "source"): source(), ("ingress", "latest"): latest_source},
+                bindings=tuple(
+                    ProvenanceBinding(
+                        subject=ProvenanceSubject(
+                            tenant_id="tenant",
+                            producer="core.conversation",
+                            record_id=entry_id,
+                            revision=revision,
+                        ),
+                        content_digest=item.content_digest,
+                        sources=(item,),
+                    )
+                    for entry_id, revision, item in (
+                        ("entry", "1", source()),
+                        ("entry2", "2", latest_source),
+                    )
+                ),
             ),
         )
-        history = ConversationHistory(store, contexts, guard, "local")
+        history = ConversationHistory(store, contexts, guard, "local", subject_bound=bound)
         ingress_request = request().model_copy(update={"context": contexts.current})
         entry = ConversationEntry(
             tenant_id="tenant",
@@ -123,6 +143,11 @@ async def test_canonical_appender_history_cursor_replay_and_fence(tmp_path: Path
         )
         contexts.current = context().model_copy(update={"snapshot_frontier": 3})
         store = R3ConversationStore(materializer, appender, contexts, contexts.current, 10)
+        direct = ConversationHistory(store, contexts, guard, "local", subject_bound=bound)
+        direct_history = await direct.context_read(
+            request().model_copy(update={"context": contexts.current})
+        )
+        assert tuple(row.row_id for row in direct_history.rows) == ("entry", "entry2")
         component = build_r9_component(
             tmp_path / "screens.db",
             store,

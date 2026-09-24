@@ -8,15 +8,18 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Literal
 
+from chiplog.capabilities.projections.provenance import ProvenanceBinding, ProvenanceClosures
 from chiplog.capabilities.projections.r9_boundary import (
     ConversationEntry,
     ReadContextPort,
     ScreenSnapshot,
+    ScreenSnapshotV2,
     WorkspaceIntegrityError,
     WorkspaceRejected,
 )
 from chiplog.capabilities.projections.workspace_boundary import (
     DisclosureEnvelope,
+    ProvenanceSubject,
     SourceReference,
     WorkspaceReadContext,
 )
@@ -41,10 +44,22 @@ class R3SourceHeads:
         contexts: ReadContextPort,
         current_sources: Mapping[tuple[str, str], SourceReference],
         derivations: Mapping[str, tuple[SourceReference, ...]] | None = None,
+        *,
+        bindings: tuple[ProvenanceBinding, ...] = (),
     ) -> None:
         self._materializer, self._contexts = materializer, contexts
         self._sources = MappingProxyType(dict(current_sources))
         self._derivations = MappingProxyType(dict(derivations or {}))
+        self._closures = ProvenanceClosures(bindings)
+
+    def validate_subject(
+        self,
+        subject: ProvenanceSubject,
+        envelope: DisclosureEnvelope,
+        context: WorkspaceReadContext,
+    ) -> None:
+        self._contexts.validate(context)
+        self._closures.check(subject, envelope)
 
     def validate_manifest(
         self, envelope: DisclosureEnvelope, context: WorkspaceReadContext
@@ -215,11 +230,30 @@ class R3ScreenDerivatives:
     async def register(self, snapshot: ScreenSnapshot) -> None:
         context = snapshot.ref.context
         self._contexts.validate(context)
-        sources = tuple(
-            sorted(
-                {source.record_id for envelope in snapshot.envelopes for source in envelope.sources}
+        if isinstance(snapshot, ScreenSnapshotV2) and (
+            snapshot.ref.location.dashboard_id == "core.conversation"
+        ):
+            if any(
+                subject.producer != "core.conversation" or subject.tenant_id != context.tenant_id
+                for subject in snapshot.subjects
+            ):
+                raise WorkspaceRejected("conversation derivative subject binding differs")
+            # Immediate physical dependencies are the original accepted entries.
+            # Assistant manifests also contain virtual visibility members, which
+            # are verified through the selected CompleteAcceptance and retained
+            # in full envelopes. This fixed-fence runtime does not claim a
+            # transitive dependency graph for future targeted fence renewal.
+            sources = tuple(sorted({subject.record_id for subject in snapshot.subjects}))
+        else:
+            sources = tuple(
+                sorted(
+                    {
+                        source.record_id
+                        for envelope in snapshot.envelopes
+                        for source in envelope.sources
+                    }
+                )
             )
-        )
         if not sources:
             # Empty screen has only static registry labels, no source-bearing derivative.
             return

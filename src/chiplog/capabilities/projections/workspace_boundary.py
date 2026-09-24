@@ -17,6 +17,13 @@ class _Wire(BaseModel):
     )
 
 
+class ProvenanceSubject(_Wire):
+    tenant_id: str = Field(min_length=1)
+    producer: str = Field(min_length=1)
+    record_id: str = Field(min_length=1)
+    revision: str = Field(min_length=1)
+
+
 class DisclosureLabel(_Wire):
     lattice_version: Literal["chiplog.disclosure.v1"]
     value: Literal["UNRESTRICTED", "ENDPOINT_RESTRICTED", "DENY_ALL"]

@@ -10,9 +10,16 @@ from .r9_boundary import (
     ConversationStore,
     DisclosureGuard,
     ReadContextPort,
+    SubjectDisclosureGuard,
     WorkspaceRejected,
 )
-from .workspace_boundary import WorkspaceReadRequest, WorkspaceReadResult, WorkspaceRow
+from .workspace_boundary import (
+    ProvenanceSubject,
+    WorkspaceReadContext,
+    WorkspaceReadRequest,
+    WorkspaceReadResult,
+    WorkspaceRow,
+)
 
 
 class ConversationHistory:
@@ -22,8 +29,29 @@ class ConversationHistory:
         contexts: ReadContextPort,
         guard: DisclosureGuard,
         endpoint: str,
+        *,
+        subject_bound: bool = False,
     ) -> None:
         self._store, self._contexts, self._guard, self._endpoint = store, contexts, guard, endpoint
+        self._subject_bound = subject_bound
+
+    def _check_entry(self, entry: ConversationEntry, context: WorkspaceReadContext) -> None:
+        if self._subject_bound:
+            if not isinstance(self._guard, SubjectDisclosureGuard):
+                raise WorkspaceRejected("conversation requires subject-bound disclosure")
+            self._guard.check_subject(
+                ProvenanceSubject(
+                    tenant_id=entry.tenant_id,
+                    producer="core.conversation",
+                    record_id=entry.entry_id,
+                    revision=str(entry.sequence),
+                ),
+                entry.envelope,
+                context,
+                self._endpoint,
+            )
+        else:
+            self._guard.check(entry.envelope, context, self._endpoint)
 
     async def accept(self, entry: ConversationEntry, request: WorkspaceReadRequest) -> str:
         """Trusted accepted-ingress port; never included in model tool inventory."""
@@ -36,7 +64,7 @@ class ConversationHistory:
         ):
             raise WorkspaceRejected("conversation ingress identity/visibility mismatch")
         verify_payload(entry.accepted_bytes, entry.envelope)
-        self._guard.check(entry.envelope, request.context, self._endpoint)
+        self._check_entry(entry, request.context)
         return await self._store.append(entry)
 
     async def read(self, request: WorkspaceReadRequest) -> WorkspaceReadResult:
@@ -81,7 +109,26 @@ class ConversationHistory:
         rows = []
         for entry in page:
             verify_payload(entry.accepted_bytes, entry.envelope)
-            self._guard.check(entry.envelope, context, self._endpoint)
+            if self._subject_bound:
+                # Original conversation bytes stay immutable. Legacy accepted
+                # assistants retained attempt order; the new projection sorts
+                # without dropping any member, then checks the independently
+                # reconstructed complete closure under the original entry ID.
+                entry = entry.model_copy(
+                    update={
+                        "envelope": entry.envelope.model_copy(
+                            update={
+                                "sources": tuple(
+                                    sorted(
+                                        entry.envelope.sources,
+                                        key=lambda s: (s.owner, s.record_id, s.record_version),
+                                    )
+                                )
+                            }
+                        )
+                    }
+                )
+            self._check_entry(entry, context)
             rows.append(
                 WorkspaceRow(
                     row_id=entry.entry_id,

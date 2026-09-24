@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Literal, Protocol
+from typing import Literal, Protocol, Self, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .workspace_boundary import DisclosureEnvelope, SourceReference, WorkspaceReadContext
+from .workspace_boundary import (
+    DisclosureEnvelope,
+    ProvenanceSubject,
+    SourceReference,
+    WorkspaceReadContext,
+)
 
 
 class Frozen(BaseModel):
@@ -60,13 +65,26 @@ class ScreenSnapshot(Frozen):
     disposition: Literal["CURRENT", "LAGGING"]
 
 
+class ScreenSnapshotV2(ScreenSnapshot):
+    schema_id: Literal["chiplog.workspace-screen.v2"] = "chiplog.workspace-screen.v2"
+    subjects: tuple[ProvenanceSubject, ...]
+
+    @model_validator(mode="after")
+    def complete_subject_shape(self) -> Self:
+        if len(self.subjects) != len(self.envelopes) or any(
+            subject.tenant_id != self.ref.tenant_id for subject in self.subjects
+        ):
+            raise ValueError("screen subjects must cover every envelope in the same tenant")
+        return self
+
+
 class WorkspaceState(Frozen):
     tenant_id: str
     channel_id: str
     sequence: int = Field(ge=0)
     retained: tuple[str, ...]
     navigation: tuple[tuple[str, tuple[ScreenLocation, ...]], ...]
-    screens: tuple[ScreenSnapshot, ...]
+    screens: tuple[ScreenSnapshotV2 | ScreenSnapshot, ...]
     allocations: tuple[BudgetAllocation, ...]
     invalidations: tuple[str, ...]
     tool_availability: tuple[str, ...]
@@ -103,9 +121,35 @@ class SnapshotStore(Protocol):
     def load(self, tenant_id: str, channel_id: str, sequence: int) -> WorkspaceState: ...
 
 
+class WorkspaceIssuancePort(Protocol):
+    def select_verified(self, state: WorkspaceState, expected_sequence: int) -> None: ...
+    def verify(self, state: WorkspaceState) -> None: ...
+
+
 class DisclosureGuard(Protocol):
     def check(
         self, envelope: DisclosureEnvelope, context: WorkspaceReadContext, endpoint: str
+    ) -> None: ...
+
+
+@runtime_checkable
+class SubjectDisclosureGuard(Protocol):
+    def check_subject(
+        self,
+        subject: ProvenanceSubject,
+        envelope: DisclosureEnvelope,
+        context: WorkspaceReadContext,
+        endpoint: str,
+    ) -> None: ...
+
+
+@runtime_checkable
+class SubjectSourceHeadPort(Protocol):
+    def validate_subject(
+        self,
+        subject: ProvenanceSubject,
+        envelope: DisclosureEnvelope,
+        context: WorkspaceReadContext,
     ) -> None: ...
 
 

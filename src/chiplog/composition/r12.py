@@ -17,6 +17,7 @@ from typing import cast
 from chiplog.adapters.driven import calendar_reads as calendar_reads_module
 from chiplog.adapters.driven.calendar_hermetic import HermeticCalendarProvider
 from chiplog.adapters.driven.calendar_reads import CalendarReadBroker, _BoundCalendarPort
+from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.adapters.driven.journal_sqlite import OWNER, SCHEMA, SQLiteJournal
 from chiplog.adapters.driven.planning_sqlite import SQLitePlanningRepository
 from chiplog.adapters.driven.r9_fence import (
@@ -27,6 +28,7 @@ from chiplog.adapters.driven.r9_fence import (
     R3ScreenDerivatives,
 )
 from chiplog.adapters.driven.r9_planning import PlanningWorkspaceQueries
+from chiplog.adapters.driven.workspace_issuance import WorkspaceIssuanceJournal
 from chiplog.adapters.driven.workspace_journal import JournalWorkspaceQueries
 from chiplog.adapters.driven.workspace_sqlite import SQLiteWorkspaceStore, latest_workspace_state
 from chiplog.capabilities.calendar_observations import CalendarBatch
@@ -64,6 +66,7 @@ from chiplog.capabilities.projections.disclosure import (
     label,
     verify_payload,
 )
+from chiplog.capabilities.projections.provenance import ProvenanceBinding, ProvenanceClosures
 from chiplog.capabilities.projections.r9_boundary import (
     BudgetPolicy,
     ConversationEntry,
@@ -82,6 +85,7 @@ from chiplog.capabilities.projections.workspace import (
 )
 from chiplog.capabilities.projections.workspace_boundary import (
     DisclosureEnvelope,
+    ProvenanceSubject,
     SourceReference,
     WorkspaceQuery,
     WorkspaceReadContext,
@@ -112,7 +116,12 @@ class _BatchContexts:
 
 
 class _Sources:
-    def __init__(self, identity: TrustedIngress, contexts: _BatchContexts) -> None:
+    def __init__(
+        self,
+        identity: TrustedIngress,
+        contexts: _BatchContexts,
+        bindings: tuple[ProvenanceBinding, ...] = (),
+    ) -> None:
         self._sources = {
             (s.owner, s.record_id): SourceReference.model_validate_json(s.model_dump_json())
             for s in identity.sources
@@ -121,13 +130,45 @@ class _Sources:
         if len(self._sources) != len(identity.sources):
             raise WorkspaceRejected("duplicate independent source identity")
         self._manifests: dict[str, tuple[SourceReference, ...]] = {}
+        self._bindings = bindings
+        self._closures = ProvenanceClosures(bindings)
 
-    def register(self, result: WorkspaceReadResult) -> None:
+    def register(self, result: WorkspaceReadResult, producer: str | None = None) -> None:
         for row in result.rows:
             verify_payload(row.canonical_payload, row.envelope)
+            if producer is not None:
+                subject = ProvenanceSubject(
+                    tenant_id=result.context.tenant_id,
+                    producer=producer,
+                    record_id=row.row_id,
+                    revision=row.row_version,
+                )
+                if producer == "core.conversation":
+                    # History must already be bound to original selected ingress
+                    # or CompleteAcceptance, before the history guard runs.
+                    self._closures.check(subject, row.envelope)
+                else:
+                    self._bindings += (
+                        ProvenanceBinding(
+                            subject=subject,
+                            content_digest=row.envelope.content_digest,
+                            sources=row.envelope.sources,
+                        ),
+                    )
+                    self._closures = ProvenanceClosures(self._bindings)
+                continue
             previous = self._manifests.setdefault(row.envelope.content_digest, row.envelope.sources)
             if previous != row.envelope.sources:
                 raise WorkspaceRejected("ambiguous composed source closure")
+
+    def validate_subject(
+        self,
+        subject: ProvenanceSubject,
+        envelope: DisclosureEnvelope,
+        context: WorkspaceReadContext,
+    ) -> None:
+        self._contexts.validate(context)
+        self._closures.check(subject, envelope)
 
     def validate(self, source: SourceReference, context: WorkspaceReadContext) -> None:
         self._contexts.validate(context)
@@ -227,7 +268,11 @@ class R12Workspace:
         calendar: CalendarReadBroker,
         calendar_ledger: CalendarReadLedger,
         planning_sources: Mapping[str, tuple[SourceReference, ...]],
+        *,
+        conversation_provenance: tuple[ProvenanceBinding, ...] = (),
+        issuance: WorkspaceIssuanceJournal | None = None,
     ) -> None:
+        _validate_paths(database, screens, calendar_ledger._path)
         self._database, self._screens = database, screens
         self._materializer, self._appender = materializer, appender
         self.ingress, self._peer = ingress, peer
@@ -245,6 +290,9 @@ class R12Workspace:
         self._fence_frontier = fence_frontier
         self._calendar, self._calendar_ledger = calendar, calendar_ledger
         self._planning_sources = dict(planning_sources)
+        self._conversation_provenance = conversation_provenance
+        self._issuance = issuance
+        self._pinned_issuance = issuance
         self._calendar_peer = calendar.authenticate_transport(
             tenant_id=identity.tenant,
             principal_id=identity.principal,
@@ -267,8 +315,11 @@ class R12Workspace:
         self._state_fingerprint: str | None = None
         self._calendar_state: CalendarReadState | None = None
         self._closed = False
-        self._screen_state: WorkspaceState | None = latest_workspace_state(
-            SQLiteWorkspaceStore(screens), identity.tenant, channel
+        store = SQLiteWorkspaceStore(screens)
+        self._screen_state: WorkspaceState | None = (
+            issuance.recover_cache(store, channel)
+            if issuance is not None
+            else latest_workspace_state(store, identity.tenant, channel)
         )
 
     def _validate_peer(self) -> TrustedIngress:
@@ -394,6 +445,7 @@ class R12Workspace:
             contexts,
             guard,
             self._identity.endpoint,
+            subject_bound=self._issuance is not None,
         )
 
     async def accept(self, entry: ConversationEntry) -> str:
@@ -402,7 +454,7 @@ class R12Workspace:
             context = self._context(snapshot, 0)
         self._active = context
         contexts = _BatchContexts(self, context)
-        sources = _Sources(self._validate_peer(), contexts)
+        sources = _Sources(self._validate_peer(), contexts, self._conversation_provenance)
         guard = CurrentDisclosureGuard(contexts, sources)
         try:
             return await self._history(contexts, guard).accept(entry, self._request(context, 100))
@@ -431,7 +483,7 @@ class R12Workspace:
                 self._active = context
                 contexts = _BatchContexts(self, context)
                 identity = self._validate_peer()
-                sources = _Sources(identity, contexts)
+                sources = _Sources(identity, contexts, self._conversation_provenance)
                 guard = CurrentDisclosureGuard(contexts, sources)
                 request = self._request(context, max_rows)
                 history_store = R3ConversationStore(
@@ -443,13 +495,17 @@ class R12Workspace:
                 ):
                     raise WorkspaceRejected("complete relevant history exceeds batch bound")
                 history = await ConversationHistory(
-                    history_store, contexts, guard, identity.endpoint
+                    history_store,
+                    contexts,
+                    guard,
+                    identity.endpoint,
+                    subject_bound=self._issuance is not None,
                 ).context_read(request)
-                sources.register(history)
+                sources.register(history, "core.conversation" if self._issuance else None)
                 journal = await JournalWorkspaceQueries(
                     self._journal, self._peer, identity.heads, contexts
                 ).read(request.model_copy(update={"query": "JOURNAL_CLAIMS"}))
-                sources.register(journal)
+                sources.register(journal, "core.journal" if self._issuance else None)
                 repository = SQLitePlanningRepository(
                     self._database, self._appender, asyncio.get_running_loop()
                 )
@@ -483,7 +539,7 @@ class R12Workspace:
                 planning = await PlanningWorkspaceQueries(
                     projection, contexts, self._planning_sources
                 ).read(request.model_copy(update={"query": "PLANNING_VIEW"}))
-                sources.register(planning)
+                sources.register(planning, "core.planning" if self._issuance else None)
                 external = await self._calendar_port.read(
                     CalendarRequest.model_validate_json(
                         request.model_copy(
@@ -515,15 +571,33 @@ class R12Workspace:
                 calendar_display = calendar.model_copy(
                     update={"context": context, "disposition": "LAGGING"}
                 )
-                sources.register(calendar_display)
-                for result in (history, planning, journal, calendar_display):
+                sources.register(calendar_display, "core.calendar" if self._issuance else None)
+                for producer, result in (
+                    ("core.conversation", history),
+                    ("core.planning", planning),
+                    ("core.journal", journal),
+                    ("core.calendar", calendar_display),
+                ):
                     if result.context != context or result.disposition not in (
                         "CURRENT",
                         "LAGGING",
                     ):
                         raise WorkspaceRejected("family failed the shared read cut")
                     for row in result.rows:
-                        guard.check(row.envelope, context, identity.endpoint)
+                        if self._issuance is not None:
+                            guard.check_subject(
+                                ProvenanceSubject(
+                                    tenant_id=context.tenant_id,
+                                    producer=producer,
+                                    record_id=row.row_id,
+                                    revision=row.row_version,
+                                ),
+                                row.envelope,
+                                context,
+                                identity.endpoint,
+                            )
+                        else:
+                            guard.check(row.envelope, context, identity.endpoint)
                 families = tuple(
                     DashboardFamilySpec(
                         name,
@@ -549,6 +623,8 @@ class R12Workspace:
                         R3ScreenDerivatives(self._appender, contexts, self._fence_frontier),
                         contexts,
                     ),
+                    issuance=self._issuance,
+                    subject_bound=self._issuance is not None,
                 )
                 policy = budget or BudgetPolicy(
                     total=16000, fixed=100, output=100, conversation_floor=256
@@ -647,7 +723,10 @@ class R12Workspace:
                     raise WorkspaceRejected("history tool cut is no longer current")
                 self._active = batch.context
                 contexts = _BatchContexts(self, batch.context)
-                guard = CurrentDisclosureGuard(contexts, _Sources(self._validate_peer(), contexts))
+                guard = CurrentDisclosureGuard(
+                    contexts,
+                    _Sources(self._validate_peer(), contexts, self._conversation_provenance),
+                )
                 request = self._request(batch.context, max_rows).model_copy(
                     update={"after_cursor": after_cursor}
                 )
@@ -711,6 +790,18 @@ class R12Workspace:
             or self._calendar_port._peer is not self._calendar_peer
         ):
             raise WorkspaceRejected("substituted workspace owner/storage graph")
+        if self._issuance is not self._pinned_issuance:
+            raise WorkspaceRejected("substituted workspace issuance journal")
+        if self._issuance is not None and (
+            type(self._issuance) is not WorkspaceIssuanceJournal
+            or type(self._issuance._journal) is not IndependentTenantDecisionJournal
+            or self._issuance._tenant != self._identity.tenant
+            or self._issuance._gate != self._materializer.authority_gate
+            or self._issuance._journal.authority_gate != self._materializer.authority_gate
+            or self._issuance._journal._path
+            != self._database.with_suffix(".workspace-issuance").resolve()
+        ):
+            raise WorkspaceRejected("workspace issuance differs from canonical authority bundle")
         for instance in (
             self,
             self._journal,
@@ -724,6 +815,7 @@ class R12Workspace:
             self._calendar._provider,
             self._calendar_port,
             self._journal_port,
+            *((self._issuance, self._issuance._journal) if self._issuance is not None else ()),
         ):
             if type(instance) not in _DISPATCH or any(
                 name in _DISPATCH[type(instance)] for name in vars(instance)
@@ -759,6 +851,9 @@ _DISPATCH: dict[type[object], dict[str, object]] = {
         CurrentDisclosureGuard,
         SQLiteWorkspaceStore,
         R3ScreenDerivatives,
+        WorkspaceIssuanceJournal,
+        IndependentTenantDecisionJournal,
+        ProvenanceClosures,
         DashboardRegistry,
         QueryDashboardBuilder,
         _BoundCalendarPort,
