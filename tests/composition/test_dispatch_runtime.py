@@ -438,8 +438,12 @@ async def test_send_writer_rejects_lease_expiring_during_final_capture(
                 custody: HermeticDispatchResources,
                 observed: ObservedTrustCall,
                 run_id: str,
+                *,
+                intent_id: str | None = None,
             ) -> DispatchCapture:
-                actual = original_capture(owner, custody, observed, run_id)
+                assert value.request.previous is not None
+                assert intent_id == value.request.previous.snapshot.intent.intent_id
+                actual = original_capture(owner, custody, observed, run_id, intent_id=intent_id)
                 assert actual == value.captured
                 deadline = min(
                     value.sent.budget.absolute_deadline_ns,

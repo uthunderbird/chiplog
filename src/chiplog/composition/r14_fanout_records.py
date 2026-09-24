@@ -22,6 +22,7 @@ from chiplog.capabilities.agent_loop.response_parsing import parse_captured_resp
 from chiplog.composition.r14_cancellation_contracts import RetainedCancellationPreparation
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 
+from ._pure_bytes import reuse_exact_bytes
 from .r14_fanout_contracts import (
     INITIALIZED_SCHEMA,
     SEAL_SCHEMA,
@@ -286,7 +287,12 @@ def _member(identity: str, owner: str, schema: str, raw: bytes) -> FanOutPhysica
 
 
 def build_envelope(evidence: RetainedFanOutPreparation) -> FanOutPhysicalEnvelope:
-    evidence = RetainedFanOutPreparation.model_validate_json(evidence.canonical_bytes())
+    return FanOutPhysicalEnvelope.model_validate_json(_envelope_bytes(evidence.canonical_bytes()))
+
+
+@reuse_exact_bytes
+def _envelope_bytes(raw: bytes) -> bytes:
+    evidence = RetainedFanOutPreparation.model_validate_json(raw)
     _verify(evidence)
     prepared, run = evidence.proposal.fan_out, evidence.accepted_run
     seal = prepared.response_seal
@@ -325,7 +331,7 @@ def build_envelope(evidence: RetainedFanOutPreparation) -> FanOutPhysicalEnvelop
         "complete physical envelope exceeds bound",
     )
     physical_command(envelope)
-    return envelope
+    return envelope.canonical_bytes()
 
 
 def physical_command(envelope: FanOutPhysicalEnvelope) -> PhysicalPublicationCommand:

@@ -68,6 +68,13 @@ def validate_issuance(
     value = DispatchIssuance.model_validate_json(auth.applicability_bytes)
     if value.canonical_bytes() != auth.applicability_bytes:
         raise ValueError("noncanonical retained dispatch issuance")
+    return validate_dispatch_issuance_value(value, batch, runtime)
+
+
+def validate_dispatch_issuance_value(
+    value: DispatchIssuance, batch: RegisteredPublication, runtime: R16DispatchRuntime
+) -> DispatchIssuance:
+    """Interpret an already decoded original exchange without requiring a live epoch."""
     captured, observed, sent, request = value.captured, value.observed, value.sent, value.request
     worker = captured.cut.worker
     if worker is None or len(captured.sessions) != 4:
@@ -173,9 +180,13 @@ class DispatchPublicationAuthority:
         self.captures: list[DispatchCapture] = []
         self.preparations: list[_Prepared] = []
 
-    def capture(self, run_id: str) -> DispatchCapture:
+    def capture(self, run_id: str, *, intent_id: str | None = None) -> DispatchCapture:
         captured = capture_dispatch(
-            self.runtime, self.runtime._dispatch_resources, self.observed, run_id
+            self.runtime,
+            self.runtime._dispatch_resources,
+            self.observed,
+            run_id,
+            intent_id=intent_id,
         )
         self.captures.append(captured)
         return captured
@@ -247,12 +258,6 @@ class DispatchPublicationAuthority:
                 worker = value.captured.cut.worker
                 if worker is None:
                     return "DENIED"
-                fresh = capture_dispatch(
-                    self.runtime,
-                    self.runtime._dispatch_resources,
-                    value.observed,
-                    worker.run.run_id,
-                )
                 intent = (
                     value.request.command.intent
                     if isinstance(value.request.command, PublishDispatchIntentV2)
@@ -264,6 +269,13 @@ class DispatchPublicationAuthority:
                 )
                 if intent is None:
                     return "DENIED"
+                fresh = capture_dispatch(
+                    self.runtime,
+                    self.runtime._dispatch_resources,
+                    value.observed,
+                    worker.run.run_id,
+                    intent_id=None if value.request.previous is None else intent.intent_id,
+                )
                 require_dispatch_scope(
                     fresh,
                     self.runtime._dispatch_resources,

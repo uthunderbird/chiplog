@@ -26,6 +26,7 @@ from chiplog.capabilities.agent_loop.delivery_preparation import (
     DeliveryPrepareRequest,
 )
 from chiplog.capabilities.agent_loop.domain import validate_record
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.effects.fences import NonSchedulerFence, NotApplicable
 from chiplog.capabilities.planning import CreateIntentionLine
 from chiplog.capabilities.planning._r8_authority import decode_trace
@@ -428,7 +429,7 @@ class EffectsCurrentWorkerHold(LoopRejected):
 
 @dataclass(frozen=True)
 class CurrentEffectsWorker:
-    run: RunRecord
+    run: RunRecord | ExecutionRunRecord
     fence: NonSchedulerFence
     owner_session: BrokerSession
 
@@ -446,7 +447,7 @@ class MaterializedEffectsCut:
     physical_inode: int
     rows: tuple[StoredEffectRow, ...]
     worker: CurrentEffectsWorker | None
-    latest_runs: tuple[RunRecord, ...]
+    latest_runs: tuple[RunRecord | ExecutionRunRecord, ...]
 
 
 def read_materialized_effects(
@@ -555,7 +556,9 @@ def _read_materialized_effects_with_history(
                         )
             if expected_effect_ids != actual_effect_ids:
                 raise ValueError("complete effects scope has missing tail or unknown rows")
-            latest_runs = _reconstruct_runs(connection, tenant, before)
+            latest_runs = _reconstruct_registered_runs(
+                runtime, connection, tenant, before, frontier
+            )
             if (
                 journal.snapshot() != before
                 or runtime._commitment_journal.load(tenant) != committed
@@ -602,6 +605,50 @@ def _reconstruct_runs(
         raise EffectsIntegrityError(
             f"effects integrity: operation=reconstruct_runs tenant={tenant} record=Run-history"
         ) from error
+
+
+def _reconstruct_registered_runs(
+    runtime: R13PlanningRuntime,
+    connection: sqlite3.Connection,
+    tenant: str,
+    journal: OwnerJournalSnapshot,
+    frontier: int,
+) -> tuple[RunRecord | ExecutionRunRecord, ...]:
+    """Explicit selected-history reader for executable Runs; legacy proof is preserved."""
+    legacy = _reconstruct_runs(connection, tenant, journal)
+    from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCHEMA
+    from chiplog.composition.r14_loop_history import read_execution_history
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
+
+    physical = dict(
+        connection.execute(
+            "SELECT record_id, canonical_bytes FROM main.records "
+            "WHERE tenant_id = ? AND owner = 'agent_loop' AND schema_id = ?",
+            (tenant, EXECUTION_RUN_SCHEMA),
+        )
+    )
+    if not physical:
+        return legacy
+    if (
+        not isinstance(runtime, R14PlanningRuntime)
+        or ("agent_loop", EXECUTION_RUN_SCHEMA) not in runtime._record_schema_variants
+    ):
+        raise ValueError("execution Run history has no registered effects worker reader")
+    snapshot = read_execution_history(runtime)
+    executions = tuple(
+        record for record in snapshot.records if isinstance(record, ExecutionRunRecord)
+    )
+    if snapshot.tenant_head != frontier or physical != {
+        record.head: record.canonical_bytes() for record in executions
+    }:
+        raise ValueError("execution selected history and effects physical cut differ")
+    latest = {record.run_id: record for record in snapshot.records}
+    legacy_latest = {
+        identity: record for identity, record in latest.items() if isinstance(record, RunRecord)
+    }
+    if legacy_latest != {record.run_id: record for record in legacy}:
+        raise ValueError("execution history changes independently verified legacy Runs")
+    return tuple(latest.values())
 
 
 def _check_legacy_run_bytes(previous_raw: bytes | None, raw: bytes) -> None:
@@ -788,7 +835,7 @@ def _historical_delivery_observation(
 
 
 def _current_worker(
-    runtime: R13PlanningRuntime, records: tuple[RunRecord, ...], run_id: str
+    runtime: R13PlanningRuntime, records: tuple[RunRecord | ExecutionRunRecord, ...], run_id: str
 ) -> CurrentEffectsWorker:
     tenant = runtime._tenant_id
     latest = {record.run_id: record for record in records}

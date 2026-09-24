@@ -64,6 +64,7 @@ class IndependentTenantDecisionJournal:
 
     def _initialize(self, path: Path) -> None:
         self._path = path
+        self._decoded: tuple[bytes, tuple[tuple[str, str | None, bytes], ...]] | None = None
         self._head_path = path.with_suffix(path.suffix + ".head")
         self._key_path = path.with_suffix(path.suffix + ".key")
         self._lock_path = path.with_suffix(path.suffix + ".lock")
@@ -138,9 +139,19 @@ class IndependentTenantDecisionJournal:
             return self._entries()
 
     def _entries(self) -> tuple[tuple[str, str | None, bytes], ...]:
+        # Reuse decoding only for exact bytes, never metadata or the head alone.
+        # entries/append still check source identities and key bytes on every call.
+        body = self._path.read_bytes()
+        cached = self._decoded
+        if cached is not None and body == cached[0]:
+            anchored_head = self._head_path.read_text(encoding="ascii")
+            actual_head = cached[1][-1][0] if cached[1] else ""
+            if anchored_head != actual_head:
+                raise RuntimeError("journal rollback or incomplete head publication")
+            return cached[1]
         result: list[tuple[str, str | None, bytes]] = []
         predecessor: str | None = None
-        for raw in self._path.read_bytes().splitlines():
+        for raw in body.splitlines():
             try:
                 item = json.loads(raw)
                 decision = bytes.fromhex(item["decision"])
@@ -165,7 +176,9 @@ class IndependentTenantDecisionJournal:
         actual_head = result[-1][0] if result else ""
         if anchored_head != actual_head:
             raise RuntimeError("journal rollback or incomplete head publication")
-        return tuple(result)
+        decoded = tuple(result)
+        self._decoded = (body, decoded)
+        return decoded
 
     def _authenticate(self, decision_id: str, predecessor: str | None, decision: bytes) -> str:
         payload = (predecessor or "GENESIS").encode() + b"\x00" + decision_id.encode()

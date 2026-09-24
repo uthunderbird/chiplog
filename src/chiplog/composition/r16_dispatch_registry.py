@@ -9,6 +9,7 @@ or replacement cannot reconstruct a prior grant or renew an adopted clock epoch.
 from __future__ import annotations
 
 import hmac
+import json
 import secrets
 import time
 from contextlib import ExitStack
@@ -33,6 +34,8 @@ from chiplog.capabilities.effects.dispatch_outcome_contracts import (
 )
 from chiplog.capabilities.effects.dispatch_v2 import canonical, digest, reference
 from chiplog.platform.authority_gate import AuthorityGate
+
+from .r14_call_dispatch_policy import policy_reference as call_policy_reference
 
 CLOCK = "chiplog.dispatch.monotonic.v2"
 POLICY_ID = "chiplog.effects.hermetic-self-send-policy.v2"
@@ -202,6 +205,14 @@ class HermeticDispatchResources:
                     os.fsync(directory)
 
     def observe(self) -> ResourceObservation:
+        """Original PlanEffect observation; its canonical bytes retain their meaning."""
+        return self._observe(for_call=False)
+
+    def observe_call(self) -> ResourceObservation:
+        """Fixed initialized-call grant from the same independent resource custody."""
+        return self._observe(for_call=True)
+
+    def _observe(self, *, for_call: bool) -> ResourceObservation:
         with self._require_gate().hold():
             if self._revocation_path is not None:
                 try:
@@ -213,14 +224,16 @@ class HermeticDispatchResources:
                     # Once observed, disappearance cannot reactivate this holder.
                     self._active = False
             provider = self.require_original_provider()
+            grant_id = self.grant_identities[1] if for_call else self._grant_id
+            policy = call_policy_reference() if for_call else policy_reference()
             grant = canonical(
                 {
                     "schema": "chiplog.hermetic.dispatch-grant.v1",
-                    "grant_id": self._grant_id,
+                    "grant_id": grant_id,
                     "version": self._generation,
                     "status": "ACTIVE" if self._active else "REVOKED",
                     "cap": self._cap,
-                    "policy": policy_reference().model_dump(mode="json"),
+                    "policy": policy.model_dump(mode="json"),
                     "tenant": "hermetic-tenant",
                     "recipient": "hermetic-principal",
                     "provider": "hermetic-effects",
@@ -235,7 +248,7 @@ class HermeticDispatchResources:
                     "status": "ACTIVE" if self._active else "REVOKED",
                     "account": "hermetic-account",
                     "provider": "hermetic-effects",
-                    "grant_id": self._grant_id,
+                    "grant_id": grant_id,
                 }
             )
             endpoint = canonical(
@@ -259,7 +272,18 @@ class HermeticDispatchResources:
 
     def verify_current(self, observation: ResourceObservation) -> bool:
         with self._require_gate().hold():
-            current = self.observe()
+            try:
+                grant = json.loads(observation.grant_bytes)
+            except ValueError, TypeError:
+                return False
+            if not isinstance(grant, dict):
+                return False
+            if grant.get("policy") == policy_reference().model_dump(mode="json"):
+                current = self.observe()
+            elif grant.get("policy") == call_policy_reference().model_dump(mode="json"):
+                current = self.observe_call()
+            else:
+                return False
             return (
                 self._active
                 and current == observation
@@ -283,6 +307,12 @@ class HermeticDispatchResources:
     def recipient(self, observation: ResourceObservation) -> ProviderRecipient:
         if not self.verify_current(observation):
             raise ValueError("offline endpoint/credential/grant observation no longer current")
+        return self.historical_recipient(observation)
+
+    def historical_recipient(self, observation: ResourceObservation) -> ProviderRecipient:
+        """Read an originally signed recipient without renewing its current authority."""
+        if not self.verify_historical(observation):
+            raise ValueError("historical offline recipient observation is unauthentic")
         return ProviderRecipient(
             provider="hermetic-effects",
             account="hermetic-account",
@@ -299,6 +329,11 @@ class HermeticDispatchResources:
     @property
     def grant_identity(self) -> str:
         return self._grant_id
+
+    @property
+    def grant_identities(self) -> tuple[str, str]:
+        """Exactly these grants share the same cap; consumers must count both."""
+        return self._grant_id, self._grant_id + "/initialized-call.v1"
 
     @property
     def cap(self) -> int:
