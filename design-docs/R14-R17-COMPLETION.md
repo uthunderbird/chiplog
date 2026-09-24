@@ -22,7 +22,18 @@ owns source authentication. Broker/platform owns authenticated capture and the
 sole physical writer; composition bridges inert owner contracts without
 reconstructing owner outputs. Existing journal/appender mechanisms are reused.
 
-## Plan
+## Current execution order
+
+The 2026-09-24 user-directed [integrated plan](R14-R17-INTEGRATED-PLAN.md)
+supersedes the incremental order below: freeze all remaining contracts, write
+behavioral tests, implement one joint mechanism, then expand detailed coverage.
+Its COMMON-MECHANISM READY boundary does not close the full requirement ledger.
+The baseline column and chronological notes below describe their recorded cuts;
+in particular executable fanout, call acceptance and original-stream effect
+outcomes have since gained bounded implementations. Current reuse and remaining
+joins are identified in the integrated plan and R14-CALL-ACCEPTANCE-RUNTIME.md.
+
+## Historical incremental plan (superseded)
 
 1. Record every required behavior, its current implementation boundary and the
    observable that could prove completion. Freeze missing cross-owner contracts

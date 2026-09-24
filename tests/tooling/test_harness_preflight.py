@@ -52,6 +52,8 @@ def _fixture(root: Path) -> tuple[Path, dict[str, str]]:
     ).split():
         env.pop(name, None)
     env.pop("HARNESS_GATE_SKIP", None)
+    env.pop("CHIPLOG_COMMIT_MODE", None)
+    env.pop("CHIPLOG_CHECKPOINT_TESTS", None)
     env["PATH"] = str(binaries) + os.pathsep + env["PATH"]
     env["ORDER_LOG"] = str(root / "order.log")
     env["FAIL_AT"] = ""
@@ -146,6 +148,47 @@ def test_lint_adapter_preserves_tool_failures(tmp_path: Path, failure: str) -> N
     result, events = _run(scripts, env, "lint.sh")
     assert events == ["-", "ruff-check", "ruff-format", "resource_contexts.py", "mypy"]
     assert result.returncode == (1 if failure else 0)
+
+
+@pytest.mark.parametrize("failure", ["", "checkpoint.py", "tests_layout.py"])
+def test_checkpoint_gate_runs_only_selected_test_adapter(tmp_path: Path, failure: str) -> None:
+    scripts, env = _fixture(tmp_path)
+    env["CHIPLOG_COMMIT_MODE"] = "checkpoint"
+    env["FAIL_AT"] = failure
+    result, events = _run(scripts, env, "gate.sh")
+    assert events == [
+        "rules_have_reproducers.py",
+        "commit_trail.py",
+        "messages_are_actionable.py",
+        "checks_are_wired.py",
+        "polish_artifacts.py",
+        "handoff_pending.py",
+        "tests_layout.py",
+        *([] if failure == "tests_layout.py" else ["checkpoint.py"]),
+    ]
+    assert result.returncode == (1 if failure else 0)
+
+
+def test_gate_rejects_unknown_commit_mode(tmp_path: Path) -> None:
+    scripts, env = _fixture(tmp_path)
+    env["CHIPLOG_COMMIT_MODE"] = "typo"
+    result, events = _run(scripts, env, "gate.sh")
+    assert result.returncode == 1
+    assert events == []
+
+
+@pytest.mark.parametrize("mode", [None, "full"])
+def test_full_mode_still_dispatches_complete_checks(tmp_path: Path, mode: str | None) -> None:
+    scripts, env = _fixture(tmp_path)
+    _stub(scripts / "lint.sh", "lint")
+    _stub(scripts / "test.sh", "test")
+    if mode is not None:
+        env["CHIPLOG_COMMIT_MODE"] = mode
+    result, events = _run(scripts, env, "gate.sh")
+    assert result.returncode == 0
+    assert "retro_due.py" in events
+    assert events[-3:] == ["fast", "lint", "test"]
+    assert "checkpoint.py" not in events
 
 
 def test_fast_profile_has_real_good_and_bad_source_inputs(tmp_path: Path) -> None:

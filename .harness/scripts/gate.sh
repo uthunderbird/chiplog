@@ -172,19 +172,36 @@ if [ "$SELFTEST" -eq 1 ]; then
     exit 0
 fi
 
-echo "gate:"
+MODE=${CHIPLOG_COMMIT_MODE:-full}
+case "$MODE" in
+    full|checkpoint) ;;
+    *)
+       echo "→ сделай: задай CHIPLOG_COMMIT_MODE=full или checkpoint" >&2
+       echo "✓ режим проверки коммита известен" >&2
+       exit 1 ;;
+esac
+
+echo "gate: $MODE"
 run "правила и репродьюсеры" python3 .harness/scripts/checks/rules_have_reproducers.py
+if [ "$MODE" = full ]; then
 run "каданс ретро"           python3 .harness/scripts/checks/retro_due.py
+fi
 run "след правил в истории"  python3 .harness/scripts/checks/commit_trail.py
 run "императив в провалах"   python3 .harness/scripts/checks/messages_are_actionable.py
 run "проверки подключены"    python3 .harness/scripts/checks/checks_are_wired.py
 run "леса полировки"         python3 .harness/scripts/checks/polish_artifacts.py
 run "хвосты сессии"          python3 .harness/scripts/checks/handoff_pending.py
 run "структура тестов"       python3 .harness/scripts/checks/tests_layout.py --index
+if [ "$MODE" = checkpoint ]; then
+    if [ "$FAILED" -eq 0 ]; then
+        run "новые тесты checkpoint" python3 .harness/scripts/checkpoint.py
+    fi
+else
 run "R0 fast verification"   uv run python -m chiplog.verification fast
 run "разбор исходников"      sh .harness/scripts/lint.sh
 if [ "$FAILED" -eq 0 ]; then
 run "тесты и эвалы"          sh .harness/scripts/clean-git-env.sh sh .harness/scripts/test.sh
+fi
 fi
 
 if [ "$FAILED" -ne 0 ]; then

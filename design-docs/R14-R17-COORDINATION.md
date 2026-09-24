@@ -1,6 +1,11 @@
 # R14–R17 parallel implementation
 
-Status: IMPLEMENTATION IN PROGRESS. No milestone or deployment claim.
+Status: HISTORICAL COORDINATION PLAN, superseded 2026-09-24 by
+[R14–R17 integrated plan](R14-R17-INTEGRATED-PLAN.md). The current work has one
+joint mechanism and the order contracts → tests → implementation → detail expansion.
+The old per-milestone worktree/retro sequence below is retained as history, not an
+active instruction. The user excluded retros; existing commit/merge/push authorization
+persists subject to integrity checks. No milestone or deployment claim.
 
 ## Plan
 

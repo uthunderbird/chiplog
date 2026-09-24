@@ -383,6 +383,16 @@ sealing; V7 network/secret/real-recipient canaries prove offline isolation; V9 o
 proposal-before-authority and default-HOLD handoff. Merely schema-valid model output cannot mark
 success. Covers A09, A13, A16, A20, A34 and owns A105.
 
+### R14–R17 implementation coordination
+
+For the remaining work, the user-directed
+[integrated plan](R14-R17-INTEGRATED-PLAN.md) defines the execution order:
+all remaining shared contracts → behavioral tests → one common executable mechanism
+→ detailed verification and extensions. The sections below retain their ownership,
+dependencies and full DoD; they are not separate sequential implementation releases.
+The common-mechanism checkpoint is earlier than full R14–R17 completion and does
+not waive any counterhistory or downstream registry convergence requirement.
+
 ### R14 — Recovery frontier and call accounting
 
 **Depends on:** R3, R7, R13. **Parallel contract work with:** R15–R17 after identities freeze.
