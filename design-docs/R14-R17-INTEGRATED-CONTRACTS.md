@@ -26,12 +26,12 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 | J3: seal/accept/cancel | ExecutionCapturedFanOutRequest/Result; composition CallAcceptancePort; ExecutionCallCancellationPort → ExecutionCancelledCallReceipt | Import cancellation boundary; retain two-record execution cancellation versus three-record legacy cancellation. Runtime authentication and both CAS orders remain Phase T/I work |
 | J4: effect dispatch/retry/delivery/compensation | effects DispatchMandateV2, ExternalActionIntentV2, AuthorizeDispatchV2, CommitFirstSendV2; DispatchOutcomeCommandV2/RecordV2; legacy SafeRetransmission and purpose unions | A versioned full lifecycle contract must join safe retransmission/all-child proofs, separately scoped compensation and delivery to immutable v2 mandates without reinterpreting legacy intents |
 | J4→J5: original-stream reduction | agent_loop EvidenceReduction, OriginalObligationBinding, TerminalCallFrontier; effects DispatchObligationV2 | Callable original resolver and evidence-reduction CAS requests/results; bridge owner-produced outcome/closure/current reduction into loop terminal records without caller-created success or stream transfer |
-| J5: frontier/suspend/resume/successor | RecoveryFrontier, SuspensionBaseline, ResumeCommand/SuccessorCommand → RecoveryResult; RecoveryPort | Executable Run preparation requests/results for suspension, both continuation consumers (TurnStarted and CompleteAcceptance), same-Run resume and atomic successor; exact complete inventory and source cut |
+| J5: frontier/suspend/resume/successor | `execution_recovery_observations` complete cut, weak/strong joins and noncircular suspension v2; `execution_recovery_contracts` executable preparation port includes suspend/resume/successor/next-Turn/abort/cancel | Consumer coverage now covers current sources, mandatory suspension pair and distinct commands; complete successor participant interpretation and terminal/work record routing remain C work; runtime classification/CAS remain T/I |
 | J5: read-only branch | `readonly_execution_contracts` preparation port, distinct unfinished attempt/outcome/pending/reduction records and registered proof preimages; existing frontier types retained | Versioned executable response/artifact registration of the new history-tool wire and end-to-end consumer; positive no-mutation/runtime proofs and full counter/pending CAS remain T/I |
 | J6: writer applicability/discovery | `platform.runtime_surface_contracts` registry and independent discovery DTOs; six worker fence variants retained | Concrete registered operation bindings and record interpretation; independent discovery and both-direction equality remain T/I, not established by source hashes |
 | J6: post-terminal work | WorkSubjectBinding, WorkEpochBinding, PostTerminalWorkFence, WorkEpochRolloverFence | Materialize the closed work-lease state, owner preparation requests/results, terminal-manifest work creation, exact close and monotone rollover boundary; consumers preserve original obligation/evidence references |
 | J6: model-attempt recovery | `model_attempt_recovery_contracts` executable replacement and separate late-evidence request/result/port | Registered source/record interpretation and operation bindings; authenticity, race handling and immutable late evidence remain T/I |
-| J7: completion/delivery/channel driver | DeliveryCompletion + DeliveryObservation → DeliveryAcceptanceProposal; DeliveryPublicationPort → PreparedDeliveryPublication; broker CompleteDeliveryBatch | Executable CompleteAcceptance consumes actual captured response and current continuation proof, with owner-produced effect companions. Public common driver/receipts for CLI/Telegram preserve distinct authentication and same committed projection |
+| J7: completion/delivery/channel driver | `execution_completion_contracts` direct executable completion request/result retains captured response, complete earlier joins and delivery observation; existing delivery owner port/broker envelope retained | Complete conversation/effects/work participant assembly contract and consumers, plus public common CLI/Telegram driver receipts preserving distinct authentication and committed projection; owner proposal alone is not CompleteAcceptance publication |
 
 These are work packages within one contract phase. No missing row is moved to
 post-implementation detail coverage. The common runtime is implemented only after
@@ -156,6 +156,39 @@ Consumer command: `uv run pytest -q
 tests/capabilities/agent_loop/test_readonly_execution_contracts.py` — 19 passed.
 Explicit mypy on the new source and consumer passed. The legacy executable Run
 schema fingerprint is unchanged. This checkpoint does not complete Phase C.
+
+## Executable recovery and continuation boundary (J4/J5/J7)
+
+Guarantee map for `execution_recovery_observations`, `execution_recovery_contracts`
+and `execution_completion_contracts`:
+
+| Claim | Owner / exact data | Independent observable | Forbidden substitute | Boundary fixture / evidence |
+|---|---|---|---|---|
+| Complete current cut | Broker-enumerated original Run lineage, sealed manifests, frontier, exact source preimages and causal changes | All required families cross the consumer seam; writer independently enumerates the same transaction | Caller ancestry, digest alone, last response only | omissions/additions/reorder/duplicate and stale cut; consumer then J5/J7 |
+| Weak versus strong join | Loop accounting includes terminal open obligations; continuation additionally binds original closure/outcome/witness and current semantic reduction | Separate closed records and both continuation consumers | Raw evidence, attempt outcome or previous Turn proof as readiness | evidence/open, stale reduction, pending, rival closure; J4→J5 |
+| Suspension without circular hashes | Baseline v2 binds prior Run and source cut; suspended Run binds baseline; mandatory pair binds both final heads | DAG baseline → Run → pair, selected pair required by resume/successor | Baseline/Run mutual whole-record hashes or already-selected proposed output | omitted/substituted pair, wrong prior/current head, mixed v1/v2; consumer then J5 |
+| Resume/successor exact CAS | Original selected pair, complete current frontier/causal proof and frozen bindings | Owner produces exact Run transitions and complete successor companions | Caller-selected disposition, copied obligation, reset pending/counter or mutable baseline | stale/fault/hold, changed binding, both resume/successor orders, physical rollover; J5 |
+| Terminal with open recovery | Loop complete terminal accounting manifest names original obligations; work owner prepares its full genesis set | Abort/cancel uses weak accounting and same-batch work companions | Strong-ready requirement that strands open recovery; terminal without work | open obligation, empty/missing/extra work, crash boundaries; J5/J6 |
+| Direct CompleteAcceptance | Captured response/attempt/visibility plus every earlier response's current strong join, delivery observation and owner companions | Both next-Turn and Complete request complete current joins | Transitive TurnStarted proof, model assertions or caller-built effects/history | ancestry substitution, stale reduction/fence, omitted participant; J7 |
+
+All standard mutation families apply. New contracts do not discharge runtime
+authenticity, current-cut equality, progress or atomicity. Legacy baseline and Run
+schemas remain unchanged. Terminal manifest hashes precede work companions; the
+combined batch checks completeness without a reverse manifest→work hash edge.
+
+Consumer command: `uv run pytest -q
+tests/capabilities/agent_loop/test_execution_recovery_contracts.py` — 12 passed.
+The consumer constructs baseline → Run → pair using actual canonical hashes and
+requires the selected pair for resume/successor. It retains accepted evidence and
+a newer current reduction separately, verifies distinct weak/strong wire types,
+and exercises suspension, resume, successor, next-Turn, abort/cancel and direct
+completion requests. Empty and deliberately mismatched fixture cuts establish
+representation only; no runtime classification or completeness claim follows.
+Explicit mypy on the three new source modules and consumer passed.
+
+The completion result is explicitly loop-owned only. Complete conversation,
+effects and work assembly remains OPEN in the graph, as does original-stream
+resolver/reduction preparation. Those gaps cannot be deferred beyond Phase C.
 
 ## Publication discipline
 
