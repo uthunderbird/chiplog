@@ -75,6 +75,16 @@ It is proposed task input, with root review requirements and remaining Phase-C
 decisions, not an approved contract freeze or permission to skip Astra's interface
 review. Sol separated consumer shape checks from future behavioral evidence.
 
+Subsequent continuation successfully ran `gpt-6-astra` low for the shared interface
+review, then Terra creation and Sol follow-up were again rejected by the thread
+limit. Read [Astra's concrete interface corrections](R14-R17-SCHEDULER-INTERFACE-REVIEW.md)
+before using the earlier sketch. It supersedes conflicting sketch details, especially
+the primitive decision source, separate V2 initialization result, N-Run absence
+manifest, streamed overflow branch and complete new dependency manifest.
+The next model-specific step is **Sol low with swarm-mode** on the review's remaining
+decisions A–E, followed by recorded decisions and Terra medium implementation.
+No source or tests were implemented in that continuation.
+
 The old one-delivery policy in `composition/r15_tick_contracts.py` explicitly
 authorizes pre-root materialization only, with no execution or SEND. Preserve it.
 The new automatic path needs a separate bounded system mandate and service
