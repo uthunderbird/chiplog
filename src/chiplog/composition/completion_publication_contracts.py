@@ -32,6 +32,9 @@ from chiplog.capabilities.agent_loop.execution_completion_contracts import (
     PreparedExecutionCompletionReject,
     PrepareExecutionCompletion,
 )
+from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
+    PrepareExecutionCompletionFirstPathV2,
+)
 from chiplog.capabilities.agent_loop.post_terminal_contracts import (
     PreparedPostTerminalWork,
     PrepareTerminalWork,
@@ -119,7 +122,7 @@ class PrepareCompleteAcceptanceAssemblyV1(Frozen):
     schema_id: Literal["chiplog.composition.complete-acceptance-assembly.v1"] = (
         "chiplog.composition.complete-acceptance-assembly.v1"
     )
-    original_completion_request: PrepareExecutionCompletion
+    original_completion_request: PrepareExecutionCompletion | PrepareExecutionCompletionFirstPathV2
     prepared_completion: PreparedExecutionCompletion
     conversation_request: PrepareConversationCompletionV1
     conversation_result: PreparedConversationCompletionV1
@@ -171,7 +174,11 @@ def acceptance_commands(
     return (
         _command(
             "agent_loop",
-            LOOP_COMPLETION_SCHEMA,
+            (
+                LOOP_COMPLETION_SCHEMA
+                if isinstance(assembly.original_completion_request, PrepareExecutionCompletion)
+                else assembly.original_completion_request.schema_id
+            ),
             assembly.original_completion_request.canonical_bytes(),
         ),
         _command(

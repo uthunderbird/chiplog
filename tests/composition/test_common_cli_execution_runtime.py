@@ -330,6 +330,92 @@ async def test_terminal_drive_reopens_without_second_decision_or_model_call(tmp_
 
 
 @pytest.mark.asyncio
+async def test_prepared_complete_seal_reopens_and_publishes_once(tmp_path: Path) -> None:
+    database = tmp_path / "h1-prepared-replay.sqlite"
+    custody = tmp_path / "dispatch-custody"
+    request, complete = await _admit_complete_script(database, custody)
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
+    async with open_common_cli_execution_runtime(
+        database, resources=resources, responses=(complete,)
+    ) as runtime:
+        initial = await runtime.drive_input(request)
+        assert initial.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        assert initial.phase == "INITIALIZED"
+        advance = _advance(initial, request)
+
+        started = await runtime.begin_execution(
+            "hermetic-ingress", initial.stable_run_lineage_id, initial.selected_run_head.head
+        )
+        captured = await runtime.capture_execution(
+            "hermetic-ingress", initial.stable_run_lineage_id, started.head
+        )
+        sealed = await runtime.seal_execution_complete(
+            "hermetic-ingress", initial.stable_run_lineage_id, captured.head
+        )
+
+        assert sealed.state == "ACTIVE"
+        assert sealed.event == "ModelCompletionPrepared"
+        assert len(runtime._execution_model.requests) == 1
+        assert not any(
+            json.loads(raw).get("operation_kind") == "agent_loop.complete_acceptance.v2"
+            for _, _, raw in runtime._loop_decisions().entries()
+        )
+
+    reopened_resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=custody
+    )
+    async with open_common_cli_execution_runtime(database, resources=reopened_resources) as runtime:
+        terminal = await runtime.advance_execution(advance)
+
+        assert terminal.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        assert terminal.phase == "TERMINAL"
+        assert terminal.selected_run_state == "SUCCEEDED"
+        assert terminal.terminal_detail is not None
+        assert terminal.terminal_detail.kind == "ACCEPTED"
+        assert runtime._execution_model.requests == []
+
+        decisions = runtime._loop_decisions().entries()
+        selected = [
+            (decision_id, json.loads(raw))
+            for decision_id, _, raw in decisions
+            if json.loads(raw).get("operation_kind") == "agent_loop.complete_acceptance.v2"
+        ]
+        assert len(selected) == 1
+        decision_id, decision = selected[0]
+        assert decision_id == terminal.selected_journal_decision.head
+        command = runtime._publication(decision)
+        assert terminal.commit_sequence == command.expected_head + 1
+        with sqlite3.connect(database) as connection:
+            rows = connection.execute(
+                "SELECT record_id, owner, schema_id, canonical_bytes FROM records "
+                "WHERE commit_sequence=? ORDER BY rowid",
+                (terminal.commit_sequence,),
+            ).fetchall()
+        assert rows == [
+            (member.record_id, member.owner, member.schema_id, member.canonical_bytes)
+            for member in command.records
+        ]
+        assert [(row[1], row[2]) for row in rows[:5]] == [
+            ("agent_loop", "chiplog.agent-loop.delivery-acceptance-record.v1"),
+            ("agent_loop", "chiplog.agent-loop.execution-terminal-manifest.v1"),
+            ("agent_loop", "chiplog.agent-loop.execution-record.v2"),
+            ("conversation", ACCEPTED_ENTRY_SCHEMA),
+            ("effects", "chiplog.effects.external-action-intent.v3"),
+        ]
+
+        records = _physical_snapshot(database)
+        replay = await runtime.advance_execution(advance)
+        assert replay.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        assert replay.disposition == "EXACT_REPLAY"
+        assert replay.model_dump(exclude={"disposition"}) == terminal.model_dump(
+            exclude={"disposition"}
+        )
+        assert runtime._execution_model.requests == []
+        assert runtime._loop_decisions().entries() == decisions
+        assert _physical_snapshot(database) == records
+
+
+@pytest.mark.asyncio
 async def test_selected_inbox_rejects_changed_or_second_driver_identity(tmp_path: Path) -> None:
     resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1)
     async with open_common_cli_execution_runtime(

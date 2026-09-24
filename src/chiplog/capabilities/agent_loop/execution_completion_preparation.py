@@ -20,6 +20,7 @@ from .call_acceptance_contracts import (
 from .call_acceptance_preparation import call_record_reference
 from .completion_owner_record_contracts import (
     completion_request_fingerprint,
+    make_delivery_acceptance_member,
     make_prepared_delivery_acceptance_member,
     make_terminal_manifest_member,
     make_terminal_run_member,
@@ -33,6 +34,11 @@ from .execution_completion_contracts import (
     PrepareExecutionCompletion,
 )
 from .execution_contracts import ExecutionRunRecord
+from .execution_first_path_completion_contracts import (
+    PrepareExecutionCompletionFirstPathV2,
+    decode_first_path_completion_request,
+    first_path_completion_request_fingerprint,
+)
 from .execution_recovery_observations import ExecutionTerminalManifest, SealedAccountingRecord
 from .recovery_contracts import Present
 from .recovery_domain import sealed_call_accounting
@@ -192,6 +198,40 @@ def _accounting(
     )
 
 
+def _first_path_accounting(
+    request: PrepareExecutionCompletionFirstPathV2,
+) -> SealedAccountingRecord:
+    """Derive zero-call accounting from the native first-path cut itself."""
+    registry_ref = frontier_registry_reference(request.source.frontier.registry)
+    frontier_ref = call_record_reference(
+        "recovery-frontier:" + request.source.frontier.run_id, request.source.frontier
+    )
+    accounted = sealed_call_accounting(
+        request.source.seal.response_seal_id, request.source.seal.digest(), (), ()
+    )
+    preimage = {
+        "domain": "chiplog.execution.sealed-accounting.v1",
+        "source_cut_fingerprint": request.source.digest(),
+        "sealed_response": request.source.selected_response_seal.model_dump(mode="json"),
+        "sealed_manifest_fingerprint": request.source.seal.digest(),
+        "registry": registry_ref.model_dump(mode="json"),
+        "frontier": frontier_ref.model_dump(mode="json"),
+        "complete_ordered_calls": [item.model_dump(mode="json") for item in accounted.calls],
+    }
+    accounting_id = "sealed-accounting:" + _sha(
+        json.dumps(preimage, sort_keys=True, separators=(",", ":")).encode()
+    )
+    return SealedAccountingRecord(
+        accounting_id=accounting_id,
+        source_cut_fingerprint=request.source.digest(),
+        sealed_response=request.source.selected_response_seal,
+        sealed_manifest_fingerprint=request.source.seal.digest(),
+        registry=registry_ref,
+        frontier=frontier_ref,
+        complete_ordered_calls=accounted.calls,
+    )
+
+
 def _terminal_run(
     run: ExecutionRunRecord, proposal: DeliveryAcceptanceProposal
 ) -> ExecutionRunRecord:
@@ -268,6 +308,51 @@ def prepare_execution_completion(request: PrepareExecutionCompletion) -> Executi
             complete_owner_commitment="0" * 64,
         )
         delivery_member = make_prepared_delivery_acceptance_member(request, seed)
+        manifest_member = make_terminal_manifest_member(manifest)
+        run_member = make_terminal_run_member(terminal)
+        return seed.model_copy(
+            update={
+                "complete_owner_commitment": _sha(
+                    delivery_member.canonical_record_bytes
+                    + manifest_member.canonical_record_bytes
+                    + run_member.canonical_record_bytes
+                )
+            }
+        )
+    except (ValidationError, ValueError, TypeError, IndexError) as error:
+        return _rejected(request, "INTEGRITY_FAULT", str(error))
+
+
+def prepare_first_path_execution_completion(
+    request: PrepareExecutionCompletionFirstPathV2,
+) -> ExecutionCompletionResult:
+    """Prepare a native first-path completion without inventing a legacy recovery cut."""
+    try:
+        request = decode_first_path_completion_request(request.canonical_bytes())
+        completion = DeliveryCompletion.model_validate_json(request.exact_captured_response)
+        if completion.canonical_bytes() != request.exact_captured_response:
+            raise ValueError("completion response bytes are not canonical")
+        accounting = _first_path_accounting(request)
+        proposal = prepare_completion(completion, request.delivery)
+        terminal = _terminal_run(request.run, proposal)
+        manifest = ExecutionTerminalManifest(
+            manifest_id="terminal-manifest:" + _sha(request.canonical_bytes()),
+            command_id=request.command_id,
+            prior_run=request.source.current_run,
+            target="SUCCEEDED",
+            source_cut_fingerprint=request.source.digest(),
+            complete_accounting=(accounting,),
+            complete_open_original_obligations=request.run.original_obligations,
+        )
+        seed = PreparedExecutionCompletion(
+            source_request_fingerprint=first_path_completion_request_fingerprint(request),
+            complete_earlier_continuations=(),
+            delivery=proposal,
+            terminal_manifest=manifest,
+            run=terminal,
+            complete_owner_commitment="0" * 64,
+        )
+        delivery_member = make_delivery_acceptance_member(completion, request.delivery)
         manifest_member = make_terminal_manifest_member(manifest)
         run_member = make_terminal_run_member(terminal)
         return seed.model_copy(

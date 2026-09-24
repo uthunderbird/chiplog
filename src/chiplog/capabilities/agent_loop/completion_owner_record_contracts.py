@@ -28,6 +28,10 @@ from .execution_completion_contracts import (
     PrepareExecutionCompletion,
 )
 from .execution_contracts import ExecutionTurn
+from .execution_first_path_completion_contracts import (
+    PrepareExecutionCompletionFirstPathV2,
+    decode_completion_request,
+)
 from .execution_history_contracts import ExecutionTurnV3
 from .execution_recovery_observations import ExecutionTerminalManifest
 from .execution_run_versions import ExecutionRun
@@ -115,16 +119,42 @@ def _member(kind: str, schema_id: str, record_id: str, raw: bytes) -> Completion
     )
 
 
+CompletionRequest = PrepareExecutionCompletion | PrepareExecutionCompletionFirstPathV2
+
+
+def completion_request_continuations(request: CompletionRequest) -> tuple[object, ...]:
+    """Return continuations retained by the request without inventing first-path history."""
+    if isinstance(request, PrepareExecutionCompletion):
+        return request.complete_earlier_continuations
+    return ()
+
+
+def completion_request_source_cut_fingerprint(request: CompletionRequest) -> str:
+    """Return the exact source inventory fingerprint for either accepted request shape."""
+    if isinstance(request, PrepareExecutionCompletion):
+        return request.cut.digest()
+    return request.source.digest()
+
+
+def _exact_completion_request(request: CompletionRequest) -> CompletionRequest:
+    decoded = decode_completion_request(request.canonical_bytes())
+    if decoded != request:
+        raise CompletionRecordIntegrityError("completion request differs from canonical bytes")
+    return decoded
+
+
 def validate_completion_request_source(
-    request: PrepareExecutionCompletion,
+    request: CompletionRequest,
 ) -> ExecutionTurn | ExecutionTurnV3:
     """Bind a completion request to its exact native captured Run and selected Turn.
 
     This deliberately does not parse the captured payload: a semantic rejection
     may preserve malformed raw bytes under its original source bindings.
     """
+    request = _exact_completion_request(request)
     run = request.run
-    _require(run.state, "ACTIVE", "completion source Run is not ACTIVE")
+    if isinstance(request, PrepareExecutionCompletion):
+        _require(run.state, "ACTIVE", "completion source Run is not ACTIVE")
     _require(
         run.head,
         "loop:" + run.model_copy(update={"head": "pending"}).digest(),
@@ -143,14 +173,15 @@ def validate_completion_request_source(
         request.exact_captured_response,
         "delivery captured response differs from request",
     )
-    _require(
-        request.cut.current_run,
-        CallSubjectHead(
-            subject_id=run.run_id,
-            revision=Present(head=run.head, fingerprint=run_fingerprint),
-        ),
-        "completion cut current Run differs from native Run",
-    )
+    if isinstance(request, PrepareExecutionCompletion):
+        _require(
+            request.cut.current_run,
+            CallSubjectHead(
+                subject_id=run.run_id,
+                revision=Present(head=run.head, fingerprint=run_fingerprint),
+            ),
+            "completion cut current Run differs from native Run",
+        )
 
     selected: list[ExecutionTurn | ExecutionTurnV3] = []
     for turn in run.turns:
@@ -315,7 +346,7 @@ def make_delivery_acceptance_member(
 
 
 def make_prepared_delivery_acceptance_member(
-    request: PrepareExecutionCompletion, prepared: PreparedExecutionCompletion
+    request: CompletionRequest, prepared: PreparedExecutionCompletion
 ) -> CompletionCanonicalMember:
     """Bind an accepted result to a proposal recomputed from its exact request bytes."""
     selected_turn = validate_completion_request_source(request)
@@ -340,7 +371,7 @@ def make_prepared_delivery_acceptance_member(
     return member
 
 
-def completion_request_fingerprint(request: PrepareExecutionCompletion) -> str:
+def completion_request_fingerprint(request: CompletionRequest) -> str:
     """Frozen completion-request convention for the rejection physical projection."""
     return _sha(request.canonical_bytes())
 

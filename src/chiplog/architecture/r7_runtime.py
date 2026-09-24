@@ -726,8 +726,21 @@ _EXECUTION_COMPLETION_ROUTE = RoutedCallDecl(
     "chiplog.agent-loop.prepare-execution-completion.v1",
     "chiplog.agent-loop.prepared-execution-completion-result.v1",
 )
+_FIRST_PATH_EXECUTION_COMPLETION_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_first_path_completion",
+    "broker",
+    "agent_loop",
+    "chiplog.execution.first-path-completion.v2",
+    "chiplog.agent-loop.prepared-execution-completion-result.v1",
+)
 _H1_EXECUTION_OPERATIONS = tuple(
-    sorted((*_H0_EXECUTION_OPERATIONS, _EXECUTION_COMPLETION_ROUTE.operation_id))
+    sorted(
+        (
+            *_H0_EXECUTION_OPERATIONS,
+            _EXECUTION_COMPLETION_ROUTE.operation_id,
+            _FIRST_PATH_EXECUTION_COMPLETION_ROUTE.operation_id,
+        )
+    )
 )
 _H1_TRUST_ROUTES = (
     RoutedCallDecl(
@@ -783,6 +796,7 @@ R14_R17_H1_PRODUCTION_MANIFEST = replace(
             (
                 *R14_R17_H0_PRODUCTION_MANIFEST.routes,
                 _EXECUTION_COMPLETION_ROUTE,
+                _FIRST_PATH_EXECUTION_COMPLETION_ROUTE,
                 *_H1_TRUST_ROUTES,
             ),
             key=lambda route: (route.callee_owner_id, route.operation_id),

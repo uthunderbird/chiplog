@@ -60,7 +60,9 @@ def bind_run(
     )
 
 
-async def fixture(complete: bool = False) -> ExecutionCapturedFanOutRequest:
+async def fixture(
+    complete: bool = False, *, canonical_response: bool = False
+) -> ExecutionCapturedFanOutRequest:
     old = await legacy_fixture()
     artifact = await render_execution_prompt("Plan")
     parsed = ExecutionContinue(
@@ -86,7 +88,9 @@ async def fixture(complete: bool = False) -> ExecutionCapturedFanOutRequest:
         else parsed
     )
     # Exact captured bytes include significant retention of noncanonical whitespace.
-    raw = json.dumps(response.model_dump(mode="json"), indent=2).encode() + b"\n"
+    raw = response.canonical_bytes() if canonical_response else json.dumps(
+        response.model_dump(mode="json"), indent=2
+    ).encode() + b"\n"
     encoded = base64.b64encode(raw).decode()
     attempt = old.captured_run.turns[-1].attempts[-1].model_dump(mode="json")
     attempt.update(live_model=None, response_base64=encoded)

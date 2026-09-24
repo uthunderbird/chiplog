@@ -285,6 +285,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             "agent_loop.prepare_delivery_completion",
             "agent_loop.prepare_execution_captured_fan_out",
             "agent_loop.prepare_execution_transition",
+            "agent_loop.prepare_first_path_completion",
             "agent_loop.prepare_pre_accept_cancellation",
             "agent_loop.validate_delivery_completion",
             "agent_loop.validate_transition",

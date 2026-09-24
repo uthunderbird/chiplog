@@ -9,12 +9,18 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, TypeAdapter, model_validator
 
 from .call_acceptance_contracts import CallSubjectHead
-from .completion_owner_record_contracts import completion_request_fingerprint
+from .completion_owner_record_contracts import (
+    CompletionRequest,
+    completion_request_continuations,
+    completion_request_fingerprint,
+    completion_request_source_cut_fingerprint,
+)
 from .execution_completion_contracts import (
     PreparedExecutionCompletion,
     PreparedExecutionCompletionReject,
     PrepareExecutionCompletion,
 )
+from .execution_first_path_completion_contracts import decode_completion_request
 from .execution_recovery_observations import ExecutionTerminalManifest
 from .execution_run_versions import ExecutionRun
 from .recovery_contracts import OriginalObligationBinding, RecoveryDTO
@@ -38,6 +44,18 @@ def _exact(raw: bytes, model: type[RecoveryDTO]) -> RecoveryDTO:
     return decoded
 
 
+def _exact_completion_request(raw: bytes) -> CompletionRequest:
+    try:
+        decoded = decode_completion_request(raw)
+    except Exception as error:
+        raise ValueError(
+            "completion source contains unknown or noncanonical request bytes"
+        ) from error
+    if decoded.canonical_bytes() != raw:
+        raise ValueError("completion source contains noncanonical owner bytes")
+    return decoded
+
+
 class AcceptedCompletionWorkSourceV1(RecoveryDTO):
     kind: Literal["ACCEPTED_COMPLETION_WORK_SOURCE_V1"] = "ACCEPTED_COMPLETION_WORK_SOURCE_V1"
     schema_id: Literal["chiplog.agent-loop.accepted-completion-work-source.v1"] = (
@@ -53,13 +71,12 @@ class AcceptedCompletionWorkSourceV1(RecoveryDTO):
 
     @model_validator(mode="after")
     def accepted_exchange_matches(self) -> Self:
-        request = _exact(self.original_completion_request_bytes, PrepareExecutionCompletion)
+        request = _exact_completion_request(self.original_completion_request_bytes)
         prepared = _exact(self.prepared_completion_bytes, PreparedExecutionCompletion)
-        assert isinstance(request, PrepareExecutionCompletion)
         assert isinstance(prepared, PreparedExecutionCompletion)
         if (
             prepared.source_request_fingerprint != completion_request_fingerprint(request)
-            or prepared.complete_earlier_continuations != request.complete_earlier_continuations
+            or prepared.complete_earlier_continuations != completion_request_continuations(request)
             or prepared.run != self.terminal_run
             or prepared.terminal_manifest != self.terminal_manifest
             or self.terminal_run_head != run_ref(self.terminal_run)
@@ -68,7 +85,8 @@ class AcceptedCompletionWorkSourceV1(RecoveryDTO):
             or self.terminal_manifest.target != "SUCCEEDED"
             or self.terminal_manifest.command_id != request.command_id
             or self.terminal_manifest.prior_run != run_ref(request.run)
-            or self.terminal_manifest.source_cut_fingerprint != request.cut.digest()
+            or self.terminal_manifest.source_cut_fingerprint
+            != completion_request_source_cut_fingerprint(request)
             or self.terminal_run.schema_id != request.run.schema_id
             or self.terminal_run.tenant != request.run.tenant
             or self.terminal_run.principal != request.run.principal

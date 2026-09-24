@@ -1064,6 +1064,7 @@ async def rejected_completion_fixture(
     """Return the semantic-rejection graph: aborted Run, no conversation/effects rows."""
     accepted = await accepted_completion_fixture(run_schema, "empty")
     original = accepted.assembly.original_completion_request
+    assert isinstance(original, PrepareExecutionCompletion)
     aborted = _terminal_run(original.run, "ABORTED", "ExecutionRejected")
     reject = PreparedExecutionCompletionReject(
         source_request_fingerprint=_sha(original.canonical_bytes()),

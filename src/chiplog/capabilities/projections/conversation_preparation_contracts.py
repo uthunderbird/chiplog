@@ -21,6 +21,9 @@ from chiplog.capabilities.agent_loop.execution_completion_contracts import (
     PreparedExecutionCompletionReject,
     PrepareExecutionCompletion,
 )
+from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
+    decode_completion_request,
+)
 from chiplog.capabilities.agent_loop.execution_initialization_contracts import (
     SelectedAdmittedRunInput,
 )
@@ -386,6 +389,15 @@ def _decode_exact_execution_run(raw: bytes) -> ExecutionRun:
     return decoded
 
 
+def _decode_exact_completion_request(raw: bytes) -> None:
+    try:
+        decoded = decode_completion_request(raw)
+    except Exception as error:
+        raise ValueError("original completion request bytes do not decode") from error
+    if decoded.canonical_bytes() != raw:
+        raise ValueError("original completion request bytes are not canonical")
+
+
 class PrepareConversationAdmittedInputV1(_Frozen):
     kind: Literal["PREPARE_CONVERSATION_ADMITTED_INPUT_V1"] = (
         "PREPARE_CONVERSATION_ADMITTED_INPUT_V1"
@@ -439,9 +451,7 @@ class PrepareConversationCompletionV1(_Frozen):
             raise ValueError("completion requires completion source cut")
         if self.source_cut.source_schema_id != self.proposed_terminal_run.schema_id:
             raise ValueError("completion source and proposed terminal Run schema differ")
-        _decode_exact_canonical_bytes(
-            self.original_completion_request_bytes, PrepareExecutionCompletion
-        )
+        _decode_exact_completion_request(self.original_completion_request_bytes)
         _decode_exact_canonical_bytes(self.loop_preparation_bytes, PreparedExecutionCompletion)
         proposal = cast(
             DeliveryAcceptanceProposal,

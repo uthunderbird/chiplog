@@ -5,13 +5,19 @@ import hashlib
 import json
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from tests.support.delivery_completion import _captured
 from tests.support.execution_fan_out import bind_run, fixture
 
+from chiplog.capabilities.agent_loop import _execution_completion_process as process
 from chiplog.capabilities.agent_loop import execution_first_path_completion_contracts as contracts
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
+from chiplog.capabilities.agent_loop.execution_completion_contracts import (
+    ExecutionCompletionResult,
+    PreparedExecutionCompletion,
+    PrepareExecutionCompletion,
+)
 from chiplog.capabilities.agent_loop.execution_fan_out_contracts import (
     ExecutionCapturedFanOutProposal,
 )
@@ -58,9 +64,11 @@ def source(schema: str, reference: CallSubjectHead, raw: bytes) -> RecoverySourc
     )
 
 
-async def request() -> contracts.PrepareExecutionCompletionFirstPathV2:
+async def request(
+    *, canonical_response: bool = False
+) -> contracts.PrepareExecutionCompletionFirstPathV2:
     """Owner-produced seal and exact native source bodies, not an authenticated history."""
-    fanout = await fixture(complete=True)
+    fanout = await fixture(complete=True, canonical_response=canonical_response)
     captured = fanout.captured_run
     turn = captured.turns[0]
     attempt = turn.attempts[0].model_copy(update={"head": "pending"})
@@ -199,6 +207,7 @@ async def request() -> contracts.PrepareExecutionCompletionFirstPathV2:
             "turn_id": run.turns[0].turn_id,
             "captured_response": raw,
             "origin": run.origin,
+            "recipients": (run.origin.recipient,),
         }
     )
     fence = NonSchedulerFence(
@@ -377,3 +386,69 @@ async def test_v1_request_bytes_remain_exact_through_versioned_decoder() -> None
     assert contracts.decode_completion_request(raw).canonical_bytes() == raw
     with pytest.raises(ValueError):
         contracts.decode_first_path_completion_request(raw)
+
+
+async def test_first_path_request_reaches_its_mounted_owner_and_prepares_acceptance() -> None:
+    value = await request(canonical_response=True)
+
+    assert (
+        process.FIRST_PATH_OPERATION,
+        "broker",
+        "agent_loop",
+        contracts.FIRST_PATH_COMPLETION_SCHEMA,
+        process.RESULT_SCHEMA,
+    ) in process.ROUTES
+    reply = process.dispatch(process.FIRST_PATH_OPERATION, value.canonical_bytes())
+
+    assert reply["schema_id"] == process.RESULT_SCHEMA
+    payload = reply["payload"]
+    assert isinstance(payload, str)
+    raw = base64.b64decode(payload)
+    decoded: ExecutionCompletionResult = TypeAdapter(ExecutionCompletionResult).validate_json(
+        raw
+    )
+    assert isinstance(decoded, PreparedExecutionCompletion)
+    assert decoded.canonical_bytes() == raw
+    assert decoded.source_request_fingerprint == hashlib.sha256(value.canonical_bytes()).hexdigest()
+    assert decoded.complete_earlier_continuations == ()
+    assert decoded.run.state == "SUCCEEDED"
+
+
+async def test_legacy_completion_owner_route_keeps_its_existing_result_bytes() -> None:
+    from tests.support.completion_assembly import accepted_completion_fixture
+
+    from chiplog.capabilities.agent_loop.execution_completion_preparation import (
+        prepare_execution_completion,
+    )
+
+    original = (
+        await accepted_completion_fixture("v3", "empty")
+    ).assembly.original_completion_request
+    assert isinstance(original, PrepareExecutionCompletion)
+    expected = prepare_execution_completion(original)
+
+    reply = process.dispatch(process.OPERATION, original.canonical_bytes())
+
+    assert reply == {
+        "payload": base64.b64encode(expected.canonical_bytes()).decode(),
+        "schema_id": process.RESULT_SCHEMA,
+    }
+
+
+@pytest.mark.parametrize("mutation", ["noncanonical", "rehash_splice"])
+async def test_first_path_owner_rejects_noncanonical_and_rehashed_splice(mutation: str) -> None:
+    value = await request()
+    if mutation == "noncanonical":
+        payload = json.dumps(json.loads(value.canonical_bytes()), indent=2).encode()
+    else:
+        cut = value.source.model_copy(update={"selected_capture": value.source.current_run})
+        cut = cut.model_copy(
+            update={
+                "complete_inventory_fingerprint": contracts.first_path_inventory_fingerprint(cut)
+            }
+        )
+        payload = value.model_copy(update={"source": cut}).canonical_bytes()
+
+    reply = process.dispatch(process.FIRST_PATH_OPERATION, payload)
+
+    assert reply["failure"] == "PROTOCOL_REJECTED"
