@@ -50,7 +50,10 @@ from tests.support.call_acceptance import preview_inputs
 
 
 def prepared_acceptance(
-    *, mandate_updates: dict[str, object] | None = None, display_bytes: bytes | None = None
+    *,
+    mandate_updates: dict[str, object] | None = None,
+    display_bytes: bytes | None = None,
+    command_id: str | None = None,
 ) -> RetainedAcceptancePreparationV2:
     def head(subject: str) -> ExactHead:
         return reference(subject, subject.encode())
@@ -243,7 +246,7 @@ def prepared_acceptance(
     )
     intent = intent.model_copy(update={"fingerprint": intent_fingerprint(intent)})
     loop_request = call.AcceptConsequentialCallRequest(
-        command_id="accept-loop",
+        command_id=command_id or "accept-loop",
         initialized_record=initialized,
         binding=call.ConsequentialAcceptanceBinding(
             original_call_id=initialized.original_call_id,
@@ -261,7 +264,7 @@ def prepared_acceptance(
     command = wire.PublishDispatchIntentV2(
         schema_id="chiplog.effects.publish-dispatch-intent.v2",
         identity=CommandIdentity(
-            command_id="accept-effects", fingerprint="a" * 64, expected_tenant_head=0
+            command_id=command_id or "accept-effects", fingerprint="a" * 64, expected_tenant_head=0
         ),
         intent=intent,
         complete_publication_manifest=tuple(

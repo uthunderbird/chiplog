@@ -57,6 +57,9 @@ def _request(decision: SelectedOwnerDecision) -> DispatchPreparationV2:
     elif batch.kind == "SINGLE_OWNER":
         command = batch.command
     elif batch.kind == "CALL_EFFECT_ATOMIC":
+        from chiplog.composition.r14_call_issuance import decode_call_issuance
+
+        decode_call_issuance(batch)
         command = batch.effects_command
     else:
         raise ValueError("v2 dispatch record has unregistered publication envelope")
@@ -343,7 +346,22 @@ def validate_selected_dispatch_sources(runtime: R16DispatchRuntime) -> None:
     for decision in journal.decisions:
         batch = decision.prepared.request
         effects = tuple(record for record in batch.complete_records if record.owner == "effects")
-        if any(record.schema_id == RECORD_SCHEMA for record in effects):
+        if batch.kind == "CALL_EFFECT_ATOMIC":
+            from chiplog.composition.r14_call_issuance import validate_call_issuance
+            from chiplog.composition.r16_dispatch_runtime import ExecutionDispatchRuntime
+
+            try:
+                if not isinstance(runtime, ExecutionDispatchRuntime):
+                    raise ValueError("call acceptance requires its registered runtime")
+                validate_call_issuance(batch, runtime)
+            except (ValueError, RuntimeError, OSError, KeyError, TypeError) as error:
+                from chiplog.adapters.driven.effects_broker import EffectsIntegrityError
+
+                raise EffectsIntegrityError(
+                    f"call.accept-startup tenant={runtime._tenant_id} "
+                    f"record={batch.identity.command_id}"
+                ) from error
+        elif any(record.schema_id == RECORD_SCHEMA for record in effects):
             validate_issuance(batch, runtime)
         elif any(
             record.schema_id == "chiplog.effects.dispatch-outcome-record.v2" for record in effects

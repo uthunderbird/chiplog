@@ -280,6 +280,8 @@ def initial_intent(
     display: ProposalDisplay,
     observed: ObservedTrustCall,
     captured: DispatchCapture,
+    *,
+    run_source_version: str = "2",
 ) -> ExternalActionIntentV2:
     adoption_raw = canonical(
         {
@@ -310,7 +312,11 @@ def initial_intent(
         precursor_request=preview.precursor_request,
         precursor_result=preview.precursor_result,
         original_sources=source_inventory(
-            captured, preview.mandate, adoption.canonical_bytes(), None
+            captured,
+            preview.mandate,
+            adoption.canonical_bytes(),
+            None,
+            run_source_version=run_source_version,
         ),
     )
     body = {
@@ -445,13 +451,23 @@ async def publish_dispatch(
             fingerprint=digest(planning.planning.request_bytes),
         )
     with runtime._authority_gate().hold():
-        captured = authority.capture(worker_run_id)
+        captured = authority.capture(
+            worker_run_id, intent_id=None if operation == "PUBLISH" else subject_id
+        )
         worker = captured.cut.worker
         if worker is None:
             raise LoopRejected("dispatch current worker absent")
         previous: DispatchRecordV2 | None = None
         if operation == "PUBLISH":
-            intent = initial_intent(preview, display, observed, captured)
+            from chiplog.composition.r16_dispatch_runtime import ExecutionDispatchRuntime
+
+            intent = initial_intent(
+                preview,
+                display,
+                observed,
+                captured,
+                run_source_version="3" if isinstance(runtime, ExecutionDispatchRuntime) else "2",
+            )
             if any(
                 member.intent.subject_id == intent.intent_id for member in captured.history.members
             ):
@@ -574,8 +590,8 @@ async def publish_dispatch(
             tenant_id=runtime._tenant_id,
             tenant_frontier=captured.cut.tenant_frontier,
             expected_materialization_commitment=captured.cut.materialization_commitment,
-            registry_head=policy_reference().head,
-            registry_fingerprint=policy_reference().fingerprint,
+            registry_head=intent.mandate.operation_profile.head,
+            registry_fingerprint=intent.mandate.operation_profile.fingerprint,
             ordered_heads=(
                 ObservedPresence(
                     head=ExactRecordHead(

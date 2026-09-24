@@ -8,15 +8,32 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import ClassVar, cast
 
+from chiplog.adapters.driven.deployment_trust._journal import IndependentTenantDecisionJournal
+from chiplog.adapters.driven.effects_broker import EffectsIntegrityError
 from chiplog.adapters.driven.effects_hermetic import IssuedEffectSendTicket
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.adapters.driven.loop_prompts import OwnedStaticPrompts
 from chiplog.adapters.driven.loop_sqlite import SQLiteLoopStore
-from chiplog.architecture.r7_runtime import R16_DISPATCH_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import (
+    R14_R16_CALL_PRODUCTION_MANIFEST,
+    R16_DISPATCH_PRODUCTION_MANIFEST,
+)
 from chiplog.capabilities.agent_loop.application import AgentLoop
-from chiplog.capabilities.agent_loop.contracts import EndpointSelection, ProposalDisplay
+from chiplog.capabilities.agent_loop.contracts import (
+    EndpointSelection,
+    LoopSnapshot,
+    ProposalDisplay,
+)
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r13_workspace import R13Workspace
+from chiplog.composition.r14_acceptance_contracts import ACCEPTED_SCHEMA, EXECUTION_SCHEMA
+from chiplog.composition.r14_call_acceptance_port import (
+    AcceptedCallReceipt,
+    CallAcceptanceAdoption,
+    CallAcceptancePreview,
+    CallAcceptanceTarget,
+)
+from chiplog.composition.r14_execution_runtime import R14ExecutionRuntime
 from chiplog.composition.r16_denial_publication import R16PlanningRuntime
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._owner_publication_contracts import BrokerPublicationResult
@@ -152,6 +169,116 @@ class R16DispatchRuntime(R16PlanningRuntime):
         from chiplog.composition.r16_dispatch_outbox import consume_and_emit
 
         return await consume_and_emit(self, peer, intent_id)
+
+
+class ExecutionDispatchRuntime(R14ExecutionRuntime, R16DispatchRuntime):
+    """Executable Run history with the original retained dispatch resource custody."""
+
+    _record_contracts: ClassVar[dict[str, str]] = dict(R16DispatchRuntime._record_contracts)
+    _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = tuple(
+        dict.fromkeys(
+            (
+                *R16DispatchRuntime._record_schema_variants,
+                *R14ExecutionRuntime._record_schema_variants,
+                ("agent_loop", ACCEPTED_SCHEMA),
+                ("agent_loop", EXECUTION_SCHEMA),
+            )
+        )
+    )
+
+    def _bind_appender(self) -> None:
+        super()._bind_appender()
+        try:
+            self._call_preview_journal = IndependentTenantDecisionJournal.for_authority_bundle(
+                self._database.with_suffix(".call-previews"), authority_gate=self._authority_gate()
+            )
+        except (ValueError, RuntimeError, OSError) as error:
+            raise EffectsIntegrityError(
+                f"call-preview.open tenant={self._tenant_id} record=<journal>"
+            ) from error
+        self._original_call_preview_journal = self._call_preview_journal
+        from chiplog.composition.r14_call_preview import validate_preview_custody_database
+
+        validate_preview_custody_database(self)
+
+    def _require_call_preview_journal(self) -> IndependentTenantDecisionJournal:
+        journal = self._call_preview_journal
+        if (
+            journal is not self._original_call_preview_journal
+            or type(journal) is not IndependentTenantDecisionJournal
+            or journal.authority_gate != self._authority_gate()
+            or journal._path != self._database.with_suffix(".call-previews").resolve()
+            or any(name in vars(journal) for name in ("append", "entries", "physical_sources"))
+        ):
+            raise EffectsIntegrityError(
+                f"call-preview.journal tenant={self._tenant_id} "
+                "record=<journal>: substituted custody"
+            )
+        try:
+            journal.physical_sources()
+        except (ValueError, RuntimeError, OSError) as error:
+            raise EffectsIntegrityError(
+                f"call-preview.journal tenant={self._tenant_id} record=<journal>"
+            ) from error
+        return journal
+
+    async def _prepare_startup(self) -> None:
+        from chiplog.composition.r14_call_preview import read_call_previews
+
+        await super()._prepare_startup()
+        with self._authority_gate().hold():
+            read_call_previews(self)
+
+    def _loop_snapshot(self) -> LoopSnapshot:
+        from chiplog.composition.r14_loop_history import read_loop_snapshot
+
+        return read_loop_snapshot(self)
+
+    async def accept_call(self, peer: str, adoption: CallAcceptanceAdoption) -> AcceptedCallReceipt:
+        from chiplog.composition.r14_call_publication import accept_call
+
+        return await accept_call(self, peer, adoption)
+
+    async def preview_call_acceptance(
+        self, peer: str, target: CallAcceptanceTarget
+    ) -> CallAcceptancePreview:
+        from chiplog.composition.r14_call_preview import preview_call_acceptance
+
+        return await preview_call_acceptance(self, peer, target)
+
+
+@asynccontextmanager
+async def open_execution_dispatch_runtime(
+    database: Path,
+    *,
+    resources: HermeticDispatchResources,
+    responses: tuple[bytes, ...] = (),
+) -> AsyncIterator[ExecutionDispatchRuntime]:
+    model = HermeticModel(responses)
+    with _configured(resources):
+        async with _open_runtime(
+            database,
+            tenant_id="hermetic-tenant",
+            operator_secret=b"r13-hermetic-only",
+            runtime_type=ExecutionDispatchRuntime,
+            manifest=R14_R16_CALL_PRODUCTION_MANIFEST,
+            extra_leaves={
+                "model": model,
+                "effects_transport": resources.require_original_provider(),
+            },
+        ) as opened:
+            runtime = cast(ExecutionDispatchRuntime, opened)
+            runtime._execution_model = model
+            model.session = runtime
+            if runtime._trust.verify() is None:
+                await runtime.bootstrap(
+                    database_instance_id="hermetic-database",
+                    principal_id="hermetic-principal",
+                    credential_id="hermetic-credential",
+                    session_id="hermetic-session",
+                    token="hermetic-bootstrap",
+                )
+            yield runtime
 
 
 @asynccontextmanager

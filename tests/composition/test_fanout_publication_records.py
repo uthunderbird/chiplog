@@ -472,3 +472,16 @@ async def test_retained_cut_source_reference_and_deadline_must_bind_exact_exchan
     )
     with pytest.raises(ValueError, match=r"registry|source reference"):
         build_envelope(evidence.model_copy(update={"request": request}))
+
+
+async def test_warm_envelope_rejects_changed_exchange_and_returns_fresh_objects() -> None:
+    evidence = await _evidence()
+    first = build_envelope(evidence)
+    original = first.canonical_bytes()
+    object.__setattr__(first, "tenant_id", "poisoned")
+    second = build_envelope(evidence)
+    assert second is not first
+    assert second.canonical_bytes() == original
+    with pytest.raises(ValueError):
+        build_envelope(evidence.model_copy(update={"deadline_ns": 0}))
+    assert build_envelope(evidence).canonical_bytes() == original

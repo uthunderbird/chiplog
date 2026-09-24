@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+from chiplog.capabilities.effects.contracts import DispatchSemanticBinding
 from chiplog.capabilities.effects.dispatch_authority_contracts import (
     CapturedSource,
     DispatchAuthorityObservation,
@@ -18,7 +20,9 @@ from chiplog.capabilities.effects.dispatch_v2_contracts import (
     CurrentDispatchInputsV2,
     DispatchMandateV2,
     ExternalActionIntentV2,
+    InitializedCallOrigin,
 )
+from chiplog.composition import r14_call_dispatch_policy as call_policy
 from chiplog.composition.r7_planning import ObservedTrustCall
 from chiplog.composition.r16_denial_inputs import require_invocation
 from chiplog.composition.r16_dispatch_history import (
@@ -63,6 +67,9 @@ def capture_dispatch(
     resources: HermeticDispatchResources,
     observed: ObservedTrustCall,
     worker_run_id: str,
+    *,
+    original_call_id: str | None = None,
+    intent_id: str | None = None,
 ) -> DispatchCapture:
     if resources is not runtime._require_dispatch_resources():
         raise LoopRejected("captured dispatch resources differ from original custody")
@@ -75,6 +82,23 @@ def capture_dispatch(
     if any(row.record.schema_id == "chiplog.effects.record.v1" for row in cut.rows):
         raise LoopRejected("mixed legacy/v2 effects history is unsupported")
     history = verify_dispatch_history(cut, selected)
+    selected_intent: ExternalActionIntentV2 | None = None
+    if intent_id is not None:
+        intents = tuple(
+            row.snapshot.intent
+            for row in history.v2_records
+            if row.snapshot.intent.intent_id == intent_id
+        )
+        if not intents:
+            raise LoopRejected("dispatch intent is absent from authenticated selected history")
+        selected_intent = intents[-1]
+        origin = selected_intent.mandate.origin
+        selected_call = (
+            origin.original_call_id if isinstance(origin, InitializedCallOrigin) else None
+        )
+        if original_call_id is not None and original_call_id != selected_call:
+            raise LoopRejected("dispatch caller cannot replace the selected origin policy")
+        original_call_id = selected_call
     if cut.worker is None or cut.worker.run.principal != "hermetic-principal":
         raise LoopRejected("dispatch needs an authenticated current hermetic worker")
     sessions = tuple(
@@ -83,7 +107,52 @@ def capture_dispatch(
     )
     if cut.worker.owner_session != sessions[2]:
         raise LoopRejected("dispatch worker generation differs")
-    resource_observation = resources.observe()
+    if original_call_id is not None:
+        from chiplog.composition.r14_loop_history import read_execution_call_history
+        from chiplog.composition.r14_runtime import R14PlanningRuntime
+
+        if not isinstance(runtime, R14PlanningRuntime) or not isinstance(
+            cut.worker.run, ExecutionRunRecord
+        ):
+            raise LoopRejected("initialized-call dispatch requires a registered executable Run")
+        snapshot, inventory, _ = read_execution_call_history(runtime)
+        originals = tuple(
+            row.initialized_record
+            for row in inventory.ordered_calls
+            if row.original_call_id == original_call_id
+        )
+        if (
+            snapshot.tenant_head != cut.tenant_frontier
+            or len(originals) != 1
+            or originals[0].call.classification != "CONSEQUENTIAL"
+            or originals[0].call.original.original_run_id != worker_run_id
+        ):
+            raise LoopRejected("call grant requires exact selected consequential initialization")
+        if selected_intent is not None:
+            from chiplog.capabilities.agent_loop.recovery_contracts import Present
+            from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+                ConsequentialAcceptedCall,
+            )
+
+            row = next(
+                row for row in inventory.ordered_calls if row.original_call_id == original_call_id
+            )
+            accepted = row.acceptance
+            expected_intent = reference(
+                selected_intent.intent_id, selected_intent.canonical_bytes()
+            )
+            if (
+                not isinstance(accepted, ConsequentialAcceptedCall)
+                or not isinstance(accepted.external_effect_intent, Present)
+                or accepted.external_effect_intent.head != expected_intent.head
+                or accepted.external_effect_intent.fingerprint != expected_intent.fingerprint
+            ):
+                raise LoopRejected(
+                    "call dispatch lacks exact selected acceptance and original intent"
+                )
+        resource_observation = resources.observe_call()
+    else:
+        resource_observation = resources.observe()
     if not resources.verify_current(resource_observation):
         raise LoopRejected("offline dispatch resource grant is unavailable or revoked")
     epoch, now = resources.clock()
@@ -128,7 +197,7 @@ def capture_dispatch(
 
 def planning_scope(captured: DispatchCapture, own: ExternalActionIntentV2 | None) -> bytes:
     exempt = set()
-    if own is not None:
+    if own is not None and not isinstance(own.mandate.origin, InitializedCallOrigin):
         exempt = {
             record_id
             for intent_id, ids in captured.own_planning_records
@@ -146,6 +215,17 @@ def planning_scope(captured: DispatchCapture, own: ExternalActionIntentV2 | None
     )
 
 
+def captured_policy(captured: DispatchCapture) -> tuple[bytes, DispatchSemanticBinding]:
+    """Interpret the exact captured issuer policy; this helper issues no authority."""
+    grant = json.loads(captured.resources.grant_bytes)
+    policy = grant.get("policy") if isinstance(grant, dict) else None
+    if policy == policy_reference().model_dump(mode="json"):
+        return policy_bytes(), SEMANTICS
+    if policy == call_policy.policy_reference().model_dump(mode="json"):
+        return call_policy.policy_bytes(), call_policy.SEMANTICS
+    raise LoopRejected("captured resource has no registered dispatch policy")
+
+
 def require_dispatch_scope(
     captured: DispatchCapture,
     resources: HermeticDispatchResources,
@@ -154,12 +234,15 @@ def require_dispatch_scope(
     *,
     first_send: bool,
 ) -> None:
+    policy, semantics = captured_policy(captured)
+    policy_head = reference(semantics.normative_manifest, policy)
     if (
         mandate.tenant_id != captured.cut.tenant_id
         or mandate.principal_id != "hermetic-principal"
         or mandate.actor_id != "hermetic-principal"
-        or mandate.operation_profile != policy_reference()
-        or mandate.semantics != SEMANTICS
+        or mandate.operation_profile != policy_head
+        or mandate.semantics != semantics
+        or isinstance(mandate.origin, InitializedCallOrigin) != (semantics == call_policy.SEMANTICS)
         or mandate.recipient != resources.recipient(captured.resources)
         or mandate.horizon.clock_contract != CLOCK
         or mandate.horizon.clock_epoch != captured.resources.clock_epoch
@@ -173,6 +256,11 @@ def require_dispatch_scope(
         or normative_generation(captured.history, own) != mandate.normative_conflict_generation
         or reference("dispatch.planning-scope", planning_scope(captured, own))
         not in mandate.authority_sources
+        or (
+            isinstance(mandate.origin, InitializedCallOrigin)
+            and mandate.planning_revision
+            != reference("dispatch.planning-scope", planning_scope(captured, own))
+        )
     ):
         raise LoopRejected("current dispatch differs from immutable registered self-only mandate")
     # Fresh adoption cannot absorb an unresolved selected SEND into its baseline.
@@ -220,7 +308,7 @@ def require_dispatch_scope(
             if not isinstance(source, CapturedSource):
                 raise LoopRejected("historical SEND has no captured deployment source")
             grant = json.loads(source.canonical_value)
-            if grant["grant_id"] == resources.grant_identity:
+            if grant["grant_id"] in resources.grant_identities:
                 uses += 1
         if uses >= resources.cap:
             raise LoopRejected("offline SEND entitlement cap exhausted")
@@ -231,19 +319,48 @@ def source_inventory(
     mandate: DispatchMandateV2,
     original_adoption_bytes: bytes,
     own: ExternalActionIntentV2 | None,
+    *,
+    run_source_version: str | None = None,
 ) -> DispatchSourceInventory:
     worker = captured.cut.worker
     if worker is None:
         raise LoopRejected("current dispatch worker absent")
+    if own is not None:
+        original = own.acquisition.original_sources.runtime_and_fence
+        if not isinstance(original, CapturedSource):
+            raise LoopRejected("original dispatch Run source is unavailable")
+        if run_source_version is not None and run_source_version != original.source_version:
+            raise LoopRejected("cannot override original dispatch Run source version")
+        run_source_version = original.source_version
+    if run_source_version is None:
+        run_source_version = "2"
+    if run_source_version not in {"2", "3"}:
+        raise LoopRejected("unregistered dispatch Run source version")
+    policy, semantics = captured_policy(captured)
+    policy_head = reference(semantics.normative_manifest, policy)
     deadline = min(mandate.horizon.expires_at_ns, captured.observed_time_ns + 5_000_000_000)
+    # The call issuance retains the full independently selected Run in captured.cut.
+    # Bind that exact revision here without recursively embedding its prompt history
+    # in every accepted record and immutable intent copy. Version 2 stays exact;
+    # version 3 also uses the reference for new combined-profile legacy intents.
+    run_source = (
+        {
+            "run_id": worker.run.run_id,
+            "head": worker.run.head,
+            "fingerprint": digest(worker.run.canonical_bytes()),
+            "state": worker.run.state,
+        }
+        if run_source_version == "3" or isinstance(mandate.origin, InitializedCallOrigin)
+        else worker.run.model_dump(mode="json")
+    )
     values: dict[str, bytes] = {
         "trust": captured.principal,
         "planning": canonical([[name, raw.hex()] for name, raw in captured.planning_records]),
-        "semantic_registry": policy_bytes(),
+        "semantic_registry": policy,
         "original_adoption": original_adoption_bytes,
         "runtime_and_fence": canonical(
             {
-                "run": worker.run.model_dump(mode="json"),
+                "run": run_source,
                 "fence": worker.fence.model_dump(mode="json"),
                 "sessions": [session.__dict__ for session in captured.sessions],
                 "loop_head": captured.loop_head,
@@ -268,10 +385,10 @@ def source_inventory(
         {
             role: CapturedSource(
                 source_id="dispatch." + role,
-                source_version="2",
+                source_version=run_source_version if role == "runtime_and_fence" else "2",
                 owner_id="broker" if role != "semantic_registry" else "effects",
                 reader_id="chiplog.composition.r16_dispatch_inputs.capture_dispatch",
-                invalidation_manifest=policy_reference(),
+                invalidation_manifest=policy_head,
                 head=reference("dispatch." + role, raw),
                 canonical_value=raw,
                 clock_contract=CLOCK,
@@ -291,6 +408,7 @@ def current_inputs(
     original_adoption_bytes: bytes,
 ) -> CurrentDispatchInputsV2:
     mandate = intent.mandate
+    policy, semantics = captured_policy(captured)
     sources = source_inventory(captured, mandate, original_adoption_bytes, intent)
     deadline = min(mandate.horizon.expires_at_ns, captured.observed_time_ns + 5_000_000_000)
     cut = captured.cut
@@ -312,7 +430,7 @@ def current_inputs(
             selected_journal_head=reference("owner-journal", canonical(cut.owner_journal_head)),
             materialization_commitment=cut.materialization_commitment,
             tenant_frontier=cut.tenant_frontier,
-            source_role_registry=policy_reference(),
+            source_role_registry=reference(semantics.normative_manifest, policy),
             capture_id=digest(canonical([cut.owner_journal_head, captured.observed_time_ns])),
         ),
         sources=sources,
@@ -326,7 +444,7 @@ def current_inputs(
         command_fingerprint=digest(command_bytes),
         immutable_mandate=reference(mandate.mandate_id, mandate.canonical_bytes()),
         observation=observation,
-        supported_semantics=SEMANTICS,
+        supported_semantics=semantics,
         clock_contract=CLOCK,
         clock_epoch=captured.resources.clock_epoch,
         observed_time_ns=captured.observed_time_ns,

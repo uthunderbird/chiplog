@@ -190,3 +190,16 @@ async def test_retained_exchange_must_match_capture_and_source_cut(mutation: str
         )
     with pytest.raises(ValueError):
         build_envelope(evidence)
+
+
+async def test_warm_envelope_rejects_changed_exchange_and_returns_fresh_objects() -> None:
+    evidence = await _evidence()
+    first = build_envelope(evidence)
+    original = first.canonical_bytes()
+    object.__setattr__(first, "tenant_id", "poisoned")
+    second = build_envelope(evidence)
+    assert second is not first
+    assert second.canonical_bytes() == original
+    with pytest.raises(ValueError):
+        build_envelope(evidence.model_copy(update={"deadline_ns": 0}))
+    assert build_envelope(evidence).canonical_bytes() == original

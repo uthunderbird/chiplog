@@ -14,6 +14,7 @@ from chiplog.capabilities.effects.dispatch_v2_contracts import (
     PublishDispatchIntentV2,
 )
 
+from ._pure_bytes import reuse_exact_bytes
 from .r14_acceptance_contracts import (
     ACCEPTED_SCHEMA,
     EXECUTION_SCHEMA,
@@ -226,8 +227,14 @@ def _member(
 def build_acceptance_envelope(
     retained: RetainedAcceptancePreparationV2,
 ) -> AcceptancePhysicalEnvelopeV2:
-    """Validate supplied bytes only. Return no command or credential for a writer."""
-    retained = RetainedAcceptancePreparationV2.model_validate_json(retained.canonical_bytes())
+    return AcceptancePhysicalEnvelopeV2.model_validate_json(
+        _envelope_bytes(retained.canonical_bytes())
+    )
+
+
+@reuse_exact_bytes
+def _envelope_bytes(raw: bytes) -> bytes:
+    retained = RetainedAcceptancePreparationV2.model_validate_json(raw)
     # Each owner has its own canonicalization domain, including bytes and key order.
     for value in (
         retained.loop_request,
@@ -276,7 +283,7 @@ def build_acceptance_envelope(
     _require(
         len(envelope.canonical_bytes()) <= MAX_ACCEPTANCE_BYTES, "physical byte bound exceeded"
     )
-    return envelope
+    return envelope.canonical_bytes()
 
 
 def verify_acceptance_envelope(

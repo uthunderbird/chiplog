@@ -13,6 +13,7 @@ from chiplog.capabilities.agent_loop.contracts import LoopSnapshot, RunRecord
 from chiplog.capabilities.agent_loop.domain import validate_record
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.execution_transition_contracts import CreateExecutionRun
+from chiplog.composition.r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
 from chiplog.composition.r14_cancellation_contracts import (
     CANCELLATION_OPERATION,
     CANCELLATION_SCHEMA,
@@ -64,6 +65,7 @@ def _read_call_history(
     tuple[RetainedCancellationPreparation, ...],
     ExecutionHistorySnapshot,
     tuple[RetainedExecutionFanOutPreparation, ...],
+    tuple[RetainedAcceptancePreparationV2, ...],
 ]:
     """Authenticate the caller's read cut, including a joined workspace snapshot.
 
@@ -88,7 +90,32 @@ def _read_call_history(
                 for entry in decisions
                 if str(entry.get("operation_kind", "")).startswith("agent_loop")
             ]
+            call_values = {}
+            for decision in runtime._owner_decisions().snapshot().decisions:
+                batch = decision.prepared.request
+                if batch.kind != "CALL_EFFECT_ATOMIC":
+                    continue
+                from chiplog.composition.r14_call_issuance import validate_call_issuance
+                from chiplog.composition.r16_dispatch_runtime import ExecutionDispatchRuntime
+
+                if not isinstance(runtime, ExecutionDispatchRuntime):
+                    raise ValueError("call acceptance requires the registered executable runtime")
+                value = validate_call_issuance(batch, runtime)
+                command = runtime._owner_command(decision)
+                if (
+                    decision.tenant_commit_sequence != command.expected_head + 1
+                    or decision.prepared.predecessor_commitment
+                    != batch.expected.expected_materialization_commitment
+                    or decision.prepared.fence_generation != "r6"
+                    or decision.prepared.fence_frontier != 0
+                    or command.idempotency_key in call_values
+                ):
+                    raise ValueError("selected acceptance header differs from original cut")
+                call_values[command.idempotency_key] = value
+                selected.append((command, {}))
             selected.sort(key=lambda item: item[0].expected_head)
+            if len({item[0].expected_head for item in selected}) != len(selected):
+                raise ValueError("multiple selected loop publications at one predecessor")
             with read_connection(runtime._database) as connection:
                 actual = capture_authority_snapshot_commitment(connection, tenant)
                 if not selected_only and actual != runtime._commitment_journal.load(tenant):
@@ -111,7 +138,8 @@ def _read_call_history(
                 physical_publications = set(
                     connection.execute(
                         "SELECT operation_kind, idempotency_key FROM publications "
-                        "WHERE tenant_id=? AND substr(operation_kind, 1, 10)='agent_loop'",
+                        "WHERE tenant_id=? AND (substr(operation_kind, 1, 10)='agent_loop' "
+                        "OR operation_kind='effects.accept_call')",
                         (tenant,),
                     )
                 )
@@ -123,6 +151,7 @@ def _read_call_history(
                 preparations: list[RetainedFanOutPreparation] = []
                 execution_preparations: list[RetainedExecutionFanOutPreparation] = []
                 cancellations: list[RetainedCancellationPreparation] = []
+                acceptances: list[RetainedAcceptancePreparationV2] = []
                 captured_heads: set[str] = set()
                 for command, entry in selected:
                     identity = command.idempotency_key
@@ -132,6 +161,7 @@ def _read_call_history(
                         CANCELLATION_OPERATION,
                         EXECUTION_TRANSITION_OPERATION,
                         EXECUTION_FANOUT_OPERATION,
+                        "effects.accept_call",
                     ):
                         raise ValueError("unregistered loop publication envelope")
                     if (
@@ -140,6 +170,34 @@ def _read_call_history(
                         != "COMPLETE"
                     ):
                         raise ValueError("selected loop publication is not exactly materialized")
+                    if command.operation_kind == "effects.accept_call":
+                        value = call_values[identity]
+                        accepted_preparation = value.retained
+                        before = ExecutionHistorySnapshot(
+                            tenant_head=command.expected_head, records=tuple(mixed_records)
+                        )
+                        worker = value.captured.cut.worker
+                        if (
+                            worker is None
+                            or latest.get(worker.run.run_id) != worker.run
+                            or value.preview.initialization not in execution_preparations
+                            or accepted_preparation.loop_request.binding.cut.predecessor_inventory
+                            != execution_inventory(
+                                tenant,
+                                before,
+                                tuple(preparations),
+                                tuple(cancellations),
+                                tuple(execution_preparations),
+                                tuple(acceptances),
+                            )
+                        ):
+                            raise ValueError("acceptance lacks its exact causal call/Run history")
+                        acceptances.append(accepted_preparation)
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        continue
                     first, *companions = command.records
                     if (
                         command.operation_kind == EXECUTION_FANOUT_OPERATION
@@ -174,6 +232,7 @@ def _read_call_history(
                                 tuple(preparations),
                                 tuple(cancellations),
                                 tuple(execution_preparations),
+                                tuple(acceptances),
                             )
                             or capture_execution.head in captured_heads
                         ):
@@ -266,6 +325,7 @@ def _read_call_history(
                                 tuple(preparations),
                                 tuple(cancellations),
                                 tuple(execution_preparations),
+                                tuple(acceptances),
                             )
                         ):
                             raise ValueError("selected cancellation differs from original history")
@@ -297,6 +357,7 @@ def _read_call_history(
                                 tuple(preparations),
                                 tuple(cancellations),
                                 tuple(execution_preparations),
+                                tuple(acceptances),
                             )
                         ):
                             raise ValueError("selected fanout differs from exact retained history")
@@ -341,6 +402,7 @@ def _read_call_history(
                         tenant_head=0 if head is None else head[0], records=tuple(mixed_records)
                     ),
                     tuple(execution_preparations),
+                    tuple(acceptances),
                 )
     except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
         raise LoopIntegrityError(
@@ -353,7 +415,7 @@ def read_call_history(
 ) -> tuple[
     LoopSnapshot, tuple[RetainedFanOutPreparation, ...], tuple[RetainedCancellationPreparation, ...]
 ]:
-    snapshot, fanout, cancellations, _, _ = _read_call_history(runtime)
+    snapshot, fanout, cancellations, _, _, _ = _read_call_history(runtime)
     return snapshot, fanout, cancellations
 
 
@@ -367,10 +429,12 @@ def read_execution_call_history(
 ) -> tuple[
     ExecutionHistorySnapshot, CallInventorySnapshot, tuple[RetainedExecutionFanOutPreparation, ...]
 ]:
-    _, legacy, cancellations, snapshot, executions = _read_call_history(runtime)
+    _, legacy, cancellations, snapshot, executions, acceptances = _read_call_history(runtime)
     return (
         snapshot,
-        execution_inventory(runtime._tenant_id, snapshot, legacy, cancellations, executions),
+        execution_inventory(
+            runtime._tenant_id, snapshot, legacy, cancellations, executions, acceptances
+        ),
         executions,
     )
 

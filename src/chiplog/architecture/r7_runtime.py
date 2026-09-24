@@ -672,6 +672,15 @@ R14_EXECUTION_LIFECYCLE_EVALUATION_MANIFEST = replace(
     R14_EXECUTION_LIFECYCLE_PRODUCTION_MANIFEST, environment="evaluation"
 )
 
+# The same isolated owner graph is assembled with independently retained dispatch
+# resources for consequential call acceptance. Older assemblies keep their IDs.
+R14_R16_CALL_PRODUCTION_MANIFEST = replace(
+    R14_EXECUTION_LIFECYCLE_PRODUCTION_MANIFEST, manifest_version=13
+)
+R14_R16_CALL_EVALUATION_MANIFEST = replace(
+    R14_R16_CALL_PRODUCTION_MANIFEST, environment="evaluation"
+)
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -683,7 +692,7 @@ def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
 
 
 def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
-    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
+    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
         1: R7_PRODUCTION_MANIFEST,
@@ -698,6 +707,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         10: R16_DISPATCH_PRODUCTION_MANIFEST,
         11: R14_R17_EXECUTION_PRODUCTION_MANIFEST,
         12: R14_EXECUTION_LIFECYCLE_PRODUCTION_MANIFEST,
+        13: R14_R16_CALL_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
@@ -729,7 +739,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
     if any(not item.implementation for item in manifest.leaves):
         raise RuntimeManifestViolation("registered leaf implementation is empty")
     if (
-        manifest.manifest_version in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+        manifest.manifest_version in (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
         and manifest.leaves != expected_manifest.leaves
     ):
         raise RuntimeManifestViolation("R13 admits only registered hermetic leaf implementations")
