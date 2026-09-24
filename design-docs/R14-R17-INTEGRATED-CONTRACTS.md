@@ -24,7 +24,7 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 | J1→J3: selected inbox → Run | `agent_loop.execution_initialization_contracts` admitted and scheduled requests retain original source preimages and distinct creation cuts | Complete scheduled-materialization consumer and conversation-owner companion join; runtime must consume selected input rather than rebuilding prompt ingress |
 | J2: scheduler decisions and execution | `agent_loop.scheduler_contracts.SchedulerPort`, DecideIntervalCommand, ResolveIntervalCommand, LeaseTransitionCommand, PhysicalRootRolloverCommand → SchedulerResult | Public automatic service-authority contract beyond one-delivery TickPolicy; executable Run materialization and lease joins must not fall back to legacy RunRecord |
 | J3: seal/accept/cancel | ExecutionCapturedFanOutRequest/Result; composition CallAcceptancePort; ExecutionCallCancellationPort → ExecutionCancelledCallReceipt | Import cancellation boundary; retain two-record execution cancellation versus three-record legacy cancellation. Runtime authentication and both CAS orders remain Phase T/I work |
-| J4: effect dispatch/retry/delivery/compensation | `effects.lifecycle_transition_contracts` all-child cut, separate safe-retry proof/request and atomic SEND decision/child/parent proposal; immutable v2 mandate retained | Fresh versioned origins for compensation, delivery and AUTHORIZE_DUPLICATE_RISK; full lifecycle registered source/record interpretation and operation routing remain C work; last-boundary proof and dispatch runtime remain T/I |
+| J4: effect dispatch/retry/delivery/compensation | `effects.lifecycle_transition_contracts` all-child retry/reduction; `effects.scoped_intent_contracts` fresh v3 compensation, duplicate-risk and prepared-delivery origins with full mandate/acquisition | V3 authorization/SEND and all-child lifecycle joins, registered source/record interpretation and operation routing remain C work; last-boundary proof and dispatch runtime remain T/I |
 | J4→J5: original-stream reduction | `agent_loop.original_recovery_contracts` loop-owned resolver/reduction plus `effects.lifecycle_transition_contracts` effects-owned reduction producer | Registered source decoding, selected foreign reduction interpretation and operation routes remain OPEN; each owner writes only its own streams; resolver/continuation runtime joins remain T/I |
 | J5: frontier/suspend/resume/successor | `execution_recovery_observations` complete cut, weak/strong joins and noncircular suspension v2; `execution_recovery_contracts` executable preparation port includes suspend/resume/successor/next-Turn/abort/cancel | Consumer coverage now covers current sources, mandatory suspension pair and distinct commands; complete successor participant interpretation and terminal/work record routing remain C work; runtime classification/CAS remain T/I |
 | J5: read-only branch | `readonly_execution_contracts` preparation port, distinct unfinished attempt/outcome/pending/reduction records and registered proof preimages; existing frontier types retained | Versioned executable response/artifact registration of the new history-tool wire and end-to-end consumer; positive no-mutation/runtime proofs and full counter/pending CAS remain T/I |
@@ -227,8 +227,9 @@ completion is claimed.
 
 All standard mutation families apply; runtime proof issuance, source completeness,
 atomicity and exact intent equality remain T/I. Compensation, delivery and
-AUTHORIZE_DUPLICATE_RISK need fresh versioned origin/authority contracts and remain
-OPEN; none is encoded as safe retransmission or silently added to legacy v2 origin.
+AUTHORIZE_DUPLICATE_RISK use the fresh v3 origin/authority contracts below; their
+SEND/lifecycle joins remain OPEN. None is encoded as safe retransmission or
+silently added to legacy v2 origin.
 
 Consumer command: `uv run pytest -q
 tests/capabilities/effects/test_lifecycle_transition_contracts.py` — 21 passed.
@@ -238,6 +239,34 @@ references the primitive decision, and that decision contains no output child or
 parent fingerprint. The writer must select all members together. Consumers retain
 original intent bytes and verify closed proof/state variants; they do not prove
 coverage validity, actual child completeness or current authority.
+
+## Fresh scoped intents (J4/J7)
+
+| Claim | Owner / exact data | Independent observable | Forbidden substitute | Boundary fixture / evidence |
+|---|---|---|---|---|
+| Full fresh authorization | Effects v3 mandate retains all v2 authority/scope/horizon fields and adds closed purpose-specific origin | Full mandate/origin bytes are adopted or independently derived under registered current authority | Reuse original uncertain intent or omit affected-party/dependency/disclosure bindings | missing field, wrong recipient/payload/scope/expiry, original id reuse; J4 |
+| Compensation is separate | New mandate and exact original ambiguity/semantics/consequence references; human adoption or registered current/bounded compensation authority | New intent has no original-mutation output | Compensation marked as original success or forced per-action adoption despite valid bounded mandate | wrong original, stale authority, missing required adoption, changed consequence; J4 |
+| Duplicate risk is explicit | Human adoption of exact displayed unresolved attempts, duplicate effects, parties/resources, commitments and safer alternatives | Origin→acquisition matrix permits only explicit human adoption for duplicate risk | Retry proof, bounded compensation authority or delivery authority | omitted risk component, altered display/mandate, wrong acquisition; J4 |
+| Delivery preparation is acyclic | Loop-owned primitive completion command/observation/delivery proposal without effects outputs; current communication/disclosure authority | Basis → v3 mandate/acquisition → effects intent → final combined batch | Combined CompleteAcceptance bytes containing this intent, model text as authority | wrong owner/basis/cut, payload/recipient mismatch, cross-origin acquisition; J7 |
+
+These are proposal contracts. The registered owner must enforce the closed
+origin/acquisition matrix and authenticate every source at publication and SEND.
+No origin name or DTO construction grants authority. All mutation families apply;
+existing v2 wire interpretation remains unchanged.
+
+`scoped_intent_contracts` now declares the full v3 mandate and origin/acquisition
+matrix, precursor and fresh-intent publication ports. Human adoption covers the
+whole mandate; compensation may also use registered current/bounded authority;
+duplicate risk admits only explicit human adoption; delivery uses the loop-only
+preparation basis and preexisting communication/disclosure authority. Acquisitions
+occur after mandate construction, avoiding an adoption-in-origin hash cycle.
+
+Consumer command: `uv run pytest -q
+tests/capabilities/effects/test_scoped_intent_contracts.py` — 11 passed; explicit
+mypy on the source and consumer passed. The delivery consumer uses the actual
+loop `DeliveryAcceptanceProposal`, not combined completion output. These are wire
+tests, not proof of authenticated adoption or valid current scope. V3 SEND/lifecycle
+joins remain OPEN and must be represented before Phase C is frozen.
 
 ## Publication discipline
 
