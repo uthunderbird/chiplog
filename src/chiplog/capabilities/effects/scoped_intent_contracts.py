@@ -230,3 +230,20 @@ class ScopedIntentPreparationPort(Protocol):
     async def prepare_scoped_intent(
         self, request: PrepareScopedIntentPublication
     ) -> PreparedScopedIntentPublication | DispatchBoundaryFailureV2: ...
+
+
+class ScopedDispatchAuthorizationRecord(DispatchObservationDTO):
+    """Hash the complete record, then derive its external head; no self-reference."""
+
+    schema_id: Literal["chiplog.effects.scoped-authorization.v3"] = (
+        "chiplog.effects.scoped-authorization.v3"
+    )
+    authorization_id: Identity
+    command: CommandIdentity
+    original_intent: ExactHead
+    expected_parent: ExactHead
+    immutable_mandate: ExactHead
+    semantics: DispatchSemanticBinding
+    complete_current_origin_sources: tuple[ScopedAuthorityRecord, ...]
+    current_inputs_fingerprint: Digest
+    fence: WorkerFence

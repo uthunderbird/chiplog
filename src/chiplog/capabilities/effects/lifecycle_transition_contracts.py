@@ -25,6 +25,31 @@ from .dispatch_v2_contracts import (
     ExternalActionIntentV2,
 )
 from .fences import Absent, Present, UInt64, WorkerFence
+from .scoped_intent_contracts import (
+    ExternalActionIntentV3,
+    ScopedAuthorityRecord,
+    ScopedDispatchAuthorizationRecord,
+)
+
+LifecycleIntent = Annotated[
+    ExternalActionIntentV2 | ExternalActionIntentV3, Field(discriminator="schema_id")
+]
+
+
+class EffectsObligationRevision(DispatchObservationDTO):
+    """Stable original obligation subject; this revision's hash is derived externally."""
+    schema_id: Literal["chiplog.effects.all-child-obligation.v1"] = (
+        "chiplog.effects.all-child-obligation.v1"
+    )
+    obligation: ExactHead
+    predecessor: ExactHead | Absent
+    original_intent: ExactHead
+    original_send: ExactHead
+    complete_ordered_children: tuple[ExactHead, ...] = Field(min_length=1)
+    state: Literal["OPEN", "CLOSED"]
+    closure_predicate: ExactHead
+    resolver_binding: ExactHead
+    closure_evidence: tuple[ExactHead, ...]
 
 
 class SelectedEffectsSource(DispatchObservationDTO):
@@ -41,14 +66,14 @@ class EffectsLineageCut(DispatchObservationDTO):
     database_id: Identity
     tenant_commit_sequence: UInt64
     materialization_commitment: Digest
-    original_intent: ExternalActionIntentV2
-    original_authorization: DispatchAuthorizationV2
+    original_intent: LifecycleIntent
+    original_authorization: DispatchAuthorizationV2 | ScopedDispatchAuthorizationRecord
     current_parent: ExactHead
     state: AttemptState
     complete_ordered_children: tuple[TransmissionAttempt, ...] = Field(min_length=1)
     complete_child_sources: tuple[SelectedEffectsSource, ...] = Field(min_length=1)
     complete_ordered_evidence: tuple[SelectedEffectsSource, ...]
-    original_obligation: DispatchObligationV2
+    original_obligation: DispatchObligationV2 | EffectsObligationRevision | Absent
     complete_inventory_fingerprint: Digest
 
 
@@ -104,6 +129,7 @@ class PrepareSafeRetransmission(DispatchObservationDTO):
     expected_parent_state: Literal["SEND_COMMITTED", "SENT", "OUTCOME_UNKNOWN"]
     coverage: SafeRetryCoverage
     current: CurrentDispatchInputsV2
+    complete_current_origin_sources: tuple[ScopedAuthorityRecord, ...]
     fence: WorkerFence
 
 
@@ -121,6 +147,7 @@ class RetransmissionDecisionRecord(DispatchObservationDTO):
     prior_parent: ExactHead
     coverage: SafeRetryCoverage
     current_inputs_fingerprint: Digest
+    complete_current_origin_sources: tuple[ScopedAuthorityRecord, ...]
     fence: WorkerFence
 
 
@@ -133,7 +160,7 @@ class RetriedParentRevision(DispatchObservationDTO):
     state: Literal["SEND_COMMITTED", "SENT", "OUTCOME_UNKNOWN"]
     complete_ordered_children: tuple[ExactHead, ...] = Field(min_length=2)
     retained_evidence: tuple[ExactHead, ...]
-    retained_obligation: ExactHead
+    retained_obligation: ExactHead | Absent
     coverage: SafeRetryCoverage
     current_command_fingerprint: Digest
     fence: WorkerFence
@@ -181,7 +208,7 @@ class EffectsSemanticReductionRecord(DispatchObservationDTO):
     complete_ordered_children: tuple[ExactHead, ...] = Field(min_length=1)
     complete_ordered_evidence: tuple[ExactHead, ...]
     current_parent: ExactHead
-    original_obligation: ExactHead
+    original_obligation: ExactHead | Absent
     original_terminal_closure: Annotated[Absent | Present, Field(discriminator="kind")]
     disposition: Annotated[
         EffectsReductionConsumable | EffectsReductionHold, Field(discriminator="kind")

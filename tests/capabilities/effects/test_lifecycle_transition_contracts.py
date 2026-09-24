@@ -103,6 +103,7 @@ def request() -> life.PrepareSafeRetransmission:
             complete_coverage_proof=source("coverage"),
         ),
         current=retained.effects_request.current,
+        complete_current_origin_sources=(),
         fence=retained.effects_request.command.fence,
     )
 
@@ -178,6 +179,8 @@ def test_permanent_incapacity_proof_is_not_timeout_or_absence_at_read() -> None:
 
 def test_send_decision_child_parent_hashes_form_a_dag_and_one_result() -> None:
     value = request()
+    assert isinstance(value.observed.original_authorization, DispatchAuthorizationV2)
+    assert isinstance(value.observed.original_obligation, DispatchObligationV2)
     decision = life.RetransmissionDecisionRecord(
         identity=value.identity,
         source_request_fingerprint=hashlib.sha256(value.canonical_bytes()).hexdigest(),
@@ -186,6 +189,7 @@ def test_send_decision_child_parent_hashes_form_a_dag_and_one_result() -> None:
         prior_parent=value.observed.current_parent,
         coverage=value.coverage,
         current_inputs_fingerprint=hashlib.sha256(value.current.canonical_bytes()).hexdigest(),
+        complete_current_origin_sources=value.complete_current_origin_sources,
         fence=value.fence,
     )
     decision_head = reference("retry-decision", decision.canonical_bytes())
@@ -240,6 +244,7 @@ def test_send_decision_child_parent_hashes_form_a_dag_and_one_result() -> None:
 )
 def test_effects_reduction_holds_without_granting_send(reason: str) -> None:
     value = request()
+    assert isinstance(value.observed.original_obligation, DispatchObligationV2)
     record = life.EffectsSemanticReductionRecord(
         stream_id="original-evidence",
         reduction_id="stable-reduction",

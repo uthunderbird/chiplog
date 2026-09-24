@@ -24,7 +24,7 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 | J1→J3: selected inbox → Run | `agent_loop.execution_initialization_contracts` admitted and scheduled requests retain original source preimages and distinct creation cuts | Complete scheduled-materialization consumer and conversation-owner companion join; runtime must consume selected input rather than rebuilding prompt ingress |
 | J2: scheduler decisions and execution | `agent_loop.scheduler_contracts.SchedulerPort`, DecideIntervalCommand, ResolveIntervalCommand, LeaseTransitionCommand, PhysicalRootRolloverCommand → SchedulerResult | Public automatic service-authority contract beyond one-delivery TickPolicy; executable Run materialization and lease joins must not fall back to legacy RunRecord |
 | J3: seal/accept/cancel | ExecutionCapturedFanOutRequest/Result; composition CallAcceptancePort; ExecutionCallCancellationPort → ExecutionCancelledCallReceipt | Import cancellation boundary; retain two-record execution cancellation versus three-record legacy cancellation. Runtime authentication and both CAS orders remain Phase T/I work |
-| J4: effect dispatch/retry/delivery/compensation | `effects.lifecycle_transition_contracts` all-child retry/reduction; `effects.scoped_intent_contracts` fresh v3 compensation, duplicate-risk and prepared-delivery origins with full mandate/acquisition | V3 authorization/SEND and all-child lifecycle joins, registered source/record interpretation and operation routing remain C work; last-boundary proof and dispatch runtime remain T/I |
+| J4: effect dispatch/retry/delivery/compensation | `effects.scoped_intent_contracts` v3 origin/mandate/acquisition; `scoped_dispatch_contracts` authorize/pre-send/first-SEND/all-child evidence/reconcile; `lifecycle_transition_contracts` shared v2/v3 retry/reduction | Registered source/record interpretation, complete publication and adapter operation routing remain C work; last-boundary proof and dispatch runtime remain T/I |
 | J4→J5: original-stream reduction | `agent_loop.original_recovery_contracts` loop-owned resolver/reduction plus `effects.lifecycle_transition_contracts` effects-owned reduction producer | Registered source decoding, selected foreign reduction interpretation and operation routes remain OPEN; each owner writes only its own streams; resolver/continuation runtime joins remain T/I |
 | J5: frontier/suspend/resume/successor | `execution_recovery_observations` complete cut, weak/strong joins and noncircular suspension v2; `execution_recovery_contracts` executable preparation port includes suspend/resume/successor/next-Turn/abort/cancel | Consumer coverage now covers current sources, mandatory suspension pair and distinct commands; complete successor participant interpretation and terminal/work record routing remain C work; runtime classification/CAS remain T/I |
 | J5: read-only branch | `readonly_execution_contracts` preparation port, distinct unfinished attempt/outcome/pending/reduction records and registered proof preimages; existing frontier types retained | Versioned executable response/artifact registration of the new history-tool wire and end-to-end consumer; positive no-mutation/runtime proofs and full counter/pending CAS remain T/I |
@@ -266,7 +266,37 @@ tests/capabilities/effects/test_scoped_intent_contracts.py` — 11 passed; expli
 mypy on the source and consumer passed. The delivery consumer uses the actual
 loop `DeliveryAcceptanceProposal`, not combined completion output. These are wire
 tests, not proof of authenticated adoption or valid current scope. V3 SEND/lifecycle
-joins remain OPEN and must be represented before Phase C is frozen.
+joins are now represented by the scoped-dispatch boundary below; its operation
+routing and participant assembly still require Phase-C closure.
+
+## Scoped dispatch and all-child outcome joins (J4)
+
+| Claim | Owner / exact data | Independent observable | Forbidden substitute | Boundary fixture / evidence |
+|---|---|---|---|---|
+| Exact v2/v3 interpretation | Effects original intent and explicitly separate authorization record versions | Union retains original canonical bytes; old schema decoders remain unchanged | Decode new intent/auth as old v2 or reconstruct mandate | unknown/hybrid/version substitution; new consumer then J4 |
+| First SEND has no prior child | Pre-send cut permits absent authorization and has no child/obligation requirement | Authorize/pre-send/first-send requests use distinct cut; first result derives primitive → child → parent | Require an existing child/obligation before first send or hash authorization into itself | genesis, missing/rival authorization, ordinal false/nonzero; J4 |
+| Fresh scope remains equal | Each authorization/SEND/retry carries current origin source preimages, exact immutable mandate and fresh cut | Owner compares actual ambiguity/endpoint/disclosure heads at the writer boundary | Replace old origin with newly observed values | stale original reference, disclosure/endpoint change, changed authority/fence; J4 |
+| Full outcome lifecycle | Evidence/reconcile consumes all children and exact original obligation plus selected authenticated input | Parent, obligation and semantic reduction are prepared together without SEND output | One-child resolver or live original Run requirement for late evidence | incomplete/rival/late evidence, post-terminal hold, both resolver race orders; J4→J5 |
+
+All standard mutation families apply. The contracts express the full observed
+sets and candidate outputs; runtime still proves completeness, current equality,
+registered transitions and atomic selection. Existing v2 histories are preserved.
+
+`scoped_dispatch_contracts` now expresses authorization, pre-send disposition,
+first SEND and all-child evidence/reconciliation. Pre-send inputs require no child
+or obligation; post-send cuts explicitly permit obligation absence, and the first
+obligation revision has an absent predecessor. Authorization is a primitive record
+without its own output hash; the owner returns its parent revision as well.
+The shared cut retains tagged v2/v3 intent bytes and separate authorization types.
+Fresh origin source preimages are mandatory fields at authorization/SEND/retry;
+the owner must compare them without substituting them into the immutable origin.
+
+Consumer command: `uv run pytest -q
+tests/capabilities/effects/test_scoped_dispatch_contracts.py
+tests/capabilities/effects/test_lifecycle_transition_contracts.py` — 32 passed.
+These two files are new Phase-C consumers relative to main. Explicit mypy passed
+on the three affected source modules and two consumers. Full regression/red-team
+remain reserved for integration. This checkpoint establishes representation only.
 
 ## Publication discipline
 
