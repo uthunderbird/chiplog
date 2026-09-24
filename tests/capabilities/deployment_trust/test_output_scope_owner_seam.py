@@ -121,9 +121,33 @@ def candidate_request() -> tuple[H1OwnerCandidateCallV1, bytes]:
     from tests.capabilities.deployment_trust.test_h1_broker_evidence_contracts import call
 
     original = call()
-    snapshot = encode_trust_journal((("logical-snapshot", None, b"inert envelope"),))
+    entries: list[tuple[str, str | None, bytes]] = []
+    predecessor = None
+    for kind in ("INITIALIZE", "BOOTSTRAP"):
+        envelope = json.dumps(
+            {"kind": kind, "payload": {}, "predecessor": predecessor},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        logical_id = hashlib.sha256(
+            (predecessor or "GENESIS").encode() + b"\x00" + envelope
+        ).hexdigest()
+        entries.append((logical_id, predecessor, envelope))
+        predecessor = logical_id
+    snapshot = encode_trust_journal(tuple(entries))
+    observation = original.evidence.trust_observation.model_copy(
+        update={"logical_snapshot_head": predecessor}
+    )
+    intent = IssueHermeticOutputScopeV1.model_validate_json(
+        original.evidence.selected_request_bytes
+    ).model_copy(update={"expected_trust_observation": observation})
     evidence = original.evidence.model_copy(
-        update={"trust_snapshot_digest": hashlib.sha256(snapshot).hexdigest()}
+        update={
+            "trust_snapshot_digest": hashlib.sha256(snapshot).hexdigest(),
+            "trust_observation": observation,
+            "selected_request_bytes": intent.canonical_bytes(),
+            "request_digest": hashlib.sha256(intent.canonical_bytes()).hexdigest(),
+        }
     )
     value = H1OwnerCandidateCallV1(
         evidence=evidence, evidence_digest=hashlib.sha256(evidence.canonical_bytes()).hexdigest()
@@ -132,7 +156,8 @@ def candidate_request() -> tuple[H1OwnerCandidateCallV1, bytes]:
 
 
 @pytest.mark.parametrize(
-    "variant", ["bare", "bound", "digest", "head", "structure", "encoding", "noncanonical"]
+    "variant",
+    ["bare", "bound", "digest", "head", "structure", "encoding", "noncanonical", "envelope"],
 )
 def test_issue_rejects_invalid_candidate_or_outer_snapshot(variant: str) -> None:
     candidate, snapshot = candidate_request()
@@ -145,7 +170,14 @@ def test_issue_rejects_invalid_candidate_or_outer_snapshot(variant: str) -> None
         snapshot += b" "
     else:
         if variant == "head":
-            snapshot = snapshot.replace(b"logical-snapshot", b"another-head")
+            snapshot = snapshot.replace(
+                candidate.evidence.trust_observation.logical_snapshot_head.encode(), b"another-head"
+            )
+        elif variant == "envelope":
+            entries = json.loads(snapshot)
+            envelope = base64.b64decode(entries[-1][2]).replace(b"BOOTSTRAP", b"REVOKE")
+            entries[-1][2] = base64.b64encode(envelope).decode()
+            snapshot = json.dumps(entries, separators=(",", ":")).encode()
         elif variant == "structure":
             snapshot = b'[["logical-snapshot"]]'
         elif variant == "encoding":

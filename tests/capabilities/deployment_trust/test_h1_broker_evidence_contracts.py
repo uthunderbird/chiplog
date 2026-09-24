@@ -6,6 +6,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
+from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
 from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     H1_CALL_MAX_BYTES,
     BrokerSelectedH1EvidenceV1,
@@ -37,6 +38,12 @@ def call() -> H1OwnerCandidateCallV1:
     retained = H1RetainedSelectedWrapperV1(
         initialization_envelope_bytes=b"claimed source",
         admitted_record_bytes=b"inert retained R17 record",
+        selected_admitted_record_ref=ExactHead(
+            identity="selected-command/record",
+            head="selected-command/record/"
+            + hashlib.sha256(b"inert retained R17 record").hexdigest(),
+            fingerprint=hashlib.sha256(b"inert retained R17 record").hexdigest(),
+        ),
         authentication_result_bytes=b"claimed source",
         admitted_record_digest=hashlib.sha256(b"inert retained R17 record").hexdigest(),
     )
@@ -86,6 +93,15 @@ def test_rehashed_splice_is_not_proof_and_differs_from_pinned_call() -> None:
         admitted_record_bytes=b"caller replacement",
         admitted_record_digest=hashlib.sha256(b"caller replacement").hexdigest(),
     )
+    with pytest.raises(ValidationError, match="differs from selected physical ref"):
+        H1RetainedSelectedWrapperV1.model_validate(changed_retained)
+    # Replacing the supposedly selected locator too remains a caller assertion.
+    replacement_digest = hashlib.sha256(b"caller replacement").hexdigest()
+    changed_retained["selected_admitted_record_ref"] = ExactHead(
+        identity="replacement-command/record",
+        head="replacement-command/record/" + replacement_digest,
+        fingerprint=replacement_digest,
+    )
     retained = H1RetainedSelectedWrapperV1.model_validate(changed_retained)
     changed = original.evidence.model_dump()
     changed.update(
@@ -100,6 +116,47 @@ def test_rehashed_splice_is_not_proof_and_differs_from_pinned_call() -> None:
     # broker exchange catches this substitution; the DTO is no authenticity gate.
     with pytest.raises(ValueError, match="pinned broker call"):
         candidate(forged).check_pinned_call(original)
+
+
+def test_selected_physical_record_ref_is_required() -> None:
+    data = call().evidence.retained.model_dump()
+    del data["selected_admitted_record_ref"]
+    with pytest.raises(ValidationError, match="selected_admitted_record_ref"):
+        H1RetainedSelectedWrapperV1.model_validate(data)
+
+
+@pytest.mark.parametrize("field", ["identity", "head", "fingerprint"])
+def test_selected_physical_record_locator_mismatch_rejected(field: str) -> None:
+    data = call().evidence.retained.model_dump()
+    data["selected_admitted_record_ref"][field] = "0" * 64
+    with pytest.raises(ValidationError, match="physical"):
+        H1RetainedSelectedWrapperV1.model_validate(data)
+
+
+def test_admitted_record_digest_must_match_retained_bytes() -> None:
+    data = call().evidence.retained.model_dump()
+    data["admitted_record_digest"] = "0" * 64
+    with pytest.raises(ValidationError, match="record digest mismatch"):
+        H1RetainedSelectedWrapperV1.model_validate(data)
+
+
+def test_authentication_proof_fingerprint_is_distinct_from_physical_record() -> None:
+    original = call().evidence
+    request_value = IssueHermeticOutputScopeV1.model_validate_json(original.selected_request_bytes)
+    assert (
+        original.retained.selected_admitted_record_ref.fingerprint
+        != request_value.admitted_authentication_ref.fingerprint
+    )
+    retained = original.retained.model_dump()
+    retained["authentication_result_bytes"] = original.retained.admitted_record_bytes
+    replacement = H1RetainedSelectedWrapperV1.model_validate(retained)
+    data = original.model_dump()
+    data.update(
+        retained=replacement,
+        retained_wrapper_digest=hashlib.sha256(replacement.canonical_bytes()).hexdigest(),
+    )
+    with pytest.raises(ValidationError, match="differ from selected source refs"):
+        BrokerSelectedH1EvidenceV1.model_validate(data)
 
 
 def test_physical_logical_swap_rejected_against_exact_request() -> None:

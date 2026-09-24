@@ -13,7 +13,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
-from chiplog.capabilities.agent_loop.delivery_contracts import ProviderRecipient
+from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead, ProviderRecipient
 
 from .cli_custody_contracts import CliCustodyDTO, Digest, Identity, UInt64
 from .hermetic_output_scope_contracts import (
@@ -49,20 +49,24 @@ class H1BrokerRouteBindingV1(CliCustodyDTO):
 class H1RetainedSelectedWrapperV1(CliCustodyDTO):
     """Exact retained bytes, not reconstructed policy or caller source objects.
 
-``initialization_envelope_bytes`` is the physical selected H0 DECIDED envelope;
-it includes the retained initialization and its exact signed R16 fields.
-``admitted_record_bytes`` is the retained R17 authenticated custody record;
-``authentication_result_bytes`` is its exact retained owner response frame.
-The broker checks their embedding/selection and combined binding. Their opaque
-historical formats retain their own canonicalization; this wrapper uses sorted
-UTF-8 JSON/base64 inherited from CliCustodyDTO. No R16 key crosses this wire.
-"""
+    ``initialization_envelope_bytes`` is the physical selected H0 DECIDED envelope;
+    it includes the retained initialization and its exact signed R16 fields.
+    ``admitted_record_bytes`` is canonical(admitted.record), the retained R17 record;
+    ``selected_admitted_record_ref`` is its independently selected physical locator.
+    ``authentication_result_bytes`` is its exact retained owner response frame.
+    The broker checks their embedding/selection and combined binding. Their opaque
+    historical formats retain their own canonicalization; this wrapper uses sorted
+    UTF-8 JSON/base64 inherited from CliCustodyDTO. No R16 key crosses this wire.
+    The physical locator follows R17's identity/fingerprint head format; checking
+    that format does not authenticate selection or the embedded command identity.
+    """
 
     schema_id: Literal["chiplog.h1.retained-selected-wrapper.v1"] = (
         "chiplog.h1.retained-selected-wrapper.v1"
     )
     initialization_envelope_bytes: RetainedBytes
     admitted_record_bytes: RetainedBytes
+    selected_admitted_record_ref: ExactHead
     authentication_result_bytes: Annotated[bytes, Field(min_length=1, max_length=65_536)]
     admitted_record_digest: Digest
 
@@ -70,17 +74,22 @@ UTF-8 JSON/base64 inherited from CliCustodyDTO. No R16 key crosses this wire.
     def byte_consistency(self) -> Self:
         if hashlib.sha256(self.admitted_record_bytes).hexdigest() != self.admitted_record_digest:
             raise ValueError("retained admitted record digest mismatch")
+        selected = self.selected_admitted_record_ref
+        if selected.fingerprint != self.admitted_record_digest:
+            raise ValueError("retained admitted record differs from selected physical ref")
+        if selected.head != selected.identity + "/" + selected.fingerprint:
+            raise ValueError("selected admitted record physical head differs from identity/digest")
         return self
 
 
 class BrokerSelectedH1EvidenceV1(CliCustodyDTO):
     """Broker assertion of verified combined provenance, not a policy grant.
 
-The intent contains the exact H0 selection and R17/R16 refs plus CLI identity.
-An arbitrary caller can create a self-consistent instance. Acceptance therefore
-requires the authenticated broker call site; source authentication cannot be
-implemented by accepting this DTO or comparing attacker-recomputed hashes.
-"""
+    The intent contains the exact H0 selection and R17/R16 refs plus CLI identity.
+    An arbitrary caller can create a self-consistent instance. Acceptance therefore
+    requires the authenticated broker call site; source authentication cannot be
+    implemented by accepting this DTO or comparing attacker-recomputed hashes.
+    """
 
     schema_id: Literal["chiplog.h1.broker-selected-evidence.v1"] = (
         "chiplog.h1.broker-selected-evidence.v1"
@@ -152,9 +161,9 @@ class H1OwnerCandidateCallV1(CliCustodyDTO):
 class H1OwnerCandidateV1(CliCustodyDTO):
     """Proposed scope only; broker must compare with its pinned original call.
 
-HermeticOutputScopeV1 closes policy, slot/profile and empty mandate inventory.
-Neither an anchor nor ISSUED/CURRENT is returned before fenced durable append.
-"""
+    HermeticOutputScopeV1 closes policy, slot/profile and empty mandate inventory.
+    Neither an anchor nor ISSUED/CURRENT is returned before fenced durable append.
+    """
 
     schema_id: Literal["chiplog.h1.owner-candidate.v1"] = "chiplog.h1.owner-candidate.v1"
     disposition: Literal["CANDIDATE"] = "CANDIDATE"

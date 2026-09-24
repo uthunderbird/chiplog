@@ -9,6 +9,9 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
+from .h1_broker_evidence_contracts import decode_h1_candidate_call
+from .hermetic_output_scope_contracts import ReadCurrentHermeticExecutionScopeV1
+
 _H1_ROUTES = (
     (
         "deployment_trust.issue_hermetic_output_scope",
@@ -306,11 +309,6 @@ def _dispatch(operation: str, payload: bytes) -> dict[str, object]:
     if call.mode != expected_mode:
         return {"failure": "PROTOCOL_REJECTED", "reason": "payload mode differs from trust route"}
     if operation in {route[0] for route in _H1_ROUTES}:
-        from .h1_broker_evidence_contracts import decode_h1_candidate_call
-        from .hermetic_output_scope_contracts import (
-            ReadCurrentHermeticExecutionScopeV1,
-        )
-
         try:
             if call.mode == "ISSUE_HERMETIC_OUTPUT_SCOPE_V1":
                 candidate = decode_h1_candidate_call(call.request_bytes)
@@ -337,7 +335,22 @@ def _dispatch(operation: str, payload: bytes) -> dict[str, object]:
                     raw = b64decode(entry[2], validate=True)
                     if not raw or b64encode(raw).decode("ascii") != entry[2]:
                         raise ValueError("H1 logical journal bytes are malformed")
-                    predecessor = entry[0]
+                    envelope = json.loads(raw)
+                    if (
+                        not isinstance(envelope, dict)
+                        or set(envelope) != {"kind", "payload", "predecessor"}
+                        or not isinstance(envelope["kind"], str)
+                        or not isinstance(envelope["payload"], dict)
+                        or envelope["predecessor"] != predecessor
+                        or _canonical(envelope) != raw
+                    ):
+                        raise ValueError("H1 logical journal envelope is malformed")
+                    logical_id = hashlib.sha256(
+                        (predecessor or "GENESIS").encode() + b"\x00" + raw
+                    ).hexdigest()
+                    if entry[0] != logical_id:
+                        raise ValueError("H1 logical journal ID differs from retained bytes")
+                    predecessor = logical_id
                 if _canonical(entries) != call.snapshot_bytes:
                     raise ValueError("H1 snapshot is not canonical")
                 if predecessor != evidence.trust_observation.logical_snapshot_head:
