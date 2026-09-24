@@ -27,7 +27,7 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 | J4: effect dispatch/retry/delivery/compensation | `effects.scoped_intent_contracts` v3 origin/mandate/acquisition; `scoped_dispatch_contracts` authorize/pre-send/first-SEND/all-child evidence/reconcile; `lifecycle_transition_contracts` shared v2/v3 retry/reduction | Registered source/record interpretation, complete publication and adapter operation routing remain C work; last-boundary proof and dispatch runtime remain T/I |
 | J4→J5: original-stream reduction | `agent_loop.original_recovery_contracts` loop-owned resolver/reduction plus `effects.lifecycle_transition_contracts` effects-owned reduction producer | Registered source decoding, selected foreign reduction interpretation and operation routes remain OPEN; each owner writes only its own streams; resolver/continuation runtime joins remain T/I |
 | J5: frontier/suspend/resume/successor | `execution_recovery_observations` complete cut, weak/strong joins and noncircular suspension v2; `execution_recovery_contracts` executable preparation port includes suspend/resume/successor/next-Turn/abort/cancel | Consumer coverage now covers current sources, mandatory suspension pair and distinct commands; complete successor participant interpretation and terminal/work record routing remain C work; runtime classification/CAS remain T/I |
-| J5: read-only branch | `readonly_execution_contracts` preparation port, distinct unfinished attempt/outcome/pending/reduction records and registered proof preimages; existing frontier types retained | Versioned executable response/artifact registration of the new history-tool wire and end-to-end consumer; positive no-mutation/runtime proofs and full counter/pending CAS remain T/I |
+| J5: read-only branch | `readonly_execution_contracts` preparation port plus `execution_history_contracts` v3 artifact/response/Run containment, transition and captured-fanout boundaries | Join OPEN recovery/readonly/completion contracts to v3 and register parser/renderer/physical interpretation; positive no-mutation/runtime proofs and full counter/pending CAS remain T/I |
 | J6: writer applicability/discovery | `platform.runtime_surface_contracts` registry and independent discovery DTOs; six worker fence variants retained | Concrete registered operation bindings and record interpretation; independent discovery and both-direction equality remain T/I, not established by source hashes |
 | J6: post-terminal work | WorkSubjectBinding, WorkEpochBinding, PostTerminalWorkFence, WorkEpochRolloverFence | Materialize the closed work-lease state, owner preparation requests/results, terminal-manifest work creation, exact close and monotone rollover boundary; consumers preserve original obligation/evidence references |
 | J6: model-attempt recovery | `model_attempt_recovery_contracts` executable replacement and separate late-evidence request/result/port | Registered source/record interpretation and operation bindings; authenticity, race handling and immutable late evidence remain T/I |
@@ -297,6 +297,36 @@ tests/capabilities/effects/test_lifecycle_transition_contracts.py` — 32 passed
 These two files are new Phase-C consumers relative to main. Explicit mypy passed
 on the three affected source modules and two consumers. Full regression/red-team
 remain reserved for integration. This checkpoint establishes representation only.
+
+## Executable history-tool containment
+
+`execution_history_contracts` adds an explicitly versioned v3 response/artifact,
+visibility manifest, attempt, Turn and Run; `execution_history_transition_contracts`
+and `execution_history_fan_out_contracts` carry that Run through creation/capture
+and initialized-call preparation. Existing v2 DTOs, parsers and source bytes are
+unchanged. History calls retain the registered READ_ONLY classification and retry
+policy in inert consumers; DTO construction does not establish their authenticity.
+
+The new artifact binds the exact v3 tools, generator and response schema. Negative
+consumers first roundtrip a valid JSON payload through the public decoder, then
+mutate that payload through the same path, avoiding unrelated strict tuple/list
+failures. The new call-slot field rejects boolean false as an integer-zero alias.
+Mixed response order, captured history bytes and Complete-pending representation
+roundtrip; the legacy parser still rejects the new tool.
+
+Evidence: `uv run pytest -q
+tests/capabilities/agent_loop/test_execution_history_contracts.py` passed 4 tests.
+Targeted Ruff and mypy passed for the three source files and the consumer. Root
+inspected the definitions and consumers and reran the new tests. No full regression
+or checkpoint red-team was run.
+
+This is not global Phase-C readiness. Shared OPEN feature contracts still need
+the v2/v3 Run/create joins, with history-tool leaves extracted to avoid an import
+cycle. Concrete parser/renderer behavior and physical publication/readback are
+still absent for v3. Phase C must register their interfaces before T/I supplies
+the behavior; query execution, no-mutation proof, counters, CAS and replay remain
+joint behavioral work. Scheduler and completion must use the same joined version
+family rather than remaining separate v2-only islands.
 
 ## Publication discipline
 
