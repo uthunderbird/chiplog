@@ -603,6 +603,27 @@ and mypy cover their six source files, four consumers and scheduler support.
 The checkpoint command carries the exact pytest selectors; no full regression
 or implementation red-team was run. Overall Phase C remains OPEN.
 
+## Frontier and read-only physical codec checkpoint
+
+`recovery_frontier_registry_contracts` decodes the fixed external registry
+schema, verifies ordered row ordinals and separates the embedded content hash
+from the full-byte physical reference. It does not establish registry selection
+or require a globally complete collection of frontier families.
+
+`readonly_record_contracts` admits exactly ten physical row types, preserving
+the four existing recovery row codecs. The pending body is hashed before its
+frontier projection, avoiding a self-reference. Canonical bytes, owner, kind,
+schema, physical ID and fingerprint are checked. These codecs do not yet
+assemble read-only operations or authenticate retained sources.
+
+Evidence: `uv run pytest -q
+tests/capabilities/agent_loop/test_recovery_frontier_registry_contracts.py
+tests/capabilities/agent_loop/test_readonly_record_contracts.py` passes 23 tests.
+Ruff, format and mypy pass for the two source modules and their two consumers.
+Selected-source wrappers, combined terminal attempt assembly, registered
+runtime readers and atomic publication remain inside the full R14–R17 goal.
+Phase C remains OPEN.
+
 ## Publication discipline
 
 New contract files, their consumer tests, this inventory and exact source catalog
