@@ -72,8 +72,12 @@ from .r14_execution_inbox_records import (
 from .r14_execution_transition_records import (
     ExecutionHistorySnapshot,
     RetainedExecutionTransition,
+    RetainedExecutionTransitionEvidence,
+    RetainedExecutionTransitionV3,
     transition_command,
 )
+from .r14_h1_workspace_issuance import verify_h1_original_workspace
+from .r14_h1_workspace_issuance_contracts import H1WorkspaceIssuanceRefV1
 from .r14_loop_history import read_execution_history
 from .r14_runtime import R14PlanningRuntime
 
@@ -167,12 +171,69 @@ class R14ExecutionRuntime(R14PlanningRuntime):
             ),
         )
 
+    def _verify_h1_prepare_issuance(
+        self,
+        request: PrepareExecutionRequest,
+        ref: H1WorkspaceIssuanceRefV1,
+        workspace_member_bytes: bytes,
+        proposal_context_bytes: bytes,
+        started: ExecutionRunRecord,
+        source_tenant_sequence: int,
+        expected_prepare_head: int,
+        workspace_port: R13Workspace,
+    ) -> None:
+        """Bind a future V3 Prepare to its exact independently issued workspace.
+
+        The current workspace verifier is intentionally not sufficient to grant
+        H1 acceptance.  Keeping this complete join at the publication boundary
+        makes the eventual readiness switch narrow and prevents a locator from
+        becoming an unverified caller input.
+        """
+        workspace = tuple(
+            member
+            for member in request.manifest.members
+            if member.producer == "projections" and member.surface == "workspace"
+        )
+        if (
+            len(workspace) != 1
+            or workspace[0].model_dump_json().encode() != workspace_member_bytes
+            or workspace[0].content.encode() != proposal_context_bytes
+            or workspace[0].record_id != "workspace/" + ref.batch_id
+            or request.run.predecessor != started.head
+        ):
+            raise LoopRejected("H1 selected Prepare workspace or lineage differs")
+        issuance = workspace_port.open_h1_workspace_issuance().load(ref)
+        if (
+            issuance.tenant != request.run.tenant
+            or issuance.run_id != request.run.run_id
+            or issuance.started_run_head != started.head
+            or issuance.turn_id != request.manifest.turn_id
+            or issuance.worker_session != request.manifest.worker_session
+            or request.manifest.worker_session != request.run.worker_session
+            or issuance.snapshot.tenant_head != source_tenant_sequence
+            or source_tenant_sequence + 1 != expected_prepare_head
+        ):
+            raise LoopRejected("H1 selected Prepare issuance identity differs")
+        verify_h1_original_workspace(
+            ref,
+            workspace_member_bytes,
+            proposal_context_bytes,
+            workspace_port.open_h1_workspace_issuance(),
+            workspace_port.open_dashboard_issuance(),
+        )
+
     async def _publish_initial_transition(
         self,
         peer: str,
         request: ExecutionTransitionRequest,
         *,
         expected_snapshot: ExecutionHistorySnapshot | None = None,
+        workspace_issuance: H1WorkspaceIssuanceRefV1 | None = None,
+        workspace_member_bytes: bytes | None = None,
+        proposal_context_bytes: bytes | None = None,
+        h1_started_run: ExecutionRunRecord | None = None,
+        h1_source_tenant_sequence: int | None = None,
+        h1_workspace_port: R13Workspace | None = None,
     ) -> ExecutionRunRecord:
         observed = await self._execution_actor(peer)
         with self._authority_gate().hold():
@@ -180,6 +241,26 @@ class R14ExecutionRuntime(R14PlanningRuntime):
             snapshot = read_execution_history(self)
             if expected_snapshot is not None and snapshot != expected_snapshot:
                 raise LoopRejected("execution visibility source cut changed")
+            if workspace_issuance is not None:
+                if (
+                    not isinstance(request, PrepareExecutionRequest)
+                    or workspace_member_bytes is None
+                    or proposal_context_bytes is None
+                    or h1_started_run is None
+                    or h1_source_tenant_sequence is None
+                    or h1_workspace_port is None
+                ):
+                    raise LoopRejected("H1 workspace issuance does not bind a Prepare")
+                self._verify_h1_prepare_issuance(
+                    request,
+                    workspace_issuance,
+                    workspace_member_bytes,
+                    proposal_context_bytes,
+                    h1_started_run,
+                    h1_source_tenant_sequence,
+                    snapshot.tenant_head,
+                    h1_workspace_port,
+                )
             run_id = (
                 request.run_id if isinstance(request, CreateExecutionRun) else request.run.run_id
             )
@@ -245,23 +326,55 @@ class R14ExecutionRuntime(R14PlanningRuntime):
             or proposal.canonical_bytes() != returned.canonical_payload
         ):
             raise LoopRejected("execution owner rejected command or changed canonical bytes")
-        evidence = RetainedExecutionTransition(
-            request=request,
-            proposal=proposal,
-            expected_head=snapshot.tenant_head,
-            predecessor_commitment=predecessor,
-            expected_snapshot_fingerprint=snapshot.digest(),
-            caller=caller,
-            callee=callee,
-            request_id=sent.request_id,
-            deadline_ns=deadline,
-        )
+        evidence: RetainedExecutionTransitionEvidence
+        if workspace_issuance is None:
+            evidence = RetainedExecutionTransition(
+                request=request,
+                proposal=proposal,
+                expected_head=snapshot.tenant_head,
+                predecessor_commitment=predecessor,
+                expected_snapshot_fingerprint=snapshot.digest(),
+                caller=caller,
+                callee=callee,
+                request_id=sent.request_id,
+                deadline_ns=deadline,
+            )
+        else:
+            evidence = RetainedExecutionTransitionV3(
+                request=request,
+                proposal=proposal,
+                expected_head=snapshot.tenant_head,
+                predecessor_commitment=predecessor,
+                expected_snapshot_fingerprint=snapshot.digest(),
+                caller=caller,
+                callee=callee,
+                request_id=sent.request_id,
+                deadline_ns=deadline,
+                workspace_issuance=workspace_issuance,
+            )
         command = transition_command(evidence)
 
         def guard() -> Literal["STALE"] | None:
             with self._authority_gate().hold():
                 try:
                     self._check_execution_actor(observed)
+                    if workspace_issuance is not None:
+                        assert isinstance(request, PrepareExecutionRequest)
+                        assert workspace_member_bytes is not None
+                        assert proposal_context_bytes is not None
+                        assert h1_started_run is not None
+                        assert h1_source_tenant_sequence is not None
+                        assert h1_workspace_port is not None
+                        self._verify_h1_prepare_issuance(
+                            request,
+                            workspace_issuance,
+                            workspace_member_bytes,
+                            proposal_context_bytes,
+                            h1_started_run,
+                            h1_source_tenant_sequence,
+                            snapshot.tenant_head,
+                            h1_workspace_port,
+                        )
                     if (
                         read_execution_history(self) != snapshot
                         or self.current_worker() != worker
@@ -282,6 +395,23 @@ class R14ExecutionRuntime(R14PlanningRuntime):
 
         def decide(resulting: str) -> None:
             with self._authority_gate().hold():
+                if workspace_issuance is not None:
+                    assert isinstance(request, PrepareExecutionRequest)
+                    assert workspace_member_bytes is not None
+                    assert proposal_context_bytes is not None
+                    assert h1_started_run is not None
+                    assert h1_source_tenant_sequence is not None
+                    assert h1_workspace_port is not None
+                    self._verify_h1_prepare_issuance(
+                        request,
+                        workspace_issuance,
+                        workspace_member_bytes,
+                        proposal_context_bytes,
+                        h1_started_run,
+                        h1_source_tenant_sequence,
+                        snapshot.tenant_head,
+                        h1_workspace_port,
+                    )
                 self._require_no_pending()
                 self._append_decision(
                     {
@@ -497,9 +627,11 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 # Preparing workspace policy may publish before the actual read.
                 # Bind the issued read cut, never silently refresh a stale context.
                 issued = workspace_port._issued
-                if issued is None or issued._issued is None:
+                workspace_issuance = workspace_port._last_h1_workspace_issuance
+                if issued is None or issued._issued is None or workspace_issuance is None:
                     raise LoopRejected("execution workspace lacks issued read")
                 context = issued.proposal_context(issued._issued)
+                source_tenant_sequence = context.batch.context.snapshot_frontier
                 snapshot = read_execution_history(self)
                 current_lineage = [row for row in snapshot.records if row.run_id == run_id]
                 if (
@@ -573,7 +705,26 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 PrepareExecutionRequest(
                     command_id="prepare:" + accumulated.head, run=accumulated, manifest=manifest
                 ),
+                workspace_issuance=workspace_issuance,
+                workspace_member_bytes=workspace.model_dump_json().encode(),
+                proposal_context_bytes=workspace.content.encode(),
+                h1_started_run=started,
+                h1_source_tenant_sequence=source_tenant_sequence,
+                h1_workspace_port=workspace_port,
             )
+            with self._authority_gate().hold():
+                self._verify_h1_prepare_issuance(
+                    PrepareExecutionRequest(
+                        command_id="prepare:" + accumulated.head, run=accumulated, manifest=manifest
+                    ),
+                    workspace_issuance,
+                    workspace.model_dump_json().encode(),
+                    workspace.content.encode(),
+                    started,
+                    source_tenant_sequence,
+                    source_tenant_sequence + 1,
+                    workspace_port,
+                )
             emitted = await self._publish_initial_transition(
                 peer, EmitExecutionAttempt(command_id="emit:" + prepared.head, run=prepared)
             )
@@ -631,14 +782,24 @@ class R14ExecutionRuntime(R14PlanningRuntime):
             return await publish_execution_fanout(self, peer, run_id, expected_head)
 
     async def seal_execution_complete(
-        self, peer: str, run_id: str, expected_head: str
+        self,
+        peer: str,
+        run_id: str,
+        expected_head: str,
+        *,
+        profile: Literal["V1", "H1_V2"] = "V1",
     ) -> ExecutionRunRecord:
         """Select the versioned registry companion for an eligible zero-call Complete."""
         from .r14_execution_fanout import publish_execution_fanout
 
         async with self._execution_lane:
             return await publish_execution_fanout(
-                self, peer, run_id, expected_head, complete_registry=True
+                self,
+                peer,
+                run_id,
+                expected_head,
+                complete_registry=True,
+                complete_profile=profile,
             )
 
     async def begin_execution(

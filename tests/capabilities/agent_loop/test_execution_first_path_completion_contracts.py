@@ -50,6 +50,7 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
     RECOVERY_FRONTIER_REGISTRY_SCHEMA,
+    execution_h1_zero_call_frontier_registry_v2,
     execution_zero_call_frontier_registry,
     frontier_registry_reference,
 )
@@ -435,6 +436,32 @@ async def test_v1_request_bytes_remain_exact_through_versioned_decoder() -> None
         contracts.decode_first_path_completion_request(raw)
 
 
+async def test_v1_cut_cannot_be_relabelled_as_v2_profile_without_workspace_carrier() -> None:
+    value = await request()
+    registry = execution_h1_zero_call_frontier_registry_v2()
+    frontier = value.source.frontier.model_copy(update={"registry": registry})
+    frontier = frontier.model_copy(
+        update={"fingerprint": contracts.first_path_frontier_fingerprint(frontier)}
+    )
+    registry_source = source(
+        RECOVERY_FRONTIER_REGISTRY_SCHEMA,
+        frontier_registry_reference(registry),
+        registry.canonical_bytes(),
+    )
+    cut = value.source.model_copy(
+        update={
+            "frontier": frontier,
+            "complete_sources": (*value.source.complete_sources[:-1], registry_source),
+        }
+    )
+    cut = cut.model_copy(
+        update={"complete_inventory_fingerprint": contracts.first_path_inventory_fingerprint(cut)}
+    )
+
+    with pytest.raises(ValueError, match="V2 workspace carrier differs"):
+        contracts.FirstPathCompletionCutV2.model_validate_json(cut.canonical_bytes())
+
+
 async def test_first_path_request_reaches_its_mounted_owner_and_prepares_acceptance() -> None:
     value = await request(canonical_response=True)
 
@@ -451,9 +478,7 @@ async def test_first_path_request_reaches_its_mounted_owner_and_prepares_accepta
     payload = reply["payload"]
     assert isinstance(payload, str)
     raw = base64.b64decode(payload)
-    decoded: ExecutionCompletionResult = TypeAdapter(ExecutionCompletionResult).validate_json(
-        raw
-    )
+    decoded: ExecutionCompletionResult = TypeAdapter(ExecutionCompletionResult).validate_json(raw)
     assert isinstance(decoded, PreparedExecutionCompletion)
     assert decoded.canonical_bytes() == raw
     assert decoded.source_request_fingerprint == hashlib.sha256(value.canonical_bytes()).hexdigest()

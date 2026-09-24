@@ -134,6 +134,77 @@ class CalendarReadLedger(BrokerReadLedger):
         except (ValueError, sqlite3.Error) as error:
             raise CalendarReadIntegrityError(tenant_id) from error
 
+    def _released_dequeued_receipt(
+        self,
+        operation: CalendarReadOperation,
+        expected_state: CalendarReadState,
+        proof_fingerprint: str,
+        result_bytes: bytes,
+    ) -> ReadRelease:
+        """Return only the exact released-and-dequeued receipt for an original read."""
+        try:
+            with closing(sqlite3.connect(self._path)) as connection:
+                row = connection.execute(
+                    "SELECT request_fingerprint, initial_state_fingerprint, state, result_digest, "
+                    "recipient_fingerprint, proof_fingerprint, enqueued, dequeued, result_bytes "
+                    "FROM authority_read_releases WHERE tenant_id = ? AND read_attempt_id = ?",
+                    (operation.tenant_id, operation.read_attempt_id),
+                ).fetchone()
+            result_digest = hashlib.sha256(result_bytes).hexdigest()
+            if (
+                row is None
+                or str(row[0]) != operation.fingerprint()
+                or str(row[1]) != expected_state.fingerprint()
+                or str(row[2]) != "RELEASED"
+                or str(row[3]) != result_digest
+                or str(row[4]) != operation.recipient_fingerprint()
+                or str(row[5]) != proof_fingerprint
+                or int(row[6]) != 1
+                or int(row[7]) != 1
+                or bytes(row[8]) != result_bytes
+            ):
+                raise ValueError("original calendar release receipt differs")
+            return ReadRelease(
+                tenant_id=operation.tenant_id,
+                read_attempt_id=operation.read_attempt_id,
+                state="RELEASED",
+                result_digest=result_digest,
+                recipient_fingerprint=operation.recipient_fingerprint(),
+                proof_fingerprint=proof_fingerprint,
+                enqueued=True,
+                dequeued=True,
+            )
+        except (ValueError, sqlite3.Error) as error:
+            raise CalendarReadIntegrityError(operation.tenant_id) from error
+
+    @staticmethod
+    def _historical_released_dequeued_receipt(
+        operation: CalendarReadOperation,
+        state: CalendarReadState,
+        proof_fingerprint: str,
+        result_bytes: bytes,
+        result_digest: str,
+        recipient_fingerprint: str,
+    ) -> ReadRelease:
+        """Reconstruct a receipt from immutable evidence without opening SQLite."""
+        if (
+            operation.tenant_id != state.tenant_id
+            or hashlib.sha256(result_bytes).hexdigest() != result_digest
+            or operation.recipient_fingerprint() != recipient_fingerprint
+            or not proof_fingerprint
+        ):
+            raise CalendarReadIntegrityError(operation.tenant_id)
+        return ReadRelease(
+            tenant_id=operation.tenant_id,
+            read_attempt_id=operation.read_attempt_id,
+            state="RELEASED",
+            result_digest=result_digest,
+            recipient_fingerprint=recipient_fingerprint,
+            proof_fingerprint=proof_fingerprint,
+            enqueued=True,
+            dequeued=True,
+        )
+
     def invalidate(self, expected: CalendarReadState, **heads: object) -> CalendarReadState:
         if not heads or not set(heads) <= set(CALENDAR_INVALIDATORS) - {"tenant_id"}:
             raise ReadLedgerConflict("unknown calendar invalidator")

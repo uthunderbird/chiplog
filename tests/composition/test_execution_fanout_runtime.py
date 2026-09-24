@@ -182,6 +182,26 @@ async def test_zero_call_complete_seal_selects_authenticated_registry_and_reopen
         assert preparations[-1].proposal.sealed_run == sealed
 
 
+async def test_h1_v2_complete_registry_rejects_before_owner_or_physical_selection(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "h1-v2-registry-unavailable.sqlite"
+    async with open_execution_runtime(database, responses=(_response(complete=True),)) as runtime:
+        created = await runtime.create_execution("hermetic-ingress", "run", "Plan", BudgetPolicy())
+        started = await runtime.begin_execution("hermetic-ingress", "run", created.head)
+        captured = await runtime.capture_execution("hermetic-ingress", "run", started.head)
+        with pytest.raises(LoopRejected, match="workspace original verification is unavailable"):
+            await runtime.seal_execution_complete(
+                "hermetic-ingress", "run", captured.head, profile="H1_V2"
+            )
+        assert read_execution_call_history(runtime)[0].records[-1] == captured
+        with sqlite3.connect(database) as connection:
+            assert connection.execute(
+                "SELECT count(*) FROM publications WHERE tenant_id=? AND operation_kind=?",
+                (runtime._tenant_id, EXECUTION_COMPLETE_SEAL_OPERATION),
+            ).fetchone() == (0,)
+
+
 async def test_complete_seals_use_distinct_registry_physical_ids(tmp_path: Path) -> None:
     database = tmp_path / "complete-registry-collision.sqlite"
     async with open_execution_runtime(

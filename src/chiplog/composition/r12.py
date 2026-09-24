@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import secrets
@@ -93,6 +94,18 @@ from chiplog.capabilities.projections.workspace_boundary import (
     WorkspaceReadResult,
 )
 from chiplog.composition.r10 import HermeticIngressRegistry
+from chiplog.composition.r14_h1_workspace_issuance_contracts import (
+    H1CalendarOriginalReadV1,
+    H1DashboardIssuanceRefV1,
+    H1OriginalWorkspaceIssuanceV1,
+    H1PlanningSourcesV1,
+    H1PublicationRowV1,
+    H1QueryProofV1,
+    H1RecordRowV1,
+    H1RetainedDecisionV1,
+    H1WorkspaceSnapshotV1,
+    H1WorkspaceSourcesV1,
+)
 from chiplog.domain_primitives import TenantId
 from chiplog.platform._sqlite import (
     EventAppender,
@@ -270,6 +283,7 @@ class R12Workspace:
         planning_sources: Mapping[str, tuple[SourceReference, ...]],
         *,
         conversation_provenance: tuple[ProvenanceBinding, ...] = (),
+        selected_loop_decisions: tuple[H1RetainedDecisionV1, ...] = (),
         issuance: WorkspaceIssuanceJournal | None = None,
     ) -> None:
         _validate_paths(database, screens, calendar_ledger._path)
@@ -291,6 +305,7 @@ class R12Workspace:
         self._calendar, self._calendar_ledger = calendar, calendar_ledger
         self._planning_sources = dict(planning_sources)
         self._conversation_provenance = conversation_provenance
+        self._selected_loop_decisions = selected_loop_decisions
         self._issuance = issuance
         self._pinned_issuance = issuance
         self._calendar_peer = calendar.authenticate_transport(
@@ -314,6 +329,16 @@ class R12Workspace:
         self._issued: WorkspaceBatch | None = None
         self._state_fingerprint: str | None = None
         self._calendar_state: CalendarReadState | None = None
+        self._h1_original: (
+            tuple[
+                H1WorkspaceSnapshotV1,
+                tuple[H1QueryProofV1, ...],
+                H1CalendarOriginalReadV1,
+                H1WorkspaceSourcesV1,
+                H1DashboardIssuanceRefV1,
+            ]
+            | None
+        ) = None
         self._closed = False
         store = SQLiteWorkspaceStore(screens)
         self._screen_state: WorkspaceState | None = (
@@ -540,19 +565,22 @@ class R12Workspace:
                     projection, contexts, self._planning_sources
                 ).read(request.model_copy(update={"query": "PLANNING_VIEW"}))
                 sources.register(planning, "core.planning" if self._issuance else None)
-                external = await self._calendar_port.read(
-                    CalendarRequest.model_validate_json(
-                        request.model_copy(
-                            update={
-                                "context": calendar_context,
-                                "query": "CALENDAR_AGENDA",
-                                "range_start_ns": 0,
-                                "range_end_ns": 2**63 - 1,
-                            }
-                        ).model_dump_json()
-                    )
+                calendar_request = CalendarRequest.model_validate_json(
+                    request.model_copy(
+                        update={
+                            "context": calendar_context,
+                            "query": "CALENDAR_AGENDA",
+                            "range_start_ns": 0,
+                            "range_end_ns": 2**63 - 1,
+                        }
+                    ).model_dump_json()
                 )
+                external = await self._calendar_port.read(calendar_request)
                 calendar = WorkspaceReadResult.model_validate_json(external.model_dump_json())
+                original_calendar = self._calendar._original_read(
+                    self._calendar_peer, calendar_request, external
+                )
+                self._calendar._verify_original_read(self._calendar_peer, original_calendar)
                 for field in (
                     "tenant_id",
                     "database_instance_id",
@@ -665,6 +693,144 @@ class R12Workspace:
                     history_complete=history.next_cursor is None,
                 )
                 _, _, expected = self._state(snapshot.connection, identity.tenant)
+                publications_rows = tuple(
+                    H1PublicationRowV1(
+                        tenant_id=str(row[0]),
+                        operation_kind=str(row[1]),
+                        idempotency_key=str(row[2]),
+                        request_fingerprint=str(row[3]),
+                        commit_sequence=int(row[4]),
+                        record_ids_json=str(row[5]),
+                    )
+                    for row in snapshot.connection.execute(
+                        "SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, "
+                        "commit_sequence, record_ids FROM publications WHERE tenant_id=? "
+                        "ORDER BY commit_sequence",
+                        (identity.tenant,),
+                    )
+                )
+                record_rows = tuple(
+                    H1RecordRowV1(
+                        tenant_id=str(row[0]),
+                        record_id=str(row[1]),
+                        owner=str(row[2]),
+                        schema_id=str(row[3]),
+                        canonical_bytes_base64=base64.b64encode(bytes(row[4])).decode("ascii"),
+                        commit_sequence=int(row[5]),
+                    )
+                    for row in snapshot.connection.execute(
+                        "SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, "
+                        "commit_sequence FROM records WHERE tenant_id=? ORDER BY record_id",
+                        (identity.tenant,),
+                    )
+                )
+                fence = snapshot.connection.execute(
+                    "SELECT generation, frontier FROM deletion_fences WHERE tenant_id=?",
+                    (identity.tenant,),
+                ).fetchone()
+                if fence is None:
+                    raise WorkspaceRejected("missing H1 deletion fence")
+                h1_snapshot = H1WorkspaceSnapshotV1(
+                    tenant_head=context.snapshot_frontier,
+                    deletion_generation=str(fence[0]),
+                    deletion_frontier=int(fence[1]),
+                    publications=publications_rows,
+                    records=record_rows,
+                    release_fingerprint=expected,
+                )
+                h1_queries = (
+                    H1QueryProofV1(
+                        slot="history",
+                        reader_id="conversation.context_read.v1",
+                        request_json=request.model_dump_json(),
+                        result_json=history.model_dump_json(),
+                    ),
+                    H1QueryProofV1(
+                        slot="planning",
+                        reader_id="planning.workspace.read.v1",
+                        request_json=request.model_copy(
+                            update={"query": "PLANNING_VIEW"}
+                        ).model_dump_json(),
+                        result_json=planning.model_dump_json(),
+                    ),
+                    H1QueryProofV1(
+                        slot="journal",
+                        reader_id="journal.workspace.read.v1",
+                        request_json=request.model_copy(
+                            update={"query": "JOURNAL_CLAIMS"}
+                        ).model_dump_json(),
+                        result_json=journal.model_dump_json(),
+                    ),
+                    H1QueryProofV1(
+                        slot="calendar",
+                        reader_id="calendar.workspace.read.v1",
+                        request_json=calendar_request.model_dump_json(),
+                        result_json=calendar.model_dump_json(),
+                    ),
+                )
+                h1_calendar = H1CalendarOriginalReadV1(
+                    provider_batch_json=original_calendar.provider_batch.model_dump_json(),
+                    state_json=original_calendar.state.model_dump_json(),
+                    operation_json=original_calendar.operation.model_dump_json(),
+                    result_json=original_calendar.result.model_dump_json(),
+                    operation_fingerprint=original_calendar.operation.fingerprint(),
+                    recipient_fingerprint=original_calendar.operation.recipient_fingerprint(),
+                    proof_fingerprint=original_calendar.receipt.proof_fingerprint or "0" * 64,
+                    result_digest=original_calendar.receipt.result_digest or "0" * 64,
+                    cursor_token=(
+                        None
+                        if original_calendar.cursor_binding is None
+                        else original_calendar.cursor_binding.token
+                    ),
+                    cursor_snapshot_id=(
+                        None
+                        if original_calendar.cursor_binding is None
+                        else original_calendar.cursor_binding.snapshot_id
+                    ),
+                    cursor_query_binding_base64=(
+                        None
+                        if original_calendar.cursor_binding is None
+                        else base64.b64encode(
+                            original_calendar.cursor_binding.query_binding
+                        ).decode("ascii")
+                    ),
+                    cursor_last_order_key=(
+                        None
+                        if original_calendar.cursor_binding is None
+                        else original_calendar.cursor_binding.last_order_key
+                    ),
+                    display_result_json=calendar_display.model_dump_json(),
+                )
+                h1_sources = H1WorkspaceSourcesV1(
+                    trusted_ingress_json=identity.model_dump_json(),
+                    conversation_bindings_json=tuple(
+                        binding.model_dump_json() for binding in self._conversation_provenance
+                    ),
+                    selected_loop_decisions=self._selected_loop_decisions,
+                    planning_sources=tuple(
+                        H1PlanningSourcesV1(
+                            intention_line_id=line_id,
+                            source_reference_json=tuple(
+                                source.model_dump_json() for source in sources
+                            ),
+                        )
+                        for line_id, sources in sorted(self._planning_sources.items())
+                    ),
+                    policy_record_id=self._policy_id,
+                    policy_payload_base64=base64.b64encode(self._policy_payload).decode("ascii"),
+                    endpoint=identity.endpoint,
+                )
+                if self._issuance is None:
+                    raise WorkspaceRejected("H1 requires original dashboard issuance")
+                dashboard_entry_id, dashboard_payload_digest = self._issuance.raw_entry(
+                    state.channel_id, state.sequence
+                )
+                h1_dashboard = H1DashboardIssuanceRefV1(
+                    channel_id=state.channel_id,
+                    sequence=state.sequence,
+                    entry_id=dashboard_entry_id,
+                    payload_digest=dashboard_payload_digest,
+                )
             self._release(expected, calendar_state)
             self._check_dispatch()
             self._issued, self._state_fingerprint, self._calendar_state = (
@@ -672,6 +838,7 @@ class R12Workspace:
                 expected,
                 calendar_state,
             )
+            self._h1_original = (h1_snapshot, h1_queries, h1_calendar, h1_sources, h1_dashboard)
             return batch
         finally:
             self._active = None
@@ -702,6 +869,44 @@ class R12Workspace:
             batch=batch,
             history_record_ids=tuple(row.row_id for row in batch.history.rows),
             label=batch.label,
+        )
+
+    def h1_original_issuance(
+        self,
+        *,
+        run_id: str,
+        started_run_head: str,
+        turn_id: str,
+        worker_session: str,
+        workspace_member_json: str,
+        proposal_context_json: str,
+    ) -> H1OriginalWorkspaceIssuanceV1:
+        """Materialize only the exact read cut captured within the original snapshot."""
+        if self._issued is None or self._h1_original is None:
+            raise WorkspaceRejected("H1 original issuance requires an issued original workspace")
+        context = self.proposal_context(self._issued)
+        if context.model_dump_json() != proposal_context_json:
+            raise WorkspaceRejected("H1 proposal context differs from issued workspace")
+        snapshot, queries, calendar, sources, dashboard = self._h1_original
+        # R13's pre-snapshot enumeration cannot authenticate a nonempty
+        # conversation lineage at this original R12 cut.  Until it supplies
+        # exact selected decision rows captured under this snapshot, issuing
+        # would turn a binding summary into retrospective proof.
+        if sources.conversation_bindings_json and not sources.selected_loop_decisions:
+            raise WorkspaceRejected("H1_WORKSPACE_ORIGINAL_READ_UNPROVEN")
+        return H1OriginalWorkspaceIssuanceV1(
+            tenant=self._identity.tenant,
+            run_id=run_id,
+            started_run_head=started_run_head,
+            turn_id=turn_id,
+            worker_session=worker_session,
+            workspace_member_json=workspace_member_json,
+            proposal_context_json=proposal_context_json,
+            snapshot=snapshot,
+            queries=queries,
+            calendar=calendar,
+            sources=sources,
+            dashboard=dashboard,
         )
 
     async def history(

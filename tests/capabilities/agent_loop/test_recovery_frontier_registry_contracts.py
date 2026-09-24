@@ -216,3 +216,41 @@ def test_reference_helper_refuses_bad_embedded_fingerprint_and_row_order() -> No
         assert raised.value.operation == "frontier_registry_reference"
         assert raised.value.schema_id == RECOVERY_FRONTIER_REGISTRY_SCHEMA
         assert raised.value.expected_reference is None
+
+
+def test_h1_v2_registry_has_immutable_profile_identity_and_all_family_ordinals() -> None:
+    from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
+        execution_h1_zero_call_frontier_registry_v2,
+    )
+
+    registry = execution_h1_zero_call_frontier_registry_v2()
+
+    assert registry.registry_id == "chiplog.execution.h1-zero-call-recovery-frontier"
+    assert registry.version == "2"
+    assert tuple(row.ordinal for row in registry.ordered_rows) == tuple(range(17))
+    assert tuple(row.family for row in registry.ordered_rows) == (
+        "RUN",
+        "TURN",
+        "SEALED_RESPONSE",
+        "CALL",
+        "EFFECT",
+        "EVIDENCE",
+        "DELIVERY",
+        "AUTHORITY",
+        "MANDATE",
+        "POLICY",
+        "PROMPT",
+        "TOOL_SCHEMA",
+        "RECIPIENT",
+        "SEMANTIC_BINDING",
+        "EXECUTION_LINEAGE",
+        "OBLIGATION",
+        "SEMANTIC_REDUCTION",
+    )
+    for row in registry.ordered_rows:
+        assert row.subject_extractor_id == f"execution-h1-zero-call-v2:{row.family}:subjects"
+        assert row.cardinality_rule == f"execution-h1-zero-call-v2:{row.family}:cardinality"
+        assert row.terminal_conflict_rule == f"execution-h1-zero-call-v2:{row.family}:conflicts"
+        assert row.serialization_rule == f"execution-h1-zero-call-v2:{row.family}:serialization"
+        assert row.canonicalization_version == "chiplog.recovery.frontier.v1"
+    assert frontier_registry_reference(registry).subject_id == registry.registry_id

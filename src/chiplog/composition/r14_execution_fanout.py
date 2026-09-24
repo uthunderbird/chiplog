@@ -42,7 +42,11 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import FanOutBo
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 
 from .r14_execution_complete_seal_records import (
+    CompleteSealProfile,
     ExecutionCompleteSealPhysicalEnvelope,
+    ExecutionCompleteSealPhysicalEnvelopeV2,
+    RetainedExecutionCompleteSeal,
+    RetainedExecutionCompleteSealV2,
     build_complete_seal_envelope,
     complete_seal_physical_command,
     retained_execution_complete_seal,
@@ -93,10 +97,13 @@ async def publish_execution_fanout(
     expected_head: str,
     *,
     complete_registry: bool = False,
+    complete_profile: CompleteSealProfile = "V1",
 ) -> ExecutionRunRecord:
     observed = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
+        if complete_profile not in ("V1", "H1_V2"):
+            raise LoopRejected("unregistered execution complete seal profile")
         snapshot, inventory, previous = read_execution_call_history(runtime)
         lineage = [row for row in snapshot.records if row.run_id == run_id]
         if (
@@ -118,6 +125,12 @@ async def publish_execution_fanout(
         attempt = turn.attempts[turn.selector]
         if attempt.response_base64 is None or attempt.state != "RESPONSE_CAPTURED":
             raise LoopRejected("execution capture lacks exact response")
+        if complete_profile == "H1_V2":
+            # The V2 registry is selected only by the H1 path.  Its workspace
+            # proof and EMPTY inventories are not yet authenticated by B's
+            # verifier, so do not even request an owner proposal or publish a
+            # physically valid-looking V2 registry companion.
+            raise LoopRejected("H1 workspace original verification is unavailable")
         registry, bound = execution_registry(captured)
         registry_ref = reference(registry.registry_id, registry)
         engine = runtime._supervisor.runtime()
@@ -251,9 +264,14 @@ async def publish_execution_fanout(
     )
     if complete_registry and not is_zero_call_complete:
         raise LoopRejected("complete registry requires an eligible zero-call Complete")
-    envelope: ExecutionFanOutPhysicalEnvelope | ExecutionCompleteSealPhysicalEnvelope
+    envelope: (
+        ExecutionFanOutPhysicalEnvelope
+        | ExecutionCompleteSealPhysicalEnvelope
+        | ExecutionCompleteSealPhysicalEnvelopeV2
+    )
     if is_zero_call_complete:
-        complete_retained = retained_execution_complete_seal(evidence)
+        complete_retained: RetainedExecutionCompleteSeal | RetainedExecutionCompleteSealV2 | None
+        complete_retained = retained_execution_complete_seal(evidence, profile=complete_profile)
         envelope = build_complete_seal_envelope(complete_retained)
         command = complete_seal_physical_command(envelope)
     else:

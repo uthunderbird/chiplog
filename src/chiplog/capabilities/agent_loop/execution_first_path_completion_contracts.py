@@ -19,12 +19,17 @@ from .delivery_contracts import ExactHead
 from .delivery_preparation import DeliveryObservation
 from .execution_completion_contracts import PrepareExecutionCompletion
 from .execution_contracts import ExecutionRunRecord
+from .execution_h1_frontier_profile_v2 import (
+    H1VerifiedWorkspaceClosure,
+    derive_h1_frontier_profile_v2_members,
+)
 from .execution_initialization_contracts import SelectedAdmittedRunInput
 from .execution_recovery_observations import ExecutionRecoveryDTO, RecoverySourceRecord
 from .recovery_contracts import Digest, Identity, NonSchedulerFence, Present, UInt64
 from .recovery_frontier_contracts import FrontierMember, RecoveryFrontier
 from .recovery_frontier_registry_contracts import (
     RECOVERY_FRONTIER_REGISTRY_SCHEMA,
+    execution_h1_zero_call_frontier_registry_v2,
     execution_zero_call_frontier_registry,
     frontier_registry_reference,
 )
@@ -255,8 +260,13 @@ class FirstPathCompletionCutV2(ExecutionRecoveryDTO):
             and not frontier.ordered_calls,
             "foreign or nonzero-call frontier",
         )
-        registry = execution_zero_call_frontier_registry()
-        _require(frontier.registry == registry, "first-path registry differs")
+        v1_registry = execution_zero_call_frontier_registry()
+        v2_registry = execution_h1_zero_call_frontier_registry_v2()
+        _require(
+            frontier.registry == v1_registry or frontier.registry == v2_registry,
+            "first-path registry differs",
+        )
+        registry = frontier.registry
         self.require_source(
             RECOVERY_FRONTIER_REGISTRY_SCHEMA,
             frontier_registry_reference(registry),
@@ -264,6 +274,29 @@ class FirstPathCompletionCutV2(ExecutionRecoveryDTO):
         )
         members = frontier.ordered_members
         turn = run.turns[0]
+        if registry == v2_registry:
+            workspace = tuple(
+                member
+                for member in turn.attempts[0].manifest.members
+                if member.producer == "projections" and member.surface == "workspace"
+            )
+            _require(len(workspace) == 1, "V2 workspace carrier differs")
+            expected = derive_h1_frontier_profile_v2_members(
+                final_run=run,
+                selected_admitted_input=self.selected_admitted_input,
+                seal=self.seal,
+                # This is only a carrier-equality check.  The broker must supply
+                # the actual issuance/source verification before accepting a cut.
+                verified_workspace=H1VerifiedWorkspaceClosure(
+                    proposal_context_bytes=workspace[0].content.encode()
+                ),
+            )
+            _require(members == expected, "V2 frontier members differ from carriers")
+            _require(
+                frontier.fingerprint == first_path_frontier_fingerprint(frontier),
+                "frontier fingerprint differs",
+            )
+            return
         turn_ref = _ref(turn.turn_id, turn.canonical_bytes(), turn.head)
         families = tuple(row.family for row in registry.ordered_rows)
         _require(

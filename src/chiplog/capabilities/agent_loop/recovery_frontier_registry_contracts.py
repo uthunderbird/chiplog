@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Literal, get_args
+from typing import Literal, cast, get_args
 
 from pydantic import Field, ValidationError
 
@@ -21,6 +21,7 @@ __all__ = [
     "RECOVERY_FRONTIER_REGISTRY_SCHEMA",
     "RecoveryFrontierRegistryIntegrityError",
     "decode_frontier_registry",
+    "execution_h1_zero_call_frontier_registry_v2",
     "execution_zero_call_frontier_registry",
     "frontier_registry_content_fingerprint",
     "frontier_registry_reference",
@@ -28,7 +29,31 @@ __all__ = [
 
 _EXECUTION_ZERO_CALL_REGISTRY_ID = "chiplog.execution.zero-call-recovery-frontier"
 _EXECUTION_ZERO_CALL_REGISTRY_VERSION = "1"
+_EXECUTION_H1_ZERO_CALL_REGISTRY_ID = "chiplog.execution.h1-zero-call-recovery-frontier"
+_EXECUTION_H1_ZERO_CALL_REGISTRY_VERSION = "2"
 _CANONICALIZATION_VERSION = "chiplog.recovery.frontier.v1"
+
+# This is deliberately a literal tuple rather than the RecoveryRegistryRow
+# annotation: adding a future family must not silently change retained V2 bytes.
+_H1_V2_FAMILIES = (
+    "RUN",
+    "TURN",
+    "SEALED_RESPONSE",
+    "CALL",
+    "EFFECT",
+    "EVIDENCE",
+    "DELIVERY",
+    "AUTHORITY",
+    "MANDATE",
+    "POLICY",
+    "PROMPT",
+    "TOOL_SCHEMA",
+    "RECIPIENT",
+    "SEMANTIC_BINDING",
+    "EXECUTION_LINEAGE",
+    "OBLIGATION",
+    "SEMANTIC_REDUCTION",
+)
 
 
 class RecoveryFrontierRegistryIntegrityError(ValueError):
@@ -161,6 +186,59 @@ def execution_zero_call_frontier_registry() -> RecoveryFrontierRegistry:
         fingerprint=frontier_registry_content_fingerprint(
             _EXECUTION_ZERO_CALL_REGISTRY_ID,
             _EXECUTION_ZERO_CALL_REGISTRY_VERSION,
+            rows,
+        ),
+    )
+
+
+def execution_h1_zero_call_frontier_registry_v2() -> RecoveryFrontierRegistry:
+    """Return the immutable H1 V2 profile registry.
+
+    This factory is intentionally separate from the historical V1 factory.  A
+    V2 registry is a newly selected physical source; it is never synthesized
+    from an old V1 selection.
+    """
+
+    rows = tuple(
+        RecoveryRegistryRow(
+            family=cast(
+                Literal[
+                    "RUN",
+                    "TURN",
+                    "SEALED_RESPONSE",
+                    "CALL",
+                    "EFFECT",
+                    "EVIDENCE",
+                    "DELIVERY",
+                    "AUTHORITY",
+                    "MANDATE",
+                    "POLICY",
+                    "PROMPT",
+                    "TOOL_SCHEMA",
+                    "RECIPIENT",
+                    "SEMANTIC_BINDING",
+                    "EXECUTION_LINEAGE",
+                    "OBLIGATION",
+                    "SEMANTIC_REDUCTION",
+                ],
+                family,
+            ),
+            ordinal=ordinal,
+            subject_extractor_id=f"execution-h1-zero-call-v2:{family}:subjects",
+            cardinality_rule=f"execution-h1-zero-call-v2:{family}:cardinality",
+            terminal_conflict_rule=f"execution-h1-zero-call-v2:{family}:conflicts",
+            serialization_rule=f"execution-h1-zero-call-v2:{family}:serialization",
+            canonicalization_version=_CANONICALIZATION_VERSION,
+        )
+        for ordinal, family in enumerate(_H1_V2_FAMILIES)
+    )
+    return RecoveryFrontierRegistry(
+        registry_id=_EXECUTION_H1_ZERO_CALL_REGISTRY_ID,
+        version=_EXECUTION_H1_ZERO_CALL_REGISTRY_VERSION,
+        ordered_rows=rows,
+        fingerprint=frontier_registry_content_fingerprint(
+            _EXECUTION_H1_ZERO_CALL_REGISTRY_ID,
+            _EXECUTION_H1_ZERO_CALL_REGISTRY_VERSION,
             rows,
         ),
     )

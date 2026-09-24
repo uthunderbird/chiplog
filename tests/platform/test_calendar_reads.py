@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import sqlite3
@@ -12,6 +13,7 @@ from chiplog.adapters.driven.calendar_reads import (
     CalendarReadBroker,
     CalendarReadFailure,
     CalendarResponseIntegrityError,
+    decode_h1_original_calendar_read,
 )
 from chiplog.capabilities.calendar_observations.boundary import (
     DisclosureLabel,
@@ -21,6 +23,7 @@ from chiplog.capabilities.calendar_observations.contracts import CalendarBatch
 from chiplog.capabilities.calendar_observations.observations import (
     observation_id,
 )
+from chiplog.composition.r14_h1_workspace_issuance_contracts import H1CalendarOriginalReadV1
 from chiplog.platform.calendar_read_ledger import (
     CALENDAR_INVALIDATORS,
     CalendarReadIntegrityError,
@@ -58,6 +61,146 @@ async def test_every_issued_context_field_is_exact(tmp_path: Path, field: str) -
     )
     result = await broker.connect(peer).read(request(context.model_copy(update={field: changed})))
     assert result.disposition == "DENIED" and not result.rows and result.next_cursor is None
+
+
+async def test_original_read_snapshot_retains_exact_provider_batch_and_dequeued_receipt(
+    tmp_path: Path,
+) -> None:
+    observations = batch(count=3)
+    broker, ledger, peer, context = await setup(tmp_path, observations)
+    original_request = request(context, max_rows=1)
+    result = await broker.connect(peer).read(original_request)
+
+    retained = broker._original_read(peer, original_request, result)
+
+    assert retained.provider_batch == observations
+    assert retained.state == state(observations)
+    assert retained.result == result
+    assert retained.receipt.state == "RELEASED"
+    assert retained.receipt.enqueued and retained.receipt.dequeued
+    assert (
+        retained.receipt.result_digest
+        == hashlib.sha256(result.model_dump_json().encode()).hexdigest()
+    )
+    assert retained.cursor_binding is not None
+    assert retained.cursor_binding.token == result.next_cursor
+    assert retained.cursor_binding.snapshot_id == context.snapshot_id
+    assert retained.cursor_binding.last_order_key == result.rows[-1].order_key
+
+    with closing(sqlite3.connect(ledger._path)) as connection:
+        connection.execute(
+            "UPDATE authority_read_releases SET result_bytes=? "
+            "WHERE tenant_id=? AND read_attempt_id=?",
+            (b"replaced", "t", result.read_attempt_id),
+        )
+        connection.commit()
+    with pytest.raises(CalendarReadFailure, match="original calendar receipt"):
+        broker._verify_original_read(peer, retained)
+
+
+async def test_original_read_snapshot_requires_its_exact_request_and_result(tmp_path: Path) -> None:
+    broker, _, peer, context = await setup(tmp_path)
+    original_request = request(context, max_rows=1)
+    result = await broker.connect(peer).read(original_request)
+
+    with pytest.raises(CalendarReadFailure, match="original calendar read"):
+        broker._original_read(peer, original_request.model_copy(update={"max_rows": 2}), result)
+    with pytest.raises(CalendarReadFailure, match="original calendar read"):
+        broker._original_read(peer, original_request, result.model_copy(update={"rows": ()}))
+
+
+async def test_original_read_snapshot_keeps_empty_provider_evidence_without_requery(
+    tmp_path: Path,
+) -> None:
+    class CountingProvider:
+        def __init__(self, observations: CalendarBatch) -> None:
+            self.observations = observations
+            self.calls = 0
+
+        async def observe(self) -> CalendarBatch:
+            self.calls += 1
+            return self.observations
+
+    observations = batch(count=0)
+    ledger = CalendarReadLedger(tmp_path / "reads.db")
+    ledger.publish_initial_state(state(observations))
+    provider = CountingProvider(observations)
+    broker = CalendarReadBroker(ledger, provider)
+    peer = broker.authenticate_transport(
+        tenant_id="t", principal_id="principal1", channel_id="channel1"
+    )
+    context = await broker.acquire(peer, observed_at_ns=30)
+    original_request = request(context)
+    result = await broker.connect(peer).read(original_request)
+
+    retained = broker._original_read(peer, original_request, result)
+    broker._verify_original_read(peer, retained)
+
+    assert retained.provider_batch.observations == ()
+    assert result.rows == () and result.next_cursor is None
+    assert provider.calls == 1
+
+
+async def test_historical_decoder_rehydrates_original_calendar_read_without_broker_state(
+    tmp_path: Path,
+) -> None:
+    broker, _, peer, context = await setup(tmp_path)
+    original_request = request(context, max_rows=1)
+    result = await broker.connect(peer).read(original_request)
+    retained = broker._original_read(peer, original_request, result)
+    display = result.model_copy(update={"disposition": "LAGGING"})
+    evidence = H1CalendarOriginalReadV1(
+        provider_batch_json=retained.provider_batch.model_dump_json(),
+        state_json=retained.state.model_dump_json(),
+        operation_json=retained.operation.model_dump_json(),
+        result_json=retained.result.model_dump_json(),
+        operation_fingerprint=retained.operation.fingerprint(),
+        recipient_fingerprint=retained.operation.recipient_fingerprint(),
+        proof_fingerprint=retained.receipt.proof_fingerprint or "0" * 64,
+        result_digest=retained.receipt.result_digest or "0" * 64,
+        cursor_token=None if retained.cursor_binding is None else retained.cursor_binding.token,
+        cursor_snapshot_id=(
+            None if retained.cursor_binding is None else retained.cursor_binding.snapshot_id
+        ),
+        cursor_query_binding_base64=(
+            None
+            if retained.cursor_binding is None
+            else base64.b64encode(retained.cursor_binding.query_binding).decode("ascii")
+        ),
+        cursor_last_order_key=(
+            None if retained.cursor_binding is None else retained.cursor_binding.last_order_key
+        ),
+        display_result_json=display.model_dump_json(),
+    )
+
+    decoded = decode_h1_original_calendar_read(evidence)
+
+    assert decoded == retained
+
+
+async def test_historical_decoder_rejects_cursor_without_exact_binding(tmp_path: Path) -> None:
+    broker, _, peer, context = await setup(tmp_path)
+    original_request = request(context, max_rows=1)
+    result = await broker.connect(peer).read(original_request)
+    retained = broker._original_read(peer, original_request, result)
+    evidence = H1CalendarOriginalReadV1(
+        provider_batch_json=retained.provider_batch.model_dump_json(),
+        state_json=retained.state.model_dump_json(),
+        operation_json=retained.operation.model_dump_json(),
+        result_json=retained.result.model_dump_json(),
+        operation_fingerprint=retained.operation.fingerprint(),
+        recipient_fingerprint=retained.operation.recipient_fingerprint(),
+        proof_fingerprint=retained.receipt.proof_fingerprint or "0" * 64,
+        result_digest=retained.receipt.result_digest or "0" * 64,
+        cursor_token=None,
+        cursor_snapshot_id=None,
+        cursor_query_binding_base64=None,
+        cursor_last_order_key=None,
+        display_result_json=result.model_copy(update={"disposition": "LAGGING"}).model_dump_json(),
+    )
+
+    with pytest.raises(CalendarReadFailure, match="historical calendar evidence"):
+        decode_h1_original_calendar_read(evidence)
 
 
 @pytest.mark.parametrize("field", tuple(f for f in CALENDAR_INVALIDATORS if f != "tenant_id"))

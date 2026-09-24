@@ -5,6 +5,7 @@ select_verified. Cache writes and cache reads never create an issuance. This
 adapter authenticates retained bytes, not the truth of a caller's source claims.
 """
 
+import hashlib
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -131,6 +132,17 @@ class WorkspaceIssuanceJournal:
                 raise WorkspaceIntegrityError(
                     "workspace.issued_read", self._tenant, identity
                 ) from error
+
+    def raw_entry(self, channel: str, sequence: int) -> tuple[str, str]:
+        """Return the immutable journal locator for an already-issued dashboard state."""
+        with self._gate.hold():
+            for entry_id, _, payload in self._journal.entries():
+                issued = _Issuance.model_validate_json(payload)
+                if issued.state.channel_id == channel and issued.state.sequence == sequence:
+                    if issued.model_dump_json().encode() != payload:
+                        raise WorkspaceIntegrityError("workspace.issued_raw", self._tenant, channel)
+                    return entry_id, hashlib.sha256(payload).hexdigest()
+        raise WorkspaceIntegrityError("workspace.issued_raw", self._tenant, channel)
 
     def verify(self, state: WorkspaceState) -> None:
         original = self.load(state.channel_id, state.sequence)

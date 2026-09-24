@@ -16,7 +16,11 @@ from chiplog.capabilities.agent_loop.execution_run_record_contracts import (
     ExecutionRunCanonicalMember,
     decode_execution_run_member,
 )
-from chiplog.capabilities.agent_loop.execution_transition_contracts import CreateExecutionRun
+from chiplog.capabilities.agent_loop.execution_transition_contracts import (
+    CreateExecutionRun,
+    PrepareExecutionRequest,
+)
+from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
 from chiplog.composition.r14_cancellation_contracts import (
     CANCELLATION_OPERATION,
@@ -31,6 +35,7 @@ from chiplog.composition.r14_cancellation_records import (
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
     RetainedExecutionCompleteSeal,
+    RetainedExecutionCompleteSealV2,
     build_complete_seal_envelope,
     complete_seal_physical_command,
 )
@@ -59,6 +64,8 @@ from chiplog.composition.r14_execution_transition_records import (
     EXECUTION_TRANSITION_OPERATION,
     ExecutionHistorySnapshot,
     RetainedExecutionTransition,
+    RetainedExecutionTransitionEvidence,
+    RetainedExecutionTransitionV3,
     transition_command,
 )
 from chiplog.composition.r14_fanout_contracts import FANOUT_OPERATION, RetainedFanOutPreparation
@@ -66,6 +73,7 @@ from chiplog.composition.r14_fanout_records import (
     build_envelope,
     physical_command,
 )
+from chiplog.composition.r14_h1_workspace_issuance import verify_h1_original_workspace
 from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 from chiplog.platform._sqlite import PhysicalPublicationCommand
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
@@ -359,7 +367,17 @@ def _read_call_history(
                         ):
                             raise ValueError("execution complete seal has a substituted operation")
                         raw_complete = entry["execution_complete_seal"]
-                        complete = RetainedExecutionCompleteSeal.model_validate_json(raw_complete)
+                        complete_kind = json.loads(raw_complete).get("kind")
+                        if complete_kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V1":
+                            complete: (
+                                RetainedExecutionCompleteSeal | RetainedExecutionCompleteSealV2
+                            ) = RetainedExecutionCompleteSeal.model_validate_json(raw_complete)
+                        elif complete_kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V2":
+                            complete = RetainedExecutionCompleteSealV2.model_validate_json(
+                                raw_complete
+                            )
+                        else:
+                            raise ValueError("unregistered execution complete seal profile")
                         complete_envelope = build_complete_seal_envelope(complete)
                         sealed = complete.exchange.proposal.sealed_run
                         before_execution = ExecutionHistorySnapshot(
@@ -490,9 +508,60 @@ def _read_call_history(
                         if command.operation_kind != EXECUTION_TRANSITION_OPERATION:
                             raise ValueError("execution transition has a substituted operation")
                         retained_raw = entry["execution_transition"]
-                        retained_transition = RetainedExecutionTransition.model_validate_json(
-                            retained_raw
-                        )
+                        retained_kind = json.loads(retained_raw).get("kind")
+                        if retained_kind == "R14_SELECTED_EXECUTION_TRANSITION_V2":
+                            retained_transition: RetainedExecutionTransitionEvidence = (
+                                RetainedExecutionTransition.model_validate_json(retained_raw)
+                            )
+                        elif retained_kind == "R14_SELECTED_EXECUTION_TRANSITION_V3":
+                            retained_transition = RetainedExecutionTransitionV3.model_validate_json(
+                                retained_raw
+                            )
+                            if not isinstance(retained_transition.request, PrepareExecutionRequest):
+                                raise ValueError("H1 retained transition is not Prepare")
+                            workspace_members = tuple(
+                                member
+                                for member in retained_transition.request.manifest.members
+                                if member.producer == "projections"
+                                and member.surface == "workspace"
+                            )
+                            if len(workspace_members) != 1:
+                                raise ValueError("H1 retained transition lacks unique workspace")
+                            workspace = workspace_members[0]
+                            workspace_port = R13Workspace(runtime)
+                            original = workspace_port.open_h1_workspace_issuance().load(
+                                retained_transition.workspace_issuance
+                            )
+                            verify_h1_original_workspace(
+                                retained_transition.workspace_issuance,
+                                workspace.model_dump_json().encode(),
+                                workspace.content.encode(),
+                                workspace_port.open_h1_workspace_issuance(),
+                                workspace_port.open_dashboard_issuance(),
+                            )
+                            started = next(
+                                (
+                                    row
+                                    for row in mixed_records
+                                    if isinstance(row, ExecutionRunRecord)
+                                    and row.head == retained_transition.request.run.predecessor
+                                ),
+                                None,
+                            )
+                            if (
+                                started is None
+                                or original.tenant != retained_transition.request.run.tenant
+                                or original.run_id != retained_transition.request.run.run_id
+                                or original.started_run_head != started.head
+                                or original.turn_id != retained_transition.request.manifest.turn_id
+                                or original.worker_session
+                                != retained_transition.request.manifest.worker_session
+                                or original.snapshot.tenant_head + 1
+                                != retained_transition.expected_head
+                            ):
+                                raise ValueError("H1 retained transition source cut differs")
+                        else:
+                            raise ValueError("unregistered retained execution transition")
                         execution = retained_transition.proposal.run
                         if not isinstance(execution, ExecutionRunRecord):
                             raise ValueError("execution transition is not a native v2 Run")

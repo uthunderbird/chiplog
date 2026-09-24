@@ -18,6 +18,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from chiplog.adapters.driven.loop_sqlite import OWNER
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
@@ -28,19 +29,28 @@ from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunReco
 from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
     FirstPathCompletionCutV2,
 )
+from chiplog.capabilities.agent_loop.execution_h1_frontier_profile_v2 import (
+    H1WorkspaceClosure,
+    derive_h1_frontier_profile_v2_members,
+)
 from chiplog.capabilities.agent_loop.execution_run_record_contracts import (
     ExecutionRunCanonicalMember,
     decode_execution_run_member,
 )
+from chiplog.capabilities.agent_loop.execution_transition_contracts import PrepareExecutionRequest
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
     RECOVERY_FRONTIER_REGISTRY_SCHEMA,
     decode_frontier_registry,
+    execution_h1_zero_call_frontier_registry_v2,
     execution_zero_call_frontier_registry,
     frontier_registry_reference,
 )
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
-from chiplog.composition.common_execution_driver_contracts import DriverCommandIdentityV1
+from chiplog.composition.common_execution_driver_contracts import (
+    DriveInputRequestV1,
+    DriverCommandIdentityV1,
+)
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
 )
@@ -48,6 +58,9 @@ from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCH
 from chiplog.composition.r14_execution_inbox_records import (
     EXECUTION_INBOX_INITIALIZATION_OPERATION,
     RetainedInboxExecutionInitialization,
+)
+from chiplog.composition.r14_execution_transition_records import (
+    RetainedExecutionTransitionV3,
 )
 from chiplog.composition.r14_fanout_contracts import SEAL_SCHEMA
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
@@ -100,10 +113,24 @@ class _RawFirstPath:
     lineage: tuple[tuple[_SelectedCommand, ExecutionRunRecord, PhysicalRecord], ...]
     seal: _SelectedCommand
     seal_record: PhysicalRecord
+    sealed_response: SealedResponseRecord
     registry_record: PhysicalRecord
+    registry_is_v2: bool
     physical_members: tuple[H1FirstPathPhysicalMember, ...]
     commitment: str
     database_identity: tuple[str, int, int]
+
+
+class H1WorkspaceClosureResolver(Protocol):
+    """Broker-private reopening port for one already selected V3 Prepare."""
+
+    def __call__(
+        self,
+        *,
+        selected_prepare: RetainedExecutionTransitionV3,
+        selected_prepare_bytes: bytes,
+        workspace_member_bytes: bytes,
+    ) -> H1WorkspaceClosure: ...
 
 
 class H1FirstPathSources:
@@ -115,11 +142,19 @@ class H1FirstPathSources:
     accidentally gain a fixture-derived source path.
     """
 
-    def __init__(self, runtime: CommonCliExecutionRuntime) -> None:
+    def __init__(
+        self,
+        runtime: CommonCliExecutionRuntime,
+        *,
+        workspace_closure_resolver: H1WorkspaceClosureResolver | None = None,
+    ) -> None:
         if type(runtime) is not CommonCliExecutionRuntime:
             raise TypeError("H1 sources require the canonical common CLI runtime")
         self._runtime = runtime
         self._gate = runtime._authority_gate()
+        self._workspace_closure_resolver = (
+            workspace_closure_resolver or self._reopen_selected_workspace
+        )
         self._issued: dict[int, H1FirstPathCapture] = {}
 
     @staticmethod
@@ -140,13 +175,17 @@ class H1FirstPathSources:
             raise TypeError("H1 sources require the exact original driver identity")
         if not isinstance(original_fingerprint, str) or len(original_fingerprint) != 64:
             raise ValueError("H1 sources require the exact original driver fingerprint")
-        self._read_selected_cut(
+        raw = self._read_selected_cut(
             original_identity=original_identity,
             original_fingerprint=original_fingerprint,
             selected_seal=selected_seal,
         )
-        self._require_complete_frontier_mapping()
-        raise AssertionError("unreachable: frozen frontier dispatcher must fail closed")
+        if not raw.registry_is_v2:
+            raise ValueError("H1 first-path V2 requires a genuinely selected V2 registry")
+        self._derive_v2_frontier_members(
+            raw, verified_workspace=self._resolve_workspace_closure(raw)
+        )
+        raise AssertionError("unreachable: missing workspace closure must fail closed")
 
     def check_current(self, capture: H1FirstPathCapture) -> bool:
         """Reject copied/unissued captures before any potentially stale reuse."""
@@ -173,11 +212,30 @@ class H1FirstPathSources:
             or not initialization_envelope_bytes
         ):
             raise ValueError("H1 historical source lacks a retained initialization envelope")
-        self._require_complete_frontier_mapping()
-
-    def _require_complete_frontier_mapping(self) -> None:
-        for row in execution_zero_call_frontier_registry().ordered_rows:
-            self._require_frozen_family_mapping(row.family)
+        try:
+            entry = json.loads(initialization_envelope_bytes)
+            encoded = entry["inbox_initialization"]
+            initialization = RetainedInboxExecutionInitialization.model_validate_json(encoded)
+        except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            raise ValueError("H1 historical initialization envelope is invalid") from error
+        request = DriveInputRequestV1.model_validate_json(initialization.driver_request_bytes)
+        raw = self._read_selected_cut(
+            original_identity=request.identity,
+            original_fingerprint=initialization.driver_request_fingerprint,
+            selected_seal=source.selected_response_seal,
+            historical=True,
+        )
+        if (
+            raw.initialization.raw != initialization_envelope_bytes
+            or initialization.request.admitted != source.selected_admitted_input
+            or not raw.registry_is_v2
+            or source.frontier.registry != execution_h1_zero_call_frontier_registry_v2()
+        ):
+            raise ValueError("H1 historical source differs from raw V2 selection")
+        self._derive_v2_frontier_members(
+            raw, verified_workspace=self._resolve_workspace_closure(raw)
+        )
+        raise AssertionError("unreachable: historical cut construction is not mounted")
 
     def _read_selected_cut(
         self,
@@ -185,11 +243,13 @@ class H1FirstPathSources:
         original_identity: DriverCommandIdentityV1,
         original_fingerprint: str,
         selected_seal: CallSubjectHead,
+        historical: bool = False,
     ) -> _RawFirstPath:
         """Authenticate raw selection and physical membership in one read cut."""
         runtime = self._runtime
         with self._gate.hold():
-            runtime._require_no_pending()
+            if not historical:
+                runtime._require_no_pending()
             runtime._check_database_identity()
             database = Path(runtime._database).resolve(strict=True)
             before = database.stat()
@@ -202,13 +262,15 @@ class H1FirstPathSources:
             ) as connection:
                 connection.execute("BEGIN")
                 commitment = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
-                if commitment != runtime._commitment_journal.load(runtime._tenant_id):
+                if not historical and (
+                    commitment != runtime._commitment_journal.load(runtime._tenant_id)
+                ):
                     raise ValueError("H1 raw cut differs from independent commitment anchor")
                 fence = connection.execute(
                     "SELECT generation, frontier FROM deletion_fences WHERE tenant_id=?",
                     (runtime._tenant_id,),
                 ).fetchone()
-                if fence != ("r6", 0):
+                if not historical and fence != ("r6", 0):
                     raise ValueError("H1 raw cut lacks the current deletion fence")
                 raw = self._select_lineage_and_seal(
                     connection, commands, initialization, selected_seal
@@ -222,7 +284,9 @@ class H1FirstPathSources:
                 lineage=raw[0],
                 seal=raw[1],
                 seal_record=raw[2],
+                sealed_response=raw[5],
                 registry_record=raw[3],
+                registry_is_v2=raw[4],
                 physical_members=(
                     *(self._source_member(command, record) for command, _, record in raw[0]),
                     self._source_member(raw[1], raw[2]),
@@ -290,6 +354,8 @@ class H1FirstPathSources:
         _SelectedCommand,
         PhysicalRecord,
         PhysicalRecord,
+        bool,
+        SealedResponseRecord,
     ]:
         entry = json.loads(initialization.raw)
         evidence = RetainedInboxExecutionInitialization.model_validate_json(
@@ -357,16 +423,143 @@ class H1FirstPathSources:
         )
         if final is None or final != runs[-1][1]:
             raise ValueError("H1 selected seal does not close the selected Run lineage")
-        registry = execution_zero_call_frontier_registry()
-        if registry_record.canonical_bytes != registry.canonical_bytes():
-            raise ValueError("H1 selected registry bytes differ from the fixed profile")
+        v1_registry = execution_zero_call_frontier_registry()
+        v2_registry = execution_h1_zero_call_frontier_registry_v2()
+        if registry_record.canonical_bytes == v1_registry.canonical_bytes():
+            registry = v1_registry
+        elif registry_record.canonical_bytes == v2_registry.canonical_bytes():
+            registry = v2_registry
+        else:
+            raise ValueError("H1 selected registry bytes differ from a fixed profile")
         expected_registry = frontier_registry_reference(registry)
         decode_frontier_registry(
             registry_record.schema_id,
             registry_record.canonical_bytes,
             expected_reference=expected_registry,
         )
-        return tuple(runs), seal_command, seal_record, registry_record
+        self._verify_native_source_inventory(tuple(runs), seal_command)
+        return (
+            tuple(runs),
+            seal_command,
+            seal_record,
+            registry_record,
+            registry == v2_registry,
+            SealedResponseRecord.model_validate_json(seal_record.canonical_bytes),
+        )
+
+    @staticmethod
+    def _derive_v2_frontier_members(
+        raw: _RawFirstPath, *, verified_workspace: H1WorkspaceClosure | None
+    ) -> None:
+        """Run the sole V2 extractor; only a broker verifier can supply closure."""
+        entry = json.loads(raw.initialization.raw)
+        encoded = entry.get("inbox_initialization")
+        if not isinstance(encoded, str):
+            raise ValueError("H1 initialization decision lacks retained evidence")
+        initialization = RetainedInboxExecutionInitialization.model_validate_json(encoded)
+        derive_h1_frontier_profile_v2_members(
+            final_run=raw.lineage[-1][1],
+            selected_admitted_input=initialization.request.admitted,
+            seal=raw.sealed_response,
+            verified_workspace=verified_workspace,
+        )
+
+    def _resolve_workspace_closure(self, raw: _RawFirstPath) -> H1WorkspaceClosure | None:
+        """Pass only raw-selected V3 Prepare and exact W bytes to the broker port."""
+        resolver = self._workspace_closure_resolver
+        if resolver is None:
+            return None
+        matches: list[tuple[RetainedExecutionTransitionV3, bytes, bytes]] = []
+        for command, run, _ in raw.lineage:
+            entry = json.loads(command.raw)
+            encoded = entry.get("execution_transition")
+            if not isinstance(encoded, str):
+                continue
+            try:
+                retained = RetainedExecutionTransitionV3.model_validate_json(encoded)
+            except ValueError:
+                continue
+            if retained.canonical_bytes().decode() != encoded:
+                raise ValueError("H1 selected V3 Prepare bytes are not canonical")
+            if (
+                not isinstance(retained.request, PrepareExecutionRequest)
+                or retained.proposal.run != run
+            ):
+                continue
+            workspace = tuple(
+                member
+                for member in retained.request.manifest.members
+                if member.producer == "projections" and member.surface == "workspace"
+            )
+            if len(workspace) != 1:
+                raise ValueError("H1 selected V3 Prepare lacks one workspace member")
+            matches.append((retained, encoded.encode(), workspace[0].model_dump_json().encode()))
+        if len(matches) != 1:
+            raise ValueError("H1 raw cut has no unique selected V3 Prepare")
+        retained, selected_bytes, workspace_bytes = matches[0]
+        with self._gate.hold():
+            closure = resolver(
+                selected_prepare=retained,
+                selected_prepare_bytes=selected_bytes,
+                workspace_member_bytes=workspace_bytes,
+            )
+        if not isinstance(getattr(closure, "proposal_context_bytes", None), bytes):
+            raise ValueError("H1 workspace closure resolver returned an invalid closure")
+        return closure
+
+    def _reopen_selected_workspace(
+        self,
+        *,
+        selected_prepare: RetainedExecutionTransitionV3,
+        selected_prepare_bytes: bytes,
+        workspace_member_bytes: bytes,
+    ) -> H1WorkspaceClosure:
+        """Reopen the runtime-bound original issuance for raw-selected V3 only."""
+        if selected_prepare.canonical_bytes() != selected_prepare_bytes:
+            raise ValueError("H1 selected V3 Prepare bytes differ at workspace reopen")
+        if not isinstance(selected_prepare.request, PrepareExecutionRequest):
+            raise ValueError("H1 workspace reopen requires selected V3 Prepare")
+        workspace = tuple(
+            member
+            for member in selected_prepare.request.manifest.members
+            if member.producer == "projections" and member.surface == "workspace"
+        )
+        if len(workspace) != 1 or workspace[0].model_dump_json().encode() != workspace_member_bytes:
+            raise ValueError("H1 selected V3 Prepare workspace bytes differ at reopen")
+        # These journal paths derive solely from the canonical runtime database
+        # and gate.  Neither a caller path nor an authority token enters here.
+        from chiplog.composition.r13_workspace import R13Workspace
+        from chiplog.composition.r14_h1_workspace_sources import reopen_h1_original_workspace
+
+        workspace_port = R13Workspace(self._runtime)
+        return reopen_h1_original_workspace(
+            selected_prepare.workspace_issuance,
+            workspace_member_bytes,
+            workspace[0].content.encode(),
+            workspace_port.open_h1_workspace_issuance(),
+            workspace_port.open_dashboard_issuance(),
+        )
+
+    @staticmethod
+    def _verify_native_source_inventory(
+        lineage: tuple[tuple[_SelectedCommand, ExecutionRunRecord, PhysicalRecord], ...],
+        seal_command: _SelectedCommand,
+    ) -> None:
+        """Reject selected native publications with hidden source members.
+
+        The cut intentionally retains only the Run lineage, response seal, and
+        selected registry.  A selected source command carrying another managed
+        member cannot be silently omitted from that inventory.
+        """
+        for command, _, run in lineage:
+            if command is seal_command:
+                continue
+            if command.command.records != (run,):
+                raise ValueError("H1 selected Run publication has hidden physical members")
+        if len(seal_command.command.records) != 3 or {
+            member.schema_id for member in seal_command.command.records
+        } != {EXECUTION_RUN_SCHEMA, SEAL_SCHEMA, RECOVERY_FRONTIER_REGISTRY_SCHEMA}:
+            raise ValueError("H1 selected seal publication has hidden physical members")
 
     def _physical_member(
         self,
