@@ -79,6 +79,10 @@ Reusable bounded implementation, not full milestone evidence:
 
 ## Phase C — freeze the whole remaining contract graph
 
+The concrete symbol inventory and remaining gaps are tracked in
+[Integrated contracts](R14-R17-INTEGRATED-CONTRACTS.md); that graph remains OPEN
+until every required boundary has a callable public contract and consumer evidence.
+
 Before new business logic, reconcile existing contracts against every ledger row.
 Retain valid contracts; version only genuine wire/semantic changes. Freeze together:
 
