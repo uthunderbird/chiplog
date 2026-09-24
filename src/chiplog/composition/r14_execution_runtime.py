@@ -56,6 +56,9 @@ from chiplog.capabilities.agent_loop.execution_transition_contracts import (
     PrepareExecutionRequest,
     StartInitialExecutionTurn,
 )
+from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
+    RECOVERY_FRONTIER_REGISTRY_SCHEMA,
+)
 from chiplog.composition.r16_dispatch_registry import ResourceObservation
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 
@@ -79,6 +82,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
     _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = (
         *R14PlanningRuntime._record_schema_variants,
         ("agent_loop", EXECUTION_RUN_SCHEMA),
+        ("agent_loop", RECOVERY_FRONTIER_REGISTRY_SCHEMA),
     )
     _execution_lane: asyncio.Lock
     _execution_model: HermeticModel
@@ -625,6 +629,17 @@ class R14ExecutionRuntime(R14PlanningRuntime):
 
         async with self._execution_lane:
             return await publish_execution_fanout(self, peer, run_id, expected_head)
+
+    async def seal_execution_complete(
+        self, peer: str, run_id: str, expected_head: str
+    ) -> ExecutionRunRecord:
+        """Select the versioned registry companion for an eligible zero-call Complete."""
+        from .r14_execution_fanout import publish_execution_fanout
+
+        async with self._execution_lane:
+            return await publish_execution_fanout(
+                self, peer, run_id, expected_head, complete_registry=True
+            )
 
     async def begin_execution(
         self, peer: str, run_id: str, expected_head: str

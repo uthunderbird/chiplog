@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
-from chiplog.architecture.r7_runtime import R14_R17_H0_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import R14_R17_H1_PRODUCTION_MANIFEST
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallAuthorityObservation,
     CallSubjectHead,
@@ -31,6 +31,7 @@ from chiplog.capabilities.agent_loop.execution_initialization_contracts import (
 from chiplog.capabilities.agent_loop.execution_transition_contracts import CreateExecutionRun
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
 from chiplog.composition.common_execution_driver_contracts import (
+    AdvanceExecutionRequestV1,
     CommonExecutionResultV1,
     DriveInputRequestV1,
     ExecutionDriverRejectedV1,
@@ -39,6 +40,9 @@ from chiplog.composition.common_execution_driver_contracts import (
     SelectedExecutionReceiptV1,
 )
 from chiplog.composition.r7_planning import _open_runtime
+from chiplog.composition.r14_execution_complete_seal_records import (
+    EXECUTION_COMPLETE_SEAL_OPERATION,
+)
 from chiplog.composition.r14_execution_inbox_records import (
     RetainedInboxExecutionInitialization,
     inbox_initialization_command,
@@ -301,6 +305,165 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             )
         return self._receipt(*found, "EXACT_REPLAY")
 
+    async def advance_execution(
+        self, request: AdvanceExecutionRequestV1
+    ) -> CommonExecutionResultV1:
+        """Advance one selected H0 Run through the mounted capture/seal first path."""
+        try:
+            await self._execution_actor("hermetic-ingress")
+            found = self._find(request.identity, request.original_driver_command_fingerprint)
+            if found is None:
+                return ExecutionDriverRejectedV1(
+                    identity=request.identity,
+                    original_driver_command_fingerprint=request.original_driver_command_fingerprint,
+                    code="HOLD",
+                    reason="selected H0 Run is unavailable for advance",
+                )
+            evidence, _ = found
+            run = evidence.proposal.run
+            expected = Head(
+                identity=run.head,
+                head=run.head,
+                fingerprint=hashlib.sha256(run.canonical_bytes()).hexdigest(),
+            )
+            if request.expected_selected_run_head != expected:
+                return ExecutionDriverRejectedV1(
+                    identity=request.identity,
+                    original_driver_command_fingerprint=request.original_driver_command_fingerprint,
+                    code="STALE",
+                    reason="expected selected H0 Run head differs",
+                )
+            lineage = [
+                item for item in read_execution_history(self).records if item.run_id == run.run_id
+            ]
+            if not lineage or lineage[0] != run:
+                return ExecutionDriverRejectedV1(
+                    identity=request.identity,
+                    original_driver_command_fingerprint=request.original_driver_command_fingerprint,
+                    code="STALE",
+                    reason="selected H0 Run lineage differs",
+                )
+            current = lineage[-1]
+            if current != run:
+                if current.state == "ACTIVE" and current.event == "ModelCompletionPrepared":
+                    return self._running_receipt(evidence, current, disposition="EXACT_REPLAY")
+                return ExecutionDriverRejectedV1(
+                    identity=request.identity,
+                    original_driver_command_fingerprint=request.original_driver_command_fingerprint,
+                    code="HOLD",
+                    reason="selected H0 Run already advanced beyond the mounted first path",
+                )
+            if run.state != "CREATED":
+                return ExecutionDriverRejectedV1(
+                    identity=request.identity,
+                    original_driver_command_fingerprint=request.original_driver_command_fingerprint,
+                    code="STALE",
+                    reason="selected H0 Run is not CREATED",
+                )
+            started = await self.begin_execution("hermetic-ingress", run.run_id, run.head)
+            captured = await self.capture_execution("hermetic-ingress", run.run_id, started.head)
+            sealed = await self.seal_execution_complete(
+                "hermetic-ingress", run.run_id, captured.head
+            )
+            if sealed.state != "ACTIVE":
+                raise LoopRejected("first-path complete seal is not an active Run")
+            return self._running_receipt(evidence, sealed, disposition="COMMITTED")
+        except _DriverConflict as error:
+            return ExecutionDriverRejectedV1(
+                identity=request.identity,
+                original_driver_command_fingerprint=request.original_driver_command_fingerprint,
+                code="CONFLICT",
+                reason=str(error),
+            )
+        except LoopRejected as error:
+            return ExecutionDriverRejectedV1(
+                identity=request.identity,
+                original_driver_command_fingerprint=request.original_driver_command_fingerprint,
+                code="STALE",
+                reason=str(error),
+            )
+
+    def _running_receipt(
+        self,
+        evidence: RetainedInboxExecutionInitialization,
+        run: object,
+        *,
+        disposition: Literal["COMMITTED", "EXACT_REPLAY"],
+    ) -> SelectedExecutionReceiptV1:
+        """Project a selected physical complete-seal, retaining the H0 ingress binding."""
+        from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+
+        if not isinstance(run, ExecutionRunRecord):
+            raise LoopRejected("first-path seal did not produce a native Run")
+        selected: tuple[str, bytes] | None = None
+        for decision_id, _, raw in self._loop_decisions().entries():
+            entry = json.loads(raw)
+            if entry.get("kind") != "DECIDED":
+                continue
+            command = self._publication(entry)
+            if (
+                command.operation_kind == EXECUTION_COMPLETE_SEAL_OPERATION
+                and command.idempotency_key == run.head
+            ):
+                if selected is not None:
+                    raise LoopRejected("multiple selected complete seals for native Run")
+                state, actual, anchored = self._selected_physical_state(command)
+                if state != "COMPLETE" or actual != anchored:
+                    raise LoopRejected("selected complete seal is not materialized")
+                physical_run = [
+                    record for record in command.records if record.record_id == run.head
+                ]
+                if (
+                    len(physical_run) != 1
+                    or physical_run[0].owner != "agent_loop"
+                    or physical_run[0].canonical_bytes != run.canonical_bytes()
+                    or physical_run[0].fingerprint
+                    != hashlib.sha256(run.canonical_bytes()).hexdigest()
+                ):
+                    raise LoopRejected("selected complete seal Run physical member differs")
+                selected = (decision_id, raw)
+        if selected is None:
+            raise LoopRejected("selected complete seal decision is absent")
+        lineage = [
+            item for item in read_execution_history(self).records if item.run_id == run.run_id
+        ]
+        if lineage[0] != evidence.proposal.run or lineage[-1] != run:
+            raise LoopRejected("selected complete seal Run lineage differs from H0 admission")
+        decision_id, raw = selected
+        wire = DriveInputRequestV1.model_validate_json(evidence.driver_request_bytes)
+        admitted = evidence.request.admitted
+
+        def ingress_head(value: CallSubjectHead) -> Head:
+            assert isinstance(value.revision, Present)
+            return Head(
+                identity=value.subject_id,
+                head=value.revision.head,
+                fingerprint=value.revision.fingerprint,
+            )
+
+        return SelectedExecutionReceiptV1(
+            disposition=disposition,
+            identity=wire.identity,
+            original_driver_command_fingerprint=evidence.driver_request_fingerprint,
+            selected_ingress_decision=ingress_head(admitted.selected_decision),
+            selected_custody=ingress_head(admitted.custody),
+            selected_admitted_input=ingress_head(admitted.inbox),
+            stable_run_lineage_id=run.run_id,
+            selected_run_head=Head(
+                identity=run.head,
+                head=run.head,
+                fingerprint=hashlib.sha256(run.canonical_bytes()).hexdigest(),
+            ),
+            selected_run_state=run.state,
+            selected_journal_decision=Head(
+                identity=run.head,
+                head=decision_id,
+                fingerprint=hashlib.sha256(raw).hexdigest(),
+            ),
+            commit_sequence=self._publication(json.loads(raw)).expected_head + 1,
+            phase="RUNNING",
+        )
+
     def _find(
         self, identity: object, fingerprint: str
     ) -> tuple[RetainedInboxExecutionInitialization, str] | None:
@@ -458,7 +621,7 @@ async def open_common_cli_execution_runtime(
             tenant_id="hermetic-tenant",
             operator_secret=b"r13-hermetic-only",
             runtime_type=CommonCliExecutionRuntime,
-            manifest=R14_R17_H0_PRODUCTION_MANIFEST,
+            manifest=R14_R17_H1_PRODUCTION_MANIFEST,
             extra_leaves={
                 "model": model,
                 "effects_transport": resources.require_original_provider(),

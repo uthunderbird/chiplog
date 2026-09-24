@@ -9,7 +9,24 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
-ROUTES = (
+_H1_ROUTES = (
+    (
+        "deployment_trust.issue_hermetic_output_scope",
+        "broker",
+        "deployment_trust",
+        "chiplog.deployment-trust.owner-call.v1",
+        "chiplog.deployment-trust.issue-hermetic-output-scope-result.v1",
+    ),
+    (
+        "deployment_trust.read_current_hermetic_output_scope",
+        "broker",
+        "deployment_trust",
+        "chiplog.deployment-trust.owner-call.v1",
+        "chiplog.deployment-trust.current-hermetic-output-scope-result.v1",
+    ),
+)
+
+ROUTES: tuple[tuple[str, str, str, str, str], ...] = (
     (
         "deployment_trust.authenticate",
         "broker",
@@ -40,11 +57,20 @@ ROUTES = (
     ),
 )
 
+ROUTES = tuple(sorted(ROUTES))
+
 
 class _TrustOwnerCall(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    mode: Literal["AUTHENTICATE", "BOOTSTRAP", "REVALIDATE", "RUNTIME_ADMISSION"]
+    mode: Literal[
+        "AUTHENTICATE",
+        "BOOTSTRAP",
+        "REVALIDATE",
+        "RUNTIME_ADMISSION",
+        "ISSUE_HERMETIC_OUTPUT_SCOPE_V1",
+        "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1",
+    ]
     snapshot_bytes: bytes
     request_bytes: bytes
 
@@ -258,6 +284,8 @@ def _evaluate(call: _TrustOwnerCall) -> _TrustOwnerResult:
 
 
 _OPERATION_MODES = {
+    "deployment_trust.issue_hermetic_output_scope": "ISSUE_HERMETIC_OUTPUT_SCOPE_V1",
+    "deployment_trust.read_current_hermetic_output_scope": "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1",
     "deployment_trust.authenticate": "AUTHENTICATE",
     "deployment_trust.bootstrap": "BOOTSTRAP",
     "deployment_trust.revalidate": "REVALIDATE",
@@ -265,7 +293,7 @@ _OPERATION_MODES = {
 }
 
 
-def dispatch(operation: str, payload: bytes) -> dict[str, object]:
+def _dispatch(operation: str, payload: bytes) -> dict[str, object]:
     expected_mode = _OPERATION_MODES.get(operation)
     if expected_mode is None:
         return {"failure": "UNAVAILABLE", "reason": "trust operation has no handler"}
@@ -277,8 +305,68 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
         return {"failure": "PROTOCOL_REJECTED", "reason": "payload is not canonical"}
     if call.mode != expected_mode:
         return {"failure": "PROTOCOL_REJECTED", "reason": "payload mode differs from trust route"}
+    if operation in {route[0] for route in _H1_ROUTES}:
+        from .h1_broker_evidence_contracts import decode_h1_candidate_call
+        from .hermetic_output_scope_contracts import (
+            ReadCurrentHermeticExecutionScopeV1,
+        )
+
+        try:
+            if call.mode == "ISSUE_HERMETIC_OUTPUT_SCOPE_V1":
+                candidate = decode_h1_candidate_call(call.request_bytes)
+                evidence = candidate.evidence
+                if (
+                    hashlib.sha256(call.snapshot_bytes).hexdigest()
+                    != evidence.trust_snapshot_digest
+                ):
+                    raise ValueError("H1 outer snapshot digest differs")
+                entries = json.loads(call.snapshot_bytes)
+                if not isinstance(entries, list) or not entries:
+                    raise ValueError("H1 snapshot must contain logical journal entries")
+                predecessor = None
+                for entry in entries:
+                    if (
+                        not isinstance(entry, list)
+                        or len(entry) != 3
+                        or not isinstance(entry[0], str)
+                        or not entry[0]
+                        or entry[1] != predecessor
+                        or not isinstance(entry[2], str)
+                    ):
+                        raise ValueError("H1 logical journal entry is malformed")
+                    raw = b64decode(entry[2], validate=True)
+                    if not raw or b64encode(raw).decode("ascii") != entry[2]:
+                        raise ValueError("H1 logical journal bytes are malformed")
+                    predecessor = entry[0]
+                if _canonical(entries) != call.snapshot_bytes:
+                    raise ValueError("H1 snapshot is not canonical")
+                if predecessor != evidence.trust_observation.logical_snapshot_head:
+                    raise ValueError("H1 outer logical snapshot head differs")
+            else:
+                request = ReadCurrentHermeticExecutionScopeV1.model_validate_json(
+                    call.request_bytes
+                )
+                if request.canonical_bytes() != call.request_bytes:
+                    raise ValueError("H1 request is not canonical")
+        except (ValueError, TypeError) as error:
+            return {"failure": "PROTOCOL_REJECTED", "reason": str(error)}
+        # Contract-only: no snapshot reduction, issuer, journal write or current permit.
+        route = next(route for route in _H1_ROUTES if route[0] == operation)
+        return {
+            "payload": b64encode(_canonical({"disposition": "UNSUPPORTED"})).decode("ascii"),
+            "schema_id": route[4],
+        }
     result = _evaluate(call)
     return {
         "payload": b64encode(result.canonical_bytes()).decode("ascii"),
         "schema_id": "chiplog.deployment-trust.owner-result.v1",
     }
+
+
+def dispatch(operation: str, payload: bytes) -> dict[str, object]:
+    if operation not in {route[0] for route in _H1_ROUTES}:
+        return _dispatch(operation, payload)
+    try:
+        return _dispatch(operation, payload)
+    except (ValueError, TypeError, KeyError) as error:
+        return {"failure": "PROTOCOL_REJECTED", "reason": str(error)}

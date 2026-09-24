@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import Field, ValidationError
 
@@ -21,9 +21,14 @@ __all__ = [
     "RECOVERY_FRONTIER_REGISTRY_SCHEMA",
     "RecoveryFrontierRegistryIntegrityError",
     "decode_frontier_registry",
+    "execution_zero_call_frontier_registry",
     "frontier_registry_content_fingerprint",
     "frontier_registry_reference",
 ]
+
+_EXECUTION_ZERO_CALL_REGISTRY_ID = "chiplog.execution.zero-call-recovery-frontier"
+_EXECUTION_ZERO_CALL_REGISTRY_VERSION = "1"
+_CANONICALIZATION_VERSION = "chiplog.recovery.frontier.v1"
 
 
 class RecoveryFrontierRegistryIntegrityError(ValueError):
@@ -122,6 +127,41 @@ def frontier_registry_reference(registry: RecoveryFrontierRegistry) -> CallSubje
         revision=Present(
             head=RECOVERY_FRONTIER_REGISTRY_SCHEMA + ":" + digest,
             fingerprint=digest,
+        ),
+    )
+
+
+def execution_zero_call_frontier_registry() -> RecoveryFrontierRegistry:
+    """Return the fixed, closed profile for an eligible native zero-call Complete.
+
+    The family order is taken from the existing wire Literal, which is the sole
+    declared recovery-registry universe.  Eligibility and actual empty-family
+    enumeration remain composition responsibilities.
+    """
+
+    families = get_args(RecoveryRegistryRow.model_fields["family"].annotation)
+    if not families or any(not isinstance(family, str) for family in families):
+        raise RuntimeError("RecoveryRegistryRow family universe is not a Literal")
+    rows = tuple(
+        RecoveryRegistryRow(
+            family=family,
+            ordinal=ordinal,
+            subject_extractor_id=f"execution-zero-call-v1:{family}:subjects",
+            cardinality_rule=f"execution-zero-call-v1:{family}:cardinality",
+            terminal_conflict_rule=f"execution-zero-call-v1:{family}:conflicts",
+            serialization_rule=f"execution-zero-call-v1:{family}:serialization",
+            canonicalization_version=_CANONICALIZATION_VERSION,
+        )
+        for ordinal, family in enumerate(families)
+    )
+    return RecoveryFrontierRegistry(
+        registry_id=_EXECUTION_ZERO_CALL_REGISTRY_ID,
+        version=_EXECUTION_ZERO_CALL_REGISTRY_VERSION,
+        ordered_rows=rows,
+        fingerprint=frontier_registry_content_fingerprint(
+            _EXECUTION_ZERO_CALL_REGISTRY_ID,
+            _EXECUTION_ZERO_CALL_REGISTRY_VERSION,
+            rows,
         ),
     )
 

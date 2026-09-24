@@ -114,6 +114,36 @@ class SQLiteTrustMaterializer:
             is not None
         )
 
+    def record(self, decision_id: str, ordinal: int) -> bytes | None:
+        """Exact materialized locator, not journal authentication or currentness."""
+        if type(decision_id) is not str or not decision_id:
+            raise ValueError("decision_id must be a nonempty string")
+        if type(ordinal) is not int or not 0 <= ordinal < 2**63:
+            raise ValueError("ordinal must be a nonnegative SQLite integer")
+        with self._scope():
+            row = self._connection.execute(
+                "SELECT canonical_bytes FROM trust_records WHERE decision_id = ? AND ordinal = ?",
+                (decision_id, ordinal),
+            ).fetchone()
+            decision = self._connection.execute(
+                "SELECT records_digest FROM trust_decisions WHERE decision_id = ?", (decision_id,)
+            ).fetchone()
+            rows = self._connection.execute(
+                "SELECT ordinal, canonical_bytes FROM trust_records "
+                "WHERE decision_id = ? ORDER BY ordinal",
+                (decision_id,),
+            ).fetchall()
+            if decision is None:
+                if rows:
+                    raise RuntimeError("orphan trust materialization")
+                return None
+            if any(index != entry[0] for index, entry in enumerate(rows)):
+                raise RuntimeError("trust materialization ordinal integrity failure")
+            digest = hashlib.sha256(b"\x00".join(bytes(entry[1]) for entry in rows)).hexdigest()
+            if digest != decision[0]:
+                raise RuntimeError("trust materialization digest integrity failure")
+            return None if row is None else bytes(row[0])
+
     def records(self) -> tuple[bytes, ...]:
         with self._scope():
             return self._records()

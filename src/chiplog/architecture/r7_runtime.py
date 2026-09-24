@@ -717,6 +717,80 @@ R14_R17_H0_PRODUCTION_MANIFEST = replace(
 )
 R14_R17_H0_EVALUATION_MANIFEST = replace(R14_R17_H0_PRODUCTION_MANIFEST, environment="evaluation")
 
+# H1 adds the inert native Complete preparation route.  The broker still lacks
+# authority to publish a completion until its retained recovery cut is mounted.
+_EXECUTION_COMPLETION_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_completion",
+    "broker",
+    "agent_loop",
+    "chiplog.agent-loop.prepare-execution-completion.v1",
+    "chiplog.agent-loop.prepared-execution-completion-result.v1",
+)
+_H1_EXECUTION_OPERATIONS = tuple(
+    sorted((*_H0_EXECUTION_OPERATIONS, _EXECUTION_COMPLETION_ROUTE.operation_id))
+)
+_H1_TRUST_ROUTES = (
+    RoutedCallDecl(
+        "deployment_trust.issue_hermetic_output_scope",
+        "broker",
+        "deployment_trust",
+        "chiplog.deployment-trust.owner-call.v1",
+        "chiplog.deployment-trust.issue-hermetic-output-scope-result.v1",
+    ),
+    RoutedCallDecl(
+        "deployment_trust.read_current_hermetic_output_scope",
+        "broker",
+        "deployment_trust",
+        "chiplog.deployment-trust.owner-call.v1",
+        "chiplog.deployment-trust.current-hermetic-output-scope-result.v1",
+    ),
+)
+_H1_TRUST_OPERATIONS = tuple(
+    sorted(
+        (
+            *next(
+                owner.capability_ids
+                for owner in R14_R17_H0_PRODUCTION_MANIFEST.owners
+                if owner.owner_id == "deployment_trust"
+            ),
+            *(route.operation_id for route in _H1_TRUST_ROUTES),
+        )
+    )
+)
+R14_R17_H1_PRODUCTION_MANIFEST = replace(
+    R14_R17_H0_PRODUCTION_MANIFEST,
+    manifest_version=15,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_H1_EXECUTION_OPERATIONS,
+            public_operations=_H1_EXECUTION_OPERATIONS,
+            target_ids=("chiplog.capabilities.agent_loop._execution_completion_process:dispatch",),
+        )
+        if owner.owner_id == "agent_loop"
+        else replace(
+            owner,
+            capability_ids=_H1_TRUST_OPERATIONS,
+            public_operations=_H1_TRUST_OPERATIONS,
+            target_ids=("chiplog.capabilities.deployment_trust._h1_process:dispatch",),
+        )
+        if owner.owner_id == "deployment_trust"
+        else owner
+        for owner in R14_R17_H0_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_R17_H0_PRODUCTION_MANIFEST.routes,
+                _EXECUTION_COMPLETION_ROUTE,
+                *_H1_TRUST_ROUTES,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_R17_H1_EVALUATION_MANIFEST = replace(R14_R17_H1_PRODUCTION_MANIFEST, environment="evaluation")
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -728,7 +802,7 @@ def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
 
 
 def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
-    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+    if manifest.manifest_version not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
         1: R7_PRODUCTION_MANIFEST,
@@ -745,6 +819,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         12: R14_EXECUTION_LIFECYCLE_PRODUCTION_MANIFEST,
         13: R14_R16_CALL_PRODUCTION_MANIFEST,
         14: R14_R17_H0_PRODUCTION_MANIFEST,
+        15: R14_R17_H1_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")

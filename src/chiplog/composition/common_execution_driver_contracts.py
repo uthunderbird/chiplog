@@ -163,6 +163,22 @@ class DriveInputRequestV1(IngressDTO):
         ).hexdigest()
 
 
+class AdvanceExecutionRequestV1(IngressDTO):
+    """Advance the exact selected CREATED Run bound to the original admission.
+
+    The fingerprint is the original DriveInput fingerprint, not a hash of this
+    request. Construction supplies no authority or proof that the head is selected.
+    """
+
+    kind: Literal["ADVANCE_EXECUTION_REQUEST_V1"] = "ADVANCE_EXECUTION_REQUEST_V1"
+    schema_id: Literal["chiplog.common-execution-driver.advance-execution-request.v1"] = (
+        "chiplog.common-execution-driver.advance-execution-request.v1"
+    )
+    identity: DriverCommandIdentityV1
+    original_driver_command_fingerprint: Digest
+    expected_selected_run_head: Head
+
+
 class LookupExecutionRequestV1(IngressDTO):
     kind: Literal["LOOKUP_EXECUTION_REQUEST_V1"] = "LOOKUP_EXECUTION_REQUEST_V1"
     schema_id: Literal["chiplog.common-execution-driver.lookup-execution-request.v1"] = (
@@ -309,6 +325,25 @@ CommonExecutionResultV1 = Annotated[
 
 class CommonExecutionDriverPort(Protocol):
     async def drive_input(self, request: DriveInputRequestV1) -> CommonExecutionResultV1: ...
+
+    async def advance_execution(
+        self, request: AdvanceExecutionRequestV1
+    ) -> CommonExecutionResultV1:
+        """Advance once after authenticating and resolving original admission.
+
+        A different original fingerprint is CONFLICT. An expected head other than
+        the bound, currently selected CREATED head is STALE, except for proven
+        exact replay: this same command and CREATED head previously advanced to
+        the still-selected terminal publication. Replay returns that publication
+        as EXACT_REPLAY, including its actual Run and journal decision heads.
+        A terminal descendant alone is not evidence of this command's replay.
+
+        Missing execution readiness is HOLD before mutation. Rejections and exact
+        replay never invoke the model. A successful new advance returns COMMITTED;
+        uncertain publication uses UncertainExecutionPublicationV1, never invented
+        success. Admission replay via drive_input retains its original receipt.
+        """
+        ...
 
     async def lookup_execution(
         self, request: LookupExecutionRequestV1

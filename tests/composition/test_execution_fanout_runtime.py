@@ -10,6 +10,7 @@ import pytest
 
 from chiplog.adapters.driven.effects_hermetic import HermeticEffectsProvider
 from chiplog.adapters.driven.loop_prompts import OwnedStaticPrompts
+from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
 from chiplog.capabilities.agent_loop.application import AgentLoop
 from chiplog.capabilities.agent_loop.contracts import (
     BudgetPolicy,
@@ -29,7 +30,16 @@ from chiplog.capabilities.agent_loop.execution_contracts import (
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import InitializedCall
+from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
+    RECOVERY_FRONTIER_REGISTRY_SCHEMA,
+    decode_frontier_registry,
+    execution_zero_call_frontier_registry,
+    frontier_registry_reference,
+)
 from chiplog.composition.r13_workspace import R13Workspace
+from chiplog.composition.r14_execution_complete_seal_records import (
+    EXECUTION_COMPLETE_SEAL_OPERATION,
+)
 from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_FANOUT_OPERATION
 from chiplog.composition.r14_execution_runtime import open_execution_runtime
 from chiplog.composition.r14_loop_history import (
@@ -39,16 +49,17 @@ from chiplog.composition.r14_loop_history import (
 )
 from chiplog.composition.r14_loop_store import R14LoopStore
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PublicationResult
+from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.broker import PublicPortCall, PublicPortResult
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
 
 
-def _response(complete: bool = False) -> bytes:
+def _response(complete: bool = False, run_id: str = "run") -> bytes:
     parsed = (
         DeliveryCompletion(
             tenant="hermetic-tenant",
-            run_id="run",
-            turn_id="run/turn/1",
+            run_id=run_id,
+            turn_id=run_id + "/turn/1",
             deliveries=(ProposedDelivery(payload=(Commentary(text="Done"),)),),
         )
         if complete
@@ -110,11 +121,127 @@ async def test_real_fanout_retains_owner_bytes_and_never_executes_initialized_ca
                 "SELECT canonical_bytes FROM records WHERE commit_sequence=? ORDER BY rowid",
                 (snapshot.tenant_head,),
             ).fetchall()
+            operation = connection.execute(
+                "SELECT operation_kind FROM publications WHERE tenant_id=? AND idempotency_key=?",
+                (runtime._tenant_id, sealed.head),
+            ).fetchone()
         assert len(members) == (2 if complete else 5)
         assert members[0][0] == sealed.canonical_bytes()
+        assert operation == (EXECUTION_FANOUT_OPERATION,)
     async with open_execution_runtime(database) as reopened:
         assert read_execution_call_history(reopened) == (snapshot, inventory, preparations)
         assert reopened._execution_model.requests == []
+
+
+async def test_zero_call_complete_seal_selects_authenticated_registry_and_reopens(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "complete-registry.sqlite"
+    raw = _response(complete=True)
+    async with open_execution_runtime(database, responses=(raw,)) as runtime:
+        created = await runtime.create_execution("hermetic-ingress", "run", "Plan", BudgetPolicy())
+        started = await runtime.begin_execution("hermetic-ingress", "run", created.head)
+        captured = await runtime.capture_execution("hermetic-ingress", "run", started.head)
+        sealed = await runtime.seal_execution_complete("hermetic-ingress", "run", captured.head)
+        registry = execution_zero_call_frontier_registry()
+        registry_bytes = registry.canonical_bytes()
+        registry_ref = frontier_registry_reference(registry)
+        with sqlite3.connect(database) as connection:
+            publication = connection.execute(
+                "SELECT commit_sequence, record_ids FROM publications "
+                "WHERE tenant_id=? AND operation_kind=? AND idempotency_key=?",
+                (runtime._tenant_id, EXECUTION_COMPLETE_SEAL_OPERATION, sealed.head),
+            ).fetchone()
+            assert publication is not None
+            sequence, record_ids = publication
+            members = record_ids.split("\n")
+            assert len(members) == 3
+            rows = connection.execute(
+                "SELECT record_id, schema_id, canonical_bytes FROM records "
+                "WHERE tenant_id=? AND commit_sequence=? ORDER BY rowid",
+                (runtime._tenant_id, sequence),
+            ).fetchall()
+        assert [row[1] for row in rows] == [
+            "chiplog.agent-loop.execution-record.v2",
+            "chiplog.call.response-seal.v1",
+            RECOVERY_FRONTIER_REGISTRY_SCHEMA,
+        ]
+        registry_row = rows[-1]
+        assert registry_row[0].startswith("recovery-frontier-registry:" + sealed.head + ":")
+        assert registry_row[2] == registry_bytes
+        assert (
+            decode_frontier_registry(
+                registry_row[1], registry_row[2], expected_reference=registry_ref
+            )
+            == registry
+        )
+    async with open_execution_runtime(database) as reopened:
+        snapshot, inventory, preparations = read_execution_call_history(reopened)
+        assert snapshot.records[-1] == sealed
+        assert inventory.ordered_calls == ()
+        assert preparations[-1].proposal.sealed_run == sealed
+
+
+async def test_complete_seals_use_distinct_registry_physical_ids(tmp_path: Path) -> None:
+    database = tmp_path / "complete-registry-collision.sqlite"
+    async with open_execution_runtime(
+        database,
+        responses=(_response(complete=True, run_id="one"), _response(complete=True, run_id="two")),
+    ) as runtime:
+        record_ids = []
+        for run_id in ("one", "two"):
+            created = await runtime.create_execution(
+                "hermetic-ingress", run_id, "Plan", BudgetPolicy()
+            )
+            started = await runtime.begin_execution("hermetic-ingress", run_id, created.head)
+            captured = await runtime.capture_execution("hermetic-ingress", run_id, started.head)
+            sealed = await runtime.seal_execution_complete(
+                "hermetic-ingress", run_id, captured.head
+            )
+            with sqlite3.connect(database) as connection:
+                row = connection.execute(
+                    "SELECT record_ids FROM publications WHERE tenant_id=? AND operation_kind=? "
+                    "AND idempotency_key=?",
+                    (runtime._tenant_id, EXECUTION_COMPLETE_SEAL_OPERATION, sealed.head),
+                ).fetchone()
+            assert row is not None
+            record_ids.append(row[0].split("\n")[-1])
+        assert len(set(record_ids)) == 2
+
+
+@pytest.mark.parametrize("damage", ("delete", "alter"))
+async def test_history_rejects_missing_or_altered_complete_registry(
+    tmp_path: Path, damage: str
+) -> None:
+    database = tmp_path / f"complete-registry-{damage}.sqlite"
+    async with open_execution_runtime(database, responses=(_response(complete=True),)) as runtime:
+        created = await runtime.create_execution("hermetic-ingress", "run", "Plan", BudgetPolicy())
+        started = await runtime.begin_execution("hermetic-ingress", "run", created.head)
+        captured = await runtime.capture_execution("hermetic-ingress", "run", started.head)
+        sealed = await runtime.seal_execution_complete("hermetic-ingress", "run", captured.head)
+        with sqlite3.connect(database) as connection:
+            row = connection.execute(
+                "SELECT record_ids FROM publications WHERE tenant_id=? AND operation_kind=? "
+                "AND idempotency_key=?",
+                (runtime._tenant_id, EXECUTION_COMPLETE_SEAL_OPERATION, sealed.head),
+            ).fetchone()
+            assert row is not None
+            registry_id = row[0].split("\n")[-1]
+            if damage == "delete":
+                connection.execute(
+                    "DELETE FROM records WHERE tenant_id=? AND record_id=?",
+                    (runtime._tenant_id, registry_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE records SET canonical_bytes=? WHERE tenant_id=? AND record_id=?",
+                    (b"{}", runtime._tenant_id, registry_id),
+                )
+        runtime._commitment_journal.commit(
+            runtime._tenant_id, capture_authority_storage_state(database)[0]
+        )
+        with pytest.raises(LoopIntegrityError):
+            read_execution_call_history(runtime)
 
 
 async def test_selected_fanout_recovers_all_members_without_owner_reissue(

@@ -41,7 +41,16 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import FanOutBound
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 
-from .r14_execution_fanout_contracts import RetainedExecutionFanOutPreparation
+from .r14_execution_complete_seal_records import (
+    ExecutionCompleteSealPhysicalEnvelope,
+    build_complete_seal_envelope,
+    complete_seal_physical_command,
+    retained_execution_complete_seal,
+)
+from .r14_execution_fanout_contracts import (
+    ExecutionFanOutPhysicalEnvelope,
+    RetainedExecutionFanOutPreparation,
+)
 from .r14_execution_fanout_records import build_envelope, physical_command, reference
 from .r14_loop_history import read_execution_call_history
 
@@ -78,7 +87,12 @@ def execution_registry(run: ExecutionRunRecord) -> tuple[FanOutToolRegistry, Fan
 
 
 async def publish_execution_fanout(
-    runtime: R14ExecutionRuntime, peer: str, run_id: str, expected_head: str
+    runtime: R14ExecutionRuntime,
+    peer: str,
+    run_id: str,
+    expected_head: str,
+    *,
+    complete_registry: bool = False,
 ) -> ExecutionRunRecord:
     observed = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
@@ -231,8 +245,21 @@ async def publish_execution_fanout(
         request_id=sent.request_id,
         deadline_ns=deadline,
     )
-    envelope = build_envelope(evidence)
-    command = physical_command(envelope)
+    is_zero_call_complete = complete_registry and (
+        proposal.sealed_run.event == "ModelCompletionPrepared"
+        and proposal.fan_out.initialized_records == ()
+    )
+    if complete_registry and not is_zero_call_complete:
+        raise LoopRejected("complete registry requires an eligible zero-call Complete")
+    envelope: ExecutionFanOutPhysicalEnvelope | ExecutionCompleteSealPhysicalEnvelope
+    if is_zero_call_complete:
+        complete_retained = retained_execution_complete_seal(evidence)
+        envelope = build_complete_seal_envelope(complete_retained)
+        command = complete_seal_physical_command(envelope)
+    else:
+        complete_retained = None
+        envelope = build_envelope(evidence)
+        command = physical_command(envelope)
 
     def guard() -> Literal["STALE"] | None:
         with runtime._authority_gate().hold():
@@ -244,7 +271,11 @@ async def publish_execution_fanout(
                 or time.monotonic_ns() >= deadline
                 or execution_registry(captured) != (registry, bound)
                 or runtime._commitment_journal.load(runtime._tenant_id) != predecessor
-                or build_envelope(evidence) != envelope
+                or (complete_retained is None and build_envelope(evidence) != envelope)
+                or (
+                    complete_retained is not None
+                    and build_complete_seal_envelope(complete_retained) != envelope
+                )
             ):
                 return "STALE"
             return None
@@ -272,8 +303,17 @@ async def publish_execution_fanout(
                         }
                         for row in command.records
                     ],
-                    "execution_fanout": evidence.canonical_bytes().decode(),
-                    "execution_fanout_envelope": envelope.canonical_bytes().decode(),
+                    **(
+                        {
+                            "execution_complete_seal": complete_retained.canonical_bytes().decode(),
+                            "execution_complete_seal_envelope": envelope.canonical_bytes().decode(),
+                        }
+                        if complete_retained is not None
+                        else {
+                            "execution_fanout": evidence.canonical_bytes().decode(),
+                            "execution_fanout_envelope": envelope.canonical_bytes().decode(),
+                        }
+                    ),
                 }
             )
 

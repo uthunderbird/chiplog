@@ -24,6 +24,12 @@ from chiplog.composition.r14_cancellation_records import (
     build_cancellation_envelope,
     cancellation_command,
 )
+from chiplog.composition.r14_execution_complete_seal_records import (
+    EXECUTION_COMPLETE_SEAL_OPERATION,
+    RetainedExecutionCompleteSeal,
+    build_complete_seal_envelope,
+    complete_seal_physical_command,
+)
 from chiplog.composition.r14_execution_fanout_contracts import (
     EXECUTION_FANOUT_OPERATION,
     EXECUTION_RUN_SCHEMA,
@@ -167,6 +173,7 @@ def _read_call_history(
                         EXECUTION_TRANSITION_OPERATION,
                         EXECUTION_INBOX_INITIALIZATION_OPERATION,
                         EXECUTION_FANOUT_OPERATION,
+                        EXECUTION_COMPLETE_SEAL_OPERATION,
                         "effects.accept_call",
                     ):
                         raise ValueError("unregistered loop publication envelope")
@@ -205,6 +212,58 @@ def _read_call_history(
                         expected_publications.add((command.operation_kind, identity))
                         continue
                     first, *companions = command.records
+                    if (
+                        command.operation_kind == EXECUTION_COMPLETE_SEAL_OPERATION
+                        or "execution_complete_seal" in entry
+                    ):
+                        if (
+                            command.operation_kind != EXECUTION_COMPLETE_SEAL_OPERATION
+                            or "execution_fanout" in entry
+                            or "execution_fanout_envelope" in entry
+                        ):
+                            raise ValueError("execution complete seal has a substituted operation")
+                        raw_complete = entry["execution_complete_seal"]
+                        complete = RetainedExecutionCompleteSeal.model_validate_json(raw_complete)
+                        complete_envelope = build_complete_seal_envelope(complete)
+                        sealed = complete.exchange.proposal.sealed_run
+                        before_execution = ExecutionHistorySnapshot(
+                            tenant_head=command.expected_head, records=tuple(mixed_records)
+                        )
+                        capture_execution = complete.exchange.request.captured_run
+                        if (
+                            complete.canonical_bytes().decode() != raw_complete
+                            or complete_seal_physical_command(complete_envelope) != command
+                            or complete_envelope.canonical_bytes().decode()
+                            != entry["execution_complete_seal_envelope"]
+                            or sealed.tenant != tenant
+                            or capture_execution != latest.get(sealed.run_id)
+                            or complete.exchange.request.request.cut.materialization_commitment
+                            != entry["predecessor"]
+                            or complete.exchange.expected_snapshot_fingerprint
+                            != before_execution.digest()
+                            or complete.exchange.request.request.cut.predecessor_inventory
+                            != execution_inventory(
+                                tenant,
+                                before_execution,
+                                tuple(preparations),
+                                tuple(cancellations),
+                                tuple(execution_preparations),
+                                tuple(acceptances),
+                            )
+                            or capture_execution.head in captured_heads
+                        ):
+                            raise ValueError(
+                                "selected execution complete seal differs from original history"
+                            )
+                        captured_heads.add(capture_execution.head)
+                        execution_preparations.append(complete.exchange)
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        latest[sealed.run_id] = sealed
+                        mixed_records.append(sealed)
+                        continue
                     if (
                         command.operation_kind == EXECUTION_FANOUT_OPERATION
                         or "execution_fanout" in entry
@@ -501,10 +560,12 @@ def validate_selected_executions(runtime: R14PlanningRuntime) -> None:
             in (
                 EXECUTION_TRANSITION_OPERATION,
                 EXECUTION_FANOUT_OPERATION,
+                EXECUTION_COMPLETE_SEAL_OPERATION,
                 EXECUTION_INBOX_INITIALIZATION_OPERATION,
             )
             or "execution_transition" in entry
             or "execution_fanout" in entry
+            or "execution_complete_seal" in entry
             or "inbox_initialization" in entry
             or any(record.schema_id == EXECUTION_RUN_SCHEMA for record in command.records)
         )
@@ -512,6 +573,7 @@ def validate_selected_executions(runtime: R14PlanningRuntime) -> None:
             if command.operation_kind not in (
                 EXECUTION_TRANSITION_OPERATION,
                 EXECUTION_FANOUT_OPERATION,
+                EXECUTION_COMPLETE_SEAL_OPERATION,
                 EXECUTION_INBOX_INITIALIZATION_OPERATION,
             ):
                 raise LoopIntegrityError(

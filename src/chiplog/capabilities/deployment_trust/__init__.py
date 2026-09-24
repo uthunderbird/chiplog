@@ -64,6 +64,8 @@ class TrustMaterializationPort(Protocol):
 
     def records(self) -> tuple[bytes, ...]: ...
 
+    def record(self, decision_id: str, ordinal: int) -> bytes | None: ...
+
 
 class TrustRevalidator(Protocol):
     def revalidate(self, request: TrustReferenceRevalidation) -> TrustDecision: ...
@@ -73,8 +75,24 @@ class TrustAuthenticator(Protocol):
     def authenticate(self, request: AuthenticationRequest) -> TrustDecision: ...
 
 
+# These contracts use the legacy TrustReference defined above.
+from .hermetic_output_scope_contracts import (  # noqa: E402
+    CurrentHermeticExecutionScopeResultV1,
+    HermeticOutputScopeOwner,
+    IssueHermeticOutputScopeResultV1,
+    IssueHermeticOutputScopeV1,
+    ReadCurrentHermeticExecutionScopeV1,
+    SelectedHermeticResourceObservationRefV1,
+)
+
 __all__ = [
     "AuthenticationRequest",
+    "CurrentHermeticExecutionScopeResultV1",
+    "HermeticOutputScopeOwner",
+    "IssueHermeticOutputScopeResultV1",
+    "IssueHermeticOutputScopeV1",
+    "ReadCurrentHermeticExecutionScopeV1",
+    "SelectedHermeticResourceObservationRefV1",
     "TenantDecisionJournalPort",
     "TrustAuthenticator",
     "TrustDecision",

@@ -9,9 +9,19 @@ from pathlib import Path
 
 import pytest
 
+from chiplog.capabilities.agent_loop.delivery_preparation import (
+    Commentary,
+    DeliveryCompletion,
+    ProposedDelivery,
+)
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     CliCustodyOffer,
     CliCustodyResponse,
+)
+from chiplog.capabilities.effects.scoped_intent_contracts import ExternalActionIntentV3
+from chiplog.capabilities.projections.conversation_preparation_contracts import (
+    ACCEPTED_ENTRY_SCHEMA,
 )
 from chiplog.composition.common_cli_execution_runtime import (
     R17_RETAINED_READER_ID,
@@ -19,10 +29,12 @@ from chiplog.composition.common_cli_execution_runtime import (
     open_common_cli_execution_runtime,
 )
 from chiplog.composition.common_execution_driver_contracts import (
+    AdvanceExecutionRequestV1,
     CliRetainedSelectedSourceV1,
     DriveInputRequestV1,
     DriverCommandIdentityV1,
     LookupExecutionRequestV1,
+    SelectedExecutionReceiptV1,
 )
 from chiplog.composition.r14_execution_inbox_records import (
     EXECUTION_INBOX_INITIALIZATION_OPERATION,
@@ -89,6 +101,44 @@ async def _admit(runtime: CommonCliExecutionRuntime) -> tuple[str, DriveInputReq
         ),
     )
     return token, request
+
+
+async def _admit_complete_script(
+    database: Path, custody: Path
+) -> tuple[DriveInputRequestV1, bytes]:
+    """Persist a real selected CLI input, then derive its one exact model response."""
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
+    async with open_common_cli_execution_runtime(database, resources=resources) as runtime:
+        _, request = await _admit(runtime)
+        admitted = runtime._selected_input(request, resources.observe())
+        run_id = runtime._run_id(admitted)
+    complete = DeliveryCompletion(
+        tenant="hermetic-tenant",
+        run_id=run_id,
+        turn_id=run_id + "/turn/1",
+        deliveries=(ProposedDelivery(payload=(Commentary(text="Hello"),)),),
+    )
+    return request, complete.canonical_bytes()
+
+
+def _physical_snapshot(database: Path) -> tuple[tuple[object, ...], ...]:
+    with sqlite3.connect(database) as connection:
+        return tuple(
+            connection.execute(
+                "SELECT record_id, owner, schema_id, canonical_bytes, commit_sequence "
+                "FROM records ORDER BY rowid"
+            ).fetchall()
+        )
+
+
+def _advance(
+    initial: SelectedExecutionReceiptV1, request: DriveInputRequestV1
+) -> AdvanceExecutionRequestV1:
+    return AdvanceExecutionRequestV1(
+        identity=request.identity,
+        original_driver_command_fingerprint=request.original_driver_command_fingerprint(),
+        expected_selected_run_head=initial.selected_run_head,
+    )
 
 
 @pytest.mark.asyncio
@@ -160,6 +210,123 @@ async def test_socket_selected_inbox_creates_native_run_and_reopens(tmp_path: Pa
             ]
         )
         assert after_count == before_count == 1
+
+
+@pytest.mark.asyncio
+async def test_socket_complete_selects_native_terminal_batch(tmp_path: Path) -> None:
+    database = tmp_path / "h1-complete.sqlite"
+    custody = tmp_path / "dispatch-custody"
+    request, complete = await _admit_complete_script(database, custody)
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
+    async with open_common_cli_execution_runtime(
+        database, resources=resources, responses=(complete,)
+    ) as runtime:
+        initial = await runtime.drive_input(request)
+
+        assert initial.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        assert initial.phase == "INITIALIZED"
+        assert initial.selected_run_state == "CREATED"
+        assert len(runtime._execution_model.requests) == 0
+
+        receipt = await runtime.advance_execution(_advance(initial, request))
+        assert receipt.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        assert receipt.phase == "TERMINAL"
+        assert receipt.selected_run_state == "SUCCEEDED"
+        assert receipt.terminal_detail is not None
+        assert receipt.terminal_detail.kind == "ACCEPTED"
+        assert receipt.selected_run_head != initial.selected_run_head
+        assert receipt.selected_journal_decision != initial.selected_journal_decision
+        assert receipt.commit_sequence > initial.commit_sequence
+        assert len(runtime._execution_model.requests) == 1
+
+        decision = next(
+            json.loads(raw)
+            for decision_id, _, raw in runtime._loop_decisions().entries()
+            if decision_id == receipt.selected_journal_decision.head
+        )
+        command = runtime._publication(decision)
+        assert command.operation_kind == "agent_loop.complete_acceptance.v2"
+        assert receipt.commit_sequence == command.expected_head + 1
+        with sqlite3.connect(database) as connection:
+            rows = connection.execute(
+                "SELECT record_id, owner, schema_id, canonical_bytes FROM records "
+                "WHERE commit_sequence=? ORDER BY rowid",
+                (receipt.commit_sequence,),
+            ).fetchall()
+        assert rows == [
+            (member.record_id, member.owner, member.schema_id, member.canonical_bytes)
+            for member in command.records
+        ]
+        assert [(row[1], row[2]) for row in rows[:5]] == [
+            ("agent_loop", "chiplog.agent-loop.delivery-acceptance-record.v1"),
+            ("agent_loop", "chiplog.agent-loop.execution-terminal-manifest.v1"),
+            ("agent_loop", "chiplog.agent-loop.execution-record.v2"),
+            ("conversation", ACCEPTED_ENTRY_SCHEMA),
+            ("effects", "chiplog.effects.external-action-intent.v3"),
+        ]
+        terminal_run = ExecutionRunRecord.model_validate_json(rows[2][3])
+        assert terminal_run.state == "SUCCEEDED"
+        assert terminal_run.turns[-1].state == "ACCEPTED"
+        assert terminal_run.turns[-1].attempts[-1].state == "TERMINAL_ACCEPTED"
+        intent = ExternalActionIntentV3.model_validate_json(rows[4][3])
+        assert intent.mandate.origin.kind == "PREPARED_DELIVERY"
+        assert json.loads(rows[3][3])["source_kind"] == "COMPLETION"
+
+
+@pytest.mark.asyncio
+async def test_terminal_drive_reopens_without_second_decision_or_model_call(tmp_path: Path) -> None:
+    database = tmp_path / "h1-replay.sqlite"
+    custody = tmp_path / "dispatch-custody"
+    request, complete = await _admit_complete_script(database, custody)
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
+    async with open_common_cli_execution_runtime(
+        database, resources=resources, responses=(complete,)
+    ) as runtime:
+        initial = await runtime.drive_input(request)
+        assert initial.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        assert initial.phase == "INITIALIZED"
+        assert initial.selected_run_state == "CREATED"
+        assert len(runtime._execution_model.requests) == 0
+        advance = _advance(initial, request)
+        committed = await runtime.advance_execution(advance)
+        assert committed.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        assert committed.phase == "TERMINAL"
+        assert committed.selected_run_state == "SUCCEEDED"
+        assert len(runtime._execution_model.requests) == 1
+        decisions = runtime._loop_decisions().entries()
+        records = _physical_snapshot(database)
+
+    reopened_resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=custody
+    )
+    async with open_common_cli_execution_runtime(database, resources=reopened_resources) as runtime:
+        replay = await runtime.advance_execution(advance)
+        admission_replay = await runtime.drive_input(request)
+        lookup = await runtime.lookup_execution(
+            LookupExecutionRequestV1(
+                identity=request.identity,
+                original_driver_command_fingerprint=request.original_driver_command_fingerprint(),
+            )
+        )
+        assert replay.kind == lookup.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+        assert replay.disposition == lookup.disposition == "EXACT_REPLAY"
+        assert replay.phase == lookup.phase == "TERMINAL"
+        assert replay.selected_run_state == lookup.selected_run_state == "SUCCEEDED"
+        assert replay.selected_journal_decision == committed.selected_journal_decision
+        assert lookup.selected_journal_decision == committed.selected_journal_decision
+        assert replay.model_dump(exclude={"disposition"}) == committed.model_dump(
+            exclude={"disposition"}
+        )
+        assert lookup.model_dump(exclude={"disposition"}) == committed.model_dump(
+            exclude={"disposition"}
+        )
+        assert admission_replay.disposition == "EXACT_REPLAY"
+        assert admission_replay.model_dump(exclude={"disposition"}) == initial.model_dump(
+            exclude={"disposition"}
+        )
+        assert runtime._execution_model.requests == []
+        assert runtime._loop_decisions().entries() == decisions
+        assert _physical_snapshot(database) == records
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 """Loop-owned accepted delivery surface; effects owns all transport transitions."""
 
+import hashlib
 from typing import Annotated, Literal, Protocol
 
 from pydantic import ConfigDict, Field
@@ -67,6 +68,16 @@ class DeliveryManifest(DeliveryDTO):
     authenticated_worker_fence: ExactHead
     ordered_deliveries: tuple[AcceptedDelivery, ...] = Field(min_length=1)
     canonicalization_version: Literal["chiplog.delivery.v1"] = "chiplog.delivery.v1"
+
+
+def delivery_manifest_head(manifest: DeliveryManifest) -> ExactHead:
+    """Logical embedded reference, not evidence of a separate selected SQL row."""
+    fingerprint = hashlib.sha256(manifest.canonical_bytes()).hexdigest()
+    return ExactHead(
+        identity=manifest.manifest_id,
+        head="delivery-manifest:" + fingerprint,
+        fingerprint=fingerprint,
+    )
 
 
 class CommittedAssertion(DeliveryDTO):

@@ -488,3 +488,53 @@ def test_retained_cli_placeholder_reader_is_never_a_wire_reader(tmp_path: Path) 
     wire["retained_source"]["reader_id"] = "<root-deployed-retained-reader>"
     with pytest.raises(ValidationError):
         TypeAdapter(driver.DriverSelectedSourceV1).validate_python(wire)
+
+
+def test_advance_retains_original_command_and_exact_selected_head(tmp_path: Path) -> None:
+    original = _request("CLI_PEER", tmp_path)
+    request = driver.AdvanceExecutionRequestV1(
+        identity=original.identity,
+        original_driver_command_fingerprint=original.original_driver_command_fingerprint(),
+        expected_selected_run_head=_head("created-run"),
+    )
+    wire = request.model_dump(mode="json")
+    assert wire == {
+        "kind": "ADVANCE_EXECUTION_REQUEST_V1",
+        "schema_id": "chiplog.common-execution-driver.advance-execution-request.v1",
+        "identity": original.identity.model_dump(mode="json"),
+        "original_driver_command_fingerprint": original.original_driver_command_fingerprint(),
+        "expected_selected_run_head": _head("created-run").model_dump(mode="json"),
+    }
+    restored = driver.AdvanceExecutionRequestV1.model_validate_json(request.model_dump_json())
+    assert restored == request
+    with pytest.raises(ValidationError):
+        driver.LookupExecutionRequestV1.model_validate(wire)
+    with pytest.raises(ValidationError):
+        driver.DriveInputRequestV1.model_validate(wire)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda wire: wire.pop("expected_selected_run_head"),
+        lambda wire: wire.pop("identity"),
+        lambda wire: wire.pop("original_driver_command_fingerprint"),
+        lambda wire: wire.update({"original_driver_command_fingerprint": "not-a-digest"}),
+        lambda wire: wire["expected_selected_run_head"].pop("fingerprint"),
+        lambda wire: wire["identity"].update({"tenant_id": "other"}),
+        lambda wire: wire.update({"ack_permitted": True}),
+        lambda wire: wire.update({"kind": "LOOKUP_EXECUTION_REQUEST_V1"}),
+    ),
+)
+def test_advance_rejects_missing_bindings_and_authority_fields(
+    mutate: Callable[[dict[str, object]], None],
+) -> None:
+    request = driver.AdvanceExecutionRequestV1(
+        identity=_identity(),
+        original_driver_command_fingerprint="b" * 64,
+        expected_selected_run_head=_head("created-run"),
+    )
+    wire = request.model_dump()
+    mutate(wire)
+    with pytest.raises(ValidationError):
+        driver.AdvanceExecutionRequestV1.model_validate(wire)

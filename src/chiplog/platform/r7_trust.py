@@ -14,7 +14,14 @@ class _Strict(BaseModel):
 
 
 class TrustOwnerCall(_Strict):
-    mode: Literal["AUTHENTICATE", "BOOTSTRAP", "REVALIDATE", "RUNTIME_ADMISSION"]
+    mode: Literal[
+        "AUTHENTICATE",
+        "BOOTSTRAP",
+        "REVALIDATE",
+        "RUNTIME_ADMISSION",
+        "ISSUE_HERMETIC_OUTPUT_SCOPE_V1",
+        "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1",
+    ]
     snapshot_bytes: bytes
     request_bytes: bytes
 
