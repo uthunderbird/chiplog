@@ -21,11 +21,15 @@ from .r9_boundary import (
     ScreenLocation,
     ScreenSnapshot,
     ScreenSnapshotRef,
+    ScreenSnapshotV2,
     SnapshotStore,
+    SubjectDisclosureGuard,
+    WorkspaceIssuancePort,
     WorkspaceRejected,
     WorkspaceState,
 )
 from .workspace_boundary import (
+    ProvenanceSubject,
     WorkspaceQuery,
     WorkspaceQueryPort,
     WorkspaceReadContext,
@@ -137,10 +141,17 @@ class Workspace:
         endpoint: str,
         derivatives: DerivativePort,
         config_version: str = "r9.config.v1",
+        *,
+        issuance: WorkspaceIssuancePort | None = None,
+        subject_bound: bool = False,
     ) -> None:
         self.registry, self._store = registry, snapshots
         self._contexts, self._guard, self._endpoint = contexts, guard, endpoint
         self._derivatives = derivatives
+        self._issuance = issuance
+        if subject_bound and (issuance is None or not isinstance(guard, SubjectDisclosureGuard)):
+            raise WorkspaceRejected("subject-bound workspace requires issuance and bound guard")
+        self._subject_bound = subject_bound
         self._config_version = config_version
         self._budgeter = TurnContextBudgeter()
 
@@ -168,6 +179,8 @@ class Workspace:
             != previous
         ):
             raise WorkspaceRejected("unpersisted workspace predecessor")
+        if previous is not None and self._issuance is not None:
+            self._issuance.verify(previous)
         retained = list(previous.retained if previous else ())
         stacks = dict(previous.navigation if previous else ())
         if navigation is not None:
@@ -209,7 +222,21 @@ class Workspace:
                 raise WorkspaceRejected("unordered/duplicate workspace page")
             for row in result.rows:
                 verify_payload(row.canonical_payload, row.envelope)
-                self._guard.check(row.envelope, context, self._endpoint)
+                if self._subject_bound:
+                    assert isinstance(self._guard, SubjectDisclosureGuard)
+                    self._guard.check_subject(
+                        ProvenanceSubject(
+                            tenant_id=context.tenant_id,
+                            producer=location.dashboard_id,
+                            record_id=row.row_id,
+                            revision=row.row_version,
+                        ),
+                        row.envelope,
+                        context,
+                        self._endpoint,
+                    )
+                else:
+                    self._guard.check(row.envelope, context, self._endpoint)
             lines = tuple(row.canonical_payload.decode("utf-8") for row in result.rows)
             if result.next_cursor:
                 lines += ("More items available through bounded history/query navigation.",)
@@ -263,6 +290,19 @@ class Workspace:
                 )
             )
             snapshot = snapshots[-1]
+            if self._subject_bound:
+                snapshot = ScreenSnapshotV2(
+                    **snapshot.model_dump(),
+                    subjects=tuple(
+                        ProvenanceSubject(
+                            tenant_id=context.tenant_id,
+                            producer=location.dashboard_id,
+                            record_id=row.row_id,
+                            revision=row.row_version,
+                        )
+                        for row in result.rows
+                    ),
+                )
             snapshots[-1] = snapshot.model_copy(
                 update={
                     "ref": snapshot.ref.model_copy(
@@ -294,6 +334,8 @@ class Workspace:
         for snapshot in state.screens:
             await self._derivatives.register(snapshot)
         self._contexts.validate(context)
+        if self._issuance is not None:
+            self._issuance.select_verified(state, state.sequence - 1)
         self._store.save(state, state.sequence - 1)
         return state
 
@@ -304,6 +346,8 @@ class Workspace:
         if (tenant_id, channel_id) != (context.tenant_id, context.channel_id):
             raise WorkspaceRejected("foreign replay context")
         state = self._store.load(tenant_id, channel_id, sequence)
+        if self._issuance is not None:
+            self._issuance.verify(state)
         for snapshot in state.screens:
             if snapshot.ref.context != context:
                 raise WorkspaceRejected("replay cut is no longer current")
@@ -342,6 +386,19 @@ class Workspace:
             lines = lines[:-1]
         if len(lines) != len(snapshot.envelopes) or screen.item_count != len(lines):
             raise WorkspaceRejected("snapshot incomplete source closure")
-        for line, envelope in zip(lines, snapshot.envelopes, strict=True):
+        if isinstance(snapshot, ScreenSnapshotV2) and (
+            self._issuance is None or not isinstance(self._guard, SubjectDisclosureGuard)
+        ):
+            raise WorkspaceRejected("subject-bound screen requires independent issuance")
+        if self._subject_bound and not isinstance(snapshot, ScreenSnapshotV2):
+            raise WorkspaceRejected("legacy screen requires rebuilding with bound subjects")
+        for index, (line, envelope) in enumerate(zip(lines, snapshot.envelopes, strict=True)):
             verify_payload(line.encode(), envelope)
-            self._guard.check(envelope, context, self._endpoint)
+            if isinstance(snapshot, ScreenSnapshotV2):
+                assert isinstance(self._guard, SubjectDisclosureGuard)
+                subject = snapshot.subjects[index]
+                if subject.producer != snapshot.ref.location.dashboard_id:
+                    raise WorkspaceRejected("screen subject differs from its owner family")
+                self._guard.check_subject(subject, envelope, context, self._endpoint)
+            else:
+                self._guard.check(envelope, context, self._endpoint)

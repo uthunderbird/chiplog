@@ -7,8 +7,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from .r9_boundary import ReadContextPort, SourceHeadPort, WorkspaceRejected
-from .workspace_boundary import DisclosureEnvelope, DisclosureLabel, WorkspaceReadContext
+from .r9_boundary import ReadContextPort, SourceHeadPort, SubjectSourceHeadPort, WorkspaceRejected
+from .workspace_boundary import (
+    DisclosureEnvelope,
+    DisclosureLabel,
+    ProvenanceSubject,
+    WorkspaceReadContext,
+)
 
 
 def label(value: str, endpoints: tuple[str, ...] = ()) -> DisclosureLabel:
@@ -56,6 +61,24 @@ class CurrentDisclosureGuard:
     def check(
         self, envelope: DisclosureEnvelope, context: WorkspaceReadContext, endpoint: str
     ) -> None:
+        self._check(envelope, context, endpoint, None)
+
+    def check_subject(
+        self,
+        subject: ProvenanceSubject,
+        envelope: DisclosureEnvelope,
+        context: WorkspaceReadContext,
+        endpoint: str,
+    ) -> None:
+        self._check(envelope, context, endpoint, subject)
+
+    def _check(
+        self,
+        envelope: DisclosureEnvelope,
+        context: WorkspaceReadContext,
+        endpoint: str,
+        subject: ProvenanceSubject | None,
+    ) -> None:
         self._contexts.validate(context)
         if (
             envelope.tenant_id != context.tenant_id
@@ -71,7 +94,14 @@ class CurrentDisclosureGuard:
             if source.tenant_id != envelope.tenant_id:
                 raise WorkspaceRejected("foreign provenance")
             self._sources.validate(source, context)
-        self._sources.validate_manifest(envelope, context)
+        if subject is None:
+            self._sources.validate_manifest(envelope, context)
+        else:
+            if not isinstance(self._sources, SubjectSourceHeadPort):
+                raise WorkspaceRejected("subject-bound provenance source port is required")
+            if subject.tenant_id != context.tenant_id:
+                raise WorkspaceRejected("foreign provenance subject")
+            self._sources.validate_subject(subject, envelope, context)
         inherited = join(tuple(source.label for source in envelope.sources))
         if join((inherited, envelope.label)) != envelope.label:
             raise WorkspaceRejected("model cannot narrow inherited disclosure")

@@ -13,6 +13,7 @@ from chiplog.adapters.driven.calendar_reads import CalendarReadBroker
 from chiplog.adapters.driven.journal_sqlite import SQLiteJournal
 from chiplog.adapters.driven.planning_sqlite import SQLitePlanningRepository
 from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER, CONVERSATION_SCHEMA
+from chiplog.adapters.driven.workspace_issuance import WorkspaceIssuanceJournal
 from chiplog.capabilities.agent_loop.contracts import (
     DisclosureLabel as LoopLabel,
 )
@@ -35,6 +36,7 @@ from chiplog.capabilities.projections.workspace_boundary import (
 )
 from chiplog.composition.r10 import HermeticIngressRegistry
 from chiplog.composition.r12 import R12Workspace, _install_policy, _open_calendar_ledger
+from chiplog.composition.r13_workspace_provenance import accepted_sources, conversation_bindings
 from chiplog.domain_primitives import TenantId
 from chiplog.platform.calendar_read_ledger import CalendarReadState
 
@@ -122,20 +124,7 @@ def acceptance_companions(runtime: R13Runtime, run: RunRecord) -> tuple[DurableC
         for attempt in turn.attempts
         for member in attempt.manifest.members
     )
-    sources = tuple(
-        SourceReference(
-            tenant_id=run.tenant,
-            owner="agent_loop",
-            record_id=member.record_id,
-            record_version=member.revision_head + ":" + _digest(member.content.encode()),
-            content_digest=_digest(member.content.encode()),
-            label_head=member.label_head,
-            label=DisclosureLabel.model_validate_json(member.label.model_dump_json()),
-        )
-        for member in {
-            (item.record_id, item.revision_head, item.content): item for item in members
-        }.values()
-    )
+    sources = accepted_sources(run)
     joined = join_labels(tuple(member.label for member in members))
     entry = _entry(
         runtime,
@@ -199,9 +188,11 @@ class R13Workspace:
                     key=lambda source: source.record_id,
                 )
             )
+        bindings = conversation_bindings(
+            runtime, _history(runtime), extra, channel=CHANNEL, contour=CONTOUR
+        )
         all_sources = (
-            *extra,
-            *(source for entry in _history(runtime) for source in entry.envelope.sources),
+            *(source for binding in bindings for source in binding.sources),
             *(source for sources in planning.values() for source in sources),
         )
         source_map: dict[tuple[str, str, str], SourceReference] = {}
@@ -264,7 +255,7 @@ class R13Workspace:
         ledger = _open_calendar_ledger(runtime._database.with_suffix(".calendar.sqlite"), state)
         self._issued = R12Workspace(
             runtime._database,
-            runtime._database.with_suffix(".screens.sqlite"),
+            runtime._database.with_suffix(".screens.v2.sqlite"),
             runtime._appender._materializer,
             runtime._appender,
             self.ingress,
@@ -275,6 +266,12 @@ class R13Workspace:
             CalendarReadBroker(ledger, HermeticCalendarProvider(batch)),
             ledger,
             planning,
+            conversation_provenance=bindings,
+            issuance=WorkspaceIssuanceJournal.open(
+                runtime._database.with_suffix(".workspace-issuance"),
+                runtime._authority_gate(),
+                TENANT,
+            ),
         )
         return self._issued
 
