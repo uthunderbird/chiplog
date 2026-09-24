@@ -1,5 +1,6 @@
 """Versioned completion batches leave historical completion bytes untouched."""
 
+import asyncio
 from typing import cast
 
 import pytest
@@ -13,6 +14,10 @@ from chiplog.platform._owner_publication_contracts import (
     RejectedCompletionBatchV1,
 )
 from chiplog.platform.owner_publications import source_commands
+from tests.support.completion_assembly import (
+    accepted_completion_fixture,
+    rejected_completion_fixture,
+)
 
 
 def _batch_values() -> dict[str, object]:
@@ -118,3 +123,27 @@ def test_versioned_batches_have_fixed_exact_replay_role_order() -> None:
         "conversation",
         "agent_loop",
     ]
+
+
+def test_real_completion_batches_keep_exact_command_order_for_v2_and_v3_runs() -> None:
+    async def exercise() -> None:
+        for run_schema in ("v2", "v3"):
+            accepted = await accepted_completion_fixture(run_schema)
+            rejected = await rejected_completion_fixture(run_schema)
+            assert source_commands(accepted.batch) == accepted.expected_commands
+            assert source_commands(rejected.batch) == rejected.expected_commands
+            assert [command.owner for command in accepted.expected_commands] == [
+                "agent_loop",
+                "conversation",
+                "effects",
+                "effects",
+                "agent_loop",
+            ]
+            assert [command.owner for command in rejected.expected_commands] == [
+                "agent_loop",
+                "agent_loop",
+                "conversation",
+                "agent_loop",
+            ]
+
+    asyncio.run(exercise())

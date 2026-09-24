@@ -33,6 +33,12 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 | J6: model-attempt recovery | `model_attempt_recovery_contracts` executable replacement and separate late-evidence request/result/port | Registered source/record interpretation and operation bindings; authenticity, race handling and immutable late evidence remain T/I |
 | J7: completion/delivery/channel driver | `execution_completion_contracts` direct executable completion request/result retains captured response, complete earlier joins and delivery observation; existing delivery owner port/broker envelope retained | Complete conversation/effects/work participant assembly contract and consumers, plus public common CLI/Telegram driver receipts preserving distinct authentication and committed projection; owner proposal alone is not CompleteAcceptance publication |
 
+The recovery classification `TERMINAL_RECOVERY_FAULT` is observation-only in the
+current contracts. Normative recovery requires a durable typed terminal fault;
+its owner preparation and physical publication recipe remain a separate explicit
+`terminal_fault_publication` C_OPEN obligation. A zero-record classification or
+ordinary rejection does not satisfy that required branch.
+
 These are work packages within one contract phase. No missing row is moved to
 post-implementation detail coverage. The common runtime is implemented only after
 the graph is frozen and the joint behavioral tests are written.
@@ -538,6 +544,32 @@ synthetic descriptor symbols and establish grammar/structural consistency only.
 They are not registrations of the named production operations. Concrete family
 envelopes, operation/result matrices, record decoding/applicability declarations,
 adapters, mount discovery and current writer validation remain OPEN.
+
+## Completion physical assembly checkpoint
+
+`agent_loop.completion_owner_record_contracts` binds captured completion to the
+exact ACTIVE native v2/v3 Run, selected attempt, Turn and raw response. Accepted
+completion additionally decodes and binds the payload identities; semantic
+rejection preserves malformed response bytes. Physical delivery identity remains
+distinct from its semantic proposal digest. Rejection retains the original trace
+reference without fabricating a new trace record.
+
+`rejected_completion_terminalization_contracts` and
+`completion_terminal_work_sources` retain exact original exchanges and join native
+terminal Runs, manifest command/cut and ordered obligations. The effects codec
+retains typed source preimages, including inventories and authority-specific
+sources, in its commitment. `composition.completion_publication_contracts`
+checks the entire ordered command and physical-record assembly against these
+owner exchanges, including conversation, each delivery intent and terminal work.
+
+Consumer cases cover accepted/rejected v2/v3, zero/one/two work obligations,
+native identity and raw-response substitutions, malformed rejection payload,
+retained-source replacement, delivery-intent aliasing and dropped/reordered work.
+The checkpoint selector list names the six completion/intent test modules. Ruff
+and mypy cover the five new source files, six consumers and two support files.
+This is pure preparation/representation evidence. Actual owner preparation,
+registered publication, source authentication, writer CAS and replay remain T/I;
+the overall contract graph remains OPEN.
 
 ## Publication discipline
 
