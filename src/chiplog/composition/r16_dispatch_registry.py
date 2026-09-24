@@ -11,14 +11,25 @@ from __future__ import annotations
 import hmac
 import secrets
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
-from chiplog.adapters.driven.effects_hermetic import HermeticEffectsProvider
+from chiplog.adapters.driven.effects_hermetic import (
+    HermeticEffectsProvider,
+    HermeticReceiptObservation,
+    IssuedEffectSendTicket,
+    verify_hermetic_receipt,
+)
 from chiplog.capabilities.effects.contracts import (
     DispatchSemanticBinding,
     ExactHead,
     ProviderRecipient,
+)
+from chiplog.capabilities.effects.dispatch_outcome_contracts import (
+    DispatchOutcomePreparationV2,
+    DispatchOutcomeRecordV2,
 )
 from chiplog.capabilities.effects.dispatch_v2 import canonical, digest, reference
 from chiplog.platform.authority_gate import AuthorityGate
@@ -87,21 +98,76 @@ class HermeticDispatchResources:
             Literal["CONFIRM", "PERMANENT_NO_EFFECT", "LOST_RESPONSE_AFTER_EFFECT", "MIXED"], ...
         ],
         cap: int,
+        custody_path: Path | None = None,
     ) -> None:
         if cap < 1 or cap > len(scenarios):
             raise ValueError("offline grant cap must fit the independent provider scenario budget")
-        self._key = secrets.token_bytes(32)
+        from chiplog.composition.r16_dispatch_custody import load_or_create
+
+        retained = None if custody_path is None else load_or_create(custody_path, scenarios, cap)
+        self._key = (
+            secrets.token_bytes(32)
+            if retained is None
+            else bytes.fromhex(str(retained["issuer_key"]))
+        )
+        self._receipt_key = (
+            secrets.token_bytes(32)
+            if retained is None
+            else bytes.fromhex(str(retained["receipt_key"]))
+        )
         self._provider = HermeticEffectsProvider(
-            receipt_key=secrets.token_bytes(32), scenarios=scenarios
+            receipt_key=self._receipt_key,
+            scenarios=scenarios,
+            journal_path=None if custody_path is None else custody_path.with_suffix(".transfers"),
         )
         self._original_provider = self._provider
-        self._grant_id = "hermetic-send-grant/" + secrets.token_hex(24)
-        self._credential_id = "hermetic-send-credential/" + secrets.token_hex(24)
+        self._grant_id = (
+            "hermetic-send-grant/" + secrets.token_hex(24)
+            if retained is None
+            else str(retained["grant_id"])
+        )
+        self._credential_id = (
+            "hermetic-send-credential/" + secrets.token_hex(24)
+            if retained is None
+            else str(retained["credential_id"])
+        )
+        self._revocation_path = (
+            None if custody_path is None else custody_path.with_suffix(".revoked")
+        )
         self._epoch = "monotonic-process/" + secrets.token_hex(24)
         self._cap = cap
         self._generation = 0
         self._active = True
         self._gate: AuthorityGate | None = None
+
+    def verify_receipt(
+        self, ticket: IssuedEffectSendTicket, raw: bytes
+    ) -> HermeticReceiptObservation:
+        self.require_original_provider()
+        return verify_hermetic_receipt(ticket, raw, registered_receipt_key=self._receipt_key)
+
+    def seal_outcome(self, raw: bytes) -> str:
+        self.require_original_provider()
+        return hmac.digest(self._key, b"dispatch-outcome.v2\x00" + raw, "sha256").hex()
+
+    def seal_boundary_outcome(
+        self, request: DispatchOutcomePreparationV2, record: DispatchOutcomeRecordV2
+    ) -> str:
+        command = request.command
+        if (
+            command.operation != "APPEND_EVIDENCE"
+            or command.evidence is None
+            or command.evidence.observation != "BOUNDARY_CROSSED"
+        ):
+            raise ValueError("boundary seal requires original SEND uncertainty")
+        # This signs a broker observation, never a provider fact or send permit.
+        # Admission still verifies the original selected SEND and exact owner result.
+        raw = canonical([request.model_dump(mode="json"), record.model_dump(mode="json")])
+        return hmac.digest(self._key, b"dispatch-outcome.v2\x00" + raw, "sha256").hex()
+
+    def verify_outcome(self, raw: bytes, signature: str) -> bool:
+        expected = hmac.digest(self._key, b"dispatch-outcome.v2\x00" + raw, "sha256").hex()
+        return hmac.compare_digest(expected, signature)
 
     def require_original_provider(self) -> HermeticEffectsProvider:
         if self._provider is not self._original_provider:
@@ -123,9 +189,29 @@ class HermeticDispatchResources:
         with self._require_gate().hold():
             self._generation += 1
             self._active = False
+            if self._revocation_path is not None:
+                import os
+
+                with ExitStack() as resources:
+                    descriptor = os.open(self._revocation_path, os.O_CREAT | os.O_WRONLY, 0o600)
+                    resources.callback(os.close, descriptor)
+                    os.fsync(descriptor)
+                with ExitStack() as resources:
+                    directory = os.open(self._revocation_path.parent, os.O_RDONLY)
+                    resources.callback(os.close, directory)
+                    os.fsync(directory)
 
     def observe(self) -> ResourceObservation:
         with self._require_gate().hold():
+            if self._revocation_path is not None:
+                try:
+                    self._revocation_path.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    # Revocation is shared by every live holder of this custody.
+                    # Once observed, disappearance cannot reactivate this holder.
+                    self._active = False
             provider = self.require_original_provider()
             grant = canonical(
                 {

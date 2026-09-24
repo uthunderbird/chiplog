@@ -14,6 +14,11 @@ from typing import TYPE_CHECKING
 from chiplog.adapters.driven.effects_queries import StoredEffectRow
 from chiplog.capabilities.effects.contracts import EffectRecord, ExactHead
 from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEffectHistoryMember
+from chiplog.capabilities.effects.dispatch_outcome_contracts import (
+    DispatchOutcomePreparationV2,
+    DispatchOutcomeRecordV2,
+)
+from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
 from chiplog.capabilities.effects.dispatch_v2 import (
     DispatchPreparationV2,
     DispatchRecordV2,
@@ -42,7 +47,7 @@ RECORD_SCHEMA = "chiplog.effects.dispatch-record.v2"
 @dataclass(frozen=True)
 class VerifiedDispatchHistory:
     members: tuple[SelectedEffectHistoryMember, ...]
-    v2_records: tuple[DispatchRecordV2, ...]
+    v2_records: tuple[DispatchRecordV2 | DispatchOutcomeRecordV2, ...]
 
 
 def _request(decision: SelectedOwnerDecision) -> DispatchPreparationV2:
@@ -89,8 +94,8 @@ def verify_dispatch_history(
     ):
         raise ValueError("duplicate effect record across selected batches")
     members: list[SelectedEffectHistoryMember] = []
-    records: list[DispatchRecordV2] = []
-    latest: dict[str, DispatchRecordV2] = {}
+    records: list[DispatchRecordV2 | DispatchOutcomeRecordV2] = []
+    latest: dict[str, DispatchRecordV2 | DispatchOutcomeRecordV2] = {}
     seen: set[str] = set()
     order: tuple[int, int] | None = None
     for row in cut.rows:
@@ -139,6 +144,51 @@ def verify_dispatch_history(
                 intent=reference(intent.intent_id, intent.canonical_bytes()),
                 semantics=intent.mandate.semantics,
                 command_bytes=request.command.canonical_bytes(),
+                record_bytes=raw.canonical_bytes,
+            )
+        elif raw.schema_id == "chiplog.effects.dispatch-outcome-record.v2":
+            outcome = DispatchOutcomeRecordV2.model_validate_json(raw.canonical_bytes)
+            if batch.kind != "SINGLE_OWNER":
+                raise ValueError("outcome has another publication envelope")
+            preparation = DispatchOutcomePreparationV2.model_validate_json(
+                batch.command.canonical_bytes
+            )
+            if (
+                outcome.canonical_bytes() != raw.canonical_bytes
+                or batch.command.owner != "effects"
+                or batch.command.schema_id != preparation.schema_id
+                or batch.command.fingerprint != digest(batch.command.canonical_bytes)
+                or preparation.canonical_bytes() != batch.command.canonical_bytes
+                or preparation.command.identity.command_id != batch.identity.command_id
+                or preparation.command.identity.expected_tenant_head
+                != batch.expected.tenant_frontier
+                or preparation.previous != latest.get(outcome.snapshot.intent.intent_id)
+                or preparation.original_send not in records
+                or prepare_outcome(preparation) != outcome
+                or raw.record_id != outcome.record.head
+                or raw.record_kind != "effects." + outcome.kind
+            ):
+                raise ValueError(
+                    "outcome original owner/predecessor/evidence interpretation differs"
+                )
+            latest[outcome.snapshot.intent.intent_id] = outcome
+            records.append(outcome)
+            member = SelectedEffectHistoryMember(
+                kind=outcome.kind,
+                selected_decision=ExactHead(
+                    subject_id=decision.decision_id,
+                    head=decision.decision_head,
+                    fingerprint=decision.decision_fingerprint,
+                ),
+                publication_ordinal=ordinal,
+                original_selected_cut=selected_cut,
+                record=outcome.record,
+                predecessor=outcome.predecessor,
+                intent=reference(
+                    outcome.snapshot.intent.intent_id, outcome.snapshot.intent.canonical_bytes()
+                ),
+                semantics=outcome.snapshot.intent.mandate.semantics,
+                command_bytes=preparation.command.canonical_bytes(),
                 record_bytes=raw.canonical_bytes,
             )
         elif raw.schema_id == "chiplog.effects.record.v1":
@@ -295,6 +345,12 @@ def validate_selected_dispatch_sources(runtime: R16DispatchRuntime) -> None:
         effects = tuple(record for record in batch.complete_records if record.owner == "effects")
         if any(record.schema_id == RECORD_SCHEMA for record in effects):
             validate_issuance(batch, runtime)
+        elif any(
+            record.schema_id == "chiplog.effects.dispatch-outcome-record.v2" for record in effects
+        ):
+            from chiplog.composition.r16_dispatch_outcomes import validate_outcome_issuance
+
+            validate_outcome_issuance(batch, runtime)
         elif (
             getattr(batch.authentication, "applicability_schema", None)
             == "chiplog.effects.dispatch-issuance.v2"

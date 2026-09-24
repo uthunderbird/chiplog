@@ -132,6 +132,7 @@ async def owner_call(
         or returned.schema_id
         not in {
             "chiplog.effects.dispatch-record.v2",
+            "chiplog.effects.dispatch-outcome-record.v2",
             "chiplog.effects.dispatch-precursor-result.v2",
         }
     ):
@@ -483,6 +484,8 @@ async def publish_dispatch(
             )
             if not matches_v2:
                 raise LoopRejected("v2 intent not found in complete current history")
+            if not isinstance(matches_v2[-1], DispatchRecordV2):
+                raise LoopRejected("outcome stream cannot authorize another first send")
             previous = matches_v2[-1]
             intent = previous.snapshot.intent
             common = dict(

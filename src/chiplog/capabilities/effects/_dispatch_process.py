@@ -3,6 +3,8 @@
 import base64
 
 from . import _r16_process
+from .dispatch_outcome_contracts import DispatchOutcomePreparationV2
+from .dispatch_outcomes import prepare_outcome
 from .dispatch_v2 import (
     DispatchPreparationV2,
     PrecursorPreparationV2,
@@ -16,6 +18,13 @@ ROUTES = tuple(
     sorted(
         (
             *_r16_process.ROUTES,
+            (
+                "effects.prepare_dispatch_outcome_v2",
+                "broker",
+                "effects",
+                "chiplog.effects.dispatch-outcome-preparation.v2",
+                "chiplog.effects.dispatch-outcome-record.v2",
+            ),
             (
                 "effects.evaluate_dispatch_mandate_v2",
                 "broker",
@@ -36,10 +45,20 @@ ROUTES = tuple(
 
 
 def dispatch(operation: str, payload: bytes) -> dict[str, object]:
-    if operation not in {"effects.evaluate_dispatch_mandate_v2", "effects.prepare_dispatch_v2"}:
+    if operation not in {
+        "effects.evaluate_dispatch_mandate_v2",
+        "effects.prepare_dispatch_v2",
+        "effects.prepare_dispatch_outcome_v2",
+    }:
         return _r16_process.dispatch(operation, payload)
     try:
-        if operation == "effects.evaluate_dispatch_mandate_v2":
+        if operation == "effects.prepare_dispatch_outcome_v2":
+            outcome = DispatchOutcomePreparationV2.model_validate_json(payload)
+            if outcome.canonical_bytes() != payload:
+                raise ValueError("noncanonical outcome request")
+            result = prepare_outcome(outcome).canonical_bytes()
+            schema = "chiplog.effects.dispatch-outcome-record.v2"
+        elif operation == "effects.evaluate_dispatch_mandate_v2":
             precursor = PrecursorPreparationV2.model_validate_json(payload)
             if precursor.canonical_bytes() != payload:
                 raise ValueError("noncanonical precursor request")

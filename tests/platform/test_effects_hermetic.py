@@ -12,34 +12,9 @@ from chiplog.adapters.driven.effects_hermetic import (
     HermeticEffectsProvider,
     HermeticReceiptIntegrityError,
     HermeticResponseLost,
-    IssuedEffectSendTicket,
     verify_hermetic_receipt,
 )
-
-
-def _ticket() -> IssuedEffectSendTicket:
-    return IssuedEffectSendTicket(
-        tenant_id="tenant",
-        issued_operation_id="issued",
-        journal_decision_id="decision",
-        journal_decision_fingerprint="a" * 64,
-        transmission_id="child0",
-        transmission_fingerprint="b" * 64,
-        request_ordinal=0,
-        intent_id="intent",
-        intent_fingerprint="c" * 64,
-        provider="hermetic-effects",
-        account="hermetic-account",
-        recipient="hermetic-principal",
-        canonical_address=b"hermetic://effects/hermetic-principal",
-        endpoint_head="endpoint",
-        credential_binding_head="credential",
-        adapter_contract_version="chiplog.hermetic-effects.v1",
-        payload=b"\xff\x00x",
-        payload_fingerprint=hashlib.sha256(b"\xff\x00x").hexdigest(),
-        idempotency_key="key",
-        bundle_members=("effect",),
-    )
+from tests.support.dispatch import _ticket as _ticket
 
 
 def test_response_loss_retains_one_external_effect_and_no_hidden_retry() -> None:

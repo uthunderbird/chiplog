@@ -258,6 +258,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
         if identity.capability_ids == (
             "effects.evaluate_dispatch_mandate_v2",
             "effects.prepare_denial",
+            "effects.prepare_dispatch_outcome_v2",
             "effects.prepare_dispatch_v2",
             "effects.prepare_transition",
         ):

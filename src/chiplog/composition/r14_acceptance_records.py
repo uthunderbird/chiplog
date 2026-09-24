@@ -130,7 +130,20 @@ def _verify_inventory(cut: call.CallPreparationCut) -> None:
 
 
 def _verify_loop(retained: RetainedAcceptancePreparation) -> None:
-    request, proposal = retained.loop_request, retained.loop_proposal
+    verify_loop_preparation(
+        retained.loop_request, retained.loop_proposal, loop_dispatch_semantics()
+    )
+
+
+def verify_loop_preparation(
+    request: call.AcceptConsequentialCallRequest,
+    proposal: call.PreparedConsequentialAcceptance,
+    expected_semantics: call.CallDispatchSemantics,
+) -> None:
+    """Version-neutral link graph; the registered caller fixes expected semantics.
+
+    This checks supplied bytes, never the existence or authenticity of history.
+    """
     binding, initialized = request.binding, request.initialized_record
     cut = binding.cut
     _require(isinstance(cut.fence, NonSchedulerFence), "unsupported execution fence")
@@ -181,7 +194,7 @@ def _verify_loop(retained: RetainedAcceptancePreparation) -> None:
         and row.terminal == Absent(),
         "call is not the exact pending initialization",
     )
-    _require(binding.dispatch_semantics == loop_dispatch_semantics(), "unregistered loop semantics")
+    _require(binding.dispatch_semantics == expected_semantics, "unregistered loop semantics")
     digest = request.digest()
     accepted = call.ToolCallAcceptedRecord(
         accepted_id="accepted:" + digest,
