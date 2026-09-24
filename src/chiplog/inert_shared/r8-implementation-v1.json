@@ -87,6 +87,7 @@
   "capabilities/agent_loop/scheduler_configuration.py": "768e9b079fce4d15bc7e8dde357a183bff4741d614a30776671d1185a8f8b437",
   "capabilities/agent_loop/scheduler_contracts.py": "1c0d219ae6cfdf259b9379f87419175f7d3652f5130f1a0acb1d38794449d0be",
   "capabilities/agent_loop/scheduler_execution_contracts.py": "c58cfb7c1039b7e5947aea1e7afdc803d96d301447706601d73d03325d67601f",
+  "capabilities/agent_loop/scheduler_mandate_lifecycle_contracts.py": "f1fb581e0fe34d32ae0e45a0592b8e5792843c82fb5f47fd0d076554e195e365",
   "capabilities/agent_loop/scheduler_domain.py": "86136caf6862c464a99272e0c6e96dbf7ef4638b2a32a59c70b798be0549a875",
   "capabilities/agent_loop/scheduler_leases.py": "960a26d1b2edeef8f02146ea05c6261dcfef28999f497f0f08f835480d8bb4d2",
   "capabilities/agent_loop/scheduler_materialization.py": "5c7132730d4c80e4d104e45fee9ac086195e35f5af3146c0d03599ff30f671cf",

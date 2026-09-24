@@ -497,6 +497,26 @@ Public cycle issuance, seed production, mandate lifecycle, service acquisition,
 operator resolution, full owner-record decoding and atomic runtime publication
 remain OPEN. Phase C is not frozen by this checkpoint.
 
+## Scheduler mandate lifecycle wires
+
+`agent_loop.scheduler_mandate_lifecycle_contracts` declares issuance, revocation
+and supersession preparation ports. Issuance requires separate mandate, budget
+and revocation absences and a zero-counter budget genesis. Revocation retains
+the exact selected mandate and budget. Supersession closes the old mandate and
+uses a distinct new ID and genesis; its permitted scope changes are limited to
+ID, issuance generation and successor bound. Selected/proposed bytes and hashes
+are checked locally, including the mandate IDs in the consumption basis and
+terminal revocation. The pure expiry predicate rejects equality at the deadline.
+
+Evidence: `uv run pytest -q
+tests/capabilities/agent_loop/test_scheduler_mandate_lifecycle_contracts.py`
+passed 14 tests. JSON negative cases first validate an unchanged baseline through
+the same decoder, then rebuild dependent bytes/hashes where needed to reach the
+intended join. Ruff and mypy passed on the module, consumer and support fixture.
+Administrative source issuance/interpretation, request/result publication joins,
+registered operation mounting, current authority, CAS and durable lifecycle
+execution remain OPEN; these wire consumers do not prove those mechanisms.
+
 ## Publication discipline
 
 New contract files, their consumer tests, this inventory and exact source catalog
