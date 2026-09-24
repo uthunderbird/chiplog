@@ -243,7 +243,7 @@ class SelectedExactDecisionV2(SchedulerExecutionDTO):
     canonical_selected_result_bytes: bytes = Field(min_length=1)
     exact_prefix_materialization: Present
     selected_debit: Annotated[Absent | Present, Field(discriminator="kind")]
-    canonical_selected_debit_bytes: bytes | None = None
+    canonical_selected_debit_bytes: Annotated[bytes, Field(min_length=1)] | None = None
 
     @model_validator(mode="after")
     def selected_debit_bytes_match_marker(self) -> SelectedExactDecisionV2:
@@ -329,7 +329,7 @@ class SelectedExactOverflowDecisionV2(SchedulerExecutionDTO):
     canonical_selected_result_bytes: bytes = Field(min_length=1)
     exact_prefix_materialization: Present
     selected_debit: Annotated[Absent | Present, Field(discriminator="kind")]
-    canonical_selected_debit_bytes: bytes | None = None
+    canonical_selected_debit_bytes: Annotated[bytes, Field(min_length=1)] | None = None
 
     @model_validator(mode="after")
     def selected_debit_bytes_match_marker(self) -> SelectedExactOverflowDecisionV2:
@@ -797,6 +797,47 @@ class PreparedFinalizedScheduledIntervalV2(SchedulerExecutionDTO):
         return self
 
 
+def _validate_selected_replay_members(
+    records: tuple[SchedulerCanonicalMember, ...],
+    subject_ids: tuple[Identity, ...],
+    selected_whole: SelectedScheduledWholeEnvelopeV2,
+    *,
+    expected_branch: IntervalBranch | Literal["OVERFLOW_HOLD"],
+) -> None:
+    """Check retained physical members against a fixed selected WHOLE body.
+
+    This establishes byte and descriptor coherence only.  Selection remains a
+    responsibility of the mounted authoritative reader.
+    """
+
+    body = selected_whole.body
+    if body.branch != expected_branch:
+        raise ValueError("selected WHOLE branch differs from exact replay kind")
+    if len(subject_ids) != len(records):
+        raise ValueError("selected WHOLE subjects must match selected membership")
+    if len(body.ordered_non_envelope_members) != len(records):
+        raise ValueError("selected WHOLE descriptors must match selected membership")
+    record_ids = tuple(item.record_id for item in records)
+    if len(record_ids) != len(set(record_ids)):
+        raise ValueError("selected WHOLE membership cannot contain duplicate records")
+    for member, subject_id, descriptor in zip(
+        records,
+        subject_ids,
+        body.ordered_non_envelope_members,
+        strict=True,
+    ):
+        raw = base64.b64decode(member.canonical_base64, validate=True)
+        if hashlib.sha256(raw).hexdigest() != member.fingerprint or (
+            descriptor.owner != "agent_loop"
+            or descriptor.subject_id != subject_id
+            or descriptor.record_kind != member.record_kind
+            or descriptor.record_id != member.record_id
+            or descriptor.schema_id != member.schema_id
+            or descriptor.fingerprint != member.fingerprint
+        ):
+            raise ValueError("selected WHOLE descriptor differs from selected member")
+
+
 class ScheduledIntervalExactReplayV2(SchedulerExecutionDTO):
     kind: Literal["SCHEDULED_INTERVAL_EXACT_REPLAY_V2"] = "SCHEDULED_INTERVAL_EXACT_REPLAY_V2"
     source: SelectedExactDecisionV2
@@ -806,31 +847,49 @@ class ScheduledIntervalExactReplayV2(SchedulerExecutionDTO):
 
     @model_validator(mode="after")
     def selected_members_match_exact_whole_body(self) -> ScheduledIntervalExactReplayV2:
-        body = self.selected_whole_envelope.body
-        if len(self.complete_selected_member_subject_ids) != len(self.complete_selected_records):
-            raise ValueError("selected WHOLE subjects must match selected membership")
-        if len(body.ordered_non_envelope_members) != len(self.complete_selected_records):
-            raise ValueError("selected WHOLE descriptors must match selected membership")
-        record_ids = tuple(item.record_id for item in self.complete_selected_records)
-        if len(record_ids) != len(set(record_ids)):
-            raise ValueError("selected WHOLE membership cannot contain duplicate records")
-        for member, subject_id, descriptor in zip(
+        if self.selected_whole_envelope.body.branch == "OVERFLOW_HOLD":
+            raise ValueError("ordinary exact replay cannot retain an overflow WHOLE")
+        _validate_selected_replay_members(
             self.complete_selected_records,
             self.complete_selected_member_subject_ids,
-            body.ordered_non_envelope_members,
-            strict=True,
-        ):
-            raw = base64.b64decode(member.canonical_base64, validate=True)
-            if hashlib.sha256(raw).hexdigest() != member.fingerprint or (
-                descriptor.owner != "agent_loop"
-                or descriptor.subject_id != subject_id
-                or descriptor.record_kind != member.record_kind
-                or descriptor.record_id != member.record_id
-                or descriptor.schema_id != member.schema_id
-                or descriptor.fingerprint != member.fingerprint
-            ):
-                raise ValueError("selected WHOLE descriptor differs from selected member")
+            self.selected_whole_envelope,
+            expected_branch=self.selected_whole_envelope.body.branch,
+        )
+        from .scheduler_outcome_record_contracts import validate_selected_scheduler_replay_native
+
+        validate_selected_scheduler_replay_native(self)
         return self
+
+
+class ScheduledOverflowIntervalExactReplayV2(SchedulerExecutionDTO):
+    kind: Literal["SCHEDULED_OVERFLOW_INTERVAL_EXACT_REPLAY_V2"] = (
+        "SCHEDULED_OVERFLOW_INTERVAL_EXACT_REPLAY_V2"
+    )
+    source: SelectedExactOverflowDecisionV2
+    complete_selected_records: tuple[SchedulerCanonicalMember, ...] = Field(min_length=1)
+    complete_selected_member_subject_ids: tuple[Identity, ...]
+    selected_whole_envelope: SelectedScheduledWholeEnvelopeV2
+
+    @model_validator(mode="after")
+    def selected_members_match_exact_overflow_whole_body(
+        self,
+    ) -> ScheduledOverflowIntervalExactReplayV2:
+        _validate_selected_replay_members(
+            self.complete_selected_records,
+            self.complete_selected_member_subject_ids,
+            self.selected_whole_envelope,
+            expected_branch="OVERFLOW_HOLD",
+        )
+        from .scheduler_outcome_record_contracts import validate_selected_scheduler_replay_native
+
+        validate_selected_scheduler_replay_native(self)
+        return self
+
+
+ScheduledExecutionExactReplayV2 = Annotated[
+    ScheduledIntervalExactReplayV2 | ScheduledOverflowIntervalExactReplayV2,
+    Field(discriminator="kind"),
+]
 
 
 class ScheduledExecutionPreparationRejectedV2(SchedulerExecutionDTO):
@@ -853,7 +912,7 @@ class ScheduledExecutionPreparationRejectedV2(SchedulerExecutionDTO):
 ScheduledIntervalPreparationResultV2 = Annotated[
     PreparedScheduledIntervalExecutionOutputsV2
     | ScheduledExecutionPreparationRejectedV2
-    | ScheduledIntervalExactReplayV2,
+    | ScheduledExecutionExactReplayV2,
     Field(discriminator="kind"),
 ]
 

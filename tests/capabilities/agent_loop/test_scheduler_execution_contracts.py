@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+from collections.abc import Callable
 from typing import Literal
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from tests.support.execution_versions import execution_run_v3
 from tests.support.scheduler_execution import DIGEST, call_head, ordinary_seed_batch, present
+from tests.support.scheduler_overflow_hold_records import v2_overflow_hold_record
 
 from chiplog.capabilities.agent_loop import execution_initialization_contracts as v1_init
 from chiplog.capabilities.agent_loop.execution_history_transition_contracts import (
@@ -34,10 +37,31 @@ from chiplog.capabilities.agent_loop.scheduler_execution_contracts import (
     ProposedScheduledWholeEnvelopeV2,
     SafetyHoldNoDebitAccountingV2,
     ScheduledExecutionBindingV2,
+    ScheduledIntervalExactReplayV2,
+    ScheduledIntervalPreparationResultV2,
+    ScheduledOverflowIntervalExactReplayV2,
     ScheduledWholeIntervalEnvelopeV2,
     ScheduledWholeIntervalMemberDescriptorV2,
     SelectedExactDecisionV2,
+    SelectedExactOverflowDecisionV2,
+    SelectedScheduledWholeEnvelopeV2,
     mandate_is_fresh_at,
+)
+from chiplog.capabilities.agent_loop.scheduler_outcome_record_contracts import (
+    ExecutableIntervalResultRecordV2,
+    executable_interval_result_reference,
+    make_executable_interval_result_member,
+    make_executable_overflow_hold_member,
+    make_scheduled_overflow_primitive_member,
+    make_scheduled_parent_member,
+)
+from chiplog.capabilities.agent_loop.scheduler_overflow_hold_records import (
+    executable_overflow_hold_reference,
+)
+from chiplog.capabilities.agent_loop.scheduler_seed_producer_contracts import (
+    overflow_primitive_reference,
+    primitive_parent_reference,
+    scheduler_execution_command_reference,
 )
 
 
@@ -300,3 +324,289 @@ def test_whole_envelope_body_and_proposal_reject_descriptor_and_byte_mutations()
 
 def present_with_fingerprint(name: str, payload: bytes) -> Present:
     return Present(head=name, fingerprint=hashlib.sha256(payload).hexdigest())
+
+
+def ordinary_exact_replay() -> ScheduledIntervalExactReplayV2:
+    seed_batch = ordinary_seed_batch()
+    assert isinstance(seed_batch.source, PreparedPrimitiveFirstPublicationV2)
+    parent = seed_batch.source.primitive_parent
+    parent_reference = primitive_parent_reference(parent)
+    parent_member = make_scheduled_parent_member(parent)
+    result = ExecutableIntervalResultRecordV2(
+        parent=parent,
+        ordered_dispositions=(),
+        ordered_occurrences=(),
+        resulting_boundary=parent.boundary.cutoff_due_coordinate,
+    )
+    result_member = make_executable_interval_result_member(result)
+    records = (parent_member, result_member)
+    subjects = (parent.command.command_id, parent.command.command_id)
+    descriptors = tuple(
+        ScheduledWholeIntervalMemberDescriptorV2(
+            record_kind=member.record_kind,
+            subject_id=subject_id,
+            record_id=member.record_id,
+            schema_id=member.schema_id,
+            fingerprint=member.fingerprint,
+        )
+        for member, subject_id in zip(records, subjects, strict=True)
+    )
+    body = ScheduledWholeIntervalEnvelopeV2(
+        tenant_id="tenant",
+        interval_command=scheduler_execution_command_reference(parent.command),
+        branch=parent.branch,
+        primitive_reference=parent_reference,
+        selected_configuration=seed_batch.configuration_source.configuration,
+        selected_mandate=seed_batch.selected_mandate.mandate_head,
+        selected_applicability=call_head("applicability"),
+        selected_budget_predecessor=seed_batch.selected_budget_predecessor.budget_head,
+        budget_successor=Absent(),
+        selected_clock_cut_fingerprint=DIGEST,
+        outcome=executable_interval_result_reference(result),
+        ordered_non_envelope_members=descriptors,
+        expected_ordinary_seed_count=0,
+        ordered_occurrence_materializations=(),
+        resulting_boundary=parent.boundary.cutoff_due_coordinate.canonical_coordinate,
+        dependency_manifest_fingerprint=DIGEST,
+    )
+    whole_raw = body.canonical_bytes()
+    whole_digest = hashlib.sha256(whole_raw).hexdigest()
+    whole = SelectedScheduledWholeEnvelopeV2(
+        selected_reference=Present(
+            head="scheduler-whole-envelope-v2:" + whole_digest, fingerprint=whole_digest
+        ),
+        canonical_envelope_bytes=whole_raw,
+        body=body,
+    )
+    return ScheduledIntervalExactReplayV2(
+        source=SelectedExactDecisionV2(
+            selected_decision=parent_reference,
+            canonical_selected_decision_bytes=parent.canonical_bytes(),
+            canonical_selected_result_bytes=result.canonical_bytes(),
+            exact_prefix_materialization=parent_reference,
+            selected_debit=Absent(),
+            canonical_selected_debit_bytes=None,
+        ),
+        complete_selected_records=records,
+        complete_selected_member_subject_ids=subjects,
+        selected_whole_envelope=whole,
+    )
+
+
+def overflow_exact_replay() -> ScheduledOverflowIntervalExactReplayV2:
+    record = v2_overflow_hold_record()
+    primitive = record.primitive
+    primitive_raw = primitive.canonical_bytes()
+    primitive_reference = overflow_primitive_reference(primitive)
+    primitive_member = make_scheduled_overflow_primitive_member(primitive)
+    outcome_member = make_executable_overflow_hold_member(record)
+    records = (primitive_member, outcome_member)
+    subjects = (record.command.command_id, record.command.command_id)
+    descriptors = tuple(
+        ScheduledWholeIntervalMemberDescriptorV2(
+            record_kind=member.record_kind,
+            subject_id=subject_id,
+            record_id=member.record_id,
+            schema_id=member.schema_id,
+            fingerprint=member.fingerprint,
+        )
+        for member, subject_id in zip(records, subjects, strict=True)
+    )
+    batch = ordinary_seed_batch(1)
+    body = ScheduledWholeIntervalEnvelopeV2(
+        tenant_id="tenant",
+        interval_command=scheduler_execution_command_reference(record.command),
+        branch="OVERFLOW_HOLD",
+        primitive_reference=primitive_reference,
+        selected_configuration=batch.configuration_source.configuration,
+        selected_mandate=batch.selected_mandate.mandate_head,
+        selected_applicability=call_head("applicability"),
+        selected_budget_predecessor=batch.selected_budget_predecessor.budget_head,
+        budget_successor=Absent(),
+        selected_clock_cut_fingerprint=DIGEST,
+        outcome=executable_overflow_hold_reference(record),
+        ordered_non_envelope_members=descriptors,
+        expected_ordinary_seed_count=0,
+        ordered_occurrence_materializations=(),
+        resulting_boundary=None,
+        dependency_manifest_fingerprint=DIGEST,
+    )
+    whole_raw = body.canonical_bytes()
+    whole_digest = hashlib.sha256(whole_raw).hexdigest()
+    whole = SelectedScheduledWholeEnvelopeV2(
+        selected_reference=Present(
+            head="scheduler-whole-envelope-v2:" + whole_digest, fingerprint=whole_digest
+        ),
+        canonical_envelope_bytes=whole_raw,
+        body=body,
+    )
+    return ScheduledOverflowIntervalExactReplayV2(
+        source=SelectedExactOverflowDecisionV2(
+            selected_decision=primitive_reference,
+            canonical_selected_decision_bytes=primitive_raw,
+            canonical_selected_result_bytes=record.canonical_bytes(),
+            exact_prefix_materialization=executable_overflow_hold_reference(record),
+            selected_debit=Absent(),
+            canonical_selected_debit_bytes=None,
+        ),
+        complete_selected_records=records,
+        complete_selected_member_subject_ids=subjects,
+        selected_whole_envelope=whole,
+    )
+
+
+def test_exact_replay_accepts_complete_nonempty_ordinary_and_overflow_wholes() -> None:
+    ordinary = ordinary_exact_replay()
+    overflow = overflow_exact_replay()
+    adapter: TypeAdapter[ScheduledIntervalPreparationResultV2] = TypeAdapter(
+        ScheduledIntervalPreparationResultV2
+    )
+    assert adapter.validate_json(ordinary.canonical_bytes()) == ordinary
+    assert adapter.validate_json(overflow.canonical_bytes()) == overflow
+    assert base64.b64decode(ordinary.complete_selected_records[0].canonical_base64) == (
+        ordinary.source.canonical_selected_decision_bytes
+    )
+    assert base64.b64decode(ordinary.complete_selected_records[1].canonical_base64) == (
+        ordinary.source.canonical_selected_result_bytes
+    )
+    assert base64.b64decode(overflow.complete_selected_records[0].canonical_base64) == (
+        overflow.source.canonical_selected_decision_bytes
+    )
+    assert base64.b64decode(overflow.complete_selected_records[1].canonical_base64) == (
+        overflow.source.canonical_selected_result_bytes
+    )
+    with pytest.raises(ValidationError):
+        adapter.validate_python({"kind": "UNREGISTERED_SCHEDULED_REPLAY"})
+
+
+@pytest.mark.parametrize("builder", [ordinary_exact_replay, overflow_exact_replay])
+@pytest.mark.parametrize("mutation", ["omit", "reorder", "duplicate", "rehash", "substitute"])
+def test_exact_replay_rejects_member_mutations_against_fixed_selected_whole(
+    builder: Callable[[], ScheduledIntervalExactReplayV2 | ScheduledOverflowIntervalExactReplayV2],
+    mutation: str,
+) -> None:
+    replay = builder()
+    records = replay.complete_selected_records
+    if mutation == "omit":
+        changed = records[:1]
+    elif mutation == "reorder":
+        changed = tuple(reversed(records))
+    elif mutation == "duplicate":
+        changed = (records[0], records[0])
+    elif mutation == "rehash":
+        changed = (records[0].model_copy(update={"fingerprint": "b" * 64}), records[1])
+    else:
+        replacement_payload = b"substituted-selected-member"
+        changed = (
+            records[0].model_copy(
+                update={
+                    "record_id": "substituted:" + hashlib.sha256(replacement_payload).hexdigest(),
+                    "canonical_base64": base64.b64encode(replacement_payload).decode(),
+                    "fingerprint": hashlib.sha256(replacement_payload).hexdigest(),
+                }
+            ),
+            records[1],
+        )
+    with pytest.raises(ValidationError):
+        if isinstance(replay, ScheduledIntervalExactReplayV2):
+            ScheduledIntervalExactReplayV2(
+                source=replay.source,
+                complete_selected_records=changed,
+                complete_selected_member_subject_ids=replay.complete_selected_member_subject_ids,
+                selected_whole_envelope=replay.selected_whole_envelope,
+            )
+        else:
+            ScheduledOverflowIntervalExactReplayV2(
+                source=replay.source,
+                complete_selected_records=changed,
+                complete_selected_member_subject_ids=replay.complete_selected_member_subject_ids,
+                selected_whole_envelope=replay.selected_whole_envelope,
+            )
+
+
+def test_exact_replay_keeps_ordinary_and_overflow_branch_in_separate_closed_sources() -> None:
+    ordinary = ordinary_exact_replay()
+    overflow = overflow_exact_replay()
+    with pytest.raises(ValidationError, match="ordinary"):
+        ScheduledIntervalExactReplayV2(
+            source=ordinary.source,
+            complete_selected_records=ordinary.complete_selected_records,
+            complete_selected_member_subject_ids=ordinary.complete_selected_member_subject_ids,
+            selected_whole_envelope=overflow.selected_whole_envelope,
+        )
+    with pytest.raises(ValidationError):
+        ScheduledIntervalExactReplayV2.model_validate(overflow.model_dump())
+    malformed = json.loads(overflow.canonical_bytes())
+    malformed["selected_whole_envelope"]["body"]["expected_ordinary_seed_count"] = 1
+    with pytest.raises(ValidationError, match="no ordinary members"):
+        ScheduledOverflowIntervalExactReplayV2.model_validate_json(json.dumps(malformed))
+    with pytest.raises(ValidationError):
+        SelectedExactOverflowDecisionV2(
+            selected_decision=present("overflow-decision"),
+            canonical_selected_decision_bytes=b"overflow-decision",
+            canonical_selected_result_bytes=b"overflow-result",
+            exact_prefix_materialization=present("overflow-prefix"),
+            selected_debit=present("debit"),
+            canonical_selected_debit_bytes=b"",
+        )
+
+
+@pytest.mark.parametrize("selected_part", ["primitive", "result"])
+def test_ordinary_replay_rejects_foreign_valid_selected_bytes_while_whole_is_unchanged(
+    selected_part: Literal["primitive", "result"],
+) -> None:
+    replay = ordinary_exact_replay()
+    parent_body = ExecutableIntervalResultRecordV2.model_validate_json(
+        base64.b64decode(replay.complete_selected_records[1].canonical_base64, validate=True)
+    ).parent
+    foreign_parent = parent_body.model_copy(
+        update={"command": parent_body.command.model_copy(update={"command_id": "foreign-command"})}
+    )
+    foreign_result = ExecutableIntervalResultRecordV2(
+        parent=foreign_parent,
+        ordered_dispositions=(),
+        ordered_occurrences=(),
+        resulting_boundary=foreign_parent.boundary.cutoff_due_coordinate,
+    )
+    source = replay.source.model_copy(
+        update=(
+            {
+                "selected_decision": primitive_parent_reference(foreign_parent),
+                "canonical_selected_decision_bytes": foreign_parent.canonical_bytes(),
+            }
+            if selected_part == "primitive"
+            else {"canonical_selected_result_bytes": foreign_result.canonical_bytes()}
+        )
+    )
+    with pytest.raises(ValidationError, match="native join"):
+        ScheduledIntervalExactReplayV2(
+            source=source,
+            complete_selected_records=replay.complete_selected_records,
+            complete_selected_member_subject_ids=replay.complete_selected_member_subject_ids,
+            selected_whole_envelope=replay.selected_whole_envelope,
+        )
+
+
+@pytest.mark.parametrize("selected_part", ["primitive", "result"])
+def test_overflow_replay_rejects_foreign_valid_selected_bytes_while_whole_is_unchanged(
+    selected_part: Literal["primitive", "result"],
+) -> None:
+    replay = overflow_exact_replay()
+    foreign = v2_overflow_hold_record(command_suffix="-foreign")
+    source = replay.source.model_copy(
+        update=(
+            {
+                "selected_decision": overflow_primitive_reference(foreign.primitive),
+                "canonical_selected_decision_bytes": foreign.primitive.canonical_bytes(),
+            }
+            if selected_part == "primitive"
+            else {"canonical_selected_result_bytes": foreign.canonical_bytes()}
+        )
+    )
+    with pytest.raises(ValidationError, match="native join"):
+        ScheduledOverflowIntervalExactReplayV2(
+            source=source,
+            complete_selected_records=replay.complete_selected_records,
+            complete_selected_member_subject_ids=replay.complete_selected_member_subject_ids,
+            selected_whole_envelope=replay.selected_whole_envelope,
+        )

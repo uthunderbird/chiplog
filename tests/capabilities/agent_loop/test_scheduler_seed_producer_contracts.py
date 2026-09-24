@@ -7,15 +7,21 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from tests.support.scheduler_execution import DIGEST, call_head, ordinary_seed_batch
+from tests.support.scheduler_execution import DIGEST, ordinary_seed_batch
 from tests.support.scheduler_seed_producer import (
     ordinary_request,
     public_request,
     retained_source,
 )
 
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
+from chiplog.capabilities.agent_loop.scheduler_contracts import (
+    FullEligibilityEvidence,
+    SchedulerEligibilityManifest,
+)
 from chiplog.capabilities.agent_loop.scheduler_execution_contracts import (
+    OverflowHoldPrimitiveV2,
     PreparedOverflowPrimitiveFirstPublicationV2,
     PreparedPrimitiveFirstPublicationV2,
 )
@@ -27,7 +33,9 @@ from chiplog.capabilities.agent_loop.scheduler_seed_producer_contracts import (
     decode_scheduler_cycle_source_row,
     overflow_primitive_reference,
     primitive_parent_reference,
+    scheduler_execution_command_reference,
     validate_prepared_overflow_primitive,
+    validate_prepared_overflow_primitive_source_join,
     validate_prepared_primitive_parent,
 )
 
@@ -275,11 +283,8 @@ def test_full_and_streamed_overflow_have_distinct_parentless_primitives(streamin
             manifest=SchedulerEligibilityManifest(members=(), fingerprint=DIGEST)
         )
     )
-    primitive = __import__(
-        "chiplog.capabilities.agent_loop.scheduler_execution_contracts",
-        fromlist=["OverflowHoldPrimitiveV2"],
-    ).OverflowHoldPrimitiveV2(
-        command=call_head("overflow"),
+    primitive = OverflowHoldPrimitiveV2(
+        command=scheduler_execution_command_reference(retained_source().observation.command),
         boundary=parent.primitive_parent.boundary,
         bound_head=parent.primitive_parent.current_bound,
         exceeded_dimension="MEMBER_COUNT",
@@ -293,4 +298,72 @@ def test_full_and_streamed_overflow_have_distinct_parentless_primitives(streamin
         canonical_overflow_primitive_bytes=primitive.canonical_bytes(),
     )
     assert validate_prepared_overflow_primitive(prepared) == primitive
+    assert (
+        validate_prepared_overflow_primitive_source_join(retained_source(), prepared) == primitive
+    )
     assert b"primitive_parent" not in prepared.canonical_bytes()
+
+
+def test_execution_command_reference_is_canonical_identity_reference() -> None:
+    identity = automatic_command_identity(public_request())
+
+    reference = scheduler_execution_command_reference(identity)
+
+    assert reference.subject_id == identity.command_id
+    assert reference.revision.head == (
+        "scheduler-execution-command-v2:"
+        "ef745f945039fb5eb871254356c6d82163553f23abe60d75f6836b34132e6846"
+    )
+    assert reference.revision.fingerprint == (
+        "ef745f945039fb5eb871254356c6d82163553f23abe60d75f6836b34132e6846"
+    )
+    changed = identity.model_copy(update={"schema_version": identity.schema_version + ".changed"})
+    assert scheduler_execution_command_reference(changed) != reference
+    assert reference != automatic_request_reference(public_request())
+
+
+def test_prepared_overflow_primitive_requires_full_source_command_reference() -> None:
+    source = retained_source()
+    ordinary = ordinary_seed_batch()
+    parent = ordinary.source
+    assert isinstance(parent, PreparedPrimitiveFirstPublicationV2)
+
+    def prepared_with(command: CallSubjectHead) -> PreparedOverflowPrimitiveFirstPublicationV2:
+        primitive = OverflowHoldPrimitiveV2(
+            command=command,
+            boundary=parent.primitive_parent.boundary,
+            bound_head=parent.primitive_parent.current_bound,
+            exceeded_dimension="MEMBER_COUNT",
+            actual_value=2,
+            limit=1,
+            evidence=FullEligibilityEvidence(
+                manifest=SchedulerEligibilityManifest(members=(), fingerprint=DIGEST)
+            ),
+        )
+        return PreparedOverflowPrimitiveFirstPublicationV2(
+            overflow_primitive=primitive,
+            overflow_primitive_reference=overflow_primitive_reference(primitive),
+            canonical_overflow_primitive_bytes=primitive.canonical_bytes(),
+        )
+
+    valid = prepared_with(scheduler_execution_command_reference(source.observation.command))
+    assert (
+        validate_prepared_overflow_primitive_source_join(source, valid) == valid.overflow_primitive
+    )
+
+    wrong_request_reference = prepared_with(automatic_request_reference(public_request()))
+    with pytest.raises(ValueError, match="source command reference"):
+        validate_prepared_overflow_primitive_source_join(source, wrong_request_reference)
+
+    other_command = automatic_command_identity(
+        public_request().model_copy(update={"delivery_id": "other-delivery"})
+    )
+    wrong_source_command = prepared_with(scheduler_execution_command_reference(other_command))
+    with pytest.raises(ValueError, match="source command reference"):
+        validate_prepared_overflow_primitive_source_join(source, wrong_source_command)
+
+    stale_source_carrier = source.model_copy(
+        update={"observation": source.observation.model_copy(update={"command": other_command})}
+    )
+    with pytest.raises(ValueError, match="retained source carrier"):
+        validate_prepared_overflow_primitive_source_join(stale_source_carrier, wrong_source_command)

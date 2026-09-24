@@ -652,6 +652,27 @@ Ruff, format and mypy cover their three sources, three consumers and shared
 genesis/rollover succession. Runtime preparation, authenticated source readers,
 publication-time checks and replay remain joint T/I work; Phase C remains OPEN.
 
+## Scheduler physical replay checkpoint
+
+The fixed scheduler outcome and overflow-hold codecs preserve native primitive
+references and canonical physical bytes. Selected ordinary and overflow replay
+now bind their retained primitive/result bytes to the matching WHOLE members,
+command, outcome and debit marker. The execution batch codec requires one final
+WHOLE row and measures the complete serialized batch. These checks do not prove
+journal selection or replace the registered reader for other member families.
+
+The checkpoint consumers are `test_scheduler_execution_contracts.py`,
+`test_scheduler_seed_producer_contracts.py`, `test_scheduler_overflow_hold_records.py`,
+`test_scheduler_execution_batch_wire.py` and `test_scheduler_outcome_record_contracts.py`
+under `tests/capabilities/agent_loop/`. Runtime assembly remains unfinished.
+
+The user's horizontal-first sequencing now takes precedence over an exhaustive
+Phase-C freeze: freeze the contracts for one executable path, write its behavioral
+tests, mount it, then expand required branches. The first path joins real selected
+CLI custody/inbox to native Run creation in one writer-backed runtime, followed
+by terminal completion and reopen/replay. The remaining R14–R17 requirements
+remain in scope; neither this checkpoint nor the first path closes the milestone.
+
 ## Publication discipline
 
 New contract files, their consumer tests, this inventory and exact source catalog

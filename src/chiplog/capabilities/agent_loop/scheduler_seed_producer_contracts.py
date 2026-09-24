@@ -94,6 +94,15 @@ def automatic_command_identity(
     )
 
 
+def scheduler_execution_command_reference(identity: SchedulerCommandIdentity) -> CallSubjectHead:
+    """Return the V2 command reference consumed by executable scheduler primitives."""
+
+    return CallSubjectHead(
+        subject_id=identity.command_id,
+        revision=_present("scheduler-execution-command-v2", identity.canonical_bytes()),
+    )
+
+
 def _decode_request(raw: bytes) -> AutomaticSchedulerCycleRequestV2:
     value = AutomaticSchedulerCycleRequestV2.model_validate_json(raw)
     if value.canonical_bytes() != raw:
@@ -735,6 +744,26 @@ def validate_prepared_overflow_primitive(
         or primitive.actual_value <= primitive.limit
     ):
         raise ValueError("overflow primitive bytes, reference, or overflow inequality differs")
+    return primitive
+
+
+def validate_prepared_overflow_primitive_source_join(
+    source: RetainedSchedulerCycleSourceObservationV2,
+    prepared: PreparedOverflowPrimitiveFirstPublicationV2,
+) -> OverflowHoldPrimitiveV2:
+    """Verify that a prepared overflow primitive belongs to its retained cycle source."""
+
+    try:
+        retained_source = RetainedSchedulerCycleSourceObservationV2.model_validate_json(
+            source.canonical_bytes()
+        )
+    except ValueError as error:
+        raise ValueError("prepared overflow retained source carrier is invalid") from error
+    primitive = validate_prepared_overflow_primitive(prepared)
+    if primitive.command != scheduler_execution_command_reference(
+        retained_source.observation.command
+    ):
+        raise ValueError("prepared overflow primitive source command reference differs")
     return primitive
 
 
