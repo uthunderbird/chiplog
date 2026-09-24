@@ -101,6 +101,34 @@ All prior registered source bytes were compared to their existing catalog hashes
 without repinning. Full regression and staged red-team are intentionally reserved
 for integration/main, following the user's checkpoint policy.
 
+## Ingress transition and execution-input boundary (J1/J2/J3)
+
+The next broker contracts retain the complete custody/admission/drain/parser/page
+snapshot and separate it from a closed command. Preparation yields exact candidate
+members; selected publication, uncertain publication and semantic rejection have
+different result types. A prepared cursor or acknowledgement is not permission
+to advance a provider cursor, release a source or emit response bytes. That requires
+the actual selected journal decision and a fresh broker-owned boundary check.
+
+The owner-local initialization seam keeps the selected inbox's raw bytes, containing
+physical record, original source authentication, normalization version/output and
+exact origin. It does not import broker-private DTOs. Scheduled creation has a
+distinct source carrying original configuration/decision and pre-root disposition;
+it does not require the head or live lease of a Run that does not exist yet.
+
+| Claim | Owner / data | Independent observable | Forbidden substitute | Boundary / planned consumer and runtime evidence |
+|---|---|---|---|---|
+| Complete custody/admission cut | Broker complete tokens, queue, bound, deficit and epoch snapshot | All fields roundtrip; runtime enumerates and rechecks exact journal/SQL cut | Caller subset or token count | omission/addition/duplicate/order, stale epoch; ingress transition consumer, then J1 |
+| FIFO progress and drain closure | Broker canonical class reserves including ORDINARY, unchanged deadline lineage, complete parser/occupancy state | Explicit full snapshot and exact selected target; runtime deadline/rebase/drain observations | Numeric limit without queue/bound closure | N/N+1, blocked-prefix rebase, restart with unsettled token; J1 |
+| Exact parser/page lineage | Original raw custody/authentication, selected retry/attempt and completed attempt IDs, raw page and ordered dispositions | Binary transport and distinct parser/cursor commands; runtime exact one selected result | Rewritten raw input, new parser identity hiding a retry, candidate cursor as applied cursor | alias/substitution, partial page, rival parser, lost publication reply; J1 |
+| Durable handoff versus uncertainty | Broker selected authorization and issued attempt, independent transport observation | Separate prepared/selected/uncertain variants; actual source/byte observer later | Success flag or timeout interpreted as no selection | crash at selection/ack/cursor/release and exact retry; J1 |
+| Original admitted input → Run | Loop consumes broker-owned selected source bytes and authenticated normalization; conversation remains its own owner | New request cannot decode as legacy create; input/body/ref/version/origin preserved | R13Workspace.ingest(prompt) as a replacement input | identical text from distinct inputs, forged origin, stale current cut; owner consumer then J1→J3 |
+| Scheduler pre-root creation | Loop owns Run, scheduler owns configuration/decision/materialization and pre-root disposition | Distinct scheduled input branch retains original bytes and root identity | Existing-Run lease or legacy RunRecord at genesis | logical/physical root alias, missing decision, later exact materialization/replay; J2→J3 |
+
+All mutation families remain applicable: omission, addition/unknown, substitution,
+duplicate/reorder, stale/race, numeric/byte boundary and logical/physical mismatch.
+Shape tests do not discharge runtime authenticity, FIFO progress or atomicity.
+
 ## Publication discipline
 
 New contract files, their consumer tests, this inventory and exact source catalog
