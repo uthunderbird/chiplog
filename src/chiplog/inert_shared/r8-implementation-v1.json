@@ -74,6 +74,7 @@
   "capabilities/agent_loop/model_attempt_recovery_contracts.py": "1c30e588c0304a420790ebdfc46f626d1761370e79ad66164573a96b3a7dbd43",
   "capabilities/agent_loop/original_recovery_contracts.py": "505b1462248f2148f99702c1e6d5d7129dd15c6d1c82c98ec2e8b73a92854ee4",
   "capabilities/agent_loop/post_terminal_contracts.py": "6d239772abfaa4e05f17cdcba392dc2cdd1610e798138d04c3df4556fb25a0ef",
+  "capabilities/agent_loop/post_terminal_record_contracts.py": "ecd965e7695e9009ca0e421d0401a799bf6ff834f222e5f6a9e26793b63850bf",
   "capabilities/agent_loop/readonly_execution_contracts.py": "231c36453eaf24eeadb70bca673a40d9a8deaaa05959cc91a61a361a722d776a",
   "capabilities/agent_loop/recovery_contracts.py": "f68ff6d770b309ad0fde53823d86c0149a8dc0b92bf108157ec6df24980bb251",
   "capabilities/agent_loop/recovery_domain.py": "66e9d6f591c8e93ea12b6169cc81e66519fd21b12dcee644957cda9d14b3057e",

@@ -29,7 +29,7 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 | J5: frontier/suspend/resume/successor | `execution_recovery_observations` complete cut, weak/strong joins and noncircular suspension v2; `execution_recovery_contracts` executable preparation port includes suspend/resume/successor/next-Turn/abort/cancel | Consumer coverage now covers current sources, mandatory suspension pair and distinct commands; complete successor participant interpretation and terminal/work record routing remain C work; runtime classification/CAS remain T/I |
 | J5: read-only branch | `readonly_execution_contracts` preparation port plus `execution_history_contracts` v3 artifact/response/Run containment, transition and captured-fanout boundaries | Join OPEN recovery/readonly/completion contracts to v3 and register parser/renderer/physical interpretation; positive no-mutation/runtime proofs and full counter/pending CAS remain T/I |
 | J6: writer applicability/discovery | `platform.runtime_surface_contracts` registry and independent discovery DTOs; six worker fence variants retained | Concrete registered operation bindings and record interpretation; independent discovery and both-direction equality remain T/I, not established by source hashes |
-| J6: post-terminal work | WorkSubjectBinding, WorkEpochBinding, PostTerminalWorkFence, WorkEpochRolloverFence | Materialize the closed work-lease state, owner preparation requests/results, terminal-manifest work creation, exact close and monotone rollover boundary; consumers preserve original obligation/evidence references |
+| J6: post-terminal work | Closed lease state and preparation port in `post_terminal_contracts`; six concrete durable record decoders and companion-graph consumer in `post_terminal_record_contracts` | Register durable interpretation and operation/version routes; join the v3 Run family; runtime must prove exact close, monotone rollover and atomic terminal companions |
 | J6: model-attempt recovery | `model_attempt_recovery_contracts` executable replacement and separate late-evidence request/result/port | Registered source/record interpretation and operation bindings; authenticity, race handling and immutable late evidence remain T/I |
 | J7: completion/delivery/channel driver | `execution_completion_contracts` direct executable completion request/result retains captured response, complete earlier joins and delivery observation; existing delivery owner port/broker envelope retained | Complete conversation/effects/work participant assembly contract and consumers, plus public common CLI/Telegram driver receipts preserving distinct authentication and committed projection; owner proposal alone is not CompleteAcceptance publication |
 
@@ -327,6 +327,28 @@ still absent for v3. Phase C must register their interfaces before T/I supplies
 the behavior; query execution, no-mutation proof, counters, CAS and replay remain
 joint behavioral work. Scheduler and completion must use the same joined version
 family rather than remaining separate v2-only islands.
+
+## Post-terminal durable record interpretation
+
+`post_terminal_record_contracts` supplies closed SUBJECT/EPOCH/SELECTOR/LEASE/
+ROLLOVER/EDGE schemas and the public `WORK_RECORD_CONTRACTS` table. Its decoder
+retains supplied canonical bytes and checks the envelope's identity, schema and
+fingerprint. The request/result consumer checks original obligation/evidence
+references, proposed companion order, predecessors and the resulting work view.
+Same-batch references are proposed graph links, not claims of prior selection.
+
+Nonempty genesis, rollover and close fixtures now use the public consumer, with
+missing, duplicate, reordered, substituted-obligation and stale-predecessor inputs.
+Root review corrected omitted request identity and output-view joins before adding
+this module to the source catalog. Historical post-terminal DTOs remain unchanged.
+
+Evidence: `uv run pytest -q
+tests/capabilities/agent_loop/test_post_terminal_record_contracts.py
+tests/capabilities/agent_loop/test_post_terminal_contracts.py` passed 26 tests;
+root reran this focused set. Targeted formatting, Ruff and mypy passed. This
+establishes record representation and local graph consistency, not authenticated
+selection, clocks, live lease CAS, original obligation closure or atomic work
+creation. Concrete central routing and joint runtime histories remain OPEN.
 
 ## Publication discipline
 
