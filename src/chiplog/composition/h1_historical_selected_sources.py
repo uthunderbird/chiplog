@@ -4,9 +4,8 @@ The H1 issuance is evidence, never a substitute for the raw H0/R17/R16/native
 and trust selections that originally authorized it.  This module deliberately
 does not fall back to the current H1 reader or a live dispatch resource.
 
-The runtime raw-source adapter has not yet been mounted.  Keeping the adapter
-check here makes that absence explicit at the historical authority boundary
-instead of silently accepting a schema-valid issuance.
+The native first-path reader and its historical inventory are reopened only
+inside the same authority cut as the retained H0/R17/R16 and owner selection.
 """
 
 from __future__ import annotations
@@ -29,6 +28,8 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
     IssueHermeticOutputScopeV1,
     ReadCurrentHermeticExecutionScopeV1,
 )
+from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+from chiplog.composition.h1_first_path_sources import H1FirstPathSources
 from chiplog.composition.h1_historical_h0_r17 import (
     HistoricalH0R17Selection,
     read_historical_h0_r17,
@@ -45,7 +46,6 @@ from chiplog.platform.r7_trust import TrustOwnerCall
 
 if TYPE_CHECKING:
     from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV1
-    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +85,13 @@ def _require_historical_ports(runtime: object) -> _HistoricalPorts:
     if not callable(loop_factory) or not callable(owner_factory) or not callable(trust_factory):
         raise ValueError("H1 historical validation lacks a registered raw selected-source reader")
     return _HistoricalPorts(gate, custody_factory, loop_factory, owner_factory, trust_factory)
+
+
+def _require_common_cli_runtime(runtime: object) -> CommonCliExecutionRuntime:
+    """Accept only the mounted runtime that owns the native V2 source reader."""
+    if type(runtime) is not CommonCliExecutionRuntime:
+        raise TypeError("H1 historical sources require the canonical common CLI runtime")
+    return runtime
 
 
 def _open_historical_ports(ports: _HistoricalPorts) -> tuple[object, object, object, object]:
@@ -463,51 +470,51 @@ def _verify_historical_scope_lineage(
         raise ValueError("H1 historical newly issued scope has the wrong physical predecessor")
 
 
+def _verify_historical_selection(
+    batch: CompleteDeliveryBatchV2,
+    issuance: H1CompletionIssuanceV1,
+    runtime: object,
+) -> SelectedOwnerDecision:
+    """Read the native sources and selected owner decision from one outer cut."""
+    _require_typed_inputs(batch, issuance)
+    common_runtime = _require_common_cli_runtime(runtime)
+    ports = _require_historical_ports(common_runtime)
+    # Subordinate native readers may re-enter this same re-entrant gate, but
+    # this is the sole outer historical cut and its decision is returned to the
+    # binder rather than re-read after release.
+    with cast(Any, ports.gate).hold():
+        custody, _, owner_journal, trust_reader = _open_historical_ports(ports)
+        retained = _retained_origin(issuance)
+        h0_r17 = read_historical_h0_r17(common_runtime, retained)
+        _verify_historical_r16(issuance, h0_selection=h0_r17, custody=custody)
+        _verify_historical_scope(issuance, trust_reader=trust_reader, gate=ports.gate)
+        H1FirstPathSources(common_runtime).validate_historical(
+            issuance.assembly.original_completion_request.source,
+            initialization_envelope_bytes=retained.initialization_envelope_bytes,
+        )
+        return _selected_owner_decision(batch, owner_journal)
+
+
 def verify_h1_historical_sources(
     batch: CompleteDeliveryBatchV2,
     issuance: H1CompletionIssuanceV1,
-    runtime: R14PlanningRuntime,
+    runtime: object,
 ) -> None:
-    """Verify H1 source selection, or reject until its raw adapter is mounted.
-
-    A positive result requires an adapter that authenticates and joins the raw
-    H0 loop, R17 ingress, R16 signed custody, native selected publications and
-    physical trust materialization under the gate.  No such adapter currently
-    exists in R14, so accepting the partially exposed semantic snapshots would
-    be a false historical proof.
-    """
-    _require_typed_inputs(batch, issuance)
-    ports = _require_historical_ports(runtime)
-    # The outer hold is the only coherent cut available from the current R14
-    # ports.  Do not split these reads into independently gated convenience calls.
-    with cast(Any, ports.gate).hold():
-        custody, _, _, trust_reader = _open_historical_ports(ports)
-        retained = _retained_origin(issuance)
-        h0_r17 = read_historical_h0_r17(runtime, retained)
-        _verify_historical_r16(issuance, h0_selection=h0_r17, custody=custody)
-        _verify_historical_scope(issuance, trust_reader=trust_reader, gate=ports.gate)
-        raise ValueError("H1 historical native selected-source verification is not mounted")
+    """Verify H1 source selection from retained native historical evidence."""
+    _verify_historical_selection(batch, issuance, runtime)
 
 
 def bind_selected_h1_completion(
-    batch: CompleteDeliveryBatchV2, runtime: R14PlanningRuntime
+    batch: CompleteDeliveryBatchV2, runtime: object
 ) -> H1HistoricalSelection:
-    """Bind an H1 batch to its selected decision, or fail closed.
-
-    Selection cannot be projected from an issuance because the latter contains
-    no decision identity.  Until the raw verifier is mounted this function also
-    rejects, rather than returning an unauthenticated snapshot decision.
-    """
+    """Bind an H1 batch to the owner decision read from its historical cut."""
     if type(batch) is not CompleteDeliveryBatchV2:
         raise TypeError("H1 historical sources require CompleteDeliveryBatchV2")
-    ports = _require_historical_ports(runtime)
+    common_runtime = _require_common_cli_runtime(runtime)
     # Decode before selection so a selected owner record cannot smuggle a
     # malformed applicability value into the raw-source boundary.
     from chiplog.composition.h1_completion_issuance import decode_h1_completion_issuance
 
     issuance = decode_h1_completion_issuance(batch)
-    verify_h1_historical_sources(batch, issuance, runtime)
-    with cast(Any, ports.gate).hold():
-        _, _, owner_journal, _ = _open_historical_ports(ports)
-        decision = _selected_owner_decision(batch, owner_journal)
+    decision = _verify_historical_selection(batch, issuance, common_runtime)
     return H1HistoricalSelection(decision, issuance)

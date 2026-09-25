@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 import chiplog.composition.h1_historical_selected_sources as historical_sources
+from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV1
 from chiplog.composition.h1_historical_selected_sources import (
     _open_historical_ports,
     _require_historical_ports,
@@ -16,6 +21,7 @@ from chiplog.composition.h1_historical_selected_sources import (
     bind_selected_h1_completion,
     verify_h1_historical_sources,
 )
+from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 
 
 class _NoHistoricalPorts:
@@ -70,7 +76,7 @@ class _NullCustodyPorts:
     def _authority_gate(self) -> _Gate:
         return self._Gate()
 
-    def _h1_historical_custody(self) -> None:
+    def _h1_historical_custody(self) -> object:
         return None
 
     def _loop_decisions(self) -> object:
@@ -116,6 +122,110 @@ def test_historical_scope_rejects_a_trust_reader_on_a_different_gate() -> None:
         )
 
 
+def _unvalidated_historical_inputs() -> tuple[CompleteDeliveryBatchV2, H1CompletionIssuanceV1]:
+    """Build only exact outer types; raw authority is supplied by the test seam."""
+    source = object()
+    retained = SimpleNamespace(initialization_envelope_bytes=b"retained-initialization")
+    issuance = H1CompletionIssuanceV1.model_construct(
+        assembly=SimpleNamespace(
+            original_completion_request=SimpleNamespace(source=source),
+            ordered_effects=(
+                SimpleNamespace(
+                    owner_call=SimpleNamespace(request=SimpleNamespace(retained_origin=retained))
+                ),
+            ),
+        )
+    )
+    return CompleteDeliveryBatchV2.model_construct(), issuance
+
+
+def test_historical_verifier_requires_the_exact_common_cli_runtime_before_ports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A duck-typed R14 runtime cannot enter the raw historical boundary."""
+    batch, issuance = _unvalidated_historical_inputs()
+
+    monkeypatch.setattr(
+        historical_sources,
+        "_require_historical_ports",
+        lambda _: pytest.fail("wrong runtime reached historical ports"),
+    )
+
+    with pytest.raises(TypeError, match="canonical common CLI runtime"):
+        verify_h1_historical_sources(batch, issuance, object())
+
+
+def test_selected_owner_decision_returns_from_the_single_outer_historical_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Binding uses the owner decision read beside native validation, never a later cut."""
+    batch, issuance = _unvalidated_historical_inputs()
+    runtime = object.__new__(CommonCliExecutionRuntime)
+    events: list[str] = []
+    decision = object()
+
+    class Gate:
+        @contextmanager
+        def hold(self) -> Iterator[None]:
+            events.append("enter")
+            try:
+                yield
+            finally:
+                events.append("exit")
+
+    ports = SimpleNamespace(
+        gate=Gate(),
+        custody_factory=object(),
+        loop_factory=object(),
+        owner_factory=object(),
+        trust_factory=object(),
+    )
+
+    class Sources:
+        def __init__(self, actual_runtime: object) -> None:
+            assert actual_runtime is runtime
+
+        def validate_historical(
+            self, source: object, *, initialization_envelope_bytes: bytes
+        ) -> None:
+            assert source is issuance.assembly.original_completion_request.source
+            assert initialization_envelope_bytes == b"retained-initialization"
+            events.append("native")
+
+    monkeypatch.setattr(historical_sources, "_require_historical_ports", lambda _: ports)
+    monkeypatch.setattr(
+        historical_sources,
+        "_open_historical_ports",
+        lambda _: (object(), object(), object(), object()),
+    )
+    monkeypatch.setattr(historical_sources, "read_historical_h0_r17", lambda *_: object())
+    monkeypatch.setattr(
+        historical_sources, "_verify_historical_r16", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        historical_sources, "_verify_historical_scope", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(historical_sources, "H1FirstPathSources", Sources)
+    monkeypatch.setattr(
+        historical_sources,
+        "_selected_owner_decision",
+        lambda actual_batch, _owner: (
+            decision if actual_batch is batch else pytest.fail("batch changed")
+        ),
+    )
+    monkeypatch.setattr(
+        "chiplog.composition.h1_completion_issuance.decode_h1_completion_issuance",
+        lambda actual_batch: issuance if actual_batch is batch else pytest.fail("batch changed"),
+    )
+
+    verify_h1_historical_sources(batch, issuance, runtime)
+    bound = bind_selected_h1_completion(batch, runtime)
+
+    assert bound.decision is decision
+    assert bound.issuance is issuance
+    assert events == ["enter", "native", "exit", "enter", "native", "exit"]
+
+
 @dataclass(frozen=True)
 class _Scope:
     database_id: str
@@ -127,7 +237,12 @@ class _Scope:
 class _ScopeCodec:
     @staticmethod
     def model_validate(value: dict[str, object]) -> _Scope:
-        return _Scope(**value)
+        return _Scope(
+            database_id=cast(str, value["database_id"]),
+            scope_id=cast(str, value["scope_id"]),
+            revision=cast(int, value["revision"]),
+            predecessor=value.get("predecessor"),
+        )
 
 
 def _scope_entry(decision_id: str, scope: _Scope) -> tuple[str, None, bytes]:
@@ -249,45 +364,45 @@ def test_historical_scope_rejects_a_recomputed_owner_response_on_a_different_rou
         scope_current_exchange=exchange(b"current-wire", "current"),
     )
     monkeypatch.setattr(
-        historical_sources.TrustOwnerCall,
+        historical_sources.TrustOwnerCall,  # type: ignore[attr-defined]
         "model_validate_json",
         lambda raw: issue_wire if raw == b"issue-wire" else current_wire,
     )
     monkeypatch.setattr(
-        historical_sources.H1OwnerCandidateCallV1,
+        historical_sources.H1OwnerCandidateCallV1,  # type: ignore[attr-defined]
         "model_validate_json",
         lambda _: issue_call,
     )
     monkeypatch.setattr(
-        historical_sources.H1OwnerCurrentCallV1,
+        historical_sources.H1OwnerCurrentCallV1,  # type: ignore[attr-defined]
         "model_validate_json",
         lambda _: current_call,
     )
     monkeypatch.setattr(
-        historical_sources.H1OwnerCandidateV1,
+        historical_sources.H1OwnerCandidateV1,  # type: ignore[attr-defined]
         "model_validate_json",
         lambda _: SimpleNamespace(route=substituted_route),
     )
     monkeypatch.setattr(
-        historical_sources.H1OwnerCurrentCandidateV1,
+        historical_sources.H1OwnerCurrentCandidateV1,  # type: ignore[attr-defined]
         "model_validate_json",
         lambda _: SimpleNamespace(route=current_call.route),
     )
     monkeypatch.setattr(historical_sources, "PublicPortSuccess", object)
     monkeypatch.setattr(
-        historical_sources.IssueHermeticOutputScopeV1,
+        historical_sources.IssueHermeticOutputScopeV1,  # type: ignore[attr-defined]
         "model_validate_json",
         lambda _: SimpleNamespace(expected_trust_observation=object()),
     )
     monkeypatch.setattr(
-        historical_sources.ReadCurrentHermeticExecutionScopeV1,
+        historical_sources.ReadCurrentHermeticExecutionScopeV1,  # type: ignore[attr-defined]
         "model_validate_json",
         lambda _: SimpleNamespace(expected_trust_observation=object()),
     )
 
     with pytest.raises(ValueError, match="prefix differs"):
-        _verify_historical_scope(  # type: ignore[arg-type]
-            issuance,
+        _verify_historical_scope(
+            cast(H1CompletionIssuanceV1, issuance),
             trust_reader=reader,
             gate=None,
         )

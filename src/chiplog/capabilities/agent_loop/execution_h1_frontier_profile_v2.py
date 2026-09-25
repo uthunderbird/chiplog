@@ -145,8 +145,6 @@ def derive_h1_frontier_profile_v2_members(
         context_value = json.loads(verified_workspace.proposal_context_bytes)
     except UnicodeDecodeError, json.JSONDecodeError:
         raise _workspace_error() from None
-    if _json(context_value) != verified_workspace.proposal_context_bytes:
-        raise _workspace_error()
     if (
         not isinstance(context_value, dict)
         or context_value.get("kind") != "WORKSPACE_EVIDENCE_ONLY"

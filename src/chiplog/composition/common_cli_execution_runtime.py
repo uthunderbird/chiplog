@@ -855,7 +855,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             started = await self.begin_execution("hermetic-ingress", run.run_id, run.head)
             captured = await self.capture_execution("hermetic-ingress", run.run_id, started.head)
             sealed = await self.seal_execution_complete(
-                "hermetic-ingress", run.run_id, captured.head
+                "hermetic-ingress", run.run_id, captured.head, profile="H1_V2"
             )
             if sealed.state != "ACTIVE":
                 raise LoopRejected("first-path complete seal is not an active Run")

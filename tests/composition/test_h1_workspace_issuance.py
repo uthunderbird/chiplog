@@ -1,6 +1,8 @@
 """Retained H1 workspace inventory rejects incomplete physical cuts."""
 
 import base64
+import json
+from pathlib import Path
 
 import pytest
 
@@ -83,7 +85,7 @@ def test_h1_snapshot_requires_contiguous_original_publication_frontier() -> None
         _validate_snapshot(_issuance(snapshot))
 
 
-async def test_h1_original_workspace_reopens_exact_native_issuance(tmp_path) -> None:
+async def test_h1_original_workspace_reopens_exact_native_issuance(tmp_path: Path) -> None:
     database = tmp_path / "execution.sqlite"
     async with open_execution_runtime(database) as runtime:
         created = await runtime.create_execution("hermetic-ingress", "run", "Plan", BudgetPolicy())
@@ -100,6 +102,29 @@ async def test_h1_original_workspace_reopens_exact_native_issuance(tmp_path) -> 
             workspace.open_dashboard_issuance(),
         )
         assert verified.proposal_context_bytes == member.content.encode()
+
+        sorted_proposal = json.dumps(
+            json.loads(member.content), sort_keys=True, ensure_ascii=False, separators=(",", ":")
+        ).encode()
+        assert sorted_proposal != member.content.encode()
+        with pytest.raises(WorkspaceRejected, match="selected workspace bytes"):
+            verify_h1_original_workspace(
+                ref,
+                member.model_dump_json().encode(),
+                sorted_proposal,
+                workspace.open_h1_workspace_issuance(),
+                workspace.open_dashboard_issuance(),
+            )
+
+        substituted_member = member.model_dump_json().encode() + b" "
+        with pytest.raises(WorkspaceRejected, match="selected workspace bytes"):
+            verify_h1_original_workspace(
+                ref,
+                substituted_member,
+                member.content.encode(),
+                workspace.open_h1_workspace_issuance(),
+                workspace.open_dashboard_issuance(),
+            )
 
         issued = workspace.open_h1_workspace_issuance().load(ref)
         changed_query = issued.queries[0].model_copy(update={"result_json": "{}"})

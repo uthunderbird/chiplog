@@ -137,6 +137,19 @@ class IndependentOwnerDecisionJournal:
     def _scan(self, operation: str, record: str) -> _Scan:
         try:
             entries = self._raw.entries()
+            return self._scan_entries(entries, operation, record)
+        except OwnerJournalIntegrityError:
+            raise
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+            raise OwnerJournalIntegrityError(operation, self._tenant, record) from error
+
+    def _scan_entries(
+        self,
+        entries: tuple[tuple[str, str | None, bytes], ...],
+        operation: str,
+        record: str,
+    ) -> _Scan:
+        try:
             selected: dict[str, SelectedOwnerDecision] = {}
             materialized: set[str] = set()
             for record, _, payload in entries:
@@ -199,6 +212,34 @@ class IndependentOwnerDecisionJournal:
         return OwnerJournalSnapshot(
             self._tenant, scan.head, tuple(scan.selected.values()), scan.materialized
         )
+
+    def snapshot_at(self, head: str | None) -> OwnerJournalSnapshot:
+        """Return the exact, strictly decoded journal prefix ending at ``head``.
+
+        The complete journal is decoded before selecting a prefix, so a damaged
+        current tail cannot be hidden behind an old otherwise-valid head. ``None``
+        explicitly selects the empty prefix.
+        """
+        record = head if head is not None else "empty"
+        try:
+            entries = self._raw.entries()
+            self._scan_entries(entries, "snapshot_at", record)
+            prefix: tuple[tuple[str, str | None, bytes], ...]
+            if head is None:
+                prefix = ()
+            else:
+                matches = [index for index, entry in enumerate(entries) if entry[0] == head]
+                if len(matches) != 1:
+                    raise ValueError("requested owner journal head is absent or ambiguous")
+                prefix = entries[: matches[0] + 1]
+            scan = self._scan_entries(prefix, "snapshot_at", record)
+            return OwnerJournalSnapshot(
+                self._tenant, scan.head, tuple(scan.selected.values()), scan.materialized
+            )
+        except OwnerJournalIntegrityError:
+            raise
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+            raise OwnerJournalIntegrityError("snapshot_at", self._tenant, record) from error
 
     def select(
         self, prepared: PreparedOwnerPublication, resulting_commitment: str

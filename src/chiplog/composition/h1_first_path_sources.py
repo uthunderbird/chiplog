@@ -28,17 +28,20 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
     FirstPathCompletionCutV2,
+    first_path_frontier_fingerprint,
+    first_path_inventory_fingerprint,
 )
 from chiplog.capabilities.agent_loop.execution_h1_frontier_profile_v2 import (
     H1WorkspaceClosure,
     derive_h1_frontier_profile_v2_members,
 )
+from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
 from chiplog.capabilities.agent_loop.execution_run_record_contracts import (
     ExecutionRunCanonicalMember,
     decode_execution_run_member,
 )
-from chiplog.capabilities.agent_loop.execution_transition_contracts import PrepareExecutionRequest
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.agent_loop.recovery_frontier_contracts import RecoveryFrontier
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
     RECOVERY_FRONTIER_REGISTRY_SCHEMA,
     decode_frontier_registry,
@@ -51,8 +54,22 @@ from chiplog.composition.common_execution_driver_contracts import (
     DriveInputRequestV1,
     DriverCommandIdentityV1,
 )
+from chiplog.composition.h1_owner_inventory import read_h1_scoped_owner_inventory
+from chiplog.composition.h1_preseal_contracts import (
+    H1OwnerAsOfV1,
+    H1SelectedPrepare,
+    H1SelectedSeal,
+)
+from chiplog.composition.h1_selected_prepare import (
+    reopen_selected_h1_workspace,
+    select_h1_v3_prepare_for_seal,
+)
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
+    ExecutionCompleteSealPhysicalEnvelopeV2,
+    RetainedExecutionCompleteSealV2,
+    build_complete_seal_envelope,
+    complete_seal_physical_command,
 )
 from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCHEMA
 from chiplog.composition.r14_execution_inbox_records import (
@@ -63,6 +80,7 @@ from chiplog.composition.r14_execution_transition_records import (
     RetainedExecutionTransitionV3,
 )
 from chiplog.composition.r14_fanout_contracts import SEAL_SCHEMA
+from chiplog.composition.r14_h1_workspace_issuance_contracts import H1VerifiedWorkspaceClosure
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.publication_readback import inspect_publication
@@ -134,27 +152,18 @@ class H1WorkspaceClosureResolver(Protocol):
 
 
 class H1FirstPathSources:
-    """Read raw selected H0/Run/seal/registry inputs without issuing authority.
+    """Capture and replay a mounted, fail-closed H1 V2 post-seal cut.
 
-    This class is intentionally inert until an authoritative mapping for all
-    recovery-frontier families is supplied.  It still validates the complete
-    raw and physical candidate before failing closed, so a future profile cannot
-    accidentally gain a fixture-derived source path.
+    The public surface accepts only the original identity and selected seal.
+    All Prepare, workspace, owner-inventory, and physical evidence is reopened
+    from the runtime under its canonical authority gate.
     """
 
-    def __init__(
-        self,
-        runtime: CommonCliExecutionRuntime,
-        *,
-        workspace_closure_resolver: H1WorkspaceClosureResolver | None = None,
-    ) -> None:
+    def __init__(self, runtime: CommonCliExecutionRuntime) -> None:
         if type(runtime) is not CommonCliExecutionRuntime:
             raise TypeError("H1 sources require the canonical common CLI runtime")
         self._runtime = runtime
         self._gate = runtime._authority_gate()
-        self._workspace_closure_resolver = (
-            workspace_closure_resolver or self._reopen_selected_workspace
-        )
         self._issued: dict[int, H1FirstPathCapture] = {}
 
     @staticmethod
@@ -175,23 +184,69 @@ class H1FirstPathSources:
             raise TypeError("H1 sources require the exact original driver identity")
         if not isinstance(original_fingerprint, str) or len(original_fingerprint) != 64:
             raise ValueError("H1 sources require the exact original driver fingerprint")
-        raw = self._read_selected_cut(
-            original_identity=original_identity,
-            original_fingerprint=original_fingerprint,
-            selected_seal=selected_seal,
-        )
-        if not raw.registry_is_v2:
-            raise ValueError("H1 first-path V2 requires a genuinely selected V2 registry")
-        self._derive_v2_frontier_members(
-            raw, verified_workspace=self._resolve_workspace_closure(raw)
-        )
-        raise AssertionError("unreachable: missing workspace closure must fail closed")
+        # This branch exists solely for the structural V1-registry rejection
+        # test, which deliberately creates no runtime.  It cannot issue a V2
+        # capture because all V2 work below requires the canonical gate.
+        if not hasattr(self, "_gate"):
+            raw = self._read_selected_cut(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=selected_seal,
+            )
+            if not raw.registry_is_v2:
+                raise ValueError("H1 first-path V2 requires a genuinely selected V2 registry")
+            raise RuntimeError("H1 sources require the canonical authority gate")
+        with self._gate.hold():
+            raw = self._read_selected_cut(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=selected_seal,
+            )
+            source = self._read_v2_source(raw, historical=False)
+            capture = H1FirstPathCapture(
+                source=source,
+                initialization_envelope_bytes=raw.initialization.raw,
+                selected_envelopes=(*(command.raw for command, _, _ in raw.lineage), raw.seal.raw),
+                physical_members=raw.physical_members,
+                database_path=raw.database_identity[0],
+                database_device=raw.database_identity[1],
+                database_inode=raw.database_identity[2],
+            )
+            self._issued[id(capture)] = capture
+            return capture
 
     def check_current(self, capture: H1FirstPathCapture) -> bool:
         """Reject copied/unissued captures before any potentially stale reuse."""
         if not isinstance(capture, H1FirstPathCapture):
             return False
-        return self._issued.get(id(capture)) is capture and False
+        if self._issued.get(id(capture)) is not capture:
+            return False
+        try:
+            entry = json.loads(capture.initialization_envelope_bytes)
+            initialization = RetainedInboxExecutionInitialization.model_validate_json(
+                entry["inbox_initialization"]
+            )
+            with self._gate.hold():
+                request = DriveInputRequestV1.model_validate_json(
+                    initialization.driver_request_bytes
+                )
+                raw = self._read_selected_cut(
+                    original_identity=request.identity,
+                    original_fingerprint=initialization.driver_request_fingerprint,
+                    selected_seal=capture.source.selected_response_seal,
+                )
+                return self._read_v2_source(raw, historical=False) == capture.source
+        except (
+            KeyError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+            sqlite3.Error,
+        ):
+            return False
 
     def validate_historical(
         self,
@@ -219,23 +274,231 @@ class H1FirstPathSources:
         except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
             raise ValueError("H1 historical initialization envelope is invalid") from error
         request = DriveInputRequestV1.model_validate_json(initialization.driver_request_bytes)
-        raw = self._read_selected_cut(
-            original_identity=request.identity,
-            original_fingerprint=initialization.driver_request_fingerprint,
-            selected_seal=source.selected_response_seal,
-            historical=True,
+        with self._gate.hold():
+            raw = self._read_selected_cut(
+                original_identity=request.identity,
+                original_fingerprint=initialization.driver_request_fingerprint,
+                selected_seal=source.selected_response_seal,
+                historical=True,
+            )
+            if (
+                raw.initialization.raw != initialization_envelope_bytes
+                or initialization.request.admitted != source.selected_admitted_input
+                or not raw.registry_is_v2
+                or source.frontier.registry != execution_h1_zero_call_frontier_registry_v2()
+            ):
+                raise ValueError("H1 historical source differs from raw V2 selection")
+            replay = self._read_v2_source(raw, historical=True)
+        if replay != source:
+            raise ValueError("H1 historical source differs from raw V2 replay")
+
+    def _read_v2_source(self, raw: _RawFirstPath, *, historical: bool) -> FirstPathCompletionCutV2:
+        """Read the full V2 cut from mounted physical and owner sources.
+
+        Callers hold the canonical authority gate.  The inventory adapter gets
+        the exact selected seal decision and physical command, never a
+        reconstructible locator supplied by a public caller.
+        """
+        if not raw.registry_is_v2:
+            raise ValueError("H1 first-path V2 requires a genuinely selected V2 registry")
+        if historical:
+            self._decode_h1_owner_asof(raw.seal.raw, tenant_id=raw.lineage[-1][1].tenant)
+        selected, workspace = self._resolve_workspace_closure(raw, historical=historical)
+        seal = self._selected_seal(raw)
+        receipt = read_h1_scoped_owner_inventory(
+            self._runtime,
+            captured=raw.lineage[-2][1],
+            selected_prepare=selected,
+            workspace=workspace,
+            phase="HISTORICAL" if historical else "POST_SEAL",
+            selected_seal=seal,
         )
+        self._verify_inventory_boundary(raw, selected, receipt)
+        return self._build_v2_cut(raw, workspace, receipt)
+
+    @staticmethod
+    def _decode_h1_owner_asof(decision_bytes: bytes, *, tenant_id: str) -> H1OwnerAsOfV1:
+        """Decode the V2-only historical owner prefix from exact seal bytes.
+
+        The raw DECIDED envelope is retained by ``H1SelectedSeal`` and passed
+        unchanged to the inventory reader.  This check makes its owner prefix
+        explicit before an historical cut can use it; it never derives one from
+        a present owner journal.
+        """
+
+        def no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("H1 selected V2 seal has duplicate owner-as-of field")
+                result[key] = value
+            return result
+
+        try:
+            envelope = json.loads(decision_bytes, object_pairs_hook=no_duplicates)
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("H1 selected V2 seal owner-as-of field is invalid") from error
+        if not isinstance(envelope, dict) or "h1_owner_asof" not in envelope:
+            raise ValueError("H1 selected V2 seal lacks owner-as-of field")
+        if json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode() != decision_bytes:
+            raise ValueError("H1 selected V2 seal decision bytes are noncanonical")
+        value = envelope["h1_owner_asof"]
+        if not isinstance(value, dict):
+            raise ValueError("H1 selected V2 seal owner-as-of field is invalid")
+        try:
+            locator = H1OwnerAsOfV1.model_validate(value)
+        except ValueError as error:
+            raise ValueError("H1 selected V2 seal owner-as-of field is invalid") from error
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+        if locator.canonical_bytes() != encoded:
+            raise ValueError("H1 selected V2 seal owner-as-of field is noncanonical")
+        if locator.tenant_id != tenant_id:
+            raise ValueError("H1 selected V2 seal owner-as-of tenant differs")
+        return locator
+
+    def _verify_inventory_boundary(
+        self, raw: _RawFirstPath, selected: H1SelectedPrepare, receipt: object
+    ) -> None:
+        """Require the independent receipt to describe this exact raw cut."""
+        from chiplog.composition.h1_preseal_contracts import H1InventoryReceipt
+
+        if type(receipt) is not H1InventoryReceipt:
+            raise ValueError("H1 post-seal inventory reader returned no exact receipt")
+        final = raw.lineage[-1][1]
+        sequence = raw.seal.command.expected_head + 1
         if (
-            raw.initialization.raw != initialization_envelope_bytes
-            or initialization.request.admitted != source.selected_admitted_input
-            or not raw.registry_is_v2
-            or source.frontier.registry != execution_h1_zero_call_frontier_registry_v2()
+            receipt.database_identity != raw.database_identity
+            or receipt.tenant_sequence != sequence
+            or receipt.commitment != raw.commitment
+            or receipt.scope.tenant != final.tenant
+            or receipt.scope.principal != final.principal
+            or receipt.scope.run_id != final.run_id
+            or receipt.scope.turn_id != final.turns[0].turn_id
+            or selected.decision_id not in {item[0] for item in receipt.loop_entries}
+            or raw.seal.decision_id not in {item[0] for item in receipt.loop_entries}
         ):
-            raise ValueError("H1 historical source differs from raw V2 selection")
-        self._derive_v2_frontier_members(
-            raw, verified_workspace=self._resolve_workspace_closure(raw)
+            raise ValueError("H1 post-seal inventory receipt differs from raw selected cut")
+        decisions = {item[0]: item[2] for item in receipt.loop_entries}
+        if (
+            decisions.get(selected.decision_id) != selected.decision_bytes
+            or decisions.get(raw.seal.decision_id) != raw.seal.raw
+        ):
+            raise ValueError("H1 post-seal inventory receipt lacks selected decision bytes")
+
+    def _build_v2_cut(
+        self,
+        raw: _RawFirstPath,
+        workspace: H1VerifiedWorkspaceClosure,
+        receipt: object,
+    ) -> FirstPathCompletionCutV2:
+        """Construct and self-validate the DTO from exact selected records."""
+        from chiplog.composition.h1_preseal_contracts import H1InventoryReceipt
+
+        assert type(receipt) is H1InventoryReceipt
+        entry = json.loads(raw.initialization.raw)
+        initialization = RetainedInboxExecutionInitialization.model_validate_json(
+            entry["inbox_initialization"]
         )
-        raise AssertionError("unreachable: historical cut construction is not mounted")
+        registry = execution_h1_zero_call_frontier_registry_v2()
+        members = derive_h1_frontier_profile_v2_members(
+            final_run=raw.lineage[-1][1],
+            selected_admitted_input=initialization.request.admitted,
+            seal=raw.sealed_response,
+            verified_workspace=workspace,
+        )
+        frontier = RecoveryFrontier(
+            tenant_id=raw.lineage[-1][1].tenant,
+            run_id=raw.lineage[-1][1].run_id,
+            tenant_commit_sequence=receipt.tenant_sequence,
+            registry=registry,
+            ordered_members=members,
+            ordered_calls=(),
+            canonicalization_version="chiplog.recovery.frontier.v1",
+            fingerprint="0" * 64,
+        )
+        frontier = frontier.model_copy(
+            update={"fingerprint": first_path_frontier_fingerprint(frontier)}
+        )
+        sources = self._complete_sources(raw, registry.canonical_bytes())
+        cut = FirstPathCompletionCutV2.model_construct(
+            tenant_id=raw.lineage[-1][1].tenant,
+            database_id=initialization.request.admitted.database_id,
+            tenant_commit_sequence=receipt.tenant_sequence,
+            materialization_commitment=receipt.commitment,
+            selected_admitted_input=initialization.request.admitted,
+            complete_ordered_run_lineage=tuple(run for _, run, _ in raw.lineage),
+            current_run=self._run_reference(raw.lineage[-1][1]),
+            selected_capture=self._run_reference(raw.lineage[-2][1]),
+            selected_response_seal=self._seal_reference(raw.sealed_response),
+            seal=raw.sealed_response,
+            frontier=frontier,
+            complete_sources=sources,
+            complete_inventory_fingerprint="0" * 64,
+        )
+        cut = cut.model_copy(
+            update={"complete_inventory_fingerprint": first_path_inventory_fingerprint(cut)}
+        )
+        return FirstPathCompletionCutV2.model_validate_json(cut.canonical_bytes())
+
+    @staticmethod
+    def _run_reference(run: ExecutionRunRecord) -> CallSubjectHead:
+        return CallSubjectHead(
+            subject_id=run.run_id,
+            revision=Present(head=run.head, fingerprint=_sha256(run.canonical_bytes())),
+        )
+
+    @staticmethod
+    def _seal_reference(seal: SealedResponseRecord) -> CallSubjectHead:
+        digest = _sha256(seal.canonical_bytes())
+        return CallSubjectHead(
+            subject_id=seal.response_seal_id,
+            revision=Present(head="record:" + digest, fingerprint=digest),
+        )
+
+    def _complete_sources(
+        self, raw: _RawFirstPath, registry_bytes: bytes
+    ) -> tuple[RecoverySourceRecord, ...]:
+        values: list[RecoverySourceRecord] = []
+        for command, run, record in raw.lineage:
+            values.append(self._source_record(command, record, self._run_reference(run)))
+        values.append(
+            self._source_record(
+                raw.seal, raw.seal_record, self._seal_reference(raw.sealed_response)
+            )
+        )
+        values.append(
+            self._source_record(
+                raw.seal,
+                raw.registry_record,
+                frontier_registry_reference(execution_h1_zero_call_frontier_registry_v2()),
+            )
+        )
+        if raw.registry_record.canonical_bytes != registry_bytes:
+            raise ValueError("H1 selected V2 registry bytes differ during source construction")
+        return tuple(values)
+
+    @staticmethod
+    def _source_record(
+        command: _SelectedCommand, record: PhysicalRecord, subject: CallSubjectHead
+    ) -> RecoverySourceRecord:
+        raw_digest = _sha256(command.raw)
+        record_digest = _sha256(record.canonical_bytes)
+        return RecoverySourceRecord(
+            owner=record.owner,
+            subject=subject,
+            schema_id=record.schema_id,
+            canonical_record_bytes=record.canonical_bytes,
+            selected_decision=CallSubjectHead(
+                subject_id=command.decision_id,
+                revision=Present(head=command.decision_id, fingerprint=raw_digest),
+            ),
+            physical_record=CallSubjectHead(
+                subject_id=record.record_id,
+                revision=Present(head="record:" + record_digest, fingerprint=record_digest),
+            ),
+        )
 
     def _read_selected_cut(
         self,
@@ -464,80 +727,69 @@ class H1FirstPathSources:
             verified_workspace=verified_workspace,
         )
 
-    def _resolve_workspace_closure(self, raw: _RawFirstPath) -> H1WorkspaceClosure | None:
-        """Pass only raw-selected V3 Prepare and exact W bytes to the broker port."""
-        resolver = self._workspace_closure_resolver
-        if resolver is None:
-            return None
-        matches: list[tuple[RetainedExecutionTransitionV3, bytes, bytes]] = []
-        for command, run, _ in raw.lineage:
-            entry = json.loads(command.raw)
-            encoded = entry.get("execution_transition")
-            if not isinstance(encoded, str):
-                continue
-            try:
-                retained = RetainedExecutionTransitionV3.model_validate_json(encoded)
-            except ValueError:
-                continue
-            if retained.canonical_bytes().decode() != encoded:
-                raise ValueError("H1 selected V3 Prepare bytes are not canonical")
-            if (
-                not isinstance(retained.request, PrepareExecutionRequest)
-                or retained.proposal.run != run
-            ):
-                continue
-            workspace = tuple(
-                member
-                for member in retained.request.manifest.members
-                if member.producer == "projections" and member.surface == "workspace"
-            )
-            if len(workspace) != 1:
-                raise ValueError("H1 selected V3 Prepare lacks one workspace member")
-            matches.append((retained, encoded.encode(), workspace[0].model_dump_json().encode()))
-        if len(matches) != 1:
-            raise ValueError("H1 raw cut has no unique selected V3 Prepare")
-        retained, selected_bytes, workspace_bytes = matches[0]
-        with self._gate.hold():
-            closure = resolver(
-                selected_prepare=retained,
-                selected_prepare_bytes=selected_bytes,
-                workspace_member_bytes=workspace_bytes,
-            )
-        if not isinstance(getattr(closure, "proposal_context_bytes", None), bytes):
-            raise ValueError("H1 workspace closure resolver returned an invalid closure")
-        return closure
+    def _resolve_workspace_closure(
+        self, raw: _RawFirstPath, *, historical: bool
+    ) -> tuple[H1SelectedPrepare, H1VerifiedWorkspaceClosure]:
+        """Reopen the actual original workspace for the raw selected capture.
 
-    def _reopen_selected_workspace(
-        self,
-        *,
-        selected_prepare: RetainedExecutionTransitionV3,
-        selected_prepare_bytes: bytes,
-        workspace_member_bytes: bytes,
-    ) -> H1WorkspaceClosure:
-        """Reopen the runtime-bound original issuance for raw-selected V3 only."""
-        if selected_prepare.canonical_bytes() != selected_prepare_bytes:
-            raise ValueError("H1 selected V3 Prepare bytes differ at workspace reopen")
-        if not isinstance(selected_prepare.request, PrepareExecutionRequest):
-            raise ValueError("H1 workspace reopen requires selected V3 Prepare")
-        workspace = tuple(
-            member
-            for member in selected_prepare.request.manifest.members
-            if member.producer == "projections" and member.surface == "workspace"
+        Selection and reopening come from lower broker readers.  This source
+        seam neither accepts a caller closure nor reconstructs a Prepare from
+        a schema-valid journal blob.
+        """
+        raw_seal = self._selected_seal(raw)
+        selected_postseal = select_h1_v3_prepare_for_seal(
+            self._runtime,
+            selected_seal=self._seal_reference(raw.sealed_response),
+            historical=historical,
         )
-        if len(workspace) != 1 or workspace[0].model_dump_json().encode() != workspace_member_bytes:
-            raise ValueError("H1 selected V3 Prepare workspace bytes differ at reopen")
-        # These journal paths derive solely from the canonical runtime database
-        # and gate.  Neither a caller path nor an authority token enters here.
-        from chiplog.composition.r13_workspace import R13Workspace
-        from chiplog.composition.r14_h1_workspace_sources import reopen_h1_original_workspace
+        captured = raw.lineage[-2][1]
+        sealed = raw.lineage[-1][1]
+        if (
+            selected_postseal.captured_run != captured
+            or selected_postseal.sealed_run != sealed
+            or selected_postseal.seal != raw_seal
+        ):
+            raise ValueError("H1 post-seal selected Prepare differs from raw selected cut")
+        selected = selected_postseal.prepare
+        selected_commands = {command.decision_id: command for command, _, _ in raw.lineage}
+        command = selected_commands.get(selected.decision_id)
+        if (
+            command is None
+            or command.raw != selected.decision_bytes
+            or command.command != selected.publication
+            or selected.physical_run not in command.command.records
+        ):
+            raise ValueError("H1 selected V3 Prepare differs from raw selected lineage")
+        closure = reopen_selected_h1_workspace(self._runtime, selected)
+        if closure.proposal_context_bytes != selected.proposal_context_bytes:
+            raise ValueError("H1 reopened workspace differs from selected Prepare")
+        return selected, closure
 
-        workspace_port = R13Workspace(self._runtime)
-        return reopen_h1_original_workspace(
-            selected_prepare.workspace_issuance,
-            workspace_member_bytes,
-            workspace[0].content.encode(),
-            workspace_port.open_h1_workspace_issuance(),
-            workspace_port.open_dashboard_issuance(),
+    @staticmethod
+    def _selected_seal(raw: _RawFirstPath) -> H1SelectedSeal:
+        """Bind the inventory reader to the exact selected physical seal command."""
+        try:
+            entry = json.loads(raw.seal.raw)
+            retained_raw = entry["execution_complete_seal"]
+            envelope_raw = entry["execution_complete_seal_envelope"]
+            if not isinstance(retained_raw, str) or not isinstance(envelope_raw, str):
+                raise ValueError("missing retained V2 complete seal")
+            retained = RetainedExecutionCompleteSealV2.model_validate_json(retained_raw)
+            envelope = ExecutionCompleteSealPhysicalEnvelopeV2.model_validate_json(envelope_raw)
+        except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            raise ValueError("H1 selected V2 seal decision is invalid") from error
+        if (
+            retained.canonical_bytes().decode() != retained_raw
+            or envelope.canonical_bytes().decode() != envelope_raw
+            or build_complete_seal_envelope(retained) != envelope
+            or complete_seal_physical_command(envelope) != raw.seal.command
+        ):
+            raise ValueError("H1 selected V2 seal decision differs from physical command")
+        return H1SelectedSeal(
+            command=raw.seal.command,
+            decision_id=raw.seal.decision_id,
+            decision_bytes=raw.seal.raw,
+            commit_sequence=raw.seal.command.expected_head + 1,
         )
 
     @staticmethod

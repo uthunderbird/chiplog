@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import sqlite3
 import struct
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -18,6 +19,7 @@ from chiplog.capabilities.agent_loop.delivery_preparation import (
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
+    execution_h1_zero_call_frontier_registry_v2,
     execution_zero_call_frontier_registry,
 )
 from chiplog.composition.common_cli_execution_runtime import (
@@ -38,7 +40,9 @@ from chiplog.composition.h1_first_path_sources import (
 )
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
-    RetainedExecutionCompleteSeal,
+    ExecutionCompleteSealPhysicalEnvelopeV2,
+    RetainedExecutionCompleteSealV2,
+    complete_seal_physical_command,
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.ingress_transition_contracts import (
@@ -158,7 +162,7 @@ def test_unissued_capture_is_not_current() -> None:
     assert reader.check_current(cast_capture(object())) is False
 
 
-async def test_raw_reader_verifies_native_h0_lineage_and_physical_seal_before_failing_closed(
+async def test_reader_captures_and_rechecks_genuine_cli_h1_v2_postseal_cut(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "first-path.sqlite"
@@ -188,11 +192,12 @@ async def test_raw_reader_verifies_native_h0_lineage_and_physical_seal_before_fa
         )
         assert completed.kind == "SELECTED_EXECUTION_RECEIPT_V1"
         seals = []
-        for _, _, raw in runtime._loop_decisions().entries():
+        selected_decisions: list[tuple[str, bytes]] = []
+        for decision_id, _, raw in runtime._loop_decisions().entries():
             entry = json.loads(raw)
             if entry.get("operation_kind") != EXECUTION_COMPLETE_SEAL_OPERATION:
                 continue
-            retained = RetainedExecutionCompleteSeal.model_validate_json(
+            retained = RetainedExecutionCompleteSealV2.model_validate_json(
                 entry["execution_complete_seal"]
             )
             seal = retained.exchange.proposal.fan_out.response_seal
@@ -202,27 +207,79 @@ async def test_raw_reader_verifies_native_h0_lineage_and_physical_seal_before_fa
                     revision=Present(head="record:" + seal.digest(), fingerprint=seal.digest()),
                 )
             )
+            selected_decisions.append((decision_id, raw))
         assert len(seals) == 1
+        assert len(selected_decisions) == 1
+        selected_decision_id, selected_decision_bytes = selected_decisions[0]
+        selected_entry = json.loads(selected_decision_bytes)
+        envelope = ExecutionCompleteSealPhysicalEnvelopeV2.model_validate_json(
+            selected_entry["execution_complete_seal_envelope"]
+        )
+        expected_command = complete_seal_physical_command(envelope)
         reader = H1FirstPathSources(runtime)
-        cut = reader._read_selected_cut(
+        capture = reader.capture_current(
             original_identity=request.identity,
             original_fingerprint=request.original_driver_command_fingerprint(),
             selected_seal=seals[0],
         )
-        assert len(cut.lineage) >= 4
-        assert cut.lineage[-1][0] == cut.seal
-        assert tuple(member.record_id for member in cut.physical_members[-2:]) == (
-            cut.seal_record.record_id,
-            cut.registry_record.record_id,
+        assert reader.check_current(capture) is True
+        assert capture.source.frontier.registry == execution_h1_zero_call_frontier_registry_v2()
+        assert capture.source.frontier.ordered_members
+        seal_members = tuple(
+            member
+            for member in capture.physical_members
+            if member.decision_id == selected_decision_id
         )
-        assert cut.seal_record.record_id == "record:" + seals[0].revision.fingerprint
-        assert cut.registry_record.schema_id == "chiplog.recovery.frontier-registry.v1"
-        with pytest.raises(ValueError, match="frontier family mapping is not frozen"):
-            reader.capture_current(
-                original_identity=request.identity,
-                original_fingerprint=request.original_driver_command_fingerprint(),
-                selected_seal=seals[0],
+        assert len(seal_members) == 3
+        assert tuple(
+            (member.record_id, member.owner, member.schema_id, member.canonical_bytes)
+            for member in seal_members
+        ) == tuple(
+            (member.record_id, member.owner, member.schema_id, member.canonical_bytes)
+            for member in expected_command.records
+        )
+        assert capture.source.selected_response_seal == seals[0]
+        assert capture.source.complete_sources[-1].canonical_record_bytes == (
+            execution_h1_zero_call_frontier_registry_v2().canonical_bytes()
+        )
+        assert any(
+            member.family == "EVIDENCE" for member in capture.source.frontier.ordered_members
+        )
+
+        original_source = capture.source
+        original_seal_bytes = original_source.seal.canonical_bytes()
+        object.__setattr__(
+            capture,
+            "source",
+            capture.source.model_copy(update={"materialization_commitment": "0" * 64}),
+        )
+        assert reader.check_current(capture) is False
+        object.__setattr__(
+            capture,
+            "source",
+            original_source,
+        )
+
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "UPDATE records SET canonical_bytes=? WHERE tenant_id=? AND record_id=?",
+                (b"tampered", "hermetic-tenant", seals[0].revision.head),
             )
+        assert reader.check_current(capture) is False
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "UPDATE records SET canonical_bytes=? WHERE tenant_id=? AND record_id=?",
+                (original_seal_bytes, "hermetic-tenant", seals[0].revision.head),
+            )
+        assert reader.check_current(capture) is True
+
+        journal = database.with_suffix(database.suffix + ".loop-journal")
+        journal_bytes = journal.read_bytes()
+        encoded = selected_decision_bytes.hex().encode()
+        assert journal_bytes.count(encoded) == 1
+        replacement = (b"0" if encoded[:1] != b"0" else b"1") + encoded[1:]
+        journal.write_bytes(journal_bytes.replace(encoded, replacement))
+        assert reader.check_current(capture) is False
 
 
 def cast_capture(value: object) -> H1FirstPathCapture:

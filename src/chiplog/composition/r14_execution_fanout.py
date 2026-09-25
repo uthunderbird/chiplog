@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import json
 import secrets
+import sqlite3
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, cast
@@ -59,6 +61,8 @@ from .r14_execution_fanout_records import build_envelope, physical_command, refe
 from .r14_loop_history import read_execution_call_history
 
 if TYPE_CHECKING:
+    from .common_cli_execution_runtime import CommonCliExecutionRuntime
+    from .h1_preseal_contracts import H1OwnerAsOfV1, H1V2SealPreflight
     from .r14_execution_runtime import R14ExecutionRuntime
 
 
@@ -100,6 +104,9 @@ async def publish_execution_fanout(
     complete_profile: CompleteSealProfile = "V1",
 ) -> ExecutionRunRecord:
     observed = await runtime._execution_actor(peer)
+    h1_preflight: H1V2SealPreflight | None = None
+    h1_runtime: CommonCliExecutionRuntime | None = None
+    h1_owner_asof: H1OwnerAsOfV1 | None = None
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
         if complete_profile not in ("V1", "H1_V2"):
@@ -125,12 +132,32 @@ async def publish_execution_fanout(
         attempt = turn.attempts[turn.selector]
         if attempt.response_base64 is None or attempt.state != "RESPONSE_CAPTURED":
             raise LoopRejected("execution capture lacks exact response")
+        parsed = parse_execution_response(
+            base64.b64decode(attempt.response_base64, validate=True), attempt.manifest.artifact
+        )
         if complete_profile == "H1_V2":
-            # The V2 registry is selected only by the H1 path.  Its workspace
-            # proof and EMPTY inventories are not yet authenticated by B's
-            # verifier, so do not even request an owner proposal or publish a
-            # physically valid-looking V2 registry companion.
-            raise LoopRejected("H1 workspace original verification is unavailable")
+            # H1 evidence is a broker-private native-runtime read.  A plain
+            # R14 assembly has no mounted original-workspace/inventory reader
+            # and must stay fail-closed before it can propose to the owner.
+            from .common_cli_execution_runtime import CommonCliExecutionRuntime
+            from .h1_owner_inventory import H1OwnerInventoryFailure
+            from .h1_preseal import preflight_h1_v2_seal
+
+            if not isinstance(runtime, CommonCliExecutionRuntime):
+                raise LoopRejected("H1 workspace original verification is unavailable")
+            h1_runtime = runtime
+            if not complete_registry or isinstance(parsed, ExecutionContinue):
+                raise LoopRejected("H1 V2 requires an eligible zero-call Complete")
+            try:
+                h1_preflight = preflight_h1_v2_seal(runtime, captured, expected_head=expected_head)
+            except (
+                H1OwnerInventoryFailure,
+                OSError,
+                TypeError,
+                ValueError,
+                sqlite3.Error,
+            ) as error:
+                raise LoopRejected("H1 V2 preflight is unproven") from error
         registry, bound = execution_registry(captured)
         registry_ref = reference(registry.registry_id, registry)
         engine = runtime._supervisor.runtime()
@@ -185,9 +212,6 @@ async def publish_execution_fanout(
                 worker_session_id=runtime.current_worker(),
                 runtime_generation=callee.generation_id,
             ),
-        )
-        parsed = parse_execution_response(
-            base64.b64decode(attempt.response_base64, validate=True), attempt.manifest.artifact
         )
         calls = parsed.tool_calls if isinstance(parsed, ExecutionContinue) else ()
         policies = {item.tool_name: item for item in registry.entries}
@@ -280,8 +304,36 @@ async def publish_execution_fanout(
         command = physical_command(envelope)
 
     def guard() -> Literal["STALE"] | None:
+        nonlocal h1_owner_asof
         with runtime._authority_gate().hold():
             runtime._check_execution_actor(observed)
+            if h1_preflight is not None and h1_runtime is not None:
+                from .h1_owner_inventory import H1OwnerInventoryFailure
+                from .h1_preseal import recheck_h1_v2_seal
+
+                try:
+                    if (
+                        runtime._appender._materializer.authority_gate
+                        is not runtime._authority_gate()
+                    ):
+                        return "STALE"
+                    if not recheck_h1_v2_seal(h1_runtime, h1_preflight):
+                        return "STALE"
+                    from .h1_preseal_contracts import H1OwnerAsOfV1
+
+                    h1_owner_asof = H1OwnerAsOfV1(
+                        tenant_id=h1_preflight.inventory.owner_snapshot.tenant_id,
+                        owner_head=h1_preflight.inventory.owner_snapshot.head,
+                    )
+                except (
+                    H1OwnerInventoryFailure,
+                    OSError,
+                    TypeError,
+                    ValueError,
+                    sqlite3.Error,
+                    LoopRejected,
+                ):
+                    return "STALE"
             if (
                 read_execution_call_history(runtime) != (snapshot, inventory, previous)
                 or runtime.current_worker() != captured.worker_session
@@ -301,39 +353,57 @@ async def publish_execution_fanout(
     def decide(resulting: str) -> None:
         with runtime._authority_gate().hold():
             runtime._require_no_pending()
-            runtime._append_decision(
-                {
-                    "version": 1,
-                    "kind": "DECIDED",
-                    "operation_id": command.idempotency_key,
-                    "operation_kind": command.operation_kind,
-                    "expected_head": command.expected_head,
-                    "fingerprint": command.request_fingerprint,
-                    "predecessor": predecessor,
-                    "resulting": resulting,
-                    "records": [
-                        {
-                            "record_id": row.record_id,
-                            "owner": row.owner,
-                            "schema": row.schema_id,
-                            "payload": base64.b64encode(row.canonical_bytes).decode(),
-                            "digest": row.fingerprint,
-                        }
-                        for row in command.records
-                    ],
-                    **(
-                        {
-                            "execution_complete_seal": complete_retained.canonical_bytes().decode(),
-                            "execution_complete_seal_envelope": envelope.canonical_bytes().decode(),
-                        }
-                        if complete_retained is not None
-                        else {
-                            "execution_fanout": evidence.canonical_bytes().decode(),
-                            "execution_fanout_envelope": envelope.canonical_bytes().decode(),
-                        }
-                    ),
-                }
-            )
+            if isinstance(complete_retained, RetainedExecutionCompleteSealV2):
+                if h1_owner_asof is None or h1_runtime is not runtime:
+                    raise LoopRejected("H1 V2 owner as-of admission is unavailable")
+                owner_journal = runtime._owner_decisions()
+                if (
+                    runtime._appender._materializer.authority_gate is not runtime._authority_gate()
+                    or owner_journal.authority_gate is not runtime._authority_gate()
+                ):
+                    raise LoopRejected("H1 V2 owner journal gate is not canonical")
+                owner_snapshot = owner_journal.snapshot()
+                if (
+                    owner_snapshot.tenant_id != h1_owner_asof.tenant_id
+                    or owner_snapshot.head != h1_owner_asof.owner_head
+                    or runtime._pending_owners()
+                ):
+                    raise LoopRejected("H1 V2 owner journal changed after admission")
+            decision: dict[str, object] = {
+                "version": 1,
+                "kind": "DECIDED",
+                "operation_id": command.idempotency_key,
+                "operation_kind": command.operation_kind,
+                "expected_head": command.expected_head,
+                "fingerprint": command.request_fingerprint,
+                "predecessor": predecessor,
+                "resulting": resulting,
+                "records": [
+                    {
+                        "record_id": row.record_id,
+                        "owner": row.owner,
+                        "schema": row.schema_id,
+                        "payload": base64.b64encode(row.canonical_bytes).decode(),
+                        "digest": row.fingerprint,
+                    }
+                    for row in command.records
+                ],
+                **(
+                    {
+                        "execution_complete_seal": complete_retained.canonical_bytes().decode(),
+                        "execution_complete_seal_envelope": envelope.canonical_bytes().decode(),
+                    }
+                    if complete_retained is not None
+                    else {
+                        "execution_fanout": evidence.canonical_bytes().decode(),
+                        "execution_fanout_envelope": envelope.canonical_bytes().decode(),
+                    }
+                ),
+            }
+            if isinstance(complete_retained, RetainedExecutionCompleteSealV2):
+                assert h1_owner_asof is not None
+                decision["h1_owner_asof"] = json.loads(h1_owner_asof.canonical_bytes())
+            runtime._append_decision(decision)
 
     result = await runtime._appender.submit(
         replace(command, admission_guard=guard, decision_guard=decide)
