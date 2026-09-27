@@ -57,6 +57,31 @@ def installed_slot(tmp_path: Path) -> tuple[InstalledH1Slot, ExpectedH1Genesis]:
     )
 
 
+def active_registration_custody(expected: ExpectedH1Genesis) -> H1RegistrationCustodyV1:
+    """One canonical active registry fixture for installed H1 composition tests."""
+    return H1RegistrationCustodyV1.model_validate(
+        {
+            "schema_id": "chiplog.execution.h1-registration-custody.v1",
+            "deployment_id": expected.deployment_id,
+            "database_id": expected.database_id,
+            "database_genesis_digest": expected.digest,
+            "entries": [
+                {
+                    "tenant_id": expected.tenant_id,
+                    "principal_id": PRINCIPAL,
+                    "channel_id": CHANNEL,
+                    "registration_id": "installed-registration",
+                    "generation": 0,
+                    "status": "ACTIVE",
+                    "origin_recipient_id": PRINCIPAL,
+                    "conversation_id": "installed-conversation",
+                    "visible_channels": [CHANNEL],
+                }
+            ],
+        }
+    )
+
+
 async def prepare_installed_slot(
     slot: InstalledH1Slot, expected: ExpectedH1Genesis, tmp_path: Path
 ) -> None:
@@ -74,27 +99,7 @@ async def prepare_installed_slot(
             expected.digest,
         )
     slot._trust = ActiveTrust(expected.digest)
-    registry = H1RegistrationCustodyV1.model_validate(
-        {
-            "schema_id": "chiplog.execution.h1-registration-custody.v1",
-            "deployment_id": DEPLOYMENT,
-            "database_id": DATABASE,
-            "database_genesis_digest": expected.digest,
-            "entries": [
-                {
-                    "tenant_id": TENANT,
-                    "principal_id": PRINCIPAL,
-                    "channel_id": CHANNEL,
-                    "registration_id": "installed-registration",
-                    "generation": 0,
-                    "status": "ACTIVE",
-                    "origin_recipient_id": PRINCIPAL,
-                    "conversation_id": "installed-conversation",
-                    "visible_channels": [CHANNEL],
-                }
-            ],
-        }
-    )
+    registry = active_registration_custody(expected)
     _provision_h1_enrollment(slot, expected, registry)
     _provision_h1_evidence_mount(slot, expected)
     _provision_h1_recovery_mount(slot, expected)

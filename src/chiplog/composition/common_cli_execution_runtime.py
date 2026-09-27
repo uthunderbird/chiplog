@@ -59,6 +59,7 @@ from chiplog.composition.common_execution_driver_contracts import (
     AdvanceExecutionRequestV1,
     CommonExecutionResultV1,
     DriveInputRequestV1,
+    DriverCommandIdentityV1,
     ExecutionDriverRejectedV1,
     ExecutionPendingReceiptV1,
     LookupExecutionRequestV1,
@@ -219,6 +220,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_delivery_evidence_journal: Any | None
     _h1_postseal_recovery_journal: Any | None
     _h1_recovery_mount: Any | None
+    _h1_postseal_recovery_coordinator: Any | None
     _h1_preissuance_registration_source_port: Any | None
     _h1_first_path_sources: Any | None
     _h1_native_member_sources: Any | None
@@ -1121,6 +1123,11 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             current = lineage[-1]
             if current != run:
                 if current.state == "ACTIVE" and current.event == "ModelCompletionPrepared":
+                    recovered = await self._resume_h1_postseal_recovery(
+                        request.identity, request.original_driver_command_fingerprint
+                    )
+                    if recovered is not None:
+                        return recovered
                     return self._running_receipt(evidence, current, disposition="EXACT_REPLAY")
                 return ExecutionDriverRejectedV1(
                     identity=request.identity,
@@ -1142,6 +1149,11 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             )
             if sealed.state != "ACTIVE":
                 raise LoopRejected("first-path complete seal is not an active Run")
+            recovered = await self._resume_h1_postseal_recovery(
+                request.identity, request.original_driver_command_fingerprint
+            )
+            if recovered is not None:
+                return recovered
             return self._running_receipt(evidence, sealed, disposition="COMMITTED")
         except _DriverConflict as error:
             return ExecutionDriverRejectedV1(
@@ -1157,6 +1169,30 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 code="STALE",
                 reason=str(error),
             )
+
+    async def _resume_h1_postseal_recovery(
+        self, identity: DriverCommandIdentityV1, original_fingerprint: str
+    ) -> ExecutionDriverRejectedV1 | None:
+        """Run the installed ROOT-only recovery boundary without changing receipt shape."""
+        from chiplog.composition.h1_postseal_recovery_coordinator import (
+            H1PostSealRecoveryCoordinatorError,
+        )
+
+        coordinator = getattr(self, "_h1_postseal_recovery_coordinator", None)
+        if coordinator is None:
+            if getattr(self, "_h1_recovery_mount", None) is not None:
+                raise LoopRejected("installed H1 post-seal recovery coordinator is absent")
+            return None
+        try:
+            await coordinator.resume_selected(identity, original_fingerprint)
+        except H1PostSealRecoveryCoordinatorError as error:
+            return ExecutionDriverRejectedV1(
+                identity=identity,
+                original_driver_command_fingerprint=original_fingerprint,
+                code="HOLD",
+                reason=str(error),
+            )
+        return None
 
     def _running_receipt(
         self,
@@ -1524,6 +1560,11 @@ async def open_installed_h1_runtime(
         # owner could publish a recovery callable.
         runtime._h1_recovery_mount = recovery_mount[0]
         runtime._h1_postseal_recovery_journal = recovery_journal[0]
+        from chiplog.composition.h1_postseal_recovery_coordinator import (
+            _H1PostSealRecoveryCoordinator,
+        )
+
+        runtime._h1_postseal_recovery_coordinator = _H1PostSealRecoveryCoordinator(runtime)
         if any(
             hasattr(runtime, name)
             for name in (
@@ -1663,6 +1704,11 @@ async def open_installed_h1_runtime(
                     runtime._h1_live_completion_enrollment = live_enrollment  # type: ignore[attr-defined]
                     yield runtime
                 finally:
+                    coordinator = getattr(runtime, "_h1_postseal_recovery_coordinator", None)
+                    if coordinator is not None:
+                        coordinator.close()
+                    if hasattr(runtime, "_h1_postseal_recovery_coordinator"):
+                        del runtime._h1_postseal_recovery_coordinator
                     if live_enrollment is not None:
                         live_enrollment._revoke_all()
                     if hasattr(runtime, "_h1_live_completion_enrollment"):
@@ -1707,6 +1753,11 @@ async def open_installed_h1_runtime(
             # the appender remained open.
             revoke_and_unbind_live_authority()
             if runtime is not None:
+                coordinator = getattr(runtime, "_h1_postseal_recovery_coordinator", None)
+                if coordinator is not None:
+                    coordinator.close()
+                if hasattr(runtime, "_h1_postseal_recovery_coordinator"):
+                    del runtime._h1_postseal_recovery_coordinator
                 if hasattr(runtime, "_h1_postseal_recovery_journal"):
                     del runtime._h1_postseal_recovery_journal
                 if hasattr(runtime, "_h1_recovery_mount"):

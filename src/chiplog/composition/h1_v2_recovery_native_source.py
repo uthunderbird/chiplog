@@ -46,6 +46,7 @@ from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCH
 from chiplog.composition.r14_execution_inbox_records import (
     EXECUTION_INBOX_INITIALIZATION_OPERATION,
     RetainedInboxExecutionInitialization,
+    inbox_initialization_command,
 )
 from chiplog.composition.r14_fanout_contracts import SEAL_SCHEMA
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
@@ -54,6 +55,18 @@ from chiplog.platform.publication_readback import inspect_publication
 
 class H1V2RecoveryNativeSourceError(ValueError):
     """The installed loop journal cannot prove the requested V2 native cut."""
+
+
+class H1V2RecoveryNativeSourceAbsent(H1V2RecoveryNativeSourceError):
+    """The authenticated journal contains no V2 seal for the original input."""
+
+
+class H1V2RecoveryNativeSourceConflict(H1V2RecoveryNativeSourceError):
+    """The authenticated journal offers more than one applicable V2 source."""
+
+
+class H1V2RecoveryNativeSourceIntegrityError(H1V2RecoveryNativeSourceError):
+    """An authenticated journal entry or its physical materialization differs."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +114,7 @@ class H1V2RecoveryNativeCut:
 @dataclass(frozen=True, slots=True)
 class _Command:
     decision_id: str
+    predecessor: str | None
     raw: bytes
     command: PhysicalPublicationCommand
 
@@ -176,13 +190,13 @@ class H1V2RecoveryNativeSource:
     ) -> H1V2RecoveryNativeCut:
         self._gate.require_held()
         entries = self._runtime._loop_decisions().entries()
-        decoded = [(decision_id, raw, _strict_object(raw)) for decision_id, _, raw in entries]
-        if any(entry.get("kind") == "PENDING" for _, _, entry in decoded):
-            raise H1V2RecoveryNativeSourceError(
-                "pending later publication leaves historical cut ambiguous"
-            )
+        self._require_no_pending()
+        decoded = [
+            (decision_id, predecessor, raw, _strict_object(raw))
+            for decision_id, predecessor, raw in entries
+        ]
         matches: list[int] = []
-        for index, (decision_id, raw, entry) in enumerate(decoded):
+        for index, (decision_id, predecessor, raw, entry) in enumerate(decoded):
             if (
                 entry.get("kind") != "DECIDED"
                 or entry.get("operation_kind") != EXECUTION_COMPLETE_SEAL_OPERATION
@@ -191,11 +205,17 @@ class H1V2RecoveryNativeSource:
             # A later V3 seal is unrelated to the selected V2 prefix.  Locate
             # candidates from their native physical seal before decoding the
             # V2-only retained envelope of the selected candidate.
-            candidate = _Command(decision_id, raw, self._runtime._publication(entry))
+            candidate = _Command(
+                decision_id, predecessor, raw, self._runtime._publication(entry)
+            )
             if self._seal_locator(candidate) == selected_seal:
                 matches.append(index)
         if len(matches) != 1:
-            raise H1V2RecoveryNativeSourceError("historical V2 source has no unique selected seal")
+            if matches:
+                raise H1V2RecoveryNativeSourceConflict(
+                    "historical V2 source has competing selected seals"
+                )
+            raise H1V2RecoveryNativeSourceAbsent("historical V2 source has no selected seal")
         prefix = self._commands(decoded[: matches[0] + 1])
         seal_command = prefix[-1]
         self._require_v2_command(seal_command)
@@ -237,6 +257,124 @@ class H1V2RecoveryNativeSource:
             database_inode=before.st_ino,
         )
 
+    def locate_selected_seal(
+        self,
+        *,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+    ) -> CallSubjectHead:
+        """Locate and prove the sole native V2 seal for one original driver input."""
+        if type(original_identity) is not DriverCommandIdentityV1:
+            raise TypeError("historical V2 locator requires the exact original driver identity")
+        if not isinstance(original_fingerprint, str) or len(original_fingerprint) != 64:
+            raise H1V2RecoveryNativeSourceIntegrityError("original driver fingerprint is invalid")
+        try:
+            with self._gate.hold():
+                self._mount.assert_current()
+                self._runtime._check_database_identity()
+                locator = self._locate_selected_seal_held(original_identity, original_fingerprint)
+                # Reuse the complete V2 proof while the mount and database identity
+                # are still held.  Returning an unproved physical locator would leave
+                # a replacement window between discovery and selection.
+                self._select_held(original_identity, original_fingerprint, locator)
+                self._runtime._check_database_identity()
+                self._mount.assert_current()
+                return locator
+        except H1V2RecoveryNativeSourceError:
+            raise
+        except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error) as error:
+            raise H1V2RecoveryNativeSourceIntegrityError(
+                "installed historical V2 locator differs"
+            ) from error
+
+    def _locate_selected_seal_held(
+        self, original_identity: DriverCommandIdentityV1, original_fingerprint: str
+    ) -> CallSubjectHead:
+        self._gate.require_held()
+        entries = self._runtime._loop_decisions().entries()
+        self._require_no_pending()
+        decoded = [
+            (decision_id, predecessor, raw, _strict_object(raw))
+            for decision_id, predecessor, raw in entries
+        ]
+        commands = self._commands(decoded)
+        initialization = self._initialization(commands, original_identity, original_fingerprint)
+        initialization_entry = _strict_object(initialization.raw)
+        retained_raw = initialization_entry.get("inbox_initialization")
+        if not isinstance(retained_raw, str):
+            raise H1V2RecoveryNativeSourceIntegrityError("historical initialization is absent")
+        retained = RetainedInboxExecutionInitialization.model_validate_json(retained_raw)
+        root = retained.proposal.run
+        candidates: list[_Command] = []
+        for command in commands:
+            if command.command.expected_head < initialization.command.expected_head:
+                continue
+            if command.command.operation_kind != EXECUTION_COMPLETE_SEAL_OPERATION:
+                continue
+            matching_runs = self._physical_runs_for(command, root.run_id)
+            if not matching_runs:
+                continue
+            if len(matching_runs) != 1:
+                raise H1V2RecoveryNativeSourceIntegrityError(
+                    "complete seal has duplicate physical Run members for original input"
+                )
+            self._require_v2_command(command)
+            prefix = tuple(
+                item
+                for item in commands
+                if item.command.expected_head <= command.command.expected_head
+            )
+            runs, _ = self._lineage(prefix, initialization)
+            if not runs or runs[-1][0].decision_id != command.decision_id:
+                raise H1V2RecoveryNativeSourceIntegrityError(
+                    "complete seal does not close original Run lineage"
+                )
+            candidates.append(command)
+        if not candidates:
+            raise H1V2RecoveryNativeSourceAbsent(
+                "historical V2 source has no seal for original input"
+            )
+        if len(candidates) != 1:
+            raise H1V2RecoveryNativeSourceConflict(
+                "historical V2 source has competing seals for original input"
+            )
+        return self._seal_locator(candidates[0])
+
+    def _require_no_pending(self) -> None:
+        try:
+            pending = self._runtime._pending()
+        except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error) as error:
+            raise H1V2RecoveryNativeSourceIntegrityError(
+                "historical V2 journal state is invalid"
+            ) from error
+        if pending:
+            raise H1V2RecoveryNativeSourceConflict(
+                "pending publication leaves historical V2 source ambiguous"
+            )
+
+    @staticmethod
+    def _physical_runs_for(command: _Command, run_id: str) -> tuple[ExecutionRunRecord, ...]:
+        runs: list[ExecutionRunRecord] = []
+        for member in command.command.records:
+            if member.owner != OWNER or member.schema_id != EXECUTION_RUN_SCHEMA:
+                continue
+            try:
+                decoded = decode_execution_run_member(
+                    ExecutionRunCanonicalMember(
+                        record_id=member.record_id,
+                        schema_id=member.schema_id,  # type: ignore[arg-type]
+                        canonical_record_bytes=member.canonical_bytes,
+                        fingerprint=hashlib.sha256(member.canonical_bytes).hexdigest(),
+                    )
+                ).run
+            except ValueError as error:
+                raise H1V2RecoveryNativeSourceIntegrityError(
+                    "complete seal physical Run member differs"
+                ) from error
+            if isinstance(decoded, ExecutionRunRecord) and decoded.run_id == run_id:
+                runs.append(decoded)
+        return tuple(runs)
+
     @staticmethod
     def _decode_v2_seal(raw: bytes) -> RetainedExecutionCompleteSealV2:
         entry = _strict_object(raw)
@@ -264,16 +402,16 @@ class H1V2RecoveryNativeSource:
         return retained
 
     def _commands(
-        self, entries: list[tuple[str, bytes, dict[str, object]]]
+        self, entries: list[tuple[str, str | None, bytes, dict[str, object]]]
     ) -> tuple[_Command, ...]:
         commands: list[_Command] = []
-        for decision_id, raw, entry in entries:
+        for decision_id, predecessor, raw, entry in entries:
             if entry.get("kind") != "DECIDED":
                 continue
             command = self._runtime._publication(entry)
             if command.tenant_id != self._runtime._tenant_id:
                 raise H1V2RecoveryNativeSourceError("historical prefix crosses tenants")
-            commands.append(_Command(decision_id, raw, command))
+            commands.append(_Command(decision_id, predecessor, raw, command))
         if not commands or len({item.command.expected_head for item in commands}) != len(commands):
             raise H1V2RecoveryNativeSourceError("historical prefix has competing publications")
         if tuple(sorted(commands, key=lambda item: item.command.expected_head)) != tuple(commands):
@@ -337,23 +475,50 @@ class H1V2RecoveryNativeSource:
                 retained = RetainedInboxExecutionInitialization.model_validate_json(encoded)
                 request = DriveInputRequestV1.model_validate_json(retained.driver_request_bytes)
             except (KeyError, TypeError, ValueError) as error:
-                raise H1V2RecoveryNativeSourceError("historical initialization differs") from error
+                raise H1V2RecoveryNativeSourceIntegrityError(
+                    "historical initialization differs"
+                ) from error
             if (
                 retained.canonical_bytes().decode() != encoded
                 or request.canonical_bytes() != retained.driver_request_bytes
             ):
-                raise H1V2RecoveryNativeSourceError(
+                raise H1V2RecoveryNativeSourceIntegrityError(
                     "historical initialization bytes are noncanonical"
                 )
+            try:
+                expected = inbox_initialization_command(retained)
+            except (TypeError, ValueError) as error:
+                raise H1V2RecoveryNativeSourceIntegrityError(
+                    "historical initialization command differs"
+                ) from error
             if (
-                request.identity == identity
-                and retained.driver_request_fingerprint == fingerprint
-                and request.original_driver_command_fingerprint() == fingerprint
+                expected != command.command
+                or command.command.idempotency_key != retained.proposal.run.head
+                or command.command.expected_head != retained.expected_head
+                or entry.get("predecessor") != retained.predecessor_commitment
             ):
-                found.append(command)
+                raise H1V2RecoveryNativeSourceIntegrityError(
+                    "historical initialization command binding differs"
+                )
+            if request.identity != identity:
+                continue
+            immutable_fingerprint = request.original_driver_command_fingerprint()
+            if retained.driver_request_fingerprint != immutable_fingerprint:
+                raise H1V2RecoveryNativeSourceIntegrityError(
+                    "historical initialization immutable fingerprint differs"
+                )
+            if immutable_fingerprint != fingerprint:
+                raise H1V2RecoveryNativeSourceConflict(
+                    "original initialization identity has another immutable fingerprint"
+                )
+            found.append(command)
         if len(found) != 1:
-            raise H1V2RecoveryNativeSourceError(
-                "historical source has no unique original initialization"
+            if found:
+                raise H1V2RecoveryNativeSourceConflict(
+                    "historical source has competing original initializations"
+                )
+            raise H1V2RecoveryNativeSourceAbsent(
+                "historical source has no original initialization"
             )
         return found[0]
 
@@ -451,5 +616,8 @@ class H1V2RecoveryNativeSource:
 __all__ = [
     "H1V2RecoveryNativeCut",
     "H1V2RecoveryNativeSource",
+    "H1V2RecoveryNativeSourceAbsent",
+    "H1V2RecoveryNativeSourceConflict",
     "H1V2RecoveryNativeSourceError",
+    "H1V2RecoveryNativeSourceIntegrityError",
 ]

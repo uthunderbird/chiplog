@@ -49,6 +49,7 @@ _EVIDENCE_BODY = "h1-delivery-evidence"
 _RECOVERY_ROLE = "h1-post-seal-recovery"
 _RECOVERY_MARKER = "h1-post-seal-recovery-enrollment.json"
 _RECOVERY_BODY = "h1-post-seal-recovery"
+_RECOVERY_EXECUTION_FENCE = _RECOVERY_BODY + ".execution-fence"
 _RECOVERY_MOUNT_ISSUER = object()
 
 
@@ -248,6 +249,44 @@ class H1RecoveryMountEnrollmentV1(CliCustodyDTO):
         return self
 
 
+class H1RecoveryMountEnrollmentV2(CliCustodyDTO):
+    """V2 binds the separately provisioned recovery execution-fence inode.
+
+    V1 markers deliberately remain readable only as a migration diagnostic:
+    their immutable bytes cannot safely be augmented at runtime.
+    """
+
+    schema_id: str = "chiplog.execution.h1-post-seal-recovery-enrollment.v2"
+    deployment_id: Identity
+    database_id: Identity
+    tenant_id: Identity
+    database_genesis_digest: Digest
+    role: Identity
+    journal_instance_id: Identity
+    body_name: Identity
+    body_dev: UInt64
+    body_ino: UInt64
+    key_dev: UInt64
+    key_ino: UInt64
+    key_digest: Digest
+    lock_dev: UInt64
+    lock_ino: UInt64
+    execution_fence_dev: UInt64
+    execution_fence_ino: UInt64
+
+    @model_validator(mode="after")
+    def _fixed_schema(self) -> H1RecoveryMountEnrollmentV2:
+        if (
+            self.schema_id != "chiplog.execution.h1-post-seal-recovery-enrollment.v2"
+            or self.role != _RECOVERY_ROLE
+            or self.body_name != _RECOVERY_BODY
+            or (self.execution_fence_dev, self.execution_fence_ino)
+            == (self.lock_dev, self.lock_ino)
+        ):
+            raise ValueError("unknown recovery role enrollment")
+        return self
+
+
 def _private_directory(fd: int) -> os.stat_result:
     item = os.fstat(fd)
     if not stat.S_ISDIR(item.st_mode) or item.st_uid != os.getuid() or item.st_mode & 0o077:
@@ -408,7 +447,7 @@ def _read_evidence_marker(custody_fd: int) -> tuple[bytes, H1EvidenceMountEnroll
     return raw, marker
 
 
-def _read_recovery_marker(custody_fd: int) -> tuple[bytes, H1RecoveryMountEnrollmentV1]:
+def _read_recovery_marker(custody_fd: int) -> tuple[bytes, H1RecoveryMountEnrollmentV2]:
     try:
         fd = os.open(
             _RECOVERY_MARKER, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=custody_fd
@@ -427,7 +466,13 @@ def _read_recovery_marker(custody_fd: int) -> tuple[bytes, H1RecoveryMountEnroll
         raise H1RecoveryMountError("enrolled recovery marker is corrupt")
     try:
         value = json.loads(raw.decode(), object_pairs_hook=_reject_duplicates)
-        marker = H1RecoveryMountEnrollmentV1.model_validate(value)
+        if not isinstance(value, dict) or value.get("schema_id") != (
+            "chiplog.execution.h1-post-seal-recovery-enrollment.v2"
+        ):
+            raise H1RecoveryMountError(
+                "recovery enrollment requires explicit V2 administrative migration"
+            )
+        marker = H1RecoveryMountEnrollmentV2.model_validate(value)
     except (UnicodeDecodeError, json.JSONDecodeError, H1LaunchEnrollmentError, ValueError) as exc:
         raise H1RecoveryMountError("enrolled recovery marker is corrupt") from exc
     if marker.canonical_bytes() != raw:
@@ -500,12 +545,13 @@ def _check_evidence_marker(
 
 def _check_recovery_marker(
     slot: InstalledH1Slot,
-    marker: H1RecoveryMountEnrollmentV1,
+    marker: H1RecoveryMountEnrollmentV2,
     *,
     body_identity: tuple[int, int],
     key_identity: tuple[int, int],
     key_bytes: bytes,
     lock_identity: tuple[int, int],
+    execution_fence_identity: tuple[int, int],
 ) -> None:
     if (
         marker.deployment_id,
@@ -522,6 +568,8 @@ def _check_recovery_marker(
         marker.key_digest,
         marker.lock_dev,
         marker.lock_ino,
+        marker.execution_fence_dev,
+        marker.execution_fence_ino,
     ) != (
         slot.deployment_id,
         slot.database_id,
@@ -537,6 +585,8 @@ def _check_recovery_marker(
         hashlib.sha256(key_bytes).hexdigest(),
         lock_identity[0],
         lock_identity[1],
+        execution_fence_identity[0],
+        execution_fence_identity[1],
     ):
         raise H1RecoveryMountError("enrolled recovery marker is foreign")
 
@@ -853,6 +903,7 @@ def _require_absent_recovery_sidecars(custody_fd: int) -> None:
         _RECOVERY_BODY + ".key",
         _RECOVERY_BODY + ".head",
         _RECOVERY_BODY + ".lock",
+        _RECOVERY_EXECUTION_FENCE,
         _RECOVERY_BODY + ".head.new",
     ):
         try:
@@ -891,6 +942,7 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
     _check_slot_expected(slot, expected)
     _verify_active(slot, expected)
     root_fd = custody_fd = db_fd = lock_fd = body_fd = key_fd = head_fd = role_lock_fd = -1
+    fence_fd = -1
     try:
         root_fd = _open_directory(slot.root)
         lock_fd = _acquire_install_lock(root_fd, create=True)
@@ -915,6 +967,9 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
             role_lock_fd, lock_identity = _open_recovery_role_file(
                 custody_fd, _RECOVERY_BODY + ".lock"
             )
+            fence_fd, fence_identity = _open_recovery_role_file(
+                custody_fd, _RECOVERY_EXECUTION_FENCE
+            )
             key_bytes = os.read(key_fd, 33)
             if len(key_bytes) != 32:
                 raise H1RecoveryMountError("enrolled recovery key is corrupt")
@@ -925,6 +980,7 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
                 key_identity=key_identity,
                 key_bytes=key_bytes,
                 lock_identity=lock_identity,
+                execution_fence_identity=fence_identity,
             )
             if existing_raw != existing.canonical_bytes():
                 raise H1RecoveryMountError("enrolled recovery marker bytes differ")
@@ -953,7 +1009,20 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
         if len(key_bytes) != 32:
             raise H1RecoveryMountError("provisioned recovery key is corrupt")
         role_lock_fd, lock_identity = _open_recovery_role_file(custody_fd, _RECOVERY_BODY + ".lock")
-        marker = H1RecoveryMountEnrollmentV1(
+        try:
+            fence_fd = os.open(
+                _RECOVERY_EXECUTION_FENCE,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=custody_fd,
+            )
+            os.fsync(fence_fd)
+            os.fsync(custody_fd)
+        except OSError as exc:
+            raise H1RecoveryMountError("recovery execution fence cannot be provisioned") from exc
+        fence_identity = (os.fstat(fence_fd).st_dev, os.fstat(fence_fd).st_ino)
+        _private_regular(fence_fd)
+        marker = H1RecoveryMountEnrollmentV2(
             deployment_id=slot.deployment_id,
             database_id=slot.database_id,
             tenant_id=slot.tenant_id,
@@ -968,6 +1037,8 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
             key_digest=hashlib.sha256(key_bytes).hexdigest(),
             lock_dev=lock_identity[0],
             lock_ino=lock_identity[1],
+            execution_fence_dev=fence_identity[0],
+            execution_fence_ino=fence_identity[1],
         )
         _write_named_marker(custody_fd, _RECOVERY_MARKER, marker.canonical_bytes())
         written, observed = _read_recovery_marker(custody_fd)
@@ -978,11 +1049,22 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
             key_identity=key_identity,
             key_bytes=key_bytes,
             lock_identity=lock_identity,
+            execution_fence_identity=fence_identity,
         )
         if written != marker.canonical_bytes():
             raise H1RecoveryMountError("enrolled recovery marker bytes differ")
     finally:
-        for fd in (role_lock_fd, head_fd, key_fd, body_fd, db_fd, custody_fd, lock_fd, root_fd):
+        for fd in (
+            fence_fd,
+            role_lock_fd,
+            head_fd,
+            key_fd,
+            body_fd,
+            db_fd,
+            custody_fd,
+            lock_fd,
+            root_fd,
+        ):
             if fd >= 0:
                 with suppress(OSError):
                     os.close(fd)
@@ -1239,6 +1321,7 @@ class EnrolledH1RecoveryMount:
 
     __slots__ = (
         "_body_identity",
+        "_execution_fence_identity",
         "_key_identity",
         "_launch",
         "_lock_identity",
@@ -1264,6 +1347,7 @@ class EnrolledH1RecoveryMount:
         self._marker_raw = b""
         self._poisoned = False
         self._body_identity = self._key_identity = self._lock_identity = (0, 0)
+        self._execution_fence_identity = (0, 0)
         self._refresh_current()
 
     def __reduce__(self) -> Never:
@@ -1277,6 +1361,10 @@ class EnrolledH1RecoveryMount:
     def key_identity(self) -> tuple[int, int]:
         return self._key_identity
 
+    @property
+    def execution_fence_identity(self) -> tuple[int, int]:
+        return self._execution_fence_identity
+
     def close(self) -> None:
         self._poisoned = True
 
@@ -1284,7 +1372,7 @@ class EnrolledH1RecoveryMount:
         if self._poisoned:
             raise H1RecoveryMountError("enrolled recovery mount is closed or poisoned")
         launch = self._launch
-        body_fd = key_fd = head_fd = lock_fd = -1
+        body_fd = key_fd = head_fd = lock_fd = fence_fd = -1
         try:
             launch.assert_current()
             raw, marker = _read_recovery_marker(launch._custody_fd)
@@ -1305,6 +1393,13 @@ class EnrolledH1RecoveryMount:
                 _RECOVERY_BODY + ".lock",
                 None if self._lock_identity == (0, 0) else self._lock_identity,
             )
+            fence_fd, fence_identity = _open_recovery_role_file(
+                launch._custody_fd,
+                _RECOVERY_EXECUTION_FENCE,
+                None
+                if self._execution_fence_identity == (0, 0)
+                else self._execution_fence_identity,
+            )
             key_bytes = os.read(key_fd, 33)
             if len(key_bytes) != 32:
                 raise H1RecoveryMountError("enrolled recovery key is corrupt")
@@ -1315,14 +1410,21 @@ class EnrolledH1RecoveryMount:
                 key_identity=key_identity,
                 key_bytes=key_bytes,
                 lock_identity=lock_identity,
+                execution_fence_identity=fence_identity,
             )
             if self._marker_raw and raw != self._marker_raw:
                 raise H1RecoveryMountError("enrolled recovery marker changed")
             self._marker_raw = raw
-            self._body_identity, self._key_identity, self._lock_identity = (
+            (
+                self._body_identity,
+                self._key_identity,
+                self._lock_identity,
+                self._execution_fence_identity,
+            ) = (
                 body_identity,
                 key_identity,
                 lock_identity,
+                fence_identity,
             )
         except BaseException as exc:
             self._poisoned = True
@@ -1330,13 +1432,34 @@ class EnrolledH1RecoveryMount:
                 raise
             raise H1RecoveryMountError("enrolled recovery validation is unavailable") from exc
         finally:
-            for fd in (lock_fd, head_fd, key_fd, body_fd):
+            for fd in (fence_fd, lock_fd, head_fd, key_fd, body_fd):
                 if fd >= 0:
                     with suppress(OSError):
                         os.close(fd)
 
     def assert_current(self) -> None:
         self._refresh_current()
+
+    def _open_existing_execution_fence(self) -> int:
+        """Return one fresh descriptor for the enrolled execution inode only."""
+        self.assert_current()
+        try:
+            fd = os.open(
+                _RECOVERY_EXECUTION_FENCE,
+                os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=self._launch._custody_fd,
+            )
+        except OSError as exc:
+            raise H1RecoveryMountError("enrolled recovery execution fence is unavailable") from exc
+        try:
+            item = _private_regular(fd)
+            if (item.st_dev, item.st_ino) != self._execution_fence_identity:
+                raise H1RecoveryMountError("enrolled recovery execution fence changed")
+            self.assert_current()
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
 
     def _open_existing_recovery_journal(self) -> object:
         """Open the authenticated role through the primitive's non-creating API only."""
