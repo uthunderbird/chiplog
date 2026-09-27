@@ -354,9 +354,18 @@ class H1RegistrationCustody:
         return cls(trusted, lock_fd, raw, registry)
 
     def close(self) -> None:
-        if self._lock_fd >= 0:
-            os.close(self._lock_fd)
+        with self._authority_condition:
+            if self._lock_fd < 0:
+                return
+            if self._authority_gate is not None:
+                raise H1RegistrationCustodyError("authority gate is bound")
+            if self._authority_transition:
+                raise H1RegistrationCustodyError("authority gate transition is in progress")
+            if self._authority_inflight:
+                raise H1RegistrationCustodyError("registry mutation is in progress")
+            lock_fd = self._lock_fd
             self._lock_fd = -1
+        os.close(lock_fd)
 
     def bind_authority_gate(
         self,
@@ -365,16 +374,18 @@ class H1RegistrationCustody:
         database_identity: object,
     ) -> None:
         """Bind the one runtime authority gate after installed launch authenticates its database."""
-        self._available()
         transition_started = False
         try:
             with self._authority_condition:
+                self._available()
                 if self._authority_gate is not None:
                     raise H1RegistrationCustodyError("authority gate is already bound")
                 if self._authority_transition:
                     raise H1RegistrationCustodyError("authority gate transition is in progress")
                 self._authority_transition = True
                 transition_started = True
+                while self._authority_inflight:
+                    self._authority_condition.wait()
             if type(authority_gate) is not AuthorityGate or not isinstance(database_path, Path):
                 raise H1RegistrationCustodyError("authority gate binding is invalid")
             if (
@@ -450,6 +461,7 @@ class H1RegistrationCustody:
     def _mutation_scope(self) -> Iterator[None]:
         """Lease one binding before entering its gate, so drain-unbind cannot race a stale gate."""
         with self._authority_condition:
+            self._available()
             if self._authority_transition:
                 raise H1RegistrationCustodyError("authority gate transition is in progress")
             gate = self._authority_gate

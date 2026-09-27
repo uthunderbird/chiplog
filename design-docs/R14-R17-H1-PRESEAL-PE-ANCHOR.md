@@ -42,12 +42,27 @@ receipt once and joins the exact enrolled runtime, database, Prepare, Run,
 owner-as-of and publication command. A failed or stale capture denies the seal;
 it does not create a partial anchor.
 
-The no-IPC recheck is valid only if P's authoritative scope, policy, custody
-and source-version mutations are covered by the shared gate through decision
-append, or by an owner-issued version token that provides the same continuity.
-This coverage has not yet been established for the current installed path.
-Until it is, the preseal anchor issuer remains ineligible; a local lock by
-itself cannot prove remote owner currentness.
+The no-IPC recheck is valid only if P's authoritative scope, policy, custody,
+source-version and supervisor-session mutations share the installed runtime's
+gate through decision append. The installed CURRENT owner is a stateless
+projection of the supplied authenticated snapshot (`selector_generation=0` is
+not a pin); the enrolled trust, resource and supervisor mutation APIs use the
+common gate. Custody's gate binding drains mutations admitted before bind, and
+its close does not release the lifetime pair lock while an installed runtime
+remains bound. Focused lifecycle tests cover these obligations. The anchor
+issuer remains ineligible until the decision owner and writer replay are
+mounted. Final P replay must recompute CURRENT and every source join under one
+uninterrupted gate hold in the **DECIDED writer**, then
+append the decision before releasing it. This assertion applies only to those
+installed, enrolled mutation APIs; an unbound writer cannot use this issuer.
+An unavailable/restarted session or changed source denies the seal.
+
+The earlier publication admission guard and the DECIDED writer are separate
+gate holds. A check in the guard alone cannot establish continuity. Native,
+P and E replay must precede consumption of the one-use H1 preflight in the
+writer's gate hold; after consumption, `_issued` can no longer authenticate
+the preseal native cut. No `await` or gate release may occur between that
+ordered recheck and `_append_decision`.
 
 The anchor records only facts not independently recoverable from the native
 prefix: P accepted scope and policy references plus canonical bytes, recipient,

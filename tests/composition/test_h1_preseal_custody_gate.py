@@ -137,6 +137,7 @@ def test_installed_custody_mutation_waits_for_canonical_authority_gate(
                 custody.select("tenant-a", "principal-a", "channel-a")
     finally:
         worker.join(timeout=1)
+        custody.unbind_authority_gate(gate)
         custody.close()
 
 
@@ -155,6 +156,7 @@ def test_installed_custody_mutation_reenters_its_gate_without_pair_lock_deadlock
             with pytest.raises(H1RegistrationCustodyError, match="revoked"):
                 custody.select("tenant-a", "principal-a", "channel-a")
     finally:
+        custody.unbind_authority_gate(gate)
         custody.close()
 
 
@@ -195,6 +197,7 @@ def test_installed_custody_unbind_requires_the_exact_bound_gate_and_allows_resta
         _replace(custody, binding, raw)
         assert custody.select("tenant-a", "principal-a", "channel-a").generation == 1
     finally:
+        custody.unbind_authority_gate(second_gate)
         custody.close()
 
 
@@ -208,6 +211,7 @@ def test_unbind_waits_for_leased_mutation_before_allowing_rebind(
     mutation_done = threading.Event()
     unbind_done = threading.Event()
     errors: list[BaseException] = []
+    second_gate: AuthorityGate | None = None
     original = H1RegistrationCustody._durable_replace
 
     def pause_replace(self: H1RegistrationCustody, replacement: bytes) -> None:
@@ -263,4 +267,95 @@ def test_unbind_waits_for_leased_mutation_before_allowing_rebind(
         release_mutation.set()
         mutation.join(timeout=1)
         unbinder.join(timeout=1)
+        if second_gate is not None:
+            custody.unbind_authority_gate(second_gate)
         custody.close()
+
+
+def test_bind_waits_for_unbound_mutation_lease_before_installing_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custody, binding, raw = _mounted(tmp_path)
+    database = tmp_path / "installed.sqlite3"
+    database.touch()
+    database_stat = database.stat()
+    gate = AuthorityGate.for_database(database)
+    mutation_entered = threading.Event()
+    release_mutation = threading.Event()
+    bind_done = threading.Event()
+    bound = threading.Event()
+    errors: list[BaseException] = []
+    original = H1RegistrationCustody._durable_replace
+
+    def pause_replace(self: H1RegistrationCustody, replacement: bytes) -> None:
+        mutation_entered.set()
+        assert release_mutation.wait(timeout=1)
+        original(self, replacement)
+
+    def mutate() -> None:
+        try:
+            _replace(custody, binding, raw)
+        except BaseException as error:
+            errors.append(error)
+
+    def bind() -> None:
+        try:
+            custody.bind_authority_gate(
+                gate, database, (database_stat.st_dev, database_stat.st_ino)
+            )
+            bound.set()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            bind_done.set()
+
+    monkeypatch.setattr(H1RegistrationCustody, "_durable_replace", pause_replace)
+    mutation = threading.Thread(target=mutate)
+    binder = threading.Thread(target=bind)
+    try:
+        mutation.start()
+        assert mutation_entered.wait(timeout=1)
+        binder.start()
+        assert not bind_done.wait(timeout=0.1)
+        with pytest.raises(H1RegistrationCustodyError, match="transition"):
+            _replace(custody, binding, raw)
+        with pytest.raises(H1RegistrationCustodyError, match="transition"):
+            custody.close()
+        release_mutation.set()
+        mutation.join(timeout=1)
+        binder.join(timeout=1)
+        assert not mutation.is_alive()
+        assert not binder.is_alive()
+        assert errors == []
+        assert custody.select("tenant-a", "principal-a", "channel-a").generation == 1
+        with gate.hold():
+            assert custody.select("tenant-a", "principal-a", "channel-a").generation == 1
+    finally:
+        release_mutation.set()
+        mutation.join(timeout=1)
+        binder.join(timeout=1)
+        if bound.is_set():
+            custody.unbind_authority_gate(gate)
+        custody.close()
+
+
+def test_close_denies_bound_gate_and_preserves_pair_lock_until_unbound(tmp_path: Path) -> None:
+    custody, _, _ = _mounted(tmp_path)
+    gate = _bind(custody, tmp_path)
+    try:
+        with pytest.raises(H1RegistrationCustodyError, match="authority gate is bound"):
+            custody.close()
+        with pytest.raises(H1RegistrationCustodyError, match="locked"):
+            H1RegistrationCustody.mount(_trusted_launcher_binding_for_canonical_runtime(
+                os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY), _DEPLOYMENT, _DATABASE, _GENESIS
+            ))
+        custody.unbind_authority_gate(gate)
+        custody.close()
+        reopened = H1RegistrationCustody.mount(_trusted_launcher_binding_for_canonical_runtime(
+            os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY), _DEPLOYMENT, _DATABASE, _GENESIS
+        ))
+        reopened.close()
+    finally:
+        if custody._lock_fd >= 0:
+            custody.unbind_authority_gate(gate)
+            custody.close()

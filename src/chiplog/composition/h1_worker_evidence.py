@@ -20,6 +20,10 @@ from chiplog.composition.h1_native_member_sources import (
     H1CurrentNativeMemberSourceCut,
     H1NativeMemberSources,
 )
+from chiplog.composition.h1_preseal_native_source import (
+    H1PresealNativeSource,
+    H1PresealNativeSourceCut,
+)
 from chiplog.composition.r7_supervisor import R7RuntimeSupervisor
 from chiplog.platform.broker import BrokerSession
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
@@ -161,6 +165,36 @@ class _H1InstalledWorkerEvidenceOwner:
             self._issued.clear()
             self._closed = True
 
+    def _preseal_worker(
+        self, native_source: H1PresealNativeSource, native_cut: H1PresealNativeSourceCut
+    ) -> dict[str, object]:
+        """Return a live E worker residual for an issuer-owned preseal native cut.
+
+        This deliberately does not accept a Run, session, fence, or worker DTO:
+        those values are reread from the installed route under the shared gate.
+        """
+        if type(native_source) is not H1PresealNativeSource:
+            raise TypeError("H1 preseal worker requires the installed native source owner")
+        if type(native_cut) is not H1PresealNativeSourceCut:
+            raise TypeError("H1 preseal worker requires an issuer-owned native source cut")
+        if (
+            native_source._runtime is not self._runtime
+            or getattr(self._runtime, "_h1_preseal_native_source", None) is not native_source
+        ):
+            raise ValueError("H1 preseal native source belongs to another installed runtime")
+        if getattr(self._runtime, "_h1_installed_worker_evidence_owner", None) is not self:
+            raise ValueError("H1 preseal worker owner is not the installed owner")
+        with self._gate.hold():
+            verified = self._current_preseal_issued(native_source, native_cut)
+            return {
+                "runtime_instance_id": verified.runtime_instance_id,
+                "owner_route_generation": verified.owner_route_generation,
+                "worker_session_id": verified.worker_session_id,
+                "owner_id": "agent_loop",
+                "run_head": verified.run.head,
+                "fence_kind": "NON_SCHEDULER",
+            }
+
     def _current_issued(self, native_cap: H1CurrentNativeMemberSourceCut) -> _IssuedWorkerSource:
         if self._closed or os.getpid() != self._pid:
             raise ValueError("H1 worker evidence owner is closed or belongs to another process")
@@ -213,6 +247,60 @@ class _H1InstalledWorkerEvidenceOwner:
                 owner_route_generation=session.generation_id,
                 runtime_instance_id=self._lifetime_id,
             ),
+        )
+
+    def _current_preseal_issued(
+        self, native_source: H1PresealNativeSource, native_cut: H1PresealNativeSourceCut
+    ) -> _H1VerifiedWorkerCut:
+        """Replay installed worker identity against the genuine captured preseal Run."""
+        if self._closed or os.getpid() != self._pid:
+            raise ValueError("H1 worker evidence owner is closed or belongs to another process")
+        self._gate.require_held()
+        self._launch.assert_current()
+        self._mount.assert_current()
+        if (
+            self._runtime._supervisor is not self._supervisor
+            or self._supervisor._authority_gate is not self._gate
+            or self._mount.authority_gate is not self._gate
+            or self._native_sources._runtime is not self._runtime
+            or self._native_sources._first_path._gate is not self._gate
+            or native_source._runtime is not self._runtime
+            or getattr(self._runtime, "_h1_preseal_native_source", None) is not native_source
+        ):
+            raise ValueError("H1 preseal worker installation is no longer canonical")
+        # The native source's identity registry and replay establish both the
+        # selected V3 Prepare/captured Run lineage and owner-currentness.
+        native_source.replay(native_cut)
+        run = native_cut._preflight.captured_run
+        engine = self._supervisor.runtime()
+        if self._runtime._supervisor is not self._supervisor:
+            raise ValueError("H1 worker runtime supervisor changed")
+        session = engine.session("agent_loop")
+        worker_session_id = f"{session.broker_epoch}:{session.generation_id}:{session.session_id}"
+        if (
+            session.owner_id != "agent_loop"
+            or session.tenant_id != run.tenant
+            or self._launch._slot.tenant_id != run.tenant
+            or self._mount.tenant_id != run.tenant
+            or run.worker_session != worker_session_id
+            or native_cut._preflight.worker_session != worker_session_id
+        ):
+            raise ValueError("H1 preseal worker session differs from selected prepared Run")
+        return _H1VerifiedWorkerCut(
+            run=run,
+            fence=NonSchedulerFence(
+                lineage=NotApplicable(),
+                physical_root=NotApplicable(),
+                lease=NotApplicable(),
+                clock_proof=NotApplicable(),
+                run_id=run.run_id,
+                run_head=run.head,
+                worker_session_id=worker_session_id,
+                runtime_generation=session.generation_id,
+            ),
+            worker_session_id=worker_session_id,
+            owner_route_generation=session.generation_id,
+            runtime_instance_id=self._lifetime_id,
         )
 
 

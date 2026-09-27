@@ -71,7 +71,11 @@ from chiplog.composition.h1_preissuance_registration import (
     _issue_verified_original_for_authenticated_port,
     _selection_state,
 )
-from chiplog.composition.h1_preseal_contracts import H1SelectedPrepare
+from chiplog.composition.h1_preseal_contracts import H1SelectedPrepare, H1V2SealPreflight
+from chiplog.composition.h1_preseal_native_source import (
+    H1PresealNativeSource,
+    H1PresealNativeSourceCut,
+)
 from chiplog.composition.h1_selected_output_sources import (
     H1SelectedOutputCapture,
     H1SelectedOutputSources,
@@ -172,6 +176,60 @@ class _AcceptedH1CompletionScopeProjection:
     custody_entry_generation: int
     custody_entry_digest: str
     source_signature_digest: str
+
+
+class _AcceptedH1PresealScopeCapability:
+    """P-owned, process-local facts captured before a V2 response seal.
+
+    It is deliberately only a source capability.  In particular it does not
+    grant a caller a remote-CURRENT lease or a DECIDED admission.
+    """
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        raise TypeError("H1 preseal scope capabilities are issued only by the P owner")
+
+    def __copy__(self) -> Never:
+        raise TypeError("H1 preseal scope capabilities cannot be copied")
+
+    def __deepcopy__(self, memo: object) -> Never:
+        del memo
+        raise TypeError("H1 preseal scope capabilities cannot be copied")
+
+    def __reduce__(self) -> Never:
+        raise TypeError("H1 preseal scope capabilities cannot be serialized")
+
+
+@dataclass(frozen=True, slots=True)
+class _AcceptedH1PresealScopeProjection:
+    """Inert P facts; final DECIDED eligibility needs the outer gate replay."""
+
+    scope: HermeticOutputScopeV1
+    recipient: ProviderRecipient
+    policy_bytes: bytes
+    scope_ref: ExactHead
+    scope_bytes: bytes
+    policy_ref: ExactHead
+    custody_entry_generation: int
+    custody_entry_digest: str
+    source_signature_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PresealScopeCut:
+    capability: _AcceptedH1PresealScopeCapability
+    native: H1PresealNativeSourceCut
+    preflight: H1V2SealPreflight
+    selection: H1PreissuanceSelection
+    cut: _SelectionCut
+    scope: HermeticOutputScopeV1
+    current: CurrentHermeticExecutionScopeV1
+    trust: HermeticTrustObservationV1
+    source: H1SelectedOutputCapture
+    custody_digest: str
+    custody_generation: int
+    current_wire: _H1ScopeWire
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,6 +404,7 @@ class _H1RuntimePreissuancePort:
         "_gate",
         "_launch",
         "_originals",
+        "_preseal_scopes",
         "_preterminal_clearances",
         "_preterminal_proofs",
         "_reopened",
@@ -393,6 +452,9 @@ class _H1RuntimePreissuancePort:
         ] = {}
         self._preterminal_proofs: dict[int, _IssuedPreterminalCompletionProof] = {}
         self._final_completion_fences: dict[int, _IssuedFinalCompletionFence] = {}
+        self._preseal_scopes: dict[
+            int, tuple[_AcceptedH1PresealScopeCapability, _PresealScopeCut]
+        ] = {}
         self._reopened: dict[
             int, tuple[H1PreissuanceSelection, H1VerifiedOriginalWorkspaceIssuance]
         ] = {}
@@ -1148,6 +1210,308 @@ class _H1RuntimePreissuancePort:
         except H1PreissuanceSourceViolation, LoopRejected, ValueError:
             return False
 
+    def _selected_scope_join(
+        self, cut: _SelectionCut
+    ) -> tuple[HermeticOutputScopeV1, H1SelectedOutputCapture, str, int]:
+        """Reopen the P/custody/policy join shared by preseal and completion."""
+        self._assert_launch_and_trust()
+        scope = self._reopen_scope(cut.issued, cut.prepared)
+        selected = H1SelectedOutputSources(self._runtime).capture_selected_current(
+            cut.prepared.source.verified.selected_resource_observation_ref,
+            cut.prepared.source.verified.admitted_authentication_ref,
+            cut.prepared.source.verified.authenticated_cli_ref,
+        )
+        entry = self._custody.select(cut.prepared.run.tenant, cut.prepared.run.principal, _CHANNEL)
+        policy = cut.workspace_policy
+        try:
+            accepted_policy = HermeticOutputPolicyV1.model_validate_json(
+                scope.disclosure_policy.canonical_source_bytes
+            )
+        except ValueError:
+            raise H1PreissuanceSourceViolation("H1 selected scope policy is malformed") from None
+        if (
+            selected is None
+            or selected != cut.prepared.source
+            or scope != cut.scope
+            or policy is None
+            or policy.registration.custody_entry_digest
+            != hashlib.sha256(entry.canonical_bytes()).hexdigest()
+            or policy.registration.generation != entry.generation
+            or policy.registration.accepted_policy != scope.disclosure_policy.ref
+            or policy.registration.accepted_policy_bytes_base64
+            != base64.b64encode(scope.disclosure_policy.canonical_source_bytes).decode("ascii")
+            or accepted_policy.endpoint_ref != scope.recipient.endpoint
+            or scope.recipient != selected.verified.recipient
+        ):
+            raise H1PreissuanceSourceViolation("H1 selected scope source join differs")
+        return scope, selected, hashlib.sha256(self._custody._raw).hexdigest(), entry.generation
+
+    def _preseal_native_owner(self) -> H1PresealNativeSource:
+        owner = getattr(self._runtime, "_h1_preseal_native_source", None)
+        if type(owner) is not H1PresealNativeSource or owner._runtime is not self._runtime:
+            raise H1PreissuanceSourceViolation("H1 preseal native source is not mounted")
+        return owner
+
+    def _preseal_scope_snapshot(
+        self, native_cut: object, preflight: object | None = None
+    ) -> tuple[
+        H1PreissuanceSelection,
+        _SelectionCut,
+        HermeticOutputScopeV1,
+        H1SelectedOutputCapture,
+        str,
+        int,
+    ]:
+        """Reopen one exact existing P selection for a native preseal cut."""
+        self._gate.require_held()
+        if type(native_cut) is not H1PresealNativeSourceCut:
+            raise H1PreissuanceSourceViolation("H1 preseal scope requires native capability")
+        native = self._preseal_native_owner()
+        native.replay(native_cut)
+        selected = native_cut._preflight.prepare
+        if preflight is not None and native_cut._preflight is not preflight:
+            raise H1PreissuanceSourceViolation("H1 preseal native preflight differs")
+        matches = [
+            (selection, cut)
+            for selection, cut in self._cuts.values()
+            if cut.prepared.run == selected.started_run and cut.workspace_policy is not None
+        ]
+        if len(matches) != 1:
+            raise H1PreissuanceSourceViolation("H1 preseal selected P cut is absent or ambiguous")
+        selection, cut = matches[0]
+        if self._cut(selection) is not cut:
+            raise H1PreissuanceSourceViolation("H1 preseal selected P cut is foreign")
+        # This validates the complete V3 retained/physical/workspace provenance,
+        # rather than treating the shared started Run as a sufficient key.
+        self._verify_selected_original(selection, cut, selected)
+        scope, source, custody_digest, custody_generation = self._selected_scope_join(cut)
+        return selection, cut, scope, source, custody_digest, custody_generation
+
+    @staticmethod
+    def _validate_preseal_issue_wire(cut: _SelectionCut, scope: HermeticOutputScopeV1) -> None:
+        wire = cut.scope_issue_wire
+        if type(wire) is not _H1ScopeWire:
+            raise H1PreissuanceSourceViolation("H1 preseal issue owner wire is absent")
+        call, result = wire.sent, wire.returned
+        if (
+            type(result) is not PublicPortSuccess
+            or result.request_id != call.request_id
+            or result.responder != call.callee
+            or result.schema_id != "chiplog.deployment-trust.issue-hermetic-output-scope-result.v1"
+        ):
+            raise H1PreissuanceSourceViolation("H1 preseal issue owner wire differs")
+        try:
+            outer = decode_trust_owner_call_canonical(call.canonical_payload)
+            owner_call = H1OwnerCandidateCallV1.model_validate_json(outer.request_bytes)
+            candidate = H1OwnerCandidateV1.model_validate_json(result.canonical_payload)
+            candidate.check_pinned_call(owner_call)
+        except ValueError:
+            raise H1PreissuanceSourceViolation("H1 preseal issue owner wire is malformed") from None
+        if (
+            outer.canonical_bytes() != call.canonical_payload
+            or outer.mode != "ISSUE_HERMETIC_OUTPUT_SCOPE_V1"
+            or owner_call.canonical_bytes() != outer.request_bytes
+            or candidate.canonical_bytes() != result.canonical_payload
+            or candidate.scope != scope
+        ):
+            raise H1PreissuanceSourceViolation("H1 preseal issue owner wire differs")
+
+    @staticmethod
+    def _validate_preseal_current_wire(
+        cut: _SelectionCut,
+        current: object,
+        wire: object,
+    ) -> None:
+        if type(wire) is not _H1ScopeWire or type(current) is not CurrentHermeticExecutionScopeV1:
+            raise H1PreissuanceSourceViolation("H1 preseal current owner wire is absent")
+        call, result = wire.sent, wire.returned
+        if (
+            type(result) is not PublicPortSuccess
+            or result.request_id != call.request_id
+            or result.responder != call.callee
+            or result.schema_id
+            != "chiplog.deployment-trust.current-hermetic-output-scope-result.v1"
+        ):
+            raise H1PreissuanceSourceViolation("H1 preseal current owner wire differs")
+        try:
+            outer = decode_trust_owner_call_canonical(call.canonical_payload)
+            owner_call = H1OwnerCurrentCallV1.model_validate_json(outer.request_bytes)
+            candidate = H1OwnerCurrentCandidateV1.model_validate_json(result.canonical_payload)
+            request = ReadCurrentHermeticExecutionScopeV1.model_validate_json(
+                owner_call.read_request_bytes
+            )
+            candidate.check_pinned_call(owner_call)
+        except ValueError:
+            raise H1PreissuanceSourceViolation(
+                "H1 preseal current owner wire is malformed"
+            ) from None
+        if (
+            outer.canonical_bytes() != call.canonical_payload
+            or outer.mode != "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1"
+            or owner_call.canonical_bytes() != outer.request_bytes
+            or request.canonical_bytes() != owner_call.read_request_bytes
+            or candidate.canonical_bytes() != result.canonical_payload
+            or candidate.current != current
+            or request.source_anchor != cut.issued.anchor
+            or request.expected_scope_ref != cut.issued.scope_head
+        ):
+            raise H1PreissuanceSourceViolation("H1 preseal current owner wire differs")
+
+    async def _capture_preseal_p_residual(
+        self, native: object
+    ) -> _AcceptedH1PresealScopeCapability:
+        """Capture P facts from an installed native preseal source without issuing scope."""
+        if type(native) is not H1PresealNativeSourceCut:
+            raise H1PreissuanceSourceViolation("H1 preseal scope requires native capability")
+        preflight = native._preflight
+        with self._gate.hold():
+            before = self._preseal_scope_snapshot(native, preflight)
+            cut, scope, source = before[1], before[2], before[3]
+            trust = self._trust_observation()
+            read = ReadCurrentHermeticExecutionScopeV1(
+                expected_trust_observation=trust,
+                source_anchor=cut.issued.anchor,
+                expected_revision=cut.issued.revision,
+                admitted_authentication_ref=scope.admitted_authentication,
+                authenticated_cli_ref=source.verified.authenticated_cli_ref,
+                tenant_id=cut.prepared.run.tenant,
+                database_id=scope.database_id,
+                scope_id=scope.scope_id,
+                expected_scope_ref=cut.issued.scope_head,
+                expected_worker_session_id=cut.prepared.run.worker_session,
+                selected_resource_observation_ref=scope.selected_resource_observation_ref,
+            )
+        current, current_wire = await self._runtime._read_current_hermetic_output_scope_with_wire(
+            read
+        )
+        if type(current) is not CurrentHermeticExecutionScopeV1:
+            raise H1PreissuanceSourceViolation(
+                "H1 preseal scope owner did not confirm current scope"
+            )
+        with self._gate.hold():
+            self._validate_preseal_issue_wire(cut, scope)
+            self._validate_preseal_current_wire(cut, current, current_wire)
+            after = self._preseal_scope_snapshot(native, preflight)
+            if (
+                after != before
+                or self._trust_observation() != trust
+                or current.scope_ref != cut.issued.scope_head
+                or current.source_anchor != cut.issued.anchor
+                or current.ordered_current_source_refs
+                != (
+                    scope.admitted_authentication,
+                    cut.issued.anchor.decision,
+                    cut.issued.anchor.record,
+                )
+            ):
+                raise H1PreissuanceSourceViolation("H1 preseal scope changed during owner read")
+            capability = object.__new__(_AcceptedH1PresealScopeCapability)
+            self._preseal_scopes[id(capability)] = (
+                capability,
+                _PresealScopeCut(
+                    capability,
+                    native,
+                    preflight,
+                    before[0],
+                    cut,
+                    scope,
+                    current,
+                    trust,
+                    source,
+                    before[4],
+                    before[5],
+                    current_wire,
+                ),
+            )
+            return capability
+
+    def _replay_preseal_scope(
+        self, scope_cap: object, native_cut: object
+    ) -> _AcceptedH1PresealScopeProjection:
+        """Recheck P/native facts under the caller-held gate; no new owner IPC occurs."""
+        self._gate.require_held()
+        issued = self._preseal_scopes.get(id(scope_cap))
+        if (
+            type(scope_cap) is not _AcceptedH1PresealScopeCapability
+            or issued is None
+            or issued[0] is not scope_cap
+            or native_cut is not issued[1].native
+        ):
+            raise H1PreissuanceSourceViolation(
+                "H1 preseal scope capability/native identity differs"
+            )
+        captured = issued[1]
+        self._validate_preseal_issue_wire(captured.cut, captured.scope)
+        self._validate_preseal_current_wire(captured.cut, captured.current, captured.current_wire)
+        returned = captured.current_wire.returned
+        if type(returned) is not PublicPortSuccess:
+            raise H1PreissuanceSourceViolation("H1 preseal current owner response differs")
+        try:
+            outer = decode_trust_owner_call_canonical(captured.current_wire.sent.canonical_payload)
+            call = H1OwnerCurrentCallV1.model_validate_json(outer.request_bytes)
+            candidate = H1OwnerCurrentCandidateV1.model_validate_json(returned.canonical_payload)
+            replayed_current = self._runtime._replay_current_hermetic_output_scope_held(
+                ReadCurrentHermeticExecutionScopeV1.model_validate_json(call.read_request_bytes),
+                candidate,
+                callee=captured.current_wire.sent.callee,
+            )
+        except (AttributeError, LoopRejected, ValueError) as error:
+            raise H1PreissuanceSourceViolation(
+                "H1 preseal current replay is unavailable"
+            ) from error
+        now = self._preseal_scope_snapshot(native_cut, captured.preflight)
+        if (
+            now
+            != (
+                captured.selection,
+                captured.cut,
+                captured.scope,
+                captured.source,
+                captured.custody_digest,
+                captured.custody_generation,
+            )
+            or self._trust_observation() != captured.trust
+            or replayed_current != captured.current
+        ):
+            raise H1PreissuanceSourceViolation("H1 preseal scope continuity is stale")
+        entry = self._custody.select(
+            captured.cut.prepared.run.tenant, captured.cut.prepared.run.principal, _CHANNEL
+        )
+        return _AcceptedH1PresealScopeProjection(
+            scope=captured.scope,
+            recipient=captured.source.verified.recipient,
+            policy_bytes=captured.scope.disclosure_policy.canonical_source_bytes,
+            scope_ref=captured.cut.issued.scope_head,
+            scope_bytes=captured.scope.canonical_bytes(),
+            policy_ref=captured.scope.disclosure_policy.ref,
+            custody_entry_generation=entry.generation,
+            custody_entry_digest=hashlib.sha256(entry.canonical_bytes()).hexdigest(),
+            source_signature_digest=(
+                captured.source.verified.selected_resource_observation_ref.signed_observation_fingerprint
+            ),
+        )
+
+    def _replay_preseal_scope_wires(
+        self, scope_cap: object, native_cut: object
+    ) -> tuple[_H1ScopeWire, _H1ScopeWire]:
+        """Expose P-retained ISSUE/CURRENT exchanges only after the full replay."""
+        self._gate.require_held()
+        issued = self._preseal_scopes.get(id(scope_cap))
+        if (
+            type(scope_cap) is not _AcceptedH1PresealScopeCapability
+            or issued is None
+            or issued[0] is not scope_cap
+            or native_cut is not issued[1].native
+        ):
+            raise H1PreissuanceSourceViolation(
+                "H1 preseal scope wire capability/native identity differs"
+            )
+        self._replay_preseal_scope(scope_cap, native_cut)
+        issue_wire = issued[1].cut.scope_issue_wire
+        if type(issue_wire) is not _H1ScopeWire:
+            raise H1PreissuanceSourceViolation("H1 preseal scope issue wire is absent")
+        return issue_wire, issued[1].current_wire
+
     def _completion_scope_snapshot(
         self,
         first_path_capture: object,
@@ -1203,37 +1567,9 @@ class _H1RuntimePreissuancePort:
             or native.source.complete_ordered_run_lineage[-1] != post_seal.sealed_run
         ):
             raise H1PreissuanceSourceViolation("H1 completion scope native/original cut differs")
-        scope = self._reopen_scope(original.cut.issued, original.cut.prepared)
-        selected = H1SelectedOutputSources(self._runtime).capture_selected_current(
-            original.cut.prepared.source.verified.selected_resource_observation_ref,
-            original.cut.prepared.source.verified.admitted_authentication_ref,
-            original.cut.prepared.source.verified.authenticated_cli_ref,
+        scope, selected, custody_digest, custody_generation = self._selected_scope_join(
+            original.cut
         )
-        entry = self._custody.select(
-            original.cut.prepared.run.tenant, original.cut.prepared.run.principal, _CHANNEL
-        )
-        policy = original.cut.workspace_policy
-        try:
-            accepted_policy = HermeticOutputPolicyV1.model_validate_json(
-                scope.disclosure_policy.canonical_source_bytes
-            )
-        except ValueError:
-            raise H1PreissuanceSourceViolation("H1 completion scope policy is malformed") from None
-        if (
-            selected is None
-            or selected != original.cut.prepared.source
-            or scope != original.cut.scope
-            or policy is None
-            or policy.registration.custody_entry_digest
-            != hashlib.sha256(entry.canonical_bytes()).hexdigest()
-            or policy.registration.generation != entry.generation
-            or policy.registration.accepted_policy != scope.disclosure_policy.ref
-            or policy.registration.accepted_policy_bytes_base64
-            != base64.b64encode(scope.disclosure_policy.canonical_source_bytes).decode("ascii")
-            or accepted_policy.endpoint_ref != scope.recipient.endpoint
-            or scope.recipient != selected.verified.recipient
-        ):
-            raise H1PreissuanceSourceViolation("H1 completion scope source join differs")
         return (
             first_path_capture,
             native_cut,
@@ -1241,8 +1577,8 @@ class _H1RuntimePreissuancePort:
             original,
             scope,
             selected,
-            hashlib.sha256(self._custody._raw).hexdigest(),
-            entry.generation,
+            custody_digest,
+            custody_generation,
         )
 
     async def _capture_completion_scope(

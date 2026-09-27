@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from threading import RLock
 
 from chiplog.capabilities.agent_loop.contracts import DisclosureLabel, VisibilityMember
 from chiplog.capabilities.agent_loop.execution_contracts import (
@@ -61,12 +62,15 @@ class H1PresealNativeSource:
         if type(runtime) is not CommonCliExecutionRuntime:
             raise TypeError("preseal native source requires the canonical common CLI runtime")
         self._runtime = runtime
+        self._closed = False
         self._issued: dict[int, H1PresealNativeSourceCut] = {}
+        self._lock = RLock()
 
     def capture(self, preflight: H1V2SealPreflight) -> H1PresealNativeSourceCut:
         """Capture exact V3-native facts from a live, runtime-issued preflight only."""
-        self._require_preflight(preflight)
-        with self._runtime._authority_gate().hold():
+        with self._runtime._authority_gate().hold(), self._lock:
+            self._require_open()
+            self._require_preflight(preflight)
             fresh = _read_preflight(self._runtime, preflight.captured_run)
             if fresh != preflight:
                 raise ValueError("H1 preseal native source is not current")
@@ -76,14 +80,29 @@ class H1PresealNativeSource:
 
     def replay(self, cut: H1PresealNativeSourceCut) -> tuple[H1PresealNativeOccurrence, ...]:
         """Recheck the exact pre-seal sources before exposing their ordered facts."""
-        if type(cut) is not H1PresealNativeSourceCut or self._issued.get(id(cut)) is not cut:
-            raise ValueError("H1 preseal native source cut is not issuer-owned")
-        self._require_preflight(cut._preflight)
-        with self._runtime._authority_gate().hold():
+        with self._runtime._authority_gate().hold(), self._lock:
+            self._require_open()
+            if type(cut) is not H1PresealNativeSourceCut or self._issued.get(id(cut)) is not cut:
+                raise ValueError("H1 preseal native source cut is not issuer-owned")
+            self._require_preflight(cut._preflight)
             fresh = _read_preflight(self._runtime, cut._preflight.captured_run)
             if fresh != cut._preflight or _occurrences(fresh) != cut._occurrences:
                 raise ValueError("H1 preseal native source cut is no longer current")
-        return cut._occurrences
+            return cut._occurrences
+
+    def revoke(self) -> None:
+        """Permanently burn every private capability issued by this source."""
+        with self._runtime._authority_gate().hold(), self._lock:
+            self._closed = True
+            self._issued.clear()
+
+    def close(self) -> None:
+        """Release this issuer's private capabilities; safe to call repeatedly."""
+        self.revoke()
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise ValueError("H1 preseal native source is closed and revoked")
 
     def _require_preflight(self, preflight: H1V2SealPreflight) -> None:
         if type(preflight) is not H1V2SealPreflight:

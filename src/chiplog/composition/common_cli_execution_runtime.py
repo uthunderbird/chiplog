@@ -1608,6 +1608,12 @@ async def open_installed_h1_runtime(
                 runtime._execution_model = model
                 model.session = runtime
                 launch.assert_current()
+                from chiplog.composition.h1_preseal_native_source import H1PresealNativeSource
+
+                if getattr(runtime, "_h1_preseal_native_source", None) is not None:
+                    raise RuntimeError("installed H1 preseal native source is already mounted")
+                preseal_native_source = H1PresealNativeSource(runtime)
+                runtime._h1_preseal_native_source = preseal_native_source  # type: ignore[attr-defined]
                 port = _H1RuntimePreissuancePort(runtime, launch)
                 if getattr(runtime, "_h1_preissuance_registration_source_port", None) is not None:
                     raise RuntimeError("installed H1 runtime port is already mounted")
@@ -1740,6 +1746,8 @@ async def open_installed_h1_runtime(
                         if hasattr(runtime, name):
                             delattr(runtime, name)
                     del runtime._h1_preissuance_registration_source_port
+                    preseal_native_source.revoke()
+                    delattr(runtime, "_h1_preseal_native_source")
                     revoke_and_unbind_live_authority()
                     for name in (
                         "_h1_live_publication_coordinator",
@@ -1763,6 +1771,10 @@ async def open_installed_h1_runtime(
                     del runtime._h1_postseal_recovery_journal
                 if hasattr(runtime, "_h1_recovery_mount"):
                     del runtime._h1_recovery_mount
+                retained_preseal_native_source = getattr(runtime, "_h1_preseal_native_source", None)
+                if retained_preseal_native_source is not None:
+                    retained_preseal_native_source.revoke()
+                    delattr(runtime, "_h1_preseal_native_source")
             for opened in recovery_journal:
                 opened.close()
             for mounted_recovery in recovery_mount:

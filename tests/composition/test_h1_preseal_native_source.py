@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -30,6 +32,48 @@ def _resources(tmp_path: Path) -> HermeticDispatchResources:
     return HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
     )
+
+
+class _OrderedGate:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    @contextmanager
+    def hold(self) -> Iterator[None]:
+        self._events.append("gate")
+        yield
+
+
+class _OrderedLock:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def __enter__(self) -> None:
+        self._events.append("source")
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+def test_preseal_source_always_enters_authority_gate_before_issuer_lock() -> None:
+    """P's gate-held replay cannot invert against source lifecycle operations."""
+    from chiplog.composition.h1_preseal_native_source import H1PresealNativeSource
+
+    events: list[str] = []
+    issuer = object.__new__(H1PresealNativeSource)
+    fake_runtime = type("Runtime", (), {"_authority_gate": lambda _self: _OrderedGate(events)})()
+    cast(Any, issuer)._runtime = fake_runtime
+    cast(Any, issuer)._lock = _OrderedLock(events)
+    cast(Any, issuer)._closed = False
+    cast(Any, issuer)._issued = {}
+
+    with pytest.raises(ValueError, match="issuer-owned"):
+        issuer.replay(cast(Any, object()))
+    assert events == ["gate", "source"]
+
+    events.clear()
+    issuer.revoke()
+    assert events == ["gate", "source"]
 
 
 async def _genuine_preflight(runtime: CommonCliExecutionRuntime) -> H1V2SealPreflight:
@@ -154,3 +198,33 @@ async def test_preseal_source_rejects_a_genuine_preflight_from_another_installed
                 ) as second:
                     with pytest.raises(ValueError, match="runtime-issued"):
                         H1PresealNativeSource(second).capture(preflight)
+
+
+@pytest.mark.asyncio
+async def test_preseal_source_revocation_burns_retained_capability_across_restart(
+    tmp_path: Path,
+) -> None:
+    """A retained source/cut cannot survive issuer revocation or an installed restart."""
+    from chiplog.composition.h1_preseal_native_source import H1PresealNativeSource
+
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
+            preflight = await _genuine_preflight(runtime)
+            issuer = H1PresealNativeSource(runtime)
+            cut = issuer.capture(preflight)
+
+            issuer.revoke()
+            issuer.revoke()
+            issuer.close()
+            issuer.close()
+            with pytest.raises(ValueError, match="closed and revoked"):
+                issuer.capture(preflight)
+            with pytest.raises(ValueError, match="closed and revoked"):
+                issuer.replay(cut)
+
+    with _open_installed_h1_launch(slot) as restarted_launch:
+        async with open_installed_h1_runtime(restarted_launch, resources=_resources(tmp_path)):
+            with pytest.raises(ValueError, match="closed and revoked"):
+                issuer.replay(cut)

@@ -26,6 +26,10 @@ from chiplog.composition.h1_native_member_sources import (
     H1NativeMemberSources,
 )
 from chiplog.composition.h1_preissuance_registration import H1PreissuanceSourceViolation
+from chiplog.composition.h1_preseal_native_source import (
+    H1PresealNativeSource,
+    H1PresealNativeSourceCut,
+)
 from chiplog.composition.h1_runtime_preissuance_port import (
     _AcceptedH1CompletionScopeProjection,
     _H1RuntimePreissuancePort,
@@ -198,6 +202,110 @@ class H1PreRequestMemberEvidence:
             self._receipts.clear()
             self._closed = True
             self._journal._unbind_private_member_issuer(self)
+
+    def _preseal_members(
+        self,
+        native_source: H1PresealNativeSource,
+        native_cut: H1PresealNativeSourceCut,
+        scope_cap: object,
+    ) -> tuple[dict[str, object], ...]:
+        """Project the E residuals before a response seal or E append exists.
+
+        ``scope_cap`` remains opaque here.  The installed P owner must replay it
+        against this exact native cut; accepting an endpoint or policy DTO at
+        this seam would manufacture P authority from caller data.
+        """
+        if type(native_source) is not H1PresealNativeSource:
+            raise TypeError("H1 preseal members require the installed native source owner")
+        if type(native_cut) is not H1PresealNativeSourceCut:
+            raise TypeError("H1 preseal members require an issuer-owned native source cut")
+        if (
+            native_source._runtime is not self._port._runtime
+            or getattr(self._port._runtime, "_h1_preseal_native_source", None) is not native_source
+        ):
+            raise ValueError("H1 preseal native source belongs to another installed runtime")
+        if getattr(self._port._runtime, "_h1_pre_request_member_evidence", None) is not self:
+            raise ValueError("H1 preseal member owner is not the installed owner")
+        replay_scope = getattr(self._port, "_replay_preseal_scope", None)
+        if not callable(replay_scope):
+            raise ValueError("H1 preseal P owner capability is unavailable")
+
+        with self._gate.hold():
+            self._require_open()
+            occurrences = native_source.replay(native_cut)
+            # This call is deliberately the only source of the endpoint.  Its
+            # private P implementation authenticates the exact owner-issued cap.
+            scope = replay_scope(scope_cap, native_cut)
+            endpoint = scope.recipient.endpoint.identity
+            if not isinstance(endpoint, str) or not endpoint:
+                raise ValueError("H1 preseal P scope has no authenticated endpoint")
+            preflight = native_cut._preflight
+            prepare = preflight.prepare
+            artifact_digest = preflight.captured_run.turns[0].attempts[0].manifest.artifact.digest()
+            prepare_digest = hashlib.sha256(prepare.decision_bytes).hexdigest()
+            rows: list[dict[str, object]] = []
+            for index, occurrence in enumerate(occurrences):
+                if occurrence.member_index != index:
+                    raise ValueError("H1 preseal member vector is not complete and ordered")
+                label = occurrence.original_label.model_dump(mode="json")
+                if occurrence.original_label.value == "DENY_ALL" or (
+                    occurrence.original_label.value == "ENDPOINT_RESTRICTED"
+                    and endpoint not in occurrence.original_label.allowed_endpoints
+                ):
+                    raise H1PreissuanceSourceViolation(
+                        "H1 preseal native label excludes accepted endpoint"
+                    )
+                if occurrence.source_kind == "WORKSPACE":
+                    locator: dict[str, object] = {
+                        "kind": "WORKSPACE_ISSUANCE",
+                        "entry_id": prepare.issuance_ref.entry_id,
+                        "payload_digest": prepare.issuance_ref.payload_digest,
+                    }
+                    rule = "WORKSPACE_ORIGINAL"
+                elif occurrence.source_kind == "CONTEXT":
+                    locator = {
+                        "kind": "STARTED_RUN",
+                        "run_id": prepare.started_run.run_id,
+                        "run_head": prepare.started_run.head,
+                    }
+                    rule = "CONTEXT_JOIN"
+                elif occurrence.source_kind in {"PROMPT", "SCHEMA"}:
+                    locator = {
+                        "kind": "PREPARE_ARTIFACT",
+                        "prepare_entry_id": prepare.decision_id,
+                        "prepare_payload_digest": prepare_digest,
+                        "artifact_digest": artifact_digest,
+                    }
+                    rule = "PROMPT_JOIN" if occurrence.source_kind == "PROMPT" else "SCHEMA_PUBLIC"
+                else:
+                    raise ValueError("H1 preseal member source kind is unknown")
+                rows.append(
+                    {
+                        "member_index": occurrence.member_index,
+                        "member_digest": occurrence.member_digest,
+                        "provenance": {
+                            "original_head": occurrence.provenance_head,
+                            "source_kind": occurrence.source_kind,
+                            "source_locator": locator,
+                        },
+                        "disclosure": {
+                            "original_head": occurrence.label_head,
+                            "original_label": label,
+                            "rule": rule,
+                        },
+                        "narrowing": {
+                            "ordinal": 0,
+                            "label": {
+                                "lattice_version": "chiplog.disclosure.v1",
+                                "value": "ENDPOINT_RESTRICTED",
+                                "allowed_endpoints": [endpoint],
+                            },
+                        },
+                    }
+                )
+            if not rows:
+                raise ValueError("H1 preseal member vector is empty")
+            return tuple(rows)
 
     def _issued(self, receipt: H1PreRequestMemberEvidenceReceipt) -> _IssuedMemberReceipt:
         issued = (
