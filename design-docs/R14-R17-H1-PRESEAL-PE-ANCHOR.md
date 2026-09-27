@@ -206,7 +206,7 @@ writes, captures the complete post-image and computes `resulting`, then
 stages and durably verifies the immutable blob before DECIDED append. The
 existing `authority_checkpoint_guard(resulting, exact_bytes)` supplies these
 post-write bytes. The DECIDED writer performs the native/P/E ordered recheck
-and one-use consumption described above and appends both siblings in that
+and one-use consumption described above and appends all required siblings in that
 same entry. SQLite commit and selected-decision completion follow. No IPC or
 gate release is introduced between writer recheck and decision append.
 
@@ -236,6 +236,53 @@ Legacy V2 without `h1_v2_authority_cut_v1` remains unsupported for full-cut
 historical completion reconstruction, even if its native ROOT is readable.
 Malformed, unknown-version or inconsistent present descriptors are integrity
 failures. No migration may manufacture the missing historical post-image.
+
+### Versioned retained P scope exchanges
+
+Later-stage recovery additionally requires the JSON object sibling
+`h1_preseal_p_scope_wires_v1` in that same authenticated DECIDED entry. The
+authority post-image and P/E anchor alone do not retain the historical CURRENT
+request/result: the anchor commits their exchange bytes only by digest.
+Neither the selected scope row nor a fresh CURRENT call may replace them.
+
+The strict descriptor has exactly `kind` = `H1_PRESEAL_P_SCOPE_WIRES_V1`,
+`version` = `1`, `binding`, `issue`, and `current`. `binding` equals the complete
+P/E anchor `binding` object byte-for-byte under canonical encoding, including
+the native seal locator, publication command, tenant, database and genesis
+coordinates. Readers independently join it to the selected native command,
+P/E anchor and authority-cut database binding. The containing decision ID is
+supplied only after journal authentication, never embedded in this descriptor.
+Each of `issue` and `current` has exactly `sent_payload_base64` and
+`returned_payload_base64`: standard padded base64 of the original accepted
+P owner's exact canonical sent and returned payload bytes. Decode strictly,
+require canonical re-encoding and canonical typed payload bytes, and reject
+duplicate or unknown keys.
+
+For each pair, compute `H(C([sent_payload_base64, returned_payload_base64]))`
+using the `C` and `H` definitions above. The results must equal, respectively,
+the anchor's `accepted_issue_wire_digest` and `accepted_current_wire_digest`;
+this is the existing `_wire_digest` encoding, including array order. Decode
+the sent trust-owner wrapper and nested ISSUE/CURRENT request, and its exact
+accepted result; validate mode, pinned route, request/result and scope joins.
+Authenticate the retained trust observation prefix and physical scope
+decision/record, and join the retained origin to the selected native H0/Prepare
+history. A digest match alone is insufficient. No historical payload may be
+represented as a fresh broker exchange or grant a live P capability.
+
+The installed P issuer captures these pairs from its accepted exchanges before
+seal admission; the DECIDED writer rechecks them with P/E under the same gate
+hold and appends all three siblings together. Pending recovery validates and
+preserves the exact descriptor and payload bytes before materialization/replay;
+it never calls CURRENT to replace them or recaptures them after a crash. The
+descriptor adds no physical member: the seal still contains exactly Run, seal
+and frontier. Full transport frames are not retained by this extension.
+
+Missing residual means later-stage historical reconstruction is unsupported,
+even when ROOT and COMPLETION are reconstructible. Present malformed,
+unknown-version, digest-mismatched or inconsistently bound residual is an
+integrity failure. Both cases hold recovery, including its fully durable
+shortcut; existing STAGE_INPUT/RESULT records cannot fill the missing source.
+Later committed publications must not change these historical projections.
 
 An installed historical reader finds the anchor only through the independently
 selected V2 decision. It checks canonical bytes, journal authentication,
@@ -289,3 +336,9 @@ or corrupt blobs, malformed and unknown extension versions, legacy V2 without
 the extension, and pending replay on both sides of SQLite commit. After a
 later unrelated publication, the full historical cut and complete canonical
 COMPLETION input must remain byte-identical. These witnesses remain open.
+
+P-exchange witnesses additionally cover each missing/corrupt/unknown residual,
+wrong pair order, canonical but wrong native/trust joins, exact preservation
+across pending replay, and unchanged CONVERSATION/EFFECTS inputs after later
+conversation publication or scope refresh. They must distinguish retained
+historical evidence from fresh broker exchanges and terminal currentness.

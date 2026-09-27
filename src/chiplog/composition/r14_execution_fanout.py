@@ -44,6 +44,7 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import FanOutBo
 from chiplog.platform.authority_checkpoint import AuthorityCheckpointRefV1, AuthorityCheckpointStore
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 
+from .h1_v2_authority_cut import build_h1_v2_authority_cut
 from .r14_execution_complete_seal_records import (
     CompleteSealProfile,
     ExecutionCompleteSealPhysicalEnvelope,
@@ -352,21 +353,22 @@ async def publish_execution_fanout(
 
     # The P/E receipt is strictly for the installed direct V3 Prepare -> V2
     # seal route.  H1_V3 retains its existing checkpoint-only semantics.
-    h1_v2_pe_route = (
-        h1_v2_pe_capture_route
-        and isinstance(complete_retained, RetainedExecutionCompleteSealV2)
+    h1_v2_pe_route = h1_v2_pe_capture_route and isinstance(
+        complete_retained, RetainedExecutionCompleteSealV2
     )
-    if h1_v2_pe_route and (
-        h1_preseal_pe_owner is None or h1_preseal_pe_capture is None
-    ):
+    if h1_v2_pe_route and (h1_preseal_pe_owner is None or h1_preseal_pe_capture is None):
         raise LoopRejected("H1 V2 P/E preseal capture is unavailable")
+    if h1_v2_pe_route:
+        # This remains a physical V2 seal.  The admitted bundle only retains
+        # its exact authority post-image as an authenticated DECIDED sibling.
+        runtime.activate_checkpoint_bundle()
 
     checkpoint_ref: AuthorityCheckpointRefV1 | None = None
 
     def stage_h1_checkpoint(resulting: str, exact_bytes: bytes) -> None:
         nonlocal checkpoint_ref
-        if not isinstance(complete_retained, RetainedExecutionCompleteSealV3):
-            raise LoopRejected("checkpoint staging was requested for a non-V3 seal")
+        if not (isinstance(complete_retained, RetainedExecutionCompleteSealV3) or h1_v2_pe_route):
+            raise LoopRejected("checkpoint staging was requested for an unqualified seal")
         with runtime._authority_gate().hold():
             store = cast(AuthorityCheckpointStore, runtime._h1_checkpoint_store())
             ref = store.stage_verified(exact_bytes)
@@ -442,10 +444,10 @@ async def publish_execution_fanout(
     def decide(resulting: str) -> None:
         with runtime._authority_gate().hold():
             runtime._require_no_pending()
-            if isinstance(complete_retained, RetainedExecutionCompleteSealV3) and (
-                checkpoint_ref is None or checkpoint_ref.blob_sha256 != resulting
-            ):
-                raise LoopRejected("H1 V3 checkpoint staging is absent or changed")
+            if (
+                isinstance(complete_retained, RetainedExecutionCompleteSealV3) or h1_v2_pe_route
+            ) and (checkpoint_ref is None or checkpoint_ref.blob_sha256 != resulting):
+                raise LoopRejected("H1 authority-cut checkpoint staging is absent or changed")
             if isinstance(
                 complete_retained,
                 (RetainedExecutionCompleteSealV2, RetainedExecutionCompleteSealV3),
@@ -512,11 +514,12 @@ async def publish_execution_fanout(
                 ):
                     raise LoopRejected("H1 V2 P/E preseal capture is unavailable")
                 assert isinstance(complete_retained, RetainedExecutionCompleteSealV2)
+                assert isinstance(envelope, ExecutionCompleteSealPhysicalEnvelopeV2)
                 assert h1_owner_asof is not None
                 assert h1_runtime is not None
                 assert h1_preseal_pe_owner is not None
                 try:
-                    anchor = h1_preseal_pe_owner.recheck_and_bind(
+                    bound_decision = h1_preseal_pe_owner.recheck_and_bind(
                         h1_preseal_pe_capture,
                         h1_preflight,
                         command,
@@ -529,7 +532,18 @@ async def publish_execution_fanout(
 
                 if not recheck_h1_v2_seal(h1_runtime, h1_preflight):
                     raise LoopRejected("H1 V2 preflight is stale at DECIDED")
-                decision["h1_preseal_pe_anchor"] = anchor.canonical_bytes().decode()
+                decision["h1_preseal_pe_anchor"] = bound_decision.anchor.canonical_bytes().decode()
+                decision["h1_preseal_p_scope_wires_v1"] = bound_decision.scope_wires.as_dict()
+                assert checkpoint_ref is not None
+                decision["h1_v2_authority_cut_v1"] = build_h1_v2_authority_cut(
+                    command=command,
+                    retained=complete_retained,
+                    envelope=envelope,
+                    database_identity=runtime._database_identity,
+                    predecessor=predecessor,
+                    resulting=resulting,
+                    reference=checkpoint_ref,
+                ).model_dump(mode="json")
             if isinstance(complete_retained, RetainedExecutionCompleteSealV3):
                 assert checkpoint_ref is not None
                 path, device, inode = runtime._database_identity
@@ -555,7 +569,7 @@ async def publish_execution_fanout(
             decision_guard=decide,
             authority_checkpoint_guard=(
                 stage_h1_checkpoint
-                if isinstance(complete_retained, RetainedExecutionCompleteSealV3)
+                if isinstance(complete_retained, RetainedExecutionCompleteSealV3) or h1_v2_pe_route
                 else None
             ),
         )

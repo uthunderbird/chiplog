@@ -1,18 +1,23 @@
-"""Installed ROOT-only handoff after an authenticated H1 V2 seal.
+"""Durable, fence-owned H1 post-seal preparation recovery.
 
-The coordinator deliberately stops after a durable recovery ROOT.  B
-continuation belongs to the next recovery slice; keeping the execution fence
-around this transaction gives that slice one place to extend safely.
+The recovery journal is the boundary around every owner preparation.  This
+module never accepts a caller-shaped stage request or result: it reconstructs
+the bytes from the selected native root, durably pins them, and only then lets
+an enrolled fresh B session make an inert owner call.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import asyncio
+import json
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition.common_execution_driver_contracts import DriverCommandIdentityV1
 from chiplog.composition.h1_postseal_recovery import (
     H1PostSealRecoveryJournal,
+    H1PostSealRecoveryRecordV1,
     H1PostSealRecoveryState,
     H1PostSealRecoveryTransition,
 )
@@ -26,6 +31,21 @@ if TYPE_CHECKING:
 
 class H1PostSealRecoveryCoordinatorError(RuntimeError):
     """The installed seal cannot safely enter the recovery journal."""
+
+
+_H1RecoveryStage = Literal["COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK"]
+_STAGES: Final[tuple[_H1RecoveryStage, ...]] = (
+    "COMPLETION",
+    "CONVERSATION",
+    "EFFECTS",
+    "TERMINAL_WORK",
+)
+_PREPARE_METHODS: Final[dict[_H1RecoveryStage, str]] = {
+    "COMPLETION": "prepare_first_path_completion",
+    "CONVERSATION": "prepare_conversation_completion",
+    "EFFECTS": "prepare_local_commentary",
+    "TERMINAL_WORK": "prepare_terminal_work",
+}
 
 
 class _H1PostSealRecoveryCoordinator:
@@ -48,8 +68,13 @@ class _H1PostSealRecoveryCoordinator:
             raise H1PostSealRecoveryCoordinatorError("installed recovery graph is absent")
         if journal._mount is not mount:
             raise H1PostSealRecoveryCoordinatorError("installed recovery journal mount differs")
+        from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
+
         self._runtime = runtime
         self._mount = mount
+        # This source is an issuer identity, not a convenient request builder.
+        # Enrollment later accepts only this mounted coordinator's exact source.
+        self._source = H1RecoveryStageSource(runtime)
         self._fence = _H1RecoveryExecutionFence(mount)
         self._closed = False
 
@@ -74,6 +99,7 @@ class _H1PostSealRecoveryCoordinator:
                 state = self._begin_or_resume_held(
                     lease, identity, original_fingerprint, selected_seal
                 )
+                state = await self._resume_stages_held(lease, state, identity, original_fingerprint)
             if state is None:
                 raise H1PostSealRecoveryCoordinatorError("recovery execution lease suppressed ROOT")
             return state
@@ -83,6 +109,289 @@ class _H1PostSealRecoveryCoordinator:
             raise H1PostSealRecoveryCoordinatorError(
                 "post-seal recovery ROOT cannot be safely resumed"
             ) from error
+
+    async def _resume_stages_held(
+        self,
+        lease: Any,
+        state: H1PostSealRecoveryState,
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+    ) -> H1PostSealRecoveryState:
+        """Run one source context and retire it before the lease can be released."""
+        lease.require_owned()
+        contexts: list[object] = []
+        try:
+            return await self._resume_stages_inner_held(
+                lease, state, identity, original_fingerprint, contexts
+            )
+        finally:
+            if contexts:
+                lease.require_owned()
+                self._source._retire_recovery_context(contexts[0])
+
+    async def _resume_stages_inner_held(
+        self,
+        lease: Any,
+        state: H1PostSealRecoveryState,
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        contexts: list[object],
+    ) -> H1PostSealRecoveryState:
+        """Reconstruct, pin, replay, and commit all four stages under one lease.
+
+        This private entry point deliberately takes the lease rather than
+        acquiring one.  All source reconstruction, journal reconciliation,
+        session lifetime, and cancellation drain therefore share exactly one
+        cross-process owner.
+        """
+        lease.require_owned()
+        source = self._source
+        locator = CallSubjectHead(
+            subject_id=state.root.selected_seal_subject_id,
+            revision=Present(
+                head=state.root.selected_seal_head,
+                fingerprint=state.root.selected_seal_fingerprint,
+            ),
+        )
+        context = source._capture_recovery(
+            original_identity=identity,
+            original_fingerprint=original_fingerprint,
+            selected_seal=locator,
+            root=state.root,
+        )
+        contexts.append(context)
+
+        # Validate every already durable link before constructing B.  This is
+        # also the no-IPC fast path for an entirely durable chain.
+        durable_results: dict[_H1RecoveryStage, bytes] = {}
+        first_incomplete: _H1RecoveryStage | None = None
+        for stage in _STAGES:
+            source._require_current(context)
+            pinned = self._existing_input(state, stage)
+            predecessor_effects_input = self._terminal_effects_input(state, stage)
+            expected = source._reconstruct_input(
+                context,
+                stage,
+                durable_results,
+                pinned[1] if pinned is not None else None,
+                predecessor_effects_input=predecessor_effects_input,
+            )
+            if pinned is None:
+                first_incomplete = stage
+                break
+            if pinned[0] != expected:
+                raise H1PostSealRecoveryCoordinatorError("durable stage input differs")
+            self._require_effects_command_id(stage, expected, pinned[1])
+            result = self._existing_result(state, stage)
+            if result is None:
+                first_incomplete = stage
+                break
+            source._validate_result(context, stage, expected, result)
+            durable_results[stage] = result
+        if first_incomplete is None:
+            return state
+
+        session = self._open_recovery_session(source=source, context=context, lease=lease)
+        try:
+            session._bind_recovery(source=source, context=context, lease=lease)
+            for stage in _STAGES:
+                lease.require_owned()
+                source._require_current(context)
+                pinned = self._existing_input(state, stage)
+                predecessor_effects_input = self._terminal_effects_input(state, stage)
+                semantic_input = source._reconstruct_input(
+                    context,
+                    stage,
+                    durable_results,
+                    pinned[1] if pinned is not None else None,
+                    predecessor_effects_input=predecessor_effects_input,
+                )
+                if pinned is None:
+                    effects_command_id = self._effects_command_id(stage, semantic_input)
+                    record = H1PostSealRecoveryTransition.pin_input(
+                        state,
+                        stage=stage,
+                        semantic_input=semantic_input,
+                        effects_command_id=effects_command_id,
+                    )
+                    state = self._append_stage_held(lease, state, record)
+                    pinned = self._existing_input(state, stage)
+                    if pinned is None or pinned[0] != semantic_input:
+                        raise H1PostSealRecoveryCoordinatorError("stage input readback differs")
+                else:
+                    if pinned[0] != semantic_input:
+                        raise H1PostSealRecoveryCoordinatorError("durable stage input differs")
+                self._require_effects_command_id(stage, semantic_input, pinned[1])
+
+                # A new B session must replay every earlier durable stage.  A
+                # result remains evidence only after its fresh exchange agrees
+                # byte-for-byte; a fully durable chain returned above opens no
+                # session and sends no IPC.
+                session._bind_recovery_stage(
+                    stage=stage,
+                    semantic_input=semantic_input,
+                    predecessor_effects_input=predecessor_effects_input,
+                )
+                exchange = await getattr(session, _PREPARE_METHODS[stage])()
+                returned = getattr(exchange, "returned", None)
+                result_bytes = getattr(returned, "canonical_payload", None)
+                if not isinstance(result_bytes, bytes):
+                    raise H1PostSealRecoveryCoordinatorError("owner result bytes are unavailable")
+                source._validate_result(context, stage, semantic_input, result_bytes)
+                durable = self._existing_result(state, stage)
+                if durable is not None:
+                    if durable != result_bytes:
+                        raise H1PostSealRecoveryCoordinatorError("durable stage result differs")
+                else:
+                    record = H1PostSealRecoveryTransition.commit_result(
+                        state, stage=stage, result_bytes=result_bytes
+                    )
+                    state = self._append_stage_held(lease, state, record)
+                    durable = self._existing_result(state, stage)
+                    if durable != result_bytes:
+                        raise H1PostSealRecoveryCoordinatorError("stage result readback differs")
+                durable_results[stage] = result_bytes
+            return state
+        finally:
+            # Session cleanup owns any broker task that crossed IPC.  Keep the
+            # execution lease until it settles even if this coordinator is
+            # cancelled; releasing first would admit a competing B issuer.
+            await self._drain_session_held(session)
+
+    def _append_stage_held(
+        self,
+        lease: Any,
+        state: H1PostSealRecoveryState,
+        record: H1PostSealRecoveryRecordV1,
+    ) -> H1PostSealRecoveryState:
+        """CAS append/readback one stage record, reopening on every uncertainty."""
+        lease.require_owned()
+        if type(record) is not H1PostSealRecoveryRecordV1 or record.kind == "ROOT":
+            raise TypeError("stage append requires one canonical stage record")
+        if record.root_id != state.root.root_id() or record.predecessor_entry_id != state.head:
+            raise H1PostSealRecoveryCoordinatorError("stage record predecessor differs")
+        try:
+            receipt = self._journal().append_transition(record, expected_global_tip=state.head)
+        except BaseException as error:
+            reconciled = self._reopen_and_reconcile_stage(state.root, record, error)
+            if not isinstance(error, Exception):
+                raise
+            return reconciled
+        returned = receipt.scan.state_for_root(state.root.root_id())
+        self._require_record_readback(returned, record)
+        return returned
+
+    @staticmethod
+    def _existing_input(
+        state: H1PostSealRecoveryState, stage: _H1RecoveryStage
+    ) -> tuple[bytes, str | None] | None:
+        try:
+            return state.stage_input(stage)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _existing_result(state: H1PostSealRecoveryState, stage: _H1RecoveryStage) -> bytes | None:
+        return dict(state.results).get(stage)
+
+    def _terminal_effects_input(
+        self, state: H1PostSealRecoveryState, stage: _H1RecoveryStage
+    ) -> tuple[bytes, str] | None:
+        if stage != "TERMINAL_WORK":
+            return None
+        effects = self._existing_input(state, "EFFECTS")
+        if effects is None or effects[1] is None:
+            raise H1PostSealRecoveryCoordinatorError("terminal Effects predecessor is absent")
+        return effects[0], effects[1]
+
+    @staticmethod
+    def _effects_command_id(stage: _H1RecoveryStage, semantic_input: bytes) -> str | None:
+        if stage != "EFFECTS":
+            return None
+        try:
+            decoded = json.loads(semantic_input)
+            command_id = decoded["identity"]["command_id"]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise H1PostSealRecoveryCoordinatorError("effects semantic input is invalid") from error
+        if not isinstance(command_id, str) or not command_id:
+            raise H1PostSealRecoveryCoordinatorError("effects command ID is invalid")
+        return command_id
+
+    def _require_effects_command_id(
+        self, stage: _H1RecoveryStage, semantic_input: bytes, pinned_command_id: str | None
+    ) -> None:
+        if self._effects_command_id(stage, semantic_input) != pinned_command_id:
+            raise H1PostSealRecoveryCoordinatorError("effects command ID differs")
+
+    @staticmethod
+    def _require_record_readback(
+        state: H1PostSealRecoveryState, record: H1PostSealRecoveryRecordV1
+    ) -> None:
+        assert record.stage is not None
+        if record.kind == "STAGE_INPUT":
+            if state.stage_input(record.stage) != (
+                record.semantic_input,
+                record.effects_command_id,
+            ):
+                raise H1PostSealRecoveryCoordinatorError("stage input readback differs")
+        elif dict(state.results).get(record.stage) != record.result_bytes:
+            raise H1PostSealRecoveryCoordinatorError("stage result readback differs")
+
+    def _reopen_and_reconcile_stage(
+        self,
+        root: Any,
+        record: H1PostSealRecoveryRecordV1,
+        append_error: BaseException,
+    ) -> H1PostSealRecoveryState:
+        state = self._reopen_and_reconcile(root, append_error)
+        try:
+            self._require_record_readback(state, record)
+        except Exception as error:
+            raise H1PostSealRecoveryCoordinatorError("stage append outcome is uncertain") from error
+        return state
+
+    def _open_recovery_session(self, *, source: Any, context: object, lease: Any) -> Any:
+        """Open and revalidate a session only through installed enrollment.
+
+        A callable attribute is not enrollment.  The recovery B session must
+        be an exact membership of the installed table before it can receive a
+        source context or a durable stage pin.
+        """
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+        )
+        from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+
+        enrollment = getattr(self._runtime, "_h1_live_completion_enrollment", None)
+        if type(enrollment) is not _H1LiveCompletionEnrollment:
+            raise H1PostSealRecoveryCoordinatorError("installed recovery B enrollment is absent")
+        session = enrollment._open_recovery_session(source=source, context=context, lease=lease)
+        if type(session) is not H1CompletionPreparationSession:
+            raise H1PostSealRecoveryCoordinatorError("installed recovery B session differs")
+        enrollment._require_recovery_session(
+            session=session,
+            source=source,
+            context=context,
+            lease=lease,
+        )
+        return session
+
+    async def _drain_session_held(self, session: Any) -> None:
+        drain = getattr(session, "_drain_recovery", None)
+        if not callable(drain):
+            raise H1PostSealRecoveryCoordinatorError("recovery B session lacks a drain")
+        task = asyncio.create_task(drain())
+        cancelled: asyncio.CancelledError | None = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as error:
+                cancelled = error
+        # Propagate a drain failure before re-raising cancellation: a failed
+        # drain is an integrity hold, not permission to free the lease early.
+        task.result()
+        if cancelled is not None:
+            raise cancelled
 
     def _begin_or_resume_held(
         self,
@@ -190,6 +499,11 @@ class _H1PostSealRecoveryCoordinator:
         if self._closed:
             return
         self._fence.close()
+        # _fence.close proves there is no live lease.  Burn source-owned
+        # contexts while the mounted graph is still present, before journal
+        # teardown can make their provenance ambiguous.
+        for state in tuple(self._source._recovery_contexts.values()):
+            self._source._retire_recovery_context(state.context)
         # Reconciliation replaces the runtime-bound wrapper.  The opener's
         # original wrapper is still closed by its owner; this closes a reopened
         # descriptor exactly once before the mount is released.

@@ -19,7 +19,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from chiplog.adapters.driven.loop_sqlite import OWNER
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
@@ -97,6 +97,9 @@ from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.authority_checkpoint import AuthorityCheckpointStore
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.publication_readback import inspect_publication
+
+if TYPE_CHECKING:
+    from chiplog.composition.h1_conversation_sources import _AuthenticatedConversationInventory
 
 
 def _sha256(raw: bytes) -> str:
@@ -526,6 +529,168 @@ class H1FirstPathSources:
             raise ValueError("H1 historical source differs from raw V2 replay")
         return self._native_cut(raw, replay)
 
+    def issue_historical_v2_cut(
+        self,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> H1HistoricalFirstPathNativeCut:
+        """Issue the independently selected, immutable full V2 historical cut.
+
+        The inputs are locators only.  The full completion DTO is constructed
+        from the selected authenticated DECIDED entry and its bound authority
+        post-image, never accepted from a caller or reconstructed from current
+        SQLite state.
+        """
+        if type(original_identity) is not DriverCommandIdentityV1:
+            raise TypeError("H1 historical V2 source requires the exact original identity")
+        if not isinstance(original_fingerprint, str) or len(original_fingerprint) != 64:
+            raise ValueError("H1 historical V2 source has an invalid original fingerprint")
+        if type(selected_seal) is not CallSubjectHead:
+            raise TypeError("H1 historical V2 source requires an exact selected seal")
+        with self._gate.hold():
+            self._runtime._require_no_pending()
+            raw = self._read_selected_cut(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=selected_seal,
+                historical=True,
+            )
+            self._require_historical_v2_seal(raw.seal.raw)
+            source = self._read_v2_source(raw, historical=True)
+            return self._native_cut(raw, source)
+
+    def _read_historical_conversation_inventory(
+        self,
+        *,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> _AuthenticatedConversationInventory:
+        """Return A's complete inventory from the selected V2 authority cut.
+
+        This stays private to the two installed source owners.  Its local A
+        imports avoid an import-time cycle while keeping the carrier out of
+        public caller authority.  Both loop and owner selections are replayed
+        from their seal-bounded authenticated prefixes; SQLite is never read.
+        """
+        from chiplog.composition.h1_conversation_sources import (
+            H1ConversationPhysicalMember,
+            H1ConversationSources,
+            H1SelectedConversationPublication,
+            _AuthenticatedConversationInventory,
+        )
+        from chiplog.composition.h1_inventory_owner_cut import _parse_h1_owner_asof
+        from chiplog.composition.h1_owner_inventory import (
+            _PhysicalRow,
+            _reconcile_historical_owner_cut,
+        )
+
+        if type(original_identity) is not DriverCommandIdentityV1:
+            raise TypeError("H1 historical conversation inventory requires the exact identity")
+        if not isinstance(original_fingerprint, str) or len(original_fingerprint) != 64:
+            raise ValueError("H1 historical conversation inventory has an invalid fingerprint")
+        if type(selected_seal) is not CallSubjectHead:
+            raise TypeError("H1 historical conversation inventory requires an exact seal")
+        with self._gate.hold():
+            self._runtime._require_no_pending()
+            raw = self._read_selected_cut(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=selected_seal,
+                historical=True,
+            )
+            self._require_historical_v2_seal(raw.seal.raw)
+            source = self._read_v2_source(raw, historical=True)
+            cut = raw.historical_cut
+            if cut is None:
+                raise ValueError("H1 historical conversation inventory lacks a selected cut")
+            rows = cut.rows
+            if (
+                source.tenant_id != self._runtime._tenant_id
+                or source.materialization_commitment != raw.commitment
+                or rows.commitment != raw.commitment
+                or rows.tenant_head(source.tenant_id) != source.tenant_commit_sequence
+            ):
+                raise ValueError("H1 historical conversation inventory differs from native cut")
+            database = Path(self._runtime._database).resolve(strict=True)
+            before = database.stat()
+            identity = (str(database), before.st_dev, before.st_ino)
+            if (
+                identity != raw.database_identity
+                or identity != cut.database_identity
+                or identity != self._runtime._database_identity
+            ):
+                raise ValueError("H1 historical conversation inventory database identity differs")
+            for _decision_id, _decision_bytes, command in cut.commands:
+                rows.require_complete(command)
+            publications = rows.publications(source.tenant_id)
+            records = rows.records(source.tenant_id)
+            physical_rows = tuple(
+                _PhysicalRow(str(record_id), str(owner), str(schema), payload, sequence)
+                for record_id, owner, schema, payload, sequence in records
+                if type(payload) is bytes and type(sequence) is int
+            )
+            if len(physical_rows) != len(records):
+                raise ValueError("H1 historical conversation inventory physical rows differ")
+            seal = self._selected_seal(raw)
+            owner_journal = self._runtime._owner_decisions()
+            owner_snapshot, _owner_prefix = _reconcile_historical_owner_cut(
+                source.tenant_id, owner_journal, seal, publications, physical_rows
+            )
+            locator = _parse_h1_owner_asof(seal, source.tenant_id)
+            if owner_snapshot.head != locator.owner_head:
+                raise ValueError("H1 historical conversation owner prefix differs")
+            raw_owner_entries = tuple(owner_journal._raw.entries())
+            raw_by_id = {
+                decision_id: decision
+                for decision_id, _previous, decision in raw_owner_entries
+            }
+            if len(raw_by_id) != len(raw_owner_entries):
+                raise ValueError("H1 historical conversation owner decisions collide")
+            selected = [
+                H1SelectedConversationPublication(decision_id, decision_bytes, command, None)
+                for decision_id, decision_bytes, command in cut.commands
+            ]
+            for decision in owner_snapshot.decisions:
+                command = self._runtime._owner_command(decision)
+                if command.tenant_id != source.tenant_id:
+                    continue
+                rows.require_complete(command)
+                owner_raw = raw_by_id.get(decision.decision_id)
+                if (
+                    not isinstance(owner_raw, bytes)
+                    or _sha256(owner_raw) != decision.decision_fingerprint
+                ):
+                    raise ValueError("H1 historical conversation owner decision differs")
+                evidence = H1ConversationSources._complete_acceptance_evidence(
+                    decision.prepared.request, command
+                )
+                selected.append(
+                    H1SelectedConversationPublication(
+                        decision.decision_id, owner_raw, command, evidence
+                    )
+                )
+            if not selected or len({item.decision_id for item in selected}) != len(selected):
+                raise ValueError("H1 historical conversation selected inventory differs")
+            physical = tuple(
+                H1ConversationPhysicalMember(
+                    row.record_id, row.owner, row.schema, row.raw, row.sequence
+                )
+                for row in physical_rows
+            )
+            self._runtime._check_database_identity()
+            after = database.stat()
+            if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+                raise ValueError("H1 historical conversation inventory database changed")
+            return _AuthenticatedConversationInventory(
+                tuple(sorted(selected, key=lambda item: item.command.expected_head)),
+                physical,
+                rows.commitment,
+                rows.tenant_head(source.tenant_id),
+                identity,
+            )
+
     def _native_cut(
         self, raw: _RawFirstPath, source: FirstPathCompletionCutV2
     ) -> H1HistoricalFirstPathNativeCut:
@@ -540,6 +705,22 @@ class H1FirstPathSources:
             database_device=raw.database_identity[1],
             database_inode=raw.database_identity[2],
         )
+
+    @staticmethod
+    def _require_historical_v2_seal(decision_bytes: bytes) -> None:
+        """Keep the authority-cut route distinct from a V3 checkpoint seal."""
+        try:
+            entry = _strict_json(decision_bytes)
+            retained_raw = entry["execution_complete_seal"]
+            if not isinstance(retained_raw, str):
+                raise TypeError("retained seal is absent")
+            retained = RetainedExecutionCompleteSealV2.model_validate_json(retained_raw)
+            if retained.canonical_bytes().decode() != retained_raw:
+                raise ValueError("retained seal is noncanonical")
+            if "h1_historical_checkpoint" in entry:
+                raise ValueError("V2 authority cut cannot carry a checkpoint")
+        except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            raise ValueError("H1 historical source requires the exact V2 seal") from error
 
     @staticmethod
     def _raw_decision(command: _SelectedCommand) -> H1FirstPathRawDecision:

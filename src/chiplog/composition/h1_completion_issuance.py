@@ -12,7 +12,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     H1OwnerCandidateCallV1,
@@ -20,7 +20,11 @@ from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     H1OwnerCurrentCallV1,
     H1OwnerCurrentCandidateV1,
 )
-from chiplog.capabilities.effects.dispatch_authority_contracts import DispatchObservationDTO
+from chiplog.capabilities.effects.dispatch_authority_contracts import (
+    Digest,
+    DispatchObservationDTO,
+    Identity,
+)
 from chiplog.composition.common_execution_driver_contracts import DriveInputRequestV1
 from chiplog.composition.completion_publication_contracts import (
     PrepareH1CompleteAcceptanceAssemblyV1,
@@ -50,6 +54,7 @@ if TYPE_CHECKING:
 
 
 SCHEMA = "chiplog.composition.h1-completion-issuance.v1"
+V2_SCHEMA = "chiplog.composition.h1-completion-issuance.v2"
 
 
 class H1CompletionOwnerExchangeV1(DispatchObservationDTO):
@@ -98,6 +103,135 @@ class H1CompletionIssuanceV1(DispatchObservationDTO):
     owner_exchanges: tuple[H1CompletionOwnerExchangeV1, ...] = Field(min_length=4, max_length=4)
     scope_issue_exchange: H1CompletionOwnerExchangeV1
     scope_current_exchange: H1CompletionOwnerExchangeV1
+
+
+class H1CompletionRecoveryRefV1(DispatchObservationDTO):
+    """Closed reference to the selected native recovery prefix."""
+
+    root_id: Digest
+    journal_instance_id: Identity
+    completed_chain_head: Identity
+
+
+class H1CompletionTerminalAdmissionWitnessV1(DispatchObservationDTO):
+    """The retained preterminal CURRENT claim for one V2 candidate."""
+
+    terminal_call_fingerprint: Digest
+    preterminal_current_exchange: H1CompletionOwnerExchangeV1
+
+
+class H1CompletionIssuanceV2(DispatchObservationDTO):
+    """V2 evidence wire; it remains non-authorizing until installed validation."""
+
+    schema_id: Literal["chiplog.composition.h1-completion-issuance.v2"] = (
+        "chiplog.composition.h1-completion-issuance.v2"
+    )
+    assembly: PrepareH1CompleteAcceptanceAssemblyV1
+    capture: H1CompletionCaptureV1
+    owner_exchanges: tuple[H1CompletionOwnerExchangeV1, ...] = Field(min_length=4, max_length=4)
+    scope_issue_exchange: H1CompletionOwnerExchangeV1
+    scope_current_exchange: H1CompletionOwnerExchangeV1
+    final_current_exchange: H1CompletionOwnerExchangeV1
+    recovery: H1CompletionRecoveryRefV1
+    terminal_admission: H1CompletionTerminalAdmissionWitnessV1
+
+
+def _forbid_json_number(value: str) -> object:
+    del value
+    raise ValueError("H1 completion issuance does not permit non-integral JSON numbers")
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("H1 completion issuance has a duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _strict_canonical_json_object(raw: bytes) -> dict[str, object]:
+    """Parse the complete wire before Pydantic can collapse duplicate keys."""
+    if type(raw) is not bytes or not raw:
+        raise ValueError("H1 completion issuance bytes are absent")
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_unique_json_object,
+            parse_float=_forbid_json_number,
+            parse_constant=_forbid_json_number,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError("H1 completion issuance is not strict JSON") from error
+    if not isinstance(value, dict) or _canonical(value) != raw:
+        raise ValueError("H1 completion issuance is noncanonical")
+    return value
+
+
+def decode_h1_completion_recovery_ref_v1(raw: bytes) -> H1CompletionRecoveryRefV1:
+    """Decode only a closed, duplicate-safe canonical recovery reference."""
+    _strict_canonical_json_object(raw)
+    try:
+        decoded = H1CompletionRecoveryRefV1.model_validate_json(raw)
+    except ValidationError as error:
+        raise ValueError("H1 completion recovery reference is malformed") from error
+    if decoded.canonical_bytes() != raw:
+        raise ValueError("H1 completion recovery reference is noncanonical")
+    return decoded
+
+
+def decode_h1_completion_terminal_admission_witness_v1(
+    raw: bytes,
+) -> H1CompletionTerminalAdmissionWitnessV1:
+    """Decode only a closed, duplicate-safe canonical admission witness."""
+    _strict_canonical_json_object(raw)
+    try:
+        decoded = H1CompletionTerminalAdmissionWitnessV1.model_validate_json(raw)
+    except ValidationError as error:
+        raise ValueError("H1 completion terminal admission witness is malformed") from error
+    if (
+        decoded.preterminal_current_exchange.role != "scope_current"
+        or decoded.canonical_bytes() != raw
+    ):
+        raise ValueError("H1 completion terminal admission witness is noncanonical")
+    return decoded
+
+
+def dispatch_h1_completion_issuance_schema(outer_schema: str, raw: bytes) -> Literal["V1", "V2"]:
+    """Fail closed unless the retained outer and inner issuance versions agree.
+
+    A schema-marker-only object is accepted for routing probes.  A complete
+    issuance must have precisely the corresponding frozen member set.
+    """
+    value = _strict_canonical_json_object(raw)
+    inner_schema = value.get("schema_id")
+    if not isinstance(outer_schema, str) or inner_schema != outer_schema:
+        raise ValueError("H1 completion issuance outer and inner schemas differ")
+    if outer_schema == SCHEMA:
+        fields = set(H1CompletionIssuanceV1.model_fields)
+        version: Literal["V1", "V2"] = "V1"
+    elif outer_schema == V2_SCHEMA:
+        fields = set(H1CompletionIssuanceV2.model_fields)
+        version = "V2"
+    else:
+        raise ValueError("H1 completion issuance schema is unsupported")
+    if set(value) not in ({"schema_id"}, fields):
+        raise ValueError("H1 completion issuance schema members differ")
+    return version
+
+
+def decode_h1_completion_issuance_v2(raw: bytes) -> H1CompletionIssuanceV2:
+    """Decode the pure canonical V2 evidence wire without granting authority."""
+    if dispatch_h1_completion_issuance_schema(V2_SCHEMA, raw) != "V2":
+        raise ValueError("H1 completion issuance is not V2")
+    _strict_canonical_json_object(raw)
+    try:
+        decoded = H1CompletionIssuanceV2.model_validate_json(raw)
+    except ValidationError as error:
+        raise ValueError("H1 completion issuance V2 is malformed") from error
+    if decoded.canonical_bytes() != raw:
+        raise ValueError("H1 completion issuance V2 is noncanonical")
+    return decoded
 
 
 def _require_success_exchange(

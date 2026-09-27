@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 
@@ -57,6 +58,40 @@ def _other_root() -> H1PostSealRecoveryRootV1:
         publication_command_id="other-publication-command",
         publication_command_fingerprint="7" * 64,
     )
+
+
+def test_authenticated_prefix_round_trips_large_semantic_input_and_rejects_wrong_digest() -> None:
+    root = _root()
+    root_record = H1PostSealRecoveryTransition.begin(H1PostSealRecoveryState.empty(root))
+    state = apply_authenticated_prefix((('entry-0', None, root_record.canonical_bytes()),), root)
+    semantic_input = b"x" * 2_123_366
+    input_record = H1PostSealRecoveryTransition.pin_input(
+        state, stage="COMPLETION", semantic_input=semantic_input
+    )
+
+    recovered = apply_authenticated_prefix(
+        (
+            ("entry-0", None, root_record.canonical_bytes()),
+            ("entry-1", "entry-0", input_record.canonical_bytes()),
+        ),
+        root,
+    )
+    assert len(semantic_input) > 256 * 1024
+    assert recovered.stage_input("COMPLETION") == (semantic_input, None)
+
+    wrong_digest = json.loads(input_record.canonical_bytes())
+    wrong_digest["semantic_input_digest"] = "0" * 64
+    malformed_record = json.dumps(
+        wrong_digest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    with pytest.raises(H1PostSealRecoveryRecordError, match="recovery record is invalid"):
+        apply_authenticated_prefix(
+            (
+                ("entry-0", None, root_record.canonical_bytes()),
+                ("entry-1", "entry-0", malformed_record),
+            ),
+            root,
+        )
 
 
 def test_root_requires_the_installed_loop_head_shape() -> None:

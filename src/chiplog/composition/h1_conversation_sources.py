@@ -20,6 +20,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER, CONVERSATION_SCHEMA
@@ -47,6 +48,7 @@ from chiplog.capabilities.projections.conversation_preparation_contracts import 
 from chiplog.capabilities.projections.r9_boundary import ConversationEntry
 from chiplog.capabilities.projections.workspace_boundary import DisclosureLabel
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+from chiplog.composition.common_execution_driver_contracts import DriverCommandIdentityV1
 from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
 from chiplog.composition.h1_conversation_policy import (
     H1RegisteredConversationPolicy,
@@ -54,7 +56,7 @@ from chiplog.composition.h1_conversation_policy import (
     _issue_for_authenticated_port,
     derive_entry,
 )
-from chiplog.composition.h1_first_path_sources import H1FirstPathCapture
+from chiplog.composition.h1_first_path_sources import H1FirstPathCapture, H1FirstPathSources
 from chiplog.composition.r14_execution_completion_records import (
     RetainedCompleteAcceptanceExchangeV1,
     complete_acceptance_command,
@@ -848,6 +850,163 @@ class H1ConversationSources:
         ):
             raise H1ConversationSourceUnavailable("H1 conversation capture is not A-issued")
         return issued.request
+
+    def _prepare_historical_conversation_completion_request(
+        self,
+        *,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+        p_source_cap: object,
+        accepted_completion: object,
+    ) -> PrepareConversationCompletionV1:
+        """Rebuild CONVERSATION from only installed historical owner evidence.
+
+        The two opaque inputs deliberately have different issuers.  P owns the
+        immutable workspace/scope projection, while the recovery B source owns
+        the accepted completion exchange.  The historical inventory reader is
+        the sole route to the V2 authority post-image and owner-as-of prefix.
+        No current inventory, completion registry, or caller-shaped object is
+        accepted as a substitute.
+        """
+        from chiplog.composition.h1_postseal_recovery_coordinator import (
+            _H1PostSealRecoveryCoordinator,
+        )
+        from chiplog.composition.h1_recovery_stage_source import (
+            H1RecoveryStageSource,
+            _AuthenticatedHistoricalCompletion,
+        )
+        from chiplog.composition.h1_runtime_preissuance_port import (
+            _AuthenticatedConversationPolicyInputs,
+            _H1RuntimePreissuancePort,
+        )
+        from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_seal
+
+        if (
+            type(original_identity) is not DriverCommandIdentityV1
+            or not isinstance(original_fingerprint, str)
+            or len(original_fingerprint) != 64
+            or type(selected_seal) is not CallSubjectHead
+        ):
+            raise H1ConversationSourceUnavailable("H1 historical conversation locators are invalid")
+        self._require_open()
+        runtime = self._runtime
+        if getattr(runtime, "_h1_conversation_source_port", None) is not self:
+            raise H1ConversationSourceUnavailable(
+                "H1 historical conversation source owner is not mounted"
+            )
+        coordinator = getattr(runtime, "_h1_postseal_recovery_coordinator", None)
+        source = getattr(coordinator, "_source", None)
+        policy_port = getattr(runtime, "_h1_preissuance_registration_source_port", None)
+        if (
+            type(coordinator) is not _H1PostSealRecoveryCoordinator
+            or coordinator._runtime is not runtime
+            or coordinator._closed
+            or source is not coordinator._source
+            or type(source) is not H1RecoveryStageSource
+            or source._runtime is not runtime
+            or type(policy_port) is not _H1RuntimePreissuancePort
+            or policy_port._runtime is not runtime
+        ):
+            raise H1ConversationSourceUnavailable(
+                "H1 historical conversation owners are unavailable"
+            )
+        try:
+            with self._gate.hold():
+                completion = source._replay_accepted_completion(
+                    accepted_completion,
+                    original_identity=original_identity,
+                    original_fingerprint=original_fingerprint,
+                    selected_seal=selected_seal,
+                )
+                if type(completion) is not _AuthenticatedHistoricalCompletion:
+                    raise TypeError("historical completion replay returned an invalid receipt")
+                policy = policy_port._replay_historical_conversation_policy(p_source_cap)
+                if type(policy) is not _AuthenticatedConversationPolicyInputs:
+                    raise TypeError("historical policy replay returned an invalid projection")
+
+                selected_prepare = select_h1_v3_prepare_for_seal(
+                    runtime, selected_seal=selected_seal, historical=True
+                ).prepare
+                started = selected_prepare.started_run
+                registration = policy.workspace_policy.registration
+                if (
+                    policy.original_issuance_ref != selected_prepare.issuance_ref
+                    or policy.original_tenant != started.tenant
+                    or policy.original_run_id != started.run_id
+                    or policy.original_started_run_head != started.head
+                    or len(started.turns) != 1
+                    or policy.original_turn_id != started.turns[0].turn_id
+                    or policy.original_worker_session != started.worker_session
+                    or registration.generation != policy.custody_entry_generation
+                    or registration.custody_entry_digest != policy.custody_entry_digest
+                ):
+                    raise ValueError("historical policy locator or custody binding differs")
+
+                reader = H1FirstPathSources(runtime)
+                historical = reader.issue_historical_v2_cut(
+                    original_identity, original_fingerprint, selected_seal
+                )
+                inventory = reader._read_historical_conversation_inventory(
+                    original_identity=original_identity,
+                    original_fingerprint=original_fingerprint,
+                    selected_seal=selected_seal,
+                )
+                if type(inventory) is not _AuthenticatedConversationInventory:
+                    raise TypeError("historical conversation inventory is not A-shaped")
+                native = completion.native
+                if (
+                    native.source.tenant_id != historical.source.tenant_id
+                    or native.source.database_id != historical.source.database_id
+                    or native.source.selected_response_seal != selected_seal
+                    or native.source.complete_ordered_run_lineage
+                    != historical.source.complete_ordered_run_lineage
+                    or native.seal.decision_id != historical.seal.decision_id
+                    or native.seal.decision_fingerprint != historical.seal.decision_fingerprint
+                    or native.seal.raw_bytes != historical.seal.raw_bytes
+                    or (native.database_path, native.database_device, native.database_inode)
+                    != (
+                        historical.database_path,
+                        historical.database_device,
+                        historical.database_inode,
+                    )
+                    or inventory.tenant_sequence != historical.source.tenant_commit_sequence
+                    or inventory.commitment != historical.source.materialization_commitment
+                    or inventory.database_identity
+                    != (
+                        historical.database_path,
+                        historical.database_device,
+                        historical.database_inode,
+                    )
+                ):
+                    raise ValueError("historical completion and authority cut differ")
+                history = decode_authenticated_conversation_history(
+                    historical.source.tenant_id, inventory.selected, inventory.physical
+                )
+                # Reuse the established derivation verbatim.  These namespaces
+                # are local views over independently replayed private evidence;
+                # they are never accepted from the caller or retained as caps.
+                request, _policy_capture = self._build_request(
+                    cast(
+                        H1FirstPathCapture,
+                        SimpleNamespace(source=historical.source),
+                    ),
+                    SimpleNamespace(
+                        native_cap=SimpleNamespace(_native=historical),
+                        request_bytes=completion.request_bytes,
+                        result_bytes=completion.result_bytes,
+                    ),
+                    policy,
+                    inventory,
+                    history,
+                )
+                return cast(PrepareConversationCompletionV1, request)
+        except H1ConversationSourceUnavailable:
+            raise
+        except (AttributeError, TypeError, ValueError) as error:
+            raise H1ConversationSourceUnavailable(
+                "H1 historical conversation source inputs do not authenticate one selected cut"
+            ) from error
 
     def check_current(self, capture: object) -> bool:
         """Re-open every source owner and compare the exact retained cut."""

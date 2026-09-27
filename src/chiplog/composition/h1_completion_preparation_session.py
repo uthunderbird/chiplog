@@ -9,11 +9,15 @@ routes this seam refuses to mint a publication capability.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import secrets
 import time
-from dataclasses import dataclass
-from typing import Protocol
+from collections.abc import Awaitable
+from contextlib import suppress
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.completion_terminal_work_sources import (
@@ -22,6 +26,9 @@ from chiplog.capabilities.agent_loop.completion_terminal_work_sources import (
 )
 from chiplog.capabilities.agent_loop.execution_completion_contracts import (
     PreparedExecutionCompletion,
+)
+from chiplog.capabilities.agent_loop.execution_completion_preparation import (
+    prepare_first_path_execution_completion,
 )
 from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
     PrepareExecutionCompletionFirstPathV2,
@@ -35,6 +42,9 @@ from chiplog.capabilities.agent_loop.post_terminal_contracts import (
 from chiplog.capabilities.agent_loop.post_terminal_record_contracts import (
     validate_prepared_post_terminal_work,
 )
+from chiplog.capabilities.agent_loop.recovery_contracts import (
+    NonSchedulerFence as LoopNonSchedulerFence,
+)
 from chiplog.capabilities.agent_loop.rejected_completion_terminalization_contracts import (
     manifest_ref,
     run_ref,
@@ -44,12 +54,17 @@ from chiplog.capabilities.agent_loop.terminal_work_preparation import (
 )
 from chiplog.capabilities.effects.contracts import CommandIdentity
 from chiplog.capabilities.effects.fences import Absent
+from chiplog.capabilities.effects.fences import NonSchedulerFence as EffectsNonSchedulerFence
+from chiplog.capabilities.effects.fences import NotApplicable as EffectsNotApplicable
 from chiplog.capabilities.effects.h1_local_preparation import _intent_id
 from chiplog.capabilities.effects.h1_local_preparation_contracts import (
     H1LocalCommentaryOwnerCallV1,
     H1LocalCommentaryRouteV1,
     PreparedH1LocalCommentaryV1,
     PrepareH1LocalCommentaryV1,
+)
+from chiplog.capabilities.projections.conversation_completion_owner import (
+    ConversationCompletionOwner,
 )
 from chiplog.capabilities.projections.conversation_preparation_contracts import (
     PrepareConversationCompletionV1,
@@ -118,6 +133,34 @@ class _H1FinalFenceInputs:
     terminal_work_exchange: H1CompletionOwnerExchangeV1 | None
 
 
+_H1RecoveryStage = Literal["COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK"]
+_H1_RECOVERY_STAGE_ORDER: tuple[_H1RecoveryStage, ...] = (
+    "COMPLETION",
+    "CONVERSATION",
+    "EFFECTS",
+    "TERMINAL_WORK",
+)
+
+
+@dataclass(slots=True)
+class _H1RecoveryBinding:
+    """Identity-held recovery transport state.
+
+    The semantic owner and coordinator retain all durable evidence.  B retains
+    only their exact private identities and a single already-read-back stage
+    input until the installed broker-admission seam accepts a real frame.
+    """
+
+    source: Any
+    context: object
+    lease: Any
+    pending_stage: _H1RecoveryStage | None = None
+    pending_semantic_input: bytes | None = None
+    dispatched_stages: tuple[_H1RecoveryStage, ...] = ()
+    result_bytes: dict[_H1RecoveryStage, bytes] = field(default_factory=dict)
+    poisoned: bool = False
+
+
 class H1CompletionPreparationSession:
     """One-use live H1 source session.
 
@@ -161,6 +204,423 @@ class H1CompletionPreparationSession:
         self._terminal_work_exchange: H1CompletionOwnerExchangeV1 | None = None
         self._terminal_work_started = False
         self._terminal_clearance: object | None = None
+        self._recovery: _H1RecoveryBinding | None = None
+        self._recovery_dispatches: list[asyncio.Task[object]] = []
+
+    def _bind_recovery(self, *, source: object, context: object, lease: Any) -> None:
+        """Bind one fresh enrolled B session to an issuer-owned recovery context.
+
+        This is intentionally private: neither a journal record nor an
+        exchange DTO can bind recovery.  The coordinator calls it only after
+        it has independently derived and read back ROOT/stage evidence.
+        """
+        from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+        from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
+
+        if (
+            type(source) is not H1RecoveryStageSource
+            or context is None
+            or self._recovery is not None
+            or self._cut is not None
+            or self._preflight is not None
+            or any(
+                value is not None
+                for value in (
+                    self._completion_exchange,
+                    self._conversation_exchange,
+                    self._effects_exchange,
+                    self._terminal_work_exchange,
+                )
+            )
+        ):
+            raise H1CompletionPreparationUnavailable("H1 recovery binding is unavailable")
+        require_owned = getattr(lease, "require_owned", None)
+        require_current = getattr(source, "_require_current", None)
+        if not callable(require_owned) or not callable(require_current):
+            raise H1CompletionPreparationUnavailable("H1 recovery binding is not issuer-owned")
+        try:
+            require_owned()
+            # The source owns the opaque context and checks issuer identity;
+            # B never opens, deserializes, or otherwise interprets it.
+            require_current(context)
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise H1CompletionPreparationUnavailable(
+                "H1 recovery binding is not current"
+            ) from error
+        enrollment = getattr(self._sources._runtime, "_h1_live_completion_enrollment", None)
+        if type(enrollment) is not _H1LiveCompletionEnrollment:
+            raise H1CompletionPreparationUnavailable("H1 recovery enrollment is unavailable")
+        try:
+            enrollment._require_recovery_session(
+                session=self, source=source, context=context, lease=lease
+            )
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise H1CompletionPreparationUnavailable(
+                "H1 recovery session is not enrolled"
+            ) from error
+        self._recovery = _H1RecoveryBinding(source=source, context=context, lease=lease)
+
+    def _bind_recovery_stage(
+        self,
+        *,
+        stage: _H1RecoveryStage,
+        semantic_input: bytes,
+        predecessor_effects_input: tuple[bytes, str] | None = None,
+    ) -> None:
+        """Retain exactly one coordinator-pinned canonical input for dispatch."""
+        recovery = self._recovery
+        if (
+            recovery is None
+            or recovery.pending_stage is not None
+            or recovery.poisoned
+            or stage not in ("COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK")
+            or not isinstance(semantic_input, bytes)
+            or not semantic_input
+            or (
+                stage != "TERMINAL_WORK" and predecessor_effects_input is not None
+            )
+        ):
+            raise H1CompletionPreparationUnavailable("H1 recovery stage binding is unavailable")
+        next_index = len(recovery.dispatched_stages)
+        if (
+            next_index >= len(_H1_RECOVERY_STAGE_ORDER)
+            or stage != _H1_RECOVERY_STAGE_ORDER[next_index]
+        ):
+            raise H1CompletionPreparationUnavailable("H1 recovery stage order differs")
+        require_owned = getattr(recovery.lease, "require_owned", None)
+        require_current = getattr(recovery.source, "_require_current", None)
+        reconstruct_input = getattr(recovery.source, "_reconstruct_input", None)
+        if (
+            not callable(require_owned)
+            or not callable(require_current)
+            or not callable(reconstruct_input)
+        ):
+            raise H1CompletionPreparationUnavailable(
+                "H1 recovery stage binding is not issuer-owned"
+            )
+        try:
+            require_owned()
+            require_current(recovery.context)
+            self._validate_recovery_semantic_input(stage, semantic_input)
+            effects_command_id = (
+                PrepareH1LocalCommentaryV1.model_validate_json(semantic_input).identity.command_id
+                if stage == "EFFECTS"
+                else None
+            )
+            reconstructed = reconstruct_input(
+                recovery.context,
+                stage,
+                recovery.result_bytes,
+                effects_command_id,
+                predecessor_effects_input=predecessor_effects_input,
+            )
+            if not isinstance(reconstructed, bytes) or reconstructed != semantic_input:
+                raise ValueError("pinned recovery input differs from source")
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise H1CompletionPreparationUnavailable(
+                "H1 recovery stage input is invalid"
+            ) from error
+        recovery.pending_stage = stage
+        recovery.pending_semantic_input = semantic_input
+
+    @staticmethod
+    def _validate_recovery_semantic_input(stage: _H1RecoveryStage, semantic_input: bytes) -> None:
+        """Parse only the pinned request type; never hydrate an exchange/result."""
+        if stage == "COMPLETION":
+            completion_request = PrepareExecutionCompletionFirstPathV2.model_validate_json(
+                semantic_input
+            )
+            if completion_request.canonical_bytes() != semantic_input:
+                raise ValueError("noncanonical completion input")
+        elif stage == "CONVERSATION":
+            conversation_request = PrepareConversationCompletionV1.model_validate_json(
+                semantic_input
+            )
+            if conversation_request.canonical_json_bytes() != semantic_input:
+                raise ValueError("noncanonical conversation input")
+        elif stage == "EFFECTS":
+            effects_request = PrepareH1LocalCommentaryV1.model_validate_json(semantic_input)
+            if (
+                effects_request.canonical_bytes() != semantic_input
+                or not effects_request.identity.command_id
+            ):
+                raise ValueError("noncanonical effects inner input")
+        else:
+            terminal_request = PrepareTerminalWork.model_validate_json(semantic_input)
+            if terminal_request.canonical_bytes() != semantic_input:
+                raise ValueError("noncanonical terminal-work input")
+
+    async def _drain_recovery(self) -> None:
+        """Drain a recovery broker worker before its coordinator releases the lease.
+
+        The guarded admission transport is intentionally not mounted yet.  This
+        still makes the lifecycle obligation explicit and refuses a second
+        drain while a future transport worker is being joined.
+        """
+        workers = tuple(self._recovery_dispatches)
+        if not all(isinstance(worker, Awaitable) for worker in workers):
+            raise H1CompletionPreparationUnavailable("H1 recovery worker identity differs")
+        try:
+            for worker in workers:
+                while not worker.done():
+                    await asyncio.shield(worker)
+                worker.result()
+        finally:
+            self._recovery_dispatches.clear()
+
+    async def _dispatch_recovery_stage(
+        self, expected_stage: _H1RecoveryStage
+    ) -> H1CompletionOwnerExchangeV1:
+        """Send one pinned recovery request through enrolled broker admission."""
+        recovery = self._recovery
+        if (
+            recovery is None
+            or recovery.pending_stage != expected_stage
+            or recovery.pending_semantic_input is None
+            or recovery.poisoned
+        ):
+            raise H1CompletionPreparationUnavailable("H1 recovery stage is not pinned")
+        from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+
+        require_owned = getattr(recovery.lease, "require_owned", None)
+        require_current = getattr(recovery.source, "_require_current", None)
+        if not callable(require_owned) or not callable(require_current):
+            raise H1CompletionPreparationUnavailable("H1 recovery transport is not issuer-owned")
+        try:
+            require_owned()
+            require_current(recovery.context)
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise H1CompletionPreparationUnavailable("H1 recovery source is not current") from error
+        runtime = self._sources._runtime
+        enrollment = getattr(runtime, "_h1_live_completion_enrollment", None)
+        if type(enrollment) is not _H1LiveCompletionEnrollment:
+            raise H1CompletionPreparationUnavailable("H1 recovery enrollment is unavailable")
+        semantic_input = recovery.pending_semantic_input
+        clearance: Any = None
+        try:
+            enrollment._require_recovery_session(
+                session=self,
+                source=recovery.source,
+                context=recovery.context,
+                lease=recovery.lease,
+            )
+            engine = runtime._supervisor.runtime()
+            sent, result_schema = self._build_recovery_call(
+                engine=engine,
+                stage=expected_stage,
+                semantic_input=semantic_input,
+            )
+            clearance = enrollment._reserve_recovery_clearance(
+                session=self,
+                stage=expected_stage,
+                semantic_input=semantic_input,
+                sent=sent,
+            )
+            guard = enrollment._recovery_admission_guard(clearance)
+            guarded_call = getattr(engine, "_call_with_admission_guard", None)
+            if not callable(guarded_call):
+                raise H1CompletionPreparationUnavailable(
+                    "H1 recovery guarded broker transport is unavailable"
+                )
+            task: asyncio.Task[object] = asyncio.create_task(
+                guarded_call(
+                    sent,
+                    admission_guard=guard,
+                    authority_gate=runtime._authority_gate(),
+                )
+            )
+            self._recovery_dispatches.append(task)
+            returned = await asyncio.shield(task)
+            if isinstance(returned, PublicPortRejected):
+                raise H1CompletionPreparationUnavailable(
+                    "H1 recovery owner rejected broker call: "
+                    f"{returned.failure.kind}"
+                )
+            enrollment._require_admitted_recovery(clearance, session=self, sent=sent)
+            returned_at_ns = time.monotonic_ns()
+            if (
+                not isinstance(returned, PublicPortSuccess)
+                or returned.request_id != sent.request_id
+                or returned.responder != sent.callee
+                or returned.schema_id != result_schema
+                or returned_at_ns
+                < sent.budget.absolute_deadline_ns - self._recovery_budget_ns(expected_stage)
+                or returned_at_ns >= sent.budget.absolute_deadline_ns
+            ):
+                raise H1CompletionPreparationUnavailable(
+                    "H1 recovery owner did not return its exact success"
+                )
+            result_bytes = returned.canonical_payload
+            recovery.source._validate_result(
+                recovery.context, expected_stage, semantic_input, result_bytes
+            )
+            exchange = H1CompletionOwnerExchangeV1(
+                role=self._recovery_exchange_role(expected_stage),
+                sent=sent,
+                returned=returned,
+                sent_at_ns=sent.budget.absolute_deadline_ns
+                - self._recovery_budget_ns(expected_stage),
+                returned_at_ns=returned_at_ns,
+            )
+            enrollment._record_recovery_result(clearance, session=self, exchange=exchange)
+            # Enrollment retains the identity-held exchange record, while the
+            # one-shot admission clearance itself must be unavailable before
+            # the next ordered recovery stage can reserve its own frame.
+            enrollment._burn_recovery_clearance(clearance)
+            self._retain_recovery_exchange(expected_stage, exchange)
+            recovery.result_bytes[expected_stage] = result_bytes
+            recovery.dispatched_stages += (expected_stage,)
+            recovery.pending_stage = None
+            recovery.pending_semantic_input = None
+            return exchange
+        except BaseException:
+            recovery.poisoned = True
+            if clearance is not None:
+                with suppress(RuntimeError, TypeError, ValueError):
+                    enrollment._burn_recovery_clearance(clearance)
+            raise
+
+    @staticmethod
+    def _recovery_exchange_role(
+        stage: _H1RecoveryStage,
+    ) -> Literal["completion", "conversation", "effects", "terminal_work"]:
+        roles: dict[
+            _H1RecoveryStage, Literal["completion", "conversation", "effects", "terminal_work"]
+        ] = {
+            "COMPLETION": "completion",
+            "CONVERSATION": "conversation",
+            "EFFECTS": "effects",
+            "TERMINAL_WORK": "terminal_work",
+        }
+        return roles[stage]
+
+    @staticmethod
+    def _recovery_budget_ns(stage: _H1RecoveryStage) -> int:
+        return 90_000_000_000
+
+    def _build_recovery_call(
+        self, *, engine: object, stage: _H1RecoveryStage, semantic_input: bytes
+    ) -> tuple[PublicPortCall, str]:
+        """Build a fresh transport frame around exactly one pinned request."""
+        session = getattr(engine, "session", None)
+        if not callable(session):
+            raise H1CompletionPreparationUnavailable("H1 recovery broker route is unavailable")
+        owner = {
+            "COMPLETION": "agent_loop",
+            "CONVERSATION": "projections",
+            "EFFECTS": "effects",
+            "TERMINAL_WORK": "agent_loop",
+        }[stage]
+        callee = session(owner)
+        if type(callee) is not BrokerSession:
+            raise H1CompletionPreparationUnavailable("H1 recovery owner route is unavailable")
+        runtime = self._sources._runtime
+        caller = BrokerSession(
+            tenant_id=runtime._tenant_id,
+            broker_epoch=callee.broker_epoch,
+            generation_id=callee.generation_id,
+            owner_id="broker",
+            session_id="broker:" + callee.generation_id,
+        )
+        request_id: str
+        payload: bytes
+        schema: str
+        result_schema: str
+        if stage == "COMPLETION":
+            completion_request = PrepareExecutionCompletionFirstPathV2.model_validate_json(
+                semantic_input
+            )
+            request_id = "h1-recovery-completion:" + secrets.token_hex(24)
+            payload, schema = completion_request.canonical_bytes(), completion_request.schema_id
+            result_schema = "chiplog.agent-loop.prepared-execution-completion-result.v1"
+        elif stage == "CONVERSATION":
+            conversation_request = PrepareConversationCompletionV1.model_validate_json(
+                semantic_input
+            )
+            request_id = "h1-recovery-conversation:" + secrets.token_hex(24)
+            payload, schema = (
+                conversation_request.canonical_json_bytes(),
+                conversation_request.schema_id,
+            )
+            result_schema = "chiplog.conversation.prepared-completion-result.v1"
+        elif stage == "EFFECTS":
+            effects_request = PrepareH1LocalCommentaryV1.model_validate_json(semantic_input)
+            request_id = effects_request.identity.command_id
+            route = H1LocalCommentaryRouteV1(
+                tenant_id=effects_request.original_completion_request.run.tenant,
+                database_id=effects_request.original_completion_request.source.database_id,
+                worker_session_id=effects_request.original_completion_request.run.worker_session,
+                broker_epoch=caller.broker_epoch,
+                runtime_generation=caller.generation_id,
+                broker_session_id=caller.session_id,
+                owner_session_id=callee.session_id,
+                request_id=request_id,
+            )
+            owner_call = H1LocalCommentaryOwnerCallV1(
+                route=route,
+                request=effects_request,
+                request_digest=hashlib.sha256(semantic_input).hexdigest(),
+            )
+            payload, schema = owner_call.canonical_bytes(), owner_call.schema_id
+            result_schema = "chiplog.effects.prepared-h1-local-commentary.v1"
+        else:
+            terminal_request = PrepareTerminalWork.model_validate_json(semantic_input)
+            request_id = "h1-recovery-terminal-work:" + secrets.token_hex(24)
+            payload, schema = (
+                terminal_request.canonical_bytes(),
+                "chiplog.agent-loop.prepare-terminal-work.v1",
+            )
+            result_schema = "chiplog.agent-loop.prepared-post-terminal-work-result.v1"
+        sent_at_ns = time.monotonic_ns()
+        sent = PublicPortCall(
+            operation_id={
+                "COMPLETION": "agent_loop.prepare_first_path_completion",
+                "CONVERSATION": "projections.prepare_conversation_completion",
+                "EFFECTS": "effects.prepare_h1_local_commentary",
+                "TERMINAL_WORK": "agent_loop.prepare_terminal_work",
+            }[stage],
+            request_id=request_id,
+            caller=caller,
+            callee=callee,
+            schema_id=schema,
+            canonical_payload=payload,
+            budget=CallBudget(
+                remaining_calls=1,
+                remaining_depth=1,
+                policy_version=1,
+                absolute_deadline_ns=sent_at_ns + self._recovery_budget_ns(stage),
+            ),
+        )
+        if stage == "EFFECTS":
+            outer = H1LocalCommentaryOwnerCallV1.model_validate_json(sent.canonical_payload)
+            if (
+                outer.canonical_bytes() != sent.canonical_payload
+                or outer.request.canonical_bytes() != semantic_input
+                or outer.route.tenant_id != sent.caller.tenant_id
+                or outer.route.tenant_id != sent.callee.tenant_id
+                or outer.route.broker_epoch != sent.caller.broker_epoch
+                or outer.route.runtime_generation != sent.caller.generation_id
+                or outer.route.broker_session_id != sent.caller.session_id
+                or outer.route.owner_session_id != sent.callee.session_id
+                or outer.route.request_id != sent.request_id
+                or outer.request.identity.command_id != sent.request_id
+            ):
+                raise H1CompletionPreparationUnavailable(
+                    "H1 recovery effects route differs from broker call"
+                )
+        return sent, result_schema
+
+    def _retain_recovery_exchange(
+        self, stage: _H1RecoveryStage, exchange: H1CompletionOwnerExchangeV1
+    ) -> None:
+        if stage == "COMPLETION":
+            self._completion_exchange = exchange
+        elif stage == "CONVERSATION":
+            self._conversation_exchange = exchange
+        elif stage == "EFFECTS":
+            self._effects_exchange = exchange
+        else:
+            self._terminal_work_exchange = exchange
 
     def capture_first_path(
         self,
@@ -194,6 +654,8 @@ class H1CompletionPreparationSession:
         Every input is issued by the installed A/P/E owners.  In particular,
         no public request or delivery/fence value crosses this boundary.
         """
+        if self._recovery is not None:
+            return await self._dispatch_recovery_stage("COMPLETION")
         cut = self._cut
         if cut is None or cut.conversation is not None:
             raise H1CompletionPreparationUnavailable("H1 completion session source is unavailable")
@@ -475,6 +937,8 @@ class H1CompletionPreparationSession:
         session only holds their opaque identity and records the actual broker
         frames once the owner has accepted that request.
         """
+        if self._recovery is not None:
+            return await self._dispatch_recovery_stage("CONVERSATION")
         cut = self._cut
         if cut is None or cut.conversation is None:
             raise H1CompletionPreparationUnavailable("H1 conversation source is unavailable")
@@ -585,6 +1049,8 @@ class H1CompletionPreparationSession:
         combines that private replay with the actual preceding owner exchanges
         and retains the real effects broker frames.
         """
+        if self._recovery is not None:
+            return await self._dispatch_recovery_stage("EFFECTS")
         cut = self._cut
         preflight = self._preflight
         completion_exchange = self._completion_exchange
@@ -893,6 +1359,226 @@ class H1CompletionPreparationSession:
             ordered_open_obligations=source.ordered_open_obligations,
         )
 
+    @staticmethod
+    def _build_historical_effects_request(
+        *,
+        completion_request: PrepareExecutionCompletionFirstPathV2,
+        completion_result: PreparedExecutionCompletion,
+        conversation_request: PrepareConversationCompletionV1,
+        conversation_result: PreparedConversationCompletionV1,
+        p_effects_source: object,
+        fence: LoopNonSchedulerFence,
+        effects_command_id: str,
+    ) -> PrepareH1LocalCommentaryV1:
+        """Build immutable Effects semantics from exact historical predecessors.
+
+        The caller already owns source authentication; B still verifies every
+        typed/canonical predecessor join before deriving the route-independent
+        local intent.  It never accepts an outer Effects route or owner frame.
+        """
+        from chiplog.composition.h1_runtime_preissuance_port import _HistoricalEffectsSource
+
+        if (
+            type(completion_request) is not PrepareExecutionCompletionFirstPathV2
+            or type(completion_result) is not PreparedExecutionCompletion
+            or type(conversation_request) is not PrepareConversationCompletionV1
+            or type(conversation_result) is not PreparedConversationCompletionV1
+            or type(p_effects_source) is not _HistoricalEffectsSource
+            or type(fence) is not LoopNonSchedulerFence
+            or not isinstance(effects_command_id, str)
+        ):
+            raise H1CompletionPreparationUnavailable("H1 historical effects inputs differ")
+        command_suffix = effects_command_id.removeprefix("h1-effects:")
+        if (
+            command_suffix == effects_command_id
+            or len(command_suffix) != 48
+            or any(character not in "0123456789abcdef" for character in command_suffix)
+        ):
+            raise H1CompletionPreparationUnavailable("H1 historical effects command ID differs")
+        try:
+            completion_bytes = completion_request.canonical_bytes()
+            completion_result_bytes = completion_result.canonical_bytes()
+            conversation_bytes = conversation_request.canonical_json_bytes()
+            conversation_result_bytes = conversation_result.canonical_json_bytes()
+            if (
+                PrepareExecutionCompletionFirstPathV2.model_validate_json(completion_bytes)
+                .canonical_bytes()
+                != completion_bytes
+                or PreparedExecutionCompletion.model_validate_json(
+                    completion_result_bytes
+                ).canonical_bytes()
+                != completion_result_bytes
+                or PrepareConversationCompletionV1.model_validate_json(conversation_bytes)
+                .canonical_json_bytes()
+                != conversation_bytes
+                or PreparedConversationCompletionV1.model_validate_json(
+                    conversation_result_bytes
+                ).canonical_json_bytes()
+                != conversation_result_bytes
+                or prepare_first_path_execution_completion(completion_request) != completion_result
+                or ConversationCompletionOwner().prepare_completion(conversation_request)
+                != conversation_result
+                or completion_result.source_request_fingerprint
+                != first_path_completion_request_fingerprint(completion_request)
+                or conversation_result.source_request_fingerprint
+                != conversation_source_request_fingerprint(conversation_request)
+                or conversation_request.original_completion_request_bytes != completion_bytes
+                or conversation_request.loop_preparation_bytes != completion_result_bytes
+                or conversation_request.proposed_terminal_run != completion_result.run
+                or conversation_request.proposed_terminal_manifest
+                != completion_result.terminal_manifest
+                or fence.run_id != completion_request.run.run_id
+                or fence.run_head != completion_request.run.head
+                or fence.worker_session_id != completion_request.run.worker_session
+                or p_effects_source.selected_scope.scope.database_id
+                != completion_request.source.database_id
+                or p_effects_source.selected_scope.scope.recipient
+                != completion_result.delivery.manifest.ordered_deliveries[0].selection.recipient
+            ):
+                raise ValueError("historical effects predecessor differs")
+            identity = CommandIdentity(
+                command_id=effects_command_id,
+                fingerprint=hashlib.sha256(effects_command_id.encode()).hexdigest(),
+                expected_tenant_head=completion_request.source.tenant_commit_sequence,
+            )
+            effects_fence = EffectsNonSchedulerFence(
+                lineage=EffectsNotApplicable(),
+                physical_root=EffectsNotApplicable(),
+                lease=EffectsNotApplicable(),
+                clock_proof=EffectsNotApplicable(),
+                run_id=fence.run_id,
+                run_head=fence.run_head,
+                worker_session_id=fence.worker_session_id,
+                runtime_generation=fence.runtime_generation,
+            )
+            if (
+                effects_fence.kind != "NON_SCHEDULER_NOT_APPLICABLE"
+                or (
+                    effects_fence.run_id,
+                    effects_fence.run_head,
+                    effects_fence.worker_session_id,
+                    effects_fence.runtime_generation,
+                )
+                != (
+                    fence.run_id,
+                    fence.run_head,
+                    fence.worker_session_id,
+                    fence.runtime_generation,
+                )
+            ):
+                raise ValueError("historical effects fence translation differs")
+            provisional = PrepareH1LocalCommentaryV1(
+                identity=identity,
+                intent_id="pending",
+                expected_intent=Absent(),
+                original_completion_request=completion_request,
+                prepared_completion=completion_result,
+                selected_scope=p_effects_source.selected_scope,
+                retained_origin=p_effects_source.retained_origin,
+                fence=effects_fence,
+            )
+            delivery_id = completion_result.delivery.manifest.ordered_deliveries[0].delivery_id
+            intent_preimage = [
+                "chiplog.effects.h1-local-commentary-preparation.v1",
+                provisional.identity.model_dump(mode="json"),
+                delivery_id,
+            ]
+            intent_id = "h1-local-commentary:" + hashlib.sha256(
+                json.dumps(
+                    intent_preimage, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            request = provisional.model_copy(update={"intent_id": intent_id})
+            raw = request.canonical_bytes()
+            if PrepareH1LocalCommentaryV1.model_validate_json(raw).canonical_bytes() != raw:
+                raise ValueError("historical effects request is noncanonical")
+            return request
+        except (IndexError, TypeError, ValueError) as error:
+            raise H1CompletionPreparationUnavailable(
+                "H1 historical effects predecessor differs"
+            ) from error
+
+    @staticmethod
+    def _build_historical_terminal_work_request(
+        *,
+        completion_request: PrepareExecutionCompletionFirstPathV2,
+        completion_result: PreparedExecutionCompletion,
+        effects_request: PrepareH1LocalCommentaryV1,
+        effects_result: PreparedH1LocalCommentaryV1,
+    ) -> PrepareTerminalWork:
+        """Rebuild terminal semantics from typed durable predecessor evidence.
+
+        The historical stage source independently authenticates these values;
+        this pure helper still requires their complete canonical joins.
+        """
+        if (
+            type(completion_request) is not PrepareExecutionCompletionFirstPathV2
+            or type(completion_result) is not PreparedExecutionCompletion
+            or type(effects_request) is not PrepareH1LocalCommentaryV1
+            or type(effects_result) is not PreparedH1LocalCommentaryV1
+        ):
+            raise H1CompletionPreparationUnavailable(
+                "H1 historical terminal work inputs differ"
+            )
+        try:
+            completion_bytes = completion_request.canonical_bytes()
+            result_bytes = completion_result.canonical_bytes()
+            effects_bytes = effects_request.canonical_bytes()
+            effects_result_bytes = effects_result.canonical_bytes()
+            if (
+                PrepareExecutionCompletionFirstPathV2.model_validate_json(completion_bytes)
+                .canonical_bytes()
+                != completion_bytes
+                or PreparedExecutionCompletion.model_validate_json(result_bytes).canonical_bytes()
+                != result_bytes
+                or PrepareH1LocalCommentaryV1.model_validate_json(effects_bytes).canonical_bytes()
+                != effects_bytes
+                or PreparedH1LocalCommentaryV1.model_validate_json(
+                    effects_result_bytes
+                ).canonical_bytes()
+                != effects_result_bytes
+            ):
+                raise ValueError("noncanonical historical terminal predecessor")
+        except ValueError as error:
+            raise H1CompletionPreparationUnavailable(
+                "H1 historical terminal work exchange has invalid canonical evidence"
+            ) from error
+        if (
+            completion_result.source_request_fingerprint
+            != first_path_completion_request_fingerprint(completion_request)
+            or effects_result.source_request_fingerprint
+            != hashlib.sha256(effects_request.canonical_bytes()).hexdigest()
+            or effects_request.original_completion_request.canonical_bytes()
+            != completion_request.canonical_bytes()
+            or effects_request.prepared_completion != completion_result
+        ):
+            raise H1CompletionPreparationUnavailable(
+                "H1 historical effects exchange differs from completion source"
+            )
+        source = AcceptedCompletionWorkSourceV1(
+            original_completion_request_bytes=completion_bytes,
+            prepared_completion_bytes=result_bytes,
+            terminal_run=completion_result.run,
+            terminal_run_head=run_ref(completion_result.run),
+            terminal_manifest=completion_result.terminal_manifest,
+            terminal_manifest_head=manifest_ref(completion_result.terminal_manifest),
+            ordered_open_obligations=completion_result.terminal_manifest.complete_open_original_obligations,
+        )
+        if source.ordered_open_obligations:
+            raise H1CompletionPreparationUnavailable(
+                "H1 historical terminal work requires zero open obligations"
+            )
+        return PrepareTerminalWork(
+            identity=WorkCommandIdentity(
+                tenant_id=source.terminal_run.tenant,
+                command_id=source.terminal_manifest.command_id,
+            ),
+            terminal_run=source.terminal_run,
+            original_terminalization_request=completion_terminal_work_source_bytes(source),
+            terminal_manifest=source.terminal_manifest_head,
+            ordered_open_obligations=source.ordered_open_obligations,
+        )
+
     def _replay_final_fence_inputs(self, port: object) -> _H1FinalFenceInputs:
         """Release this session's retained inputs only to its mounted P owner."""
         from chiplog.composition.h1_completion_exchange_registry import (
@@ -955,6 +1641,8 @@ class H1CompletionPreparationSession:
 
     async def prepare_terminal_work(self) -> H1CompletionOwnerExchangeV1:
         """Prepare zero-obligation terminal work through the guarded live route."""
+        if self._recovery is not None:
+            return await self._dispatch_recovery_stage("TERMINAL_WORK")
         cut = self._cut
         preflight = self._preflight
         completion_exchange = self._completion_exchange

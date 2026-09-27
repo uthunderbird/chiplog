@@ -2,8 +2,9 @@
 
 Status: CONTRACT FROZEN, TESTS/IMPLEMENTATION OPEN. This contract extends the
 [integrated contract graph](R14-R17-INTEGRATED-CONTRACTS.md) at the H1 V2 seal →
-four owner preparations boundary. It does not establish selected publication,
-external delivery, or completion of R14–R17.
+four owner preparations boundary and specifies separate installed finalization.
+It does not establish implemented selected publication, external delivery, or
+completion of R14–R17.
 
 ## Authority and identity
 
@@ -44,7 +45,7 @@ completion, even where native ROOT selection succeeds. A present malformed,
 unknown-version or inconsistent descriptor is an integrity failure.
 
 Pending recovery validates the authenticated extension and blob before exact
-materialization/replay, preserves both DECIDED siblings, reconciles the
+materialization/replay, preserves all required DECIDED siblings, reconciles the
 recorded predecessor/resulting, and finishes the original decision before
 historical selection. It never recaptures a historical cut or P/E facts.
 Selected missing/corrupt blobs hold recovery; unselected staged blobs grant
@@ -111,6 +112,86 @@ intent, scope, origin, fence and predecessor joins from independent selected
 sources, then requires equality with the entire pinned request before replay
 or a completed-state shortcut.
 
+## Historical later-stage source interfaces
+
+CONVERSATION and EFFECTS additionally require the immutable
+[`h1_preseal_p_scope_wires_v1` sibling](R14-R17-H1-PRESEAL-PE-ANCHOR.md#versioned-retained-p-scope-exchanges).
+Its original accepted ISSUE/CURRENT payload pairs must match the P/E anchor's
+existing exchange digests and the independently selected seal/command/database
+bindings. The authority post-image and scope bytes cannot reconstruct these
+pairs. Missing residual holds later-stage recovery as unsupported; malformed,
+unknown-version or inconsistent present residual is an integrity failure.
+These checks precede a fully durable shortcut as well as replay. Pending
+recovery preserves the sibling exactly with the original DECIDED command;
+no additional physical member or fresh CURRENT substitution is permitted.
+
+The following are private installed-owner interfaces, not public wire edges.
+P exposes `_issue_historical_recovery_source(*, original_identity:
+DriverCommandIdentityV1, original_fingerprint: str, selected_seal:
+CallSubjectHead) -> object`. These inputs are locators only. P independently
+authenticates native history, authority cut, anchor, residual, original
+workspace issuance and historical trust, then registers an opaque receipt by
+exact object identity in that runtime. Copies, deserialization and caller
+DTOs cannot issue authority. P exposes
+`_replay_historical_conversation_policy(source_cap: object) ->
+_AuthenticatedConversationPolicyInputs` and
+`_replay_historical_effects_source(source_cap: object) ->
+_AuthenticatedCompletionEffectsSource`. Each replay authenticates the same
+immutable sources and compares its canonical projection to the issued one.
+The returned private dataclasses are inert evidence, never caller authority.
+These APIs do not replace the existing current-path methods.
+
+A exposes `_prepare_historical_conversation_completion_request(*,
+original_identity: DriverCommandIdentityV1, original_fingerprint: str,
+selected_seal: CallSubjectHead, p_source_cap: object,
+accepted_completion: object) -> PrepareConversationCompletionV1`.
+`accepted_completion` is an opaque B-issued receipt whose request is
+independently reconstructed and whose complete canonical result is validated.
+A verifies its exact identity through the installed B issuer; arbitrary
+request/result/native attributes are insufficient. Durable-result validation
+may issue such evidence without IPC, but cannot issue an exchange identity.
+
+A obtains the captured Run and selected/physical provenance from the full
+historical native cut. It obtains the complete physical tenant inventory,
+tenant sequence and commitment from the verified authority post-image, and
+selected publication membership from the seal-bounded loop prefix and the
+captured protected-owner-as-of prefix. It reconciles every snapshot row and
+selected publication before deriving conversation history and the previous
+entry. Native lineage members alone are not a complete conversation inventory.
+Workspace policy and registration come from the original physical V2 workspace
+issuance reached through selected Prepare; scope policy and recipient come
+from the anchor. Original registration generation/digest must join the
+anchor's custody coordinates, never current custody selection. A preserves
+the existing conversation entry and command-seed derivation from these inputs
+and the exact accepted completion request/result bytes.
+
+P's effects projection contains `selected_scope`, `retained_origin` and
+`fence`. The scope comes from anchor bytes joined to the authenticated
+historical trust decision/record; `current_request` and `current_result` come
+from the retained accepted CURRENT pair and its historical prefix. The
+retained origin comes from selected H0/native initialization and admitted
+authentication, compared with the retained ISSUE evidence. The non-scheduler
+fence comes from the anchor's E worker joined to the sealed Run. B derives
+intent and predecessor evidence from independently validated completion and
+conversation results, then performs the complete pinned EFFECTS comparison
+specified above. Historical CURRENT evidence is not current admission proof.
+
+B's private pure builder is `_build_historical_terminal_work_request(*,
+completion_request: PrepareExecutionCompletionFirstPathV2,
+completion_result: PreparedExecutionCompletion,
+effects_request: PrepareH1LocalCommentaryV1,
+effects_result: PreparedH1LocalCommentaryV1) -> PrepareTerminalWork`.
+Before invoking it, B validates the complete ordered predecessor chain,
+including conversation. The builder checks canonical bytes, completion source
+fingerprint, effects request/result fingerprint, and equality of the effects
+request's original completion and prepared completion with those exact
+predecessors. `AcceptedCompletionWorkSourceV1` contains the exact completion
+request/result bytes, resulting terminal Run/head, terminal manifest/head and
+its complete open obligations. Require zero obligations; terminal-work command
+identity remains the terminal tenant and terminal manifest command ID. This
+stage needs no further immutable residual and grants no terminal clearance.
+Fresh terminal admission and P currentness remain separately mandatory.
+
 ## Driver and failure behavior
 
 After a durable H1 V2 seal, installed `advance_execution` derives the exact
@@ -119,12 +200,77 @@ the original command finds that seal from authenticated native history and
 resumes incomplete ROOT/stages without repeating native advancement. It does
 not infer the locator from the recovery journal: the seal may be committed
 while ROOT is absent. Fully durable preparation returns the established
-running receipt with `EXACT_REPLAY` and no new B call. A state that cannot
+running receipt with `EXACT_REPLAY` and no new B call. Caller authentication
+through deployment trust still precedes this replay; retained identity and
+fingerprint do not authorize access by themselves. A state that cannot
 continue returns the existing HOLD/CONFLICT behavior with a precise cause;
 it never claims terminal publication or fabricates an old current Run.
 Cancellation drains/revokes the live continuation before releasing the
-execution fence. The terminal admission guard and P currentness proof remain
-mandatory even when all preparation stages are durable.
+execution fence. This preparation operation does not mint completion issuance
+or invoke finalization implicitly. Fresh terminal admission and P currentness
+remain mandatory for the separate finalization operation below.
+
+## Separate installed finalization
+
+The installed coordinator exposes a separate private operation
+`finalize_execution(original_identity: DriverCommandIdentityV1,
+original_fingerprint: str) -> CommonExecutionResultV1`. Its arguments locate
+original authenticated admission; they carry no publication authority. It does
+not change the public `advance_execution` replay contract or accept a caller
+batch, issuance, ROOT or selected-decision DTO. These are frozen obligations,
+not a claim that finalization is implemented.
+
+Finalization acquires the same enrolled recovery execution fence as preparation
+and retains it through publication reconciliation and drain. No competing B
+continuation may run. `AuthorityGate` still covers short synchronous checks and
+writer admission, never an await or owner IPC. Finalization independently derives
+the native ROOT, scans the authenticated journal, reconstructs all four semantic
+inputs and validates each complete durable result against its predecessors.
+An incomplete chain holds until preparation completes.
+
+Before fresh B replay, the publication owner independently locates the original
+stable completion identity in authenticated history. An already selected decision
+is reconciled/materialized and read back exactly, then returned as `EXACT_REPLAY`
+without opening B or minting issuance. Pending or uncertain publication must be
+resolved first. Only authoritative absence permits a new attempt; a missing
+response or failed readback is not proof of absence.
+
+With a validated complete chain and authenticated absence of selected or unresolved
+completion, finalization opens fresh enrolled B and replays the four inert owner
+preparations in canonical order. Requests retain their pinned semantic bytes but
+use fresh admitted broker frames. Each actual result must equal its durable
+canonical bytes exactly. Replay neither replaces stage records nor treats them
+as live exchanges. The fourth call requires fresh terminal admission before IPC.
+After its exact success, P obtains a distinct fresh final CURRENT and rechecks
+source currentness after the await. Historical CURRENT and the preterminal check
+cannot substitute for this post-terminal read. P must authenticate the recovery
+provenance through its installed owner, without fabricating a live-path cut or
+relaxing live-path validation.
+
+One-use B issuance binds the independently verified ROOT, exact four live
+exchanges, terminal admission, fresh final P CURRENT, mounted installation and
+fence-owned continuation. Enrollment retains this material behind an opaque
+identity marker. Durable records and public issuance DTOs cannot manufacture it.
+The installed publication authority consumes the marker once at admission before
+reentrant downstream work, independently derives authenticated invocation and
+read-manifest inputs, and rechecks the complete source cut at final writer
+admission without owner IPC under the writer lock. Failed or stale admission
+burns transient authority; the marker is never retried.
+
+The versioned [H1 completion issuance V2 freeze](H1-COMPLETION-ISSUANCE-V2.md)
+separates historical selected scope evidence from final invocation evidence,
+defines the writer-accepted admission witness and freezes dispatch/replay checks.
+It is a tests-first contract, not a claim of implemented finalization.
+
+Publication preserves the existing `CompleteDeliveryBatchV2` physical envelope
+and fixed owner slots. Selection and exact physical readback precede a terminal
+selected receipt. Cancellation or uncertain commit revokes transient authority
+and reconciles the original publication identity before any later issuance;
+unresolved state returns existing uncertain/HOLD behavior. Restart authenticates
+and recovers an already selected batch without fresh B authority or current owner
+regeneration. Terminal selection alone does not assert hermetic delivery, SEND
+permission or outcome closure: those require their own selected intent and
+observed evidence through the installed driver.
 
 ## Acceptance tests before implementation
 
@@ -133,7 +279,8 @@ Tests must first show the current missing behavior as RED and then prove:
 1. Seal committed without ROOT recovers from the selected native prefix;
    forged but canonical ROOT fields, rival roots and missing native bytes hold.
 2. An uncertain ROOT/input/result append is reconciled by reopening and
-   scanning; no IPC begins before input readback or from a losing CAS branch.
+   scanning; no B/stage-owner IPC begins before input readback or from a losing
+   CAS branch.
 3. Each crash cut resumes with exact pinned semantic bytes and full result
    comparison; fresh B exchange identities are observed after restart.
 4. Effects replay across a fresh broker generation uses the same inner bytes,
@@ -143,17 +290,30 @@ Tests must first show the current missing behavior as RED and then prove:
    late pure replies cannot append or publish after ownership loss. Journal
    scan/append inside the separately enrolled fence does not self-deadlock.
 6. Exact driver replay performs no second native seal. Once four stages are
-   durable, it performs no extra B/owner call and still reports only the
-   established running receipt.
+   durable, it performs no B/stage-owner call after mandatory caller
+   authentication and still reports only the established running receipt.
 7. A digest-consistent but semantically substituted stage input and matching
    result under a valid ROOT are rejected, including on the fully durable
-   no-IPC path.
+   path without B/stage-owner IPC.
 8. The versioned V2 authority cut survives DECIDED-before-materialization and
    committed-before-finish crashes, and later unrelated publications leave
    the full historical cut and COMPLETION input byte-identical. Wrong cut
    bindings, missing/corrupt blobs and unknown versions hold; legacy V2
    without the extension cannot reconstruct full-cut completion. The physical
    seal still has exactly Run, seal and frontier members.
+
+9. Fully durable `advance_execution` remains B/stage-owner-IPC-free
+   `EXACT_REPLAY` after caller authentication; separate
+   finalization without selected completion opens fresh B, replays exactly four
+   inert calls and compares every result. Terminal admission precedes the fourth
+   send; a distinct post-terminal P CURRENT precedes one-use issuance.
+10. Copied/caller-shaped issuance, substituted ROOT/session/lease or result,
+    stale terminal admission and historical CURRENT cannot authorize publication.
+    Competing finalizations cannot consume one marker twice.
+11. Selection-before-readback crash recovers the original exact batch without B
+    IPC or reminting. Pending/ambiguous publication holds before fresh B;
+    cancellation drains before fence release. A terminal selected receipt alone
+    cannot report delivery/outcome success.
 
 These tests observe authenticated journal bytes, physical publications,
 actual broker frames and owner-call counts. A DTO roundtrip alone is not a

@@ -248,7 +248,9 @@ class R13Runtime(R8PlanningRuntime):
     async def _prepare_startup(self) -> None:
         for pending in self._pending():
             identity = str(pending["operation_id"])
+            command = self._publication(pending)
             with self._authority_gate().hold():
+                self._validate_pending_h1_v2_authority_cut(pending, command)
                 if self._loop_decision_materialized(identity, pending):
                     continue
                 actual, _ = capture_authority_storage_state(self._database)
@@ -256,7 +258,7 @@ class R13Runtime(R8PlanningRuntime):
                 self._replaying_publication = True
                 try:
                     result = await self._appender._submit_exact_recovery(
-                        self._publication(pending),
+                        command,
                         str(pending["predecessor"]),
                         str(pending["resulting"]),
                     )
@@ -269,6 +271,39 @@ class R13Runtime(R8PlanningRuntime):
                     raise LoopRejected("decided loop publication recovery " + result.disposition)
             self._finish_decision(identity, expected=pending)
         await super()._prepare_startup()
+
+    def _validate_pending_h1_v2_authority_cut(
+        self, decision: dict[str, object], command: PhysicalPublicationCommand
+    ) -> None:
+        """Resolve an explicit selected V2 post-image before any recovery path.
+
+        A legacy V2 decision has no extension and remains on its native-only
+        recovery path.  Once the extension is present, however, it is part of
+        the authenticated DECIDED body and must bind this exact command and
+        its recorded authority transition before either replay or the already-
+        materialized shortcut can finish the decision.
+        """
+        from chiplog.composition.h1_v2_authority_cut import (
+            H1_V2_AUTHORITY_CUT_FIELD,
+            resolve_h1_v2_authority_cut,
+        )
+        from chiplog.platform.authority_checkpoint import AuthorityCheckpointStore
+
+        if (
+            H1_V2_AUTHORITY_CUT_FIELD not in decision
+            or command.operation_kind != "agent_loop.execution-complete-seal.v1"
+        ):
+            return
+        try:
+            self._check_database_identity()
+            resolve_h1_v2_authority_cut(
+                decision,
+                cast(AuthorityCheckpointStore, self._h1_checkpoint_store()),
+                self._database_identity,
+                command,
+            )
+        except ValueError as error:
+            raise LoopRejected("pending H1 V2 authority cut cannot be verified") from error
 
     def _publication(self, entry: dict[str, object]) -> PhysicalPublicationCommand:
         rows = cast(list[dict[str, str]], entry["records"])

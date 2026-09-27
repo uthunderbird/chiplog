@@ -494,7 +494,15 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 envelope = json.loads(raw)
                 if envelope.get("kind") != "HERMETIC_OUTPUT_SCOPE_V1":
                     continue
-                existing = HermeticOutputScopeV1.model_validate(envelope["payload"]["scope"])
+                scope_bytes = json.dumps(
+                    envelope["payload"]["scope"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode()
+                existing = HermeticOutputScopeV1.model_validate_json(scope_bytes)
+                if existing.canonical_bytes() != scope_bytes:
+                    raise ValueError("historical H1 scope is not canonical")
                 if (
                     existing.database_id == candidate.scope.database_id
                     and existing.scope_id == candidate.scope.scope_id

@@ -12,6 +12,7 @@ from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
 from chiplog.capabilities.agent_loop.application import AgentLoop
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopRejected, RunRecord
 from chiplog.composition.h1_completion_issuance import SCHEMA as H1_ISSUANCE_SCHEMA
+from chiplog.composition.h1_completion_issuance import V2_SCHEMA as H1_ISSUANCE_V2_SCHEMA
 from chiplog.composition.r14 import open_r14_loop
 from chiplog.composition.r14_execution_completion_records import (
     RetainedCompleteAcceptanceExchangeV1,
@@ -56,17 +57,48 @@ async def test_selected_complete_delivery_v2_projects_its_native_terminal_run() 
 async def test_complete_delivery_v2_applicability_schema_dispatch_is_total() -> None:
     fixture = await accepted_completion_fixture("v2")
 
-    with pytest.raises(ValueError, match="unsupported complete delivery v2 applicability schema"):
-        _completion_v2_schema_dispatch(fixture.batch)
+    for schema in (H1_ISSUANCE_SCHEMA, H1_ISSUANCE_V2_SCHEMA):
+        routed = fixture.batch.model_copy(
+            update={
+                "authentication": fixture.batch.authentication.model_copy(
+                    update={
+                        "applicability_schema": schema,
+                        "applicability_bytes": f'{{"schema_id":"{schema}"}}'.encode(),
+                    }
+                )
+            }
+        )
+        assert _completion_v2_schema_dispatch(routed) == "H1"
 
-    h1 = fixture.batch.model_copy(
+    mixed = fixture.batch.model_copy(
         update={
             "authentication": fixture.batch.authentication.model_copy(
-                update={"applicability_schema": H1_ISSUANCE_SCHEMA}
+                update={
+                    "applicability_schema": H1_ISSUANCE_V2_SCHEMA,
+                    "applicability_bytes": (
+                        f'{{"schema_id":"{H1_ISSUANCE_SCHEMA}"}}'.encode()
+                    ),
+                }
             )
         }
     )
-    assert _completion_v2_schema_dispatch(h1) == "H1"
+    with pytest.raises(ValueError, match="outer and inner schemas differ"):
+        _completion_v2_schema_dispatch(mixed)
+
+    unknown = fixture.batch.model_copy(
+        update={
+            "authentication": fixture.batch.authentication.model_copy(
+                update={
+                    "applicability_schema": "chiplog.composition.h1-completion-issuance.v9",
+                    "applicability_bytes": (
+                        b'{"schema_id":"chiplog.composition.h1-completion-issuance.v9"}'
+                    ),
+                }
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="schema is unsupported"):
+        _completion_v2_schema_dispatch(unknown)
 
 
 def test_historical_trust_reader_returns_the_canonical_gated_durability() -> None:

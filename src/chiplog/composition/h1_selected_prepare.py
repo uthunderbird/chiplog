@@ -31,6 +31,10 @@ from chiplog.capabilities.agent_loop.execution_transition_contracts import Prepa
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.h1_preseal_contracts import H1SelectedPrepare, H1SelectedSeal
+from chiplog.composition.h1_v2_authority_cut import (
+    H1_V2_AUTHORITY_CUT_FIELD,
+    resolve_h1_v2_authority_cut,
+)
 from chiplog.composition.h1_verified_snapshot_rows import (
     H1VerifiedSnapshotRows,
     H1VerifiedSnapshotRowsError,
@@ -71,13 +75,13 @@ class H1SelectedPostSealPrepare:
 
 @dataclass(frozen=True, slots=True)
 class _H1SelectedCut:
-    """One V3 seal's authenticated journal prefix and authority post-image."""
+    """One versioned H1 seal's authenticated journal prefix and post-image."""
 
     decision_id: str
     decision_bytes: bytes
     command: PhysicalPublicationCommand
-    retained: RetainedExecutionCompleteSealV3
-    envelope: ExecutionCompleteSealPhysicalEnvelopeV3
+    retained: RetainedExecutionCompleteSealV2 | RetainedExecutionCompleteSealV3
+    envelope: ExecutionCompleteSealPhysicalEnvelopeV2 | ExecutionCompleteSealPhysicalEnvelopeV3
     resulting: str
     commit_sequence: int
     database_identity: tuple[str, int, int]
@@ -350,12 +354,13 @@ def select_h1_v3_prepare_for_candidate(
 def _resolve_h1_selected_cut(
     runtime: CommonCliExecutionRuntime, *, selected_seal: CallSubjectHead
 ) -> _H1SelectedCut:
-    """Locate a V3 seal in the journal, then resolve its one checkpoint cut.
+    """Locate a selected V3 or extension-bearing V2 seal and its post-image.
 
     This deliberately reads the seal member from authenticated command bytes:
     opening SQLite to discover a historical cut would make later authority state
     part of the locator.
     """
+    runtime._require_no_pending()
     runtime._check_database_identity()
     commands = _journal_commands(runtime)
     selected: (
@@ -363,8 +368,8 @@ def _resolve_h1_selected_cut(
             str,
             bytes,
             PhysicalPublicationCommand,
-            RetainedExecutionCompleteSealV3,
-            ExecutionCompleteSealPhysicalEnvelopeV3,
+            RetainedExecutionCompleteSealV2 | RetainedExecutionCompleteSealV3,
+            ExecutionCompleteSealPhysicalEnvelopeV2 | ExecutionCompleteSealPhysicalEnvelopeV3,
             dict[str, object],
         ]
         | None
@@ -379,20 +384,20 @@ def _resolve_h1_selected_cut(
                 if member.owner == OWNER and member.schema_id == SEAL_SCHEMA
             )
             if len(seals) != 1:
-                raise ValueError("H1 selected V3 seal lacks one native response seal")
+                raise ValueError("H1 selected seal lacks one native response seal")
             physical_seal = seals[0]
             decoded_seal = SealedResponseRecord.model_validate_json(physical_seal.canonical_bytes)
             if decoded_seal.canonical_bytes() != physical_seal.canonical_bytes:
-                raise ValueError("H1 selected V3 response seal bytes are not canonical")
+                raise ValueError("H1 selected response seal bytes are not canonical")
             digest = _digest(physical_seal.canonical_bytes)
             actual_locator = CallSubjectHead(
                 subject_id=decoded_seal.response_seal_id,
                 revision=Present(head="record:" + digest, fingerprint=digest),
             )
             if physical_seal.record_id != actual_locator.revision.head:
-                raise ValueError("H1 selected V3 response seal physical ID differs")
+                raise ValueError("H1 selected response seal physical ID differs")
         except (TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-            raise ValueError("H1 selected V3 seal decision is invalid") from error
+            raise ValueError("H1 selected seal decision is invalid") from error
         if actual_locator != selected_seal:
             continue
         if selected is not None:
@@ -402,24 +407,37 @@ def _resolve_h1_selected_cut(
             retained_raw = entry.get("execution_complete_seal")
             envelope_raw = entry.get("execution_complete_seal_envelope")
             if not isinstance(retained_raw, str) or not isinstance(envelope_raw, str):
-                raise ValueError("H1 selected V3 seal has no retained envelope")
+                raise ValueError("H1 selected seal has no retained envelope")
             retained_wire = _strict_json(retained_raw, canonical=False)
-            if retained_wire.get("kind") != "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V3":
-                raise ValueError("H1 selected seal is not V3")
-            retained = RetainedExecutionCompleteSealV3.model_validate_json(retained_raw)
-            envelope = ExecutionCompleteSealPhysicalEnvelopeV3.model_validate_json(envelope_raw)
+            kind = retained_wire.get("kind")
+            retained: RetainedExecutionCompleteSealV2 | RetainedExecutionCompleteSealV3
+            envelope: (
+                ExecutionCompleteSealPhysicalEnvelopeV2 | ExecutionCompleteSealPhysicalEnvelopeV3
+            )
+            if kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V2":
+                if "h1_historical_checkpoint" in entry:
+                    raise ValueError("H1 selected V2 seal cannot carry a checkpoint")
+                retained = RetainedExecutionCompleteSealV2.model_validate_json(retained_raw)
+                envelope = ExecutionCompleteSealPhysicalEnvelopeV2.model_validate_json(envelope_raw)
+            elif kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V3":
+                if H1_V2_AUTHORITY_CUT_FIELD in entry:
+                    raise ValueError("H1 selected V3 seal cannot carry a V2 authority cut")
+                retained = RetainedExecutionCompleteSealV3.model_validate_json(retained_raw)
+                envelope = ExecutionCompleteSealPhysicalEnvelopeV3.model_validate_json(envelope_raw)
+            else:
+                raise ValueError("H1 selected seal has an unsupported retained profile")
             if (
                 retained.canonical_bytes().decode() != retained_raw
                 or envelope.canonical_bytes().decode() != envelope_raw
                 or build_complete_seal_envelope(retained) != envelope
                 or complete_seal_physical_command(envelope) != command
             ):
-                raise ValueError("H1 selected V3 seal decision differs from physical command")
+                raise ValueError("H1 selected seal decision differs from physical command")
         except (TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-            raise ValueError("H1 selected V3 seal decision is invalid") from error
+            raise ValueError("H1 selected seal decision is invalid") from error
         selected = (decision_id, decision_bytes, command, retained, envelope, entry)
     if selected is None:
-        raise ValueError("H1 historical selector has no unique selected V3 seal")
+        raise ValueError("H1 historical selector has no unique selected seal")
 
     decision_id, decision_bytes, command, retained, envelope, entry = selected
     prefix = tuple(item for item in commands if item[2].expected_head <= command.expected_head)
@@ -427,21 +445,26 @@ def _resolve_h1_selected_cut(
     if len(heads) != len(set(heads)):
         raise ValueError("H1 selected journal prefix has competing publication predecessors")
     try:
-        snapshot = resolve_h1_checkpoint(
-            entry,
-            cast(AuthorityCheckpointStore, runtime._h1_checkpoint_store()),
-            runtime._database_identity,
-            command,
-        )
+        store = cast(AuthorityCheckpointStore, runtime._h1_checkpoint_store())
+        if isinstance(retained, RetainedExecutionCompleteSealV3):
+            snapshot = resolve_h1_checkpoint(
+                entry, store, runtime._database_identity, command
+            )
+        else:
+            if H1_V2_AUTHORITY_CUT_FIELD not in entry:
+                raise ValueError("H1 selected V2 seal lacks an authority cut")
+            snapshot = resolve_h1_v2_authority_cut(
+                entry, store, runtime._database_identity, command
+            )
         rows = H1VerifiedSnapshotRows.from_verified(snapshot)
         if rows.tenant_head(command.tenant_id) != command.expected_head + 1:
-            raise ValueError("H1 selected checkpoint head differs from selected seal")
+            raise ValueError("H1 selected post-image head differs from selected seal")
         rows.require_complete(command)
     except (ValueError, H1VerifiedSnapshotRowsError) as error:
-        raise ValueError("H1 selected V3 checkpoint is invalid") from error
+        raise ValueError("H1 selected authority post-image is invalid") from error
     resulting = entry.get("resulting")
     if not isinstance(resulting, str):
-        raise ValueError("H1 selected V3 checkpoint has no resulting commitment")
+        raise ValueError("H1 selected authority post-image has no resulting commitment")
     return _H1SelectedCut(
         decision_id=decision_id,
         decision_bytes=decision_bytes,

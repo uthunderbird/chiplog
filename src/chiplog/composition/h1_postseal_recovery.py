@@ -24,7 +24,6 @@ _DOMAIN = b"chiplog.h1.postseal-recovery-root.v1\x00"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _RUN_HEAD = re.compile(r"^loop:[0-9a-f]{64}$")
 _STAGES = ("COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK")
-_MAX_SEMANTIC_BYTES = 256 * 1024
 
 
 class H1PostSealRecoveryUnavailable(RuntimeError):
@@ -260,7 +259,7 @@ class H1PostSealRecoveryRecordV1:
 
 
 def _validate_bytes(value: object, commitment: object, name: str) -> None:
-    if not isinstance(value, bytes) or len(value) > _MAX_SEMANTIC_BYTES:
+    if not isinstance(value, bytes):
         raise H1PostSealRecoveryRecordError(f"{name} bytes are invalid")
     if _digest(value) != _require_digest(commitment, f"{name} digest"):
         raise H1PostSealRecoveryRecordError(f"{name} commitment differs")

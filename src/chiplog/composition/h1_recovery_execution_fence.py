@@ -190,6 +190,23 @@ class _H1RecoveryExecutionLease:
             raise RuntimeError("recovery execution fence lease is not owned by this task")
         self._fence._mount.assert_current()
 
+    def _require_admission_current(self) -> None:
+        """Check lease/mount liveness from the broker worker thread.
+
+        Broker admission runs through ``asyncio.to_thread`` and therefore has
+        no owning asyncio task.  It must never call ``require_owned``: that
+        task-affine check is reserved for coordinator-side operations.
+        """
+        self._fence._require_current_process()
+        with _fork_lock:
+            if (
+                self._released
+                or os.getpid() != self._pid
+                or self._fence._lease is not self
+            ):
+                raise RuntimeError("recovery execution fence lease is no longer current")
+            self._fence._mount.assert_current()
+
     def _task_owns(self, fence: _H1RecoveryExecutionFence) -> bool:
         return (
             not self._released

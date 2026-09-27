@@ -21,6 +21,7 @@ from chiplog.composition.h1_preseal_native_source import (
     H1PresealNativeSource,
     H1PresealNativeSourceCut,
 )
+from chiplog.composition.h1_preseal_p_scope_wires import H1PresealPScopeWiresV1
 from chiplog.composition.h1_preseal_pe_anchor_records import H1PresealPEAnchorRecordV1
 from chiplog.composition.r14_execution_complete_seal_records import (
     RetainedExecutionCompleteSealV2,
@@ -51,6 +52,14 @@ class H1PresealPEDecisionCapture:
 
     def __reduce__(self) -> Never:
         raise TypeError("H1 preseal P/E captures cannot be serialized")
+
+
+@dataclass(frozen=True, slots=True)
+class H1PresealPEBoundDecision:
+    """The two authenticated DECIDED siblings minted by one replay."""
+
+    anchor: H1PresealPEAnchorRecordV1
+    scope_wires: H1PresealPScopeWiresV1
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +150,7 @@ class H1PresealPEDecisionOwner:
         command: PhysicalPublicationCommand,
         retained_v2: RetainedExecutionCompleteSealV2,
         owner_asof: H1OwnerAsOfV1,
-    ) -> H1PresealPEAnchorRecordV1:
+    ) -> H1PresealPEBoundDecision:
         """Consume ``capture`` and mint its closed RECORD under the writer's gate.
 
         This method intentionally contains no await and invokes no public-port
@@ -167,9 +176,23 @@ class H1PresealPEDecisionOwner:
         native, scope, wires, members, worker = self._replay(state.native_cut, state.scope_cap)
         if (native, scope, wires, members, worker) != state.baseline:
             raise H1PresealPEDecisionError("H1 preseal P/E source changed after capture")
-        return self._record(
+        anchor = self._record(
             preflight, command, retained_v2, owner_asof, native, scope, wires, members, worker
         )
+        data = anchor.as_dict()
+        p = cast(dict[str, object], data["p"])
+        if not isinstance(wires, tuple) or len(wires) != 2:
+            raise H1PresealPEDecisionError("H1 preseal P owner wire pair differs")
+        candidate = H1PresealPScopeWiresV1.from_wires(
+            binding=anchor.binding, issue_wire=wires[0], current_wire=wires[1]
+        )
+        scope_wires = H1PresealPScopeWiresV1.from_mapping(
+            candidate.as_dict(),
+            anchor_binding=data["binding"],
+            issue_digest=cast(str, p["accepted_issue_wire_digest"]),
+            current_digest=cast(str, p["accepted_current_wire_digest"]),
+        )
+        return H1PresealPEBoundDecision(anchor=anchor, scope_wires=scope_wires)
 
     def revoke(self) -> None:
         """Permanently invalidate outstanding private P/E capture receipts."""
@@ -333,6 +356,7 @@ class H1PresealPEDecisionOwner:
 
 
 __all__ = [
+    "H1PresealPEBoundDecision",
     "H1PresealPEDecisionCapture",
     "H1PresealPEDecisionError",
     "H1PresealPEDecisionOwner",

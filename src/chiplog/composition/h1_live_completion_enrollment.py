@@ -6,6 +6,7 @@ capability or make the mounted writer authority permissive.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -17,6 +18,8 @@ from chiplog.composition.h1_completion_preparation_session import (
 from chiplog.composition.h1_first_path_sources import H1FirstPathSources
 from chiplog.composition.h1_live_publication_authority import H1LivePublicationAuthority
 from chiplog.composition.h1_native_member_sources import H1NativeMemberSources
+from chiplog.composition.h1_recovery_execution_fence import _H1RecoveryExecutionLease
+from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
 from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.broker import PublicPortCall
 
@@ -63,6 +66,25 @@ class _H1TerminalClearance:
         raise TypeError("H1 terminal clearances cannot be serialized")
 
 
+class _H1RecoveryClearance:
+    """Identity-held, one-shot recovery-admission record."""
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        raise TypeError("H1 recovery clearances are enrollment-issued")
+
+    def __copy__(self) -> _H1RecoveryClearance:
+        raise TypeError("H1 recovery clearances cannot be copied")
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _H1RecoveryClearance:
+        del memo
+        raise TypeError("H1 recovery clearances cannot be copied")
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        raise TypeError("H1 recovery clearances cannot be serialized")
+
+
 class _H1LiveCompletionIssuance:
     """Opaque B-to-authority source; only enrollment may retain its identity.
 
@@ -105,6 +127,30 @@ class _ClearanceRecord:
     scope_snapshot: object
     preterminal_wire: object
     state: Literal["RESERVED", "ADMITTED", "BURNED"] = "RESERVED"
+
+
+@dataclass
+class _RecoveryEnrollmentRecord:
+    """One B session bound to the coordinator's mounted recovery source."""
+
+    session: H1CompletionPreparationSession
+    source: object
+    context: object
+    lease: object
+    state: Literal["ACTIVE", "REVOKED"] = "ACTIVE"
+
+
+@dataclass
+class _RecoveryClearanceRecord:
+    enrollment: _RecoveryEnrollmentRecord
+    stage: Literal["COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK"]
+    semantic_input: bytes
+    semantic_digest: str
+    sent: PublicPortCall
+    call_fingerprint: str
+    owner_frame_bytes: bytes
+    state: Literal["RESERVED", "ADMITTED", "RECORDED", "BURNED"] = "RESERVED"
+    exchange: object | None = None
 
 
 @dataclass
@@ -183,6 +229,8 @@ class _H1LiveCompletionEnrollment:
         self._gate = gate
         self._records: dict[int, _EnrollmentRecord] = {}
         self._clearances: dict[int, _ClearanceRecord] = {}
+        self._recovery_records: dict[int, _RecoveryEnrollmentRecord] = {}
+        self._recovery_clearances: dict[int, _RecoveryClearanceRecord] = {}
         # B has no real mint contract yet.  In particular, this is not a
         # generic capability registry: no public object can add an entry.
         self._issuances: dict[int, _IssuanceRecord] = {}
@@ -219,6 +267,191 @@ class _H1LiveCompletionEnrollment:
             # owner.  Recheck all identity and state facts before returning.
             if self._require_record(session) is not record or record.cut is not cut:
                 raise H1LiveCompletionEnrollmentUnavailable("H1 enrollment changed during replay")
+
+    def _open_recovery_session(
+        self,
+        *,
+        source: H1RecoveryStageSource,
+        context: object,
+        lease: _H1RecoveryExecutionLease,
+    ) -> H1CompletionPreparationSession:
+        """Create one B session for the exact coordinator-owned recovery source."""
+        with self._gate.hold():
+            self._require_recovery_source_context_lease(source=source, context=context, lease=lease)
+            if any(record.state == "ACTIVE" for record in self._recovery_records.values()):
+                raise H1LiveCompletionEnrollmentUnavailable(
+                    "H1 recovery session is already registered"
+                )
+            session = H1CompletionPreparationSession(first_path_sources=self._first_path_sources)
+            self._records[id(session)] = _EnrollmentRecord(
+                session, object.__new__(_H1LiveCompletionHandle)
+            )
+            self._recovery_records[id(session)] = _RecoveryEnrollmentRecord(
+                session, source, context, lease
+            )
+            return session
+
+    def _require_recovery_session(
+        self,
+        *,
+        session: object,
+        source: H1RecoveryStageSource,
+        context: object,
+        lease: _H1RecoveryExecutionLease,
+    ) -> None:
+        """Require the exact source/context/lease/session recovery enrollment."""
+        with self._gate.hold():
+            record = self._require_recovery_record(session)
+            if (
+                record.source is not source
+                or record.context is not context
+                or record.lease is not lease
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable(
+                    "H1 recovery source, context, or lease is not registered"
+                )
+            self._require_recovery_source_context_lease(source=source, context=context, lease=lease)
+            if self._require_recovery_record(session) is not record:
+                raise H1LiveCompletionEnrollmentUnavailable("H1 recovery session was revoked")
+
+    def _reserve_recovery_clearance(
+        self,
+        *,
+        session: object,
+        stage: Literal["COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK"],
+        semantic_input: bytes,
+        sent: PublicPortCall,
+    ) -> _H1RecoveryClearance:
+        """Pin one canonical recovery request to its exact fresh broker frame."""
+        with self._gate.hold():
+            enrollment = self._require_recovery_record(session)
+            self._require_recovery_record_current(enrollment)
+            if (
+                stage not in ("COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK")
+                or not isinstance(semantic_input, bytes)
+                or not semantic_input
+                or type(sent) is not PublicPortCall
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable("H1 recovery clearance inputs differ")
+            if any(
+                item.enrollment is enrollment and item.state != "BURNED"
+                for item in self._recovery_clearances.values()
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable(
+                    "H1 recovery session already has a clearance"
+                )
+            call_fingerprint, owner_frame_bytes = self._recovery_call_identity(sent)
+            clearance = object.__new__(_H1RecoveryClearance)
+            self._recovery_clearances[id(clearance)] = _RecoveryClearanceRecord(
+                enrollment,
+                stage,
+                semantic_input,
+                hashlib.sha256(b"chiplog.h1.recovery.semantic.v1\x00" + semantic_input).hexdigest(),
+                sent,
+                call_fingerprint,
+                owner_frame_bytes,
+            )
+            return clearance
+
+    def _recovery_admission_guard(
+        self, clearance: _H1RecoveryClearance
+    ) -> Callable[[PublicPortCall, bytes], None]:
+        with self._gate.hold():
+            self._require_recovery_clearance(clearance)
+
+        def guard(sent: PublicPortCall, owner_frame_bytes: bytes) -> None:
+            self._consume_recovery_clearance(
+                clearance, sent=sent, owner_frame_bytes=owner_frame_bytes
+            )
+
+        return guard
+
+    def _require_admitted_recovery(
+        self, clearance: _H1RecoveryClearance, *, session: object, sent: PublicPortCall
+    ) -> None:
+        with self._gate.hold():
+            record = self._require_recovery_clearance(clearance)
+            if (
+                record.state != "ADMITTED"
+                or session is not record.enrollment.session
+                or sent is not record.sent
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable("H1 recovery clearance is not admitted")
+            self._require_recovery_record_current(record.enrollment)
+            if (
+                self._require_recovery_clearance(clearance) is not record
+                or record.state != "ADMITTED"
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable("H1 recovery clearance was revoked")
+
+    def _record_recovery_result(
+        self, clearance: _H1RecoveryClearance, *, session: object, exchange: object
+    ) -> None:
+        """Retain only the actual exchange paired with the admitted frame."""
+        from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
+
+        with self._gate.hold():
+            record = self._require_recovery_clearance(clearance)
+            self._require_admitted_recovery(clearance, session=session, sent=record.sent)
+            if (
+                type(exchange) is not H1CompletionOwnerExchangeV1
+                or exchange.sent is not record.sent
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable(
+                    "H1 recovery exchange differs from clearance"
+                )
+            if (
+                self._require_recovery_clearance(clearance) is not record
+                or record.state != "ADMITTED"
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable("H1 recovery clearance was revoked")
+            record.exchange = exchange
+            record.state = "RECORDED"
+
+    def _burn_recovery_clearance(self, clearance: _H1RecoveryClearance) -> None:
+        with self._gate.hold():
+            record = self._require_recovery_clearance(clearance)
+            record.state = "BURNED"
+
+    def _revoke_recovery_session(self, session: object) -> None:
+        with self._gate.hold():
+            record = self._require_recovery_record(session)
+            record.state = "REVOKED"
+            for clearance in self._recovery_clearances.values():
+                if clearance.enrollment is record:
+                    clearance.state = "BURNED"
+
+    def _consume_recovery_clearance(
+        self, clearance: _H1RecoveryClearance, *, sent: PublicPortCall, owner_frame_bytes: bytes
+    ) -> None:
+        with self._gate.hold():
+            record = self._require_recovery_clearance(clearance)
+            if record.state != "RESERVED" or sent is not record.sent:
+                raise H1LiveCompletionEnrollmentUnavailable(
+                    "H1 recovery clearance is one-use or not exact"
+                )
+            fingerprint, expected_frame = self._recovery_call_identity(sent)
+            if (
+                fingerprint != record.call_fingerprint
+                or expected_frame != record.owner_frame_bytes
+                or owner_frame_bytes != record.owner_frame_bytes
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable("H1 recovery call frame differs")
+            try:
+                record.enrollment.lease._require_admission_current()
+                record.enrollment.source._require_current(record.enrollment.context)
+            except (RuntimeError, TypeError, ValueError) as error:
+                record.state = "BURNED"
+                raise H1LiveCompletionEnrollmentUnavailable(
+                    "H1 recovery source or lease is no longer current"
+                ) from error
+            if (
+                self._require_recovery_clearance(clearance) is not record
+                or record.state != "RESERVED"
+                or record.enrollment.state != "ACTIVE"
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable("H1 recovery clearance was revoked")
+            record.state = "ADMITTED"
 
     def _reserve_terminal_clearance(
         self,
@@ -326,9 +559,15 @@ class _H1LiveCompletionEnrollment:
                 return
             for record in self._clearances.values():
                 record.state = "BURNED"
+            for record in self._recovery_clearances.values():
+                record.state = "BURNED"
+            for record in self._recovery_records.values():
+                record.state = "REVOKED"
             for issuance in self._issuances.values():
                 issuance.state = "BURNED"
             self._clearances.clear()
+            self._recovery_clearances.clear()
+            self._recovery_records.clear()
             self._issuances.clear()
             self._records.clear()
             self._closed = True
@@ -431,6 +670,79 @@ class _H1LiveCompletionEnrollment:
             raise H1LiveCompletionEnrollmentUnavailable("H1 session source owner differs")
         return record
 
+    def _require_recovery_source_context_lease(
+        self, *, source: object, context: object, lease: object
+    ) -> None:
+        """Revalidate the installed source and task-held lease before B use."""
+        from chiplog.composition.h1_postseal_recovery_coordinator import (
+            _H1PostSealRecoveryCoordinator,
+        )
+        from chiplog.composition.h1_recovery_execution_fence import _H1RecoveryExecutionLease
+        from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
+
+        runtime = self._runtime
+        coordinator = getattr(runtime, "_h1_postseal_recovery_coordinator", None)
+        if (
+            type(source) is not H1RecoveryStageSource
+            or source._runtime is not runtime
+            or type(coordinator) is not _H1PostSealRecoveryCoordinator
+            or coordinator._runtime is not runtime
+            or getattr(runtime, "_h1_postseal_recovery_coordinator", None) is not coordinator
+            or source is not getattr(coordinator, "_source", None)
+            or type(lease) is not _H1RecoveryExecutionLease
+            or lease._fence is not coordinator._fence
+        ):
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 recovery source or lease is not installed"
+            )
+        try:
+            source._context_state(context)
+            lease.require_owned()
+            source._require_current(context)
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 recovery context or lease is not current"
+            ) from error
+
+    def _require_recovery_record(self, session: object) -> _RecoveryEnrollmentRecord:
+        self._require_open_and_mounted()
+        record = self._recovery_records.get(id(session))
+        if (
+            type(session) is not H1CompletionPreparationSession
+            or record is None
+            or record.session is not session
+            or record.state != "ACTIVE"
+            or self._records.get(id(session)) is None
+            or self._records[id(session)].session is not session
+        ):
+            raise H1LiveCompletionEnrollmentUnavailable("H1 recovery session is not registered")
+        return record
+
+    def _require_recovery_record_current(self, record: _RecoveryEnrollmentRecord) -> None:
+        self._require_recovery_source_context_lease(
+            source=record.source, context=record.context, lease=record.lease
+        )
+        if record.state != "ACTIVE":
+            raise H1LiveCompletionEnrollmentUnavailable("H1 recovery session was revoked")
+
+    @staticmethod
+    def _recovery_call_identity(sent: PublicPortCall) -> tuple[str, bytes]:
+        """Use the complete public-call preimage retained by terminal admission."""
+        from chiplog.composition.h1_terminal_call_identity import _terminal_call_identity
+
+        return _terminal_call_identity(sent)
+
+    def _require_recovery_clearance(self, clearance: object) -> _RecoveryClearanceRecord:
+        self._require_open_and_mounted()
+        record = self._recovery_clearances.get(id(clearance))
+        if (
+            type(clearance) is not _H1RecoveryClearance
+            or record is None
+            or record.state == "BURNED"
+        ):
+            raise H1LiveCompletionEnrollmentUnavailable("H1 recovery clearance is not enrolled")
+        return record
+
     def _require_clearance(self, clearance: object) -> _ClearanceRecord:
         self._require_open_and_mounted()
         record = self._clearances.get(id(clearance))
@@ -444,5 +756,6 @@ __all__ = [
     "_H1LiveCompletionEnrollment",
     "_H1LiveCompletionHandle",
     "_H1LiveCompletionIssuance",
+    "_H1RecoveryClearance",
     "_H1TerminalClearance",
 ]

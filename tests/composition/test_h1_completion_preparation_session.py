@@ -38,6 +38,8 @@ from chiplog.composition.h1_completion_preparation_session import (
 )
 from chiplog.composition.h1_conversation_sources import H1ConversationSources
 from chiplog.composition.h1_first_path_sources import H1FirstPathCapture, H1FirstPathSources
+from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
 from chiplog.platform.broker import (
     BrokerSession,
     CallBudget,
@@ -771,6 +773,207 @@ def test_session_binds_the_exact_mounted_a_reader_and_calls_its_keyword_only_pai
 
     assert session._conversation_sources is source._runtime._h1_conversation_source_port
     assert captured.conversation is not None
+
+
+class _RecoveryLease:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def require_owned(self) -> None:
+        self.calls += 1
+
+
+def test_recovery_transport_rejects_caller_owned_source_before_any_stage_pin() -> None:
+    """Only the installed semantic issuer can bind an opaque recovery context."""
+    source = _sources()
+    session = H1CompletionPreparationSession(first_path_sources=source)
+
+    with pytest.raises(H1CompletionPreparationUnavailable, match="binding is unavailable"):
+        session._bind_recovery(source=object(), context=object(), lease=_RecoveryLease())
+
+
+@pytest.mark.asyncio
+async def test_recovery_transport_rejects_noncanonical_pin_without_owner_dispatch() -> None:
+    """The canonical parser never accepts a durable result/exchange as input."""
+    request = await real_first_path_request(canonical_response=True)
+    H1CompletionPreparationSession._validate_recovery_semantic_input(
+        "COMPLETION", request.canonical_bytes()
+    )
+    with pytest.raises(ValueError, match="validation error"):
+        H1CompletionPreparationSession._validate_recovery_semantic_input(
+            "COMPLETION", b"not-a-request"
+        )
+
+
+@pytest.mark.asyncio
+async def test_recovery_completion_uses_enrolled_guard_and_retains_the_actual_exchange() -> None:
+    """A recovery pin reaches an owner only through its exact fresh guarded frame."""
+    request = await real_first_path_request(canonical_response=True)
+    reply = completion_process.dispatch(
+        completion_process.FIRST_PATH_OPERATION, request.canonical_bytes()
+    )
+    result_bytes = base64.b64decode(cast(str, reply["payload"]))
+    source = _sources()
+    callee = BrokerSession(
+        tenant_id="tenant",
+        broker_epoch=7,
+        generation_id="recovery-generation",
+        owner_id="agent_loop",
+        session_id="recovery-agent-loop",
+    )
+    admitted: list[PublicPortCall] = []
+    recorded: list[H1CompletionOwnerExchangeV1] = []
+
+    class _RecoveryEngine:
+        def session(self, owner: str) -> BrokerSession:
+            assert owner == "agent_loop"
+            return callee
+
+        async def _call_with_admission_guard(
+            self, sent: PublicPortCall, *, admission_guard: Any, authority_gate: object
+        ) -> PublicPortSuccess:
+            assert authority_gate is source._gate
+            admission_guard(sent, sent.canonical_payload)
+            return PublicPortSuccess(
+                request_id=sent.request_id,
+                responder=callee,
+                schema_id="chiplog.agent-loop.prepared-execution-completion-result.v1",
+                canonical_payload=result_bytes,
+            )
+
+    runtime = cast(Any, source._runtime)
+    runtime._tenant_id = "tenant"
+    runtime._supervisor = SimpleNamespace(runtime=lambda: _RecoveryEngine())
+    runtime._authority_gate = lambda: source._gate
+    enrollment = cast(Any, object.__new__(_H1LiveCompletionEnrollment))
+    runtime._h1_live_completion_enrollment = enrollment
+    recovery_source = cast(Any, object.__new__(H1RecoveryStageSource))
+    context = object()
+    lease = _RecoveryLease()
+    recovery_source._require_current = lambda value: value is context  # type: ignore[method-assign]
+    recovery_source._reconstruct_input = (  # type: ignore[method-assign]
+        lambda value, stage, predecessors, effects_command_id, **kwargs: request.canonical_bytes()
+    )
+    recovery_source._validate_result = (  # type: ignore[method-assign]
+        lambda value, stage, semantic, returned: (
+            value is context
+            and stage == "COMPLETION"
+            and semantic == request.canonical_bytes()
+            and returned == result_bytes
+        )
+        or (_ for _ in ()).throw(ValueError("recovery result differs"))
+    )
+    enrollment._require_recovery_session = lambda **_: None  # type: ignore[method-assign]
+    enrollment._reserve_recovery_clearance = lambda **_: object()  # type: ignore[method-assign]
+    enrollment._recovery_admission_guard = (  # type: ignore[method-assign]
+        lambda clearance: lambda sent, _frame: admitted.append(sent)
+    )
+    enrollment._require_admitted_recovery = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+    enrollment._record_recovery_result = (  # type: ignore[method-assign]
+        lambda clearance, *, session, exchange: recorded.append(exchange)
+    )
+    enrollment._burn_recovery_clearance = lambda clearance: None  # type: ignore[method-assign]
+
+    session = H1CompletionPreparationSession(first_path_sources=source)
+    session._bind_recovery(source=recovery_source, context=context, lease=lease)
+    session._bind_recovery_stage(stage="COMPLETION", semantic_input=request.canonical_bytes())
+    exchange = await session.prepare_first_path_completion()
+
+    assert recorded == [exchange]
+    assert admitted == [exchange.sent]
+    assert session._completion_exchange is exchange
+    assert exchange.sent.canonical_payload == request.canonical_bytes()
+    assert exchange.sent.caller.generation_id == "recovery-generation"
+    assert lease.calls >= 3
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ("COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK"),
+)
+def test_recovery_stages_use_the_same_ninety_second_budget(stage: str) -> None:
+    assert H1CompletionPreparationSession._recovery_budget_ns(cast(Any, stage)) == 90_000_000_000
+
+
+@pytest.mark.asyncio
+async def test_recovery_rejection_preserves_failure_kind_and_burns_unadmitted_clearance() -> None:
+    """A rejected broker call is not evidence that recovery was admitted."""
+    request = await real_first_path_request(canonical_response=True)
+    source = _sources()
+    callee = BrokerSession(
+        tenant_id="tenant",
+        broker_epoch=7,
+        generation_id="recovery-generation",
+        owner_id="agent_loop",
+        session_id="recovery-agent-loop",
+    )
+    guard_calls: list[PublicPortCall] = []
+    admitted_calls: list[PublicPortCall] = []
+    recorded: list[H1CompletionOwnerExchangeV1] = []
+    burned: list[object] = []
+    clearance = object()
+
+    class _RecoveryEngine:
+        def session(self, owner: str) -> BrokerSession:
+            assert owner == "agent_loop"
+            return callee
+
+        async def _call_with_admission_guard(
+            self, sent: PublicPortCall, *, admission_guard: Any, authority_gate: object
+        ) -> PublicPortRejected:
+            assert authority_gate is source._gate
+            return PublicPortRejected(
+                request_id=sent.request_id,
+                responder=callee,
+                failure=PublicPortFailure(kind="DEADLINE_EXCEEDED", reason="expired"),
+            )
+
+    runtime = cast(Any, source._runtime)
+    runtime._tenant_id = "tenant"
+    runtime._supervisor = SimpleNamespace(runtime=lambda: _RecoveryEngine())
+    runtime._authority_gate = lambda: source._gate
+    enrollment = cast(Any, object.__new__(_H1LiveCompletionEnrollment))
+    runtime._h1_live_completion_enrollment = enrollment
+    recovery_source = cast(Any, object.__new__(H1RecoveryStageSource))
+    context = object()
+    lease = _RecoveryLease()
+    recovery_source._require_current = lambda value: value is context  # type: ignore[method-assign]
+    recovery_source._reconstruct_input = (  # type: ignore[method-assign]
+        lambda value, stage, predecessors, effects_command_id, **kwargs: request.canonical_bytes()
+    )
+    recovery_source._validate_result = lambda *_args: pytest.fail("rejected result was accepted")  # type: ignore[method-assign]
+    enrollment._require_recovery_session = lambda **_: None  # type: ignore[method-assign]
+    enrollment._reserve_recovery_clearance = lambda **_: clearance  # type: ignore[method-assign]
+    enrollment._recovery_admission_guard = (  # type: ignore[method-assign]
+        lambda _: lambda sent, _frame: guard_calls.append(sent)
+    )
+    enrollment._require_admitted_recovery = (  # type: ignore[method-assign]
+        lambda *_args, **_kwargs: admitted_calls.append(cast(PublicPortCall, _kwargs["sent"]))
+    )
+    enrollment._record_recovery_result = (  # type: ignore[method-assign]
+        lambda clearance, *, session, exchange: recorded.append(exchange)
+    )
+    enrollment._burn_recovery_clearance = lambda value: burned.append(value)  # type: ignore[method-assign]
+
+    session = H1CompletionPreparationSession(first_path_sources=source)
+    session._bind_recovery(source=recovery_source, context=context, lease=lease)
+    session._bind_recovery_stage(stage="COMPLETION", semantic_input=request.canonical_bytes())
+
+    with pytest.raises(H1CompletionPreparationUnavailable, match="DEADLINE_EXCEEDED"):
+        await session.prepare_first_path_completion()
+
+    assert guard_calls == []
+    assert admitted_calls == []
+    assert recorded == []
+    assert burned == [clearance]
+    assert session._completion_exchange is None
+    assert session._recovery is not None
+    assert session._recovery.poisoned is True
+    assert session._recovery.pending_stage == "COMPLETION"
+    assert session._recovery.pending_semantic_input == request.canonical_bytes()
+    assert session._recovery.dispatched_stages == ()
+    assert session._recovery.result_bytes == {}
+    await session._drain_recovery()
 
 
 async def test_session_refuses_to_send_a_caller_owned_completion_dto_without_a_bound_builder(

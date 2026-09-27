@@ -22,6 +22,10 @@ from chiplog.capabilities.agent_loop.execution_transition_contracts import (
     CreateExecutionRun,
     PrepareExecutionRequest,
 )
+from chiplog.composition.h1_v2_authority_cut import (
+    H1_V2_AUTHORITY_CUT_FIELD,
+    resolve_h1_v2_authority_cut,
+)
 from chiplog.composition.h1_verified_snapshot_rows import H1VerifiedSnapshotRows
 from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
@@ -262,15 +266,18 @@ def completion_v2_terminal_run(command: PhysicalPublicationCommand) -> Execution
 
 
 def _completion_v2_schema_dispatch(batch: CompleteDeliveryBatchV2) -> Literal["H1"]:
-    """Route every V2 applicability schema once, for startup and history reads."""
-    from chiplog.composition.h1_completion_issuance import SCHEMA
+    """Route supported H1 applicability schemas without validating issuance authority."""
+    from chiplog.composition.h1_completion_issuance import dispatch_h1_completion_issuance_schema
 
-    if batch.authentication.applicability_schema == SCHEMA:
+    if (
+        dispatch_h1_completion_issuance_schema(
+            batch.authentication.applicability_schema,
+            batch.authentication.applicability_bytes,
+        )
+        in ("V1", "V2")
+    ):
         return "H1"
-    raise ValueError(
-        "unsupported complete delivery v2 applicability schema: "
-        + batch.authentication.applicability_schema
-    )
+    raise AssertionError("H1 completion issuance schema dispatcher returned an unknown route")
 
 
 def _selected_h1_completion(
@@ -538,6 +545,21 @@ def _read_call_history(
                             )
                             if "h1_historical_checkpoint" in entry:
                                 raise ValueError("V2 complete seal cannot carry an H1 checkpoint")
+                            if H1_V2_AUTHORITY_CUT_FIELD in entry:
+                                checkpoint_rows = H1VerifiedSnapshotRows.from_verified(
+                                    resolve_h1_v2_authority_cut(
+                                        entry,
+                                        cast(
+                                            AuthorityCheckpointStore,
+                                            runtime._h1_checkpoint_store(),
+                                        ),
+                                        runtime._database_identity,
+                                        command,
+                                    )
+                                )
+                                if checkpoint_rows.tenant_head(tenant) != command.expected_head + 1:
+                                    raise ValueError("V2 authority-cut tenant head differs")
+                                checkpoint_rows.require_complete(command)
                         elif complete_kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V3":
                             complete = RetainedExecutionCompleteSealV3.model_validate_json(
                                 raw_complete

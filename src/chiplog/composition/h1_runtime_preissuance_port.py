@@ -76,6 +76,10 @@ from chiplog.composition.h1_preseal_native_source import (
     H1PresealNativeSource,
     H1PresealNativeSourceCut,
 )
+from chiplog.composition.h1_preseal_p_scope_wires import decode_h1_preseal_p_scope_wires
+from chiplog.composition.h1_preseal_pe_anchor_records import (
+    decode_h1_preseal_pe_anchor_record,
+)
 from chiplog.composition.h1_selected_output_sources import (
     H1SelectedOutputCapture,
     H1SelectedOutputSources,
@@ -87,6 +91,7 @@ from chiplog.composition.h1_selected_prepare import (
     reopen_selected_h1_workspace,
     select_h1_v3_prepare_for_seal,
 )
+from chiplog.composition.h1_v2_recovery_native_source import H1V2RecoveryNativeSource
 from chiplog.composition.h1_workspace_policy_v2 import (
     H1OriginalWorkspaceIssuanceV2,
     H1PreissuanceRegistrationV1,
@@ -265,6 +270,51 @@ class _AuthenticatedCompletionEffectsSource:
     fence: EffectsNonSchedulerFence
 
 
+class _HistoricalRecoverySourceCapability:
+    """Runtime-private handle for one retained V2 P reconstruction."""
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        raise TypeError("historical P recovery sources are issued only by the P owner")
+
+    def __copy__(self) -> Never:
+        raise TypeError("historical P recovery sources cannot be copied")
+
+    def __deepcopy__(self, memo: object) -> Never:
+        del memo
+        raise TypeError("historical P recovery sources cannot be copied")
+
+    def __reduce__(self) -> Never:
+        raise TypeError("historical P recovery sources cannot be serialized")
+
+
+@dataclass(frozen=True, slots=True)
+class _HistoricalRecoverySourceState:
+    capability: _HistoricalRecoverySourceCapability
+    original_identity: object
+    original_fingerprint: str
+    selected_seal: object
+    conversation_bytes: bytes
+    effects_bytes: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _HistoricalEffectsSource:
+    """P-only historical effects inputs; E supplies its separate worker fence."""
+
+    selected_scope: H1SelectedScopeSourceV1
+    retained_origin: H1RetainedSelectedWrapperV1
+
+
+class _HistoricalRecoverySourceUnsupported(H1PreissuanceSourceViolation):
+    """A selected legacy V2 decision lacks a required immutable P residual."""
+
+
+class _HistoricalRecoverySourceIntegrity(H1PreissuanceSourceViolation):
+    """Retained historical P evidence is present but cannot be authenticated."""
+
+
 @dataclass(frozen=True, slots=True)
 class _H1PreterminalScopeSnapshot:
     session: object
@@ -402,6 +452,7 @@ class _H1RuntimePreissuancePort:
         "_delivery_receipts",
         "_final_completion_fences",
         "_gate",
+        "_historical_recovery_sources",
         "_launch",
         "_originals",
         "_preseal_scopes",
@@ -458,6 +509,7 @@ class _H1RuntimePreissuancePort:
         self._reopened: dict[
             int, tuple[H1PreissuanceSelection, H1VerifiedOriginalWorkspaceIssuance]
         ] = {}
+        self._historical_recovery_sources: dict[int, _HistoricalRecoverySourceState] = {}
 
     def __reduce__(self) -> Never:
         raise TypeError("H1 preissuance issuer is not serializable")
@@ -2605,6 +2657,384 @@ class _H1RuntimePreissuancePort:
         del authenticated_completion_inputs
         self._cut(selection)
         raise H1PreissuanceSourceViolation("H1 completion fence is not wired")
+
+    @staticmethod
+    def _historical_bytes(value: object) -> bytes:
+        """Commit inert historical projections without admitting their DTO shape."""
+
+        try:
+            return json.dumps(
+                value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            ).encode()
+        except (TypeError, ValueError) as error:
+            raise _HistoricalRecoverySourceIntegrity(
+                "historical P projection cannot be committed"
+            ) from error
+
+    @classmethod
+    def _historical_conversation_bytes(cls, value: _AuthenticatedConversationPolicyInputs) -> bytes:
+        return cls._historical_bytes(
+            {
+                "workspace_policy": value.workspace_policy.model_dump(mode="json"),
+                "recipient": value.recipient.model_dump(mode="json"),
+                "scope_policy_ref": value.scope_policy_ref.model_dump(mode="json"),
+                "scope_policy_bytes_base64": base64.b64encode(value.scope_policy_bytes).decode(),
+                "custody_entry_generation": value.custody_entry_generation,
+                "custody_entry_digest": value.custody_entry_digest,
+                "original_issuance_ref": value.original_issuance_ref.model_dump(mode="json"),
+                "original_issuance_bytes_base64": base64.b64encode(
+                    value.original_issuance_bytes
+                ).decode(),
+                "original_tenant": value.original_tenant,
+                "original_run_id": value.original_run_id,
+                "original_started_run_head": value.original_started_run_head,
+                "original_turn_id": value.original_turn_id,
+                "original_worker_session": value.original_worker_session,
+            }
+        )
+
+    def _historical_recovery_projection(
+        self, original_identity: object, original_fingerprint: object, selected_seal: object
+    ) -> tuple[_AuthenticatedConversationPolicyInputs, _HistoricalEffectsSource]:
+        """Reopen only immutable selected V2 P evidence under the installed gate.
+
+        This intentionally never asks the live P owner for CURRENT and never
+        reads current custody or inventory.  The authority-cut full source and
+        the selected V3/original issuance authenticate the historical cut;
+        the retained P sibling only supplies its two accepted owner exchanges.
+        """
+
+        try:
+            native = H1V2RecoveryNativeSource(self._runtime).select(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=selected_seal,
+            )
+            carrier = H1FirstPathSources(self._runtime).issue_historical_v2_cut(
+                original_identity, original_fingerprint, selected_seal
+            )
+        except (TypeError, ValueError) as error:
+            raise _HistoricalRecoverySourceIntegrity(
+                "historical P native authority cut is invalid"
+            ) from error
+        if (
+            carrier.seal.decision_id != native.seal.decision_id
+            or carrier.seal.decision_fingerprint != native.seal.decision_fingerprint
+            or carrier.seal.raw_bytes != native.seal.raw_bytes
+            or carrier.source.selected_response_seal != selected_seal
+        ):
+            raise _HistoricalRecoverySourceIntegrity(
+                "historical P authority cut differs from selected native seal"
+            )
+        try:
+            decision = json.loads(native.seal.raw_bytes)
+            if (
+                not isinstance(decision, dict)
+                or json.dumps(decision, sort_keys=True, separators=(",", ":")).encode()
+                != native.seal.raw_bytes
+            ):
+                raise ValueError("selected DECIDED bytes are noncanonical")
+            raw_anchor = decision.get("h1_preseal_pe_anchor")
+            if not isinstance(raw_anchor, str):
+                raise _HistoricalRecoverySourceUnsupported("historical P anchor is unsupported")
+            anchor = decode_h1_preseal_pe_anchor_record(raw_anchor.encode())
+            raw_wires = decision.get("h1_preseal_p_scope_wires_v1")
+            if raw_wires is None:
+                raise _HistoricalRecoverySourceUnsupported(
+                    "historical P scope-wire residual is unsupported"
+                )
+            p = cast(dict[str, object], anchor.as_dict()["p"])
+            wires = decode_h1_preseal_p_scope_wires(
+                self._historical_bytes(raw_wires),
+                anchor_binding=anchor.binding,
+                issue_digest=cast(str, p["accepted_issue_wire_digest"]),
+                current_digest=cast(str, p["accepted_current_wire_digest"]),
+            ).as_dict()
+            issue = cast(dict[str, object], wires["issue"])
+            current = cast(dict[str, object], wires["current"])
+            issue_sent = base64.b64decode(cast(str, issue["sent_payload_base64"]), validate=True)
+            issue_returned = base64.b64decode(
+                cast(str, issue["returned_payload_base64"]), validate=True
+            )
+            current_sent = base64.b64decode(
+                cast(str, current["sent_payload_base64"]), validate=True
+            )
+            current_returned = base64.b64decode(
+                cast(str, current["returned_payload_base64"]), validate=True
+            )
+            issue_outer = decode_trust_owner_call_canonical(issue_sent)
+            current_outer = decode_trust_owner_call_canonical(current_sent)
+            issue_call = H1OwnerCandidateCallV1.model_validate_json(issue_outer.request_bytes)
+            issue_result = H1OwnerCandidateV1.model_validate_json(issue_returned)
+            current_call = H1OwnerCurrentCallV1.model_validate_json(current_outer.request_bytes)
+            current_request = ReadCurrentHermeticExecutionScopeV1.model_validate_json(
+                current_call.read_request_bytes
+            )
+            current_result = H1OwnerCurrentCandidateV1.model_validate_json(current_returned)
+            issue_result.check_pinned_call(issue_call)
+            current_result.check_pinned_call(current_call)
+            if (
+                issue_outer.mode != "ISSUE_HERMETIC_OUTPUT_SCOPE_V1"
+                or current_outer.mode != "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1"
+                or issue_outer.canonical_bytes() != issue_sent
+                or current_outer.canonical_bytes() != current_sent
+                or issue_call.canonical_bytes() != issue_outer.request_bytes
+                or issue_result.canonical_bytes() != issue_returned
+                or current_call.canonical_bytes() != current_outer.request_bytes
+                or current_request.canonical_bytes() != current_call.read_request_bytes
+                or current_result.canonical_bytes() != current_returned
+            ):
+                raise ValueError("retained P exchange is noncanonical")
+            scope = issue_result.scope
+            scope_bytes = base64.b64decode(cast(str, p["scope_bytes_base64"]), validate=True)
+            policy_bytes = base64.b64decode(cast(str, p["policy_bytes_base64"]), validate=True)
+            policy = HermeticOutputPolicyV1.model_validate_json(policy_bytes)
+            scope_ref = ExactHead.model_validate(p["scope_ref"])
+            policy_ref = ExactHead.model_validate(p["policy_ref"])
+            raw_recipient = cast(dict[str, object], p["recipient"])
+            canonical_address_base64 = cast(str, raw_recipient["canonical_address_base64"])
+            canonical_address = base64.b64decode(canonical_address_base64, validate=True)
+            if base64.b64encode(canonical_address).decode() != canonical_address_base64:
+                raise ValueError("historical P recipient address base64 is noncanonical")
+            recipient = ProviderRecipient.model_validate(
+                {
+                    "provider_id": raw_recipient["provider_id"],
+                    "account_id": raw_recipient["account_id"],
+                    "recipient_id": raw_recipient["recipient_id"],
+                    "endpoint": raw_recipient["endpoint"],
+                    "canonical_address": canonical_address,
+                    "credential_binding": raw_recipient["credential_binding"],
+                }
+            )
+            normalized_recipient = recipient.model_dump(mode="json")
+            normalized_recipient["canonical_address_base64"] = base64.b64encode(
+                recipient.canonical_address
+            ).decode()
+            del normalized_recipient["canonical_address"]
+            if normalized_recipient != raw_recipient:
+                raise ValueError("historical P recipient differs from retained anchor")
+            if (
+                scope.canonical_bytes() != scope_bytes
+                or scope.disclosure_policy.canonical_source_bytes != policy_bytes
+                or scope.disclosure_policy.ref != policy_ref
+                or scope.recipient != recipient
+                or policy.canonical_bytes() != policy_bytes
+                or policy.endpoint_ref != recipient.endpoint
+                or scope_ref
+                != ExactHead(
+                    identity=scope.scope_id,
+                    head=scope.scope_id + "/" + hashlib.sha256(scope_bytes).hexdigest(),
+                    fingerprint=hashlib.sha256(scope_bytes).hexdigest(),
+                )
+                or current_request.expected_scope_ref != scope_ref
+                or current_request.expected_revision != scope.revision
+                or current_request.expected_worker_session_id != scope.worker_session_id
+                or current_request.source_anchor != current_result.current.source_anchor
+                or current_result.current.scope_ref != scope_ref
+                or current_request.admitted_authentication_ref != scope.admitted_authentication
+                or current_request.selected_resource_observation_ref
+                != scope.selected_resource_observation_ref
+            ):
+                raise ValueError("retained P scope/current join differs")
+            entries = self._runtime._trust._journal.entries()
+            anchor_ref = current_request.source_anchor
+            trust_decision = next(
+                (raw for key, _, raw in entries if key == anchor_ref.decision.head), None
+            )
+            trust_record = self._runtime._trust._materializer.record(
+                anchor_ref.decision.head, anchor_ref.record_ordinal
+            )
+            observation = current_request.expected_trust_observation.physical_journal_head
+            observed = next((raw for key, _, raw in entries if key == observation.head), None)
+            if (
+                trust_decision is None
+                or trust_record is None
+                or observed is None
+                or hashlib.sha256(trust_decision).hexdigest() != anchor_ref.decision.fingerprint
+                or hashlib.sha256(trust_record).hexdigest() != anchor_ref.record.fingerprint
+                or hashlib.sha256(observed).hexdigest() != observation.fingerprint
+            ):
+                raise ValueError("retained P trust observation prefix differs")
+            selected = select_h1_v3_prepare_for_seal(
+                self._runtime, selected_seal=selected_seal, historical=True
+            ).prepare
+            run = carrier.source.complete_ordered_run_lineage[-1]
+            captured = carrier.source.complete_ordered_run_lineage[-2]
+            attempt = captured.turns[0].attempts[0]
+            slot = self._launch._slot
+            binding = anchor.binding
+            publication = cast(dict[str, object], binding["publication"])
+            selected_prepare = cast(dict[str, object], binding["selected_prepare"])
+            command = self._runtime._publication(decision)
+            expected_seal = {
+                "identity": selected_seal.subject_id,
+                "head": selected_seal.revision.head,
+                "fingerprint": selected_seal.revision.fingerprint,
+            }
+            if (
+                binding["deployment_id"] != slot.deployment_id
+                or binding["database_id"] != original_identity.database_id
+                or binding["database_genesis_digest"]
+                != self._custody._registry.database_genesis_digest
+                or binding["tenant_id"] != run.tenant
+                or binding["principal_id"] != run.principal
+                or binding["run_id"] != run.run_id
+                or binding["turn_id"] != captured.turns[0].turn_id
+                or binding["attempt_id"] != attempt.attempt_id
+                or binding["prepared_run_head"] != captured.head
+                or binding["manifest_digest"] != attempt.manifest.digest()
+                or selected_prepare["entry_id"] != selected.decision_id
+                or selected_prepare["payload_digest"]
+                != hashlib.sha256(selected.decision_bytes).hexdigest()
+                or publication
+                != {
+                    "operation_kind": command.operation_kind,
+                    "operation_id": command.idempotency_key,
+                    "expected_head": command.expected_head,
+                    "request_fingerprint": command.request_fingerprint,
+                }
+                or binding["selected_response_seal"] != expected_seal
+            ):
+                raise ValueError("historical P anchor/native binding differs")
+            reopen_selected_h1_workspace(self._runtime, selected)
+            original = (
+                R13Workspace(self._runtime).open_h1_workspace_issuance().load(selected.issuance_ref)
+            )
+            if type(original) is not H1OriginalWorkspaceIssuanceV2:
+                raise _HistoricalRecoverySourceUnsupported(
+                    "historical P original workspace issuance is unsupported"
+                )
+            original_bytes = original.canonical_bytes()
+            workspace_policy = decode_h1_workspace_policy_v2(
+                base64.b64decode(
+                    original.sources.policy_payload_base64.encode("ascii"), validate=True
+                )
+            )
+            if (
+                workspace_policy.registration.accepted_policy != policy_ref
+                or workspace_policy.registration.accepted_policy_bytes_base64
+                != base64.b64encode(policy_bytes).decode("ascii")
+                or workspace_policy.registration.generation != p["custody_entry_generation"]
+                or workspace_policy.registration.custody_entry_digest != p["custody_entry_digest"]
+                or original.tenant != workspace_policy.tenant
+                or original.run_id != selected.started_run.run_id
+                or original.started_run_head != selected.started_run.head
+                or original.turn_id != selected.started_run.turns[0].turn_id
+                or original.worker_session != selected.started_run.worker_session
+                or scope.tenant_id != run.tenant
+                or scope.principal_id != run.principal
+                or scope.worker_session_id != run.worker_session
+            ):
+                raise ValueError("historical P original/native binding differs")
+            selected_scope = H1SelectedScopeSourceV1(
+                anchor=anchor_ref,
+                scope=scope,
+                selected_decision_bytes=trust_decision,
+                selected_record_bytes=trust_record,
+                current_request=current_request,
+                current_result=current_result.current,
+            )
+            conversation = _AuthenticatedConversationPolicyInputs(
+                workspace_policy=workspace_policy,
+                recipient=recipient,
+                scope_policy_ref=policy_ref,
+                scope_policy_bytes=policy_bytes,
+                custody_entry_generation=cast(int, p["custody_entry_generation"]),
+                custody_entry_digest=cast(str, p["custody_entry_digest"]),
+                original_issuance_ref=selected.issuance_ref,
+                original_issuance_bytes=original_bytes,
+                original_tenant=original.tenant,
+                original_run_id=original.run_id,
+                original_started_run_head=original.started_run_head,
+                original_turn_id=original.turn_id,
+                original_worker_session=original.worker_session,
+            )
+            return conversation, _HistoricalEffectsSource(
+                selected_scope, issue_call.evidence.retained
+            )
+        except _HistoricalRecoverySourceUnsupported:
+            raise
+        except (TypeError, ValueError, KeyError, UnicodeDecodeError) as error:
+            raise _HistoricalRecoverySourceIntegrity(
+                "historical P residual has an integrity failure"
+            ) from error
+
+    def _issue_historical_recovery_source(
+        self, *, original_identity: object, original_fingerprint: object, selected_seal: object
+    ) -> object:
+        """Mint one opaque P source after selecting the immutable historical cut."""
+
+        with self._gate.hold():
+            self._assert_launch_and_trust()
+            conversation, effects = self._historical_recovery_projection(
+                original_identity, original_fingerprint, selected_seal
+            )
+            receipt = object.__new__(_HistoricalRecoverySourceCapability)
+            self._historical_recovery_sources[id(receipt)] = _HistoricalRecoverySourceState(
+                receipt,
+                original_identity,
+                cast(str, original_fingerprint),
+                selected_seal,
+                self._historical_conversation_bytes(conversation),
+                self._historical_bytes(
+                    {
+                        "selected_scope": effects.selected_scope.model_dump(mode="json"),
+                        "retained_origin": effects.retained_origin.model_dump(mode="json"),
+                    }
+                ),
+            )
+            return receipt
+
+    def _revoke_historical_recovery_source(self, capability: object) -> None:
+        """Burn one exact P recovery capability when its B owner retires it."""
+
+        with self._gate.hold():
+            state = self._historical_recovery_sources.get(id(capability))
+            if (
+                type(capability) is not _HistoricalRecoverySourceCapability
+                or state is None
+                or state.capability is not capability
+            ):
+                raise H1PreissuanceSourceViolation("historical P source is not issuer-owned")
+            self._historical_recovery_sources.pop(id(capability))
+
+    def _replay_historical_conversation_policy(
+        self, capability: object
+    ) -> _AuthenticatedConversationPolicyInputs:
+        with self._gate.hold():
+            state = self._historical_recovery_sources.get(id(capability))
+            if (
+                type(capability) is not _HistoricalRecoverySourceCapability
+                or state is None
+                or state.capability is not capability
+            ):
+                raise H1PreissuanceSourceViolation("historical P source is not issuer-owned")
+            conversation, _effects = self._historical_recovery_projection(
+                state.original_identity, state.original_fingerprint, state.selected_seal
+            )
+            if self._historical_conversation_bytes(conversation) != state.conversation_bytes:
+                raise _HistoricalRecoverySourceIntegrity("historical P conversation source changed")
+            return conversation
+
+    def _replay_historical_effects_source(self, capability: object) -> _HistoricalEffectsSource:
+        with self._gate.hold():
+            state = self._historical_recovery_sources.get(id(capability))
+            if (
+                type(capability) is not _HistoricalRecoverySourceCapability
+                or state is None
+                or state.capability is not capability
+            ):
+                raise H1PreissuanceSourceViolation("historical P source is not issuer-owned")
+            _conversation, effects = self._historical_recovery_projection(
+                state.original_identity, state.original_fingerprint, state.selected_seal
+            )
+            value = {
+                "selected_scope": effects.selected_scope.model_dump(mode="json"),
+                "retained_origin": effects.retained_origin.model_dump(mode="json"),
+            }
+            if self._historical_bytes(value) != state.effects_bytes:
+                raise _HistoricalRecoverySourceIntegrity("historical P effects source changed")
+            return effects
 
 
 __all__ = ["_H1RuntimePreissuancePort"]
