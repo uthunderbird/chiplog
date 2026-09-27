@@ -16,7 +16,10 @@ import json
 import os
 import secrets
 import stat
-from contextlib import suppress
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+from pathlib import Path
 from typing import Annotated, Literal, Never
 
 from pydantic import Field, field_validator, model_validator
@@ -27,6 +30,7 @@ from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     Identity,
     UInt64,
 )
+from chiplog.platform.authority_gate import AuthorityGate, AuthorityGateError, checked_file_identity
 
 _FILENAME = "h1-registration-custody.json"
 _LOCK_PREFIX = ".h1-registration-custody-"
@@ -242,7 +246,17 @@ def _acquire_pair_lock(binding: TrustedH1RegistrationLauncherBinding) -> int:
 class H1RegistrationCustody:
     """Live mounted registry; close it to release the database-pair lifetime lock."""
 
-    __slots__ = ("_binding", "_lock_fd", "_poisoned", "_raw", "_registry")
+    __slots__ = (
+        "_authority_condition",
+        "_authority_gate",
+        "_authority_inflight",
+        "_authority_transition",
+        "_binding",
+        "_lock_fd",
+        "_poisoned",
+        "_raw",
+        "_registry",
+    )
 
     def __init__(
         self,
@@ -251,6 +265,10 @@ class H1RegistrationCustody:
         raw: bytes,
         registry: H1RegistrationCustodyV1,
     ) -> None:
+        self._authority_condition = threading.Condition(threading.RLock())
+        self._authority_gate: AuthorityGate | None = None
+        self._authority_inflight = 0
+        self._authority_transition = False
         self._binding = binding
         self._lock_fd = lock_fd
         self._raw = raw
@@ -340,6 +358,73 @@ class H1RegistrationCustody:
             os.close(self._lock_fd)
             self._lock_fd = -1
 
+    def bind_authority_gate(
+        self,
+        authority_gate: object,
+        database_path: object,
+        database_identity: object,
+    ) -> None:
+        """Bind the one runtime authority gate after installed launch authenticates its database."""
+        self._available()
+        transition_started = False
+        try:
+            with self._authority_condition:
+                if self._authority_gate is not None:
+                    raise H1RegistrationCustodyError("authority gate is already bound")
+                if self._authority_transition:
+                    raise H1RegistrationCustodyError("authority gate transition is in progress")
+                self._authority_transition = True
+                transition_started = True
+            if type(authority_gate) is not AuthorityGate or not isinstance(database_path, Path):
+                raise H1RegistrationCustodyError("authority gate binding is invalid")
+            if (
+                type(database_identity) is not tuple
+                or len(database_identity) != 2
+                or any(type(value) is not int or value <= 0 for value in database_identity)
+            ):
+                raise H1RegistrationCustodyError("authority database identity is invalid")
+            database = database_path.resolve(strict=False)
+            if database != database_path or authority_gate.database != database:
+                raise H1RegistrationCustodyError("authority gate differs from installed database")
+            try:
+                checked_file_identity(
+                    database, (str(database), database_identity[0], database_identity[1])
+                )
+            except AuthorityGateError as exc:
+                raise H1RegistrationCustodyError("authority database identity differs") from exc
+            with self._authority_condition:
+                self._available()
+                if self._authority_gate is not None:
+                    raise H1RegistrationCustodyError("authority gate is already bound")
+                self._authority_gate = authority_gate
+        finally:
+            if transition_started:
+                with self._authority_condition:
+                    self._authority_transition = False
+                    self._authority_condition.notify_all()
+
+    def unbind_authority_gate(self, authority_gate: object) -> None:
+        """Release the exact runtime gate after its owner has drained dependent work."""
+        if type(authority_gate) is not AuthorityGate:
+            raise H1RegistrationCustodyError("authority gate binding is invalid")
+        with self._authority_condition:
+            if self._authority_gate is not authority_gate:
+                raise H1RegistrationCustodyError("authority gate differs from bound gate")
+            if self._authority_transition:
+                raise H1RegistrationCustodyError("authority gate transition is in progress")
+            self._authority_transition = True
+            while self._authority_inflight:
+                self._authority_condition.wait()
+        try:
+            with authority_gate.hold(), self._authority_condition:
+                if self._authority_gate is not authority_gate:
+                    raise H1RegistrationCustodyError("authority gate differs from bound gate")
+                self._authority_gate = None
+        finally:
+            with self._authority_condition:
+                self._authority_transition = False
+                self._authority_condition.notify_all()
+
     def _available(self) -> None:
         if self._poisoned:
             raise H1RegistrationCustodyError("registry is poisoned pending reconciliation")
@@ -360,6 +445,25 @@ class H1RegistrationCustody:
             raise H1RegistrationCustodyError(
                 "registry changed outside trusted installer; mount poisoned"
             )
+
+    @contextmanager
+    def _mutation_scope(self) -> Iterator[None]:
+        """Lease one binding before entering its gate, so drain-unbind cannot race a stale gate."""
+        with self._authority_condition:
+            if self._authority_transition:
+                raise H1RegistrationCustodyError("authority gate transition is in progress")
+            gate = self._authority_gate
+            self._authority_inflight += 1
+        try:
+            if gate is None:
+                yield
+            else:
+                with gate.hold():
+                    yield
+        finally:
+            with self._authority_condition:
+                self._authority_inflight -= 1
+                self._authority_condition.notify_all()
 
     def select(self, tenant_id: str, principal_id: str, channel_id: str) -> H1RegistrationEntryV1:
         self._available()
@@ -386,6 +490,74 @@ class H1RegistrationCustody:
         replacement: H1RegistrationCustodyV1,
     ) -> None:
         """Trusted installer CAS. Any persistence uncertainty poisons this mount."""
+        with self._mutation_scope():
+            self._replace(
+                installer,
+                expected_bytes,
+                tenant_id,
+                principal_id,
+                channel_id,
+                expected_generation,
+                replacement,
+            )
+
+    def revoke(
+        self,
+        installer: object,
+        expected_bytes: bytes,
+        tenant_id: str,
+        principal_id: str,
+        channel_id: str,
+        expected_generation: int,
+    ) -> None:
+        """Write a durable tombstone; a revoked stable registration never reactivates."""
+        with self._mutation_scope():
+            self._available()
+            self._ensure_current()
+            key = (tenant_id, principal_id, channel_id)
+            entries: list[H1RegistrationEntryV1] = []
+            found = False
+            for entry in self._registry.entries:
+                if entry.key != key:
+                    entries.append(entry)
+                    continue
+                if entry.status == "REVOKED":
+                    raise H1RegistrationCustodyError("registration is already revoked")
+                found = True
+                entries.append(
+                    H1RegistrationEntryV1.model_validate(
+                        {
+                            **entry.model_dump(),
+                            "generation": entry.generation + 1,
+                            "status": "REVOKED",
+                        }
+                    )
+                )
+            if not found:
+                raise H1RegistrationCustodyError("registration selection is absent")
+            replacement = H1RegistrationCustodyV1.model_validate(
+                {**self._registry.model_dump(), "entries": entries}
+            )
+            self._replace(
+                installer,
+                expected_bytes,
+                tenant_id,
+                principal_id,
+                channel_id,
+                expected_generation,
+                replacement,
+            )
+
+    def _replace(
+        self,
+        installer: object,
+        expected_bytes: bytes,
+        tenant_id: str,
+        principal_id: str,
+        channel_id: str,
+        expected_generation: int,
+        replacement: H1RegistrationCustodyV1,
+    ) -> None:
         self._available()
         self._ensure_current()
         if installer is not self._binding or type(expected_bytes) is not bytes:
@@ -413,47 +585,6 @@ class H1RegistrationCustody:
             ) from exc
         self._raw = raw
         self._registry = replacement
-
-    def revoke(
-        self,
-        installer: object,
-        expected_bytes: bytes,
-        tenant_id: str,
-        principal_id: str,
-        channel_id: str,
-        expected_generation: int,
-    ) -> None:
-        """Write a durable tombstone; a revoked stable registration never reactivates."""
-        self._available()
-        key = (tenant_id, principal_id, channel_id)
-        entries: list[H1RegistrationEntryV1] = []
-        found = False
-        for entry in self._registry.entries:
-            if entry.key != key:
-                entries.append(entry)
-                continue
-            if entry.status == "REVOKED":
-                raise H1RegistrationCustodyError("registration is already revoked")
-            found = True
-            entries.append(
-                H1RegistrationEntryV1.model_validate(
-                    {**entry.model_dump(), "generation": entry.generation + 1, "status": "REVOKED"}
-                )
-            )
-        if not found:
-            raise H1RegistrationCustodyError("registration selection is absent")
-        replacement = H1RegistrationCustodyV1.model_validate(
-            {**self._registry.model_dump(), "entries": entries}
-        )
-        self.replace(
-            installer,
-            expected_bytes,
-            tenant_id,
-            principal_id,
-            channel_id,
-            expected_generation,
-            replacement,
-        )
 
     @staticmethod
     def _validate_replacement(

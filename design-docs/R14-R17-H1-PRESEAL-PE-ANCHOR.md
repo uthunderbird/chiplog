@@ -68,6 +68,14 @@ member ordinal (when applicable). No nonexistent E journal locator or old
 exact-head ID may be inferred. A decoded anchor by itself grants no old or
 current E capability.
 
+The selected decision ID is supplied by the installed historical reader after
+it authenticates the containing journal entry. It cannot be embedded in the
+anchor: that ID hashes the entire DECIDED entry, including the anchor. Worker
+route generation remains the exact string issued by the original broker
+session. Disclosure uses the actual `UNRESTRICTED`, `DENY_ALL` and
+`ENDPOINT_RESTRICTED` vocabulary; endpoint narrowing may be stricter than the
+original label and must be checked as a valid narrowing, not forced equal.
+
 ## Historical read and use
 
 An installed historical reader finds the anchor only through the independently

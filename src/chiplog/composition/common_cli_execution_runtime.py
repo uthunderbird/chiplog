@@ -1532,6 +1532,7 @@ async def open_installed_h1_runtime(
         evidence_mount = role_mounts[0]
         mounted_recovery = role_mounts[1]
         nonlocal authority_gate
+        launch.custody.bind_authority_gate(gate, launch.database_path, launch.database_identity)
         authority_gate = gate
         enrolled_mount.append(evidence_mount)
         recovery_mount.append(mounted_recovery)
@@ -1768,5 +1769,7 @@ async def open_installed_h1_runtime(
                 mounted_recovery.close()
             for reader in evidence_reader:
                 reader.close()
+            if authority_gate is not None:
+                launch.custody.unbind_authority_gate(authority_gate)
             if runtime is not None:
                 del runtime._h1_delivery_evidence_journal
