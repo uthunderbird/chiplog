@@ -17,6 +17,11 @@ from typing import Final, Literal, cast
 ANCHOR_SCHEMA_ID: Final = "chiplog.execution.h1-preseal-pe-anchor.v1"
 PROJECTION_IDENTITY_DOMAIN: Final = "chiplog.h1.preseal-pe-anchor-projection.v1"
 _MAX_BYTES: Final = 1_000_000
+# Base64 is ASCII, so a field within one canonical anchor cannot contain more
+# text bytes than the anchor's complete byte bound.  Keep this separate from
+# _text: retained byte payloads are intentionally larger than identity-like
+# strings, while still bounded before decoding.
+_MAX_BASE64_TEXT_BYTES: Final = _MAX_BYTES
 _DIGEST_LENGTH: Final = 64
 _ROLES: Final = frozenset(("P", "E_MEMBER", "E_WORKER"))
 _LEGACY_PREFIXES: Final = ("h1-evidence:", "h1-delivery-evidence:", "journal:")
@@ -101,7 +106,13 @@ def _uint(value: object, name: str) -> int:
 
 
 def _b64(value: object, name: str, *, nonempty: bool = True) -> bytes:
-    text = _text(value, name)
+    if (
+        not isinstance(value, str)
+        or (nonempty and not value)
+        or len(value) > _MAX_BASE64_TEXT_BYTES
+    ):
+        raise H1PresealPEAnchorRecordError(f"{name} is not a nonempty bounded base64 string")
+    text = value
     try:
         decoded = base64.b64decode(text, validate=True)
     except (TypeError, ValueError) as error:

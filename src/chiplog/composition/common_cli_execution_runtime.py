@@ -1621,6 +1621,7 @@ async def open_installed_h1_runtime(
                 worker_owner: Any | None = None
                 member_evidence: Any | None = None
                 worker_evidence: Any | None = None
+                decision_owner: Any | None = None
                 completion_exchange_registry: Any | None = None
                 conversation_sources: Any | None = None
                 live_enrollment: Any | None = None
@@ -1697,6 +1698,20 @@ async def open_installed_h1_runtime(
                         runtime._h1_installed_worker_evidence_owner,
                     )
                     runtime._h1_pre_request_worker_evidence = worker_evidence
+                    from chiplog.composition.h1_preseal_pe_decision import (
+                        H1PresealPEDecisionOwner,
+                    )
+
+                    if getattr(runtime, "_h1_preseal_pe_decision_owner", None) is not None:
+                        raise RuntimeError("installed H1 P/E decision owner is already mounted")
+                    decision_owner = H1PresealPEDecisionOwner(
+                        runtime,
+                        preseal_native_source,
+                        port,
+                        member_evidence,
+                        worker_owner,
+                    )
+                    runtime._h1_preseal_pe_decision_owner = decision_owner  # type: ignore[attr-defined]
                     live_enrollment = _H1LiveCompletionEnrollment(
                         runtime=runtime,
                         first_path_sources=runtime._h1_first_path_sources,
@@ -1711,6 +1726,12 @@ async def open_installed_h1_runtime(
                     runtime._h1_live_completion_enrollment = live_enrollment  # type: ignore[attr-defined]
                     yield runtime
                 finally:
+                    # This owner holds capabilities issued by the native, P, and E
+                    # owners below.  Revoke it while all of them are still live.
+                    if decision_owner is not None:
+                        decision_owner.revoke()
+                    if hasattr(runtime, "_h1_preseal_pe_decision_owner"):
+                        del runtime._h1_preseal_pe_decision_owner
                     coordinator = getattr(runtime, "_h1_postseal_recovery_coordinator", None)
                     if coordinator is not None:
                         coordinator.close()
@@ -1762,6 +1783,10 @@ async def open_installed_h1_runtime(
             # the appender remained open.
             revoke_and_unbind_live_authority()
             if runtime is not None:
+                retained_decision_owner = getattr(runtime, "_h1_preseal_pe_decision_owner", None)
+                if retained_decision_owner is not None:
+                    retained_decision_owner.revoke()
+                    delattr(runtime, "_h1_preseal_pe_decision_owner")
                 coordinator = getattr(runtime, "_h1_postseal_recovery_coordinator", None)
                 if coordinator is not None:
                     coordinator.close()

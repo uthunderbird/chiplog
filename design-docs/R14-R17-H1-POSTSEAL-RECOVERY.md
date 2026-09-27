@@ -25,6 +25,33 @@ decision holds historical selection until its outcome is resolved. Neither a
 V3 checkpoint nor the current owner inventory substitutes for the V2 native
 source. Missing retained native bytes hold recovery.
 
+Full historical COMPLETION reconstruction additionally requires the explicit
+[`h1_v2_authority_cut_v1` extension](R14-R17-H1-PRESEAL-PE-ANCHOR.md#versioned-v2-authority-cut).
+It is a versioned sibling in the same authenticated V2 DECIDED entry as the
+P/E anchor: the predecessor commitment and an `AuthorityCheckpointRefV1`
+retain the exact writer post-image and resulting commitment, bound to the
+native seal, exact command/envelope, database identity and head. No predecessor
+snapshot bytes are required. Exactly three physical seal members remain;
+neither the retained V2 seal nor its physical envelope becomes V3.
+
+This extension supplements independent native ROOT derivation with the
+complete historical authority rows needed by `FirstPathCompletionCutV2`.
+Readers must validate its explicit version, bindings, immutable bytes,
+selected publication membership, complete inventory and owner-as-of joins.
+Neither a V3 checkpoint descriptor nor current rows may substitute. Legacy
+V2 without the extension remains unsupported for full-cut historical
+completion, even where native ROOT selection succeeds. A present malformed,
+unknown-version or inconsistent descriptor is an integrity failure.
+
+Pending recovery validates the authenticated extension and blob before exact
+materialization/replay, preserves both DECIDED siblings, reconciles the
+recorded predecessor/resulting, and finishes the original decision before
+historical selection. It never recaptures a historical cut or P/E facts.
+Selected missing/corrupt blobs hold recovery; unselected staged blobs grant
+no authority. Later committed publications cannot alter the selected cut.
+These are newly frozen obligations; the existing V2 no-checkpoint readers
+require explicit implementation changes, not silent V3 relabeling.
+
 ## Execution ownership and stage records
 
 One private, task-owned, cross-process execution fence covers ROOT readback,
@@ -121,6 +148,12 @@ Tests must first show the current missing behavior as RED and then prove:
 7. A digest-consistent but semantically substituted stage input and matching
    result under a valid ROOT are rejected, including on the fully durable
    no-IPC path.
+8. The versioned V2 authority cut survives DECIDED-before-materialization and
+   committed-before-finish crashes, and later unrelated publications leave
+   the full historical cut and COMPLETION input byte-identical. Wrong cut
+   bindings, missing/corrupt blobs and unknown versions hold; legacy V2
+   without the extension cannot reconstruct full-cut completion. The physical
+   seal still has exactly Run, seal and frontier members.
 
 These tests observe authenticated journal bytes, physical publications,
 actual broker frames and owner-call counts. A DTO roundtrip alone is not a

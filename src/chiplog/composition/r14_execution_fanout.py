@@ -61,11 +61,13 @@ from .r14_execution_fanout_contracts import (
     RetainedExecutionFanOutPreparation,
 )
 from .r14_execution_fanout_records import build_envelope, physical_command, reference
+from .r14_execution_transition_records import RetainedExecutionTransitionV3
 from .r14_loop_history import read_execution_call_history
 
 if TYPE_CHECKING:
     from .common_cli_execution_runtime import CommonCliExecutionRuntime
     from .h1_preseal_contracts import H1OwnerAsOfV1, H1V2SealPreflight
+    from .h1_preseal_pe_decision import H1PresealPEDecisionCapture, H1PresealPEDecisionOwner
     from .r14_execution_runtime import R14ExecutionRuntime
 
 
@@ -110,6 +112,8 @@ async def publish_execution_fanout(
     h1_preflight: H1V2SealPreflight | None = None
     h1_runtime: CommonCliExecutionRuntime | None = None
     h1_owner_asof: H1OwnerAsOfV1 | None = None
+    h1_preseal_pe_owner: H1PresealPEDecisionOwner | None = None
+    h1_preseal_pe_capture: H1PresealPEDecisionCapture | None = None
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
         if complete_profile not in ("V1", "H1_V2", "H1_V3"):
@@ -161,6 +165,38 @@ async def publish_execution_fanout(
                 sqlite3.Error,
             ) as error:
                 raise LoopRejected("H1 V2 preflight is unproven") from error
+
+    # P capture may make an owner IPC call.  It must finish before any actor
+    # deadline is copied into the fanout request, its retained evidence, or
+    # the eventual physical command.
+    h1_v2_pe_capture_route = (
+        complete_profile == "H1_V2"
+        and complete_registry
+        and h1_preflight is not None
+        and h1_runtime is runtime
+        and not isinstance(parsed, ExecutionContinue)
+        and isinstance(h1_preflight.prepare.retained, RetainedExecutionTransitionV3)
+    )
+    if h1_v2_pe_capture_route:
+        from .h1_preseal_pe_decision import H1PresealPEDecisionOwner
+
+        assert h1_preflight is not None
+        owner = getattr(runtime, "_h1_preseal_pe_decision_owner", None)
+        if type(owner) is not H1PresealPEDecisionOwner:
+            raise LoopRejected("installed H1 V2 P/E decision owner is unavailable")
+        h1_preseal_pe_owner = owner
+        try:
+            h1_preseal_pe_capture = await owner.capture(h1_preflight)
+        except (OSError, TypeError, ValueError, sqlite3.Error, LoopRejected) as error:
+            raise LoopRejected("H1 V2 P/E preseal capture is unproven") from error
+        observed2 = await runtime._execution_actor(peer)
+        with runtime._authority_gate().hold():
+            runtime._check_execution_actor(observed2)
+            if not runtime._same_execution_actor_identity(observed, observed2):
+                raise LoopRejected("H1 V2 P/E capture refreshed a substituted execution actor")
+            observed = observed2
+
+    with runtime._authority_gate().hold():
         registry, bound = execution_registry(captured)
         registry_ref = reference(registry.registry_id, registry)
         engine = runtime._supervisor.runtime()
@@ -314,6 +350,17 @@ async def publish_execution_fanout(
         envelope = build_envelope(evidence)
         command = physical_command(envelope)
 
+    # The P/E receipt is strictly for the installed direct V3 Prepare -> V2
+    # seal route.  H1_V3 retains its existing checkpoint-only semantics.
+    h1_v2_pe_route = (
+        h1_v2_pe_capture_route
+        and isinstance(complete_retained, RetainedExecutionCompleteSealV2)
+    )
+    if h1_v2_pe_route and (
+        h1_preseal_pe_owner is None or h1_preseal_pe_capture is None
+    ):
+        raise LoopRejected("H1 V2 P/E preseal capture is unavailable")
+
     checkpoint_ref: AuthorityCheckpointRefV1 | None = None
 
     def stage_h1_checkpoint(resulting: str, exact_bytes: bytes) -> None:
@@ -334,7 +381,6 @@ async def publish_execution_fanout(
             runtime._check_execution_actor(observed)
             if h1_preflight is not None and h1_runtime is not None:
                 from .h1_owner_inventory import H1OwnerInventoryFailure
-                from .h1_preseal import recheck_h1_v2_seal
 
                 try:
                     if (
@@ -342,8 +388,26 @@ async def publish_execution_fanout(
                         is not runtime._authority_gate()
                     ):
                         return "STALE"
-                    if not recheck_h1_v2_seal(h1_runtime, h1_preflight):
-                        return "STALE"
+                    if h1_v2_pe_route:
+                        # Do not consume the one-use native receipt here: the
+                        # DECIDED writer must bind P/E and consume it under one
+                        # uninterrupted canonical gate hold.
+                        from .h1_preseal import _issued, _read
+
+                        if _issued.get(id(h1_preflight)) != (h1_runtime, h1_preflight):
+                            return "STALE"
+                        fresh = _read(
+                            h1_runtime,
+                            h1_preflight.captured_run,
+                            expected_head=h1_preflight.captured_run.head,
+                        )
+                        if fresh != h1_preflight:
+                            return "STALE"
+                    else:
+                        from .h1_preseal import recheck_h1_v2_seal
+
+                        if not recheck_h1_v2_seal(h1_runtime, h1_preflight):
+                            return "STALE"
                     from .h1_preseal_contracts import H1OwnerAsOfV1
 
                     h1_owner_asof = H1OwnerAsOfV1(
@@ -438,6 +502,34 @@ async def publish_execution_fanout(
             ):
                 assert h1_owner_asof is not None
                 decision["h1_owner_asof"] = json.loads(h1_owner_asof.canonical_bytes())
+            if h1_v2_pe_route:
+                if (
+                    h1_preflight is None
+                    or h1_preseal_pe_capture is None
+                    or h1_preseal_pe_owner is None
+                    or getattr(runtime, "_h1_preseal_pe_decision_owner", None)
+                    is not h1_preseal_pe_owner
+                ):
+                    raise LoopRejected("H1 V2 P/E preseal capture is unavailable")
+                assert isinstance(complete_retained, RetainedExecutionCompleteSealV2)
+                assert h1_owner_asof is not None
+                assert h1_runtime is not None
+                assert h1_preseal_pe_owner is not None
+                try:
+                    anchor = h1_preseal_pe_owner.recheck_and_bind(
+                        h1_preseal_pe_capture,
+                        h1_preflight,
+                        command,
+                        complete_retained,
+                        h1_owner_asof,
+                    )
+                except (OSError, TypeError, ValueError, sqlite3.Error, LoopRejected) as error:
+                    raise LoopRejected("H1 V2 P/E preseal anchor is unproven") from error
+                from .h1_preseal import recheck_h1_v2_seal
+
+                if not recheck_h1_v2_seal(h1_runtime, h1_preflight):
+                    raise LoopRejected("H1 V2 preflight is stale at DECIDED")
+                decision["h1_preseal_pe_anchor"] = anchor.canonical_bytes().decode()
             if isinstance(complete_retained, RetainedExecutionCompleteSealV3):
                 assert checkpoint_ref is not None
                 path, device, inode = runtime._database_identity

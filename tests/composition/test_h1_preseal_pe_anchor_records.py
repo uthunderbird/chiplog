@@ -12,12 +12,15 @@ import pytest
 
 from chiplog.capabilities.agent_loop.contracts import DisclosureLabel
 from chiplog.composition.h1_preseal_pe_anchor_records import (
+    _MAX_BASE64_TEXT_BYTES,
+    _MAX_BYTES,
     ANCHOR_SCHEMA_ID,
     H1PresealPEAnchorRecordError,
     H1PresealPEAnchorRecordV1,
     decode_h1_preseal_pe_anchor_record,
     h1_preseal_pe_anchor_projection_identity,
 )
+from chiplog.composition.h1_preseal_pe_anchor_records import _b64 as _decode_b64
 from chiplog.platform.broker import BrokerSession
 
 
@@ -326,6 +329,27 @@ def test_anchor_record_rejects_noncanonical_embedded_scope_policy_bytes() -> Non
     value["p"]["scope_bytes_base64"] = _b64(b'{ "scope":"accepted" }')
     with pytest.raises(H1PresealPEAnchorRecordError):
         H1PresealPEAnchorRecordV1.from_mapping(value)
+
+
+@pytest.mark.parametrize("field", ("scope_bytes_base64", "policy_bytes_base64"))
+def test_anchor_record_accepts_large_canonical_embedded_scope_policy_bytes(field: str) -> None:
+    value = anchor_mapping()
+    embedded = b'{"retained":"' + b"x" * 5_000 + b'"}'
+    encoded = _b64(embedded)
+    assert len(encoded) > 4_096
+    value["p"][field] = encoded
+
+    record = H1PresealPEAnchorRecordV1.from_mapping(value)
+
+    assert len(record.canonical_bytes()) <= _MAX_BYTES
+
+
+def test_anchor_record_base64_field_rejects_canonical_text_above_its_bound() -> None:
+    encoded = _b64(b"x" * ((_MAX_BASE64_TEXT_BYTES // 4) * 3 + 3))
+    assert len(encoded) > _MAX_BASE64_TEXT_BYTES
+
+    with pytest.raises(H1PresealPEAnchorRecordError, match="bounded base64"):
+        _decode_b64(encoded, "p.scope_bytes_base64")
 
 
 def test_anchor_record_accepts_current_p_e_label_and_worker_wire_shapes() -> None:
