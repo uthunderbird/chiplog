@@ -153,6 +153,7 @@ class H1CompletionPreparationSession:
         self._preflight: _H1CompletionPreflight | None = None
         self._completion_exchange: H1CompletionOwnerExchangeV1 | None = None
         self._completion_started = False
+        self._completion_dispatch_started = False
         self._conversation_exchange: H1CompletionOwnerExchangeV1 | None = None
         self._conversation_started = False
         self._effects_exchange: H1CompletionOwnerExchangeV1 | None = None
@@ -199,6 +200,27 @@ class H1CompletionPreparationSession:
         if self._completion_exchange is not None or self._completion_started:
             raise H1CompletionPreparationUnavailable("H1 completion session is already started")
         self._completion_started = True
+        try:
+            await self._build_first_path_completion_preflight()
+            return await self._dispatch_first_path_completion()
+        except BaseException:
+            # The owner call may already have crossed the process boundary;
+            # cancellation and failure must not permit a second use of this cut.
+            raise
+
+    async def _build_first_path_completion_preflight(self) -> _H1CompletionPreflight:
+        """Retain the canonical completion request before opening B's route.
+
+        This private seam has no caller-supplied request or pin.  It retains
+        the installed A/P/E joins and complete canonical request so a future
+        recovery coordinator can persist the semantic bytes before dispatch.
+        It deliberately establishes no historical authority.
+        """
+        cut = self._cut
+        if cut is None or cut.conversation is not None:
+            raise H1CompletionPreparationUnavailable("H1 completion session source is unavailable")
+        if self._completion_exchange is not None or self._preflight is not None:
+            raise H1CompletionPreparationUnavailable("H1 completion session is already started")
         try:
             from chiplog.composition.h1_completion_exchange_registry import (
                 H1CompletionExchangeRegistry,
@@ -276,16 +298,65 @@ class H1CompletionPreparationSession:
                 delivery_receipt=delivery_receipt,
                 request=request,
             )
+            return self._preflight
+        except (TypeError, ValueError) as error:
+            raise H1CompletionPreparationUnavailable(
+                "H1 completion source returned invalid canonical evidence"
+            ) from error
+
+    async def _dispatch_first_path_completion(self) -> H1CompletionOwnerExchangeV1:
+        """Dispatch the exact semantic request retained by the private builder."""
+        cut = self._cut
+        preflight = self._preflight
+        if (
+            cut is None
+            or cut.conversation is not None
+            or preflight is None
+            or preflight.first_path is not cut.first_path
+            or self._completion_exchange is not None
+            or self._completion_dispatch_started
+        ):
+            raise H1CompletionPreparationUnavailable("H1 completion session is already started")
+        # A direct private dispatch is still one-use.  An interrupted owner
+        # exchange has an ambiguous outcome and cannot consume this preflight
+        # a second time.
+        self._completion_dispatch_started = True
+        try:
+            from chiplog.composition.h1_completion_exchange_registry import (
+                H1CompletionExchangeRegistry,
+            )
+            from chiplog.composition.h1_runtime_preissuance_port import (
+                _H1RuntimePreissuancePort,
+            )
+
+            runtime = self._sources._runtime
+            port = getattr(runtime, "_h1_preissuance_registration_source_port", None)
+            registry = getattr(runtime, "_h1_completion_exchange_registry", None)
+            if (
+                type(port) is not _H1RuntimePreissuancePort
+                or type(registry) is not H1CompletionExchangeRegistry
+            ):
+                raise H1CompletionPreparationUnavailable(
+                    "H1 completion requires one installed B/P/E completion mount"
+                )
+            request_builder = self._sources._prepare_first_path_completion_request
+            if not callable(request_builder):
+                raise H1CompletionPreparationUnavailable(
+                    "H1 first-path source lacks a session-owned request builder"
+                )
+            request = preflight.request
             # Immediately before the irreversible call, rederive the request
             # and atomically consume P's one-use receipt.  A changed source,
             # receipt, or command identity leaves the session consumed.
             with self._sources._gate.hold():
-                replayed = request_builder(cut.first_path, delivery_receipt)
+                replayed = request_builder(cut.first_path, preflight.delivery_receipt)
                 if replayed.canonical_bytes() != request.canonical_bytes():
                     raise H1CompletionPreparationUnavailable(
                         "H1 completion preflight request is no longer current"
                     )
-                delivery, fence = port._consume_delivery_inputs(delivery_receipt, cut.first_path)
+                delivery, fence = port._consume_delivery_inputs(
+                    preflight.delivery_receipt, cut.first_path
+                )
                 if (
                     delivery != request.delivery
                     or fence.canonical_bytes() != request.fence.canonical_bytes()
@@ -351,10 +422,12 @@ class H1CompletionPreparationSession:
             self._completion_exchange = exchange
             registry._register_actual_success(self)
             return exchange
-        except BaseException:
-            # The owner call may already have crossed the process boundary;
-            # cancellation and failure must not permit a second use of this cut.
+        except H1CompletionPreparationUnavailable:
             raise
+        except (TypeError, ValueError) as error:
+            raise H1CompletionPreparationUnavailable(
+                "H1 completion owner returned invalid canonical evidence"
+            ) from error
 
     def capture_current(
         self,
