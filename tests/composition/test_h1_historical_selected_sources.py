@@ -13,7 +13,10 @@ import pytest
 
 import chiplog.composition.h1_historical_selected_sources as historical_sources
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
-from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV1
+from chiplog.composition.h1_completion_issuance import (
+    H1CompletionIssuanceV1,
+    H1CompletionIssuanceV2,
+)
 from chiplog.composition.h1_historical_selected_sources import (
     _open_historical_ports,
     _require_historical_ports,
@@ -57,6 +60,14 @@ def test_binder_rejects_untyped_batch_before_any_runtime_access() -> None:
 
     with pytest.raises(TypeError, match="CompleteDeliveryBatchV2"):
         bind_selected_h1_completion(object(), runtime)  # type: ignore[arg-type]
+
+
+def test_historical_reader_accepts_the_exact_v2_issuance_type() -> None:
+    """V2 reaches the same historical source boundary; subclasses never do."""
+    batch = CompleteDeliveryBatchV2.model_construct()
+    issuance = H1CompletionIssuanceV2.model_construct()
+
+    historical_sources._require_typed_inputs(batch, issuance)
 
 
 def test_historical_ports_are_not_silently_replaced_by_current_h1_services() -> None:
@@ -339,6 +350,7 @@ def test_historical_scope_rejects_a_recomputed_owner_response_on_a_different_rou
     def decode_current_call(raw: bytes) -> object:
         decoded_nested_calls.append(raw)
         return current_call
+
     prefix = SimpleNamespace(snapshot_bytes=b"snapshot")
     reader = SimpleNamespace(
         authority_gate=None,

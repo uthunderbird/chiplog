@@ -22,6 +22,10 @@ from chiplog.composition.common_cli_execution_runtime import (
 )
 from chiplog.composition.common_execution_driver_contracts import ExecutionDriverRejectedV1
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
+from chiplog.composition.h1_postseal_recovery import H1PostSealRecoveryJournal
+from chiplog.composition.h1_postseal_recovery_coordinator import (
+    H1PostSealRecoveryCoordinatorError,
+)
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.broker import PublicPortCall
 from tests.support.h1_cli_execution import _admit, advance
@@ -158,6 +162,119 @@ def _corrupt_open_recovery_body(runtime: CommonCliExecutionRuntime) -> None:
         body.seek(0)
         body.write(b"!" if first != b"!" else b"?")
         body.flush()
+
+
+def _recovery_body_and_tip(runtime: CommonCliExecutionRuntime) -> tuple[bytes, str | None]:
+    """Observe the mounted journal without manufacturing recovery evidence."""
+    private = cast(Any, runtime)
+    journal = private._h1_postseal_recovery_journal
+    body_path, _device, _inode = journal._journal.physical_sources()[0]
+    return Path(body_path).read_bytes(), journal.scan().tip
+
+
+@pytest.mark.asyncio
+async def test_held_finalization_preflight_revalidates_a_complete_durable_chain_without_b_or_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A finalizer gets only a lease-bound capture of real durable evidence."""
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
+            request, _initial = await _durable_four_stage_chain(runtime)
+
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as restarted:
+            engine = _install_recorder(restarted, monkeypatch)
+            before = _recovery_body_and_tip(restarted)
+
+            def append_must_not_run(*_args: object, **_kwargs: object) -> object:
+                raise AssertionError(
+                    "read-only finalization preflight appended to recovery journal"
+                )
+
+            monkeypatch.setattr(H1PostSealRecoveryJournal, "append_transition", append_must_not_run)
+            coordinator = cast(Any, restarted)._h1_postseal_recovery_coordinator
+            assert coordinator is not None
+            async with await coordinator._fence.acquire() as lease:
+                capture = coordinator._preflight_complete_chain_held(
+                    lease, request.identity, request.original_driver_command_fingerprint()
+                )
+                assert capture._state.next_stage == "COMPLETE"
+                coordinator._require_complete_chain_preflight_held(lease, capture)
+                coordinator._retire_complete_chain_preflight_held(lease, capture)
+
+            assert _recovery_body_and_tip(restarted) == before
+            assert engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_held_finalization_preflight_rejects_missing_root_without_writing_or_b(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finalization preflight cannot turn a selected seal into a new ROOT."""
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
+            request, _initial = await _seal_v3_then_v2_without_recovery(runtime)
+
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as restarted:
+            engine = _install_recorder(restarted, monkeypatch)
+            before = _recovery_body_and_tip(restarted)
+
+            def append_must_not_run(*_args: object, **_kwargs: object) -> object:
+                raise AssertionError("read-only finalization preflight appended a missing ROOT")
+
+            monkeypatch.setattr(H1PostSealRecoveryJournal, "append_transition", append_must_not_run)
+            coordinator = cast(Any, restarted)._h1_postseal_recovery_coordinator
+            assert coordinator is not None
+            async with await coordinator._fence.acquire() as lease:
+                with pytest.raises(H1PostSealRecoveryCoordinatorError, match="ROOT is absent"):
+                    coordinator._preflight_complete_chain_held(
+                        lease, request.identity, request.original_driver_command_fingerprint()
+                    )
+
+            assert _recovery_body_and_tip(restarted) == before
+            assert engine.calls == []
+
+
+@pytest.mark.asyncio
+async def test_held_finalization_preflight_rejects_an_incomplete_real_root_without_b(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real ROOT without all four durable exchanges cannot enter finalization."""
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
+            request, _initial = await _seal_v3_then_v2_without_recovery(runtime)
+            coordinator = cast(Any, runtime)._h1_postseal_recovery_coordinator
+            assert coordinator is not None
+            async with await coordinator._fence.acquire() as lease:
+                coordinator._begin_or_resume_held(
+                    lease, request.identity, request.original_driver_command_fingerprint(), None
+                )
+
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as restarted:
+            engine = _install_recorder(restarted, monkeypatch)
+            before = _recovery_body_and_tip(restarted)
+
+            def append_must_not_run(*_args: object, **_kwargs: object) -> object:
+                raise AssertionError(
+                    "read-only finalization preflight appended an incomplete chain"
+                )
+
+            monkeypatch.setattr(H1PostSealRecoveryJournal, "append_transition", append_must_not_run)
+            coordinator = cast(Any, restarted)._h1_postseal_recovery_coordinator
+            assert coordinator is not None
+            async with await coordinator._fence.acquire() as lease:
+                with pytest.raises(H1PostSealRecoveryCoordinatorError, match="chain is incomplete"):
+                    coordinator._preflight_complete_chain_held(
+                        lease, request.identity, request.original_driver_command_fingerprint()
+                    )
+
+            assert _recovery_body_and_tip(restarted) == before
+            assert engine.calls == []
 
 
 @pytest.mark.asyncio

@@ -216,3 +216,38 @@ def test_v2_outer_dto_exposes_only_the_frozen_evidence_members() -> None:
         "terminal_admission",
     }
     assert value_type.model_fields["schema_id"].default == V2_SCHEMA
+
+
+def test_v2_terminal_admission_fingerprint_is_checked_against_the_terminal_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clearance fingerprint cannot be detached from the retained fourth call."""
+    checker = getattr(issuance, "_require_v2_exchange_shape", None)
+    assert callable(checker), "H1 completion issuance V2 lacks its exchange validator"
+    terminal = _preterminal_current_exchange().model_copy(update={"role": "terminal_work"})
+    value = issuance.H1CompletionIssuanceV2.model_construct(
+        owner_exchanges=(
+            terminal.model_copy(update={"role": "completion"}),
+            terminal.model_copy(update={"role": "conversation"}),
+            terminal.model_copy(update={"role": "effects"}),
+            terminal,
+        ),
+        scope_issue_exchange=terminal.model_copy(update={"role": "scope_issue"}),
+        scope_current_exchange=terminal.model_copy(update={"role": "scope_current"}),
+        final_current_exchange=terminal.model_copy(update={"role": "scope_current"}),
+        terminal_admission=issuance.H1CompletionTerminalAdmissionWitnessV1.model_construct(
+            terminal_call_fingerprint="0" * 64,
+            preterminal_current_exchange=terminal.model_copy(update={"role": "scope_current"}),
+        ),
+    )
+    monkeypatch.setattr(issuance, "_require_success_exchange", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        issuance, "_require_historical_scope_issue_exchange_v2", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        issuance, "_require_historical_scope_current_exchange_v2", lambda *_args: None
+    )
+    monkeypatch.setattr(issuance, "_require_fresh_scope_current_exchange_v2", lambda *_args: None)
+
+    with pytest.raises(ValueError, match="terminal fingerprint"):
+        checker(value)

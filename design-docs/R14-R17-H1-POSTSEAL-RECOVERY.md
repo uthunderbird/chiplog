@@ -221,19 +221,41 @@ batch, issuance, ROOT or selected-decision DTO. These are frozen obligations,
 not a claim that finalization is implemented.
 
 Finalization acquires the same enrolled recovery execution fence as preparation
-and retains it through publication reconciliation and drain. No competing B
-continuation may run. `AuthorityGate` still covers short synchronous checks and
-writer admission, never an await or owner IPC. Finalization independently derives
+before its initial owner-journal lookup and retains it through publication
+reconciliation and actual writer settlement. This is mandatory for **every
+positive H1 publication path**, including ordinary publication, finalization,
+retry and exact selected recovery; no alternative entry point may bypass it.
+The installed coordinator owns the task-bound lease; B enrollment and the
+publication authority validate the exact installed source, context and lease,
+including at writer admission. No competing B continuation or H1 publication
+may run under the same installed recovery role. `AuthorityGate` still covers
+short synchronous checks and writer admission, never an await or owner IPC.
+Finalization independently derives
 the native ROOT, scans the authenticated journal, reconstructs all four semantic
 inputs and validates each complete durable result against its predecessors.
 An incomplete chain holds until preparation completes.
 
 Before fresh B replay, the publication owner independently locates the original
-stable completion identity in authenticated history. An already selected decision
-is reconciled/materialized and read back exactly, then returned as `EXACT_REPLAY`
-without opening B or minting issuance. Pending or uncertain publication must be
-resolved first. Only authoritative absence permits a new attempt; a missing
-response or failed readback is not proof of absence.
+stable completion identity in authenticated history. Use the independently
+validated ROOT's `publication_command_id` and `publication_command_fingerprint`, derived
+from the original completion, never a fresh invocation identity; V1/V2 retries
+retain that identity. Under the held lease, `OwnerDecisionJournal.lookup`
+authenticates the journal and distinguishes selected from absent. This is an
+absence proof only because all earlier admitted writers have settled and every
+positive path obeys the same exclusion boundary. No separate in-flight identity
+registry is required by this contract; an unfenced path invalidates that proof
+and must remain unable to publish.
+
+An already selected decision is reconciled/materialized and read back exactly,
+then returned as `EXACT_REPLAY` without opening B, fresh CURRENT or minting
+issuance. In particular, selected with absent physical materialization is still
+selected: `lookup_exact` reporting HOLD for that state requires exact
+`recover_selected`, not a new attempt. Recovery authenticates the retained
+original version and decision, reconciles predecessor/resulting commitments,
+and verifies exact physical bytes. Conflicting or unprovable materialization,
+corrupt evidence and pending or uncertain outcomes hold before B; uncertainty
+retains the existing uncertain/HOLD behavior. Only authoritative absence permits
+a new attempt; a missing response or failed readback is not proof of absence.
 
 With a validated complete chain and authenticated absence of selected or unresolved
 completion, finalization opens fresh enrolled B and replays the four inert owner
@@ -256,6 +278,22 @@ reentrant downstream work, independently derives authenticated invocation and
 read-manifest inputs, and rechecks the complete source cut at final writer
 admission without owner IPC under the writer lock. Failed or stale admission
 burns transient authority; the marker is never retried.
+
+Once a writer submission may have been accepted, the coordinator retains its
+submission/commit task and drains it without cancelling that task, including on
+caller cancellation, exceptions and runtime teardown. `EventAppender.submit`
+shields its accepted result: cancelling its caller can leave a queued writer
+able to select later. A cancelled wrapper, revoked marker or absent journal row
+while that writer is outstanding therefore does not establish settlement.
+Keep the lease and required enrolled resources live until the admitted writer
+has finished or its termination is confirmed; only then reconcile the stable
+identity and release ownership. Repeated cancellation must not shorten this
+drain. Caller `CancelledError` propagates after cleanup, without a fabricated
+success. If settlement cannot yet be established, retain exclusion rather than
+permit another attempt. Process death releases the OS lease; the next holder
+authenticates and reconciles any durable selected decision before B. These are
+implementation obligations, not claims that existing broker-worker drain also
+drains the publication writer.
 
 The versioned [H1 completion issuance V2 freeze](H1-COMPLETION-ISSUANCE-V2.md)
 separates historical selected scope evidence from final invocation evidence,
@@ -314,6 +352,13 @@ Tests must first show the current missing behavior as RED and then prove:
     IPC or reminting. Pending/ambiguous publication holds before fresh B;
     cancellation drains before fence release. A terminal selected receipt alone
     cannot report delivery/outcome success.
+12. Ordinary publication, retry and finalization contend on the same enrolled
+    lease across processes. Pause an accepted writer before selection, cancel
+    its caller repeatedly and attempt a competing finalization: no second B or
+    publication starts until actual writer settlement and reconciliation.
+    Selected-but-physically-absent recovery materializes the exact original
+    decision without B, fresh CURRENT or another marker consumption; an absent
+    journal row is usable only after exclusion and settlement are established.
 
 These tests observe authenticated journal bytes, physical publications,
 actual broker frames and owner-call counts. A DTO roundtrip alone is not a

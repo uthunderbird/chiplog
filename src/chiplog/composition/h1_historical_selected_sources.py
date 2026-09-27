@@ -45,7 +45,10 @@ from chiplog.platform.owner_publications import SelectedOwnerDecision
 from chiplog.platform.r7_trust import decode_trust_owner_call_canonical
 
 if TYPE_CHECKING:
-    from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV1
+    from chiplog.composition.h1_completion_issuance import (
+        H1CompletionIssuanceV1,
+        H1CompletionIssuanceV2,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +56,7 @@ class H1HistoricalSelection:
     """The exact selected owner decision, paired with its verified issuance."""
 
     decision: SelectedOwnerDecision
-    issuance: H1CompletionIssuanceV1
+    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,13 +118,20 @@ def _require_typed_inputs(batch: object, issuance: object) -> None:
     if type(batch) is not CompleteDeliveryBatchV2:
         raise TypeError("H1 historical sources require CompleteDeliveryBatchV2")
     # Delay this import: the issuance module statically imports this seam.
-    from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV1
+    from chiplog.composition.h1_completion_issuance import (
+        H1CompletionIssuanceV1,
+        H1CompletionIssuanceV2,
+    )
 
-    if type(issuance) is not H1CompletionIssuanceV1:
-        raise TypeError("H1 historical sources require H1CompletionIssuanceV1")
+    if type(issuance) not in (H1CompletionIssuanceV1, H1CompletionIssuanceV2):
+        raise TypeError(
+            "H1 historical sources require H1CompletionIssuanceV1 or H1CompletionIssuanceV2"
+        )
 
 
-def _retained_origin(issuance: H1CompletionIssuanceV1) -> H1RetainedSelectedWrapperV1:
+def _retained_origin(
+    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
+) -> H1RetainedSelectedWrapperV1:
     """Return the one H0/R17 wrapper embedded by the local effects exchange."""
     effects = issuance.assembly.ordered_effects
     if len(effects) != 1:
@@ -130,7 +140,7 @@ def _retained_origin(issuance: H1CompletionIssuanceV1) -> H1RetainedSelectedWrap
 
 
 def _verify_historical_r16(
-    issuance: H1CompletionIssuanceV1,
+    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
     *,
     h0_selection: HistoricalH0R17Selection,
     custody: object,
@@ -271,7 +281,7 @@ def _selected_owner_decision(
 
 
 def _verify_historical_scope(
-    issuance: H1CompletionIssuanceV1,
+    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
     *,
     trust_reader: object,
     gate: object,
@@ -470,9 +480,76 @@ def _verify_historical_scope_lineage(
         raise ValueError("H1 historical newly issued scope has the wrong physical predecessor")
 
 
+def _verify_v2_current_as_of(
+    issuance: H1CompletionIssuanceV2,
+    exchange: object,
+    *,
+    trust_reader: object,
+    gate: object,
+) -> None:
+    """Prove a V2 CURRENT against the prefix named by that exact wire.
+
+    This is intentionally separate from the capture-time check in the codec:
+    the selected reader must also prove the immutable, as-of trust material.
+    """
+    reader = cast(Any, trust_reader)
+    if reader.authority_gate is not gate:
+        raise ValueError("H1 V2 historical trust reader has a different authority gate")
+    sent = cast(Any, exchange).sent
+    returned = cast(Any, exchange).returned
+    try:
+        wire = decode_trust_owner_call_canonical(sent.canonical_payload)
+        call = H1OwnerCurrentCallV1.model_validate_json(wire.request_bytes)
+        request = ReadCurrentHermeticExecutionScopeV1.model_validate_json(call.read_request_bytes)
+        candidate = H1OwnerCurrentCandidateV1.model_validate_json(returned.canonical_payload)
+        prefix = reader.historical_prefix(request.expected_trust_observation)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("H1 V2 historical current wire is malformed") from error
+    selected = issuance.assembly.ordered_effects[0].owner_call.request.selected_scope
+    if (
+        wire.canonical_bytes() != sent.canonical_payload
+        or wire.mode != "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1"
+        or call.canonical_bytes() != wire.request_bytes
+        or request.canonical_bytes() != call.read_request_bytes
+        or candidate.canonical_bytes() != returned.canonical_payload
+        or wire.snapshot_bytes != prefix.snapshot_bytes
+        or sent.request_id != call.route.request_id
+        or candidate.route != call.route
+        or returned.request_id != sent.request_id
+        or returned.responder != sent.callee
+        or sent.caller.owner_id != "broker"
+        or sent.callee.owner_id != "deployment_trust"
+        or request != selected.current_request
+        or candidate.current != selected.current_result
+    ):
+        raise ValueError("H1 V2 historical current differs from its own trust prefix")
+    anchor = request.source_anchor
+    record = reader.historical_record(anchor.decision.head, anchor.record_ordinal)
+    try:
+        materialized = json.loads(record.record_bytes)
+        scope = HermeticOutputScopeV1.model_validate(materialized["scope"])
+    except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("H1 V2 historical current scope materialization is malformed") from error
+    if (
+        anchor.decision.head != record.physical_decision_id
+        or anchor.decision.fingerprint != record.envelope_fingerprint
+        or anchor.record_ordinal != record.record_ordinal
+        or scope != selected.scope
+        or not any(entry[0] == record.physical_decision_id for entry in prefix.physical_entries)
+    ):
+        raise ValueError("H1 V2 historical current anchor differs from raw materialization")
+    _verify_historical_scope_lineage(
+        scope=scope,
+        selected_decision_id=record.physical_decision_id,
+        selected_predecessor=record.physical_predecessor,
+        issue_prefix=prefix,
+        current_prefix=prefix,
+    )
+
+
 def _verify_historical_selection(
     batch: CompleteDeliveryBatchV2,
-    issuance: H1CompletionIssuanceV1,
+    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
     runtime: object,
 ) -> SelectedOwnerDecision:
     """Read the native sources and selected owner decision from one outer cut."""
@@ -488,6 +565,29 @@ def _verify_historical_selection(
         h0_r17 = read_historical_h0_r17(common_runtime, retained)
         _verify_historical_r16(issuance, h0_selection=h0_r17, custody=custody)
         _verify_historical_scope(issuance, trust_reader=trust_reader, gate=ports.gate)
+        # V1 deliberately remains on its original two-wire route.  V2 adds
+        # three independently prefix-bound CURRENT observations.
+        from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
+
+        if type(issuance) is H1CompletionIssuanceV2:
+            _verify_v2_current_as_of(
+                issuance,
+                issuance.scope_current_exchange,
+                trust_reader=trust_reader,
+                gate=ports.gate,
+            )
+            _verify_v2_current_as_of(
+                issuance,
+                issuance.terminal_admission.preterminal_current_exchange,
+                trust_reader=trust_reader,
+                gate=ports.gate,
+            )
+            _verify_v2_current_as_of(
+                issuance,
+                issuance.final_current_exchange,
+                trust_reader=trust_reader,
+                gate=ports.gate,
+            )
         H1FirstPathSources(common_runtime).validate_historical(
             issuance.assembly.original_completion_request.source,
             initialization_envelope_bytes=retained.initialization_envelope_bytes,
@@ -497,7 +597,7 @@ def _verify_historical_selection(
 
 def verify_h1_historical_sources(
     batch: CompleteDeliveryBatchV2,
-    issuance: H1CompletionIssuanceV1,
+    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
     runtime: object,
 ) -> None:
     """Verify H1 source selection from retained native historical evidence."""

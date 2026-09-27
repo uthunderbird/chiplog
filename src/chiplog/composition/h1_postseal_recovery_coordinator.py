@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
@@ -22,7 +23,10 @@ from chiplog.composition.h1_postseal_recovery import (
     H1PostSealRecoveryTransition,
 )
 from chiplog.composition.h1_postseal_recovery_source import H1PostSealRecoveryRootSource
-from chiplog.composition.h1_recovery_execution_fence import _H1RecoveryExecutionFence
+from chiplog.composition.h1_recovery_execution_fence import (
+    _H1RecoveryExecutionFence,
+    _H1RecoveryExecutionLease,
+)
 from chiplog.composition.h1_v2_recovery_native_source import H1V2RecoveryNativeSource
 
 if TYPE_CHECKING:
@@ -46,6 +50,24 @@ _PREPARE_METHODS: Final[dict[_H1RecoveryStage, str]] = {
     "EFFECTS": "prepare_local_commentary",
     "TERMINAL_WORK": "prepare_terminal_work",
 }
+
+
+@dataclass(slots=True)
+class _H1CompleteChainPreflight:
+    """Coordinator-owned evidence retained for one future finalizer continuation.
+
+    This is deliberately not a DTO or authority token.  It keeps the source's
+    opaque context alive only while the exact execution lease remains owned.
+    The coordinator validates both identities again before a downstream owner
+    may use it, then burns the context after its eventual drain.
+    """
+
+    _coordinator: _H1PostSealRecoveryCoordinator
+    _source: object
+    _lease: _H1RecoveryExecutionLease
+    _state: H1PostSealRecoveryState
+    _context: object
+    _retired: bool = False
 
 
 class _H1PostSealRecoveryCoordinator:
@@ -109,6 +131,145 @@ class _H1PostSealRecoveryCoordinator:
             raise H1PostSealRecoveryCoordinatorError(
                 "post-seal recovery ROOT cannot be safely resumed"
             ) from error
+
+    def _preflight_complete_chain_held(
+        self,
+        lease: _H1RecoveryExecutionLease,
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+    ) -> _H1CompleteChainPreflight:
+        """Read and validate an already-complete recovery chain without changing it.
+
+        A finalizer calls this only after authenticating its current caller and
+        original H0 admission.  This private seam deliberately does not do
+        either: its arguments locate the frozen V2 source, and it must never
+        turn a missing ROOT or stage into a new recovery operation.
+        """
+        if type(lease) is not _H1RecoveryExecutionLease:
+            raise TypeError("complete-chain preflight requires the exact recovery lease")
+        lease.require_owned()
+        if type(identity) is not DriverCommandIdentityV1:
+            raise TypeError("complete-chain preflight requires the exact original driver identity")
+        if not isinstance(original_fingerprint, str) or len(original_fingerprint) != 64:
+            raise H1PostSealRecoveryCoordinatorError("original driver fingerprint is invalid")
+        if self._closed:
+            raise H1PostSealRecoveryCoordinatorError("post-seal recovery coordinator is closed")
+
+        context: object | None = None
+        try:
+            self._mount.assert_current()
+            # Keep source location, root derivation and the journal observation
+            # in one mounted authority interval.  Unlike _begin_or_resume_held,
+            # this branch has no append or reconciliation path.
+            with self._runtime._authority_gate().hold():
+                locator = H1V2RecoveryNativeSource(self._runtime).locate_selected_seal(
+                    original_identity=identity, original_fingerprint=original_fingerprint
+                )
+                derived_root = H1PostSealRecoveryRootSource(self._runtime).derive_on_restart(
+                    identity, original_fingerprint, locator
+                )
+                scan = self._journal().scan()
+                root_id = dict(scan.root_id_by_selected_seal).get(
+                    (
+                        derived_root.tenant_id,
+                        derived_root.database_id,
+                        derived_root.selected_seal_subject_id,
+                        derived_root.selected_seal_head,
+                        derived_root.selected_seal_fingerprint,
+                    )
+                )
+                if root_id is None:
+                    raise H1PostSealRecoveryCoordinatorError("durable recovery ROOT is absent")
+                state = scan.state_for_root(root_id)
+                if (
+                    state.root.root_id() != derived_root.root_id()
+                    or state.root.as_dict() != derived_root.as_dict()
+                ):
+                    raise H1PostSealRecoveryCoordinatorError("durable recovery ROOT differs")
+                self._require_complete_chain_shape(state)
+                context = self._source._capture_recovery(
+                    original_identity=identity,
+                    original_fingerprint=original_fingerprint,
+                    selected_seal=locator,
+                    root=state.root,
+                )
+                self._validate_complete_chain_held(context, state)
+                return _H1CompleteChainPreflight(self, self._source, lease, state, context)
+        except BaseException:
+            if context is not None:
+                # Capture allocates issuer-owned capability state even when a
+                # later durable link fails.  Retire it under the still-owned
+                # lease before reporting the hold.
+                lease.require_owned()
+                self._source._retire_recovery_context(context)
+            raise
+
+    def _require_complete_chain_preflight_held(
+        self, lease: _H1RecoveryExecutionLease, capture: _H1CompleteChainPreflight
+    ) -> H1PostSealRecoveryState:
+        """Recheck exact lease/context ownership immediately before continuation."""
+        if type(lease) is not _H1RecoveryExecutionLease:
+            raise TypeError("complete-chain preflight requires the exact recovery lease")
+        lease.require_owned()
+        if (
+            type(capture) is not _H1CompleteChainPreflight
+            or capture._coordinator is not self
+            or capture._source is not self._source
+            or capture._lease is not lease
+            or capture._retired
+        ):
+            raise H1PostSealRecoveryCoordinatorError("complete-chain preflight differs")
+        self._source._require_current(capture._context)
+        return capture._state
+
+    def _retire_complete_chain_preflight_held(
+        self, lease: _H1RecoveryExecutionLease, capture: _H1CompleteChainPreflight
+    ) -> None:
+        """Burn a completed preflight only under its original held lease."""
+        if type(lease) is not _H1RecoveryExecutionLease:
+            raise TypeError("complete-chain preflight requires the exact recovery lease")
+        lease.require_owned()
+        if (
+            type(capture) is not _H1CompleteChainPreflight
+            or capture._coordinator is not self
+            or capture._source is not self._source
+            or capture._lease is not lease
+            or capture._retired
+        ):
+            raise H1PostSealRecoveryCoordinatorError("complete-chain preflight differs")
+        self._source._retire_recovery_context(capture._context)
+        capture._retired = True
+
+    @staticmethod
+    def _require_complete_chain_shape(state: H1PostSealRecoveryState) -> None:
+        if (
+            tuple(stage for stage, _semantic_input, _command_id in state.inputs) != _STAGES
+            or tuple(stage for stage, _result in state.results) != _STAGES
+            or state.next_stage != "COMPLETE"
+        ):
+            raise H1PostSealRecoveryCoordinatorError("durable recovery chain is incomplete")
+
+    def _validate_complete_chain_held(
+        self, context: object, state: H1PostSealRecoveryState
+    ) -> None:
+        """Rebuild all semantic inputs and validate all persisted results in order."""
+        durable_results: dict[_H1RecoveryStage, bytes] = {}
+        for stage in _STAGES:
+            self._source._require_current(context)
+            semantic_input, effects_command_id = state.stage_input(stage)
+            expected = self._source._reconstruct_input(
+                context,
+                stage,
+                durable_results,
+                effects_command_id,
+                predecessor_effects_input=self._terminal_effects_input(state, stage),
+            )
+            if semantic_input != expected:
+                raise H1PostSealRecoveryCoordinatorError("durable stage input differs")
+            self._require_effects_command_id(stage, semantic_input, effects_command_id)
+            result = dict(state.results)[stage]
+            self._source._validate_result(context, stage, semantic_input, result)
+            durable_results[stage] = result
 
     async def _resume_stages_held(
         self,

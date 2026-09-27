@@ -420,6 +420,202 @@ def _require_exchange_shape(value: H1CompletionIssuanceV1) -> None:
     _require_scope_current_exchange(value.scope_current_exchange, assembly, value.capture)
 
 
+def _require_historical_scope_issue_exchange_v2(
+    exchange: H1CompletionOwnerExchangeV1,
+    assembly: PrepareH1CompleteAcceptanceAssemblyV1,
+    capture: H1CompletionCaptureV1,
+) -> None:
+    """Validate the retained ISSUE wire without substituting the final capture.
+
+    Its trust-prefix join is deliberately performed by the selected historical
+    reader, which is the only component with raw historical trust access.
+    """
+    sent = exchange.sent
+    if (
+        sent.operation_id != "deployment_trust.issue_hermetic_output_scope"
+        or sent.schema_id != "chiplog.deployment-trust.owner-call.v1"
+        or sent.caller.owner_id != "broker"
+        or sent.callee.owner_id != "deployment_trust"
+        or sent.callee not in capture.sessions
+    ):
+        raise ValueError("H1 V2 historical scope issue exchange has a substituted route")
+    wire = decode_trust_owner_call_canonical(sent.canonical_payload)
+    call = H1OwnerCandidateCallV1.model_validate_json(wire.request_bytes)
+    selected = assembly.ordered_effects[0].owner_call.request.selected_scope
+    retained = assembly.ordered_effects[0].owner_call.request.retained_origin
+    returned = exchange.returned
+    if (
+        wire.canonical_bytes() != sent.canonical_payload
+        or wire.mode != "ISSUE_HERMETIC_OUTPUT_SCOPE_V1"
+        or call.canonical_bytes() != wire.request_bytes
+        or hashlib.sha256(wire.snapshot_bytes).hexdigest() != call.evidence.trust_snapshot_digest
+        or call.evidence.retained != retained
+        or not isinstance(returned, PublicPortSuccess)
+        or returned.request_id != sent.request_id
+        or returned.responder != sent.callee
+        or returned.schema_id != "chiplog.deployment-trust.issue-hermetic-output-scope-result.v1"
+    ):
+        raise ValueError("H1 V2 historical scope issue exchange differs from selected evidence")
+    candidate = H1OwnerCandidateV1.model_validate_json(returned.canonical_payload)
+    if (
+        candidate.canonical_bytes() != returned.canonical_payload
+        or candidate.scope != selected.scope
+    ):
+        raise ValueError("H1 V2 historical scope issue response differs from selected scope")
+    candidate.check_pinned_call(call)
+
+
+def _require_historical_scope_current_exchange_v2(
+    exchange: H1CompletionOwnerExchangeV1,
+    assembly: PrepareH1CompleteAcceptanceAssemblyV1,
+    capture: H1CompletionCaptureV1,
+) -> None:
+    """Validate one historical CURRENT wire; its own prefix is checked by the reader."""
+    sent = exchange.sent
+    if (
+        sent.operation_id != "deployment_trust.read_current_hermetic_output_scope"
+        or sent.schema_id != "chiplog.deployment-trust.owner-call.v1"
+        or sent.caller.owner_id != "broker"
+        or sent.callee.owner_id != "deployment_trust"
+        or sent.callee not in capture.sessions
+    ):
+        raise ValueError("H1 V2 historical scope current exchange has a substituted route")
+    wire = decode_trust_owner_call_canonical(sent.canonical_payload)
+    call = H1OwnerCurrentCallV1.model_validate_json(wire.request_bytes)
+    selected = assembly.ordered_effects[0].owner_call.request.selected_scope
+    returned = exchange.returned
+    if (
+        wire.canonical_bytes() != sent.canonical_payload
+        or wire.mode != "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1"
+        or call.canonical_bytes() != wire.request_bytes
+        or call.read_request_bytes != selected.current_request.canonical_bytes()
+        or not isinstance(returned, PublicPortSuccess)
+        or returned.request_id != sent.request_id
+        or returned.responder != sent.callee
+        or returned.schema_id != "chiplog.deployment-trust.current-hermetic-output-scope-result.v1"
+    ):
+        raise ValueError("H1 V2 historical scope current exchange differs from selected evidence")
+    candidate = H1OwnerCurrentCandidateV1.model_validate_json(returned.canonical_payload)
+    if (
+        candidate.canonical_bytes() != returned.canonical_payload
+        or candidate.current != selected.current_result
+    ):
+        raise ValueError("H1 V2 historical scope current response differs from selected scope")
+    candidate.check_pinned_call(call)
+
+
+def _require_fresh_scope_current_exchange_v2(
+    exchange: H1CompletionOwnerExchangeV1,
+    assembly: PrepareH1CompleteAcceptanceAssemblyV1,
+    capture: H1CompletionCaptureV1,
+) -> None:
+    """A final-fence CURRENT is independently tied to the final capture."""
+    _require_scope_current_exchange(exchange, assembly, capture)
+
+
+def _require_v2_exchange_shape(value: H1CompletionIssuanceV2) -> None:
+    roles = tuple(item.role for item in value.owner_exchanges)
+    if roles != ("completion", "conversation", "effects", "terminal_work"):
+        raise ValueError("H1 V2 completion owner exchanges have a noncanonical role order")
+    if (
+        value.scope_issue_exchange.role != "scope_issue"
+        or value.scope_current_exchange.role != "scope_current"
+        or value.terminal_admission.preterminal_current_exchange.role != "scope_current"
+        or value.final_current_exchange.role != "scope_current"
+    ):
+        raise ValueError("H1 V2 scope exchanges have substituted roles")
+    from chiplog.composition.h1_terminal_call_identity import _terminal_call_identity
+
+    terminal = value.owner_exchanges[3]
+    if (
+        _terminal_call_identity(terminal.sent)[0]
+        != value.terminal_admission.terminal_call_fingerprint
+    ):
+        raise ValueError("H1 V2 terminal fingerprint differs from terminal exchange")
+    preterminal = value.terminal_admission.preterminal_current_exchange
+    final = value.final_current_exchange
+    if (
+        preterminal.sent.request_id == final.sent.request_id
+        or final.sent.request_id == value.scope_current_exchange.sent.request_id
+        or preterminal.returned_at_ns >= terminal.sent_at_ns
+        or terminal.returned_at_ns >= final.sent_at_ns
+    ):
+        raise ValueError("H1 V2 final-fence chronology or call identity differs")
+    exchanges = (
+        *value.owner_exchanges,
+        value.scope_issue_exchange,
+        value.scope_current_exchange,
+        preterminal,
+        final,
+    )
+    if any(
+        exchange.returned_at_ns < exchange.sent_at_ns
+        or exchange.returned_at_ns >= exchange.sent.budget.absolute_deadline_ns
+        for exchange in exchanges
+    ):
+        raise ValueError("H1 V2 owner exchange timing differs")
+    assembly = value.assembly
+    completion, conversation, effects, terminal_work = value.owner_exchanges
+    for exchange, operation, request_schema, request_bytes, response_schema, owner in (
+        (
+            completion,
+            "agent_loop.prepare_first_path_completion",
+            "chiplog.execution.first-path-completion.v2",
+            assembly.original_completion_request.canonical_bytes(),
+            "chiplog.agent-loop.prepared-execution-completion-result.v1",
+            "agent_loop",
+        ),
+        (
+            conversation,
+            "projections.prepare_conversation_completion",
+            "chiplog.conversation.prepare-completion.v1",
+            assembly.conversation_request.canonical_json_bytes(),
+            "chiplog.conversation.prepared-completion-result.v1",
+            "projections",
+        ),
+        (
+            effects,
+            "effects.prepare_h1_local_commentary",
+            "chiplog.effects.h1-local-commentary-owner-call.v1",
+            assembly.ordered_effects[0].owner_call.canonical_bytes(),
+            "chiplog.effects.prepared-h1-local-commentary.v1",
+            "effects",
+        ),
+        (
+            terminal_work,
+            "agent_loop.prepare_terminal_work",
+            "chiplog.agent-loop.prepare-terminal-work.v1",
+            assembly.terminal_work_request.canonical_bytes(),
+            "chiplog.agent-loop.prepared-post-terminal-work-result.v1",
+            "agent_loop",
+        ),
+    ):
+        _require_success_exchange(
+            exchange,
+            operation=operation,
+            request_schema=request_schema,
+            request_bytes=request_bytes,
+            response_schema=response_schema,
+            response_bytes=(
+                assembly.prepared_completion.canonical_bytes()
+                if exchange is completion
+                else assembly.conversation_result.canonical_json_bytes()
+                if exchange is conversation
+                else assembly.ordered_effects[0].owner_result.canonical_bytes()
+                if exchange is effects
+                else assembly.terminal_work_result.canonical_bytes()
+            ),
+            callee_owner=owner,
+            capture=value.capture,
+        )
+    _require_historical_scope_issue_exchange_v2(value.scope_issue_exchange, assembly, value.capture)
+    _require_historical_scope_current_exchange_v2(
+        value.scope_current_exchange, assembly, value.capture
+    )
+    _require_fresh_scope_current_exchange_v2(preterminal, assembly, value.capture)
+    _require_fresh_scope_current_exchange_v2(final, assembly, value.capture)
+
+
 def _h1_identity(assembly: PrepareH1CompleteAcceptanceAssemblyV1) -> tuple[str, str]:
     """Derive the stable completion identity from the retained H0 envelope."""
     retained = assembly.ordered_effects[0].owner_call.request.retained_origin
@@ -505,21 +701,31 @@ def _require_invocation(
         raise ValueError("H1 completion invocation issuance fingerprint differs")
 
 
-def _decode_value(batch: CompleteDeliveryBatchV2) -> H1CompletionIssuanceV1:
+def _decode_value(
+    batch: CompleteDeliveryBatchV2,
+) -> H1CompletionIssuanceV1 | H1CompletionIssuanceV2:
     if type(batch) is not CompleteDeliveryBatchV2:
         raise TypeError("H1 completion issuance requires CompleteDeliveryBatchV2")
     authentication = batch.authentication
     if (
         authentication.kind != "WORKER"
-        or authentication.applicability_schema != SCHEMA
+        or authentication.applicability_schema not in (SCHEMA, V2_SCHEMA)
         or hashlib.sha256(authentication.applicability_bytes).hexdigest()
         != authentication.applicability_fingerprint
     ):
         raise ValueError("H1 completion batch lacks its exact issuance applicability")
-    value = H1CompletionIssuanceV1.model_validate_json(authentication.applicability_bytes)
-    if value.canonical_bytes() != authentication.applicability_bytes:
-        raise ValueError("H1 completion issuance is noncanonical")
-    _require_exchange_shape(value)
+    version = dispatch_h1_completion_issuance_schema(
+        authentication.applicability_schema, authentication.applicability_bytes
+    )
+    value: H1CompletionIssuanceV1 | H1CompletionIssuanceV2
+    if version == "V1":
+        value = H1CompletionIssuanceV1.model_validate_json(authentication.applicability_bytes)
+        if value.canonical_bytes() != authentication.applicability_bytes:
+            raise ValueError("H1 completion issuance is noncanonical")
+        _require_exchange_shape(value)
+    else:
+        value = decode_h1_completion_issuance_v2(authentication.applicability_bytes)
+        _require_v2_exchange_shape(value)
     command_id, command_fingerprint = _h1_identity(value.assembly)
     failure = validate_h1_complete_acceptance_batch(value.assembly, batch)
     if failure is not None:
@@ -540,7 +746,9 @@ def _decode_value(batch: CompleteDeliveryBatchV2) -> H1CompletionIssuanceV1:
     return value
 
 
-def decode_h1_completion_issuance(batch: CompleteDeliveryBatchV2) -> H1CompletionIssuanceV1:
+def decode_h1_completion_issuance(
+    batch: CompleteDeliveryBatchV2,
+) -> H1CompletionIssuanceV1 | H1CompletionIssuanceV2:
     """Decode only a canonical issuance whose assembly exactly reproduces *batch*.
 
     Source selection and independent manifest derivation are intentionally not
@@ -552,7 +760,7 @@ def decode_h1_completion_issuance(batch: CompleteDeliveryBatchV2) -> H1Completio
 
 def validate_h1_completion_issuance(
     batch: CompleteDeliveryBatchV2, runtime: R14PlanningRuntime
-) -> H1CompletionIssuanceV1:
+) -> H1CompletionIssuanceV1 | H1CompletionIssuanceV2:
     """Validate raw selected H0/R16/R17 sources through the historical seam.
 
     The reader currently fails closed until its registered raw ports are
