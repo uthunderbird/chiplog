@@ -11,6 +11,7 @@ from chiplog.composition.h1_launch_enrollment import (
     InstalledH1Slot,
     _provision_h1_enrollment,
     _provision_h1_evidence_mount,
+    _provision_h1_recovery_mount,
 )
 from chiplog.composition.h1_registration_custody import H1RegistrationCustodyV1
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
@@ -96,3 +97,4 @@ async def prepare_installed_slot(
     )
     _provision_h1_enrollment(slot, expected, registry)
     _provision_h1_evidence_mount(slot, expected)
+    _provision_h1_recovery_mount(slot, expected)

@@ -46,6 +46,10 @@ _MAX_BYTES = 16_384
 _EVIDENCE_ROLE = "h1-delivery-evidence"
 _EVIDENCE_MARKER = "h1-delivery-evidence-enrollment.json"
 _EVIDENCE_BODY = "h1-delivery-evidence"
+_RECOVERY_ROLE = "h1-post-seal-recovery"
+_RECOVERY_MARKER = "h1-post-seal-recovery-enrollment.json"
+_RECOVERY_BODY = "h1-post-seal-recovery"
+_RECOVERY_MOUNT_ISSUER = object()
 
 
 class H1LaunchEnrollmentError(RuntimeError):
@@ -54,6 +58,10 @@ class H1LaunchEnrollmentError(RuntimeError):
 
 class H1EvidenceMountError(H1LaunchEnrollmentError):
     """An enrolled evidence role is absent, foreign, corrupt, or unavailable."""
+
+
+class H1RecoveryMountError(H1LaunchEnrollmentError):
+    """An enrolled post-seal recovery role is absent, foreign, or unavailable."""
 
 
 class _TrustVerifier(Protocol):
@@ -210,6 +218,36 @@ class H1EvidenceMountEnrollmentV1(CliCustodyDTO):
         return self
 
 
+class H1RecoveryMountEnrollmentV1(CliCustodyDTO):
+    """Immutable protected binding for the post-seal recovery journal role."""
+
+    schema_id: str = "chiplog.execution.h1-post-seal-recovery-enrollment.v1"
+    deployment_id: Identity
+    database_id: Identity
+    tenant_id: Identity
+    database_genesis_digest: Digest
+    role: Identity
+    journal_instance_id: Identity
+    body_name: Identity
+    body_dev: UInt64
+    body_ino: UInt64
+    key_dev: UInt64
+    key_ino: UInt64
+    key_digest: Digest
+    lock_dev: UInt64
+    lock_ino: UInt64
+
+    @model_validator(mode="after")
+    def _fixed_schema(self) -> H1RecoveryMountEnrollmentV1:
+        if (
+            self.schema_id != "chiplog.execution.h1-post-seal-recovery-enrollment.v1"
+            or self.role != _RECOVERY_ROLE
+            or self.body_name != _RECOVERY_BODY
+        ):
+            raise ValueError("unknown recovery role enrollment")
+        return self
+
+
 def _private_directory(fd: int) -> os.stat_result:
     item = os.fstat(fd)
     if not stat.S_ISDIR(item.st_mode) or item.st_uid != os.getuid() or item.st_mode & 0o077:
@@ -329,6 +367,20 @@ def _evidence_instance_id(slot: InstalledH1Slot) -> str:
     return _EVIDENCE_ROLE + ":" + hashlib.sha256(raw).hexdigest()
 
 
+def _recovery_instance_id(slot: InstalledH1Slot) -> str:
+    raw = json.dumps(
+        [
+            slot.deployment_id,
+            slot.database_id,
+            _genesis_digest(slot.tenant_id, slot.database_id),
+            slot.tenant_id,
+            _RECOVERY_ROLE,
+        ],
+        separators=(",", ":"),
+    ).encode()
+    return _RECOVERY_ROLE + ":" + hashlib.sha256(raw).hexdigest()
+
+
 def _read_evidence_marker(custody_fd: int) -> tuple[bytes, H1EvidenceMountEnrollmentV1]:
     try:
         fd = os.open(
@@ -353,6 +405,33 @@ def _read_evidence_marker(custody_fd: int) -> tuple[bytes, H1EvidenceMountEnroll
         raise H1EvidenceMountError("enrolled evidence marker is corrupt") from exc
     if marker.canonical_bytes() != raw:
         raise H1EvidenceMountError("enrolled evidence marker is noncanonical")
+    return raw, marker
+
+
+def _read_recovery_marker(custody_fd: int) -> tuple[bytes, H1RecoveryMountEnrollmentV1]:
+    try:
+        fd = os.open(
+            _RECOVERY_MARKER, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=custody_fd
+        )
+    except FileNotFoundError:
+        raise H1RecoveryMountError("enrolled recovery marker is absent") from None
+    except OSError as exc:
+        raise H1RecoveryMountError("enrolled recovery marker is unavailable") from exc
+    try:
+        _private_regular(fd)
+        raw = os.read(fd, _MAX_BYTES + 1)
+        _private_regular(fd)
+    finally:
+        os.close(fd)
+    if not raw or len(raw) > _MAX_BYTES:
+        raise H1RecoveryMountError("enrolled recovery marker is corrupt")
+    try:
+        value = json.loads(raw.decode(), object_pairs_hook=_reject_duplicates)
+        marker = H1RecoveryMountEnrollmentV1.model_validate(value)
+    except (UnicodeDecodeError, json.JSONDecodeError, H1LaunchEnrollmentError, ValueError) as exc:
+        raise H1RecoveryMountError("enrolled recovery marker is corrupt") from exc
+    if marker.canonical_bytes() != raw:
+        raise H1RecoveryMountError("enrolled recovery marker is noncanonical")
     return raw, marker
 
 
@@ -417,6 +496,49 @@ def _check_evidence_marker(
         lock_identity[1],
     ):
         raise H1EvidenceMountError("enrolled evidence marker is foreign")
+
+
+def _check_recovery_marker(
+    slot: InstalledH1Slot,
+    marker: H1RecoveryMountEnrollmentV1,
+    *,
+    body_identity: tuple[int, int],
+    key_identity: tuple[int, int],
+    key_bytes: bytes,
+    lock_identity: tuple[int, int],
+) -> None:
+    if (
+        marker.deployment_id,
+        marker.database_id,
+        marker.tenant_id,
+        marker.database_genesis_digest,
+        marker.role,
+        marker.journal_instance_id,
+        marker.body_name,
+        marker.body_dev,
+        marker.body_ino,
+        marker.key_dev,
+        marker.key_ino,
+        marker.key_digest,
+        marker.lock_dev,
+        marker.lock_ino,
+    ) != (
+        slot.deployment_id,
+        slot.database_id,
+        slot.tenant_id,
+        _genesis_digest(slot.tenant_id, slot.database_id),
+        _RECOVERY_ROLE,
+        _recovery_instance_id(slot),
+        _RECOVERY_BODY,
+        body_identity[0],
+        body_identity[1],
+        key_identity[0],
+        key_identity[1],
+        hashlib.sha256(key_bytes).hexdigest(),
+        lock_identity[0],
+        lock_identity[1],
+    ):
+        raise H1RecoveryMountError("enrolled recovery marker is foreign")
 
 
 def _pair_lock_name(database_id: str, digest: str) -> str:
@@ -724,6 +846,148 @@ def _provision_h1_evidence_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
                     os.close(fd)
 
 
+def _require_absent_recovery_sidecars(custody_fd: int) -> None:
+    """Reject credential seeding before the immutable recovery marker exists."""
+    for name in (
+        _RECOVERY_BODY,
+        _RECOVERY_BODY + ".key",
+        _RECOVERY_BODY + ".head",
+        _RECOVERY_BODY + ".lock",
+        _RECOVERY_BODY + ".head.new",
+    ):
+        try:
+            os.stat(name, dir_fd=custody_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise H1RecoveryMountError("recovery role storage is unavailable") from exc
+        raise H1RecoveryMountError("un-enrolled recovery role storage already exists")
+
+
+def _open_recovery_role_file(
+    custody_fd: int, name: str, expected: tuple[int, int] | None = None
+) -> tuple[int, tuple[int, int]]:
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=custody_fd)
+    except FileNotFoundError:
+        raise H1RecoveryMountError("enrolled recovery storage is absent") from None
+    except OSError as exc:
+        raise H1RecoveryMountError("enrolled recovery storage is unavailable") from exc
+    try:
+        item = _private_regular(fd)
+        identity = (item.st_dev, item.st_ino)
+        if expected is not None and identity != expected:
+            raise H1RecoveryMountError("enrolled recovery storage changed")
+        return fd, identity
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Genesis) -> None:
+    """Administrative-only fresh enrollment; runtime opening never invokes this."""
+    if type(slot) is not InstalledH1Slot or type(expected) is not ExpectedH1Genesis:
+        raise TypeError("recovery provisioning requires trusted slot and explicit expected genesis")
+    _check_slot_expected(slot, expected)
+    _verify_active(slot, expected)
+    root_fd = custody_fd = db_fd = lock_fd = body_fd = key_fd = head_fd = role_lock_fd = -1
+    try:
+        root_fd = _open_directory(slot.root)
+        lock_fd = _acquire_install_lock(root_fd, create=True)
+        custody_fd = _open_directory(slot.root / slot.custody_name)
+        db_fd, database_identity = _open_database(slot)
+        if not _same_path_identity(slot.database_path, database_identity):
+            raise H1RecoveryMountError("database changed during recovery provisioning")
+        launch_raw, launch_marker = _read_marker(custody_fd)
+        _check_marker(slot, launch_marker, database_identity)
+        if launch_raw != launch_marker.canonical_bytes():
+            raise H1RecoveryMountError("launch enrollment bytes differ")
+        _verify_pair_lock(custody_fd, slot.database_id, expected.digest)
+        try:
+            existing_raw, existing = _read_recovery_marker(custody_fd)
+        except H1RecoveryMountError as exc:
+            if "absent" not in str(exc):
+                raise
+        else:
+            body_fd, body_identity = _open_recovery_role_file(custody_fd, _RECOVERY_BODY)
+            key_fd, key_identity = _open_recovery_role_file(custody_fd, _RECOVERY_BODY + ".key")
+            head_fd, _ = _open_recovery_role_file(custody_fd, _RECOVERY_BODY + ".head")
+            role_lock_fd, lock_identity = _open_recovery_role_file(
+                custody_fd, _RECOVERY_BODY + ".lock"
+            )
+            key_bytes = os.read(key_fd, 33)
+            if len(key_bytes) != 32:
+                raise H1RecoveryMountError("enrolled recovery key is corrupt")
+            _check_recovery_marker(
+                slot,
+                existing,
+                body_identity=body_identity,
+                key_identity=key_identity,
+                key_bytes=key_bytes,
+                lock_identity=lock_identity,
+            )
+            if existing_raw != existing.canonical_bytes():
+                raise H1RecoveryMountError("enrolled recovery marker bytes differ")
+            return
+        _require_absent_recovery_sidecars(custody_fd)
+        from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
+
+        gate = AuthorityGate.for_database(slot.database_path)
+        with gate.hold():
+            journal = IndependentTenantDecisionJournal.for_authority_bundle(
+                slot.root / slot.custody_name / _RECOVERY_BODY, authority_gate=gate
+            )
+            body, key, _head = journal.physical_sources()
+        for name in (
+            _RECOVERY_BODY,
+            _RECOVERY_BODY + ".key",
+            _RECOVERY_BODY + ".head",
+            _RECOVERY_BODY + ".lock",
+        ):
+            os.chmod(name, 0o600, dir_fd=custody_fd, follow_symlinks=False)
+        body_identity = (body[1], body[2])
+        key_fd, key_identity = _open_recovery_role_file(
+            custody_fd, _RECOVERY_BODY + ".key", (key[1], key[2])
+        )
+        key_bytes = os.read(key_fd, 33)
+        if len(key_bytes) != 32:
+            raise H1RecoveryMountError("provisioned recovery key is corrupt")
+        role_lock_fd, lock_identity = _open_recovery_role_file(custody_fd, _RECOVERY_BODY + ".lock")
+        marker = H1RecoveryMountEnrollmentV1(
+            deployment_id=slot.deployment_id,
+            database_id=slot.database_id,
+            tenant_id=slot.tenant_id,
+            database_genesis_digest=expected.digest,
+            role=_RECOVERY_ROLE,
+            journal_instance_id=_recovery_instance_id(slot),
+            body_name=_RECOVERY_BODY,
+            body_dev=body_identity[0],
+            body_ino=body_identity[1],
+            key_dev=key_identity[0],
+            key_ino=key_identity[1],
+            key_digest=hashlib.sha256(key_bytes).hexdigest(),
+            lock_dev=lock_identity[0],
+            lock_ino=lock_identity[1],
+        )
+        _write_named_marker(custody_fd, _RECOVERY_MARKER, marker.canonical_bytes())
+        written, observed = _read_recovery_marker(custody_fd)
+        _check_recovery_marker(
+            slot,
+            observed,
+            body_identity=body_identity,
+            key_identity=key_identity,
+            key_bytes=key_bytes,
+            lock_identity=lock_identity,
+        )
+        if written != marker.canonical_bytes():
+            raise H1RecoveryMountError("enrolled recovery marker bytes differ")
+    finally:
+        for fd in (role_lock_fd, head_fd, key_fd, body_fd, db_fd, custody_fd, lock_fd, root_fd):
+            if fd >= 0:
+                with suppress(OSError):
+                    os.close(fd)
+
+
 class InstalledH1Launch:
     __slots__ = (
         "_custody_fd",
@@ -815,6 +1079,15 @@ class InstalledH1Launch:
             raise H1EvidenceMountError("enrolled evidence gate is foreign")
         self.assert_current()
         return EnrolledH1EvidenceMount(self, authority_gate)
+
+    def open_enrolled_recovery_mount(self, authority_gate: object) -> EnrolledH1RecoveryMount:
+        """Return the existing post-seal role; this never provisions or repairs it."""
+        if type(authority_gate) is not AuthorityGate:
+            raise TypeError("enrolled recovery mount requires the runtime authority gate")
+        if authority_gate.database != self.database_path.resolve(strict=False):
+            raise H1RecoveryMountError("enrolled recovery gate is foreign")
+        self.assert_current()
+        return EnrolledH1RecoveryMount(self, authority_gate, _RECOVERY_MOUNT_ISSUER)
 
 
 class EnrolledH1EvidenceMount:
@@ -927,11 +1200,7 @@ class EnrolledH1EvidenceMount:
                 self._launch._slot.root / self._launch._slot.custody_name / _EVIDENCE_BODY,
                 authority_gate=self.authority_gate,
                 expected_body_identity=(
-                    str(
-                        self._launch._slot.root
-                        / self._launch._slot.custody_name
-                        / _EVIDENCE_BODY
-                    ),
+                    str(self._launch._slot.root / self._launch._slot.custody_name / _EVIDENCE_BODY),
                     *self._body_identity,
                 ),
                 expected_key_identity=(
@@ -952,10 +1221,10 @@ class EnrolledH1EvidenceMount:
                 ),
             )
             sources = journal.physical_sources()
-            if (
-                (sources[0][1], sources[0][2]) != self._body_identity
-                or (sources[1][1], sources[1][2]) != self._key_identity
-            ):
+            if (sources[0][1], sources[0][2]) != self._body_identity or (
+                sources[1][1],
+                sources[1][2],
+            ) != self._key_identity:
                 raise H1EvidenceMountError("existing evidence journal differs from enrollment")
             self.assert_current()
             return journal
@@ -963,6 +1232,159 @@ class EnrolledH1EvidenceMount:
             raise
         except BaseException as exc:
             raise H1EvidenceMountError("existing evidence journal is unavailable") from exc
+
+
+class EnrolledH1RecoveryMount:
+    """Issuer-private, descriptor-bound role for the post-seal recovery journal."""
+
+    __slots__ = (
+        "_body_identity",
+        "_key_identity",
+        "_launch",
+        "_lock_identity",
+        "_marker_raw",
+        "_poisoned",
+        "authority_gate",
+        "journal_instance_id",
+        "tenant_id",
+    )
+    authority_gate: AuthorityGate
+
+    def __init__(self, launch: InstalledH1Launch, authority_gate: object, issuer: object) -> None:
+        if (
+            type(launch) is not InstalledH1Launch
+            or type(authority_gate) is not AuthorityGate
+            or issuer is not _RECOVERY_MOUNT_ISSUER
+        ):
+            raise TypeError("enrolled recovery mount is issued only by installed launch")
+        self._launch = launch
+        self.authority_gate = authority_gate
+        self.tenant_id = launch._slot.tenant_id
+        self.journal_instance_id = _recovery_instance_id(launch._slot)
+        self._marker_raw = b""
+        self._poisoned = False
+        self._body_identity = self._key_identity = self._lock_identity = (0, 0)
+        self._refresh_current()
+
+    def __reduce__(self) -> Never:
+        raise TypeError("enrolled recovery mount is not serializable")
+
+    @property
+    def body_identity(self) -> tuple[int, int]:
+        return self._body_identity
+
+    @property
+    def key_identity(self) -> tuple[int, int]:
+        return self._key_identity
+
+    def close(self) -> None:
+        self._poisoned = True
+
+    def _refresh_current(self) -> None:
+        if self._poisoned:
+            raise H1RecoveryMountError("enrolled recovery mount is closed or poisoned")
+        launch = self._launch
+        body_fd = key_fd = head_fd = lock_fd = -1
+        try:
+            launch.assert_current()
+            raw, marker = _read_recovery_marker(launch._custody_fd)
+            body_fd, body_identity = _open_recovery_role_file(
+                launch._custody_fd,
+                _RECOVERY_BODY,
+                None if self._body_identity == (0, 0) else self._body_identity,
+            )
+            key_fd, key_identity = _open_recovery_role_file(
+                launch._custody_fd,
+                _RECOVERY_BODY + ".key",
+                None if self._key_identity == (0, 0) else self._key_identity,
+            )
+            # The head is deliberately live: append replaces it atomically.
+            head_fd, _ = _open_recovery_role_file(launch._custody_fd, _RECOVERY_BODY + ".head")
+            lock_fd, lock_identity = _open_recovery_role_file(
+                launch._custody_fd,
+                _RECOVERY_BODY + ".lock",
+                None if self._lock_identity == (0, 0) else self._lock_identity,
+            )
+            key_bytes = os.read(key_fd, 33)
+            if len(key_bytes) != 32:
+                raise H1RecoveryMountError("enrolled recovery key is corrupt")
+            _check_recovery_marker(
+                launch._slot,
+                marker,
+                body_identity=body_identity,
+                key_identity=key_identity,
+                key_bytes=key_bytes,
+                lock_identity=lock_identity,
+            )
+            if self._marker_raw and raw != self._marker_raw:
+                raise H1RecoveryMountError("enrolled recovery marker changed")
+            self._marker_raw = raw
+            self._body_identity, self._key_identity, self._lock_identity = (
+                body_identity,
+                key_identity,
+                lock_identity,
+            )
+        except BaseException as exc:
+            self._poisoned = True
+            if isinstance(exc, H1RecoveryMountError):
+                raise
+            raise H1RecoveryMountError("enrolled recovery validation is unavailable") from exc
+        finally:
+            for fd in (lock_fd, head_fd, key_fd, body_fd):
+                if fd >= 0:
+                    with suppress(OSError):
+                        os.close(fd)
+
+    def assert_current(self) -> None:
+        self._refresh_current()
+
+    def _open_existing_recovery_journal(self) -> object:
+        """Open the authenticated role through the primitive's non-creating API only."""
+        self.assert_current()
+        from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
+
+        journal: IndependentTenantDecisionJournal | None = None
+        try:
+            journal = IndependentTenantDecisionJournal.for_existing_authority_bundle(
+                self._launch._slot.root / self._launch._slot.custody_name / _RECOVERY_BODY,
+                authority_gate=self.authority_gate,
+                expected_body_identity=(
+                    str(self._launch._slot.root / self._launch._slot.custody_name / _RECOVERY_BODY),
+                    *self._body_identity,
+                ),
+                expected_key_identity=(
+                    str(
+                        self._launch._slot.root
+                        / self._launch._slot.custody_name
+                        / (_RECOVERY_BODY + ".key")
+                    ),
+                    *self._key_identity,
+                ),
+                expected_lock_identity=(
+                    str(
+                        self._launch._slot.root
+                        / self._launch._slot.custody_name
+                        / (_RECOVERY_BODY + ".lock")
+                    ),
+                    *self._lock_identity,
+                ),
+            )
+            sources = journal.physical_sources()
+            if (sources[0][1], sources[0][2]) != self._body_identity or (
+                sources[1][1],
+                sources[1][2],
+            ) != self._key_identity:
+                raise H1RecoveryMountError("existing recovery journal differs from enrollment")
+            self.assert_current()
+            return journal
+        except H1RecoveryMountError:
+            if journal is not None:
+                journal.close()
+            raise
+        except BaseException as exc:
+            if journal is not None:
+                journal.close()
+            raise H1RecoveryMountError("existing recovery journal is unavailable") from exc
 
 
 @contextmanager

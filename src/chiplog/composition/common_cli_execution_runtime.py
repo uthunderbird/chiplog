@@ -217,6 +217,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_scope_wires: dict[_H1ScopeWireKey, _H1ScopeWire | None]
     _h1_scope_append_receipts: dict[str, _H1ScopeAppendReceipt]
     _h1_delivery_evidence_journal: Any | None
+    _h1_postseal_recovery_journal: Any | None
+    _h1_recovery_mount: Any | None
     _h1_preissuance_registration_source_port: Any | None
     _h1_first_path_sources: Any | None
     _h1_native_member_sources: Any | None
@@ -1442,6 +1444,8 @@ async def open_installed_h1_runtime(
     model = HermeticModel(responses)
     evidence_reader: list[Any] = []
     enrolled_mount: list[Any] = []
+    recovery_journal: list[Any] = []
+    recovery_mount: list[Any] = []
     authority = H1LivePublicationAuthority()
     authority_gate: Any | None = None
     root_bound = False
@@ -1460,30 +1464,52 @@ async def open_installed_h1_runtime(
             evidence_reader[0]._unbind_private_root_issuer(authority)
         root_bound = False
 
-    def preflight_evidence(gate: object) -> object:
-        # The launch owns the protected role marker and performs read-only
-        # validation before _open_runtime can create any runtime sidecars.
-        return launch.open_enrolled_evidence_mount(gate)
+    def preflight_roles(gate: object) -> tuple[object, object]:
+        # The launch owns both protected role markers.  Validate both before
+        # _open_runtime constructs any mutable runtime sidecars.
+        return (
+            launch.open_enrolled_evidence_mount(gate),
+            launch.open_enrolled_recovery_mount(gate),
+        )
 
-    def bind_evidence(store: object, gate: object, mounted: object) -> None:
+    def bind_installed_roles(store: object, gate: object, mounted: object) -> None:
         from chiplog.composition.h1_delivery_evidence_journal import H1DeliveryEvidenceJournal
-        from chiplog.composition.h1_launch_enrollment import EnrolledH1EvidenceMount
+        from chiplog.composition.h1_launch_enrollment import (
+            EnrolledH1EvidenceMount,
+            EnrolledH1RecoveryMount,
+        )
+        from chiplog.composition.h1_postseal_recovery import H1PostSealRecoveryJournal
 
+        if type(mounted) is not tuple or len(mounted) != 2:
+            raise RuntimeError("installed H1 role mounts differ")
+        role_mounts = cast(tuple[object, object], mounted)
         if (
-            type(mounted) is not EnrolledH1EvidenceMount
-            or mounted.authority_gate is not gate
+            type(role_mounts[0]) is not EnrolledH1EvidenceMount
+            or type(role_mounts[1]) is not EnrolledH1RecoveryMount
+            or role_mounts[0].authority_gate is not gate
+            or role_mounts[1].authority_gate is not gate
             or getattr(store, "authority_gate", None) is not gate
-            or mounted.tenant_id != launch._slot.tenant_id
+            or role_mounts[0].tenant_id != launch._slot.tenant_id
+            or role_mounts[1].tenant_id != launch._slot.tenant_id
         ):
-            raise RuntimeError("installed evidence mount gate or tenant differs")
+            raise RuntimeError("installed H1 role mount gate or tenant differs")
+        evidence_mount = role_mounts[0]
+        mounted_recovery = role_mounts[1]
         nonlocal authority_gate
         authority_gate = gate
-        enrolled_mount.append(mounted)
-        journal = H1DeliveryEvidenceJournal.open_enrolled(mounted)
+        enrolled_mount.append(evidence_mount)
+        recovery_mount.append(mounted_recovery)
+        journal = H1DeliveryEvidenceJournal.open_enrolled(evidence_mount)
         evidence_reader.append(journal)
         try:
+            # This existing-only opener scans the complete authenticated
+            # prefix under the exact runtime gate before it is retained.
+            recovery_journal.append(H1PostSealRecoveryJournal.open_enrolled(mounted_recovery))
             cast(Any, store)._mount_owner_publication_resolver(authority)
         except BaseException:
+            for opened in recovery_journal:
+                opened.close()
+            recovery_journal.clear()
             revoke_and_unbind_live_authority()
             raise
 
@@ -1491,9 +1517,13 @@ async def open_installed_h1_runtime(
         nonlocal root_bound
         runtime = cast(CommonCliExecutionRuntime, opened)
         runtime._bind_h1_historical_custody_path(resources._custody_path)
-        if len(evidence_reader) != 1:
-            raise RuntimeError("installed evidence reader is absent")
+        if len(evidence_reader) != 1 or len(recovery_journal) != 1 or len(recovery_mount) != 1:
+            raise RuntimeError("installed H1 role reader is absent")
         runtime._h1_delivery_evidence_journal = evidence_reader[0]
+        # Retain the one authenticated recovery graph before any later B
+        # owner could publish a recovery callable.
+        runtime._h1_recovery_mount = recovery_mount[0]
+        runtime._h1_postseal_recovery_journal = recovery_journal[0]
         if any(
             hasattr(runtime, name)
             for name in (
@@ -1528,8 +1558,8 @@ async def open_installed_h1_runtime(
                     "model": model,
                     "effects_transport": resources.require_original_provider(),
                 },
-                preflight=preflight_evidence,
-                store_setup=bind_evidence,
+                preflight=preflight_roles,
+                store_setup=bind_installed_roles,
                 runtime_setup=installed_runtime_setup,
             ) as opened:
                 runtime = cast(CommonCliExecutionRuntime, opened)
@@ -1676,6 +1706,15 @@ async def open_installed_h1_runtime(
             # the ordinary path the inner finally already released this while
             # the appender remained open.
             revoke_and_unbind_live_authority()
+            if runtime is not None:
+                if hasattr(runtime, "_h1_postseal_recovery_journal"):
+                    del runtime._h1_postseal_recovery_journal
+                if hasattr(runtime, "_h1_recovery_mount"):
+                    del runtime._h1_recovery_mount
+            for opened in recovery_journal:
+                opened.close()
+            for mounted_recovery in recovery_mount:
+                mounted_recovery.close()
             for reader in evidence_reader:
                 reader.close()
             if runtime is not None:
