@@ -4,10 +4,12 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
+from chiplog.composition.h1_historical_selected_sources import _selected_owner_decision
 from chiplog.platform._owner_publication_contracts import (
     AuthoritativeReadManifest,
     CompleteDeliveryBatchV2,
@@ -43,7 +45,7 @@ def _binding(batch: CompleteDeliveryBatchV2) -> H1DeliveryBinding:
 
 
 def _h1_batch() -> CompleteDeliveryBatchV2:
-    def command(owner: str) -> OwnerCommandBytes:
+    def command(owner: Literal["agent_loop", "conversation", "effects"]) -> OwnerCommandBytes:
         raw = f"{owner}-command".encode()
         return OwnerCommandBytes(
             owner=owner,
@@ -128,6 +130,11 @@ def test_v1_selected_golden_bytes_are_unchanged(tmp_path: Path) -> None:
     assert hashlib.sha256(journal._raw.entries()[0][2]).hexdigest() == (
         "64711f15d84ba4ffec0dbd336cc9f479f22334175f1cab2a5193d2c8aebccb2a"
     )
+    reopened = _journal(tmp_path).lookup("tenant", "command")
+    assert reopened is not None
+    assert reopened.prepared.h1_delivery_binding is None
+    _journal(tmp_path).materialized(reopened)
+    assert b'"schema_id":"chiplog.owner-decision.v1"' in _journal(tmp_path)._raw.entries()[1][2]
 
 
 def test_v2_selected_roundtrips_and_materialized_retains_closed_binding(tmp_path: Path) -> None:
@@ -146,6 +153,115 @@ def test_v2_selected_roundtrips_and_materialized_retains_closed_binding(tmp_path
     marker = journal._raw.entries()[1][2]
     assert b'"schema_id":"chiplog.owner-decision.v1"' in marker
     assert _journal(tmp_path).snapshot().materialized_command_ids == frozenset({"h1-command"})
+
+
+def _canonical_raw(entry: dict[str, object]) -> bytes:
+    return json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _open_raw(tmp_path: Path, payload: bytes) -> IndependentOwnerDecisionJournal:
+    raw = IndependentTenantDecisionJournal(tmp_path / "raw")
+    raw.append(payload, None)
+    return IndependentOwnerDecisionJournal(raw, "tenant")
+
+
+@pytest.mark.parametrize(
+    "applicability_schema",
+    [
+        "chiplog.composition.h1-completion-issuance.v1",
+        "chiplog.composition.h1-completion-issuance.v2",
+    ],
+)
+def test_v1_selected_h1_request_without_binding_is_rejected_on_reopen(
+    tmp_path: Path, applicability_schema: str
+) -> None:
+    journal, batch = _journal(tmp_path), _h1_batch()
+    batch = batch.model_copy(
+        update={
+            "authentication": batch.authentication.model_copy(
+                update={"applicability_schema": applicability_schema}
+            )
+        }
+    )
+    selected = journal.select(_prepared(batch), digest(b"after"))
+    entry = json.loads(journal._raw.entries()[0][2])
+    entry["schema_id"] = "chiplog.owner-decision.v1"
+    del entry["h1_delivery_binding"]
+
+    with pytest.raises(OwnerJournalIntegrityError):
+        _open_raw(tmp_path / applicability_schema, _canonical_raw(entry))
+    assert selected.prepared.h1_delivery_binding is not None
+
+
+def test_v2_selected_accepts_registered_v2_h1_applicability_with_exact_binding(
+    tmp_path: Path,
+) -> None:
+    batch = _h1_batch()
+    batch = batch.model_copy(
+        update={
+            "authentication": batch.authentication.model_copy(
+                update={"applicability_schema": "chiplog.composition.h1-completion-issuance.v2"}
+            )
+        }
+    )
+    prepared = _prepared(batch)
+
+    selected = _journal(tmp_path).select(prepared, digest(b"after"))
+
+    assert selected.prepared.h1_delivery_binding == prepared.h1_delivery_binding
+
+
+@pytest.mark.parametrize(
+    "field,replacement",
+    [
+        ("tenant_id", "other-tenant"),
+        ("command_id", "other-command"),
+        ("command_fingerprint", digest(b"other-command")),
+        ("request_digest", digest(b"other-request")),
+    ],
+)
+def test_v2_selected_rejects_canonical_raw_binding_tamper_on_reopen(
+    tmp_path: Path, field: str, replacement: str
+) -> None:
+    journal = _journal(tmp_path)
+    journal.select(_prepared(_h1_batch()), digest(b"after"))
+    entry = json.loads(journal._raw.entries()[0][2])
+    entry["h1_delivery_binding"][field] = replacement
+
+    with pytest.raises(OwnerJournalIntegrityError):
+        _open_raw(tmp_path / field, _canonical_raw(entry))
+
+
+def test_selected_rejects_cross_version_members_on_reopen(tmp_path: Path) -> None:
+    v1 = _journal(tmp_path / "v1")
+    before = digest(b"before")
+    v1.select(
+        PreparedOwnerPublication(request(before), "issued", "fence", 0, before), digest(b"after")
+    )
+    v1_entry = json.loads(v1._raw.entries()[0][2])
+    v1_entry["schema_id"] = "chiplog.owner-decision.v2"
+
+    v2 = _journal(tmp_path / "v2")
+    v2.select(_prepared(_h1_batch()), digest(b"after"))
+    v2_entry = json.loads(v2._raw.entries()[0][2])
+    v2_entry["schema_id"] = "chiplog.owner-decision.v1"
+
+    with pytest.raises(OwnerJournalIntegrityError):
+        _open_raw(tmp_path / "v1-to-v2", _canonical_raw(v1_entry))
+    with pytest.raises(OwnerJournalIntegrityError):
+        _open_raw(tmp_path / "v2-to-v1", _canonical_raw(v2_entry))
+
+
+def test_public_binding_dto_does_not_create_selected_evidence(tmp_path: Path) -> None:
+    batch = _h1_batch()
+    prepared = _prepared(batch)
+    journal = _journal(tmp_path)
+
+    assert prepared.h1_delivery_binding == _binding(batch)
+    assert journal.snapshot().decisions == ()
+    assert journal.lookup("tenant", "h1-command") is None
+    with pytest.raises(ValueError, match="no unique selected owner decision"):
+        _selected_owner_decision(batch, journal)
 
 
 @pytest.mark.parametrize(
@@ -172,6 +288,7 @@ def test_h1_selected_retry_with_changed_binding_is_rejected(tmp_path: Path) -> N
     journal, batch = _journal(tmp_path), _h1_batch()
     prepared = _prepared(batch)
     journal.select(prepared, digest(b"after"))
+    assert prepared.h1_delivery_binding is not None
 
     with pytest.raises(OwnerJournalIntegrityError):
         journal.select(

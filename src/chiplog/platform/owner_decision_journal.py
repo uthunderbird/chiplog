@@ -75,6 +75,13 @@ _CODECS: dict[tuple[str, str], TypeAdapter[_Entry]] = {
     ("chiplog.owner-decision.v2", "SELECTED"): TypeAdapter(_SelectedV2),
 }
 
+_H1_COMPLETION_ISSUANCE_SCHEMAS = frozenset(
+    {
+        "chiplog.composition.h1-completion-issuance.v1",
+        "chiplog.composition.h1-completion-issuance.v2",
+    }
+)
+
 
 def _canonical(entry: _Entry) -> bytes:
     return json.dumps(entry.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
@@ -112,13 +119,18 @@ def _decode(payload: bytes) -> _Entry:
     return codec.validate_json(payload)
 
 
+def _is_h1_delivery_request(request: RegisteredPublication) -> bool:
+    return (
+        request.kind == "COMPLETE_DELIVERY_ATOMIC_V2"
+        and request.authentication.applicability_schema in _H1_COMPLETION_ISSUANCE_SCHEMAS
+    )
+
+
 def _validate_v2_binding(entry: _SelectedV2) -> None:
     request = entry.request
     binding = entry.h1_delivery_binding
     if (
-        request.kind != "COMPLETE_DELIVERY_ATOMIC_V2"
-        or request.authentication.applicability_schema
-        != "chiplog.composition.h1-completion-issuance.v1"
+        not _is_h1_delivery_request(request)
         or binding.tenant_id != request.identity.tenant_id
         or binding.command_id != request.identity.command_id
         or binding.command_fingerprint != request.identity.command_fingerprint
@@ -126,6 +138,15 @@ def _validate_v2_binding(entry: _SelectedV2) -> None:
         != hashlib.sha256(canonical_owner_publication_bytes(request)).hexdigest()
     ):
         raise ValueError("V2 selected delivery binding differs from H1 request")
+
+
+def _validate_selected_envelope(entry: _Selected | _SelectedV2) -> None:
+    h1_request = _is_h1_delivery_request(entry.request)
+    has_binding = isinstance(entry, _SelectedV2)
+    if h1_request != has_binding:
+        raise ValueError("H1 selected decision requires its closed delivery binding")
+    if isinstance(entry, _SelectedV2):
+        _validate_v2_binding(entry)
 
 
 def _validate_bytes(request: RegisteredPublication) -> None:
@@ -222,8 +243,7 @@ class IndependentOwnerDecisionJournal:
                 if _canonical(entry) != payload:
                     raise ValueError("noncanonical journal entry")
                 if isinstance(entry, (_Selected, _SelectedV2)):
-                    if isinstance(entry, _SelectedV2):
-                        _validate_v2_binding(entry)
+                    _validate_selected_envelope(entry)
                     request = entry.request
                     _validate_bytes(request)
                     _validate_successor(request, selected, materialized)
@@ -317,11 +337,7 @@ class IndependentOwnerDecisionJournal:
         try:
             with self._authority_scope():
                 entry: _Selected | _SelectedV2
-                h1_request = (
-                    request.kind == "COMPLETE_DELIVERY_ATOMIC_V2"
-                    and request.authentication.applicability_schema
-                    == "chiplog.composition.h1-completion-issuance.v1"
-                )
+                h1_request = _is_h1_delivery_request(request)
                 if h1_request != (prepared.h1_delivery_binding is not None):
                     raise ValueError("H1 V2 selected decision requires its closed delivery binding")
                 if prepared.h1_delivery_binding is None:
@@ -347,8 +363,9 @@ class IndependentOwnerDecisionJournal:
                 # Validate reconstructed bytes before any durable append, including
                 # nested DTOs built using Pydantic's intentionally unchecked copy API.
                 decoded = _decode(payload)
-                if isinstance(decoded, _SelectedV2):
-                    _validate_v2_binding(decoded)
+                if not isinstance(decoded, (_Selected, _SelectedV2)):
+                    raise ValueError("selected journal entry decoded as a materialization marker")
+                _validate_selected_envelope(decoded)
                 _validate_bytes(request)
                 if (
                     request.identity.tenant_id != self._tenant

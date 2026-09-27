@@ -371,7 +371,7 @@
   "platform/ingress_source_contracts.py": "8824fa205a16bbba380f8ac6340918bc7d901e97c93ba01163204b843f1c010a",
   "platform/ingress_transition_contracts.py": "106167afa6aae77a8b0f3e4a2ff98aa2ec4ec076bd7de7f7904e699b43071cb1",
   "platform/operation_registry_contracts.py": "fa2550a1ea80d83f4b3e248c5e57c3332d1b689847b759a309e371a70ef43ae7",
-  "platform/owner_decision_journal.py": "d8b0c52f710a059781b640f615a23bfc183d01a941104c07fe74d56f7e75ee5d",
+  "platform/owner_decision_journal.py": "4a24109749c55223feff3a87181ac7cfba768f9a9674a334d32273870c5690f0",
   "platform/owner_publications.py": "4632d13176789c59135845ceb5ad8e28a20812a97861b0eeb630c5c5ea19c622",
   "platform/publication_inspection.py": "123185c5cb56c85253657c1e9878fde5244ac1e61dea3eb036e68b46fef6ffe4",
   "platform/publication_readback.py": "53eb5e22f7c77deefe7156d82a93db50a3234ceb75338d6032e9b532159ba68b",
