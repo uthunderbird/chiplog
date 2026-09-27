@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import secrets
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -64,6 +65,8 @@ from chiplog.composition.common_execution_driver_contracts import (
     SelectedExecutionReceiptV1,
 )
 from chiplog.composition.r7_planning import _open_runtime
+from chiplog.composition.r14_cancellation_contracts import CancelCallSubmission
+from chiplog.composition.r14_execution_cancellation_contracts import ExecutionCancelledCallReceipt
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
 )
@@ -88,6 +91,7 @@ from chiplog.platform.broker import (
 from chiplog.platform.ingress_custody_records import canonical, reference
 from chiplog.platform.ingress_transition_contracts import RetainedIngressSource
 from chiplog.platform.r7_trust import TrustOwnerCall
+from chiplog.platform.r7_trust_durability import FrozenTrustObservation
 
 R17_RETAINED_READER_ID = RETAINED_CLI_READER_ID
 
@@ -105,6 +109,80 @@ class _H1ScopeWireKey:
     request_id: str
     caller: BrokerSession
     callee: BrokerSession
+
+
+@dataclass(frozen=True, slots=True)
+class _H1ScopeWire:
+    """One exact, bounded broker exchange retained for an H1 private owner."""
+
+    sent: PublicPortCall
+    returned: PublicPortResult
+    sent_at_ns: int
+    returned_at_ns: int
+
+class _H1LiveCompletionMount:
+    """Private installation owner for the one live H1 root issuer."""
+
+    def __init__(self, installed_authority: object) -> None:
+        self._authority: Any = installed_authority
+        self._runtime: CommonCliExecutionRuntime | None = None
+        self._revoked = False
+
+    def _bind_runtime(self, opened: CommonCliExecutionRuntime) -> None:
+        if self._runtime is not None:
+            raise RuntimeError("live H1 completion mount is already bound")
+        self._runtime = opened
+
+    def _revoke_all(self) -> None:
+        self._authority._revoke_all()
+        self._revoked = True
+
+    def _assert_root_binding(self, journal: object, issuer: object) -> None:
+        """Prove the installed writer graph before the journal retains its root."""
+        from chiplog.composition.h1_delivery_evidence_journal import H1DeliveryEvidenceJournal
+
+        runtime = self._runtime
+        if runtime is None:
+            raise RuntimeError("live H1 completion mount has no runtime")
+        if type(journal) is not H1DeliveryEvidenceJournal or journal._closed:
+            raise RuntimeError("live H1 root journal differs or is closed")
+        installed_journal = cast(Any, journal)
+        if self._revoked or getattr(issuer, "_revoked", None) is not False:
+            raise RuntimeError("live H1 root issuer is revoked")
+        if self._authority is not issuer:
+            raise RuntimeError("live H1 root issuer differs from its mount")
+        coordinator = getattr(runtime, "_h1_live_publication_coordinator", None)
+        if (
+            getattr(runtime, "_h1_live_completion_mount", None) is not self
+            or getattr(runtime, "_h1_live_publication_authority", None) is not issuer
+            or getattr(runtime, "_h1_delivery_evidence_journal", None) is not journal
+            or getattr(coordinator, "_authority", None) is not issuer
+            or getattr(coordinator, "_appender", None) is not runtime._appender
+            or getattr(coordinator, "_journal", None) is not runtime._owner_decisions()
+        ):
+            raise RuntimeError("live H1 root runtime mount differs")
+        gate = runtime._authority_gate()
+        store = runtime._appender._materializer
+        if (
+            installed_journal._journal.authority_gate is not gate
+            or installed_journal._mount.authority_gate is not gate
+            or getattr(store, "authority_gate", None) is not gate
+            or getattr(store, "_owner_publication_resolver", None) is not issuer
+        ):
+            raise RuntimeError("live H1 root gate or store resolver differs")
+        gate.require_held()
+
+
+@dataclass(frozen=True, slots=True)
+class _H1ScopeAppendReceipt:
+    """One gate-held trust transition, retained only for the installed H1 issuer."""
+
+    request_id: str
+    before: FrozenTrustObservation
+    after: FrozenTrustObservation
+    decision_id: str
+    scope: HermeticOutputScopeV1
+    disposition: Literal["ISSUED", "REPLAY"]
 
 
 def _call_head(value: Head) -> CallSubjectHead:
@@ -136,16 +214,47 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     # Invocation-local wire captures are consumed only by the private H1
     # publication authority.  The public scope methods still return their
     # domain DTOs; callers never receive broker frames as authority evidence.
-    _h1_scope_wires: dict[_H1ScopeWireKey, tuple[PublicPortCall, PublicPortResult] | None]
+    _h1_scope_wires: dict[_H1ScopeWireKey, _H1ScopeWire | None]
+    _h1_scope_append_receipts: dict[str, _H1ScopeAppendReceipt]
+    _h1_delivery_evidence_journal: Any | None
+    _h1_preissuance_registration_source_port: Any | None
+    _h1_first_path_sources: Any | None
+    _h1_native_member_sources: Any | None
+    _h1_installed_worker_evidence_owner: Any | None
+    _h1_pre_request_member_evidence: Any | None
+    _h1_pre_request_worker_evidence: Any | None
+    _h1_completion_exchange_registry: Any | None
+    _h1_conversation_source_port: Any | None
+
+    async def cancel_execution_call(
+        self, peer: str, submission: CancelCallSubmission
+    ) -> ExecutionCancelledCallReceipt:
+        """Mounted native cancellation port; authority remains in its focused runtime."""
+        from chiplog.composition.r14_execution_cancellation_runtime import cancel_execution_call
+
+        return await cancel_execution_call(self, peer, submission)
+
+    def _take_h1_scope_append_receipt(
+        self, request_id: str, issued: IssuedHermeticOutputScopeV1
+    ) -> _H1ScopeAppendReceipt:
+        receipt = getattr(self, "_h1_scope_append_receipts", {}).pop(request_id, None)
+        if (
+            receipt is None
+            or receipt.decision_id != issued.anchor.decision.head
+            or receipt.scope.revision != issued.revision
+            or self._trust.capture_verified_observation() != receipt.after
+        ):
+            raise LoopRejected("H1 scope append receipt is absent or stale")
+        return cast(_H1ScopeAppendReceipt, receipt)
 
     @staticmethod
     def _purge_expired_h1_scope_wires(
-        wires: dict[_H1ScopeWireKey, tuple[PublicPortCall, PublicPortResult] | None],
+        wires: dict[_H1ScopeWireKey, _H1ScopeWire | None],
     ) -> None:
         now = time.monotonic_ns()
         for key in tuple(wires):
             captured = wires[key]
-            if captured is not None and captured[0].budget.absolute_deadline_ns <= now:
+            if captured is not None and captured.sent.budget.absolute_deadline_ns <= now:
                 del wires[key]
 
     @staticmethod
@@ -175,14 +284,27 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         return key
 
     def _record_h1_scope_wire(
-        self, key: _H1ScopeWireKey, call: PublicPortCall, result: PublicPortResult
+        self,
+        key: _H1ScopeWireKey,
+        call: PublicPortCall,
+        result: PublicPortResult,
+        *,
+        sent_at_ns: int,
+        returned_at_ns: int,
     ) -> None:
         wires = self._h1_scope_wires
-        if wires.get(key, "missing") is not None or key != self._h1_scope_key(key.role, call):
+        if (
+            wires.get(key, "missing") is not None
+            or key != self._h1_scope_key(key.role, call)
+            or sent_at_ns > returned_at_ns
+            or returned_at_ns >= call.budget.absolute_deadline_ns
+        ):
+            wires.pop(key, None)
             raise LoopRejected("H1 scope capture reservation differs")
         if result.request_id != call.request_id or result.responder != call.callee:
+            wires.pop(key, None)
             raise LoopRejected("H1 scope capture response differs from sent frame")
-        wires[key] = (call, result)
+        wires[key] = _H1ScopeWire(call, result, sent_at_ns, returned_at_ns)
 
     def _discard_h1_scope_wire(self, key: _H1ScopeWireKey) -> None:
         getattr(self, "_h1_scope_wires", {}).pop(key, None)
@@ -194,22 +316,38 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         request_id: str,
         caller: BrokerSession,
         callee: BrokerSession,
-    ) -> tuple[PublicPortCall, PublicPortResult]:
+    ) -> _H1ScopeWire:
         """Consume one exact private H1 scope exchange without cross-call reuse."""
         key = _H1ScopeWireKey(role, request_id, caller, callee)
-        wires: dict[_H1ScopeWireKey, tuple[PublicPortCall, PublicPortResult] | None] = getattr(
+        wires: dict[_H1ScopeWireKey, _H1ScopeWire | None] = getattr(
             self, "_h1_scope_wires", {}
         )
         self._purge_expired_h1_scope_wires(wires)
         captured = wires.pop(key, None)
         if captured is None:
             raise LoopRejected("H1 scope capture is absent or still in flight")
-        call, result = captured
+        call, result = captured.sent, captured.returned
         if key != self._h1_scope_key(role, call):
             raise LoopRejected("H1 scope capture key differs from its sent frame")
         if result.request_id != call.request_id or result.responder != call.callee:
             raise LoopRejected("H1 scope capture response differs from sent frame")
         return captured
+
+    def _take_h1_scope_wire_for_request(
+        self, role: _H1ScopeRole, *, request_id: str
+    ) -> _H1ScopeWire:
+        """Consume a uniquely reserved private scope wire without caller-provided sessions."""
+        wires: dict[_H1ScopeWireKey, _H1ScopeWire | None] = getattr(
+            self, "_h1_scope_wires", {}
+        )
+        self._purge_expired_h1_scope_wires(wires)
+        matches = [key for key in wires if key.role == role and key.request_id == request_id]
+        if len(matches) != 1:
+            raise LoopRejected("H1 scope capture is absent or ambiguous")
+        key = matches[0]
+        return self._take_h1_scope_wire(
+            role, request_id=request_id, caller=key.caller, callee=key.callee
+        )
 
     async def issue_hermetic_output_scope(
         self, intent: IssueHermeticOutputScopeV1, *, request_id: str
@@ -305,11 +443,23 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         except LoopRejected:
             return NonIssuedHermeticOutputScopeV1(disposition="STALE")
         try:
-            response = await self._supervisor.runtime().call(request)
+            broker_runtime = self._supervisor.runtime()
+            sent_at_ns = time.monotonic_ns()
+            response = await broker_runtime.call(request)
+            returned_at_ns = time.monotonic_ns()
         except BaseException:
             self._discard_h1_scope_wire(capture_key)
             raise
-        self._record_h1_scope_wire(capture_key, request, response)
+        try:
+            self._record_h1_scope_wire(
+                capture_key,
+                request,
+                response,
+                sent_at_ns=sent_at_ns,
+                returned_at_ns=returned_at_ns,
+            )
+        except LoopRejected:
+            return NonIssuedHermeticOutputScopeV1(disposition="STALE")
         if (
             not isinstance(response, PublicPortSuccess)
             or response.request_id != request_id
@@ -348,11 +498,49 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 ):
                     if existing != candidate.scope:
                         return NonIssuedHermeticOutputScopeV1(disposition="DENIED")
-                    return self._issued_h1_result(existing_id, existing, disposition="REPLAY")
+                    authenticated = self._trust.historical_hermetic_output_scope(existing)
+                    if (
+                        authenticated is None
+                        or authenticated.decision_id != existing_id
+                        or authenticated.scope != existing
+                    ):
+                        return NonIssuedHermeticOutputScopeV1(disposition="STALE")
+                    issued = self._issued_h1_result(existing_id, existing, disposition="REPLAY")
+                    receipts = getattr(self, "_h1_scope_append_receipts", None)
+                    if receipts is None:
+                        receipts = self._h1_scope_append_receipts = {}
+                    receipts[request_id] = _H1ScopeAppendReceipt(
+                        request_id, frozen, frozen, existing_id, existing, "REPLAY"
+                    )
+                    return issued
+            before_entries = self._trust._journal.entries()
+            before_records = self._trust._materializer.records()
             decision_id, _, _ = self._trust.append_hermetic_output_scope(
                 candidate.scope.canonical_bytes()
             )
-            return self._issued_h1_result(decision_id, candidate.scope, disposition="ISSUED")
+            after = self._trust.capture_verified_observation()
+            after_entries = self._trust._journal.entries()
+            after_records = self._trust._materializer.records()
+            expected_records = self._trust._expected_records(
+                decision_id,
+                "HERMETIC_OUTPUT_SCOPE_V1",
+                {"scope": candidate.scope.model_dump(mode="json")},
+            )
+            if (
+                after_entries[:-1] != before_entries
+                or len(after_entries) != len(before_entries) + 1
+                or after_entries[-1][0] != decision_id
+                or after_records != before_records + expected_records
+            ):
+                raise RuntimeError("H1 scope append receipt has an unrelated durable mutation")
+            issued = self._issued_h1_result(decision_id, candidate.scope, disposition="ISSUED")
+            receipts = getattr(self, "_h1_scope_append_receipts", None)
+            if receipts is None:
+                receipts = self._h1_scope_append_receipts = {}
+            receipts[request_id] = _H1ScopeAppendReceipt(
+                request_id, frozen, after, decision_id, candidate.scope, "ISSUED"
+            )
+            return issued
 
     def _issued_h1_result(
         self,
@@ -409,14 +597,32 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     async def read_current_hermetic_output_scope(
         self, request: ReadCurrentHermeticExecutionScopeV1
     ) -> CurrentHermeticExecutionScopeResultV1:
-        """Authenticate a physical scope record and its selected sources at one fence."""
+        """Return only the domain DTO; broker frames stay private to H1 consumers."""
+        try:
+            result, _ = await self._read_current_hermetic_output_scope_with_wire(request)
+        except LoopRejected:
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        return result
+
+    async def _read_current_hermetic_output_scope_with_wire(
+        self, request: ReadCurrentHermeticExecutionScopeV1
+    ) -> tuple[CurrentHermeticExecutionScopeResultV1, _H1ScopeWire]:
+        """Read one scope and consume the exact invocation-local owner exchange.
+
+        The public DTO method deliberately cannot expose or later rediscover this
+        frame.  A private H1 consumer gets the one frame reserved by this call.
+        """
         gate = self._authority_gate()
-        from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSources
 
         with gate.hold():
             snapshot = self._trust.capture_verified_observation().snapshot_bytes
             callee = self._supervisor.runtime().session("deployment_trust")
-            request_id = "h1-current:" + hashlib.sha256(request.canonical_bytes()).hexdigest()
+            request_id = (
+                "h1-current:"
+                + hashlib.sha256(request.canonical_bytes()).hexdigest()
+                + ":"
+                + secrets.token_hex(16)
+            )
             route = H1CurrentBrokerRouteV1(
                 tenant_id="hermetic-tenant",
                 broker_epoch=callee.broker_epoch,
@@ -457,117 +663,192 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         )
         try:
             capture_key = self._reserve_h1_scope_wire("scope_current", broker_call)
-        except LoopRejected:
-            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        except LoopRejected as error:
+            raise LoopRejected("H1 current scope capture cannot be reserved") from error
         try:
-            owner_response = await self._supervisor.runtime().call(broker_call)
+            broker_runtime = self._supervisor.runtime()
+            sent_at_ns = time.monotonic_ns()
+            owner_response = await broker_runtime.call(broker_call)
+            returned_at_ns = time.monotonic_ns()
         except BaseException:
             self._discard_h1_scope_wire(capture_key)
             raise
-        self._record_h1_scope_wire(capture_key, broker_call, owner_response)
+        with gate.hold():
+            self._record_h1_scope_wire(
+                capture_key,
+                broker_call,
+                owner_response,
+                sent_at_ns=sent_at_ns,
+                returned_at_ns=returned_at_ns,
+            )
+            exact_wire = self._take_h1_scope_wire(
+                capture_key.role,
+                request_id=capture_key.request_id,
+                caller=capture_key.caller,
+                callee=capture_key.callee,
+            )
+            exact_response = exact_wire.returned
+        owner_response = exact_response
         if (
             not isinstance(owner_response, PublicPortSuccess)
             or owner_response.request_id != broker_call.request_id
             or owner_response.responder != callee
+            or owner_response.schema_id
+            != "chiplog.deployment-trust.current-hermetic-output-scope-result.v1"
         ):
-            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+            return (
+                NonCurrentHermeticExecutionScopeV1(disposition="STALE"),
+                exact_wire,
+            )
         try:
             owner_candidate = H1OwnerCurrentCandidateV1.model_validate_json(
                 owner_response.canonical_payload
             )
             if owner_candidate.canonical_bytes() != owner_response.canonical_payload:
-                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+                return (
+                    NonCurrentHermeticExecutionScopeV1(disposition="STALE"),
+                    exact_wire,
+                )
             owner_candidate.check_pinned_call(current_call)
         except ValueError:
-            return NonCurrentHermeticExecutionScopeV1(disposition="DENIED")
+            return (
+                NonCurrentHermeticExecutionScopeV1(disposition="DENIED"),
+                exact_wire,
+            )
         with gate.hold():
-            frozen = self._trust.capture_verified_observation()
-            if not self._matches_h1_trust_observation(request.expected_trust_observation):
-                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
-            anchor = request.source_anchor
-            decision = next(
-                (
-                    raw
-                    for decision_id, _, raw in self._trust._journal.entries()
-                    if decision_id == anchor.decision.head
+            return (
+                self._validate_current_hermetic_output_scope_held(
+                    request, owner_candidate, callee=callee
                 ),
-                None,
+                exact_wire,
             )
-            if (
-                decision is None
-                or hashlib.sha256(decision).hexdigest() != anchor.decision.fingerprint
-            ):
-                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
-            record = self._trust._materializer.record(anchor.decision.head, anchor.record_ordinal)
-            if record is None or hashlib.sha256(record).hexdigest() != anchor.record.fingerprint:
-                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
-            record_identity = (
-                "trust-record:" + anchor.decision.head + ":" + str(anchor.record_ordinal)
+
+    def _replay_current_hermetic_output_scope_held(
+        self,
+        request: ReadCurrentHermeticExecutionScopeV1,
+        owner_candidate: H1OwnerCurrentCandidateV1,
+        *,
+        callee: BrokerSession,
+    ) -> CurrentHermeticExecutionScopeResultV1:
+        """Revalidate one retained CURRENT candidate at the installed H1 final fence."""
+        gate = self._authority_gate()
+        gate.require_held()
+        port = getattr(self, "_h1_preissuance_registration_source_port", None)
+        resources = self._require_dispatch_resources()
+        if (
+            getattr(port, "_runtime", None) is not self
+            or getattr(port, "_gate", None) is not gate
+            or resources._require_gate() is not gate
+        ):
+            raise LoopRejected("H1 current replay requires the installed runtime shared gate")
+        result: CurrentHermeticExecutionScopeResultV1 = (
+            self._validate_current_hermetic_output_scope_held(
+            request, owner_candidate, callee=callee
             )
+        )
+        return result
+
+    def _validate_current_hermetic_output_scope_held(
+        self,
+        request: ReadCurrentHermeticExecutionScopeV1,
+        owner_candidate: H1OwnerCurrentCandidateV1,
+        *,
+        callee: BrokerSession,
+    ) -> CurrentHermeticExecutionScopeResultV1:
+        """Recompute a pinned owner candidate from the one gate-held live cut."""
+        self._authority_gate().require_held()
+        from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSources
+
+        frozen = self._trust.capture_verified_observation()
+        if not self._matches_h1_trust_observation(request.expected_trust_observation):
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        anchor = request.source_anchor
+        try:
+            authenticated = self._trust.current_hermetic_output_scope(anchor)
+        except RuntimeError, TypeError:
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        decision = next(
+            (
+                raw
+                for decision_id, _, raw in self._trust._journal.entries()
+                if decision_id == anchor.decision.head
+            ),
+            None,
+        )
+        if decision is None or hashlib.sha256(decision).hexdigest() != anchor.decision.fingerprint:
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        record = self._trust._materializer.record(anchor.decision.head, anchor.record_ordinal)
+        if record is None or hashlib.sha256(record).hexdigest() != anchor.record.fingerprint:
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        record_identity = "trust-record:" + anchor.decision.head + ":" + str(anchor.record_ordinal)
+        if (
+            anchor.record.identity != record_identity
+            or anchor.record.head != record_identity + "/" + anchor.record.fingerprint
+        ):
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        try:
+            envelope = json.loads(record)
             if (
-                anchor.record.identity != record_identity
-                or anchor.record.head != record_identity + "/" + anchor.record.fingerprint
+                envelope.get("record_type_id") != anchor.record_type_id
+                or envelope.get("schema_id") != anchor.schema_id
+                or envelope.get("decision_id") != anchor.decision.head
+                or envelope.get("operation_kind") != "HERMETIC_OUTPUT_SCOPE_V1"
             ):
-                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
-            try:
-                envelope = json.loads(record)
-                if (
-                    envelope.get("record_type_id") != anchor.record_type_id
-                    or envelope.get("schema_id") != anchor.schema_id
-                    or envelope.get("decision_id") != anchor.decision.head
-                    or envelope.get("operation_kind") != "HERMETIC_OUTPUT_SCOPE_V1"
-                ):
-                    raise ValueError("scope record type differs")
-                scope = HermeticOutputScopeV1.model_validate_json(
-                    json.dumps(envelope["scope"], sort_keys=True, separators=(",", ":"))
-                )
-            except KeyError, TypeError, ValueError:
-                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
-            scope_bytes = scope.canonical_bytes()
-            scope_ref = ExactHead(
-                identity=scope.scope_id,
-                head=scope.scope_id + "/" + hashlib.sha256(scope_bytes).hexdigest(),
-                fingerprint=hashlib.sha256(scope_bytes).hexdigest(),
+                raise ValueError("scope record type differs")
+            scope = HermeticOutputScopeV1.model_validate_json(
+                json.dumps(envelope["scope"], sort_keys=True, separators=(",", ":"))
             )
-            if (
-                scope_ref != request.expected_scope_ref
-                or scope.revision != request.expected_revision
-                or scope.database_id != request.database_id
-                or scope.scope_id != request.scope_id
-                or scope.worker_session_id != request.expected_worker_session_id
-                or scope.admitted_authentication != request.admitted_authentication_ref
-                or scope.selected_resource_observation_ref
-                != request.selected_resource_observation_ref
-                or scope.authenticated_cli_state.trust_binding_digest
-                != request.authenticated_cli_ref.trust_head
-                or scope.authenticated_cli_state.credential_head
-                != request.authenticated_cli_ref.credential_head
-                or scope.authenticated_cli_state.session_head
-                != request.authenticated_cli_ref.session_head
-            ):
-                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
-            current = H1SelectedOutputSources(self).capture_selected_current(
-                request.selected_resource_observation_ref,
+        except KeyError, TypeError, ValueError:
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        scope_bytes = scope.canonical_bytes()
+        scope_ref = ExactHead(
+            identity=scope.scope_id,
+            head=scope.scope_id + "/" + hashlib.sha256(scope_bytes).hexdigest(),
+            fingerprint=hashlib.sha256(scope_bytes).hexdigest(),
+        )
+        if (
+            scope_ref != request.expected_scope_ref
+            or scope != authenticated.scope
+            or scope.revision != request.expected_revision
+            or scope.database_id != request.database_id
+            or scope.scope_id != request.scope_id
+            or scope.worker_session_id != request.expected_worker_session_id
+            or scope.admitted_authentication != request.admitted_authentication_ref
+            or scope.selected_resource_observation_ref
+            != request.selected_resource_observation_ref
+            or scope.authenticated_cli_state.trust_binding_digest
+            != request.authenticated_cli_ref.trust_head
+            or scope.authenticated_cli_state.credential_head
+            != request.authenticated_cli_ref.credential_head
+            or scope.authenticated_cli_state.session_head
+            != request.authenticated_cli_ref.session_head
+        ):
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        current = H1SelectedOutputSources(self).capture_selected_current(
+            request.selected_resource_observation_ref,
+            request.admitted_authentication_ref,
+            request.authenticated_cli_ref,
+        )
+        if current is None or self._trust.capture_verified_observation() != frozen:
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        if scope.recipient != current.verified.recipient:
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        if self._supervisor.runtime().session("deployment_trust") != callee:
+            return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
+        expected = CurrentHermeticExecutionScopeV1(
+            disposition="CURRENT",
+            scope_ref=scope_ref,
+            source_anchor=anchor,
+            selector_generation=0,
+            ordered_current_source_refs=(
                 request.admitted_authentication_ref,
-                request.authenticated_cli_ref,
-            )
-            if current is None or self._trust.capture_verified_observation() != frozen:
-                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
-            if scope.recipient != current.verified.recipient:
-                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
-            if self._supervisor.runtime().session("deployment_trust") != callee:
-                return NonCurrentHermeticExecutionScopeV1(disposition="STALE")
-            return CurrentHermeticExecutionScopeV1(
-                disposition="CURRENT",
-                scope_ref=scope_ref,
-                source_anchor=anchor,
-                selector_generation=0,
-                ordered_current_source_refs=(
-                    current.verified.admitted_authentication_ref,
-                    current.verified.recipient.endpoint,
-                    current.verified.recipient.credential_binding,
-                ),
-            )
+                anchor.decision,
+                anchor.record,
+            ),
+        )
+        if owner_candidate.current != expected:
+            return NonCurrentHermeticExecutionScopeV1(disposition="DENIED")
+        return expected
 
     def _matches_h1_trust_observation(self, expected: HermeticTrustObservationV1) -> bool:
         entries = self._trust._journal.entries()
@@ -1134,3 +1415,268 @@ async def open_common_cli_execution_runtime(
                     token="hermetic-bootstrap",
                 )
             yield runtime
+
+
+@asynccontextmanager
+async def open_installed_h1_runtime(
+    launch: object,
+    *,
+    resources: HermeticDispatchResources,
+    responses: tuple[bytes, ...] = (),
+) -> AsyncIterator[CommonCliExecutionRuntime]:
+    """Open the one enrolled H1 slot without bootstrap or caller-selected storage."""
+    # These imports must remain local: the private port imports this module's
+    # canonical runtime class and a module-level reciprocal import is cyclic.
+    from chiplog.composition.h1_launch_enrollment import InstalledH1Launch
+    from chiplog.composition.h1_live_publication_authority import H1LivePublicationAuthority
+    from chiplog.composition.h1_runtime_preissuance_port import _H1RuntimePreissuancePort
+    from chiplog.platform.owner_publications import BrokerPublicationCoordinator
+
+    if type(launch) is not InstalledH1Launch:
+        raise TypeError("installed H1 runtime requires an installed launch")
+    launch.assert_current()
+    installed_trust = launch._slot._trust.verify()
+    if installed_trust is None or installed_trust.phase != "ACTIVE":
+        raise ValueError("installed H1 runtime requires preexisting ACTIVE trust")
+
+    model = HermeticModel(responses)
+    evidence_reader: list[Any] = []
+    enrolled_mount: list[Any] = []
+    authority = H1LivePublicationAuthority()
+    authority_gate: Any | None = None
+    root_bound = False
+
+    live_mount = _H1LiveCompletionMount(authority)
+
+    def revoke_and_unbind_live_authority() -> None:
+        """Close the future capability owner before releasing its exact root issuer."""
+        nonlocal root_bound
+        live_mount._revoke_all()
+        if not root_bound:
+            return
+        if authority_gate is None or len(evidence_reader) != 1:
+            raise RuntimeError("installed live H1 root cleanup is incomplete")
+        with cast(Any, authority_gate).hold():
+            evidence_reader[0]._unbind_private_root_issuer(authority)
+        root_bound = False
+
+    def preflight_evidence(gate: object) -> object:
+        # The launch owns the protected role marker and performs read-only
+        # validation before _open_runtime can create any runtime sidecars.
+        return launch.open_enrolled_evidence_mount(gate)
+
+    def bind_evidence(store: object, gate: object, mounted: object) -> None:
+        from chiplog.composition.h1_delivery_evidence_journal import H1DeliveryEvidenceJournal
+        from chiplog.composition.h1_launch_enrollment import EnrolledH1EvidenceMount
+
+        if (
+            type(mounted) is not EnrolledH1EvidenceMount
+            or mounted.authority_gate is not gate
+            or getattr(store, "authority_gate", None) is not gate
+            or mounted.tenant_id != launch._slot.tenant_id
+        ):
+            raise RuntimeError("installed evidence mount gate or tenant differs")
+        nonlocal authority_gate
+        authority_gate = gate
+        enrolled_mount.append(mounted)
+        journal = H1DeliveryEvidenceJournal.open_enrolled(mounted)
+        evidence_reader.append(journal)
+        try:
+            cast(Any, store)._mount_owner_publication_resolver(authority)
+        except BaseException:
+            revoke_and_unbind_live_authority()
+            raise
+
+    def installed_runtime_setup(opened: object) -> None:
+        nonlocal root_bound
+        runtime = cast(CommonCliExecutionRuntime, opened)
+        runtime._bind_h1_historical_custody_path(resources._custody_path)
+        if len(evidence_reader) != 1:
+            raise RuntimeError("installed evidence reader is absent")
+        runtime._h1_delivery_evidence_journal = evidence_reader[0]
+        if any(
+            hasattr(runtime, name)
+            for name in (
+                "_h1_live_completion_mount",
+                "_h1_live_publication_authority",
+                "_h1_live_publication_coordinator",
+            )
+        ):
+            raise RuntimeError("installed H1 live publication authority is already mounted")
+        live_mount._bind_runtime(runtime)
+        runtime._h1_live_completion_mount = live_mount  # type: ignore[attr-defined]
+        runtime._h1_live_publication_authority = authority  # type: ignore[attr-defined]
+        runtime._h1_live_publication_coordinator = BrokerPublicationCoordinator(  # type: ignore[attr-defined]
+            runtime._appender, authority, runtime._owner_decisions()
+        )
+        if authority_gate is None:
+            raise RuntimeError("installed live H1 root gate is absent")
+        with cast(Any, authority_gate).hold():
+            evidence_reader[0]._bind_private_root_issuer(authority, live_mount)
+        root_bound = True
+
+    runtime: CommonCliExecutionRuntime | None = None
+    with _configured(resources):
+        try:
+            async with _open_runtime(
+                launch.database_path,
+                tenant_id=launch._slot.tenant_id,
+                operator_secret=b"r13-hermetic-only",
+                runtime_type=CommonCliExecutionRuntime,
+                manifest=R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
+                extra_leaves={
+                    "model": model,
+                    "effects_transport": resources.require_original_provider(),
+                },
+                preflight=preflight_evidence,
+                store_setup=bind_evidence,
+                runtime_setup=installed_runtime_setup,
+            ) as opened:
+                runtime = cast(CommonCliExecutionRuntime, opened)
+                runtime._execution_model = model
+                model.session = runtime
+                launch.assert_current()
+                port = _H1RuntimePreissuancePort(runtime, launch)
+                if getattr(runtime, "_h1_preissuance_registration_source_port", None) is not None:
+                    raise RuntimeError("installed H1 runtime port is already mounted")
+                runtime._h1_preissuance_registration_source_port = port
+                worker_owner: Any | None = None
+                member_evidence: Any | None = None
+                worker_evidence: Any | None = None
+                completion_exchange_registry: Any | None = None
+                conversation_sources: Any | None = None
+                live_enrollment: Any | None = None
+                try:
+                    from chiplog.composition.h1_completion_exchange_registry import (
+                        H1CompletionExchangeRegistry,
+                    )
+                    from chiplog.composition.h1_conversation_sources import H1ConversationSources
+                    from chiplog.composition.h1_delivery_evidence_journal import (
+                        H1DeliveryEvidenceJournal,
+                    )
+                    from chiplog.composition.h1_first_path_sources import H1FirstPathSources
+                    from chiplog.composition.h1_launch_enrollment import EnrolledH1EvidenceMount
+                    from chiplog.composition.h1_live_completion_enrollment import (
+                        _H1LiveCompletionEnrollment,
+                    )
+                    from chiplog.composition.h1_native_member_sources import H1NativeMemberSources
+                    from chiplog.composition.h1_pre_request_member_evidence import (
+                        H1PreRequestMemberEvidence,
+                    )
+                    from chiplog.composition.h1_pre_request_worker_evidence import (
+                        H1PreRequestWorkerEvidence,
+                    )
+                    from chiplog.composition.h1_worker_evidence import (
+                        _H1InstalledWorkerEvidenceOwner,
+                    )
+
+                    if (
+                        len(enrolled_mount) != 1
+                        or type(enrolled_mount[0]) is not EnrolledH1EvidenceMount
+                    ):
+                        raise RuntimeError("installed enrolled evidence mount is absent")
+                    mount = enrolled_mount[0]
+                    first_path = H1FirstPathSources(runtime)
+                    native_sources = H1NativeMemberSources(runtime, first_path)
+                    worker_owner = _H1InstalledWorkerEvidenceOwner(
+                        runtime, runtime._supervisor, launch, mount, native_sources
+                    )
+                    if any(
+                        getattr(runtime, name, None) is not None
+                        for name in (
+                            "_h1_first_path_sources",
+                            "_h1_native_member_sources",
+                            "_h1_installed_worker_evidence_owner",
+                            "_h1_pre_request_member_evidence",
+                            "_h1_pre_request_worker_evidence",
+                            "_h1_completion_exchange_registry",
+                            "_h1_conversation_source_port",
+                            "_h1_live_completion_enrollment",
+                        )
+                    ):
+                        raise RuntimeError("installed H1 worker sources are already mounted")
+                    runtime._h1_first_path_sources = first_path
+                    runtime._h1_native_member_sources = native_sources
+                    completion_exchange_registry = H1CompletionExchangeRegistry(
+                        runtime=runtime,
+                        native_sources=runtime._h1_native_member_sources,
+                        scope_port=runtime._h1_preissuance_registration_source_port,
+                    )
+                    runtime._h1_completion_exchange_registry = completion_exchange_registry
+                    conversation_sources = H1ConversationSources(runtime)
+                    runtime._h1_conversation_source_port = conversation_sources
+                    journal = cast(H1DeliveryEvidenceJournal, runtime._h1_delivery_evidence_journal)
+                    member_evidence = H1PreRequestMemberEvidence(
+                        journal,
+                        runtime._h1_native_member_sources,
+                        port,
+                    )
+                    runtime._h1_pre_request_member_evidence = member_evidence
+                    runtime._h1_installed_worker_evidence_owner = worker_owner
+                    worker_evidence = H1PreRequestWorkerEvidence(
+                        journal,
+                        runtime._h1_native_member_sources,
+                        runtime._h1_installed_worker_evidence_owner,
+                    )
+                    runtime._h1_pre_request_worker_evidence = worker_evidence
+                    live_enrollment = _H1LiveCompletionEnrollment(
+                        runtime=runtime,
+                        first_path_sources=runtime._h1_first_path_sources,
+                        native_sources=runtime._h1_native_member_sources,
+                        scope_port=runtime._h1_preissuance_registration_source_port,
+                        conversation_sources=runtime._h1_conversation_source_port,
+                        completion_registry=runtime._h1_completion_exchange_registry,
+                        authority=runtime._h1_live_publication_authority,  # type: ignore[attr-defined]
+                        publication_mount=runtime._h1_live_completion_mount,  # type: ignore[attr-defined]
+                        gate=runtime._authority_gate(),
+                    )
+                    runtime._h1_live_completion_enrollment = live_enrollment  # type: ignore[attr-defined]
+                    yield runtime
+                finally:
+                    if live_enrollment is not None:
+                        live_enrollment._revoke_all()
+                    if hasattr(runtime, "_h1_live_completion_enrollment"):
+                        del runtime._h1_live_completion_enrollment
+                    if conversation_sources is not None:
+                        conversation_sources._revoke_all()
+                    if hasattr(runtime, "_h1_conversation_source_port"):
+                        del runtime._h1_conversation_source_port
+                    if completion_exchange_registry is not None:
+                        completion_exchange_registry._revoke_all()
+                    if hasattr(runtime, "_h1_completion_exchange_registry"):
+                        del runtime._h1_completion_exchange_registry
+                    if member_evidence is not None:
+                        member_evidence._revoke_all()
+                    if hasattr(runtime, "_h1_pre_request_member_evidence"):
+                        del runtime._h1_pre_request_member_evidence
+                    if worker_evidence is not None:
+                        worker_evidence._revoke_all()
+                    if hasattr(runtime, "_h1_pre_request_worker_evidence"):
+                        del runtime._h1_pre_request_worker_evidence
+                    if worker_owner is not None:
+                        worker_owner._revoke_all()
+                    for name in (
+                        "_h1_installed_worker_evidence_owner",
+                        "_h1_native_member_sources",
+                        "_h1_first_path_sources",
+                    ):
+                        if hasattr(runtime, name):
+                            delattr(runtime, name)
+                    del runtime._h1_preissuance_registration_source_port
+                    revoke_and_unbind_live_authority()
+                    for name in (
+                        "_h1_live_publication_coordinator",
+                        "_h1_live_publication_authority",
+                        "_h1_live_completion_mount",
+                    ):
+                        if hasattr(runtime, name):
+                            delattr(runtime, name)
+        finally:
+            # Covers failures before _open_runtime can yield its runtime.  On
+            # the ordinary path the inner finally already released this while
+            # the appender remained open.
+            revoke_and_unbind_live_authority()
+            for reader in evidence_reader:
+                reader.close()
+            if runtime is not None:
+                del runtime._h1_delivery_evidence_journal

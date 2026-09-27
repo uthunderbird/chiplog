@@ -66,6 +66,8 @@ async def _record_after_barrier(
             schema_id="chiplog.deployment-trust.owner-result.v1",
             canonical_payload=("result-" + call.request_id).encode(),
         ),
+        sent_at_ns=time.monotonic_ns(),
+        returned_at_ns=time.monotonic_ns(),
     )
 
 
@@ -88,20 +90,20 @@ async def test_concurrent_scope_capture_lookup_cannot_splice_broker_frames() -> 
             caller=second.caller,
             callee=second.callee,
         )
-    second_call, second_result = runtime._take_h1_scope_wire(
+    second_wire = runtime._take_h1_scope_wire(
         "scope_issue",
         request_id=second.request_id,
         caller=second.caller,
         callee=second.callee,
     )
-    first_call, first_result = runtime._take_h1_scope_wire(
+    first_wire = runtime._take_h1_scope_wire(
         "scope_issue",
         request_id=first.request_id,
         caller=first.caller,
         callee=first.callee,
     )
-    assert (second_call, second_result.request_id) == (second, second.request_id)
-    assert (first_call, first_result.request_id) == (first, first.request_id)
+    assert (second_wire.sent, second_wire.returned.request_id) == (second, second.request_id)
+    assert (first_wire.sent, first_wire.returned.request_id) == (first, first.request_id)
     with pytest.raises(LoopRejected, match="absent"):
         runtime._take_h1_scope_wire(
             "scope_issue",
@@ -129,7 +131,7 @@ def test_malformed_exact_capture_is_burned_without_affecting_other_key() -> None
     intact = _call("scope_issue", "intact")
     malformed_key = runtime._reserve_h1_scope_wire("scope_issue", malformed)
     intact_key = runtime._reserve_h1_scope_wire("scope_issue", intact)
-    runtime._h1_scope_wires[malformed_key] = (
+    runtime._h1_scope_wires[malformed_key] = _wire(
         malformed,
         PublicPortSuccess(
             request_id="substituted-request",
@@ -147,6 +149,8 @@ def test_malformed_exact_capture_is_burned_without_affecting_other_key() -> None
             schema_id="chiplog.deployment-trust.owner-result.v1",
             canonical_payload=b"intact",
         ),
+        sent_at_ns=time.monotonic_ns(),
+        returned_at_ns=time.monotonic_ns(),
     )
 
     with pytest.raises(LoopRejected, match="response differs"):
@@ -163,10 +167,84 @@ def test_malformed_exact_capture_is_burned_without_affecting_other_key() -> None
             caller=malformed.caller,
             callee=malformed.callee,
         )
-    call, result = runtime._take_h1_scope_wire(
+    wire = runtime._take_h1_scope_wire(
         "scope_issue",
         request_id=intact.request_id,
         caller=intact.caller,
         callee=intact.callee,
     )
-    assert (call, result.request_id) == (intact, intact.request_id)
+    assert (wire.sent, wire.returned.request_id) == (intact, intact.request_id)
+
+
+def test_request_id_handoff_requires_one_live_identity_and_cancellation_burns_it() -> None:
+    runtime = object.__new__(CommonCliExecutionRuntime)
+    first = _call("scope_issue", "shared")
+    second = _call("scope_issue", "other")
+    second = PublicPortCall(
+        operation_id=second.operation_id,
+        request_id=first.request_id,
+        caller=second.caller,
+        callee=second.callee,
+        schema_id=second.schema_id,
+        canonical_payload=second.canonical_payload,
+        budget=second.budget,
+    )
+    first_key = runtime._reserve_h1_scope_wire("scope_issue", first)
+    second_key = runtime._reserve_h1_scope_wire("scope_issue", second)
+    now = time.monotonic_ns()
+    runtime._record_h1_scope_wire(
+        first_key, first, _result(first), sent_at_ns=now, returned_at_ns=now
+    )
+    runtime._record_h1_scope_wire(
+        second_key, second, _result(second), sent_at_ns=now, returned_at_ns=now
+    )
+
+    with pytest.raises(LoopRejected, match="absent or ambiguous"):
+        runtime._take_h1_scope_wire_for_request("scope_issue", request_id=first.request_id)
+    assert first_key in runtime._h1_scope_wires
+    assert second_key in runtime._h1_scope_wires
+
+    runtime._discard_h1_scope_wire(first_key)
+    wire = runtime._take_h1_scope_wire_for_request("scope_issue", request_id=first.request_id)
+    assert wire.sent is second
+    with pytest.raises(LoopRejected, match="absent or ambiguous"):
+        runtime._take_h1_scope_wire_for_request("scope_issue", request_id=first.request_id)
+
+
+def test_invalid_timing_burns_the_reserved_scope_wire() -> None:
+    runtime = object.__new__(CommonCliExecutionRuntime)
+    call = _call("scope_current", "reversed-time")
+    key = runtime._reserve_h1_scope_wire("scope_current", call)
+    now = time.monotonic_ns()
+
+    with pytest.raises(LoopRejected, match="reservation differs"):
+        runtime._record_h1_scope_wire(
+            key,
+            call,
+            _result(call),
+            sent_at_ns=now + 1,
+            returned_at_ns=now,
+        )
+    with pytest.raises(LoopRejected, match="absent"):
+        runtime._take_h1_scope_wire(
+            "scope_current",
+            request_id=call.request_id,
+            caller=call.caller,
+            callee=call.callee,
+        )
+
+
+def _wire(call: PublicPortCall, result: PublicPortSuccess):
+    from chiplog.composition.common_cli_execution_runtime import _H1ScopeWire
+
+    now = time.monotonic_ns()
+    return _H1ScopeWire(call, result, now, now)
+
+
+def _result(call: PublicPortCall) -> PublicPortSuccess:
+    return PublicPortSuccess(
+        request_id=call.request_id,
+        responder=call.callee,
+        schema_id="chiplog.deployment-trust.owner-result.v1",
+        canonical_payload=b"result-" + call.request_id.encode(),
+    )

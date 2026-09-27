@@ -21,7 +21,15 @@ from chiplog.composition.h1_inventory_leaf_contracts import (
     H1ScopeKey,
     H1ScopeRelation,
 )
-from chiplog.composition.r14_h1_workspace_issuance_contracts import H1OriginalWorkspaceIssuanceV1
+from chiplog.composition.h1_workspace_policy_v2 import (
+    H1OriginalWorkspaceIssuanceV2,
+    decode_h1_original_workspace_issuance_v2,
+    decode_h1_workspace_policy_v2,
+)
+from chiplog.composition.r14_h1_workspace_issuance_contracts import (
+    H1OriginalWorkspaceIssuanceV1,
+    H1WorkspaceIssuanceRefV1,
+)
 from chiplog.domain_primitives.codec import canonical_record_bytes
 from chiplog.domain_primitives.identity import RecordId, RecordTypeId, SchemaId
 from chiplog.domain_primitives.tenant import TenantId
@@ -36,6 +44,9 @@ _PLANNING_OWNER = "planning"
 _PLANNING_SCHEMA = "chiplog.planning.record.v1"
 _WORKSPACE_OWNER = "workspace_issuance"
 _WORKSPACE_SCHEMA = "chiplog.execution.h1-original-workspace-issuance.v1"
+_WORKSPACE_V2_SCHEMA = "chiplog.execution.h1-original-workspace-issuance.v2"
+_POLICY_OWNER = "workspace_policy"
+_POLICY_V2_SCHEMA = "chiplog.workspace.policy.v2"
 
 REGISTRATIONS: tuple[H1LeafRegistration, ...] = (
     *(
@@ -43,6 +54,8 @@ REGISTRATIONS: tuple[H1LeafRegistration, ...] = (
         for kind in PLANNING_RECORD_TYPES
     ),
     H1LeafRegistration("WORKSPACE_SOURCE", _WORKSPACE_OWNER, _WORKSPACE_SCHEMA, None, "v1"),
+    H1LeafRegistration("WORKSPACE_SOURCE", _WORKSPACE_OWNER, _WORKSPACE_V2_SCHEMA, None, "v2"),
+    H1LeafRegistration("PHYSICAL", _POLICY_OWNER, _POLICY_V2_SCHEMA, None, "v2"),
 )
 
 
@@ -150,8 +163,35 @@ def _decode_planning(item: H1RawInventoryItem) -> H1DecodedInventoryItem:
     )
 
 
+def _decode_workspace_policy_v2(item: H1RawInventoryItem) -> H1DecodedInventoryItem:
+    try:
+        policy = decode_h1_workspace_policy_v2(item.raw)
+    except ValueError as error:
+        raise _failure(item, "CORRUPT") from error
+    if policy.tenant != item.tenant:
+        raise _failure(item, "CORRUPT")
+    policy_identity = hashlib.sha256(
+        json.dumps([policy.tenant, policy.principal, policy.channel]).encode()
+    ).hexdigest()
+    expected_id = "workspace-policy:" + policy_identity + ":" + hashlib.sha256(item.raw).hexdigest()
+    if item.record_id != expected_id:
+        raise _failure(item, "CORRUPT")
+    record = H1ScopeKey(item.tenant, "record", expected_id, item.fingerprint)
+    sources = tuple(policy.sources)
+    if any(source.tenant_id != item.tenant for source in sources):
+        raise _failure(item, "CORRUPT")
+    source_keys = tuple(_source_key(item.tenant, source) for source in sources)
+    return H1DecodedInventoryItem(
+        item.locator,
+        (record, *source_keys),
+        tuple(H1ScopeRelation("RECORD_SOURCE", record, source) for source in source_keys),
+        sources,
+        ("RECORD", "SOURCE") if sources else ("RECORD",),
+    )
+
+
 def _sources_from_workspace(
-    item: H1RawInventoryItem, issued: H1OriginalWorkspaceIssuanceV1
+    item: H1RawInventoryItem, issued: H1OriginalWorkspaceIssuanceV1 | H1OriginalWorkspaceIssuanceV2
 ) -> tuple[tuple[SourceReference, ...], tuple[H1ScopeRelation, ...], tuple[H1ScopeKey, ...]]:
     try:
         context = ProposalContext.model_validate_json(issued.proposal_context_json)
@@ -183,9 +223,18 @@ def _sources_from_workspace(
     return tuple(references), tuple(relations), (workspace, *planning_keys)
 
 
-def _decode_workspace_issuance(item: H1RawInventoryItem) -> H1DecodedInventoryItem:
+def _decode_workspace_issuance(
+    item: H1RawInventoryItem, issuance_ref: H1WorkspaceIssuanceRefV1 | None
+) -> H1DecodedInventoryItem:
     try:
-        issued = H1OriginalWorkspaceIssuanceV1.model_validate_json(item.raw)
+        if item.schema == _WORKSPACE_SCHEMA:
+            issued: H1OriginalWorkspaceIssuanceV1 | H1OriginalWorkspaceIssuanceV2 = (
+                H1OriginalWorkspaceIssuanceV1.model_validate_json(item.raw)
+            )
+        else:
+            if issuance_ref is None or item.record_id != issuance_ref.entry_id:
+                raise ValueError("H1 V2 original workspace selected reference differs")
+            issued = decode_h1_original_workspace_issuance_v2(item.raw, issuance_ref)
     except (TypeError, ValueError) as error:
         raise _failure(item, "CORRUPT") from error
     if issued.canonical_bytes() != item.raw or issued.tenant != item.tenant:
@@ -197,13 +246,17 @@ def _decode_workspace_issuance(item: H1RawInventoryItem) -> H1DecodedInventoryIt
     return H1DecodedInventoryItem(item.locator, identities, relations, references, families)
 
 
-def decode_h1_workspace_planning_scope(item: H1RawInventoryItem) -> H1DecodedInventoryItem:
+def decode_h1_workspace_planning_scope(
+    item: H1RawInventoryItem, *, issuance_ref: H1WorkspaceIssuanceRefV1 | None = None
+) -> H1DecodedInventoryItem:
     """Decode one enumerated planning/workspace occurrence without global policy."""
     _require_registered(item)
     _require_raw_fingerprint(item)
     if (item.surface, item.owner, item.schema) == ("PHYSICAL", _PLANNING_OWNER, _PLANNING_SCHEMA):
         return _decode_planning(item)
-    return _decode_workspace_issuance(item)
+    if (item.surface, item.owner, item.schema) == ("PHYSICAL", _POLICY_OWNER, _POLICY_V2_SCHEMA):
+        return _decode_workspace_policy_v2(item)
+    return _decode_workspace_issuance(item, issuance_ref)
 
 
 __all__ = ["REGISTRATIONS", "decode_h1_workspace_planning_scope"]

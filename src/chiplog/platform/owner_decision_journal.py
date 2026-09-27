@@ -4,9 +4,9 @@ import hashlib
 import json
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import Field, TypeAdapter
+from pydantic import TypeAdapter
 
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.platform._owner_publication_contracts import (
@@ -19,6 +19,7 @@ from chiplog.platform._owner_publication_contracts import (
     UInt64,
 )
 from chiplog.platform.authority_gate import AuthorityGate
+from chiplog.platform.h1_delivery_binding_contracts import H1DeliveryBinding
 from chiplog.platform.owner_publications import (
     OwnerPublicationPending,
     PreparedOwnerPublication,
@@ -55,12 +56,76 @@ class _Materialized(BrokerDTO):
     resulting_commitment: Digest
 
 
-_Entry = Annotated[_Selected | _Materialized, Field(discriminator="kind")]
-_CODEC: TypeAdapter[_Entry] = TypeAdapter(_Entry)
+class _SelectedV2(BrokerDTO):
+    kind: Literal["SELECTED"] = "SELECTED"
+    schema_id: Literal["chiplog.owner-decision.v2"] = "chiplog.owner-decision.v2"
+    request: RegisteredPublication
+    issuance_id: Identity
+    fence_generation: Identity
+    fence_frontier: UInt64
+    predecessor_commitment: Digest
+    resulting_commitment: Digest
+    h1_delivery_binding: H1DeliveryBinding
+
+
+type _Entry = _Selected | _Materialized | _SelectedV2
+_CODECS: dict[tuple[str, str], TypeAdapter[_Entry]] = {
+    ("chiplog.owner-decision.v1", "SELECTED"): TypeAdapter(_Selected),
+    ("chiplog.owner-decision.v1", "MATERIALIZED"): TypeAdapter(_Materialized),
+    ("chiplog.owner-decision.v2", "SELECTED"): TypeAdapter(_SelectedV2),
+}
 
 
 def _canonical(entry: _Entry) -> bytes:
     return json.dumps(entry.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+
+
+def canonical_owner_publication_bytes(request: RegisteredPublication) -> bytes:
+    """The closed canonical request preimage used by an H1 V2 binding."""
+    return json.dumps(
+        request.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    ).encode()
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _decode(payload: bytes) -> _Entry:
+    value = json.loads(payload, object_pairs_hook=_unique_object)
+    if not isinstance(value, dict):
+        raise ValueError("journal entry is not an object")
+    schema_id, kind = value.get("schema_id"), value.get("kind")
+    if not isinstance(schema_id, str) or not isinstance(kind, str):
+        raise ValueError("journal entry lacks schema or kind")
+    codec = _CODECS.get((schema_id, kind))
+    if codec is None:
+        raise ValueError("unknown journal entry schema/kind")
+    # The first parse rejects duplicate keys at every nesting level and fixes
+    # dispatch.  The codec then parses the original JSON so Pydantic retains
+    # its configured strict base64-bytes and tuple decoding semantics.
+    return codec.validate_json(payload)
+
+
+def _validate_v2_binding(entry: _SelectedV2) -> None:
+    request = entry.request
+    binding = entry.h1_delivery_binding
+    if (
+        request.kind != "COMPLETE_DELIVERY_ATOMIC_V2"
+        or request.authentication.applicability_schema
+        != "chiplog.composition.h1-completion-issuance.v1"
+        or binding.tenant_id != request.identity.tenant_id
+        or binding.command_id != request.identity.command_id
+        or binding.command_fingerprint != request.identity.command_fingerprint
+        or binding.request_digest
+        != hashlib.sha256(canonical_owner_publication_bytes(request)).hexdigest()
+    ):
+        raise ValueError("V2 selected delivery binding differs from H1 request")
 
 
 def _validate_bytes(request: RegisteredPublication) -> None:
@@ -153,10 +218,12 @@ class IndependentOwnerDecisionJournal:
             selected: dict[str, SelectedOwnerDecision] = {}
             materialized: set[str] = set()
             for record, _, payload in entries:
-                entry = _CODEC.validate_json(payload)
+                entry = _decode(payload)
                 if _canonical(entry) != payload:
                     raise ValueError("noncanonical journal entry")
-                if isinstance(entry, _Selected):
+                if isinstance(entry, (_Selected, _SelectedV2)):
+                    if isinstance(entry, _SelectedV2):
+                        _validate_v2_binding(entry)
                     request = entry.request
                     _validate_bytes(request)
                     _validate_successor(request, selected, materialized)
@@ -177,6 +244,7 @@ class IndependentOwnerDecisionJournal:
                             entry.fence_generation,
                             entry.fence_frontier,
                             entry.predecessor_commitment,
+                            entry.h1_delivery_binding if isinstance(entry, _SelectedV2) else None,
                         ),
                         record,
                         record,
@@ -248,18 +316,39 @@ class IndependentOwnerDecisionJournal:
         command = request.identity.command_id
         try:
             with self._authority_scope():
-                entry = _Selected(
-                    request=request,
-                    issuance_id=prepared.issuance_id,
-                    fence_generation=prepared.fence_generation,
-                    fence_frontier=prepared.fence_frontier,
-                    predecessor_commitment=prepared.predecessor_commitment,
-                    resulting_commitment=resulting_commitment,
+                entry: _Selected | _SelectedV2
+                h1_request = (
+                    request.kind == "COMPLETE_DELIVERY_ATOMIC_V2"
+                    and request.authentication.applicability_schema
+                    == "chiplog.composition.h1-completion-issuance.v1"
                 )
+                if h1_request != (prepared.h1_delivery_binding is not None):
+                    raise ValueError("H1 V2 selected decision requires its closed delivery binding")
+                if prepared.h1_delivery_binding is None:
+                    entry = _Selected(
+                        request=request,
+                        issuance_id=prepared.issuance_id,
+                        fence_generation=prepared.fence_generation,
+                        fence_frontier=prepared.fence_frontier,
+                        predecessor_commitment=prepared.predecessor_commitment,
+                        resulting_commitment=resulting_commitment,
+                    )
+                else:
+                    entry = _SelectedV2(
+                        request=request,
+                        issuance_id=prepared.issuance_id,
+                        fence_generation=prepared.fence_generation,
+                        fence_frontier=prepared.fence_frontier,
+                        predecessor_commitment=prepared.predecessor_commitment,
+                        resulting_commitment=resulting_commitment,
+                        h1_delivery_binding=prepared.h1_delivery_binding,
+                    )
                 payload = _canonical(entry)
                 # Validate reconstructed bytes before any durable append, including
                 # nested DTOs built using Pydantic's intentionally unchecked copy API.
-                _CODEC.validate_json(payload)
+                decoded = _decode(payload)
+                if isinstance(decoded, _SelectedV2):
+                    _validate_v2_binding(decoded)
                 _validate_bytes(request)
                 if (
                     request.identity.tenant_id != self._tenant

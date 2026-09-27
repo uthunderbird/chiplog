@@ -12,13 +12,14 @@ verification recursive.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from chiplog.adapters.driven.loop_sqlite import OWNER
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
@@ -28,6 +29,7 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
     FirstPathCompletionCutV2,
+    PrepareExecutionCompletionFirstPathV2,
     first_path_frontier_fingerprint,
     first_path_inventory_fingerprint,
 )
@@ -61,13 +63,22 @@ from chiplog.composition.h1_preseal_contracts import (
     H1SelectedSeal,
 )
 from chiplog.composition.h1_selected_prepare import (
+    _H1SelectedCut,
+    _resolve_h1_selected_cut,
+    _select_h1_prepare_at_cut,
     reopen_selected_h1_workspace,
     select_h1_v3_prepare_for_seal,
+)
+from chiplog.composition.h1_verified_snapshot_rows import (
+    H1VerifiedSnapshotRows,
+    H1VerifiedSnapshotRowsError,
 )
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
     ExecutionCompleteSealPhysicalEnvelopeV2,
+    ExecutionCompleteSealPhysicalEnvelopeV3,
     RetainedExecutionCompleteSealV2,
+    RetainedExecutionCompleteSealV3,
     build_complete_seal_envelope,
     complete_seal_physical_command,
 )
@@ -81,7 +92,9 @@ from chiplog.composition.r14_execution_transition_records import (
 )
 from chiplog.composition.r14_fanout_contracts import SEAL_SCHEMA
 from chiplog.composition.r14_h1_workspace_issuance_contracts import H1VerifiedWorkspaceClosure
+from chiplog.composition.r14_loop_history import _strict_json, resolve_h1_checkpoint
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
+from chiplog.platform.authority_checkpoint import AuthorityCheckpointStore
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.publication_readback import inspect_publication
 
@@ -103,6 +116,49 @@ class H1FirstPathPhysicalMember:
     owner: str
     schema_id: str
     canonical_bytes: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class H1FirstPathRawDecision:
+    """One exact selected journal entry retained by historical readback."""
+
+    decision_id: str
+    decision_fingerprint: str
+    raw_bytes: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class H1HistoricalFirstPathNativeCut:
+    """Authenticated historical raw material for a selected first-path cut.
+
+    This is a readback result, not a caller-constructible authority input.  Its
+    values are only returned after the selected checkpoint replay has matched
+    ``source`` exactly.
+    """
+
+    source: FirstPathCompletionCutV2
+    initialization: H1FirstPathRawDecision
+    lineage: tuple[H1FirstPathRawDecision, ...]
+    seal: H1FirstPathRawDecision
+    physical_members: tuple[H1FirstPathPhysicalMember, ...]
+    database_path: str
+    database_device: int
+    database_inode: int
+
+
+@dataclass(frozen=True, slots=True)
+class H1CurrentFirstPathNativeCut:
+    """Authenticated raw material from a freshly replayed issuer-owned capture."""
+
+    source: FirstPathCompletionCutV2
+    initialization: H1FirstPathRawDecision
+    lineage: tuple[H1FirstPathRawDecision, ...]
+    seal: H1FirstPathRawDecision
+    physical_members: tuple[H1FirstPathPhysicalMember, ...]
+    database_path: str
+    database_device: int
+    database_inode: int
+    commitment: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +193,7 @@ class _RawFirstPath:
     physical_members: tuple[H1FirstPathPhysicalMember, ...]
     commitment: str
     database_identity: tuple[str, int, int]
+    historical_cut: _H1SelectedCut | None = None
 
 
 class H1WorkspaceClosureResolver(Protocol):
@@ -248,17 +305,193 @@ class H1FirstPathSources:
         ):
             return False
 
+    def replay_current_native_cut(self, capture: H1FirstPathCapture) -> H1CurrentFirstPathNativeCut:
+        """Reopen one issuer-owned capture against the current selected cut.
+
+        This readback is bounded to the capture issued by this instance.  It
+        performs no owner IPC and creates no completion request; it only returns
+        raw material after the current selected journal and physical projection
+        exactly reproduce the issued capture.
+        """
+        with self._gate.hold():
+            raw, source = self._replay_current_capture(capture)
+            return H1CurrentFirstPathNativeCut(
+                source=source,
+                initialization=self._raw_decision(raw.initialization),
+                lineage=tuple(self._raw_decision(command) for command, _, _ in raw.lineage),
+                seal=self._raw_decision(raw.seal),
+                physical_members=raw.physical_members,
+                database_path=raw.database_identity[0],
+                database_device=raw.database_identity[1],
+                database_inode=raw.database_identity[2],
+                commitment=raw.commitment,
+            )
+
+    def _replay_current_capture(
+        self, capture: H1FirstPathCapture
+    ) -> tuple[_RawFirstPath, FirstPathCompletionCutV2]:
+        """Require all issuer-owned capture fields to match a fresh raw replay."""
+        if type(capture) is not H1FirstPathCapture or self._issued.get(id(capture)) is not capture:
+            raise ValueError("H1 completion requires this issuer-owned first-path capture")
+        try:
+            entry = json.loads(capture.initialization_envelope_bytes)
+            initialization = RetainedInboxExecutionInitialization.model_validate_json(
+                entry["inbox_initialization"]
+            )
+            request = DriveInputRequestV1.model_validate_json(initialization.driver_request_bytes)
+            with self._gate.hold():
+                raw = self._read_selected_cut(
+                    original_identity=request.identity,
+                    original_fingerprint=initialization.driver_request_fingerprint,
+                    selected_seal=capture.source.selected_response_seal,
+                )
+                source = self._read_v2_source(raw, historical=False)
+            expected_envelopes = (*(command.raw for command, _, _ in raw.lineage), raw.seal.raw)
+            if (
+                source != capture.source
+                or source.materialization_commitment != raw.commitment
+                or capture.initialization_envelope_bytes != raw.initialization.raw
+                or capture.selected_envelopes != expected_envelopes
+                or capture.physical_members != raw.physical_members
+                or (
+                    capture.database_path,
+                    capture.database_device,
+                    capture.database_inode,
+                )
+                != raw.database_identity
+            ):
+                raise ValueError("H1 completion requires a current first-path capture")
+            self._validate_selected_completion_evidence(source)
+            return raw, source
+        except ValueError:
+            raise
+        except (
+            KeyError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            sqlite3.Error,
+        ) as error:
+            raise ValueError("H1 completion requires a current first-path capture") from error
+
+    def _prepare_first_path_completion_request(
+        self, capture: H1FirstPathCapture, delivery_receipt: object
+    ) -> PrepareExecutionCompletionFirstPathV2:
+        """Build one request solely from the current A cut and opaque P receipt.
+
+        This synchronous seam never calls an owner.  P remains the only source
+        of delivery/fence values; object identity of its receipt, rather than a
+        caller-shaped DTO, binds those values to this capture.
+        """
+        from chiplog.composition.h1_runtime_preissuance_port import (
+            _H1RuntimePreissuancePort,
+        )
+
+        if type(capture) is not H1FirstPathCapture or self._issued.get(id(capture)) is not capture:
+            raise ValueError("H1 completion requires this issuer-owned first-path capture")
+        with self._gate.hold():
+            _raw, source = self._replay_current_capture(capture)
+            port = getattr(self._runtime, "_h1_preissuance_registration_source_port", None)
+            if type(port) is not _H1RuntimePreissuancePort:
+                raise ValueError("H1 completion requires the installed P delivery owner")
+            delivery, fence = port._replay_delivery_inputs(delivery_receipt, capture)
+            run = source.complete_ordered_run_lineage[-1]
+            attempt = run.turns[0].attempts[0]
+            if attempt.response_base64 is None:
+                raise ValueError("H1 completion selected attempt lacks a captured response")
+            try:
+                response = base64.b64decode(attempt.response_base64, validate=True)
+            except (TypeError, ValueError) as error:
+                raise ValueError("H1 completion selected response is not strict base64") from error
+            manifest = attempt.manifest
+            request = PrepareExecutionCompletionFirstPathV2(
+                command_id="h1-first-path-completion:" + _sha256(source.canonical_bytes()),
+                run=run,
+                selected_attempt=CallSubjectHead(
+                    subject_id=attempt.attempt_id,
+                    revision=Present(head=attempt.head, fingerprint=attempt.digest()),
+                ),
+                selector_generation=attempt.generation,
+                visibility_manifest=CallSubjectHead(
+                    subject_id="visibility",
+                    revision=Present(
+                        head="record:" + manifest.digest(), fingerprint=manifest.digest()
+                    ),
+                ),
+                exact_captured_response=response,
+                source=source,
+                delivery=delivery,
+                fence=fence,
+            )
+            # Construction validates the public DTO; canonicalization is also
+            # pinned before B hands the request to the owner.
+            PrepareExecutionCompletionFirstPathV2.model_validate_json(request.canonical_bytes())
+            return request
+
+    def _validate_selected_completion_evidence(self, source: FirstPathCompletionCutV2) -> None:
+        """Check the selected Run/attempt/seal facts before any future assembly."""
+        lineage = source.complete_ordered_run_lineage
+        if len(lineage) < 3:
+            raise ValueError("H1 completion selected Run lineage is incomplete")
+        captured, run = lineage[-2:]
+        if (
+            source.current_run != self._run_reference(run)
+            or source.selected_capture != self._run_reference(captured)
+            or run.event != "ModelCompletionPrepared"
+            or captured.event != "ModelResponseCaptured"
+            or len(run.turns) != 1
+            or len(captured.turns) != 1
+        ):
+            raise ValueError("H1 completion selected Run or capture differs")
+        turn, captured_turn = run.turns[0], captured.turns[0]
+        if (
+            turn.turn_id != captured_turn.turn_id
+            or turn.attempts != captured_turn.attempts
+            or turn.selector != captured_turn.selector
+            or len(turn.attempts) != 1
+            or turn.response_seal != source.selected_response_seal
+        ):
+            raise ValueError("H1 completion selected attempt or seal differs")
+        attempt = turn.attempts[0]
+        if attempt.response_base64 is None:
+            raise ValueError("H1 completion selected attempt lacks a captured response")
+        try:
+            base64.b64decode(attempt.response_base64, validate=True)
+        except (TypeError, ValueError) as error:
+            raise ValueError("H1 completion selected response is not strict base64") from error
+        if (
+            source.seal.captured_response != source.selected_capture
+            or source.seal.original_run_id != run.run_id
+            or source.seal.original_turn_id != turn.turn_id
+            or source.seal.complete_ordered_initialized != ()
+        ):
+            raise ValueError("H1 completion selected seal differs from captured response")
+
     def validate_historical(
         self,
         source: FirstPathCompletionCutV2,
         *,
         initialization_envelope_bytes: bytes,
     ) -> None:
-        """Reserved for raw historical replay once the family profile is frozen.
+        """Require ``source`` to equal the selected verified-snapshot replay."""
+        self.replay_selected_native_cut(
+            source, initialization_envelope_bytes=initialization_envelope_bytes
+        )
 
-        A schema-valid DTO cannot stand in for independently selected raw bytes.
-        Refusing it now is safer than using joined history or inventing family
-        absences.  This method intentionally performs no call into history code.
+    def replay_selected_native_cut(
+        self,
+        source: FirstPathCompletionCutV2,
+        *,
+        initialization_envelope_bytes: bytes,
+    ) -> H1HistoricalFirstPathNativeCut:
+        """Replay one selected checkpoint and retain its exact native raw material.
+
+        The returned carrier is bounded to the already selected H1 snapshot.
+        It neither accepts a caller-supplied journal entry or physical member,
+        nor issues a capture or calls owner IPC.  A schema-valid source DTO is
+        useful only when the independently reopened selected bytes reproduce it.
         """
         if type(source) is not FirstPathCompletionCutV2:
             raise TypeError("H1 historical source requires an exact first-path cut")
@@ -291,6 +524,30 @@ class H1FirstPathSources:
             replay = self._read_v2_source(raw, historical=True)
         if replay != source:
             raise ValueError("H1 historical source differs from raw V2 replay")
+        return self._native_cut(raw, replay)
+
+    def _native_cut(
+        self, raw: _RawFirstPath, source: FirstPathCompletionCutV2
+    ) -> H1HistoricalFirstPathNativeCut:
+        """Project only raw material authenticated by a completed replay."""
+        return H1HistoricalFirstPathNativeCut(
+            source=source,
+            initialization=self._raw_decision(raw.initialization),
+            lineage=tuple(self._raw_decision(command) for command, _, _ in raw.lineage),
+            seal=self._raw_decision(raw.seal),
+            physical_members=raw.physical_members,
+            database_path=raw.database_identity[0],
+            database_device=raw.database_identity[1],
+            database_inode=raw.database_identity[2],
+        )
+
+    @staticmethod
+    def _raw_decision(command: _SelectedCommand) -> H1FirstPathRawDecision:
+        return H1FirstPathRawDecision(
+            decision_id=command.decision_id,
+            decision_fingerprint=_sha256(command.raw),
+            raw_bytes=command.raw,
+        )
 
     def _read_v2_source(self, raw: _RawFirstPath, *, historical: bool) -> FirstPathCompletionCutV2:
         """Read the full V2 cut from mounted physical and owner sources.
@@ -312,6 +569,7 @@ class H1FirstPathSources:
             workspace=workspace,
             phase="HISTORICAL" if historical else "POST_SEAL",
             selected_seal=seal,
+            historical_cut=raw.historical_cut,
         )
         self._verify_inventory_boundary(raw, selected, receipt)
         return self._build_v2_cut(raw, workspace, receipt)
@@ -517,27 +775,44 @@ class H1FirstPathSources:
             database = Path(runtime._database).resolve(strict=True)
             before = database.stat()
             commands = self._selected_commands()
+            snapshot_rows: H1VerifiedSnapshotRows | None = None
+            historical_cut: _H1SelectedCut | None = None
+            if historical:
+                historical_cut = _resolve_h1_selected_cut(runtime, selected_seal=selected_seal)
+                snapshot_rows = historical_cut.rows
+                commands = tuple(
+                    _SelectedCommand(decision_id, raw, command)
+                    for decision_id, raw, command in historical_cut.commands
+                )
             initialization = self._find_initialization(
                 commands, original_identity, original_fingerprint
             )
-            with closing(
-                sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, isolation_level=None)
-            ) as connection:
-                connection.execute("BEGIN")
-                commitment = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
-                if not historical and (
-                    commitment != runtime._commitment_journal.load(runtime._tenant_id)
-                ):
-                    raise ValueError("H1 raw cut differs from independent commitment anchor")
-                fence = connection.execute(
-                    "SELECT generation, frontier FROM deletion_fences WHERE tenant_id=?",
-                    (runtime._tenant_id,),
-                ).fetchone()
-                if not historical and fence != ("r6", 0):
-                    raise ValueError("H1 raw cut lacks the current deletion fence")
+            if snapshot_rows is not None:
                 raw = self._select_lineage_and_seal(
-                    connection, commands, initialization, selected_seal
+                    snapshot_rows, commands, initialization, selected_seal
                 )
+                commitment = snapshot_rows.commitment
+            else:
+                with closing(
+                    sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, isolation_level=None)
+                ) as connection:
+                    connection.execute("BEGIN")
+                    commitment = capture_authority_snapshot_commitment(
+                        connection, runtime._tenant_id
+                    )
+                    if not historical and (
+                        commitment != runtime._commitment_journal.load(runtime._tenant_id)
+                    ):
+                        raise ValueError("H1 raw cut differs from independent commitment anchor")
+                    fence = connection.execute(
+                        "SELECT generation, frontier FROM deletion_fences WHERE tenant_id=?",
+                        (runtime._tenant_id,),
+                    ).fetchone()
+                    if not historical and fence != ("r6", 0):
+                        raise ValueError("H1 raw cut lacks the current deletion fence")
+                    raw = self._select_lineage_and_seal(
+                        connection, commands, initialization, selected_seal
+                    )
             runtime._check_database_identity()
             after = database.stat()
             if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
@@ -557,6 +832,7 @@ class H1FirstPathSources:
                 ),
                 commitment=commitment,
                 database_identity=(str(database), before.st_dev, before.st_ino),
+                historical_cut=historical_cut,
             )
 
     def _selected_commands(self) -> tuple[_SelectedCommand, ...]:
@@ -608,7 +884,7 @@ class H1FirstPathSources:
 
     def _select_lineage_and_seal(
         self,
-        connection: sqlite3.Connection,
+        connection: sqlite3.Connection | H1VerifiedSnapshotRows,
         commands: tuple[_SelectedCommand, ...],
         initialization: _SelectedCommand,
         selected_seal: CallSubjectHead,
@@ -737,11 +1013,14 @@ class H1FirstPathSources:
         a schema-valid journal blob.
         """
         raw_seal = self._selected_seal(raw)
-        selected_postseal = select_h1_v3_prepare_for_seal(
-            self._runtime,
-            selected_seal=self._seal_reference(raw.sealed_response),
-            historical=historical,
-        )
+        if historical and raw.historical_cut is not None:
+            selected_postseal = _select_h1_prepare_at_cut(self._runtime, cut=raw.historical_cut)
+        else:
+            selected_postseal = select_h1_v3_prepare_for_seal(
+                self._runtime,
+                selected_seal=self._seal_reference(raw.sealed_response),
+                historical=historical,
+            )
         captured = raw.lineage[-2][1]
         sealed = raw.lineage[-1][1]
         if (
@@ -765,17 +1044,35 @@ class H1FirstPathSources:
             raise ValueError("H1 reopened workspace differs from selected Prepare")
         return selected, closure
 
-    @staticmethod
-    def _selected_seal(raw: _RawFirstPath) -> H1SelectedSeal:
+    def _selected_seal(self, raw: _RawFirstPath) -> H1SelectedSeal:
         """Bind the inventory reader to the exact selected physical seal command."""
         try:
-            entry = json.loads(raw.seal.raw)
+            entry = _strict_json(raw.seal.raw)
             retained_raw = entry["execution_complete_seal"]
             envelope_raw = entry["execution_complete_seal_envelope"]
             if not isinstance(retained_raw, str) or not isinstance(envelope_raw, str):
-                raise ValueError("missing retained V2 complete seal")
-            retained = RetainedExecutionCompleteSealV2.model_validate_json(retained_raw)
-            envelope = ExecutionCompleteSealPhysicalEnvelopeV2.model_validate_json(envelope_raw)
+                raise ValueError("missing retained complete seal")
+            kind = _strict_json(retained_raw, canonical=False).get("kind")
+            retained: RetainedExecutionCompleteSealV2 | RetainedExecutionCompleteSealV3
+            envelope: (
+                ExecutionCompleteSealPhysicalEnvelopeV2 | ExecutionCompleteSealPhysicalEnvelopeV3
+            )
+            if kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V2":
+                if "h1_historical_checkpoint" in entry:
+                    raise ValueError("V2 seal cannot carry a checkpoint")
+                retained = RetainedExecutionCompleteSealV2.model_validate_json(retained_raw)
+                envelope = ExecutionCompleteSealPhysicalEnvelopeV2.model_validate_json(envelope_raw)
+            elif kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V3":
+                retained = RetainedExecutionCompleteSealV3.model_validate_json(retained_raw)
+                envelope = ExecutionCompleteSealPhysicalEnvelopeV3.model_validate_json(envelope_raw)
+                resolve_h1_checkpoint(
+                    entry,
+                    cast(AuthorityCheckpointStore, self._runtime._h1_checkpoint_store()),
+                    self._runtime._database_identity,
+                    raw.seal.command,
+                )
+            else:
+                raise ValueError("unregistered retained complete seal profile")
         except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
             raise ValueError("H1 selected V2 seal decision is invalid") from error
         if (
@@ -815,20 +1112,28 @@ class H1FirstPathSources:
 
     def _physical_member(
         self,
-        connection: sqlite3.Connection,
+        connection: sqlite3.Connection | H1VerifiedSnapshotRows,
         selected: _SelectedCommand,
         member: PhysicalRecord,
     ) -> PhysicalRecord:
-        if (
-            inspect_publication(connection, selected.command, selected.command.expected_head + 1)
-            != "COMPLETE"
-        ):
-            raise ValueError("H1 selected publication is not exactly materialized")
-        row = connection.execute(
-            "SELECT owner, schema_id, canonical_bytes, commit_sequence FROM records "
-            "WHERE tenant_id=? AND record_id=?",
-            (selected.command.tenant_id, member.record_id),
-        ).fetchone()
+        if isinstance(connection, H1VerifiedSnapshotRows):
+            try:
+                return connection.physical_member(selected.command, member)
+            except H1VerifiedSnapshotRowsError as error:
+                raise ValueError("H1 selected publication is not exactly materialized") from error
+        else:
+            if (
+                inspect_publication(
+                    connection, selected.command, selected.command.expected_head + 1
+                )
+                != "COMPLETE"
+            ):
+                raise ValueError("H1 selected publication is not exactly materialized")
+            row = connection.execute(
+                "SELECT owner, schema_id, canonical_bytes, commit_sequence FROM records "
+                "WHERE tenant_id=? AND record_id=?",
+                (selected.command.tenant_id, member.record_id),
+            ).fetchone()
         if row is None:
             raise ValueError("H1 selected physical record is absent")
         owner, schema_id, raw, sequence = row

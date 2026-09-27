@@ -14,6 +14,8 @@ from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead, Provid
 from chiplog.capabilities.deployment_trust import TrustReference
 from chiplog.capabilities.deployment_trust._output_scope_profile import VerifiedH1SelectedSources
 from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+    HermeticTrustObservationV1,
+    IssueHermeticOutputScopeV1,
     SelectedHermeticResourceObservationRefV1,
 )
 from chiplog.composition.common_cli_execution_runtime import (
@@ -37,8 +39,49 @@ from chiplog.composition.r16_dispatch_registry import (
 )
 from chiplog.composition.r17_authenticated_records import decode_authentication
 from chiplog.domain_primitives import PrincipalId, TenantId
-from chiplog.platform.ingress_transition_contracts import IngressCommandIdentity, RetainedIngressSource
-from tests.capabilities.deployment_trust.test_output_scope_owner_seam import request
+from chiplog.platform.ingress_transition_contracts import (
+    IngressCommandIdentity,
+    RetainedIngressSource,
+)
+
+
+def _head(identity: str) -> ExactHead:
+    return ExactHead(
+        identity=identity, head=identity, fingerprint=hashlib.sha256(b"inert").hexdigest()
+    )
+
+
+def _request() -> IssueHermeticOutputScopeV1:
+    return IssueHermeticOutputScopeV1(
+        slot_id="h1-cli-effects-origin",
+        database_id="db",
+        scope_id="scope",
+        expected_trust_observation=HermeticTrustObservationV1(
+            physical_journal_head=_head("physical-journal"),
+            logical_snapshot_head="logical-snapshot",
+        ),
+        expected_scope_predecessor=None,
+        expected_revision=0,
+        authenticated_cli_ref=TrustReference(
+            TenantId("hermetic-tenant"),
+            PrincipalId("hermetic-principal"),
+            "CLI",
+            "credential",
+            "session",
+            "source",
+            hashlib.sha256(b"trust-binding").hexdigest(),
+            "materialization",
+            0,
+            "peer",
+        ),
+        admitted_authentication_ref=_head("selected-r17"),
+        worker_session_id="worker",
+        selected_resource_observation_ref=SelectedHermeticResourceObservationRefV1(
+            signature_domain="dispatch-resources.v1",
+            selected_initialization=_head("initialization"),
+            signed_observation_fingerprint=hashlib.sha256(b"inert signed observation").hexdigest(),
+        ),
+    )
 
 
 async def _client(path: Path) -> None:
@@ -68,7 +111,11 @@ async def _admit(
     runtime.provision_retained(slot, raw)
     await runtime.allocate_receipt(slot)
     await runtime.stage_receipt(slot)
-    token = next(entry.token.token_id for entry in runtime.ingress_history().custody.entries if entry.token.receive_slot == slot)
+    token = next(
+        entry.token.token_id
+        for entry in runtime.ingress_history().custody.entries
+        if entry.token.receive_slot == slot
+    )
     async with runtime.cli_custody(slot) as custody:
         peer = asyncio.create_task(_client(custody.socket.path))
         assert (await custody.admit()).kind == "COMMITTED"
@@ -203,33 +250,41 @@ async def _selected_sources(
 async def test_selected_h0_r16_r17_sources_resolve_to_the_exact_binding(tmp_path: Path) -> None:
     custody = tmp_path / "dispatch-custody"
     resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
-    async with open_common_cli_execution_runtime(tmp_path / "h1.sqlite", resources=resources) as runtime:
+    async with open_common_cli_execution_runtime(
+        tmp_path / "h1.sqlite", resources=resources
+    ) as runtime:
         sources = await _selected_sources(runtime, resources)
-        assert H1SelectedOutputSources(runtime).resolve_selected_current(
-            sources.resource_ref,
-            sources.authentication_ref,
-            sources.authenticated_cli_ref,
-        ) == sources.expected
+        assert (
+            H1SelectedOutputSources(runtime).resolve_selected_current(
+                sources.resource_ref,
+                sources.authentication_ref,
+                sources.authenticated_cli_ref,
+            )
+            == sources.expected
+        )
 
 
 async def test_selected_sources_reject_a_borrowed_r17_authentication_proof(tmp_path: Path) -> None:
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
     )
-    async with open_common_cli_execution_runtime(tmp_path / "h1.sqlite", resources=resources) as runtime:
+    async with open_common_cli_execution_runtime(
+        tmp_path / "h1.sqlite", resources=resources
+    ) as runtime:
         sources = await _selected_sources(runtime, resources)
         token, _ = await _admit(runtime, slot="borrowed", raw=b"another native run")
         borrowed = runtime.read_admitted_inbox(token)
         assert borrowed is not None
         borrowed_proof = ExactHead(**borrowed.record.inbox.authentication.proof.model_dump())
         assert borrowed_proof != sources.authentication_ref
-        assert H1SelectedOutputSources(runtime).resolve_selected_current(
-            sources.resource_ref,
-            borrowed_proof,
-            sources.authenticated_cli_ref,
-        ) is None
-
-
+        assert (
+            H1SelectedOutputSources(runtime).resolve_selected_current(
+                sources.resource_ref,
+                borrowed_proof,
+                sources.authenticated_cli_ref,
+            )
+            is None
+        )
 
 
 def test_wrong_runtime_type_is_rejected() -> None:
@@ -244,12 +299,15 @@ async def test_typed_locators_do_not_invent_verified_sources(tmp_path: Path) -> 
         tmp_path / "h1.sqlite", resources=resources
     ) as runtime:
         verifier = H1SelectedOutputSources(runtime)
-        issue = request()
-        assert verifier.resolve_selected_current(
-            issue.selected_resource_observation_ref,
-            issue.admitted_authentication_ref,
-            issue.authenticated_cli_ref,
-        ) is None
+        issue = _request()
+        assert (
+            verifier.resolve_selected_current(
+                issue.selected_resource_observation_ref,
+                issue.admitted_authentication_ref,
+                issue.authenticated_cli_ref,
+            )
+            is None
+        )
 
 
 @pytest.mark.parametrize("argument", [0, 1, 2])
@@ -259,7 +317,7 @@ async def test_each_wrong_locator_type_is_rejected(tmp_path: Path, argument: int
         tmp_path / "h1.sqlite", resources=resources
     ) as runtime:
         verifier = H1SelectedOutputSources(runtime)
-        issue = request()
+        issue = _request()
         arguments: list[Any] = [
             issue.selected_resource_observation_ref,
             issue.admitted_authentication_ref,

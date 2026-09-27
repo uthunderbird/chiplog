@@ -17,11 +17,18 @@ from chiplog.capabilities.projections.r9_boundary import WorkspaceRejected
 from chiplog.capabilities.projections.workspace_boundary import SourceReference
 from chiplog.platform.authority_gate import AuthorityGate
 
+from .h1_workspace_policy_v2 import (
+    H1OriginalWorkspaceIssuanceV2,
+    decode_h1_original_workspace_issuance_v2,
+)
 from .r14_h1_workspace_issuance_contracts import (
     H1OriginalWorkspaceIssuanceV1,
     H1VerifiedWorkspaceClosure,
     H1WorkspaceIssuanceRefV1,
+    H1WorkspaceSourcesV1,
 )
+
+H1OriginalWorkspaceIssuance = H1OriginalWorkspaceIssuanceV1 | H1OriginalWorkspaceIssuanceV2
 
 
 class H1WorkspaceIssuanceJournal:
@@ -42,10 +49,34 @@ class H1WorkspaceIssuanceJournal:
         self._journal, self._tenant, self._gate = journal, tenant, journal.authority_gate
         self._scan()
 
-    def _scan(self) -> dict[str, H1OriginalWorkspaceIssuanceV1]:
-        result: dict[str, H1OriginalWorkspaceIssuanceV1] = {}
+    @staticmethod
+    def _decode(payload: bytes) -> H1OriginalWorkspaceIssuance:
+        try:
+            schema_id = json.loads(payload)["schema_id"]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValueError("H1 original workspace issuance schema differs") from error
+        if schema_id == "chiplog.execution.h1-original-workspace-issuance.v1":
+            return H1OriginalWorkspaceIssuanceV1.model_validate_json(payload)
+        if schema_id == "chiplog.execution.h1-original-workspace-issuance.v2":
+            # A synthetic reference is sufficient here: the journal has not yet
+            # assigned its durable entry id.  Physical V2 joins are still
+            # checked before this value can enter the journal.
+            issued = H1OriginalWorkspaceIssuanceV2.model_validate_json(payload)
+            return decode_h1_original_workspace_issuance_v2(
+                payload,
+                H1WorkspaceIssuanceRefV1(
+                    tenant=issued.tenant,
+                    batch_id=_batch_id(issued),
+                    entry_id="0" * 64,
+                    payload_digest=_digest(payload),
+                ),
+            )
+        raise ValueError("H1 original workspace issuance schema differs")
+
+    def _scan(self) -> dict[str, H1OriginalWorkspaceIssuance]:
+        result: dict[str, H1OriginalWorkspaceIssuance] = {}
         for entry_id, _, payload in self._journal.entries():
-            issued = H1OriginalWorkspaceIssuanceV1.model_validate_json(payload)
+            issued = self._decode(payload)
             if issued.canonical_bytes() != payload or issued.tenant != self._tenant:
                 raise WorkspaceRejected("invalid original workspace issuance")
             if entry_id in result:
@@ -53,7 +84,7 @@ class H1WorkspaceIssuanceJournal:
             result[entry_id] = issued
         return result
 
-    def append(self, issuance: H1OriginalWorkspaceIssuanceV1) -> H1WorkspaceIssuanceRefV1:
+    def append(self, issuance: H1OriginalWorkspaceIssuance) -> H1WorkspaceIssuanceRefV1:
         if issuance.tenant != self._tenant:
             raise WorkspaceRejected("foreign original workspace issuance")
         payload = issuance.canonical_bytes()
@@ -83,7 +114,7 @@ class H1WorkspaceIssuanceJournal:
                 payload_digest=_digest(payload),
             )
 
-    def load(self, ref: H1WorkspaceIssuanceRefV1) -> H1OriginalWorkspaceIssuanceV1:
+    def load(self, ref: H1WorkspaceIssuanceRefV1) -> H1OriginalWorkspaceIssuance:
         if ref.tenant != self._tenant:
             raise WorkspaceRejected("foreign original workspace issuance reference")
         with self._gate.hold():
@@ -100,7 +131,7 @@ class H1WorkspaceIssuanceJournal:
 
     def find_exact(
         self, workspace_member_bytes: bytes, proposal_context_bytes: bytes
-    ) -> tuple[H1WorkspaceIssuanceRefV1, H1OriginalWorkspaceIssuanceV1]:
+    ) -> tuple[H1WorkspaceIssuanceRefV1, H1OriginalWorkspaceIssuance]:
         with self._gate.hold():
             matches = [
                 (entry_id, value)
@@ -126,7 +157,16 @@ def verify_h1_original_workspace(
     journal: H1WorkspaceIssuanceJournal,
     dashboard_issuance: WorkspaceIssuanceJournal,
 ) -> H1VerifiedWorkspaceClosure:
-    issued = journal.load(ref)
+    try:
+        issued = journal.load(ref)
+        if isinstance(issued, H1OriginalWorkspaceIssuanceV2):
+            # `load` establishes the durable journal entry.  Re-decode with
+            # that exact reference so V2's physical workspace-policy member
+            # and its reference/payload joins cannot be bypassed by the
+            # journal's admission-time synthetic reference.
+            issued = decode_h1_original_workspace_issuance_v2(issued.canonical_bytes(), ref)
+    except ValueError as error:
+        raise WorkspaceRejected("invalid original workspace issuance") from error
     if (
         issued.workspace_member_json.encode() != workspace_member_bytes
         or issued.proposal_context_json.encode() != proposal_context_bytes
@@ -142,13 +182,13 @@ def verify_h1_original_workspace(
         snapshot=issued.snapshot,
         queries=issued.queries,
         calendar=issued.calendar,
-        sources=issued.sources,
+        sources=_closure_sources(issued),
         dashboard=issued.dashboard,
     )
 
 
 def _validate_dashboard(
-    issued: H1OriginalWorkspaceIssuanceV1, dashboard_issuance: WorkspaceIssuanceJournal
+    issued: H1OriginalWorkspaceIssuance, dashboard_issuance: WorkspaceIssuanceJournal
 ) -> None:
     dashboard = issued.dashboard
     entry_id, payload_digest = dashboard_issuance.raw_entry(
@@ -164,7 +204,7 @@ def _validate_dashboard(
         raise WorkspaceRejected("original workspace dashboard issuance differs")
 
 
-def _validate_retained_original(issued: H1OriginalWorkspaceIssuanceV1) -> None:
+def _validate_retained_original(issued: H1OriginalWorkspaceIssuance) -> None:
     """Validate every relationship recoverable from immutable retained bytes."""
     member = VisibilityMember.model_validate_json(issued.workspace_member_json)
     context = ProposalContext.model_validate_json(issued.proposal_context_json)
@@ -241,7 +281,7 @@ def _validate_retained_original(issued: H1OriginalWorkspaceIssuanceV1) -> None:
                 raise WorkspaceRejected("original workspace planning source differs")
 
 
-def _validate_snapshot(issued: H1OriginalWorkspaceIssuanceV1) -> None:
+def _validate_snapshot(issued: H1OriginalWorkspaceIssuance) -> None:
     snapshot = issued.snapshot
     if tuple(row.commit_sequence for row in snapshot.publications) != tuple(
         range(1, snapshot.tenant_head + 1)
@@ -278,6 +318,22 @@ def _digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _batch_id(issued: H1OriginalWorkspaceIssuanceV1) -> str:
+def _batch_id(issued: H1OriginalWorkspaceIssuance) -> str:
 
     return str(json.loads(issued.proposal_context_json)["batch"]["batch_id"])
+
+
+def _closure_sources(issued: H1OriginalWorkspaceIssuance) -> H1WorkspaceSourcesV1:
+    """Project V2's stricter physical source cut to the legacy closure wire."""
+    sources = issued.sources
+    if isinstance(sources, H1WorkspaceSourcesV1):
+        return sources
+    return H1WorkspaceSourcesV1(
+        trusted_ingress_json=sources.trusted_ingress_json,
+        conversation_bindings_json=sources.conversation_bindings_json,
+        selected_loop_decisions=sources.selected_loop_decisions,
+        planning_sources=sources.planning_sources,
+        policy_record_id=sources.policy_record_id,
+        policy_payload_base64=sources.policy_payload_base64,
+        endpoint=sources.endpoint,
+    )

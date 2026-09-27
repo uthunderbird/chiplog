@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 from typing import TYPE_CHECKING, Literal, cast
 
 from chiplog.adapters.driven.loop_sqlite import OWNER, SCHEMA, LoopIntegrityError
 from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER, CONVERSATION_SCHEMA
+from chiplog.architecture.r7_storage_surface import AUTHORITY_STORAGE_SURFACE_DIGEST
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallInventorySnapshot
 from chiplog.capabilities.agent_loop.contracts import LoopSnapshot, RunRecord
 from chiplog.capabilities.agent_loop.domain import validate_record
@@ -20,6 +22,7 @@ from chiplog.capabilities.agent_loop.execution_transition_contracts import (
     CreateExecutionRun,
     PrepareExecutionRequest,
 )
+from chiplog.composition.h1_verified_snapshot_rows import H1VerifiedSnapshotRows
 from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
 from chiplog.composition.r14_cancellation_contracts import (
@@ -32,10 +35,19 @@ from chiplog.composition.r14_cancellation_records import (
     build_cancellation_envelope,
     cancellation_command,
 )
+from chiplog.composition.r14_execution_cancellation import (
+    build_execution_cancellation_envelope,
+    execution_cancellation_command,
+)
+from chiplog.composition.r14_execution_cancellation_contracts import (
+    EXECUTION_CANCELLATION_OPERATION,
+    RetainedExecutionCancellationPreparation,
+)
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
     RetainedExecutionCompleteSeal,
     RetainedExecutionCompleteSealV2,
+    RetainedExecutionCompleteSealV3,
     build_complete_seal_envelope,
     complete_seal_physical_command,
 )
@@ -54,6 +66,7 @@ from chiplog.composition.r14_execution_fanout_records import (
 from chiplog.composition.r14_execution_fanout_records import (
     physical_command as execution_command,
 )
+from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_execution_inbox_records import (
     EXECUTION_INBOX_INITIALIZATION_OPERATION,
     RetainedInboxExecutionInitialization,
@@ -76,12 +89,144 @@ from chiplog.composition.r14_fanout_records import (
 from chiplog.composition.r14_h1_workspace_issuance import verify_h1_original_workspace
 from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 from chiplog.platform._sqlite import PhysicalPublicationCommand
+from chiplog.platform.authority_checkpoint import (
+    AuthorityCheckpointRefV1,
+    AuthorityCheckpointStore,
+    AuthorityCheckpointVerificationError,
+    VerifiedAuthoritySnapshot,
+)
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
     from chiplog.composition.r14_runtime import R14PlanningRuntime
+
+
+def _strict_json(raw: bytes | str, *, canonical: bool = True) -> dict[str, object]:
+    """Decode a selected JSON object, always rejecting duplicate keys."""
+
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("selected decision has duplicate JSON key")
+            value[key] = item
+        return value
+
+    value = json.loads(raw, object_pairs_hook=unique)
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    original = raw.encode() if isinstance(raw, str) else raw
+    if not isinstance(value, dict) or (canonical and encoded != original):
+        raise ValueError("selected decision is noncanonical")
+    return value
+
+
+def resolve_h1_checkpoint(
+    selected_authenticated_decision: dict[str, object],
+    store: AuthorityCheckpointStore,
+    admitted_database_identity: tuple[str, int, int],
+    command: PhysicalPublicationCommand,
+) -> VerifiedAuthoritySnapshot:
+    """Resolve the V3 checkpoint bound to one authenticated selected command.
+
+    This authenticates the descriptor and immutable post-image only.  The E
+    historical adapter owns queries over ``snapshot.tables``; callers must not
+    substitute current SQLite rows for this source.
+    """
+
+    descriptor = selected_authenticated_decision.get("h1_historical_checkpoint")
+    if not isinstance(descriptor, dict) or set(descriptor) != {
+        "version",
+        "reference",
+        "tenant_id",
+        "operation_id",
+        "commit_sequence",
+        "database_binding",
+        "resulting",
+    }:
+        raise ValueError("H1 V3 selected checkpoint descriptor is absent or malformed")
+    binding = descriptor["database_binding"]
+    reference = descriptor["reference"]
+    if (
+        descriptor["version"] != 1
+        or not isinstance(binding, dict)
+        or set(binding) != {"canonical_path", "st_dev", "st_ino"}
+        or not isinstance(reference, dict)
+        or descriptor["tenant_id"] != command.tenant_id
+        or descriptor["operation_id"] != command.idempotency_key
+        or descriptor["commit_sequence"] != command.expected_head + 1
+        or descriptor["resulting"] != selected_authenticated_decision.get("resulting")
+        or (
+            binding.get("canonical_path"),
+            binding.get("st_dev"),
+            binding.get("st_ino"),
+        )
+        != admitted_database_identity
+        or not isinstance(descriptor["resulting"], str)
+    ):
+        raise ValueError("H1 V3 selected checkpoint binding differs")
+    try:
+        ref = AuthorityCheckpointRefV1.model_validate(reference)
+        snapshot = store.resolve_verified(
+            ref,
+            expected_resulting=descriptor["resulting"],
+            expected_surface_digest=AUTHORITY_STORAGE_SURFACE_DIGEST,
+        )
+        _verify_checkpoint_selected_membership(snapshot, command)
+        return snapshot
+    except (TypeError, ValueError, AuthorityCheckpointVerificationError) as error:
+        raise ValueError("H1 V3 selected checkpoint cannot be verified") from error
+
+
+def _verify_checkpoint_selected_membership(
+    snapshot: VerifiedAuthoritySnapshot, command: PhysicalPublicationCommand
+) -> None:
+    """Bind the V3 descriptor to the exact selected post-image membership."""
+
+    tables = {table.table: (table.columns, table.rows) for table in snapshot.tables}
+    try:
+        publication_columns, publication_rows = tables["publications"]
+        record_columns, record_rows = tables["records"]
+        publication = dict(
+            zip(
+                publication_columns,
+                next(
+                    row
+                    for row in publication_rows
+                    if row[0] == command.tenant_id
+                    and row[1] == command.operation_kind
+                    and row[2] == command.idempotency_key
+                ),
+                strict=True,
+            )
+        )
+        if (
+            publication["request_fingerprint"] != command.request_fingerprint
+            or publication["commit_sequence"] != command.expected_head + 1
+            or publication["record_ids"]
+            != "\n".join(record.record_id for record in command.records)
+        ):
+            raise ValueError("checkpoint selected publication differs")
+        physical = {
+            row[1]: dict(zip(record_columns, row, strict=True))
+            for row in record_rows
+            if row[0] == command.tenant_id
+        }
+        for member in command.records:
+            row = physical[member.record_id]
+            encoded = row["canonical_bytes"]
+            if (
+                row["owner"] != member.owner
+                or row["schema_id"] != member.schema_id
+                or row["commit_sequence"] != command.expected_head + 1
+                or not isinstance(encoded, dict)
+                or set(encoded) != {"base64"}
+                or encoded["base64"] != base64.b64encode(member.canonical_bytes).decode()
+            ):
+                raise ValueError("checkpoint selected record differs")
+    except (KeyError, StopIteration, TypeError, ValueError) as error:
+        raise ValueError("checkpoint lacks exact selected physical membership") from error
 
 
 def completion_v2_terminal_run(command: PhysicalPublicationCommand) -> ExecutionRunRecord:
@@ -180,6 +325,7 @@ def _read_call_history(
     tuple[RetainedCancellationPreparation, ...],
     ExecutionHistorySnapshot,
     tuple[RetainedExecutionFanOutPreparation, ...],
+    tuple[RetainedExecutionCancellationPreparation, ...],
     tuple[RetainedAcceptancePreparationV2, ...],
 ]:
     """Authenticate the caller's read cut, including a joined workspace snapshot.
@@ -195,7 +341,10 @@ def _read_call_history(
             else:
                 runtime._require_no_pending()
             tenant = runtime._tenant_id
-            entries = [json.loads(raw) for _, _, raw in runtime._loop_decisions().entries()]
+            entries = []
+            for _, _, raw in runtime._loop_decisions().entries():
+                _strict_json(raw)
+                entries.append(json.loads(raw))
             decisions = [entry for entry in entries if entry.get("kind") == "DECIDED"]
             identities = [entry["operation_id"] for entry in decisions]
             if len(identities) != len(set(identities)):
@@ -281,6 +430,7 @@ def _read_call_history(
                 latest: dict[str, RunRecord | ExecutionRunRecord] = {}
                 preparations: list[RetainedFanOutPreparation] = []
                 execution_preparations: list[RetainedExecutionFanOutPreparation] = []
+                execution_cancellations: list[RetainedExecutionCancellationPreparation] = []
                 cancellations: list[RetainedCancellationPreparation] = []
                 acceptances: list[RetainedAcceptancePreparationV2] = []
                 captured_heads: set[str] = set()
@@ -290,6 +440,7 @@ def _read_call_history(
                         "agent_loop",
                         FANOUT_OPERATION,
                         CANCELLATION_OPERATION,
+                        EXECUTION_CANCELLATION_OPERATION,
                         EXECUTION_TRANSITION_OPERATION,
                         EXECUTION_INBOX_INITIALIZATION_OPERATION,
                         EXECUTION_FANOUT_OPERATION,
@@ -300,7 +451,9 @@ def _read_call_history(
                         raise ValueError("unregistered loop publication envelope")
                     if (
                         not selected_only
-                        and inspect_publication(connection, command, command.expected_head + 1)
+                        and inspect_publication(
+                            connection, command, command.expected_head + 1
+                        )
                         != "COMPLETE"
                     ):
                         raise ValueError("selected loop publication is not exactly materialized")
@@ -322,6 +475,7 @@ def _read_call_history(
                                 tuple(preparations),
                                 tuple(cancellations),
                                 tuple(execution_preparations),
+                                tuple(execution_cancellations),
                                 tuple(acceptances),
                             )
                         ):
@@ -367,15 +521,38 @@ def _read_call_history(
                         ):
                             raise ValueError("execution complete seal has a substituted operation")
                         raw_complete = entry["execution_complete_seal"]
-                        complete_kind = json.loads(raw_complete).get("kind")
+                        if not isinstance(raw_complete, str):
+                            raise ValueError("execution complete seal retained bytes are absent")
+                        complete_kind = _strict_json(raw_complete, canonical=False).get("kind")
                         if complete_kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V1":
+                            if "h1_historical_checkpoint" in entry:
+                                raise ValueError("V1 complete seal cannot carry an H1 checkpoint")
                             complete: (
-                                RetainedExecutionCompleteSeal | RetainedExecutionCompleteSealV2
+                                RetainedExecutionCompleteSeal
+                                | RetainedExecutionCompleteSealV2
+                                | RetainedExecutionCompleteSealV3
                             ) = RetainedExecutionCompleteSeal.model_validate_json(raw_complete)
                         elif complete_kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V2":
                             complete = RetainedExecutionCompleteSealV2.model_validate_json(
                                 raw_complete
                             )
+                            if "h1_historical_checkpoint" in entry:
+                                raise ValueError("V2 complete seal cannot carry an H1 checkpoint")
+                        elif complete_kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V3":
+                            complete = RetainedExecutionCompleteSealV3.model_validate_json(
+                                raw_complete
+                            )
+                            checkpoint_rows = H1VerifiedSnapshotRows.from_verified(
+                                resolve_h1_checkpoint(
+                                    entry,
+                                    cast(AuthorityCheckpointStore, runtime._h1_checkpoint_store()),
+                                    runtime._database_identity,
+                                    command,
+                                )
+                            )
+                            if checkpoint_rows.tenant_head(tenant) != command.expected_head + 1:
+                                raise ValueError("V3 checkpoint tenant head differs")
+                            checkpoint_rows.require_complete(command)
                         else:
                             raise ValueError("unregistered execution complete seal profile")
                         complete_envelope = build_complete_seal_envelope(complete)
@@ -402,6 +579,7 @@ def _read_call_history(
                                 tuple(preparations),
                                 tuple(cancellations),
                                 tuple(execution_preparations),
+                                tuple(execution_cancellations),
                                 tuple(acceptances),
                             )
                             or capture_execution.head in captured_heads
@@ -451,6 +629,7 @@ def _read_call_history(
                                 tuple(preparations),
                                 tuple(cancellations),
                                 tuple(execution_preparations),
+                                tuple(execution_cancellations),
                                 tuple(acceptances),
                             )
                             or capture_execution.head in captured_heads
@@ -593,6 +772,69 @@ def _read_call_history(
                         latest[execution.run_id] = execution
                         mixed_records.append(execution)
                         continue
+                    if (
+                        command.operation_kind == EXECUTION_CANCELLATION_OPERATION
+                        or "execution_cancellation_preparation" in entry
+                        or "execution_cancellation_envelope" in entry
+                    ):
+                        if command.operation_kind != EXECUTION_CANCELLATION_OPERATION:
+                            raise ValueError("execution cancellation has a substituted operation")
+                        raw_cancellation = entry["execution_cancellation_preparation"]
+                        if not isinstance(raw_cancellation, str):
+                            raise ValueError("execution cancellation retained bytes are absent")
+                        execution_cancellation = (
+                            RetainedExecutionCancellationPreparation.model_validate_json(
+                                raw_cancellation
+                            )
+                        )
+                        execution_cancellation_envelope = build_execution_cancellation_envelope(
+                            execution_cancellation
+                        )
+                        before_execution = ExecutionHistorySnapshot(
+                            tenant_head=command.expected_head, records=tuple(mixed_records)
+                        )
+                        initialized = tuple(
+                            record
+                            for fanout in execution_preparations
+                            for record in fanout.proposal.fan_out.initialized_records
+                            if record.original_call_id
+                            == execution_cancellation.request.original_call_id
+                        )
+                        if (
+                            execution_cancellation.canonical_bytes().decode() != raw_cancellation
+                            or entry.get("execution_cancellation_envelope")
+                            != execution_cancellation_envelope.canonical_bytes().decode()
+                            or execution_cancellation_command(execution_cancellation) != command
+                            or execution_cancellation.run_predecessor
+                            != latest.get(execution_cancellation.run_predecessor.run_id)
+                            or execution_cancellation.request.cut.materialization_commitment
+                            != entry["predecessor"]
+                            or execution_cancellation.expected_snapshot_fingerprint
+                            != before_execution.digest()
+                            or execution_cancellation.request.cut.predecessor_inventory
+                            != execution_inventory(
+                                tenant,
+                                before_execution,
+                                tuple(preparations),
+                                tuple(cancellations),
+                                tuple(execution_preparations),
+                                tuple(execution_cancellations),
+                                tuple(acceptances),
+                            )
+                            or len(initialized) != 1
+                            or execution_cancellation.request.initialized_record != initialized[0]
+                            or execution_cancellation.request.initialized
+                            != reference(initialized[0].original_call_id, initialized[0])
+                        ):
+                            raise ValueError(
+                                "selected execution cancellation differs from original history"
+                            )
+                        execution_cancellations.append(execution_cancellation)
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        continue
                     record = RunRecord.model_validate_json(first.canonical_bytes)
                     if (
                         first.owner != OWNER
@@ -633,6 +875,7 @@ def _read_call_history(
                                 tuple(preparations),
                                 tuple(cancellations),
                                 tuple(execution_preparations),
+                                tuple(execution_cancellations),
                                 tuple(acceptances),
                             )
                         ):
@@ -665,6 +908,7 @@ def _read_call_history(
                                 tuple(preparations),
                                 tuple(cancellations),
                                 tuple(execution_preparations),
+                                tuple(execution_cancellations),
                                 tuple(acceptances),
                             )
                         ):
@@ -710,6 +954,7 @@ def _read_call_history(
                         tenant_head=0 if head is None else head[0], records=tuple(mixed_records)
                     ),
                     tuple(execution_preparations),
+                    tuple(execution_cancellations),
                     tuple(acceptances),
                 )
     except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
@@ -723,7 +968,7 @@ def read_call_history(
 ) -> tuple[
     LoopSnapshot, tuple[RetainedFanOutPreparation, ...], tuple[RetainedCancellationPreparation, ...]
 ]:
-    snapshot, fanout, cancellations, _, _, _ = _read_call_history(runtime)
+    snapshot, fanout, cancellations, _, _, _, _ = _read_call_history(runtime)
     return snapshot, fanout, cancellations
 
 
@@ -737,11 +982,19 @@ def read_execution_call_history(
 ) -> tuple[
     ExecutionHistorySnapshot, CallInventorySnapshot, tuple[RetainedExecutionFanOutPreparation, ...]
 ]:
-    _, legacy, cancellations, snapshot, executions, acceptances = _read_call_history(runtime)
+    _, legacy, cancellations, snapshot, executions, execution_cancellations, acceptances = (
+        _read_call_history(runtime)
+    )
     return (
         snapshot,
         execution_inventory(
-            runtime._tenant_id, snapshot, legacy, cancellations, executions, acceptances
+            runtime._tenant_id,
+            snapshot,
+            legacy,
+            cancellations,
+            executions,
+            execution_cancellations,
+            acceptances,
         ),
         executions,
     )
@@ -837,17 +1090,32 @@ def validate_selected_cancellations(runtime: R14PlanningRuntime) -> None:
         if entry.get("kind") != "DECIDED":
             continue
         command = runtime._publication(entry)
-        claims_cancellation = (
+        claims_legacy_cancellation = (
             command.operation_kind == CANCELLATION_OPERATION
             or "cancellation_preparation" in entry
-            or any(
-                record.schema_id in (CANCELLATION_SCHEMA, NOT_EXECUTED_SCHEMA)
-                for record in command.records
-            )
         )
-        if claims_cancellation:
+        claims_execution_cancellation = (
+            command.operation_kind == EXECUTION_CANCELLATION_OPERATION
+            or "execution_cancellation_preparation" in entry
+            or "execution_cancellation_envelope" in entry
+            or tuple(record.schema_id for record in command.records)
+            == (CANCELLATION_SCHEMA, NOT_EXECUTED_SCHEMA)
+        )
+        schemas = tuple(record.schema_id for record in command.records)
+        if claims_legacy_cancellation:
             if command.operation_kind != CANCELLATION_OPERATION:
                 raise LoopIntegrityError("cancellation publication has a substituted operation")
+            found = True
+        if claims_execution_cancellation:
+            if (
+                command.operation_kind != EXECUTION_CANCELLATION_OPERATION
+                or schemas != (CANCELLATION_SCHEMA, NOT_EXECUTED_SCHEMA)
+                or "execution_cancellation_preparation" not in entry
+                or "execution_cancellation_envelope" not in entry
+            ):
+                raise LoopIntegrityError(
+                    "execution cancellation publication has a substituted shape"
+                )
             found = True
     if found:
         _read_call_history(runtime, selected_only=True)

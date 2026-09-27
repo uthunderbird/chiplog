@@ -14,6 +14,8 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
 from .r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
 from .r14_acceptance_v2_records import build_acceptance_envelope
 from .r14_cancellation_contracts import RetainedCancellationPreparation
+from .r14_execution_cancellation import build_execution_cancellation_envelope
+from .r14_execution_cancellation_contracts import RetainedExecutionCancellationPreparation
 from .r14_execution_fanout_contracts import RetainedExecutionFanOutPreparation
 from .r14_execution_fanout_records import build_envelope, reference
 from .r14_execution_transition_records import ExecutionHistorySnapshot
@@ -27,6 +29,7 @@ def execution_inventory(
     legacy: tuple[RetainedFanOutPreparation, ...],
     cancellations: tuple[RetainedCancellationPreparation, ...],
     executions: tuple[RetainedExecutionFanOutPreparation, ...],
+    execution_cancellations: tuple[RetainedExecutionCancellationPreparation, ...] = (),
     acceptances: tuple[RetainedAcceptancePreparationV2, ...] = (),
 ) -> CallInventorySnapshot:
     snapshot = ExecutionHistorySnapshot.model_validate_json(snapshot.canonical_bytes())
@@ -71,11 +74,44 @@ def execution_inventory(
                 acceptance=InitializedCall(initialized=ref.revision),
                 terminal=Absent(),
             )
+    inventory = CallInventorySnapshot(
+        tenant_id=tenant,
+        tenant_commit_sequence=snapshot.tenant_head,
+        ordered_calls=tuple(observations[key] for key in sorted(observations)),
+    )
+    previous_head = -1
+    for cancellation in execution_cancellations:
+        envelope = build_execution_cancellation_envelope(cancellation)
+        if (
+            envelope.tenant_id != tenant
+            or not previous_head < envelope.expected_head < snapshot.tenant_head
+            or cancellation.run_predecessor.tenant != tenant
+            or cancellation.run_predecessor.head not in history
+            or snapshot.records[history[cancellation.run_predecessor.head]]
+            != cancellation.run_predecessor
+        ):
+            raise ValueError("execution cancellation is not in exact native history")
+        previous_head = envelope.expected_head
+        row = observations.get(cancellation.request.original_call_id)
+        terminal = reference(
+            cancellation.proposal.terminal.terminal_id, cancellation.proposal.terminal
+        )
+        if (
+            row is None
+            or row.initialized_record != cancellation.request.initialized_record
+            or row.initialized != cancellation.request.initialized
+            or not isinstance(row.acceptance, InitializedCall)
+            or row.acceptance.initialized != row.initialized.revision
+            or not isinstance(row.terminal, Absent)
+            or cancellation.proposal.result.terminal != terminal
+        ):
+            raise ValueError("execution cancellation lacks its exact initialized branch")
+        observations[row.original_call_id] = row.model_copy(
+            update={"terminal": terminal.revision}
+        )
     return accepted_inventory(
-        CallInventorySnapshot(
-            tenant_id=tenant,
-            tenant_commit_sequence=snapshot.tenant_head,
-            ordered_calls=tuple(observations[key] for key in sorted(observations)),
+        inventory.model_copy(
+            update={"ordered_calls": tuple(observations[key] for key in sorted(observations))}
         ),
         acceptances,
     )

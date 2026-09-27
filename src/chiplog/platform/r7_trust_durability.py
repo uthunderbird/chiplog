@@ -16,6 +16,10 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
     HermeticTrustObservationV1,
 )
 from chiplog.platform.authority_gate import AuthorityGate, FileIdentity
+from chiplog.platform.h1_scope_lineage import (
+    AuthenticatedHermeticOutputScope,
+    authenticated_h1_scope_lineage,
+)
 from chiplog.platform.r7_trust import encode_trust_journal
 
 _SCHEMA = "chiplog.deployment_trust.record.v1"
@@ -410,6 +414,7 @@ class BrokerTrustDurability:
         if scope.canonical_bytes() != scope_bytes:
             raise RuntimeError("H1 scope bytes are not canonical")
         with self._authority_scope():
+            self._admit_hermetic_output_scope(scope)
             decision_id = self._locked_append(
                 "HERMETIC_OUTPUT_SCOPE_V1", {"scope": scope.model_dump(mode="json")}
             )
@@ -417,6 +422,77 @@ class BrokerTrustDurability:
                 decision_id, "HERMETIC_OUTPUT_SCOPE_V1", {"scope": scope.model_dump(mode="json")}
             )
             return decision_id, len(records) - 1, records[-1]
+
+    def _authenticated_hermetic_output_scopes(self) -> tuple[AuthenticatedHermeticOutputScope, ...]:
+        """Authenticate the complete observation before exposing H1 lineage."""
+        self.capture_verified_observation()
+        return authenticated_h1_scope_lineage(self._journal.entries(), self._materializer.record)
+
+    def _admit_hermetic_output_scope(self, scope: object) -> None:
+        from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+            HermeticOutputScopeV1,
+        )
+
+        if not isinstance(scope, HermeticOutputScopeV1):
+            raise TypeError("H1 scope lineage requires HermeticOutputScopeV1")
+        scopes = self._authenticated_hermetic_output_scopes()
+        matching = [
+            item
+            for item in scopes
+            if (item.scope.database_id, item.scope.scope_id) == (scope.database_id, scope.scope_id)
+        ]
+        if not matching:
+            if scope.revision != 0 or scope.predecessor is not None:
+                raise RuntimeError("H1 scope lineage genesis differs")
+            return
+        latest = matching[-1]
+        if scope.revision != latest.scope.revision + 1 or scope.predecessor != latest.decision:
+            raise RuntimeError("H1 scope lineage successor differs")
+
+    def historical_hermetic_output_scope(
+        self, scope: object
+    ) -> AuthenticatedHermeticOutputScope | None:
+        """Return an exact authenticated historical issuance, never a currentness claim."""
+        from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+            HermeticOutputScopeV1,
+        )
+
+        if not isinstance(scope, HermeticOutputScopeV1):
+            raise TypeError("H1 scope lineage requires HermeticOutputScopeV1")
+        with self._authority_scope():
+            return next(
+                (
+                    item
+                    for item in self._authenticated_hermetic_output_scopes()
+                    if item.scope == scope
+                ),
+                None,
+            )
+
+    def current_hermetic_output_scope(
+        self, anchor: object
+    ) -> AuthenticatedHermeticOutputScope:
+        """Resolve one exact anchor only when it remains latest for its scope key."""
+        from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+            HermeticOutputScopeAnchorV1,
+        )
+
+        if not isinstance(anchor, HermeticOutputScopeAnchorV1):
+            raise TypeError("H1 scope currentness requires HermeticOutputScopeAnchorV1")
+        with self._authority_scope():
+            scopes = self._authenticated_hermetic_output_scopes()
+            selected = next((item for item in scopes if item.anchor == anchor), None)
+            if selected is None:
+                raise RuntimeError("H1 scope current anchor differs")
+            latest = next(
+                item
+                for item in reversed(scopes)
+                if (item.scope.database_id, item.scope.scope_id)
+                == (selected.scope.database_id, selected.scope.scope_id)
+            )
+            if latest != selected:
+                raise RuntimeError("H1 scope current anchor is superseded")
+            return selected
 
     @staticmethod
     def _expected_records(

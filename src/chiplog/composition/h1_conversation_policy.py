@@ -69,6 +69,11 @@ class H1RegisteredConversationPolicy:
 class _CaptureMaterial:
     registration: H1RegisteredConversationPolicy
     run: NativeCapturedRun
+    # The selected-admitted input retains the derived principal-contour head
+    # which the execution Run carries.  It is deliberately separate from the
+    # raw workspace contour kept in ``registration`` and rendered in the
+    # conversation envelope.
+    selected_run_contour_head: str
     accepted_delivery: AcceptedDelivery
     authenticated_history: tuple[ConversationEntry, ...]
     narrowing: DisclosureLabel
@@ -198,7 +203,11 @@ def _source_references(run: NativeCapturedRun) -> tuple[SourceReference, ...]:
                     record_version=member.revision_head + ":" + digest,
                     content_digest=digest,
                     label_head=member.label_head,
-                    label=DisclosureLabel.model_validate(member.label.model_dump(mode="json")),
+                    label=DisclosureLabel(
+                        lattice_version=member.label.lattice_version,
+                        value=member.label.value,
+                        allowed_endpoints=tuple(member.label.allowed_endpoints),
+                    ),
                 )
                 identity = (source.owner, source.record_id, source.record_version)
                 previous = by_identity.get(identity)
@@ -270,7 +279,15 @@ def derive_entry(capture: H1ConversationPolicyCapture) -> ConversationEntry:
     _require(type(run) in (ExecutionRunRecord, ExecutionRunRecordV3), "run schema is unsupported")
     _require(run.tenant == registration.tenant_id, "run tenant differs from registration")
     _require(run.principal == registration.principal_id, "run principal differs from registration")
-    _require(run.contour_head == registration.contour_head, "run contour differs from registration")
+    _require(
+        isinstance(material.selected_run_contour_head, str)
+        and bool(material.selected_run_contour_head),
+        "selected Run contour witness is empty",
+    )
+    _require(
+        run.contour_head == material.selected_run_contour_head,
+        "run contour differs from selected admission",
+    )
     _require(
         run.origin.recipient.recipient_id == registration.origin_recipient_id,
         "run origin recipient differs from registration",

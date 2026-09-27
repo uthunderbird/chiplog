@@ -26,6 +26,7 @@ from dishka import Provider, Scope, make_container, provide
 
 from chiplog.architecture.r7_runtime import RuntimeAssemblyManifest, verify_runtime_manifest
 from chiplog.composition.r7 import OwnerGeneration, RuntimeGraphGeneration
+from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.broker import (
     BrokerSession,
     PublicPortCall,
@@ -474,6 +475,18 @@ def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
+def _owner_request_bytes(call: PublicPortCall) -> bytes:
+    return _canonical(
+        {
+            "operation": call.operation_id,
+            "payload": b64encode(call.canonical_payload).decode("ascii"),
+            "request_id": call.request_id,
+            "schema_id": call.schema_id,
+            "target": call.callee.model_dump(),
+        }
+    )
+
+
 def _send_frame(connection: socket.socket, secret: bytes, payload: bytes) -> None:
     if len(payload) > _MAX_FRAME_BYTES:
         raise OwnerProcessFailure("IPC frame exceeds the registered bound")
@@ -786,23 +799,58 @@ class AuthorityBrokerRuntime:
     async def call(self, request: PublicPortCall) -> PublicPortResult:
         return await to_thread(self._call_sync, request)
 
+    async def _call_with_admission_guard(
+        self,
+        request: PublicPortCall,
+        *,
+        admission_guard: Callable[[PublicPortCall, bytes], None],
+        authority_gate: AuthorityGate | None = None,
+    ) -> PublicPortResult:
+        """Dispatch one call after synchronous terminal admission succeeds.
+
+        When supplied, ``authority_gate`` covers the exact guard/send interval.
+        It is deliberately released before the owner response is received.
+        """
+        return await to_thread(
+            self._call_sync,
+            request,
+            admission_guard=admission_guard,
+            authority_gate=authority_gate,
+        )
+
     def call_sync(self, request: PublicPortCall) -> PublicPortResult:
         """Broker-local commit guards use the same routed admission synchronously."""
         return self._call_sync(request)
 
-    def _call_sync(self, request: PublicPortCall) -> PublicPortResult:
+    def _call_sync(
+        self,
+        request: PublicPortCall,
+        *,
+        admission_guard: Callable[[PublicPortCall, bytes], None] | None = None,
+        authority_gate: AuthorityGate | None = None,
+    ) -> PublicPortResult:
         with self._drain:
             if self._draining:
                 return self._rejected(request, "OWNER_DRAINING", "runtime generation is draining")
             self._inflight += 1
         try:
-            return self._call_admitted(request)
+            return self._call_admitted(
+                request,
+                admission_guard=admission_guard,
+                authority_gate=authority_gate,
+            )
         finally:
             with self._drain:
                 self._inflight -= 1
                 self._drain.notify_all()
 
-    def _call_admitted(self, request: PublicPortCall) -> PublicPortResult:
+    def _call_admitted(
+        self,
+        request: PublicPortCall,
+        *,
+        admission_guard: Callable[[PublicPortCall, bytes], None] | None = None,
+        authority_gate: AuthorityGate | None = None,
+    ) -> PublicPortResult:
         callee = self._identities.get(request.callee.owner_id)
         if callee is None or request.callee != self.session(request.callee.owner_id):
             return self._rejected(request, "STALE_SESSION", "callee session is not current")
@@ -840,16 +888,60 @@ class AuthorityBrokerRuntime:
             )
         connection = self._connections[callee.owner_id]
         owner_secret = self._owner_secrets[callee.owner_id]
-        wire_request = {
-            "operation": request.operation_id,
-            "payload": b64encode(request.canonical_payload).decode("ascii"),
-            "request_id": request.request_id,
-            "schema_id": request.schema_id,
-            "target": request.callee.model_dump(),
-        }
-        with self._connection_locks[callee.owner_id]:
-            _send_frame(connection, owner_secret, _canonical(wire_request))
-            response = json.loads(_receive_frame(connection, owner_secret))
+        connection_lock = self._connection_locks[callee.owner_id]
+
+        def send_admitted_frame() -> PublicPortRejected | None:
+            if request.callee != self.session(callee.owner_id):
+                return self._rejected(request, "STALE_SESSION", "callee session is not current")
+            if (
+                request.caller.tenant_id != self._tenant_id
+                or request.caller.broker_epoch != self._broker_epoch
+                or request.caller.generation_id != self._generation_id
+            ):
+                return self._rejected(
+                    request, "STALE_GENERATION", "caller generation is not current"
+                )
+            if request.budget.absolute_deadline_ns <= self._clock.monotonic_ns():
+                return self._rejected(request, "DEADLINE_EXCEEDED", "call deadline elapsed")
+            if request.operation_id not in owner.public_operations or (
+                route.request_schema_id != request.schema_id
+            ):
+                return self._rejected(
+                    request,
+                    "PROTOCOL_REJECTED",
+                    "exact caller-to-callee schema edge is not manifested",
+                )
+            owner_request_bytes = _owner_request_bytes(request)
+            if admission_guard is not None:
+                admission_guard(request, owner_request_bytes)
+            if request.budget.absolute_deadline_ns <= self._clock.monotonic_ns():
+                return self._rejected(request, "DEADLINE_EXCEEDED", "call deadline elapsed")
+            _send_frame(connection, owner_secret, owner_request_bytes)
+            return None
+
+        if authority_gate is None:
+            with connection_lock:
+                rejection = send_admitted_frame()
+                if rejection is not None:
+                    return rejection
+                response = json.loads(_receive_frame(connection, owner_secret))
+        else:
+            connection_locked = False
+            try:
+                # The terminal path acquires gate → connection lock.  Other
+                # authority writers use that order and can synchronously call
+                # the same owner; reversing it would deadlock.  The connection
+                # lock remains held only to pair this response to its request.
+                with authority_gate.hold():
+                    connection_lock.acquire()
+                    connection_locked = True
+                    rejection = send_admitted_frame()
+                if rejection is not None:
+                    return rejection
+                response = json.loads(_receive_frame(connection, owner_secret))
+            finally:
+                if connection_locked:
+                    connection_lock.release()
         if "failure" in response:
             return self._rejected(
                 request,

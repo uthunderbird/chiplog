@@ -26,8 +26,6 @@ class TrustOwnerCall(_Strict):
     request_bytes: bytes
 
     def canonical_bytes(self) -> bytes:
-        import base64
-
         return json.dumps(
             {
                 "mode": self.mode,
@@ -37,6 +35,48 @@ class TrustOwnerCall(_Strict):
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def _canonical_base64_bytes(value: object) -> bytes:
+    if not isinstance(value, str):
+        raise ValueError("trust owner wire bytes are not base64 text")
+    try:
+        encoded = value.encode("ascii")
+        decoded = base64.b64decode(encoded, validate=True)
+    except (UnicodeEncodeError, ValueError) as error:
+        raise ValueError("trust owner wire bytes are not valid base64") from error
+    if base64.b64encode(decoded).decode("ascii") != value:
+        raise ValueError("trust owner wire bytes are noncanonical base64")
+    return decoded
+
+
+def decode_trust_owner_call_canonical(payload: bytes) -> TrustOwnerCall:
+    """Decode one closed, canonical deployment-trust owner-call wire."""
+    try:
+        raw = json.loads(payload, object_pairs_hook=_unique_object)
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("trust owner call is not JSON") from error
+    if not isinstance(raw, dict) or set(raw) != {"mode", "request_bytes", "snapshot_bytes"}:
+        raise ValueError("trust owner call has an unexpected outer shape")
+    call = TrustOwnerCall.model_validate(
+        {
+            "mode": raw["mode"],
+            "request_bytes": _canonical_base64_bytes(raw["request_bytes"]),
+            "snapshot_bytes": _canonical_base64_bytes(raw["snapshot_bytes"]),
+        }
+    )
+    if call.canonical_bytes() != payload:
+        raise ValueError("trust owner call is noncanonical")
+    return call
 
 
 class TrustOwnerResult(_Strict):
@@ -76,5 +116,6 @@ def encode_trust_journal(
 __all__ = [
     "TrustOwnerCall",
     "TrustOwnerResult",
+    "decode_trust_owner_call_canonical",
     "encode_trust_journal",
 ]

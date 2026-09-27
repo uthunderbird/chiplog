@@ -43,7 +43,7 @@ from chiplog.platform.broker import (
     PublicPortResult,
     PublicPortSuccess,
 )
-from chiplog.platform.r7_trust import TrustOwnerCall
+from chiplog.platform.r7_trust import decode_trust_owner_call_canonical
 
 if TYPE_CHECKING:
     from chiplog.composition.r14_runtime import R14PlanningRuntime
@@ -147,7 +147,7 @@ def _require_scope_issue_exchange(
         or sent.callee not in capture.sessions
     ):
         raise ValueError("H1 scope issue exchange has a substituted route")
-    wire = TrustOwnerCall.model_validate_json(sent.canonical_payload)
+    wire = decode_trust_owner_call_canonical(sent.canonical_payload)
     if (
         wire.canonical_bytes() != sent.canonical_payload
         or wire.mode != "ISSUE_HERMETIC_OUTPUT_SCOPE_V1"
@@ -196,7 +196,7 @@ def _require_scope_current_exchange(
         or sent.callee not in capture.sessions
     ):
         raise ValueError("H1 scope current exchange has a substituted route")
-    wire = TrustOwnerCall.model_validate_json(sent.canonical_payload)
+    wire = decode_trust_owner_call_canonical(sent.canonical_payload)
     if (
         wire.canonical_bytes() != sent.canonical_payload
         or wire.mode != "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1"

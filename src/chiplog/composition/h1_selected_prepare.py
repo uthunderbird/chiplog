@@ -14,6 +14,7 @@ import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from chiplog.adapters.driven.loop_sqlite import OWNER
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
@@ -30,11 +31,17 @@ from chiplog.capabilities.agent_loop.execution_transition_contracts import Prepa
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.h1_preseal_contracts import H1SelectedPrepare, H1SelectedSeal
+from chiplog.composition.h1_verified_snapshot_rows import (
+    H1VerifiedSnapshotRows,
+    H1VerifiedSnapshotRowsError,
+)
 from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
     ExecutionCompleteSealPhysicalEnvelopeV2,
+    ExecutionCompleteSealPhysicalEnvelopeV3,
     RetainedExecutionCompleteSealV2,
+    RetainedExecutionCompleteSealV3,
     build_complete_seal_envelope,
     complete_seal_physical_command,
 )
@@ -46,7 +53,9 @@ from chiplog.composition.r14_execution_transition_records import (
 from chiplog.composition.r14_fanout_contracts import SEAL_SCHEMA
 from chiplog.composition.r14_h1_workspace_issuance_contracts import H1VerifiedWorkspaceClosure
 from chiplog.composition.r14_h1_workspace_sources import reopen_h1_original_workspace
+from chiplog.composition.r14_loop_history import _strict_json, resolve_h1_checkpoint
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
+from chiplog.platform.authority_checkpoint import AuthorityCheckpointStore
 from chiplog.platform.publication_readback import inspect_publication
 
 
@@ -58,6 +67,22 @@ class H1SelectedPostSealPrepare:
     sealed_run: ExecutionRunRecord
     prepare: H1SelectedPrepare
     seal: H1SelectedSeal
+
+
+@dataclass(frozen=True, slots=True)
+class _H1SelectedCut:
+    """One V3 seal's authenticated journal prefix and authority post-image."""
+
+    decision_id: str
+    decision_bytes: bytes
+    command: PhysicalPublicationCommand
+    retained: RetainedExecutionCompleteSealV3
+    envelope: ExecutionCompleteSealPhysicalEnvelopeV3
+    resulting: str
+    commit_sequence: int
+    database_identity: tuple[str, int, int]
+    commands: tuple[tuple[str, bytes, PhysicalPublicationCommand], ...]
+    rows: H1VerifiedSnapshotRows
 
 
 def _digest(raw: bytes) -> str:
@@ -107,13 +132,13 @@ def _require_candidate(captured: ExecutionRunRecord, expected_head: str) -> None
         raise ValueError("H1 candidate Complete response differs from captured Run")
 
 
-def _selected_commands(
+def _journal_commands(
     runtime: CommonCliExecutionRuntime,
 ) -> tuple[tuple[str, bytes, PhysicalPublicationCommand], ...]:
     values: list[tuple[str, bytes, PhysicalPublicationCommand]] = []
     for decision_id, _predecessor, raw in runtime._loop_decisions().entries():
         try:
-            entry = json.loads(raw)
+            entry = _strict_json(raw)
         except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ValueError("H1 selected journal entry is undecodable") from error
         if entry.get("kind") != "DECIDED":
@@ -125,10 +150,18 @@ def _selected_commands(
         if command.tenant_id != runtime._tenant_id:
             raise ValueError("H1 selected journal entry crosses tenants")
         values.append((decision_id, raw, command))
+    return tuple(sorted(values, key=lambda item: item[2].expected_head))
+
+
+def _selected_commands(
+    runtime: CommonCliExecutionRuntime,
+) -> tuple[tuple[str, bytes, PhysicalPublicationCommand], ...]:
+    """Return the whole selected journal for current (non-cut) readers."""
+    values = _journal_commands(runtime)
     heads = tuple(command.expected_head for _, _, command in values)
     if len(heads) != len(set(heads)):
         raise ValueError("H1 selected journal has competing publication predecessors")
-    return tuple(sorted(values, key=lambda item: item[2].expected_head))
+    return values
 
 
 def _physical_run(
@@ -314,6 +347,172 @@ def select_h1_v3_prepare_for_candidate(
         return selected
 
 
+def _resolve_h1_selected_cut(
+    runtime: CommonCliExecutionRuntime, *, selected_seal: CallSubjectHead
+) -> _H1SelectedCut:
+    """Locate a V3 seal in the journal, then resolve its one checkpoint cut.
+
+    This deliberately reads the seal member from authenticated command bytes:
+    opening SQLite to discover a historical cut would make later authority state
+    part of the locator.
+    """
+    runtime._check_database_identity()
+    commands = _journal_commands(runtime)
+    selected: (
+        tuple[
+            str,
+            bytes,
+            PhysicalPublicationCommand,
+            RetainedExecutionCompleteSealV3,
+            ExecutionCompleteSealPhysicalEnvelopeV3,
+            dict[str, object],
+        ]
+        | None
+    ) = None
+    for decision_id, decision_bytes, command in commands:
+        if command.operation_kind != EXECUTION_COMPLETE_SEAL_OPERATION:
+            continue
+        try:
+            seals = tuple(
+                member
+                for member in command.records
+                if member.owner == OWNER and member.schema_id == SEAL_SCHEMA
+            )
+            if len(seals) != 1:
+                raise ValueError("H1 selected V3 seal lacks one native response seal")
+            physical_seal = seals[0]
+            decoded_seal = SealedResponseRecord.model_validate_json(physical_seal.canonical_bytes)
+            if decoded_seal.canonical_bytes() != physical_seal.canonical_bytes:
+                raise ValueError("H1 selected V3 response seal bytes are not canonical")
+            digest = _digest(physical_seal.canonical_bytes)
+            actual_locator = CallSubjectHead(
+                subject_id=decoded_seal.response_seal_id,
+                revision=Present(head="record:" + digest, fingerprint=digest),
+            )
+            if physical_seal.record_id != actual_locator.revision.head:
+                raise ValueError("H1 selected V3 response seal physical ID differs")
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            raise ValueError("H1 selected V3 seal decision is invalid") from error
+        if actual_locator != selected_seal:
+            continue
+        if selected is not None:
+            raise ValueError("H1 selected seal has no unique selected response seal")
+        try:
+            entry = _strict_json(decision_bytes)
+            retained_raw = entry.get("execution_complete_seal")
+            envelope_raw = entry.get("execution_complete_seal_envelope")
+            if not isinstance(retained_raw, str) or not isinstance(envelope_raw, str):
+                raise ValueError("H1 selected V3 seal has no retained envelope")
+            retained_wire = _strict_json(retained_raw, canonical=False)
+            if retained_wire.get("kind") != "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V3":
+                raise ValueError("H1 selected seal is not V3")
+            retained = RetainedExecutionCompleteSealV3.model_validate_json(retained_raw)
+            envelope = ExecutionCompleteSealPhysicalEnvelopeV3.model_validate_json(envelope_raw)
+            if (
+                retained.canonical_bytes().decode() != retained_raw
+                or envelope.canonical_bytes().decode() != envelope_raw
+                or build_complete_seal_envelope(retained) != envelope
+                or complete_seal_physical_command(envelope) != command
+            ):
+                raise ValueError("H1 selected V3 seal decision differs from physical command")
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+            raise ValueError("H1 selected V3 seal decision is invalid") from error
+        selected = (decision_id, decision_bytes, command, retained, envelope, entry)
+    if selected is None:
+        raise ValueError("H1 historical selector has no unique selected V3 seal")
+
+    decision_id, decision_bytes, command, retained, envelope, entry = selected
+    prefix = tuple(item for item in commands if item[2].expected_head <= command.expected_head)
+    heads = tuple(item[2].expected_head for item in prefix)
+    if len(heads) != len(set(heads)):
+        raise ValueError("H1 selected journal prefix has competing publication predecessors")
+    try:
+        snapshot = resolve_h1_checkpoint(
+            entry,
+            cast(AuthorityCheckpointStore, runtime._h1_checkpoint_store()),
+            runtime._database_identity,
+            command,
+        )
+        rows = H1VerifiedSnapshotRows.from_verified(snapshot)
+        if rows.tenant_head(command.tenant_id) != command.expected_head + 1:
+            raise ValueError("H1 selected checkpoint head differs from selected seal")
+        rows.require_complete(command)
+    except (ValueError, H1VerifiedSnapshotRowsError) as error:
+        raise ValueError("H1 selected V3 checkpoint is invalid") from error
+    resulting = entry.get("resulting")
+    if not isinstance(resulting, str):
+        raise ValueError("H1 selected V3 checkpoint has no resulting commitment")
+    return _H1SelectedCut(
+        decision_id=decision_id,
+        decision_bytes=decision_bytes,
+        command=command,
+        retained=retained,
+        envelope=envelope,
+        resulting=resulting,
+        commit_sequence=command.expected_head + 1,
+        database_identity=runtime._database_identity,
+        commands=prefix,
+        rows=rows,
+    )
+
+
+def _select_h1_prepare_at_cut(
+    runtime: CommonCliExecutionRuntime, *, cut: _H1SelectedCut
+) -> H1SelectedPostSealPrepare:
+    """Reconstruct a selected V3 Prepare solely from a resolved seal cut."""
+    sealed_run = cut.retained.exchange.proposal.sealed_run
+    runs: list[_SelectedRun] = []
+    for decision_id, decision_bytes, command in cut.commands:
+        for member in command.records:
+            if member.owner != OWNER or member.schema_id != EXECUTION_RUN_SCHEMA:
+                continue
+            try:
+                physical = cut.rows.physical_member(command, member)
+            except H1VerifiedSnapshotRowsError as error:
+                raise ValueError("H1 selected publication is not exactly materialized") from error
+            decoded = decode_execution_run_member(
+                ExecutionRunCanonicalMember(
+                    record_id=physical.record_id,
+                    schema_id=physical.schema_id,  # type: ignore[arg-type]
+                    canonical_record_bytes=physical.canonical_bytes,
+                    fingerprint=_digest(physical.canonical_bytes),
+                )
+            ).run
+            if isinstance(decoded, ExecutionRunRecord) and decoded.run_id == sealed_run.run_id:
+                runs.append((decision_id, decision_bytes, command, decoded, physical))
+    runs.sort(key=lambda item: item[2].expected_head)
+    if not runs or runs[-1][3] != sealed_run:
+        raise ValueError("H1 selected seal does not close the selected Run lineage")
+    if len(runs) < 2:
+        raise ValueError("H1 selected seal lacks its exact physical captured predecessor")
+    if len({run.head for *_prefix, run, _physical in runs}) != len(runs):
+        raise ValueError("H1 selected Run lineage has duplicate heads")
+    for index, (_id, _raw, _command, run, _physical) in enumerate(runs):
+        if index == 0:
+            if run.predecessor is not None:
+                raise ValueError("H1 selected root has a predecessor")
+        elif run.predecessor != runs[index - 1][3].head:
+            raise ValueError("H1 selected Run lineage has a gap or competing descendant")
+    captured = next(
+        (run for _id, _raw, _command, run, _physical in runs if run.head == sealed_run.predecessor),
+        None,
+    )
+    if captured is None or captured != runs[-2][3]:
+        raise ValueError("H1 selected seal lacks its exact physical captured predecessor")
+    _require_candidate(captured, captured.head)
+    if cut.retained.exchange.request.captured_run != captured:
+        raise ValueError("H1 selected seal retained exchange differs from physical predecessor")
+    prepare = _select_prepare_from_runs(
+        runtime, tuple(item for item in runs if item[3].head != sealed_run.head)
+    )
+    return H1SelectedPostSealPrepare(
+        captured,
+        sealed_run,
+        prepare,
+        H1SelectedSeal(cut.command, cut.decision_id, cut.decision_bytes, cut.commit_sequence),
+    )
+
+
 def select_h1_v3_prepare_for_seal(
     runtime: CommonCliExecutionRuntime,
     *,
@@ -333,6 +532,9 @@ def select_h1_v3_prepare_for_seal(
         raise TypeError("H1 selected seal historical mode must be boolean")
 
     with runtime._authority_gate().hold():
+        if historical:
+            cut = _resolve_h1_selected_cut(runtime, selected_seal=selected_seal)
+            return _select_h1_prepare_at_cut(runtime, cut=cut)
         if not historical:
             runtime._require_no_pending()
         runtime._check_database_identity()
@@ -344,7 +546,7 @@ def select_h1_v3_prepare_for_seal(
                 str,
                 bytes,
                 PhysicalPublicationCommand,
-                RetainedExecutionCompleteSealV2,
+                RetainedExecutionCompleteSealV2 | RetainedExecutionCompleteSealV3,
                 PhysicalRecord,
             ]
             | None
@@ -357,20 +559,43 @@ def select_h1_v3_prepare_for_seal(
                 if command.operation_kind != EXECUTION_COMPLETE_SEAL_OPERATION:
                     continue
                 try:
-                    entry = json.loads(decision_bytes)
+                    entry = _strict_json(decision_bytes)
                     retained_raw = entry.get("execution_complete_seal")
                     if not isinstance(retained_raw, str):
                         continue
-                    retained_wire = json.loads(retained_raw)
-                    if retained_wire.get("kind") != "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V2":
+                    retained_wire = _strict_json(retained_raw, canonical=False)
+                    kind = retained_wire.get("kind")
+                    if kind not in (
+                        "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V2",
+                        "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V3",
+                    ):
                         continue
                     envelope_raw = entry["execution_complete_seal_envelope"]
                     if not isinstance(envelope_raw, str):
                         raise ValueError("missing retained V2 complete seal envelope")
-                    retained = RetainedExecutionCompleteSealV2.model_validate_json(retained_raw)
-                    envelope = ExecutionCompleteSealPhysicalEnvelopeV2.model_validate_json(
-                        envelope_raw
+                    retained: RetainedExecutionCompleteSealV2 | RetainedExecutionCompleteSealV3
+                    envelope: (
+                        ExecutionCompleteSealPhysicalEnvelopeV2
+                        | ExecutionCompleteSealPhysicalEnvelopeV3
                     )
+                    if kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V2":
+                        if "h1_historical_checkpoint" in entry:
+                            raise ValueError("H1 V2 seal cannot carry a checkpoint")
+                        retained = RetainedExecutionCompleteSealV2.model_validate_json(retained_raw)
+                        envelope = ExecutionCompleteSealPhysicalEnvelopeV2.model_validate_json(
+                            envelope_raw
+                        )
+                    else:
+                        retained = RetainedExecutionCompleteSealV3.model_validate_json(retained_raw)
+                        envelope = ExecutionCompleteSealPhysicalEnvelopeV3.model_validate_json(
+                            envelope_raw
+                        )
+                        resolve_h1_checkpoint(
+                            entry,
+                            cast(AuthorityCheckpointStore, runtime._h1_checkpoint_store()),
+                            runtime._database_identity,
+                            command,
+                        )
                 except (
                     KeyError,
                     TypeError,
@@ -415,7 +640,8 @@ def select_h1_v3_prepare_for_seal(
             if selected is None:
                 raise ValueError("H1 selected seal has no unique selected response seal")
 
-            decision_id, decision_bytes, seal_command, retained, _physical_seal = selected
+            decision_id, decision_bytes, seal_command, selected_retained, _physical_seal = selected
+            retained = selected_retained
             sealed_run = retained.exchange.proposal.sealed_run
             runs: list[_SelectedRun] = []
             for candidate_id, candidate_bytes, command in commands:

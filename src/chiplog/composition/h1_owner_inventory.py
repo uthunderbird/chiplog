@@ -37,6 +37,10 @@ from chiplog.composition.h1_preseal_contracts import (
     H1SelectedPrepare,
     H1SelectedSeal,
 )
+from chiplog.composition.h1_selected_prepare import _H1SelectedCut
+from chiplog.composition.h1_verified_snapshot_rows import (
+    H1VerifiedSnapshotRows,
+)
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
 )
@@ -47,8 +51,14 @@ from chiplog.composition.r14_execution_fanout_contracts import (
 from chiplog.composition.r14_execution_inbox_records import (
     EXECUTION_INBOX_INITIALIZATION_OPERATION,
 )
+from chiplog.composition.r14_execution_transition_records import (
+    EXECUTION_TRANSITION_OPERATION,
+)
 from chiplog.composition.r14_fanout_contracts import FANOUT_OPERATION, SEAL_SCHEMA
-from chiplog.composition.r14_h1_workspace_issuance_contracts import H1VerifiedWorkspaceClosure
+from chiplog.composition.r14_h1_workspace_issuance_contracts import (
+    H1VerifiedWorkspaceClosure,
+    H1WorkspaceIssuanceRefV1,
+)
 from chiplog.platform._sqlite import PhysicalRecord
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.owner_decision_journal import OwnerJournalSnapshot
@@ -67,9 +77,12 @@ _Pair = tuple[str, str]
 _H1_KNOWN_NON_OWNER_OPERATIONS = frozenset(
     {
         EXECUTION_INBOX_INITIALIZATION_OPERATION,
+        "workspace.policy",
+        "workspace.policy.h1.v2",
         FANOUT_OPERATION,
         EXECUTION_FANOUT_OPERATION,
         EXECUTION_COMPLETE_SEAL_OPERATION,
+        EXECUTION_TRANSITION_OPERATION,
     }
 )
 
@@ -424,6 +437,7 @@ def _workspace_inventory_item(
             R13Workspace(cast(Any, runtime)).open_h1_workspace_issuance().load(closure.issuance)
         )
         raw = issued.canonical_bytes()
+        schema = issued.schema_id
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         raise H1OwnerInventoryFailure.corrupt(
             family="WORKSPACE",
@@ -443,7 +457,7 @@ def _workspace_inventory_item(
         "workspace-issuance/" + closure.issuance.entry_id,
         closure.issuance.tenant,
         "workspace_issuance",
-        "chiplog.execution.h1-original-workspace-issuance.v1",
+        schema,
         None,
         closure.issuance.entry_id,
         closure.issuance.payload_digest,
@@ -589,9 +603,11 @@ def _reauthenticate_selected_prepare(
         )
 
 
-def _merge_workspace_sources(scope: H1Scope, item: H1RawInventoryItem) -> H1Scope:
+def _merge_workspace_sources(
+    scope: H1Scope, item: H1RawInventoryItem, *, issuance_ref: H1WorkspaceIssuanceRefV1
+) -> H1Scope:
     """Only the workspace leaf can add independently authenticated source refs."""
-    decoded = decode_h1_workspace_planning_scope(item)
+    decoded = decode_h1_workspace_planning_scope(item, issuance_ref=issuance_ref)
     known = {value.model_dump_json(): value for value in scope.reachable_source_refs}
     known.update({value.model_dump_json(): value for value in decoded.source_refs})
     return H1Scope(
@@ -948,6 +964,66 @@ def _validate_publication_membership(
         )
 
 
+def _validate_v2_workspace_policy_publications(
+    publications: tuple[tuple[object, ...], ...], rows: tuple[_PhysicalRow, ...]
+) -> None:
+    """Bind every V2 policy row to its sole, exact V2 policy publication."""
+    rows_by_sequence: dict[int, tuple[_PhysicalRow, ...]] = {}
+    for row in rows:
+        rows_by_sequence[row.sequence] = (*rows_by_sequence.get(row.sequence, ()), row)
+    for index, publication in enumerate(publications):
+        if len(publication) != 5:
+            raise H1OwnerInventoryFailure.corrupt(
+                family="WORKSPACE",
+                owner="workspace_policy",
+                schema="publication",
+                locator=str(index),
+            )
+        operation, key, fingerprint, sequence, record_ids = publication
+        if (
+            not all(type(value) is str for value in (operation, key, fingerprint, record_ids))
+            or type(sequence) is not int
+        ):
+            raise H1OwnerInventoryFailure.corrupt(
+                family="WORKSPACE",
+                owner="workspace_policy",
+                schema="publication",
+                locator=str(index),
+            )
+        operation_text = cast(str, operation)
+        key_text = cast(str, key)
+        fingerprint_text = cast(str, fingerprint)
+        record_ids_text = cast(str, record_ids)
+        sequence_rows = rows_by_sequence.get(sequence, ())
+        has_v2_row = any(
+            (row.owner, row.schema) == ("workspace_policy", "chiplog.workspace.policy.v2")
+            for row in sequence_rows
+        )
+        if operation_text != "workspace.policy.h1.v2" and not has_v2_row:
+            continue
+        if (
+            operation_text != "workspace.policy.h1.v2"
+            or len(sequence_rows) != 1
+            or len(record_ids_text.split("\n")) != 1
+        ):
+            raise H1OwnerInventoryFailure.corrupt(
+                family="WORKSPACE",
+                owner="workspace_policy",
+                schema="publication",
+                locator=str(index),
+            )
+        row = sequence_rows[0]
+        if (
+            (row.owner, row.schema) != ("workspace_policy", "chiplog.workspace.policy.v2")
+            or record_ids_text != row.record_id
+            or key_text != row.record_id
+            or fingerprint_text != hashlib.sha256(row.raw).hexdigest()
+        ):
+            raise H1OwnerInventoryFailure.corrupt(
+                family="WORKSPACE", owner=row.owner, schema=row.schema, locator=row.record_id
+            )
+
+
 def _verify_selected_publication(
     selected: H1SelectedSeal, publications: tuple[tuple[object, ...], ...]
 ) -> None:
@@ -1152,6 +1228,7 @@ def read_h1_scoped_owner_inventory(
     workspace: H1VerifiedWorkspaceClosure,
     phase: Phase,
     selected_seal: H1SelectedSeal | None = None,
+    historical_cut: _H1SelectedCut | None = None,
 ) -> H1InventoryReceipt:
     """Read every tenant physical family before making any owner-negative claim.
 
@@ -1166,6 +1243,8 @@ def read_h1_scoped_owner_inventory(
         phase != "PRE_SEAL" and type(selected_seal) is not H1SelectedSeal
     ):
         raise ValueError("H1 inventory phase has an invalid selected seal argument")
+    if (phase == "HISTORICAL") != (historical_cut is not None):
+        raise ValueError("H1 inventory historical cut is invalid")
     scope = _scope(captured, selected_prepare, workspace)
     gate_factory = getattr(runtime, "_authority_gate", None)
     if not callable(gate_factory):
@@ -1188,7 +1267,11 @@ def read_h1_scoped_owner_inventory(
             _reauthenticate_selected_prepare(
                 runtime, captured, selected_prepare, workspace, phase, selected_seal
             )
-            scope = _merge_workspace_sources(scope, _workspace_inventory_item(runtime, workspace))
+            scope = _merge_workspace_sources(
+                scope,
+                _workspace_inventory_item(runtime, workspace),
+                issuance_ref=workspace.issuance,
+            )
         except H1OwnerInventoryFailure:
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as error:
@@ -1221,55 +1304,80 @@ def read_h1_scoped_owner_inventory(
         if runtime._pending_owners() or runtime._pending() or runtime._pending_gate_publications():
             raise H1OwnerInventoryFailure.incomplete(family="PENDING", locator="runtime")
 
-        with read_connection(runtime._database) as connection:
-            commitment = capture_authority_snapshot_commitment(connection, scope.tenant)
-            anchored = runtime._commitment_journal.load(scope.tenant)
-            if commitment != anchored:
+        snapshot_rows: H1VerifiedSnapshotRows | None = None
+        if phase == "HISTORICAL":
+            assert selected_seal is not None
+            assert historical_cut is not None
+            if (
+                selected_seal.command != historical_cut.command
+                or selected_seal.decision_bytes != historical_cut.decision_bytes
+                or selected_seal.decision_id != historical_cut.decision_id
+            ):
                 raise H1OwnerInventoryFailure.corrupt(
-                    family="ANCHOR", owner="", schema="", locator="commitment"
+                    family="CHECKPOINT", owner="", schema="", locator="selected"
                 )
-            head_row = connection.execute(
-                "SELECT head FROM tenant_heads WHERE tenant_id=?", (scope.tenant,)
-            ).fetchone()
-            tenant_sequence = 0 if head_row is None else int(head_row[0])
-            limit = "" if boundary is None else " AND commit_sequence <= ?"
-            params: tuple[object, ...] = (
-                (scope.tenant,) if boundary is None else (scope.tenant, boundary)
-            )
-            publications = tuple(
-                connection.execute(
-                    "SELECT operation_kind,idempotency_key,request_fingerprint,"
-                    "commit_sequence,record_ids "
-                    "FROM publications WHERE tenant_id=?"
-                    + limit
-                    + " ORDER BY commit_sequence,operation_kind,idempotency_key",
-                    params,
+            snapshot_rows = historical_cut.rows
+
+        if snapshot_rows is not None:
+            commitment = snapshot_rows.commitment
+            tenant_sequence = snapshot_rows.tenant_head(scope.tenant)
+            publications = snapshot_rows.publications(scope.tenant, through_sequence=boundary)
+            records_raw = snapshot_rows.records(scope.tenant, through_sequence=boundary)
+            evidence = snapshot_rows.evidence(scope.tenant)
+        else:
+            with read_connection(runtime._database) as connection:
+                commitment = capture_authority_snapshot_commitment(connection, scope.tenant)
+                anchored = runtime._commitment_journal.load(scope.tenant)
+                if commitment != anchored:
+                    raise H1OwnerInventoryFailure.corrupt(
+                        family="ANCHOR", owner="", schema="", locator="commitment"
+                    )
+                head_row = connection.execute(
+                    "SELECT head FROM tenant_heads WHERE tenant_id=?", (scope.tenant,)
+                ).fetchone()
+                tenant_sequence = 0 if head_row is None else int(head_row[0])
+                limit = "" if boundary is None else " AND commit_sequence <= ?"
+                params: tuple[object, ...] = (
+                    (scope.tenant,) if boundary is None else (scope.tenant, boundary)
                 )
-            )
-            records_raw = tuple(
-                connection.execute(
-                    "SELECT record_id,owner,schema_id,canonical_bytes,commit_sequence FROM records "
-                    "WHERE tenant_id=?" + limit + " ORDER BY commit_sequence,record_id",
-                    params,
+                publications = tuple(
+                    connection.execute(
+                        "SELECT operation_kind,idempotency_key,request_fingerprint,"
+                        "commit_sequence,record_ids "
+                        "FROM publications WHERE tenant_id=?"
+                        + limit
+                        + " ORDER BY commit_sequence,operation_kind,idempotency_key",
+                        params,
+                    )
                 )
-            )
-            evidence = tuple(
-                connection.execute(
-                    "SELECT source_id,evidence_id,fingerprint,canonical_bytes,followup_kind,"
-                    "state,attempt_id,transport_version,cursor "
-                    "FROM evidence_inbox WHERE tenant_id=? ORDER BY source_id,evidence_id",
-                    (scope.tenant,),
+                records_raw = tuple(
+                    connection.execute(
+                        "SELECT record_id,owner,schema_id,canonical_bytes,commit_sequence "
+                        "FROM records "
+                        "WHERE tenant_id=?" + limit + " ORDER BY commit_sequence,record_id",
+                        params,
+                    )
                 )
-            )
+                evidence = tuple(
+                    connection.execute(
+                        "SELECT source_id,evidence_id,fingerprint,canonical_bytes,followup_kind,"
+                        "state,attempt_id,transport_version,cursor "
+                        "FROM evidence_inbox WHERE tenant_id=? ORDER BY source_id,evidence_id",
+                        (scope.tenant,),
+                    )
+                )
         owner_prefix_bytes = b""
         selected_input_bytes = b""
         selected_input_ids: frozenset[str] = frozenset()
         selected_input_decisions: tuple[Any, ...] = ()
         try:
             rows = tuple(
-                _PhysicalRow(str(a), str(b), str(c), bytes(d), int(e))
+                _PhysicalRow(str(a), str(b), str(c), d, e)
                 for a, b, c, d, e in records_raw
+                if type(d) is bytes and type(e) is int
             )
+            if len(rows) != len(records_raw):
+                raise ValueError("physical checkpoint row types differ")
             if phase == "HISTORICAL":
                 assert selected_seal is not None
                 owner_snapshot, owner_prefix_bytes = _reconcile_historical_owner_cut(
@@ -1282,6 +1390,7 @@ def read_h1_scoped_owner_inventory(
                     selected_input_decisions,
                 ) = _selected_input_roles(runtime, selected_prepare, captured, publications, rows)
             _validate_publication_membership(publications, rows, scope.tenant)
+            _validate_v2_workspace_policy_publications(publications, rows)
             scope = _complete_run_ancestry(scope, rows)
             if selected_seal is not None:
                 _verify_selected_publication(selected_seal, publications)

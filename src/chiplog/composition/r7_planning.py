@@ -151,6 +151,7 @@ class R7PlanningRuntime:
     """The broker is the only object holding trust, SQLite, writer, and token authority."""
 
     _record_contracts: ClassVar[dict[str, str]] = {"planning": _SCHEMA}
+    _checkpoint_bundle_admission: ClassVar[bool] = False
     _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = ()
     _derivative_contracts: ClassVar[tuple[str, ...]] = ()
 
@@ -980,9 +981,14 @@ async def _open_runtime(
     manifest: RuntimeAssemblyManifest,
     extra_leaves: Mapping[str, object] | None = None,
     runtime_setup: Callable[[R7PlanningRuntime], None] | None = None,
+    preflight: Callable[[AuthorityGate], object] | None = None,
+    store_setup: Callable[[SQLiteMaterializer, AuthorityGate, object], None] | None = None,
 ) -> AsyncIterator[R7PlanningRuntime]:
     authority_gate = AuthorityGate.for_database(database)
     database = authority_gate.database
+    # This must run before any runtime-owned sidecar constructor.  Installed
+    # mounts use it to deny an absent/foreign evidence role without repair.
+    preflight_result = preflight(authority_gate) if preflight is not None else None
     journal = IndependentTenantDecisionJournal.for_authority_bundle(
         database.with_suffix(database.suffix + ".trust-journal"), authority_gate=authority_gate
     )
@@ -1004,32 +1010,40 @@ async def _open_runtime(
         read_ledger=read_ledger,
         trust=trust,
     )
-    with SQLiteMaterializer(
-        database,
-        record_contracts=runtime_type._record_contracts,
-        authority_gate=authority_gate,
-        record_schema_variants=runtime_type._record_schema_variants,
-        derivative_contracts=runtime_type._derivative_contracts,
-        managed_derivative_sinks=runtime_type._derivative_contracts,
-    ) as store:
-        async with EventAppender(store, capacity=4) as appender:
-            commitment_journal = AuthorityCommitmentJournal(
-                database, operator_secret, authority_gate=authority_gate
-            )
-            runtime = runtime_type(
-                tenant_id,
-                trust,
-                journal,
-                planning_store.path or database,
-                read_ledger,
-                commitment_journal,
-                appender,
-                supervisor,
-            )
-            if runtime_setup is not None:
-                runtime_setup(runtime)
-            runtime._bind_appender()
-            try:
+    materializer_kwargs = {
+        "record_contracts": runtime_type._record_contracts,
+        "authority_gate": authority_gate,
+        "record_schema_variants": runtime_type._record_schema_variants,
+        "derivative_contracts": runtime_type._derivative_contracts,
+        "managed_derivative_sinks": runtime_type._derivative_contracts,
+    }
+    factory: Any = (
+        SQLiteMaterializer._open_for_broker_bootstrap
+        if runtime_type._checkpoint_bundle_admission
+        else SQLiteMaterializer
+    )
+    runtime: R7PlanningRuntime | None = None
+    try:
+        with factory(database, **materializer_kwargs) as store:
+            if store_setup is not None:
+                store_setup(store, authority_gate, preflight_result)
+            async with EventAppender(store, capacity=4) as appender:
+                commitment_journal = AuthorityCommitmentJournal(
+                    database, operator_secret, authority_gate=authority_gate
+                )
+                runtime = runtime_type(
+                    tenant_id,
+                    trust,
+                    journal,
+                    planning_store.path or database,
+                    read_ledger,
+                    commitment_journal,
+                    appender,
+                    supervisor,
+                )
+                runtime._bind_appender()
+                if runtime_setup is not None:
+                    runtime_setup(runtime)
                 trust.recover_materialization()
                 trust_state = trust.verify()
                 if trust_state is not None and trust_state.phase == "ACTIVE":
@@ -1039,9 +1053,12 @@ async def _open_runtime(
                     await runtime._prepare_startup()
                     runtime.restart_generation()
                 yield runtime
-            finally:
-                runtime.close()
-    trust_store.close()
+    finally:
+        if runtime is not None:
+            runtime.close()
+        else:
+            supervisor.close()
+        trust_store.close()
 
 
 __all__ = ["R7PlanningRuntime", "open_r7_runtime"]

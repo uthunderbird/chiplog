@@ -46,6 +46,7 @@ from chiplog.platform.ingress_authenticated_contracts import (
     AuthenticatedCustodyRecord,
 )
 from chiplog.platform.ingress_custody_records import CustodyRecord, canonical, digest
+from chiplog.platform.owner_decision_journal import OwnerJournalSnapshot
 from chiplog.platform.owner_publications import SelectedOwnerDecision
 from chiplog.platform.publication_readback import inspect_publication
 
@@ -135,6 +136,132 @@ def _physical(
         sequence,
         "",
     )
+
+
+def _bounded_physical(
+    command: PhysicalPublicationCommand,
+    member: PhysicalRecord,
+    publications: tuple[tuple[object, ...], ...],
+    rows: tuple[object, ...],
+) -> InputOccurrenceKey:
+    """Match one member against only the caller's authenticated SQL cut."""
+    sequence = command.expected_head + 1
+    matching_rows = tuple(
+        row for row in rows if getattr(row, "record_id", None) == member.record_id
+    )
+    if len(matching_rows) != 1 or (
+        getattr(matching_rows[0], "owner", None),
+        getattr(matching_rows[0], "schema", None),
+        getattr(matching_rows[0], "raw", None),
+        getattr(matching_rows[0], "sequence", None),
+    ) != (member.owner, member.schema_id, member.canonical_bytes, sequence):
+        raise ValueError("selected input physical member differs from bounded publication")
+    expected = (
+        command.operation_kind,
+        command.idempotency_key,
+        command.request_fingerprint,
+        sequence,
+        member.record_id,
+    )
+    if sum(tuple(item) == expected for item in publications) != 1:
+        raise ValueError("selected input SQL publication differs from bounded command")
+    return InputOccurrenceKey(
+        command.tenant_id,
+        member.owner,
+        member.schema_id,
+        member.record_id,
+        member.canonical_bytes,
+        member.fingerprint,
+        command.operation_kind,
+        command.idempotency_key,
+        command.request_fingerprint,
+        sequence,
+        "",
+    )
+
+
+def _bounded_run_chain(
+    captured: ExecutionRunRecord, rows: tuple[object, ...]
+) -> tuple[ExecutionRunRecord, ...]:
+    by_head: dict[str, ExecutionRunRecord] = {}
+    for row in rows:
+        if (
+            getattr(row, "owner", None) != LOOP_OWNER
+            or getattr(row, "schema", None) != EXECUTION_RUN_SCHEMA
+        ):
+            continue
+        record_id, raw = getattr(row, "record_id", None), getattr(row, "raw", None)
+        if not isinstance(record_id, str) or not isinstance(raw, bytes):
+            raise ValueError("bounded native Run physical member is malformed")
+        run = decode_execution_run_member(
+            ExecutionRunCanonicalMember(
+                record_id=record_id,
+                schema_id=cast(
+                    Literal[
+                        "chiplog.agent-loop.execution-record.v2",
+                        "chiplog.agent-loop.execution-record.v3",
+                    ],
+                    EXECUTION_RUN_SCHEMA,
+                ),
+                canonical_record_bytes=raw,
+                fingerprint=_digest(raw),
+            )
+        ).run
+        if (
+            not isinstance(run, ExecutionRunRecord)
+            or run.canonical_bytes() != raw
+            or run.head != record_id
+        ):
+            raise ValueError("bounded native Run physical member is not canonical")
+        if run.head in by_head:
+            raise ValueError("bounded native Run history has duplicate heads")
+        by_head[run.head] = run
+    if by_head.get(captured.head) != captured:
+        raise ValueError("captured Run is absent from bounded physical native history")
+    chain: list[ExecutionRunRecord] = []
+    current = captured
+    while True:
+        chain.append(current)
+        if current.predecessor is None:
+            break
+        predecessor = by_head.get(current.predecessor)
+        if predecessor is None or predecessor.run_id != current.run_id:
+            raise ValueError("selected native Run bounded ancestry has a gap")
+        current = predecessor
+    return tuple(reversed(chain))
+
+
+def _bounded_publication(tenant: str, entry: dict[str, object]) -> PhysicalPublicationCommand:
+    records = entry.get("records")
+    if not isinstance(records, list):
+        raise ValueError("selected H0 envelope has malformed physical records")
+    try:
+        members = tuple(
+            PhysicalRecord(
+                str(item["record_id"]),
+                str(item["owner"]),
+                str(item["schema"]),
+                base64.b64decode(str(item["payload"]), validate=True),
+                str(item["digest"]),
+            )
+            for item in records
+            if isinstance(item, dict)
+        )
+        if len(members) != len(records):
+            raise ValueError("selected H0 envelope has malformed physical record")
+        return PhysicalPublicationCommand(
+            tenant,
+            str(entry["operation_kind"]),
+            str(entry["operation_id"]),
+            str(entry["fingerprint"]),
+            cast(int, entry["expected_head"]),
+            "r6",
+            0,
+            0,
+            members,
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("selected H0 envelope has malformed publication") from error
 
 
 def _run_chain(
@@ -242,8 +369,66 @@ def _h0(
     return matches[0]
 
 
+def _bounded_h0(
+    tenant: str, entries: tuple[tuple[str, str | None, bytes], ...], root: ExecutionRunRecord
+) -> tuple[
+    str,
+    bytes,
+    RetainedInboxExecutionInitialization,
+    DriveInputRequestV1,
+    PhysicalPublicationCommand,
+]:
+    """Read the one root-linked H0 from an already selected loop prefix."""
+    matches: list[
+        tuple[
+            str,
+            bytes,
+            RetainedInboxExecutionInitialization,
+            DriveInputRequestV1,
+            PhysicalPublicationCommand,
+        ]
+    ] = []
+    for decision_id, _predecessor, raw in entries:
+        try:
+            entry = json.loads(raw)
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("bounded selected H0 journal entry is undecodable") from error
+        if not isinstance(entry, dict) or entry.get("kind") != "DECIDED":
+            continue
+        if entry.get("operation_kind") != EXECUTION_INBOX_INITIALIZATION_OPERATION:
+            continue
+        evidence_raw = entry.get("inbox_initialization")
+        if not isinstance(evidence_raw, str):
+            raise ValueError("bounded selected H0 envelope lacks initialization evidence")
+        evidence = RetainedInboxExecutionInitialization.model_validate_json(evidence_raw)
+        # Select by the authenticated root linkage before applying selected-root
+        # invariants, so unrelated H0 entries in the prefix remain inventory work.
+        if evidence.proposal.run != root:
+            continue
+        command = inbox_initialization_command(evidence)
+        if (
+            evidence.canonical_bytes() != evidence_raw.encode()
+            or _bounded_publication(tenant, entry) != command
+            or entry.get("expected_head") != evidence.expected_head
+            or entry.get("predecessor") != evidence.predecessor_commitment
+            or len(command.records) != 1
+            or command.records[0].canonical_bytes != root.canonical_bytes()
+        ):
+            raise ValueError("bounded selected H0 command, root Run, or envelope differs")
+        wire = DriveInputRequestV1.model_validate_json(evidence.driver_request_bytes)
+        if (
+            wire.canonical_bytes() != evidence.driver_request_bytes
+            or evidence.driver_request_fingerprint != wire.original_driver_command_fingerprint()
+        ):
+            raise ValueError("bounded selected H0 driver request is noncanonical")
+        matches.append((decision_id, raw, evidence, wire, command))
+    if len(matches) != 1:
+        raise ValueError("selected native root has no unique bounded H0 initialization")
+    return matches[0]
+
+
 def _r17(
-    runtime: CommonCliExecutionRuntime,
+    history: OwnerJournalSnapshot,
     wire: DriveInputRequestV1,
     evidence: RetainedInboxExecutionInitialization,
 ) -> tuple[
@@ -253,7 +438,6 @@ def _r17(
     PhysicalPublicationCommand,
     tuple[tuple[SelectedOwnerDecision, PhysicalPublicationCommand, str], ...],
 ]:
-    history = runtime._owner_decisions().snapshot()
     # This is retained-history validation, not a current inbox/source read.
     records, _custody = validate_selected_ingress(history)
     ingress = tuple(decision for decision in history.decisions if is_ingress(decision))
@@ -458,7 +642,9 @@ def read_h1_selected_input_role(
                 raise ValueError("selected Prepare does not belong to the captured native ancestry")
             decision_id, decision_bytes, initialization, wire, h0_command = _h0(runtime, chain[0])
             h0 = _physical(connection, h0_command, h0_command.records[0])
-            decision, command, record, _r17_command, inbound = _r17(runtime, wire, initialization)
+            decision, command, record, _r17_command, inbound = _r17(
+                runtime._owner_decisions().snapshot(), wire, initialization
+            )
             inbound_rows = tuple(
                 _physical(connection, item[1], item[1].records[0]) for item in inbound
             )
@@ -508,6 +694,108 @@ def read_h1_selected_input_role(
                         if name == "canonical_bytes"
                         else getattr(item, name)
                     )
+                    for name in item.__dataclass_fields__
+                }
+                for item in occurrences
+            ],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return H1SelectedInputRoleWitness(
+        decision_id,
+        decision_bytes,
+        initialization,
+        wire,
+        decision,
+        command,
+        record,
+        tuple(item[0] for item in inbound),
+        occurrences,
+        _digest(preimage),
+    )
+
+
+def _read_h1_historical_selected_input_role(
+    selected: H1SelectedPrepare,
+    captured: ExecutionRunRecord,
+    loop_entries: tuple[tuple[str, str | None, bytes], ...],
+    owner_snapshot: OwnerJournalSnapshot,
+    publications: tuple[tuple[object, ...], ...],
+    rows: tuple[object, ...],
+) -> H1SelectedInputRoleWitness:
+    """Derive the exact H0/R17 role from only an authenticated historical cut.
+
+    This private seam intentionally accepts no runtime.  Its caller owns the
+    selected-seal, loop-prefix, owner-prefix, and SQL-cut authentication.
+    """
+    if type(selected) is not H1SelectedPrepare or type(captured) is not ExecutionRunRecord:
+        raise TypeError("historical selected input role requires selected Prepare and captured Run")
+    if not isinstance(owner_snapshot, OwnerJournalSnapshot):
+        raise TypeError("historical selected input role requires an owner snapshot")
+    if any(
+        not isinstance(item, tuple)
+        or len(item) != 3
+        or not isinstance(item[0], str)
+        or (item[1] is not None and not isinstance(item[1], str))
+        or not isinstance(item[2], bytes)
+        for item in loop_entries
+    ):
+        raise TypeError("historical selected input role requires canonical loop entries")
+    chain = _bounded_run_chain(captured, rows)
+    if selected.started_run not in chain or selected.started_run.predecessor is None:
+        raise ValueError("selected Prepare does not belong to the bounded native ancestry")
+    decision_id, decision_bytes, initialization, wire, h0_command = _bounded_h0(
+        owner_snapshot.tenant_id, loop_entries, chain[0]
+    )
+    h0 = _bounded_physical(h0_command, h0_command.records[0], publications, rows)
+    decision, command, record, _r17_command, inbound = _r17(owner_snapshot, wire, initialization)
+    if len(inbound) != 3:
+        raise ValueError("selected historical R17 role has a non-exact predecessor set")
+    inbound_rows = tuple(
+        _bounded_physical(item[1], item[1].records[0], publications, rows) for item in inbound
+    )
+    occurrences = (
+        InputOccurrenceKey(
+            h0.tenant,
+            h0.owner,
+            h0.schema,
+            h0.record_id,
+            h0.canonical_bytes,
+            h0.fingerprint,
+            h0.operation,
+            h0.command_id,
+            h0.command_fingerprint,
+            h0.commit_sequence,
+            "H0_NATIVE_INPUT",
+        ),
+        *(
+            InputOccurrenceKey(
+                item.tenant,
+                item.owner,
+                item.schema,
+                item.record_id,
+                item.canonical_bytes,
+                item.fingerprint,
+                item.operation,
+                item.command_id,
+                item.command_fingerprint,
+                item.commit_sequence,
+                reason,
+            )
+            for item, (_decision, _command, reason) in zip(inbound_rows, inbound, strict=True)
+        ),
+    )
+    preimage = json.dumps(
+        {
+            "h0": base64.b64encode(decision_bytes).decode(),
+            "r17": base64.b64encode(canonical(record)).decode(),
+            "owner_head": owner_snapshot.head,
+            "occurrences": [
+                {
+                    name: base64.b64encode(getattr(item, name)).decode()
+                    if name == "canonical_bytes"
+                    else getattr(item, name)
                     for name in item.__dataclass_fields__
                 }
                 for item in occurrences

@@ -27,7 +27,7 @@ from chiplog.composition.r14_fanout_contracts import SEAL_SCHEMA, FanOutPhysical
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 
 EXECUTION_COMPLETE_SEAL_OPERATION = "agent_loop.execution-complete-seal.v1"
-CompleteSealProfile = Literal["V1", "H1_V2"]
+CompleteSealProfile = Literal["V1", "H1_V2", "H1_V3"]
 
 
 def _require(condition: bool, reason: str) -> None:
@@ -82,6 +82,18 @@ class RetainedExecutionCompleteSealV2(RecoveryDTO):
     registry_reference: CallSubjectHead
 
 
+class RetainedExecutionCompleteSealV3(RecoveryDTO):
+    """Prospective full-authority checkpoint selection with a static carrier profile."""
+
+    kind: Literal["R14_SELECTED_EXECUTION_COMPLETE_SEAL_V3"] = (
+        "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V3"
+    )
+    profile: Literal["H1_FULL_AUTHORITY_CHECKPOINT_V1"] = "H1_FULL_AUTHORITY_CHECKPOINT_V1"
+    exchange: RetainedExecutionFanOutPreparation
+    canonical_registry_base64: Identity
+    registry_reference: CallSubjectHead
+
+
 class ExecutionCompleteSealPhysicalEnvelope(RecoveryDTO):
     kind: Literal["R14_EXECUTION_COMPLETE_SEAL_PHYSICAL_V1"] = (
         "R14_EXECUTION_COMPLETE_SEAL_PHYSICAL_V1"
@@ -118,6 +130,38 @@ class ExecutionCompleteSealPhysicalEnvelopeV2(RecoveryDTO):
     request_fingerprint: Digest
 
 
+class ExecutionCompleteSealPhysicalEnvelopeV3(RecoveryDTO):
+    """Static physical discriminator for the full-authority checkpoint profile."""
+
+    kind: Literal["R14_EXECUTION_COMPLETE_SEAL_PHYSICAL_V3"] = (
+        "R14_EXECUTION_COMPLETE_SEAL_PHYSICAL_V3"
+    )
+    profile: Literal["H1_FULL_AUTHORITY_CHECKPOINT_V1"] = "H1_FULL_AUTHORITY_CHECKPOINT_V1"
+    tenant_id: Identity
+    operation_kind: Literal["agent_loop.execution-complete-seal.v1"] = (
+        "agent_loop.execution-complete-seal.v1"
+    )
+    idempotency_key: Identity
+    expected_head: UInt64
+    fence_generation: Literal["r6"] = "r6"
+    expected_fence_frontier: Literal[0] = 0
+    minimum_fence_frontier: Literal[0] = 0
+    records: tuple[FanOutPhysicalMember, FanOutPhysicalMember, FanOutPhysicalMember]
+    request_fingerprint: Digest
+
+
+type RetainedCompleteSeal = (
+    RetainedExecutionCompleteSeal
+    | RetainedExecutionCompleteSealV2
+    | RetainedExecutionCompleteSealV3
+)
+type CompleteSealEnvelope = (
+    ExecutionCompleteSealPhysicalEnvelope
+    | ExecutionCompleteSealPhysicalEnvelopeV2
+    | ExecutionCompleteSealPhysicalEnvelopeV3
+)
+
+
 @overload
 def retained_execution_complete_seal(
     exchange: RetainedExecutionFanOutPreparation,
@@ -140,11 +184,19 @@ def retained_execution_complete_seal(
 ) -> RetainedExecutionCompleteSealV2: ...
 
 
+@overload
+def retained_execution_complete_seal(
+    exchange: RetainedExecutionFanOutPreparation,
+    *,
+    profile: Literal["H1_V3"],
+) -> RetainedExecutionCompleteSealV3: ...
+
+
 def retained_execution_complete_seal(
     exchange: RetainedExecutionFanOutPreparation,
     *,
     profile: CompleteSealProfile = "V1",
-) -> RetainedExecutionCompleteSeal | RetainedExecutionCompleteSealV2:
+) -> RetainedCompleteSeal:
     registry = (
         execution_zero_call_frontier_registry()
         if profile == "V1"
@@ -152,6 +204,12 @@ def retained_execution_complete_seal(
     )
     if profile == "H1_V2":
         return RetainedExecutionCompleteSealV2(
+            exchange=exchange,
+            canonical_registry_base64=base64.b64encode(registry.canonical_bytes()).decode(),
+            registry_reference=frontier_registry_reference(registry),
+        )
+    if profile == "H1_V3":
+        return RetainedExecutionCompleteSealV3(
             exchange=exchange,
             canonical_registry_base64=base64.b64encode(registry.canonical_bytes()).decode(),
             registry_reference=frontier_registry_reference(registry),
@@ -164,7 +222,7 @@ def retained_execution_complete_seal(
 
 
 def _verified(
-    retained: RetainedExecutionCompleteSeal | RetainedExecutionCompleteSealV2,
+    retained: RetainedCompleteSeal,
 ) -> tuple[ExecutionRunRecord, bytes]:
     exchange = RetainedExecutionFanOutPreparation.model_validate_json(
         retained.exchange.canonical_bytes()
@@ -209,20 +267,29 @@ def build_complete_seal_envelope(
 ) -> ExecutionCompleteSealPhysicalEnvelopeV2: ...
 
 
+@overload
 def build_complete_seal_envelope(
-    retained: RetainedExecutionCompleteSeal | RetainedExecutionCompleteSealV2,
-) -> ExecutionCompleteSealPhysicalEnvelope | ExecutionCompleteSealPhysicalEnvelopeV2:
+    retained: RetainedExecutionCompleteSealV3,
+) -> ExecutionCompleteSealPhysicalEnvelopeV3: ...
+
+
+def build_complete_seal_envelope(
+    retained: RetainedCompleteSeal,
+) -> CompleteSealEnvelope:
     if type(retained) is RetainedExecutionCompleteSeal:
         retained = RetainedExecutionCompleteSeal.model_validate_json(retained.canonical_bytes())
         return _build_complete_seal_envelope_v1(retained)
     if type(retained) is RetainedExecutionCompleteSealV2:
         retained = RetainedExecutionCompleteSealV2.model_validate_json(retained.canonical_bytes())
         return _build_complete_seal_envelope_v2(retained)
+    if type(retained) is RetainedExecutionCompleteSealV3:
+        retained = RetainedExecutionCompleteSealV3.model_validate_json(retained.canonical_bytes())
+        return _build_complete_seal_envelope_v3(retained)
     raise ValueError("unsupported complete seal retained profile")
 
 
 def _complete_seal_records(
-    retained: RetainedExecutionCompleteSeal | RetainedExecutionCompleteSealV2,
+    retained: RetainedCompleteSeal,
 ) -> tuple[
     ExecutionRunRecord, tuple[FanOutPhysicalMember, FanOutPhysicalMember, FanOutPhysicalMember]
 ]:
@@ -282,8 +349,29 @@ def _build_complete_seal_envelope_v2(
     return envelope
 
 
+def _build_complete_seal_envelope_v3(
+    retained: RetainedExecutionCompleteSealV3,
+) -> ExecutionCompleteSealPhysicalEnvelopeV3:
+    run, records = _complete_seal_records(retained)
+    envelope = ExecutionCompleteSealPhysicalEnvelopeV3(
+        tenant_id=run.tenant,
+        idempotency_key=run.head,
+        expected_head=retained.exchange.request.request.cut.tenant_commit_sequence,
+        records=records,
+        request_fingerprint="0" * 64,
+    )
+    envelope = envelope.model_copy(update={"request_fingerprint": _without_fingerprint(envelope)})
+    _require(
+        len(envelope.canonical_bytes())
+        <= retained.exchange.request.request.bound.max_serialized_batch_bytes,
+        "complete seal physical envelope exceeds bound",
+    )
+    complete_seal_physical_command(envelope)
+    return envelope
+
+
 def complete_seal_physical_command(
-    envelope: ExecutionCompleteSealPhysicalEnvelope | ExecutionCompleteSealPhysicalEnvelopeV2,
+    envelope: CompleteSealEnvelope,
 ) -> PhysicalPublicationCommand:
     if type(envelope) is ExecutionCompleteSealPhysicalEnvelope:
         envelope = ExecutionCompleteSealPhysicalEnvelope.model_validate_json(
@@ -291,6 +379,10 @@ def complete_seal_physical_command(
         )
     elif type(envelope) is ExecutionCompleteSealPhysicalEnvelopeV2:
         envelope = ExecutionCompleteSealPhysicalEnvelopeV2.model_validate_json(
+            envelope.canonical_bytes()
+        )
+    elif type(envelope) is ExecutionCompleteSealPhysicalEnvelopeV3:
+        envelope = ExecutionCompleteSealPhysicalEnvelopeV3.model_validate_json(
             envelope.canonical_bytes()
         )
     else:

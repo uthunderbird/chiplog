@@ -42,7 +42,7 @@ from chiplog.composition.r16_dispatch_registry import (
 from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 from chiplog.platform.broker import PublicPortSuccess
 from chiplog.platform.owner_publications import SelectedOwnerDecision
-from chiplog.platform.r7_trust import TrustOwnerCall
+from chiplog.platform.r7_trust import decode_trust_owner_call_canonical
 
 if TYPE_CHECKING:
     from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV1
@@ -284,10 +284,10 @@ def _verify_historical_scope(
     reader = cast(Any, trust_reader)
     if reader.authority_gate is not gate:
         raise ValueError("H1 historical trust reader has a different authority gate")
-    issue_wire = TrustOwnerCall.model_validate_json(
+    issue_wire = decode_trust_owner_call_canonical(
         issuance.scope_issue_exchange.sent.canonical_payload
     )
-    current_wire = TrustOwnerCall.model_validate_json(
+    current_wire = decode_trust_owner_call_canonical(
         issuance.scope_current_exchange.sent.canonical_payload
     )
     issue_call = H1OwnerCandidateCallV1.model_validate_json(issue_wire.request_bytes)

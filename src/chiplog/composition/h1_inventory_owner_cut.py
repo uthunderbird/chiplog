@@ -16,7 +16,10 @@ from typing import Literal, get_args
 from pydantic import TypeAdapter, ValidationError
 
 from chiplog.composition.h1_preseal_contracts import H1OwnerAsOfV1, H1SelectedSeal
-from chiplog.composition.r14_execution_complete_seal_records import RetainedExecutionCompleteSealV2
+from chiplog.composition.r14_execution_complete_seal_records import (
+    RetainedExecutionCompleteSealV2,
+    RetainedExecutionCompleteSealV3,
+)
 from chiplog.platform._owner_publication_contracts import (
     BrokerOperation,
     OwnerCommandBytes,
@@ -336,7 +339,20 @@ def _parse_h1_owner_asof(selected_seal: H1SelectedSeal, tenant: str) -> H1OwnerA
     if not isinstance(retained_raw, str):
         raise H1OwnerCutFailure("UNSUPPORTED", "HISTORICAL_OWNER")
     try:
-        retained = RetainedExecutionCompleteSealV2.model_validate_json(retained_raw)
+        retained_wire = _strict_json(retained_raw.encode())
+        if not isinstance(retained_wire, dict):
+            raise ValueError("retained seal is not an object")
+        kind = retained_wire.get("kind")
+        if kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V2":
+            if "h1_historical_checkpoint" in decision:
+                raise ValueError("V2 checkpoint extension")
+            retained: RetainedExecutionCompleteSealV2 | RetainedExecutionCompleteSealV3 = (
+                RetainedExecutionCompleteSealV2.model_validate_json(retained_raw)
+            )
+        elif kind == "R14_SELECTED_EXECUTION_COMPLETE_SEAL_V3":
+            retained = RetainedExecutionCompleteSealV3.model_validate_json(retained_raw)
+        else:
+            raise ValueError("unsupported selected complete seal profile")
     except ValueError as error:
         raise _corrupt("selected-loop-decision/v2-retained") from error
     if retained.canonical_bytes() != retained_raw.encode():

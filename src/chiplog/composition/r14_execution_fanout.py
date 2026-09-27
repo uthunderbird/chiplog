@@ -41,14 +41,17 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
     Present,
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import FanOutBound
+from chiplog.platform.authority_checkpoint import AuthorityCheckpointRefV1, AuthorityCheckpointStore
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 
 from .r14_execution_complete_seal_records import (
     CompleteSealProfile,
     ExecutionCompleteSealPhysicalEnvelope,
     ExecutionCompleteSealPhysicalEnvelopeV2,
+    ExecutionCompleteSealPhysicalEnvelopeV3,
     RetainedExecutionCompleteSeal,
     RetainedExecutionCompleteSealV2,
+    RetainedExecutionCompleteSealV3,
     build_complete_seal_envelope,
     complete_seal_physical_command,
     retained_execution_complete_seal,
@@ -109,7 +112,7 @@ async def publish_execution_fanout(
     h1_owner_asof: H1OwnerAsOfV1 | None = None
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
-        if complete_profile not in ("V1", "H1_V2"):
+        if complete_profile not in ("V1", "H1_V2", "H1_V3"):
             raise LoopRejected("unregistered execution complete seal profile")
         snapshot, inventory, previous = read_execution_call_history(runtime)
         lineage = [row for row in snapshot.records if row.run_id == run_id]
@@ -135,7 +138,7 @@ async def publish_execution_fanout(
         parsed = parse_execution_response(
             base64.b64decode(attempt.response_base64, validate=True), attempt.manifest.artifact
         )
-        if complete_profile == "H1_V2":
+        if complete_profile in ("H1_V2", "H1_V3"):
             # H1 evidence is a broker-private native-runtime read.  A plain
             # R14 assembly has no mounted original-workspace/inventory reader
             # and must stay fail-closed before it can propose to the owner.
@@ -147,7 +150,7 @@ async def publish_execution_fanout(
                 raise LoopRejected("H1 workspace original verification is unavailable")
             h1_runtime = runtime
             if not complete_registry or isinstance(parsed, ExecutionContinue):
-                raise LoopRejected("H1 V2 requires an eligible zero-call Complete")
+                raise LoopRejected("H1 complete profile requires an eligible zero-call Complete")
             try:
                 h1_preflight = preflight_h1_v2_seal(runtime, captured, expected_head=expected_head)
             except (
@@ -288,13 +291,21 @@ async def publish_execution_fanout(
     )
     if complete_registry and not is_zero_call_complete:
         raise LoopRejected("complete registry requires an eligible zero-call Complete")
+    if complete_profile == "H1_V3" and is_zero_call_complete:
+        runtime.activate_checkpoint_bundle()
     envelope: (
         ExecutionFanOutPhysicalEnvelope
         | ExecutionCompleteSealPhysicalEnvelope
         | ExecutionCompleteSealPhysicalEnvelopeV2
+        | ExecutionCompleteSealPhysicalEnvelopeV3
     )
     if is_zero_call_complete:
-        complete_retained: RetainedExecutionCompleteSeal | RetainedExecutionCompleteSealV2 | None
+        complete_retained: (
+            RetainedExecutionCompleteSeal
+            | RetainedExecutionCompleteSealV2
+            | RetainedExecutionCompleteSealV3
+            | None
+        )
         complete_retained = retained_execution_complete_seal(evidence, profile=complete_profile)
         envelope = build_complete_seal_envelope(complete_retained)
         command = complete_seal_physical_command(envelope)
@@ -302,6 +313,20 @@ async def publish_execution_fanout(
         complete_retained = None
         envelope = build_envelope(evidence)
         command = physical_command(envelope)
+
+    checkpoint_ref: AuthorityCheckpointRefV1 | None = None
+
+    def stage_h1_checkpoint(resulting: str, exact_bytes: bytes) -> None:
+        nonlocal checkpoint_ref
+        if not isinstance(complete_retained, RetainedExecutionCompleteSealV3):
+            raise LoopRejected("checkpoint staging was requested for a non-V3 seal")
+        with runtime._authority_gate().hold():
+            store = cast(AuthorityCheckpointStore, runtime._h1_checkpoint_store())
+            ref = store.stage_verified(exact_bytes)
+            if ref.blob_sha256 != resulting:
+                raise LoopRejected("staged H1 checkpoint digest differs from selected result")
+            checkpoint_ref = ref
+            runtime._h1_checkpoint_staged()
 
     def guard() -> Literal["STALE"] | None:
         nonlocal h1_owner_asof
@@ -353,9 +378,16 @@ async def publish_execution_fanout(
     def decide(resulting: str) -> None:
         with runtime._authority_gate().hold():
             runtime._require_no_pending()
-            if isinstance(complete_retained, RetainedExecutionCompleteSealV2):
+            if isinstance(complete_retained, RetainedExecutionCompleteSealV3) and (
+                checkpoint_ref is None or checkpoint_ref.blob_sha256 != resulting
+            ):
+                raise LoopRejected("H1 V3 checkpoint staging is absent or changed")
+            if isinstance(
+                complete_retained,
+                (RetainedExecutionCompleteSealV2, RetainedExecutionCompleteSealV3),
+            ):
                 if h1_owner_asof is None or h1_runtime is not runtime:
-                    raise LoopRejected("H1 V2 owner as-of admission is unavailable")
+                    raise LoopRejected("H1 owner as-of admission is unavailable")
                 owner_journal = runtime._owner_decisions()
                 if (
                     runtime._appender._materializer.authority_gate is not runtime._authority_gate()
@@ -400,13 +432,41 @@ async def publish_execution_fanout(
                     }
                 ),
             }
-            if isinstance(complete_retained, RetainedExecutionCompleteSealV2):
+            if isinstance(
+                complete_retained,
+                (RetainedExecutionCompleteSealV2, RetainedExecutionCompleteSealV3),
+            ):
                 assert h1_owner_asof is not None
                 decision["h1_owner_asof"] = json.loads(h1_owner_asof.canonical_bytes())
+            if isinstance(complete_retained, RetainedExecutionCompleteSealV3):
+                assert checkpoint_ref is not None
+                path, device, inode = runtime._database_identity
+                decision["h1_historical_checkpoint"] = {
+                    "version": 1,
+                    "reference": checkpoint_ref.model_dump(mode="json"),
+                    "tenant_id": command.tenant_id,
+                    "operation_id": command.idempotency_key,
+                    "commit_sequence": command.expected_head + 1,
+                    "database_binding": {
+                        "canonical_path": path,
+                        "st_dev": device,
+                        "st_ino": inode,
+                    },
+                    "resulting": resulting,
+                }
             runtime._append_decision(decision)
 
     result = await runtime._appender.submit(
-        replace(command, admission_guard=guard, decision_guard=decide)
+        replace(
+            command,
+            admission_guard=guard,
+            decision_guard=decide,
+            authority_checkpoint_guard=(
+                stage_h1_checkpoint
+                if isinstance(complete_retained, RetainedExecutionCompleteSealV3)
+                else None
+            ),
+        )
     )
     if result.disposition not in ("COMMITTED", "REPLAY"):
         raise LoopRejected("execution fanout publication " + result.disposition)

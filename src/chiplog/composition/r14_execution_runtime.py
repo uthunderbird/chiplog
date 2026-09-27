@@ -95,6 +95,9 @@ class R14ExecutionRuntime(R14PlanningRuntime):
         super()._bind_appender()
         self._execution_lane = asyncio.Lock()
 
+    def _h1_checkpoint_staged(self) -> None:
+        """Synchronous fault seam after durable staging and before DECIDED."""
+
     def _check_execution_actor(self, observed: ObservedTrustCall) -> None:
         self._check_database_identity()
         raw = observed.result.reference_bytes
@@ -117,6 +120,33 @@ class R14ExecutionRuntime(R14PlanningRuntime):
             f"uid:{os.getuid()}",
         ):
             raise LoopRejected("caller outside registered hermetic execution ingress")
+
+    @staticmethod
+    def _same_execution_actor_identity(old: ObservedTrustCall, new: ObservedTrustCall) -> bool:
+        """A scope refresh may move trust state, never the authenticated actor."""
+        if (
+            old.request.callee != new.request.callee
+            or old.result.reference_bytes is None
+            or new.result.reference_bytes is None
+        ):
+            return False
+        try:
+            before = json.loads(old.result.reference_bytes)
+            after = json.loads(new.result.reference_bytes)
+        except (TypeError, ValueError):
+            return False
+        return all(
+            before.get(field) == after.get(field)
+            for field in (
+                "tenant_id",
+                "principal_id",
+                "contour",
+                "source_head",
+                "peer_credential",
+                "credential_head",
+                "session_head",
+            )
+        )
 
     async def _execution_actor(self, peer: str) -> ObservedTrustCall:
         if peer != "hermetic-ingress":
@@ -622,7 +652,32 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 ):
                     raise LoopRejected("capture requires fresh initial Turn; unknown cannot retry")
             workspace_port = R13Workspace(self)
-            workspace = await workspace_port.context(started)
+            h1_preissuance_selection = None
+            h1_original_deadline: int | None = None
+            if getattr(self, "_h1_preissuance_registration_source_port", None) is not None:
+                from chiplog.composition.h1_preissuance_registration import (
+                    H1PreissuanceRegistrationSource,
+                )
+
+                source = H1PreissuanceRegistrationSource(self)
+                h1_original_deadline = observed.request.budget.absolute_deadline_ns
+                h1_preissuance_selection = await source.prepare_preissuance(
+                    (started.run_id, started.head), observed.observation
+                )
+                refreshed = await self._execution_actor(peer)
+                with self._authority_gate().hold():
+                    if (
+                        time.monotonic_ns() >= h1_original_deadline
+                        or not self._same_execution_actor_identity(observed, refreshed)
+                        or not source.validate_actor_scope_refresh(
+                            h1_preissuance_selection, observed.observation, refreshed.observation
+                        )
+                    ):
+                        raise LoopRejected("H1 execution actor refresh is stale or substituted")
+                observed = refreshed
+            workspace = await workspace_port.context(
+                started, h1_preissuance_selection=h1_preissuance_selection
+            )
             with self._authority_gate().hold():
                 # Preparing workspace policy may publish before the actual read.
                 # Bind the issued read cut, never silently refresh a stale context.
@@ -729,6 +784,8 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 peer, EmitExecutionAttempt(command_id="emit:" + prepared.head, run=prepared)
             )
             with self._authority_gate().hold():
+                if h1_original_deadline is not None and time.monotonic_ns() >= h1_original_deadline:
+                    raise LoopRejected("H1 execution actor original deadline expired")
                 self._check_execution_actor(observed)
                 current = read_execution_history(self)
                 selected = [run for run in current.records if run.run_id == run_id]
@@ -787,7 +844,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
         run_id: str,
         expected_head: str,
         *,
-        profile: Literal["V1", "H1_V2"] = "V1",
+        profile: Literal["V1", "H1_V2", "H1_V3"] = "V1",
     ) -> ExecutionRunRecord:
         """Select the versioned registry companion for an eligible zero-call Complete."""
         from .r14_execution_fanout import publish_execution_fanout

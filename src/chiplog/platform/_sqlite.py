@@ -14,6 +14,7 @@ from chiplog.platform.authority_gate import AuthorityGate, FileIdentity, checked
 from chiplog.platform.workspace_snapshot import read_connection
 
 STORE_VERSION = 1
+CHECKPOINT_BUNDLE_PROFILE = 0x48314350
 SCHEMA_SQL = """
 CREATE TABLE store_metadata (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1), store_version INTEGER NOT NULL
@@ -99,6 +100,31 @@ class EvidencePossibleLoss(RuntimeError):
     """A non-redeliverable source could not be durably admitted."""
 
 
+AuthorityMutationKind = Literal["publication", "evidence_ingress", "evidence_followup", "fence"]
+
+
+class AuthorityMutationAdmissionError(RuntimeError):
+    """The checkpoint authority bundle refused a physical mutation."""
+
+
+class CheckpointBundleAdmissionError(StoreAdmissionError):
+    """A marked checkpoint database was opened outside the broker bundle."""
+
+
+@dataclass(frozen=True)
+class _AuthorityRecoveryContext:
+    command: PhysicalPublicationCommand
+    predecessor: str
+    resulting: str
+    _issuer: object
+
+
+class _BrokerBootstrapLease:
+    def __init__(self, materializer: SQLiteMaterializer) -> None:
+        self.materializer = materializer
+        self.consumed = False
+
+
 @dataclass(frozen=True)
 class PhysicalRecord:
     record_id: str
@@ -124,6 +150,86 @@ class PhysicalPublicationCommand:
     decision_guard: Callable[[str], Literal["DENIED", "STALE", "INDETERMINATE"] | None] | None = (
         None
     )
+    authority_checkpoint_guard: Callable[[str, bytes], None] | None = None
+
+
+PublicationVerificationMode = Literal["ABSENT", "REPLAY", "PRESELECT", "PRECOMMIT"]
+OwnerPublicationApplicability = Literal["h1", "non_h1"]
+_COMPLETE_ACCEPTANCE_V2 = "agent_loop.complete_acceptance.v2"
+_H1_LOCAL_INTENT_PAIR = (
+    "effects",
+    "chiplog.effects.h1-local-prepared-commentary-intent.v1",
+)
+
+
+@dataclass(frozen=True)
+class PhysicalPublicationProjection:
+    """The command fields whose bytes are authorized at the physical cut."""
+
+    tenant_id: str
+    operation_kind: str
+    idempotency_key: str
+    request_fingerprint: str
+    expected_head: int
+    fence_generation: str
+    expected_fence_frontier: int
+    minimum_fence_frontier: int
+    records: tuple[PhysicalRecord, ...]
+
+    @classmethod
+    def from_command(cls, command: PhysicalPublicationCommand) -> PhysicalPublicationProjection:
+        return cls(
+            command.tenant_id,
+            command.operation_kind,
+            command.idempotency_key,
+            command.request_fingerprint,
+            command.expected_head,
+            command.fence_generation,
+            command.expected_fence_frontier,
+            command.minimum_fence_frontier,
+            command.records,
+        )
+
+
+@dataclass(frozen=True)
+class VerifiedOwnerPublication:
+    """Trusted owner proof returned by the store-mounted resolver only."""
+
+    projection: PhysicalPublicationProjection
+    applicability: OwnerPublicationApplicability
+    binding_fingerprint: str | None
+    selected_identity: str | None
+    selected_fingerprint: str | None
+    expected_resulting: str | None
+    expected_commit_sequence: int | None
+
+    @classmethod
+    def from_command(
+        cls,
+        command: PhysicalPublicationCommand,
+        *,
+        applicability: OwnerPublicationApplicability = "h1",
+        binding_fingerprint: str | None,
+        selected_identity: str | None,
+        selected_fingerprint: str | None,
+        expected_resulting: str | None,
+        expected_commit_sequence: int | None,
+    ) -> VerifiedOwnerPublication:
+        return cls(
+            PhysicalPublicationProjection.from_command(command),
+            applicability,
+            binding_fingerprint,
+            selected_identity,
+            selected_fingerprint,
+            expected_resulting,
+            expected_commit_sequence,
+        )
+
+
+class OwnerPublicationResolver(Protocol):
+    def verify(
+        self, command: PhysicalPublicationCommand, mode: PublicationVerificationMode
+    ) -> VerifiedOwnerPublication: ...
 
 
 @dataclass(frozen=True)
@@ -230,8 +336,23 @@ class SQLiteMaterializer:
         managed_derivative_sinks: tuple[str, ...] = (),
         store_version: int = STORE_VERSION,
         authority_gate: AuthorityGate | None = None,
+        authority_mutation_admission: Callable[
+            [AuthorityMutationKind, _AuthorityRecoveryContext | None], None
+        ]
+        | None = None,
+        checkpoint_enabled: bool = False,
+        _broker_bootstrap: bool = False,
     ) -> None:
         self._authority_gate = authority_gate
+        self._owner_publication_resolver: OwnerPublicationResolver | None = None
+        if checkpoint_enabled and authority_mutation_admission is None:
+            raise StoreAdmissionError("checkpoint authority bundle requires mutation admission")
+        self._authority_mutation_admission = authority_mutation_admission
+        self._checkpoint_enabled = checkpoint_enabled
+        self._broker_bootstrap = _broker_bootstrap
+        self._broker_lease: _BrokerBootstrapLease | None = None
+        self._broker_ready = not _broker_bootstrap
+        self._recovery_issuer = object()
         self._identity: FileIdentity | None = None
         if authority_gate is not None and path.resolve(strict=False) != authority_gate.database:
             raise StoreAdmissionError("materializer authority gate binding mismatch")
@@ -279,8 +400,51 @@ class SQLiteMaterializer:
                 raise
             self._connection.execute("PRAGMA foreign_keys = ON")
             self._connection.execute("PRAGMA journal_mode = WAL")
+            profile = self._read_bundle_profile()
+            if profile == CHECKPOINT_BUNDLE_PROFILE:
+                if not _broker_bootstrap:
+                    self._connection.close()
+                    raise CheckpointBundleAdmissionError(
+                        "marked checkpoint bundle requires broker bootstrap"
+                    )
+            elif profile != 0:
+                self._connection.close()
+                raise CheckpointBundleAdmissionError("unknown checkpoint bundle profile")
             if authority_gate is not None:
                 self._identity = checked_file_identity(path, prior)
+
+    @classmethod
+    def _open_for_broker_bootstrap(cls, *args: object, **kwargs: object) -> SQLiteMaterializer:
+        if kwargs.get("authority_gate") is None:
+            raise CheckpointBundleAdmissionError("broker bootstrap requires authority gate")
+        kwargs["_broker_bootstrap"] = True
+        materializer = cls(*args, **kwargs)  # type: ignore[arg-type]
+        materializer._broker_lease = _BrokerBootstrapLease(materializer)
+        materializer._broker_ready = False
+        return materializer
+
+    def _read_bundle_profile(self) -> int:
+        return int(self._connection.execute("PRAGMA user_version").fetchone()[0])
+
+    def _require_ready_bundle(
+        self,
+        *,
+        pending_admission: bool,
+        kind: AuthorityMutationKind,
+        context: _AuthorityRecoveryContext | None,
+    ) -> None:
+        profile = self._read_bundle_profile()
+        if profile not in (0, CHECKPOINT_BUNDLE_PROFILE):
+            raise CheckpointBundleAdmissionError("unknown checkpoint bundle profile")
+        if profile == 0:
+            if pending_admission and self._authority_mutation_admission is not None:
+                self._admit_authority_mutation(kind, context)
+            return
+        if not self._broker_ready or self._authority_gate is None:
+            raise CheckpointBundleAdmissionError("marked checkpoint bundle is not broker-bound")
+        self._authority_gate.require_held()
+        if pending_admission:
+            self._admit_authority_mutation(kind, context)
 
     @property
     def authority_gate(self) -> AuthorityGate | None:
@@ -347,10 +511,21 @@ class SQLiteMaterializer:
                 raise StoreAdmissionError("persisted record owner/schema has no decoder")
 
     def _publish(
-        self, token: _WriterToken, command: PhysicalPublicationCommand
+        self,
+        token: _WriterToken,
+        command: PhysicalPublicationCommand,
+        recovery_context: _AuthorityRecoveryContext | None = None,
     ) -> PublicationResult:
         with self._authority_scope():
             self._require_writer(token)
+            if any(
+                (record.owner, record.schema_id) == _H1_LOCAL_INTENT_PAIR
+                for record in command.records
+            ) and command.operation_kind != _COMPLETE_ACCEPTANCE_V2:
+                raise StoreAdmissionError("H1-only record submitted under alternate operation")
+            is_v2 = command.operation_kind == _COMPLETE_ACCEPTANCE_V2
+            if is_v2 and self._owner_publication_resolver is None:
+                return PublicationResult("DENIED", None, ())
             record_ids = tuple(record.record_id for record in command.records)
             if not record_ids or len(record_ids) != len(set(record_ids)):
                 raise ValueError("publication records must be a non-empty unique set")
@@ -376,10 +551,20 @@ class SQLiteMaterializer:
                     (command.tenant_id, command.operation_kind, command.idempotency_key),
                 ).fetchone()
                 if existing is not None:
+                    if is_v2:
+                        verified = self._verify_owner_publication(command, "REPLAY")
+                        self._verify_replay_membership(
+                            command, verified, int(existing[1]), tuple(str(existing[2]).split("\n"))
+                        )
                     self._connection.rollback()
                     if existing[0] != command.request_fingerprint:
                         return PublicationResult("CONFLICT", existing[1], ())
                     return PublicationResult("REPLAY", existing[1], tuple(existing[2].split("\n")))
+                if is_v2:
+                    self._verify_owner_publication(command, "ABSENT")
+                self._require_ready_bundle(
+                    pending_admission=True, kind="publication", context=recovery_context
+                )
                 if command.admission_guard is not None:
                     disposition = command.admission_guard()
                     if disposition is not None:
@@ -427,13 +612,31 @@ class SQLiteMaterializer:
                        ON CONFLICT(tenant_id) DO UPDATE SET head = excluded.head""",
                     (command.tenant_id, commit_sequence),
                 )
-                if command.decision_guard is not None:
-                    from .authority_reads import _authority_commitment
+                preselected: VerifiedOwnerPublication | None = None
+                if is_v2:
+                    preselected = self._verify_owner_publication(command, "PRESELECT")
+                if (
+                    command.authority_checkpoint_guard is not None
+                    or command.decision_guard is not None
+                    or is_v2
+                ):
+                    from .authority_reads import capture_authority_snapshot_bytes
 
-                    disposition = command.decision_guard(_authority_commitment(self._connection))
+                    snapshot = capture_authority_snapshot_bytes(self._connection, command.tenant_id)
+                    resulting = hashlib.sha256(snapshot).hexdigest()
+                    if command.authority_checkpoint_guard is not None:
+                        command.authority_checkpoint_guard(resulting, snapshot)
+                if is_v2 and command.decision_guard is None:
+                    self._connection.rollback()
+                    return PublicationResult("DENIED", None, ())
+                if command.decision_guard is not None:
+                    disposition = command.decision_guard(resulting)
                     if disposition is not None:
                         self._connection.rollback()
                         return PublicationResult(disposition, None, ())
+                if is_v2:
+                    precommitted = self._verify_owner_publication(command, "PRECOMMIT")
+                    self._verify_precommit(preselected, precommitted, resulting, commit_sequence)
                 if command.fault == "before_commit":
                     raise RuntimeError("injected fault before commit")
                 self._connection.commit()
@@ -444,6 +647,99 @@ class SQLiteMaterializer:
             if command.fault == "after_commit":
                 raise LostCommitAcknowledgement("injected lost commit acknowledgement")
             return PublicationResult("COMMITTED", commit_sequence, record_ids)
+
+    def _mount_owner_publication_resolver(self, resolver: OwnerPublicationResolver) -> None:
+        """Private composition mount; it is immutable once an appender owns this store."""
+        if self._writer_token is not None:
+            raise StoreAdmissionError("owner publication resolver must mount before EventAppender")
+        if self._owner_publication_resolver is not None:
+            raise StoreAdmissionError("owner publication resolver already mounted")
+        self._owner_publication_resolver = resolver
+
+    @staticmethod
+    def _projection_matches(
+        command: PhysicalPublicationCommand, verified: VerifiedOwnerPublication
+    ) -> bool:
+        return verified.projection == PhysicalPublicationProjection.from_command(command)
+
+    def _verify_owner_publication(
+        self, command: PhysicalPublicationCommand, mode: PublicationVerificationMode
+    ) -> VerifiedOwnerPublication:
+        resolver = self._owner_publication_resolver
+        if resolver is None:
+            raise StoreAdmissionError("H1 publication resolver is not mounted")
+        verified = resolver.verify(command, mode)
+        if not isinstance(verified, VerifiedOwnerPublication):
+            raise StoreAdmissionError("owner publication resolver returned an invalid proof")
+        if not self._projection_matches(command, verified):
+            raise StoreAdmissionError("owner publication proof command projection mismatch")
+        if verified.applicability not in ("h1", "non_h1"):
+            raise StoreAdmissionError("owner publication proof applicability is invalid")
+        if verified.applicability == "h1" and not verified.binding_fingerprint:
+            raise StoreAdmissionError("H1 publication proof has no binding")
+        return verified
+
+    def _verify_replay_membership(
+        self,
+        command: PhysicalPublicationCommand,
+        verified: VerifiedOwnerPublication,
+        sequence: int,
+        persisted_ids: tuple[str, ...],
+    ) -> None:
+        expected = verified.projection.records
+        if not verified.selected_identity or not verified.selected_fingerprint:
+            raise StoreAdmissionError("H1 replay selected proof is incomplete")
+        if persisted_ids != tuple(record.record_id for record in expected):
+            raise StoreAdmissionError("H1 replay publication membership mismatch")
+        if verified.expected_commit_sequence is None:
+            raise StoreAdmissionError("H1 replay selected sequence is absent")
+        if sequence != verified.expected_commit_sequence:
+            raise StoreAdmissionError("H1 replay selected sequence mismatch")
+        rows = self._connection.execute(
+            """SELECT record_id, owner, schema_id, canonical_bytes, commit_sequence
+               FROM records WHERE tenant_id = ? AND commit_sequence = ? ORDER BY rowid""",
+            (command.tenant_id, sequence),
+        ).fetchall()
+        observed = tuple(
+            (str(row[0]), str(row[1]), str(row[2]), bytes(row[3]), int(row[4]))
+            for row in rows
+        )
+        wanted = tuple(
+            (record.record_id, record.owner, record.schema_id, record.canonical_bytes, sequence)
+            for record in expected
+        )
+        if observed != wanted:
+            raise StoreAdmissionError("H1 replay record membership mismatch")
+
+    @staticmethod
+    def _verify_precommit(
+        preselected: VerifiedOwnerPublication | None,
+        precommitted: VerifiedOwnerPublication,
+        resulting: str,
+        commit_sequence: int,
+    ) -> None:
+        if (
+            preselected is None
+            or precommitted.binding_fingerprint != preselected.binding_fingerprint
+            or precommitted.applicability != preselected.applicability
+        ):
+            raise StoreAdmissionError("H1 precommit binding mismatch")
+        if (
+            not precommitted.selected_identity
+            or not precommitted.selected_fingerprint
+            or precommitted.expected_resulting is None
+            or precommitted.expected_commit_sequence is None
+        ):
+            raise StoreAdmissionError("H1 precommit selected proof is incomplete")
+        if precommitted.expected_resulting != resulting:
+            raise StoreAdmissionError("H1 precommit resulting commitment mismatch")
+        if precommitted.expected_commit_sequence != commit_sequence:
+            raise StoreAdmissionError("H1 precommit selected sequence mismatch")
+        if preselected.selected_identity is not None and (
+            precommitted.selected_identity != preselected.selected_identity
+            or precommitted.selected_fingerprint != preselected.selected_fingerprint
+        ):
+            raise StoreAdmissionError("H1 precommit selected identity mismatch")
 
     def durable_records(self) -> tuple[tuple[object, ...], ...]:
         rows = self._connection.execute(
@@ -461,6 +757,8 @@ class SQLiteMaterializer:
     def _require_writer(self, token: _WriterToken) -> None:
         if token is not self._writer_token:
             raise RuntimeError("SQLite mutation requires EventAppender ownership")
+        if not self._broker_ready:
+            raise CheckpointBundleAdmissionError("broker bootstrap writer is waiting for bind")
 
     def _install_fence(
         self,
@@ -475,13 +773,16 @@ class SQLiteMaterializer:
             self._require_writer(token)
             if frontier < 0 or not generation:
                 raise ValueError("invalid deletion fence")
-            with self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
                 current = self._connection.execute(
                     "SELECT generation, frontier FROM deletion_fences WHERE tenant_id = ?",
                     (tenant_id,),
                 ).fetchone()
                 if current == (generation, frontier) and allow_exact_replay:
+                    self._connection.rollback()
                     return PlatformMutationResult("REPLAY", f"fence:{tenant_id}:{generation}")
+                self._require_ready_bundle(pending_admission=True, kind="fence", context=None)
                 if current is not None and (frontier < current[1] or generation == current[0]):
                     raise ValueError("deletion fence must advance generation and not regress")
                 self._connection.execute(
@@ -490,6 +791,11 @@ class SQLiteMaterializer:
                            generation = excluded.generation, frontier = excluded.frontier""",
                     (tenant_id, generation, frontier),
                 )
+                self._connection.commit()
+            except BaseException:
+                if self._connection.in_transaction:
+                    self._connection.rollback()
+                raise
             return PlatformMutationResult("COMMITTED", f"fence:{tenant_id}:{generation}")
 
     def require_fence(
@@ -577,7 +883,11 @@ class SQLiteMaterializer:
             ).encode()
             if hashlib.sha256(canonical).hexdigest() != registration.provenance_fingerprint:
                 raise ValueError("derivative provenance fingerprint mismatch")
+            self._connection.execute("BEGIN IMMEDIATE")
             with self._connection:
+                self._require_ready_bundle(
+                    pending_admission=False, kind="publication", context=None
+                )
                 existing = self._connection.execute(
                     """SELECT source_record_ids, source_epoch, provenance_fingerprint
                        FROM derivatives WHERE tenant_id = ? AND sink = ? AND derivative_id = ?""",
@@ -624,6 +934,9 @@ class SQLiteMaterializer:
                 return EvidenceResult("REPLAY", command.evidence_id, str(existing[1]))
             try:
                 self._connection.execute("BEGIN IMMEDIATE")
+                self._require_ready_bundle(
+                    pending_admission=True, kind="evidence_ingress", context=None
+                )
                 self._connection.execute(
                     """INSERT INTO evidence_inbox(
                            tenant_id, source_id, evidence_id, fingerprint, canonical_bytes,
@@ -693,7 +1006,11 @@ class SQLiteMaterializer:
                 raise ValueError("illegal evidence follow-up transition")
             if followup_kind == "POLL" and command.cursor is None:
                 raise ValueError("polling transition requires a durable cursor")
-            with self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._require_ready_bundle(
+                    pending_admission=True, kind="evidence_followup", context=None
+                )
                 changed = self._connection.execute(
                     """UPDATE evidence_inbox
                        SET state = ?, attempt_id = ?, transport_version = ?, cursor = ?
@@ -711,6 +1028,11 @@ class SQLiteMaterializer:
                 ).rowcount
                 if changed != 1:
                     raise RuntimeError("evidence state CAS lost")
+                self._connection.commit()
+            except BaseException:
+                if self._connection.in_transaction:
+                    self._connection.rollback()
+                raise
             return EvidenceResult("COMMITTED", command.evidence_id, command.next_state)
 
     def evidence_state(self, tenant_id: str, source_id: str, evidence_id: str) -> str | None:
@@ -724,6 +1046,73 @@ class SQLiteMaterializer:
     def close(self) -> None:
         self._connection.close()
 
+    def _bind_authority_mutation_admission(
+        self, callback: Callable[[AuthorityMutationKind, _AuthorityRecoveryContext | None], None]
+    ) -> None:
+        if self._authority_mutation_admission is not None:
+            raise StoreAdmissionError("authority mutation admission already bound")
+        self._authority_mutation_admission = callback
+        self._checkpoint_enabled = True
+
+    def _complete_broker_admission(
+        self,
+        callback: Callable[[AuthorityMutationKind, _AuthorityRecoveryContext | None], None],
+        database_identity: tuple[str, int, int],
+    ) -> None:
+        lease = self._broker_lease
+        if lease is None or lease.consumed or lease.materializer is not self:
+            raise CheckpointBundleAdmissionError("broker bootstrap lease is unavailable")
+        if self._authority_gate is None:
+            raise CheckpointBundleAdmissionError("broker bootstrap authority gate is unavailable")
+        with self._authority_gate.hold():
+            identity = checked_file_identity(self._path, self._identity)
+            expected = identity
+            if database_identity != expected:
+                raise CheckpointBundleAdmissionError("broker bootstrap database identity mismatch")
+            profile = self._read_bundle_profile()
+            if profile not in (0, CHECKPOINT_BUNDLE_PROFILE):
+                raise CheckpointBundleAdmissionError("unknown checkpoint bundle profile")
+            self._authority_mutation_admission = callback
+            self._checkpoint_enabled = profile == CHECKPOINT_BUNDLE_PROFILE
+            self._broker_ready = True
+            lease.consumed = True
+
+    def _activate_checkpoint_bundle(self) -> None:
+        if self._authority_gate is None or not self._broker_ready:
+            raise CheckpointBundleAdmissionError("checkpoint activation requires broker readiness")
+        with self._authority_gate.hold():
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                profile = self._read_bundle_profile()
+                if profile not in (0, CHECKPOINT_BUNDLE_PROFILE):
+                    raise CheckpointBundleAdmissionError("unknown checkpoint bundle profile")
+                if profile == 0:
+                    self._connection.execute(f"PRAGMA user_version = {CHECKPOINT_BUNDLE_PROFILE}")
+                self._connection.commit()
+            except BaseException:
+                if self._connection.in_transaction:
+                    self._connection.rollback()
+                raise
+        self._checkpoint_enabled = True
+
+    def _issue_recovery_context(
+        self, command: PhysicalPublicationCommand, predecessor: str, resulting: str
+    ) -> _AuthorityRecoveryContext:
+        return _AuthorityRecoveryContext(command, predecessor, resulting, self._recovery_issuer)
+
+    def _admit_authority_mutation(
+        self, kind: AuthorityMutationKind, context: _AuthorityRecoveryContext | None
+    ) -> None:
+        if context is not None and context._issuer is not self._recovery_issuer:
+            raise AuthorityMutationAdmissionError("foreign authority recovery context")
+        callback = self._authority_mutation_admission
+        if self._checkpoint_enabled and callback is None:
+            raise AuthorityMutationAdmissionError(
+                "checkpoint authority bundle has no mutation admission"
+            )
+        if callback is not None:
+            callback(kind, context)
+
 
 @dataclass
 class _AcceptedCommand:
@@ -735,6 +1124,7 @@ class _AcceptedCommand:
         | DerivativeRegistrationCommand
     )
     result: asyncio.Future[PublicationResult | EvidenceResult | PlatformMutationResult]
+    recovery_context: _AuthorityRecoveryContext | None = None
 
 
 class PublicationObserver(Protocol):
@@ -770,6 +1160,38 @@ class EventAppender:
             raise ValueError("publication observer already bound")
         self._publication_observer = observer
 
+    def bind_authority_mutation_admission(
+        self, callback: Callable[[AuthorityMutationKind, _AuthorityRecoveryContext | None], None]
+    ) -> None:
+        self._materializer._bind_authority_mutation_admission(callback)
+
+    def complete_broker_admission(
+        self,
+        callback: Callable[[AuthorityMutationKind, _AuthorityRecoveryContext | None], None],
+        *,
+        database_identity: tuple[str, int, int],
+    ) -> None:
+        self._materializer._complete_broker_admission(callback, database_identity)
+
+    def activate_checkpoint_bundle(self) -> None:
+        self._materializer._activate_checkpoint_bundle()
+
+    @property
+    def checkpoint_enabled(self) -> bool:
+        return self._materializer._checkpoint_enabled
+
+    @property
+    def checkpoint_bundle_active(self) -> bool:
+        return self._materializer._read_bundle_profile() == CHECKPOINT_BUNDLE_PROFILE
+
+    async def _submit_exact_recovery(
+        self, command: PhysicalPublicationCommand, predecessor: str, resulting: str
+    ) -> PublicationResult:
+        return await self._submit_publication(
+            command,
+            self._materializer._issue_recovery_context(command, predecessor, resulting),
+        )
+
     async def __aenter__(self) -> EventAppender:
         return self
 
@@ -777,7 +1199,18 @@ class EventAppender:
         await self.close()
 
     async def submit(self, command: PhysicalPublicationCommand) -> PublicationResult:
-        observer = self._publication_observer if command.decision_guard is None else None
+        return await self._submit_publication(command, None)
+
+    async def _submit_publication(
+        self,
+        command: PhysicalPublicationCommand,
+        recovery_context: _AuthorityRecoveryContext | None,
+    ) -> PublicationResult:
+        observer = (
+            self._publication_observer
+            if command.decision_guard is None and command.operation_kind != _COMPLETE_ACCEPTANCE_V2
+            else None
+        )
         if observer is not None:
             original = command
 
@@ -795,7 +1228,7 @@ class EventAppender:
             if self._ordinary_admitted >= self._ordinary_capacity:
                 raise asyncio.QueueFull("ordinary writer lane is at capacity")
             self._ordinary_admitted += 1
-            self._ordinary.put_nowait(_AcceptedCommand(command, result))
+            self._ordinary.put_nowait(_AcceptedCommand(command, result, recovery_context))
             self._available.release()
         value = await asyncio.shield(result)
         assert isinstance(value, PublicationResult)
@@ -867,6 +1300,7 @@ class EventAppender:
                             self._materializer._publish,
                             self._writer_token,
                             accepted.command,
+                            accepted.recovery_context,
                         )
                     elif isinstance(accepted.command, EvidenceIngressCommand):
                         value = await asyncio.to_thread(

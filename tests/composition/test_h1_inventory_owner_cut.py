@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -17,10 +19,10 @@ from chiplog.composition.h1_inventory_owner_cut import (
     reconcile_h1_owner_cut,
 )
 from chiplog.composition.h1_preseal_contracts import H1OwnerAsOfV1, H1SelectedSeal
+from chiplog.platform._owner_publication_contracts import InvocationProofRef, SingleOwnerBatch
 from chiplog.platform._sqlite import PhysicalPublicationCommand
 from chiplog.platform.owner_decision_journal import IndependentOwnerDecisionJournal
 from chiplog.platform.owner_publications import PreparedOwnerPublication
-from tests.platform.test_owner_publications import digest, request
 
 type _Fixture = tuple[
     tuple[tuple[str, str | None, bytes], ...],
@@ -29,14 +31,77 @@ type _Fixture = tuple[
 ]
 
 
+def _digest(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _invocation() -> InvocationProofRef:
+    return InvocationProofRef(
+        issuance_id="fixture-issued",
+        issuance_fingerprint=_digest(b"issued"),
+        broker_epoch="epoch",
+        broker_session="session",
+        runtime_generation="generation",
+        operation_subject="command",
+    )
+
+
+def _request(commitment: str) -> SingleOwnerBatch:
+    return SingleOwnerBatch.model_validate(
+        {
+            "operation": "effects.authorize",
+            "identity": {
+                "tenant_id": "tenant",
+                "command_id": "command",
+                "command_fingerprint": _digest(b"command"),
+                "canonicalization_version": "chiplog.owner-publication.v1",
+            },
+            "authentication": {
+                "kind": "WORKER",
+                "invocation": _invocation(),
+                "applicability_schema": "fixture.v1",
+                "applicability_bytes": b"fixture-non-authoritative-fence",
+                "applicability_fingerprint": _digest(b"fixture-non-authoritative-fence"),
+            },
+            "expected": {
+                "tenant_id": "tenant",
+                "tenant_frontier": 0,
+                "expected_materialization_commitment": commitment,
+                "registry_head": "fixture-registry",
+                "registry_fingerprint": _digest(b"registry"),
+                "ordered_heads": (),
+                "complete_manifest_fingerprint": _digest(b"empty"),
+            },
+            "command": {
+                "owner": "effects",
+                "schema_id": "fixture.command.v1",
+                "canonical_bytes": b"command",
+                "fingerprint": _digest(b"command"),
+            },
+            "complete_records": tuple(
+                {
+                    "owner": "effects",
+                    "record_kind": "fixture",
+                    "record_id": name,
+                    "schema_id": "fixture.record.v1",
+                    "canonical_bytes": name.encode(),
+                    "fingerprint": _digest(name.encode()),
+                }
+                for name in ("record1", "record2")
+            ),
+            "complete_batch_fingerprint": _digest(b"complete fixture batch"),
+        }
+    )
+
+
 def _fixture(tmp_path: Path, *, materialized: bool) -> _Fixture:
     from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 
     raw = IndependentTenantDecisionJournal(tmp_path / "owner.journal")
     journal = IndependentOwnerDecisionJournal(raw, "tenant")
-    batch = request(digest(b"before"))
+    batch = _request(_digest(b"before"))
     decision = journal.select(
-        PreparedOwnerPublication(batch, "issued", "fence", 0, digest(b"before")), digest(b"after")
+        PreparedOwnerPublication(batch, "issued", "fence", 0, _digest(b"before")), _digest(b"after")
     )
     if materialized:
         journal.materialized(decision)
@@ -78,9 +143,9 @@ def _historical_fixture(
 
     raw = IndependentTenantDecisionJournal(tmp_path / "owner.journal")
     journal = IndependentOwnerDecisionJournal(raw, "tenant")
-    batch = request(digest(b"before"))
+    batch = _request(_digest(b"before"))
     decision = journal.select(
-        PreparedOwnerPublication(batch, "issued", "fence", 0, digest(b"before")), digest(b"after")
+        PreparedOwnerPublication(batch, "issued", "fence", 0, _digest(b"before")), _digest(b"after")
     )
     journal.materialized(decision)
     head = journal.snapshot().head
@@ -110,7 +175,7 @@ def _historical_fixture(
 def _selected_seal(sequence: int) -> H1SelectedSeal:
     return H1SelectedSeal(
         PhysicalPublicationCommand(
-            "tenant", "native", "seal", digest(b"seal"), 0, "fence", 0, 0, ()
+            "tenant", "native", "seal", _digest(b"seal"), 0, "fence", 0, 0, ()
         ),
         "loop-decision",
         b"{}",
@@ -119,7 +184,7 @@ def _selected_seal(sequence: int) -> H1SelectedSeal:
 
 
 def _seal_publication(sequence: int) -> OwnerJournalSqlPublication:
-    return OwnerJournalSqlPublication("native", "seal", digest(b"seal"), sequence, ())
+    return OwnerJournalSqlPublication("native", "seal", _digest(b"seal"), sequence, ())
 
 
 def test_registry_covers_every_registered_owner_envelope_variant() -> None:
@@ -243,9 +308,9 @@ def test_historical_prefix_selected_without_marker_is_incomplete(
     journal = IndependentOwnerDecisionJournal(
         IndependentTenantDecisionJournal(tmp_path / "owner.journal"), "tenant"
     )
-    batch = request(digest(b"before"))
+    batch = _request(_digest(b"before"))
     journal.select(
-        PreparedOwnerPublication(batch, "issued", "fence", 0, digest(b"before")), digest(b"after")
+        PreparedOwnerPublication(batch, "issued", "fence", 0, _digest(b"before")), _digest(b"after")
     )
     head = journal.snapshot().head
     assert head is not None
@@ -270,22 +335,25 @@ def test_historical_locator_is_strictly_decoded_from_the_selected_v2_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     locator = H1OwnerAsOfV1(tenant_id="tenant", owner_head=None)
+    retained_raw = b'{"kind":"R14_SELECTED_EXECUTION_COMPLETE_SEAL_V2","profile":"H1_V2"}'
 
     class _Retained:
         def canonical_bytes(self) -> bytes:
-            return b"retained-v2"
+            return retained_raw
 
     class _V2Decoder:
         @staticmethod
         def model_validate_json(raw: str) -> _Retained:
-            assert raw == "retained-v2"
+            assert raw == retained_raw.decode()
             return _Retained()
 
     monkeypatch.setattr(owner_cut, "RetainedExecutionCompleteSealV2", _V2Decoder)
     selected = _selected_seal(1)
     decision = (
-        b'{"execution_complete_seal":"retained-v2","fingerprint":"'
-        + digest(b"seal").encode()
+        b'{"execution_complete_seal":'
+        + json.dumps(retained_raw.decode(), separators=(",", ":")).encode()
+        + b',"fingerprint":"'
+        + _digest(b"seal").encode()
         + b'","expected_head":0,"h1_owner_asof":'
         + locator.canonical_bytes()
         + b',"kind":"DECIDED","operation_id":"seal","operation_kind":"native","version":1}'

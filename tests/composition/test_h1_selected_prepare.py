@@ -22,6 +22,7 @@ from chiplog.composition.h1_selected_prepare import (
 )
 from chiplog.composition.r14_execution_complete_seal_records import RetainedExecutionCompleteSealV2
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from tests.support.h1_cli_execution import admit_complete_script, advance
 
 
 def test_selected_prepare_carrier_has_the_frozen_evidence_fields() -> None:
@@ -93,17 +94,15 @@ async def test_postseal_selector_reopens_real_selected_v2_seal_and_rejects_tampe
     tmp_path: Path,
 ) -> None:
     """The lower reader derives its predecessor and Prepare from the V2 seal itself."""
-    from tests.composition.test_h1_cli_v2_selection import _admit_complete_script, _advance
-
     database = tmp_path / "selected-postseal.sqlite"
     custody = tmp_path / "dispatch-custody"
-    request, complete = await _admit_complete_script(database, custody)
+    request, complete = await admit_complete_script(database, custody)
     resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
     async with open_common_cli_execution_runtime(
         database, resources=resources, responses=(complete,)
     ) as runtime:
         initial = await runtime.drive_input(request)
-        committed = await runtime.advance_execution(_advance(cast(Any, initial), request))
+        committed = await runtime.advance_execution(advance(cast(Any, initial), request))
         assert committed.kind == "SELECTED_EXECUTION_RECEIPT_V1"
         retained = RetainedExecutionCompleteSealV2.model_validate_json(
             next(

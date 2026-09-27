@@ -22,6 +22,7 @@ from chiplog.composition.h1_historical_selected_sources import (
     verify_h1_historical_sources,
 )
 from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
+from chiplog.platform.r7_trust import TrustOwnerCall
 
 
 class _NoHistoricalPorts:
@@ -313,14 +314,14 @@ def test_historical_scope_rejects_a_recomputed_owner_response_on_a_different_rou
     """A self-consistent owner response cannot be moved to a different broker route."""
     route = SimpleNamespace(request_id="issue")
     substituted_route = SimpleNamespace(request_id="issue", replacement=True)
-    issue_wire = SimpleNamespace(
-        canonical_bytes=lambda: b"issue-wire",
+    issue_wire = TrustOwnerCall(
         mode="ISSUE_HERMETIC_OUTPUT_SCOPE_V1",
+        snapshot_bytes=b"snapshot",
         request_bytes=b"issue-call",
     )
-    current_wire = SimpleNamespace(
-        canonical_bytes=lambda: b"current-wire",
+    current_wire = TrustOwnerCall(
         mode="READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1",
+        snapshot_bytes=b"snapshot",
         request_bytes=b"current-call",
     )
     issue_call = SimpleNamespace(
@@ -329,6 +330,15 @@ def test_historical_scope_rejects_a_recomputed_owner_response_on_a_different_rou
     current_call = SimpleNamespace(
         route=SimpleNamespace(request_id="current"), read_request_bytes=b"current-intent"
     )
+    decoded_nested_calls: list[bytes] = []
+
+    def decode_issue_call(raw: bytes) -> object:
+        decoded_nested_calls.append(raw)
+        return issue_call
+
+    def decode_current_call(raw: bytes) -> object:
+        decoded_nested_calls.append(raw)
+        return current_call
     prefix = SimpleNamespace(snapshot_bytes=b"snapshot")
     reader = SimpleNamespace(
         authority_gate=None,
@@ -360,23 +370,18 @@ def test_historical_scope_rejects_a_recomputed_owner_response_on_a_different_rou
         )
 
     issuance = SimpleNamespace(
-        scope_issue_exchange=exchange(b"issue-wire", "issue"),
-        scope_current_exchange=exchange(b"current-wire", "current"),
-    )
-    monkeypatch.setattr(
-        historical_sources.TrustOwnerCall,  # type: ignore[attr-defined]
-        "model_validate_json",
-        lambda raw: issue_wire if raw == b"issue-wire" else current_wire,
+        scope_issue_exchange=exchange(issue_wire.canonical_bytes(), "issue"),
+        scope_current_exchange=exchange(current_wire.canonical_bytes(), "current"),
     )
     monkeypatch.setattr(
         historical_sources.H1OwnerCandidateCallV1,  # type: ignore[attr-defined]
         "model_validate_json",
-        lambda _: issue_call,
+        decode_issue_call,
     )
     monkeypatch.setattr(
         historical_sources.H1OwnerCurrentCallV1,  # type: ignore[attr-defined]
         "model_validate_json",
-        lambda _: current_call,
+        decode_current_call,
     )
     monkeypatch.setattr(
         historical_sources.H1OwnerCandidateV1,  # type: ignore[attr-defined]
@@ -406,3 +411,4 @@ def test_historical_scope_rejects_a_recomputed_owner_response_on_a_different_rou
             trust_reader=reader,
             gate=None,
         )
+    assert decoded_nested_calls == [b"issue-call", b"current-call"]

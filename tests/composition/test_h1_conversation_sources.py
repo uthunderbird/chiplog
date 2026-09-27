@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import pickle
 from typing import cast
 
 import pytest
@@ -22,6 +24,7 @@ from chiplog.capabilities.projections.workspace_boundary import (
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
 from chiplog.composition.h1_conversation_sources import (
+    H1ConversationCapture,
     H1ConversationPhysicalMember,
     H1ConversationSources,
     H1SelectedConversationPublication,
@@ -60,6 +63,17 @@ def test_recheck_never_treats_unissued_capture_as_current() -> None:
     reader = object.__new__(H1ConversationSources)
 
     assert reader.check_current(object()) is False
+
+
+def test_capture_cannot_be_constructed_copied_or_serialized() -> None:
+    with pytest.raises(TypeError, match="issuer-held"):
+        H1ConversationCapture()
+
+    forged = object.__new__(H1ConversationCapture)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        copy.copy(forged)
+    with pytest.raises(TypeError, match="cannot be serialized"):
+        pickle.dumps(forged)
 
 
 def _entry(sequence: int = 1) -> ConversationEntry:
@@ -156,6 +170,44 @@ def test_mixed_history_rejects_unselected_hidden_or_unproven_v2_rows() -> None:
     with pytest.raises(ValueError, match="member count"):
         decode_authenticated_conversation_history(
             "tenant", (selected,), (physical, extra_same_publication)
+        )
+
+    missing_companion = PhysicalRecord(
+        "companion",
+        "agent_loop",
+        "chiplog.agent-loop.execution-record.v3",
+        b"companion",
+        hashlib.sha256(b"companion").hexdigest(),
+    )
+    selected_with_companion = H1SelectedConversationPublication(
+        selected.decision_id,
+        selected.decision_bytes,
+        PhysicalPublicationCommand(
+            selected.command.tenant_id,
+            selected.command.operation_kind,
+            selected.command.idempotency_key,
+            selected.command.request_fingerprint,
+            selected.command.expected_head,
+            selected.command.fence_generation,
+            selected.command.expected_fence_frontier,
+            selected.command.minimum_fence_frontier,
+            (*selected.command.records, missing_companion),
+        ),
+        None,
+    )
+    with pytest.raises(ValueError, match="member count"):
+        decode_authenticated_conversation_history("tenant", (selected_with_companion,), (physical,))
+
+    extra_other_publication = H1ConversationPhysicalMember(
+        "later-companion",
+        "agent_loop",
+        "chiplog.agent-loop.execution-record.v3",
+        b"later",
+        2,
+    )
+    with pytest.raises(ValueError, match="physical member is unselected"):
+        decode_authenticated_conversation_history(
+            "tenant", (selected,), (physical, extra_other_publication)
         )
 
     v2_raw = b"{}"

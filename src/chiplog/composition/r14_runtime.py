@@ -30,7 +30,13 @@ from chiplog.composition.r14_cancellation_contracts import (
 )
 from chiplog.composition.r14_fanout_contracts import INITIALIZED_SCHEMA, SEAL_SCHEMA
 from chiplog.platform._owner_publication_contracts import BrokerPublicationResult
-from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
+from chiplog.platform._sqlite import (
+    AuthorityMutationAdmissionError,
+    AuthorityMutationKind,
+    PhysicalPublicationCommand,
+    PhysicalRecord,
+    _AuthorityRecoveryContext,
+)
 from chiplog.platform.authority_reads import (
     capture_authority_snapshot_commitment,
     capture_authority_storage_state,
@@ -156,6 +162,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
         **R13PlanningRuntime._record_contracts,
         "effects": "chiplog.effects.record.v1",
     }
+    _checkpoint_bundle_admission: ClassVar[bool] = True
     _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = (
         *R13PlanningRuntime._record_schema_variants,
         ("agent_loop", SEAL_SCHEMA),
@@ -166,6 +173,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
     _owner_journal: AnchoredOwnerDecisionJournal | None = None
     _database_identity: tuple[str, int, int]
     _h1_historical_custody_path: Path | None = None
+    _checkpoint_store: object | None = None
 
     def _bind_h1_historical_custody_path(self, path: Path | None) -> None:
         """Install only composition-provided H1 custody before startup recovery."""
@@ -234,12 +242,141 @@ class R14PlanningRuntime(R13PlanningRuntime):
         metadata = path.stat()
         self._database_identity = (str(path), metadata.st_dev, metadata.st_ino)
         super()._bind_appender()
+        self._appender.complete_broker_admission(
+            self._admit_authority_mutation, database_identity=self._database_identity
+        )
+
+    def activate_checkpoint_bundle(self) -> None:
+        with self._authority_gate().hold():
+            self._check_database_identity()
+            self._require_no_pending()
+            self._appender.activate_checkpoint_bundle()
+
+    def _admit_authority_mutation(
+        self, kind: AuthorityMutationKind, context: _AuthorityRecoveryContext | None
+    ) -> None:
+        """Reject normal authority changes while any selected decision is unfinished."""
+        with self._authority_gate().hold():
+            pending = (
+                *self._pending(),
+                *self._pending_owners(),
+                *self._pending_gate_publications(),
+            )
+            if not pending:
+                if context is not None:
+                    raise AuthorityMutationAdmissionError("stale authority recovery context")
+                return
+            if kind != "publication" or context is None:
+                raise AuthorityMutationAdmissionError("selected authority decision is pending")
+            command = context.command
+            matching_loop = [
+                entry
+                for entry in self._pending()
+                if entry.get("operation_id") == command.idempotency_key
+                and entry.get("predecessor") == context.predecessor
+                and entry.get("resulting") == context.resulting
+                and self._publication(entry)
+                == replace(
+                    command,
+                    admission_guard=None,
+                    decision_guard=None,
+                    authority_checkpoint_guard=None,
+                )
+            ]
+            matching_owner = [
+                entry
+                for entry in self._pending_owners()
+                if entry.prepared.request.identity.command_id == command.idempotency_key
+                and entry.prepared.predecessor_commitment == context.predecessor
+                and entry.resulting_commitment == context.resulting
+                and self._owner_command(entry)
+                == replace(
+                    command,
+                    admission_guard=None,
+                    decision_guard=None,
+                    authority_checkpoint_guard=None,
+                )
+            ]
+            matching_gate = [
+                (identity, raw)
+                for identity, raw in self._pending_gate_publications()
+                if self._gate_recovery_command(identity, raw)
+                == replace(
+                    command,
+                    admission_guard=None,
+                    decision_guard=None,
+                    authority_checkpoint_guard=None,
+                )
+                and self._gate_recovery_predecessor(raw) == context.predecessor
+                and self._gate_recovery_resulting(raw) == context.resulting
+            ]
+            if len(matching_loop) + len(matching_owner) + len(matching_gate) != 1:
+                raise AuthorityMutationAdmissionError("foreign authority recovery context")
+
+    def _gate_recovery_entry(
+        self, identity: str, raw: bytes
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        entry = json.loads(raw)
+        if (
+            set(entry) != {"version", "predecessor", "resulting", "proposal"}
+            or entry["version"] != 1
+        ):
+            raise AuthorityMutationAdmissionError("unknown selected gate materialization")
+        proposal = json.loads(base64.b64decode(entry["proposal"], validate=True))
+        if not isinstance(proposal, dict):
+            raise AuthorityMutationAdmissionError("malformed selected gate proposal")
+        return entry, proposal
+
+    def _gate_recovery_command(self, identity: str, raw: bytes) -> PhysicalPublicationCommand:
+        _, proposal = self._gate_recovery_entry(identity, raw)
+        return PhysicalPublicationCommand(
+            tenant_id=self._tenant_id,
+            operation_kind="planning.create_intention_line",
+            idempotency_key=identity,
+            request_fingerprint=str(proposal["request_fingerprint"]),
+            expected_head=int(proposal["commit_sequence"]) - 1,
+            fence_generation="r6",
+            expected_fence_frontier=0,
+            minimum_fence_frontier=0,
+            records=tuple(
+                PhysicalRecord(
+                    str(row["record_id"]),
+                    "planning",
+                    "chiplog.planning.record.v1",
+                    base64.b64decode(row["canonical_bytes"], validate=True),
+                    hashlib.sha256(
+                        base64.b64decode(row["canonical_bytes"], validate=True)
+                    ).hexdigest(),
+                )
+                for row in proposal["records"]
+            ),
+        )
+
+    def _gate_recovery_predecessor(self, raw: bytes) -> str:
+        return str(self._gate_recovery_entry("unused", raw)[0]["predecessor"])
+
+    def _gate_recovery_resulting(self, raw: bytes) -> str:
+        return str(self._gate_recovery_entry("unused", raw)[0]["resulting"])
 
     def _check_database_identity(self) -> None:
         path = self._database.resolve(strict=True)
         metadata = path.stat()
         if (str(path), metadata.st_dev, metadata.st_ino) != self._database_identity:
             raise ValueError("runtime physical database identity changed")
+
+    def _h1_checkpoint_store(self) -> object:
+        """Return the only checkpoint namespace admitted for this database bundle."""
+        with self._authority_gate().hold():
+            self._check_database_identity()
+            if not self._appender.checkpoint_bundle_active:
+                raise ValueError("checkpoint store requires checkpoint-enabled writer admission")
+            if self._checkpoint_store is None:
+                from chiplog.platform.authority_checkpoint import AuthorityCheckpointStore
+
+                self._checkpoint_store = AuthorityCheckpointStore(
+                    self._database.with_suffix(self._database.suffix + ".authority-checkpoints")
+                )
+            return self._checkpoint_store
 
     def _owner_decisions(self) -> AnchoredOwnerDecisionJournal:
         with self._authority_gate().hold():
@@ -396,8 +533,10 @@ class R14PlanningRuntime(R13PlanningRuntime):
                     "recover_result", self._tenant_id, command.idempotency_key
                 ) from ValueError("exact selected records produce a different commitment")
 
-        outcome = await self._appender.submit(
-            replace(command, admission_guard=guard, decision_guard=selected_bytes)
+        outcome = await self._appender._submit_exact_recovery(
+            replace(command, admission_guard=guard, decision_guard=selected_bytes),
+            predecessor,
+            resulting,
         )
         # REPLAY bypasses writer guards. Re-read history and exact physical membership,
         # allowing a different process to have completed and advanced the anchor.

@@ -39,6 +39,7 @@ from chiplog.composition.h1_selected_prepare import (
     select_h1_v3_prepare_for_candidate,
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from tests.support.h1_cli_execution import admit_complete_script, advance
 
 
 def test_native_zero_call_pairs_have_explicit_decoders() -> None:
@@ -202,18 +203,17 @@ async def test_mounted_native_h1_postseal_inventory_and_selected_delta_mutant(
     from chiplog.composition.r14_execution_complete_seal_records import (
         RetainedExecutionCompleteSealV2,
     )
-    from tests.composition.test_h1_cli_v2_selection import _admit_complete_script, _advance
 
     database = tmp_path / "h1-owner-inventory-post.sqlite"
     custody = tmp_path / "dispatch-custody"
-    request, complete = await _admit_complete_script(database, custody)
+    request, complete = await admit_complete_script(database, custody)
     resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
     async with open_common_cli_execution_runtime(
         database, resources=resources, responses=(complete,)
     ) as runtime:
         initial = await runtime.drive_input(request)
         assert initial.kind == "SELECTED_EXECUTION_RECEIPT_V1"
-        committed = await runtime.advance_execution(_advance(cast(Any, initial), request))
+        committed = await runtime.advance_execution(advance(cast(Any, initial), request))
         assert committed.kind == "SELECTED_EXECUTION_RECEIPT_V1"
         retained = RetainedExecutionCompleteSealV2.model_validate_json(
             next(
@@ -260,11 +260,9 @@ async def test_mounted_native_h1_postseal_inventory_and_selected_delta_mutant(
 @pytest.mark.asyncio
 async def test_mounted_native_h1_preseal_inventory_is_positive(tmp_path: Path) -> None:
     """Exercise the real H0 → V3 capture and selected-workspace readers."""
-    from tests.composition.test_common_cli_execution_runtime import _admit_complete_script
-
     database = tmp_path / "h1-owner-inventory.sqlite"
     custody = tmp_path / "dispatch-custody"
-    request, complete = await _admit_complete_script(database, custody)
+    request, complete = await admit_complete_script(database, custody)
     resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
     async with open_common_cli_execution_runtime(
         database, resources=resources, responses=(complete,)

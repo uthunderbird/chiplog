@@ -407,6 +407,39 @@ async def test_terminal_drive_reopens_without_second_decision_or_model_call(tmp_
         assert admission_replay.model_dump(exclude={"disposition"}) == initial.model_dump(
             exclude={"disposition"}
         )
+        before_rejections = (
+            runtime._execution_model.requests,
+            runtime._loop_decisions().entries(),
+            runtime._owner_decisions().snapshot(),
+            _physical_snapshot(database),
+        )
+        changed_identity = request.model_copy(
+            update={
+                "identity": request.identity.model_copy(
+                    update={"driver_command_id": request.identity.driver_command_id + ":changed"}
+                )
+            }
+        )
+        conflict = await runtime.drive_input(changed_identity)
+        assert conflict.kind == "EXECUTION_DRIVER_REJECTED_V1"
+        assert conflict.code == "CONFLICT"
+        stale = await runtime.advance_execution(
+            advance.model_copy(
+                update={
+                    "expected_selected_run_head": advance.expected_selected_run_head.model_copy(
+                        update={"head": advance.expected_selected_run_head.head + ":stale"}
+                    )
+                }
+            )
+        )
+        assert stale.kind == "EXECUTION_DRIVER_REJECTED_V1"
+        assert stale.code == "STALE"
+        assert (
+            runtime._execution_model.requests,
+            runtime._loop_decisions().entries(),
+            runtime._owner_decisions().snapshot(),
+            _physical_snapshot(database),
+        ) == before_rejections
         assert runtime._execution_model.requests == []
         assert runtime._loop_decisions().entries() == loop_decisions
         assert runtime._owner_decisions().snapshot() == owner_decisions

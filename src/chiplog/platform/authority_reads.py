@@ -279,6 +279,11 @@ def _schema_members(connection: sqlite3.Connection) -> tuple[tuple[str, tuple[st
 
 
 def _authority_commitment(connection: sqlite3.Connection) -> str:
+    return hashlib.sha256(_authority_snapshot_bytes(connection)).hexdigest()
+
+
+def _authority_snapshot_bytes(connection: sqlite3.Connection) -> bytes:
+    """Encode the immutable v1 full-authority preimage without changing its wire."""
     materialized: list[dict[str, object]] = []
     for member in AUTHORITY_STORAGE_MEMBERS:
         if not member.authority_bearing:
@@ -295,9 +300,7 @@ def _authority_commitment(connection: sqlite3.Connection) -> str:
                 "table": member.table,
             }
         )
-    return hashlib.sha256(
-        json.dumps(materialized, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return json.dumps(materialized, sort_keys=True, separators=(",", ":")).encode()
 
 
 def capture_authority_snapshot_commitment(connection: sqlite3.Connection, tenant_id: str) -> str:
@@ -312,7 +315,24 @@ def capture_authority_snapshot_commitment(connection: sqlite3.Connection, tenant
         expected = tuple((item.table, item.columns) for item in AUTHORITY_STORAGE_MEMBERS)
         if _schema_members(connection) != expected:
             raise ValueError("authority storage surface differs from physical schema")
-        return _authority_commitment(connection)
+        return hashlib.sha256(_capture_authority_snapshot_bytes(connection)).hexdigest()
+    except (sqlite3.Error, ValueError, TypeError) as error:
+        raise AuthoritySnapshotIntegrityError(tenant_id) from error
+
+
+def _capture_authority_snapshot_bytes(connection: sqlite3.Connection) -> bytes:
+    if not connection.in_transaction:
+        raise ValueError("authority snapshot requires an active transaction")
+    expected = tuple((item.table, item.columns) for item in AUTHORITY_STORAGE_MEMBERS)
+    if _schema_members(connection) != expected:
+        raise ValueError("authority storage surface differs from physical schema")
+    return _authority_snapshot_bytes(connection)
+
+
+def capture_authority_snapshot_bytes(connection: sqlite3.Connection, tenant_id: str) -> bytes:
+    """Return the exact full-authority commitment preimage from this transaction."""
+    try:
+        return _capture_authority_snapshot_bytes(connection)
     except (sqlite3.Error, ValueError, TypeError) as error:
         raise AuthoritySnapshotIntegrityError(tenant_id) from error
 

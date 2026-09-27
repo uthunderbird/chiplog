@@ -51,6 +51,10 @@ class R13Runtime(R8PlanningRuntime):
         "evidence_journal": "chiplog.evidence_journal.record.v1",
         "workspace_policy": "chiplog.workspace.policy.v1",
     }
+    _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = (
+        *R8PlanningRuntime._record_schema_variants,
+        ("workspace_policy", "chiplog.workspace.policy.v2"),
+    )
     _derivative_contracts: ClassVar[tuple[str, ...]] = (SCREEN_SINK,)
     _loop_journal: IndependentTenantDecisionJournal | None = None
     _replaying_publication = False
@@ -62,9 +66,11 @@ class R13Runtime(R8PlanningRuntime):
         with self._authority_gate().hold():
             if self._replaying_publication:
                 return
+            self._validate_h1_v2_workspace_policy(command)
             if (
                 command.tenant_id != self._tenant_id
-                or command.operation_kind not in ("workspace.policy", "conversation.accept")
+                or command.operation_kind
+                not in ("workspace.policy", "workspace.policy.h1.v2", "conversation.accept")
                 or self._pending()
             ):
                 raise LoopRejected("unregistered auxiliary publication or pending decision")
@@ -93,6 +99,39 @@ class R13Runtime(R8PlanningRuntime):
                     ],
                 }
             )
+
+    def _validate_h1_v2_workspace_policy(self, command: PhysicalPublicationCommand) -> None:
+        """Bind the newly admitted V2 pair to its separate physical operation."""
+        pair = ("workspace_policy", "chiplog.workspace.policy.v2")
+        has_v2_record = any((row.owner, row.schema_id) == pair for row in command.records)
+        if command.operation_kind != "workspace.policy.h1.v2" and not has_v2_record:
+            return
+        if (
+            command.operation_kind != "workspace.policy.h1.v2"
+            or len(command.records) != 1
+            or (command.records[0].owner, command.records[0].schema_id) != pair
+        ):
+            raise LoopRejected("H1 V2 workspace policy operation/record mismatch")
+        record = command.records[0]
+        digest = hashlib.sha256(record.canonical_bytes).hexdigest()
+        if record.fingerprint != digest or command.request_fingerprint != digest:
+            raise LoopRejected("H1 V2 workspace policy fingerprint differs")
+        try:
+            from chiplog.composition.h1_workspace_policy_v2 import decode_h1_workspace_policy_v2
+
+            policy = decode_h1_workspace_policy_v2(record.canonical_bytes)
+        except ValueError as error:
+            raise LoopRejected("H1 V2 workspace policy bytes differ") from error
+        prefix = "workspace-policy:" + hashlib.sha256(
+            json.dumps([policy.tenant, policy.principal, policy.channel]).encode()
+        ).hexdigest()
+        expected_id = prefix + ":" + digest
+        if (
+            policy.tenant != command.tenant_id
+            or record.record_id != expected_id
+            or command.idempotency_key != expected_id
+        ):
+            raise LoopRejected("H1 V2 workspace policy identity differs")
 
     def publication_committed(self, command: PhysicalPublicationCommand) -> None:
         if not self._replaying_publication:
@@ -133,6 +172,7 @@ class R13Runtime(R8PlanningRuntime):
                     raise LoopRejected("display physical identity mismatch")
                 continue
             if entry.get("kind") == "DECIDED":
+                self._validate_h1_v2_durable_decision(entry)
                 if operation in pending:
                     raise LoopRejected("rival pending loop publication")
                 pending[operation] = entry
@@ -143,6 +183,61 @@ class R13Runtime(R8PlanningRuntime):
             else:
                 raise LoopRejected("unknown loop publication disposition")
         return tuple(pending.values())
+
+    def _validate_h1_v2_durable_decision(self, entry: dict[str, object]) -> None:
+        """Fail closed before either durable V2 recovery completion path."""
+        operation = entry.get("operation_kind")
+        rows = entry.get("records")
+        has_v2_record = isinstance(rows, list) and any(
+            isinstance(row, dict)
+            and row.get("owner") == "workspace_policy"
+            and row.get("schema") == "chiplog.workspace.policy.v2"
+            for row in rows
+        )
+        if operation != "workspace.policy.h1.v2" and not has_v2_record:
+            return
+        if (
+            not isinstance(operation, str)
+            or not isinstance(entry.get("operation_id"), str)
+            or not isinstance(entry.get("fingerprint"), str)
+            or not isinstance(entry.get("expected_head"), int)
+            or isinstance(entry["expected_head"], bool)
+            or not isinstance(rows, list)
+        ):
+            raise LoopRejected("invalid H1 V2 workspace policy decision")
+        records: list[PhysicalRecord] = []
+        for row in rows:
+            if not isinstance(row, dict) or not all(
+                isinstance(row.get(field), str)
+                for field in ("record_id", "owner", "schema", "payload", "digest")
+            ):
+                raise LoopRejected("invalid H1 V2 workspace policy decision")
+            try:
+                payload = base64.b64decode(cast(str, row["payload"]), validate=True)
+            except ValueError as error:
+                raise LoopRejected("invalid H1 V2 workspace policy decision") from error
+            records.append(
+                PhysicalRecord(
+                    cast(str, row["record_id"]),
+                    cast(str, row["owner"]),
+                    cast(str, row["schema"]),
+                    payload,
+                    cast(str, row["digest"]),
+                )
+            )
+        self._validate_h1_v2_workspace_policy(
+            PhysicalPublicationCommand(
+                self._tenant_id,
+                operation,
+                cast(str, entry["operation_id"]),
+                cast(str, entry["fingerprint"]),
+                cast(int, entry["expected_head"]),
+                "r6",
+                0,
+                0,
+                tuple(records),
+            )
+        )
 
     def _append_decision(self, value: object) -> None:
         with self._authority_gate().hold():
@@ -160,7 +255,11 @@ class R13Runtime(R8PlanningRuntime):
             if actual == pending["predecessor"]:
                 self._replaying_publication = True
                 try:
-                    result = await self._appender.submit(self._publication(pending))
+                    result = await self._appender._submit_exact_recovery(
+                        self._publication(pending),
+                        str(pending["predecessor"]),
+                        str(pending["resulting"]),
+                    )
                 finally:
                     self._replaying_publication = False
                 if result.disposition not in ("COMMITTED", "REPLAY"):

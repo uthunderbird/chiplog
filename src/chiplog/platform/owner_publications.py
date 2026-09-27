@@ -17,6 +17,7 @@ from chiplog.platform._owner_publication_contracts import (
     RegisteredPublication,
 )
 from chiplog.platform._sqlite import EventAppender, PhysicalPublicationCommand, PhysicalRecord
+from chiplog.platform.h1_delivery_binding_contracts import H1DeliveryBinding
 
 
 class OwnerPublicationIntegrityError(RuntimeError):
@@ -42,6 +43,7 @@ class PreparedOwnerPublication:
     fence_generation: str
     fence_frontier: int
     predecessor_commitment: str
+    h1_delivery_binding: H1DeliveryBinding | None = None
 
 
 @dataclass(frozen=True)

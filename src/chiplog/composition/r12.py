@@ -93,6 +93,12 @@ from chiplog.capabilities.projections.workspace_boundary import (
     WorkspaceReadRequest,
     WorkspaceReadResult,
 )
+from chiplog.composition.h1_workspace_policy_v2 import (
+    H1OriginalWorkspaceIssuanceV2,
+    H1WorkspacePolicyV2,
+    H1WorkspaceSourcesV2,
+    decode_h1_workspace_policy_v2,
+)
 from chiplog.composition.r10 import HermeticIngressRegistry
 from chiplog.composition.r14_h1_workspace_issuance_contracts import (
     H1CalendarOriginalReadV1,
@@ -285,6 +291,7 @@ class R12Workspace:
         conversation_provenance: tuple[ProvenanceBinding, ...] = (),
         selected_loop_decisions: tuple[H1RetainedDecisionV1, ...] = (),
         issuance: WorkspaceIssuanceJournal | None = None,
+        h1_workspace_policy: H1WorkspacePolicyV2 | None = None,
     ) -> None:
         _validate_paths(database, screens, calendar_ledger._path)
         self._database, self._screens = database, screens
@@ -294,7 +301,12 @@ class R12Workspace:
         if identity is None:
             raise WorkspaceRejected("unknown authenticated peer")
         self._identity = identity
-        self._policy_payload = _policy_bytes(identity, channel, database_id)
+        self._h1_workspace_policy = h1_workspace_policy
+        self._policy_payload = (
+            h1_workspace_policy.canonical_bytes()
+            if h1_workspace_policy is not None
+            else _policy_bytes(identity, channel, database_id)
+        )
         self._policy_id = (
             _policy_id(identity.tenant, identity.principal, channel)
             + ":"
@@ -334,7 +346,7 @@ class R12Workspace:
                 H1WorkspaceSnapshotV1,
                 tuple[H1QueryProofV1, ...],
                 H1CalendarOriginalReadV1,
-                H1WorkspaceSourcesV1,
+                H1WorkspaceSourcesV1 | H1WorkspaceSourcesV2,
                 H1DashboardIssuanceRefV1,
             ]
             | None
@@ -414,7 +426,12 @@ class R12Workspace:
             "WHERE tenant_id=? AND record_id=?",
             (identity.tenant, self._policy_id),
         ).fetchone()
-        if policy != ("workspace_policy", "chiplog.workspace.policy.v1", self._policy_payload):
+        expected_schema = (
+            "chiplog.workspace.policy.v2"
+            if self._h1_workspace_policy is not None
+            else "chiplog.workspace.policy.v1"
+        )
+        if policy != ("workspace_policy", expected_schema, self._policy_payload):
             error = ValueError(
                 "policy binding differs from independent current transport/policy state"
             )
@@ -801,7 +818,7 @@ class R12Workspace:
                     ),
                     display_result_json=calendar_display.model_dump_json(),
                 )
-                h1_sources = H1WorkspaceSourcesV1(
+                h1_sources_v1 = H1WorkspaceSourcesV1(
                     trusted_ingress_json=identity.model_dump_json(),
                     conversation_bindings_json=tuple(
                         binding.model_dump_json() for binding in self._conversation_provenance
@@ -820,6 +837,14 @@ class R12Workspace:
                     policy_payload_base64=base64.b64encode(self._policy_payload).decode("ascii"),
                     endpoint=identity.endpoint,
                 )
+                h1_sources: H1WorkspaceSourcesV1 | H1WorkspaceSourcesV2 = h1_sources_v1
+                if self._h1_workspace_policy is not None:
+                    h1_sources = H1WorkspaceSourcesV2(
+                        **h1_sources_v1.model_dump(),
+                        policy_owner="workspace_policy",
+                        policy_schema_id="chiplog.workspace.policy.v2",
+                        policy_payload_digest=hashlib.sha256(self._policy_payload).hexdigest(),
+                    )
                 if self._issuance is None:
                     raise WorkspaceRejected("H1 requires original dashboard issuance")
                 dashboard_entry_id, dashboard_payload_digest = self._issuance.raw_entry(
@@ -880,7 +905,7 @@ class R12Workspace:
         worker_session: str,
         workspace_member_json: str,
         proposal_context_json: str,
-    ) -> H1OriginalWorkspaceIssuanceV1:
+    ) -> H1OriginalWorkspaceIssuanceV1 | H1OriginalWorkspaceIssuanceV2:
         """Materialize only the exact read cut captured within the original snapshot."""
         if self._issued is None or self._h1_original is None:
             raise WorkspaceRejected("H1 original issuance requires an issued original workspace")
@@ -894,6 +919,25 @@ class R12Workspace:
         # would turn a binding summary into retrospective proof.
         if sources.conversation_bindings_json and not sources.selected_loop_decisions:
             raise WorkspaceRejected("H1_WORKSPACE_ORIGINAL_READ_UNPROVEN")
+        if self._h1_workspace_policy is not None:
+            if not isinstance(sources, H1WorkspaceSourcesV2):
+                raise WorkspaceRejected("H1 V2 original issuance lacks selected physical policy")
+            return H1OriginalWorkspaceIssuanceV2(
+                tenant=self._identity.tenant,
+                run_id=run_id,
+                started_run_head=started_run_head,
+                turn_id=turn_id,
+                worker_session=worker_session,
+                workspace_member_json=workspace_member_json,
+                proposal_context_json=proposal_context_json,
+                snapshot=snapshot,
+                queries=queries,
+                calendar=calendar,
+                sources=sources,
+                dashboard=dashboard,
+            )
+        if not isinstance(sources, H1WorkspaceSourcesV1):
+            raise WorkspaceRejected("H1 V1 original issuance source schema differs")
         return H1OriginalWorkspaceIssuanceV1(
             tenant=self._identity.tenant,
             run_id=run_id,
@@ -1152,6 +1196,63 @@ async def _install_policy(
     )
     if result.disposition not in ("COMMITTED", "REPLAY"):
         raise WorkspaceRejected("workspace policy binding publication " + result.disposition)
+
+
+async def install_h1_workspace_policy_v2(
+    appender: EventAppender,
+    storage: SQLiteJournal,
+    identity: TrustedIngress,
+    channel: str,
+    database_id: str,
+    fence_frontier: int,
+    policy: H1WorkspacePolicyV2,
+) -> None:
+    """Publish one owner-derived H1 V2 record as an independent physical cut.
+
+    The caller must obtain ``policy`` from the private P capability.  This
+    installer only checks the resulting evidence and never treats the DTO as
+    authority to select or issue that capability.
+    """
+    payload = policy.canonical_bytes()
+    if decode_h1_workspace_policy_v2(payload) != policy or (
+        policy.tenant,
+        policy.principal,
+        policy.channel,
+        policy.database,
+        policy.endpoint,
+    ) != (identity.tenant, identity.principal, channel, database_id, identity.endpoint):
+        raise WorkspaceRejected("H1 V2 policy differs from authenticated workspace binding")
+    if policy.heads.model_dump() != identity.heads.model_dump(exclude={"journal"}):
+        raise WorkspaceRejected("H1 V2 policy heads differ from authenticated workspace binding")
+    if tuple(policy.sources) != tuple(
+        SourceReference.model_validate_json(source.model_dump_json()) for source in identity.sources
+    ):
+        raise WorkspaceRejected("H1 V2 policy sources differ from authenticated workspace binding")
+    fingerprint = hashlib.sha256(payload).hexdigest()
+    record_id = _policy_id(identity.tenant, identity.principal, channel) + ":" + fingerprint
+    result = await appender.submit(
+        PhysicalPublicationCommand(
+            identity.tenant,
+            "workspace.policy.h1.v2",
+            record_id,
+            fingerprint,
+            storage.snapshot(identity.tenant).head,
+            identity.heads.deletion,
+            fence_frontier,
+            fence_frontier,
+            (
+                PhysicalRecord(
+                    record_id,
+                    "workspace_policy",
+                    "chiplog.workspace.policy.v2",
+                    payload,
+                    fingerprint,
+                ),
+            ),
+        )
+    )
+    if result.disposition not in ("COMMITTED", "REPLAY") or result.record_ids != (record_id,):
+        raise WorkspaceRejected("H1 V2 workspace policy physical publication " + result.disposition)
 
 
 @asynccontextmanager
