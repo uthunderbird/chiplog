@@ -361,6 +361,24 @@ def test_v2_selected_preseal_scope_frames_require_exact_full_dto_json(
     historical_sources._require_v2_selected_preseal_scope_frames(issuance, native)
 
 
+def test_v2_selected_preseal_scope_frames_accept_installed_ascii_escaped_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issuance, native, frames = _v2_selected_scope_frame_inputs()
+    decision = json.loads(native.seal.raw_bytes)
+    decision["prompt"] = "Привет"
+    native.seal.raw_bytes = json.dumps(decision, sort_keys=True, separators=(",", ":")).encode()
+    _install_selected_scope_frame_codecs(monkeypatch, frames)
+
+    historical_sources._require_v2_selected_preseal_scope_frames(issuance, native)
+
+    native.seal.raw_bytes = json.dumps(
+        decision, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    with pytest.raises(ValueError, match="full-frame sibling is malformed"):
+        historical_sources._require_v2_selected_preseal_scope_frames(issuance, native)
+
+
 @pytest.mark.parametrize(
     "substitute_frame, substitute_timestamp",
     ((True, False), (False, True)),

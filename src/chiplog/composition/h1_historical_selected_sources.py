@@ -801,6 +801,13 @@ def _canonical_json_bytes(value: object, *, name: str) -> bytes:
         raise ValueError(f"H1 V2 selected preseal {name} is malformed") from error
 
 
+def _selected_decision_bytes(value: object) -> bytes:
+    """Match the installed loop-journal encoder, including escaped Unicode."""
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+
 def _full_frame_json(value: object, *, name: str) -> bytes:
     dump = getattr(value, "model_dump", None)
     if not callable(dump):
@@ -826,7 +833,7 @@ def _require_v2_selected_preseal_scope_frames(
         if (
             not isinstance(raw_decision, bytes)
             or not isinstance(decision, dict)
-            or _canonical_json_bytes(decision, name="decision") != raw_decision
+            or _selected_decision_bytes(decision) != raw_decision
         ):
             raise ValueError("selected decision bytes differ")
         raw_anchor = decision.get("h1_preseal_pe_anchor")
