@@ -9,7 +9,6 @@ guessed while the session producer is being assembled.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import secrets
@@ -173,7 +172,9 @@ class H1LivePublicationAuthority:
                             raise ValueError("H1 selected predecessor differs")
                     elif prepared is None or self.check_prepared(prepared) is not None:
                         raise ValueError("H1 retained preparation differs")
-                if selected is not None and self.materialization_state(selected) == "CONFLICT":
+                if mode == "REPLAY" and (
+                    selected is not None and self.materialization_state(selected) == "CONFLICT"
+                ):
                     raise ValueError("H1 selected physical state conflicts")
                 return VerifiedOwnerPublication.from_command(
                     command,
@@ -208,7 +209,10 @@ class H1LivePublicationAuthority:
         reader is mounted.  Returning ``None`` without that authenticated
         reader would turn ambiguous absence into permission to issue.
         """
-        from chiplog.composition.h1_completion_issuance import decode_h1_completion_issuance
+        from chiplog.composition.h1_completion_issuance import (
+            H1CompletionIssuanceV2,
+            decode_h1_completion_issuance,
+        )
         from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 
         runtime = self._runtime
@@ -228,8 +232,18 @@ class H1LivePublicationAuthority:
                         _verify_selected_v2_delivery_closure,
                     )
 
-                    _verify_selected_v2_delivery_closure(decision, runtime)
+                    retained_principal = _verify_selected_v2_delivery_closure(decision, runtime)
                     value = decode_h1_completion_issuance(batch)
+                    from chiplog.composition.h1_historical_selected_sources import (
+                        _selected_v2_issuance_principal,
+                    )
+
+                    if retained_principal is not None:
+                        if type(value) is not H1CompletionIssuanceV2:
+                            raise ValueError("H1 finalization selected closure issuance differs")
+                        issuance_principal = _selected_v2_issuance_principal(value)
+                        if retained_principal != issuance_principal:
+                            raise ValueError("H1 finalization selected closure principal differs")
                     retained = self._retained_h0(value.assembly)
                 except (TypeError, ValueError) as error:
                     raise RuntimeError("H1 finalization selected evidence is malformed") from error
@@ -258,10 +272,13 @@ class H1LivePublicationAuthority:
         coordinator = getattr(runtime, "_h1_live_publication_coordinator", None)
         if coordinator is None:
             raise RuntimeError("H1 finalization coordinator is not mounted")
-        return cast("BrokerPublicationResult", await coordinator.recover_selected(
-            selected.prepared.request.identity.tenant_id,
-            selected.prepared.request.identity.command_id,
-        ))
+        return cast(
+            "BrokerPublicationResult",
+            await coordinator.recover_selected(
+                selected.prepared.request.identity.tenant_id,
+                selected.prepared.request.identity.command_id,
+            ),
+        )
 
     async def _commit_finalization_held(
         self, *, source: _H1LiveCompletionIssuance
@@ -508,7 +525,7 @@ class H1LivePublicationAuthority:
                 if record.enrollment.preflight is None:
                     return denied("live H1 completion replay finalization differs")
                 return None
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             return denied("live H1 completion replay is not current")
 
     async def prepare(
@@ -599,24 +616,24 @@ class H1LivePublicationAuthority:
                 )
                 predecessor_commitment = request.expected.expected_materialization_commitment
                 request_bytes = canonical_owner_publication_bytes(request)
+                closure_fields = {
+                    "schema_id": ROOT_V2_SCHEMA,
+                    "deployment_id": slot.deployment_id,
+                    "database_id": slot.database_id,
+                    "database_genesis_digest": genesis_digest,
+                    "tenant_id": mount.tenant_id,
+                    "principal_id": principal_id,
+                    "journal_role": "h1-delivery-evidence",
+                    "journal_instance_id": mount.journal_instance_id,
+                    "command_id": request.identity.command_id,
+                    "command_fingerprint": request.identity.command_fingerprint,
+                    "request_digest": hashlib.sha256(request_bytes).hexdigest(),
+                    "predecessor_commitment": predecessor_commitment,
+                    "expected_tenant_frontier": request.expected.tenant_frontier,
+                }
                 closure = decode_h1_delivery_evidence(
                     json.dumps(
-                        {
-                            "schema_id": ROOT_V2_SCHEMA,
-                            "deployment_id": slot.deployment_id,
-                            "database_id": slot.database_id,
-                            "database_genesis_digest": genesis_digest,
-                            "tenant_id": mount.tenant_id,
-                            "principal_id": principal_id,
-                            "journal_role": "h1-delivery-evidence",
-                            "journal_instance_id": mount.journal_instance_id,
-                            "command_id": request.identity.command_id,
-                            "command_fingerprint": request.identity.command_fingerprint,
-                            "request_digest": hashlib.sha256(request_bytes).hexdigest(),
-                            "predecessor_commitment": predecessor_commitment,
-                            "expected_tenant_frontier": request.expected.tenant_frontier,
-                            "request_bytes_base64": base64.b64encode(request_bytes).decode("ascii"),
-                        },
+                        closure_fields,
                         sort_keys=True,
                         separators=(",", ":"),
                     ).encode()
@@ -640,10 +657,7 @@ class H1LivePublicationAuthority:
                 retained = journal.read_closure(binding)
                 if (
                     type(retained.record) is not H1DeliverySelectionClosureV2
-                    or base64.b64decode(
-                        cast(str, retained.record._value["request_bytes_base64"]), validate=True
-                    )
-                    != request_bytes
+                    or retained.record._value != closure_fields
                 ):
                     raise ValueError("H1 delivery closure retained request differs")
                 prepared = entry[0]
@@ -660,7 +674,7 @@ class H1LivePublicationAuthority:
                 elif prepared.request is not request or prepared.h1_delivery_binding != binding:
                     raise ValueError("prepared H1 delivery binding differs")
                 return prepared
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             return PublicationRejected(
                 kind="DENIED",
                 tenant_id=request.identity.tenant_id,
@@ -690,7 +704,7 @@ class H1LivePublicationAuthority:
             if manifest != prepared.request.expected:
                 return "STALE"
             return None
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             return "STALE"
 
     def materialization_state(
@@ -707,7 +721,7 @@ class H1LivePublicationAuthority:
             if state in ("ABSENT", "COMPLETE", "CONFLICT"):
                 return cast(Literal["ABSENT", "COMPLETE", "CONFLICT"], state)
             return "CONFLICT"
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             return "CONFLICT"
 
     def check_selected_predecessor(self, decision: SelectedOwnerDecision) -> bool:

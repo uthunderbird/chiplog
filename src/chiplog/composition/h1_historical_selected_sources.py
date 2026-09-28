@@ -10,7 +10,6 @@ inside the same authority cut as the retained H0/R17/R16 and owner selection.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 from dataclasses import dataclass
@@ -321,8 +320,10 @@ def _selected_owner_decision(
 
 
 def _verify_selected_v2_delivery_closure(
-    decision: SelectedOwnerDecision, runtime: object
-) -> None:
+    decision: SelectedOwnerDecision,
+    runtime: object,
+    issuance: H1CompletionIssuanceV2 | None = None,
+) -> str | None:
     """Reopen the selected V2 closure before consuming its issuance evidence.
 
     The caller holds the installed authority gate.  This deliberately dispatches
@@ -330,7 +331,11 @@ def _verify_selected_v2_delivery_closure(
     a corrupted selected V2 record therefore cannot trigger historical-source
     reads merely to determine whether it has retained closure evidence.
     """
-    from chiplog.composition.h1_completion_issuance import SCHEMA, V2_SCHEMA
+    from chiplog.composition.h1_completion_issuance import (
+        SCHEMA,
+        V2_SCHEMA,
+        H1CompletionIssuanceV2,
+    )
     from chiplog.composition.h1_delivery_evidence_contracts import (
         ROOT_V2_SCHEMA,
         H1DeliverySelectionClosureV2,
@@ -344,7 +349,7 @@ def _verify_selected_v2_delivery_closure(
         raise ValueError("H1 selected delivery closure has the wrong batch")
     applicability_schema = batch.authentication.applicability_schema
     if applicability_schema == SCHEMA:
-        return
+        return None
     if applicability_schema != V2_SCHEMA:
         raise ValueError("H1 selected delivery closure has unknown applicability")
     gate_factory = getattr(runtime, "_authority_gate", None)
@@ -368,22 +373,59 @@ def _verify_selected_v2_delivery_closure(
         raise ValueError("H1 selected V2 delivery closure has the wrong record")
     value = retained.record._value
     try:
-        encoded_request = value["request_bytes_base64"]
-        if not isinstance(encoded_request, str):
-            raise ValueError("request bytes are not base64 text")
-        request_bytes = base64.b64decode(encoded_request, validate=True)
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError("H1 selected V2 delivery closure request bytes differ") from error
-    expected_frontier = value.get("expected_tenant_frontier")
+        request_digest = hashlib.sha256(canonical_owner_publication_bytes(batch)).hexdigest()
+        source_tenant = batch.identity.tenant_id
+        source_command = batch.identity.command_id
+        source_fingerprint = batch.identity.command_fingerprint
+        source_predecessor = batch.expected.expected_materialization_commitment
+        expected_frontier = batch.expected.tenant_frontier
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("H1 selected V2 delivery closure source request differs") from error
     if (
-        request_bytes != canonical_owner_publication_bytes(batch)
+        binding.deployment_id != value.get("deployment_id")
+        or binding.database_id != value.get("database_id")
+        or binding.database_genesis_digest != value.get("database_genesis_digest")
+        or binding.tenant_id != value.get("tenant_id")
+        or binding.journal_instance_id != value.get("journal_instance_id")
+        or binding.command_id != value.get("command_id")
+        or binding.command_fingerprint != value.get("command_fingerprint")
+        or binding.request_digest != value.get("request_digest")
+        or source_tenant != binding.tenant_id
+        or source_command != binding.command_id
+        or source_fingerprint != binding.command_fingerprint
+        or request_digest != binding.request_digest
         or value.get("predecessor_commitment") != decision.prepared.predecessor_commitment
-        or type(expected_frontier) is not int
-        or expected_frontier < 0
-        or expected_frontier != batch.expected.tenant_frontier
+        or decision.prepared.predecessor_commitment != source_predecessor
+        or value.get("expected_tenant_frontier") != expected_frontier
         or decision.tenant_commit_sequence != expected_frontier + 1
     ):
         raise ValueError("H1 selected V2 delivery closure differs from selected decision")
+    retained_principal = value.get("principal_id")
+    if not isinstance(retained_principal, str):
+        raise ValueError("H1 selected V2 delivery closure principal differs")
+    if issuance is not None:
+        if type(issuance) is not H1CompletionIssuanceV2:
+            raise ValueError("H1 selected V2 delivery closure issuance differs")
+        if retained_principal != _selected_v2_issuance_principal(issuance):
+            raise ValueError("H1 selected V2 delivery closure principal differs")
+    return retained_principal
+
+
+def _selected_v2_issuance_principal(issuance: H1CompletionIssuanceV2) -> str:
+    """Read the principal only from a decoded, exact V2 issuance."""
+    from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
+
+    if type(issuance) is not H1CompletionIssuanceV2:
+        raise ValueError("H1 selected V2 delivery closure issuance differs")
+    try:
+        principal_id = (
+            issuance.assembly.original_completion_request.source.selected_admitted_input.principal_id
+        )
+    except AttributeError as error:
+        raise ValueError("H1 selected V2 delivery closure principal differs") from error
+    if not isinstance(principal_id, str) or not principal_id:
+        raise ValueError("H1 selected V2 delivery closure principal differs")
+    return principal_id
 
 
 def _require_v2_read_plan_prechecks(
@@ -829,6 +871,7 @@ def _verify_v2_selected_recovery(
             H1CompletionPreparationSession,
         )
         from chiplog.composition.h1_conversation_sources import H1ConversationSources
+
         original = DriveInputRequestV1.model_validate_json(h0.initialization.driver_request_bytes)
         if original.canonical_bytes() != h0.initialization.driver_request_bytes:
             raise ValueError("historical H0 request is noncanonical")
@@ -978,7 +1021,7 @@ def _verify_historical_selection(
         from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
 
         if type(issuance) is H1CompletionIssuanceV2:
-            _verify_selected_v2_delivery_closure(decision, common_runtime)
+            _verify_selected_v2_delivery_closure(decision, common_runtime, issuance)
         retained = _retained_origin(issuance)
         h0_r17 = read_historical_h0_r17(common_runtime, retained)
         _verify_historical_r16(issuance, h0_selection=h0_r17, custody=custody)

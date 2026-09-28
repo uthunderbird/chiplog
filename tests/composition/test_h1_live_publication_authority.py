@@ -330,7 +330,11 @@ def test_h1_verify_fresh_modes_check_only_absent_and_returns_precommit_selection
         resulting_commitment="b" * 64,
         tenant_commit_sequence=1,
     )
-    monkeypatch.setattr(authority, "materialization_state", lambda _decision: "COMPLETE")
+    monkeypatch.setattr(
+        authority,
+        "materialization_state",
+        lambda _decision: pytest.fail("precommit verification read materialization state"),
+    )
     verified = authority.verify(command, "PRECOMMIT")
 
     assert checks == ["prepared"]
@@ -363,20 +367,25 @@ def test_h1_verify_selected_recovery_checks_predecessor_only_when_absent(
         "check_selected_predecessor",
         lambda _decision: checks.append("selected") or True,
     )
-    monkeypatch.setattr(authority, "materialization_state", lambda _decision: "ABSENT")
+    monkeypatch.setattr(
+        authority,
+        "materialization_state",
+        lambda _decision: pytest.fail("precommit verification read materialization state"),
+    )
 
     assert authority.verify(command, "ABSENT").selected_identity == "decision"
     assert checks == ["selected"]
     assert authority.verify(command, "PRESELECT").selected_identity == "decision"
     assert authority.verify(command, "PRECOMMIT").selected_identity == "decision"
-    monkeypatch.setattr(authority, "materialization_state", lambda _decision: "COMPLETE")
-    assert (
-        authority.verify(
-            replace(command, admission_guard=None, decision_guard=None), "REPLAY"
-        ).selected_identity
-        == "decision"
-    )
     assert checks == ["selected"]
+
+    monkeypatch.setattr(authority, "materialization_state", lambda _decision: "CONFLICT")
+    with pytest.raises(StoreAdmissionError):
+        authority.verify(replace(command, admission_guard=None, decision_guard=None), "REPLAY")
+
+    monkeypatch.setattr(authority, "check_selected_predecessor", lambda _decision: False)
+    with pytest.raises(StoreAdmissionError):
+        authority.verify(command, "ABSENT")
 
 
 @pytest.mark.parametrize(

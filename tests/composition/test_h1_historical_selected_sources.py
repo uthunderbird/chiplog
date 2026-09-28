@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 from collections.abc import Iterator
@@ -760,7 +759,15 @@ def test_selected_v2_closure_rejects_missing_or_changed_selected_evidence(
     request_bytes = b"selected-request"
     batch = CompleteDeliveryBatchV2.model_construct(
         authentication=SimpleNamespace(applicability_schema=V2_SCHEMA),
-        expected=SimpleNamespace(tenant_frontier=4),
+        identity=SimpleNamespace(
+            tenant_id="tenant",
+            command_id="command",
+            command_fingerprint=hashlib.sha256(b"command").hexdigest(),
+        ),
+        expected=SimpleNamespace(
+            tenant_frontier=4,
+            expected_materialization_commitment="a" * 64,
+        ),
     )
     binding = H1DeliveryBinding(
         deployment_id="deployment",
@@ -806,7 +813,15 @@ def test_selected_v2_closure_rejects_missing_or_changed_selected_evidence(
             return SimpleNamespace(record=H1DeliverySelectionClosureV2(b"", self.value))
 
     base = {
-        "request_bytes_base64": base64.b64encode(request_bytes).decode(),
+        "deployment_id": "deployment",
+        "database_id": "database",
+        "database_genesis_digest": hashlib.sha256(b"genesis").hexdigest(),
+        "tenant_id": "tenant",
+        "principal_id": "principal",
+        "journal_instance_id": "journal",
+        "command_id": "command",
+        "command_fingerprint": hashlib.sha256(b"command").hexdigest(),
+        "request_digest": hashlib.sha256(request_bytes).hexdigest(),
         "predecessor_commitment": "a" * 64,
         "expected_tenant_frontier": 4,
     }
@@ -815,14 +830,33 @@ def test_selected_v2_closure_rejects_missing_or_changed_selected_evidence(
     with gate.hold():
         historical_sources._verify_selected_v2_delivery_closure(decision, runtime)
 
+    issuance = object.__new__(H1CompletionIssuanceV2)
+    object.__setattr__(
+        issuance,
+        "assembly",
+        SimpleNamespace(
+            original_completion_request=SimpleNamespace(
+                source=SimpleNamespace(
+                    selected_admitted_input=SimpleNamespace(principal_id="principal")
+                )
+            )
+        ),
+    )
+    with gate.hold():
+        historical_sources._verify_selected_v2_delivery_closure(decision, runtime, issuance)
+
     for changed in (
-        {**base, "request_bytes_base64": base64.b64encode(b"other").decode()},
+        {**base, "request_digest": hashlib.sha256(b"other").hexdigest()},
+        {**base, "tenant_id": "other-tenant"},
+        {**base, "command_id": "other-command"},
+        {**base, "command_fingerprint": hashlib.sha256(b"other-command").hexdigest()},
+        {**base, "principal_id": "other-principal"},
         {**base, "predecessor_commitment": "d" * 64},
         {**base, "expected_tenant_frontier": 3},
     ):
         runtime._h1_delivery_evidence_journal = Journal(changed)
-        with gate.hold(), pytest.raises(ValueError, match="differs from selected decision"):
-            historical_sources._verify_selected_v2_delivery_closure(decision, runtime)
+        with gate.hold(), pytest.raises(ValueError, match="closure"):
+            historical_sources._verify_selected_v2_delivery_closure(decision, runtime, issuance)
 
     missing = SelectedOwnerDecision(
         prepared=PreparedOwnerPublication(

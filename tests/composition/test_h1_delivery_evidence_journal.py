@@ -225,7 +225,6 @@ def _synthetic_v2_envelope() -> tuple[CompleteDeliveryBatchV2, dict[str, object]
         "request_digest": hashlib.sha256(request).hexdigest(),
         "predecessor_commitment": batch.expected.expected_materialization_commitment,
         "expected_tenant_frontier": batch.expected.tenant_frontier,
-        "request_bytes_base64": base64.b64encode(request).decode(),
     }
 
 
@@ -241,10 +240,10 @@ def _structural_v2_issuance() -> completion_issuance.H1CompletionIssuanceV2:
     )
 
 
-def test_structural_v2_closure_roundtrips_canonical_envelope_once(
+def test_structural_v2_closure_roundtrips_digest_without_decoding_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """This isolates issuance validation; it is not an installed V2 witness."""
+    """Compact closure decoding validates claims without replaying issuance."""
     batch, value = _synthetic_v2_envelope()
     request = canonical_owner_publication_bytes(batch)
     calls: list[CompleteDeliveryBatchV2] = []
@@ -260,13 +259,14 @@ def test_structural_v2_closure_roundtrips_canonical_envelope_once(
 
     assert type(decoded) is H1DeliverySelectionClosureV2
     assert decoded.canonical_bytes() == _canonical(value)
-    assert calls == [batch]
+    assert calls == []
+    assert "request_bytes_base64" not in value
 
 
-def test_structural_v2_closure_journal_readback_rechecks_the_same_envelope(
+def test_structural_v2_closure_journal_readback_retains_exact_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Storage re-decodes each retained V2 envelope without granting issuance authority."""
+    """Storage retains the compact digest claim without replaying issuance."""
     batch, value = _synthetic_v2_envelope()
     request = canonical_owner_publication_bytes(batch)
     calls: list[CompleteDeliveryBatchV2] = []
@@ -282,7 +282,8 @@ def test_structural_v2_closure_journal_readback_rechecks_the_same_envelope(
     locator = journal.issue(record)
 
     assert type(journal.read_exact(locator).record) is H1DeliverySelectionClosureV2
-    assert calls and all(candidate == batch for candidate in calls)
+    assert calls == []
+    assert journal.read_exact(locator).record.canonical_bytes() == _canonical(value)
 
 
 def test_read_closure_reopens_only_the_exact_structural_v2_binding(
@@ -330,14 +331,13 @@ def test_read_closure_reopens_only_the_exact_structural_v2_binding(
         reader.close()
 
 
-def test_v2_closure_rejects_a_schema_label_without_a_genuine_issuance() -> None:
+def test_v2_closure_is_a_digest_claim_without_issuance_authority() -> None:
     _batch, value = _synthetic_v2_envelope()
 
-    with pytest.raises(ValueError, match="closed H1 complete-delivery request"):
-        decode_h1_delivery_evidence(_canonical(value))
+    assert type(decode_h1_delivery_evidence(_canonical(value))) is H1DeliverySelectionClosureV2
 
 
-def test_v2_closure_strict_wire_rejects_malformed_or_mismatched_fields(
+def test_v2_closure_strict_wire_rejects_malformed_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _batch, value = _synthetic_v2_envelope()
@@ -350,12 +350,14 @@ def test_v2_closure_strict_wire_rejects_malformed_or_mismatched_fields(
     malformed = (
         _canonical({key: item for key, item in value.items() if key != "principal_id"}),
         _canonical({**value, "unknown": "field"}),
-        _canonical({**value, "tenant_id": "other"}),
-        _canonical({**value, "principal_id": "other"}),
-        _canonical({**value, "command_id": "other"}),
-        _canonical({**value, "command_fingerprint": "1" * 64}),
-        _canonical({**value, "predecessor_commitment": "1" * 64}),
-        _canonical({**value, "expected_tenant_frontier": 8}),
+        _canonical({**value, "tenant_id": ""}),
+        _canonical({**value, "principal_id": 7}),
+        _canonical({**value, "command_id": ""}),
+        _canonical({**value, "command_fingerprint": "A" * 64}),
+        _canonical({**value, "request_digest": "0" * 63}),
+        _canonical({**value, "predecessor_commitment": "g" * 64}),
+        _canonical({**value, "expected_tenant_frontier": True}),
+        _canonical({**value, "expected_tenant_frontier": 2**64}),
         _canonical(
             {
                 **value,
@@ -374,6 +376,18 @@ def test_v2_closure_strict_wire_rejects_malformed_or_mismatched_fields(
     for raw in malformed:
         with pytest.raises(ValueError):
             decode_h1_delivery_evidence(raw)
+
+
+def test_v2_closure_obeys_one_megabyte_bound() -> None:
+    _batch, value = _synthetic_v2_envelope()
+    raw = _canonical(value)
+    value["deployment_id"] = "x" * (1_000_000 - len(raw) + len("deployment"))
+    at_bound = _canonical(value)
+    assert len(at_bound) == 1_000_000
+    assert decode_h1_delivery_evidence(at_bound).canonical_bytes() == at_bound
+    value["deployment_id"] = str(value["deployment_id"]) + "x"
+    with pytest.raises(ValueError, match="exceed the bound"):
+        decode_h1_delivery_evidence(_canonical(value))
 
 
 def test_issue_readback_retry_and_reopen_are_exact(tmp_path: Path) -> None:

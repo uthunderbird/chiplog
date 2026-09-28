@@ -178,6 +178,15 @@ and ingress inventories match actual paths bidirectionally. Frozen-tree prefligh
 normal tests, relevant verifiers, lint/types and cold critical review pass. This
 does not assert the expanded Phase-D matrix or full milestone completion.
 
+During implementation, test each new join in a short ladder: first a fast
+negative for the new invariant, then a reached negative through the real mounted
+owner/journal or ingress path, then a narrow positive before its checkpoint.
+Run only the new selectors for intermediate feature-branch commits. Repeat the
+costly installed end-to-end path at a joint phase boundary, after those local
+checks pass. Broad load, stress, and combinatorial matrices belong to Phase D
+and merge preparation; this does not defer the first reached negative, the
+representative positive, or crash/reopen evidence required for every J row in I.
+
 ## Coverage map: common mechanism first, detail expansion second
 
 Every row requires representative positive and reached negative/recovery evidence

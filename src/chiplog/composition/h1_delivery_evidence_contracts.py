@@ -16,7 +16,6 @@ WORKER_SCHEMA = "chiplog.execution.h1-worker-fence.v1"
 ROOT_SCHEMA = "chiplog.execution.h1-delivery-selection-closure.v1"
 ROOT_V2_SCHEMA = "chiplog.execution.h1-delivery-selection-closure.v2"
 _MAX_BYTES = 1_000_000
-_MAX_PREPARSE_BYTES = 8 * 1024 * 1024
 
 
 def _canonical(value: object) -> bytes:
@@ -35,7 +34,7 @@ def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def _strict_json(raw: bytes) -> dict[str, object]:
-    if not isinstance(raw, bytes) or not raw or len(raw) > _MAX_PREPARSE_BYTES:
+    if not isinstance(raw, bytes) or not raw or len(raw) > _MAX_BYTES:
         raise ValueError("evidence bytes are absent or exceed the bound")
     try:
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicates)
@@ -621,7 +620,6 @@ def _root_v2(value: dict[str, object]) -> None:
         "request_digest",
         "predecessor_commitment",
         "expected_tenant_frontier",
-        "request_bytes_base64",
     }
     data = _exact(value, fields, "root v2")
     if data["schema_id"] != ROOT_V2_SCHEMA or data["journal_role"] != "h1-delivery-evidence":
@@ -643,41 +641,8 @@ def _root_v2(value: dict[str, object]) -> None:
     ):
         _digest(data[key], key)
     _index(data["expected_tenant_frontier"], "expected_tenant_frontier")
-    request = _b64(data["request_bytes_base64"], "request_bytes_base64")
-    if hashlib.sha256(request).hexdigest() != data["request_digest"]:
-        raise ValueError("root v2 request digest differs")
-    try:
-        from chiplog.composition.h1_completion_issuance import (
-            V2_SCHEMA as H1_COMPLETION_V2_SCHEMA,
-        )
-        from chiplog.composition.h1_completion_issuance import (
-            H1CompletionIssuanceV2,
-            decode_h1_completion_issuance,
-        )
-        from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
-        from chiplog.platform.owner_decision_journal import canonical_owner_publication_bytes
-
-        decoded = CompleteDeliveryBatchV2.model_validate_json(request)
-        if (
-            decoded.authentication.applicability_schema != H1_COMPLETION_V2_SCHEMA
-            or request != canonical_owner_publication_bytes(decoded)
-        ):
-            raise ValueError("root v2 request is not canonical H1 applicability")
-        issuance = decode_h1_completion_issuance(decoded)
-        if type(issuance) is not H1CompletionIssuanceV2:
-            raise ValueError("root v2 request does not carry a V2 issuance")
-    except (ImportError, ValueError) as error:
-        raise ValueError("root v2 request is not a closed H1 complete-delivery request") from error
-    if (
-        decoded.identity.tenant_id != data["tenant_id"]
-        or decoded.identity.command_id != data["command_id"]
-        or decoded.identity.command_fingerprint != data["command_fingerprint"]
-        or decoded.expected.expected_materialization_commitment != data["predecessor_commitment"]
-        or decoded.expected.tenant_frontier != data["expected_tenant_frontier"]
-        or issuance.assembly.original_completion_request.source.selected_admitted_input.principal_id
-        != data["principal_id"]
-    ):
-        raise ValueError("root v2 fields differ from its H1 request")
+    # The selected owner journal retains the exact request and authenticates
+    # this digest during source replay; this decoder validates claims only.
 
 
 @dataclass(frozen=True, slots=True)
@@ -736,8 +701,6 @@ H1DeliveryEvidence = (
 def decode_h1_delivery_evidence(raw: bytes) -> H1DeliveryEvidence:
     value = _strict_json(raw)
     schema = value.get("schema_id")
-    if len(raw) > _MAX_BYTES and schema != ROOT_V2_SCHEMA:
-        raise ValueError("evidence bytes exceed the schema bound")
     if schema == MEMBER_SCHEMA:
         _member(value)
         return H1DeliveryMemberEvidenceV1(raw, value)
