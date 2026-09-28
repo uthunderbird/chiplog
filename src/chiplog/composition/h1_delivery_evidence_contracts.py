@@ -16,6 +16,7 @@ WORKER_SCHEMA = "chiplog.execution.h1-worker-fence.v1"
 ROOT_SCHEMA = "chiplog.execution.h1-delivery-selection-closure.v1"
 ROOT_V2_SCHEMA = "chiplog.execution.h1-delivery-selection-closure.v2"
 _MAX_BYTES = 1_000_000
+_MAX_PREPARSE_BYTES = 8 * 1024 * 1024
 
 
 def _canonical(value: object) -> bytes:
@@ -34,7 +35,7 @@ def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def _strict_json(raw: bytes) -> dict[str, object]:
-    if not isinstance(raw, bytes) or not raw or len(raw) > _MAX_BYTES:
+    if not isinstance(raw, bytes) or not raw or len(raw) > _MAX_PREPARSE_BYTES:
         raise ValueError("evidence bytes are absent or exceed the bound")
     try:
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicates)
@@ -735,6 +736,8 @@ H1DeliveryEvidence = (
 def decode_h1_delivery_evidence(raw: bytes) -> H1DeliveryEvidence:
     value = _strict_json(raw)
     schema = value.get("schema_id")
+    if len(raw) > _MAX_BYTES and schema != ROOT_V2_SCHEMA:
+        raise ValueError("evidence bytes exceed the schema bound")
     if schema == MEMBER_SCHEMA:
         _member(value)
         return H1DeliveryMemberEvidenceV1(raw, value)

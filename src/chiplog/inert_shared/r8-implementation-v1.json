@@ -206,7 +206,7 @@
   "composition/h1_completion_readplan_registry.py": "a4ddebf0358101aa1a35a362cbe5666e8abf182fe0d1235ac93d74c7fc74cebb",
   "composition/h1_conversation_policy.py": "38cb081e98cdf2f652d53a88978697f8efe049a978f83b87194e737d892e8e8e",
   "composition/h1_conversation_sources.py": "606b815391483231f1f4732864af544f917e3b6301028093076b0bfa142c5762",
-  "composition/h1_delivery_evidence_contracts.py": "2070cef1c9528f9993cbf860d1853a4c0f727cab5275207c5c7796fcf2f73639",
+  "composition/h1_delivery_evidence_contracts.py": "f018dcee204c2d4ea83b31be27994bb89d8b8287d730cad5cf6201c057822c7c",
   "composition/h1_delivery_evidence_journal.py": "7135929da054b27795743657488a0e445f5ae9b404c00241814f2b57a9d32a4a",
   "composition/h1_first_path_sources.py": "7af69d24d3685d80102783a30da41498660ddc5aca6c8c88b50de50b9bdc7eb0",
   "composition/h1_historical_h0_r17.py": "6c7e536737458b09bd946fc2685f31144f98615e6f4e7a49ad25a67bce6cbe1e",

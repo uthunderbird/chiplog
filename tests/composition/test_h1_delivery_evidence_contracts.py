@@ -3,9 +3,14 @@ from typing import Any, cast
 
 import pytest
 
+import chiplog.composition.h1_delivery_evidence_contracts as contracts
 from chiplog.composition.h1_delivery_evidence_contracts import (
     MEMBER_SCHEMA,
+    ROOT_SCHEMA,
+    ROOT_V2_SCHEMA,
+    WORKER_SCHEMA,
     H1DeliveryMemberEvidenceV1,
+    H1DeliverySelectionClosureV2,
     H1DeliveryWorkerFenceV1,
     decode_h1_delivery_evidence,
 )
@@ -29,6 +34,12 @@ def _member(*args: object, **kwargs: object) -> dict[str, object]:
     records[0]["label"]["lattice_version"] = "chiplog.disclosure.v1"
     _refresh_cut_digest(value)
     return value
+
+
+def _oversized_wire(schema_id: str, padding_bytes: int) -> bytes:
+    raw = _canonical({"padding": "x" * padding_bytes, "schema_id": schema_id})
+    assert len(raw) > padding_bytes
+    return raw
 
 
 @pytest.mark.parametrize(
@@ -170,6 +181,62 @@ def test_top_level_unknown_fields_and_schemas_fail_closed(mutate: object) -> Non
 def test_duplicate_or_noncanonical_json_is_rejected(raw: bytes) -> None:
     with pytest.raises(ValueError):
         decode_h1_delivery_evidence(raw)
+
+
+@pytest.mark.parametrize("schema_id", (MEMBER_SCHEMA, WORKER_SCHEMA, ROOT_SCHEMA, "unknown.schema"))
+def test_oversized_non_v2_evidence_is_rejected_before_schema_dispatch(
+    monkeypatch: pytest.MonkeyPatch, schema_id: str
+) -> None:
+    dispatched: list[str] = []
+
+    def _spy(name: str) -> object:
+        def validate(value: dict[str, object]) -> None:
+            dispatched.append(name)
+
+        return validate
+
+    monkeypatch.setattr(contracts, "_member", _spy("member"))
+    monkeypatch.setattr(contracts, "_worker", _spy("worker"))
+    monkeypatch.setattr(contracts, "_root", _spy("root"))
+    raw = _oversized_wire(schema_id, 1_000_000)
+
+    with pytest.raises(ValueError, match="schema bound"):
+        decode_h1_delivery_evidence(raw)
+
+    assert dispatched == []
+
+
+def test_oversized_v2_evidence_reaches_v2_dispatcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    dispatched: list[dict[str, object]] = []
+
+    def validate(value: dict[str, object]) -> None:
+        dispatched.append(value)
+
+    monkeypatch.setattr(contracts, "_root_v2", validate)
+    raw = _oversized_wire(ROOT_V2_SCHEMA, 1_000_000)
+
+    decoded = decode_h1_delivery_evidence(raw)
+
+    assert isinstance(decoded, H1DeliverySelectionClosureV2)
+    assert len(dispatched) == 1
+    assert dispatched[0]["schema_id"] == ROOT_V2_SCHEMA
+
+
+def test_v2_evidence_over_preparse_bound_is_rejected_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatched: list[dict[str, object]] = []
+
+    def validate(value: dict[str, object]) -> None:
+        dispatched.append(value)
+
+    monkeypatch.setattr(contracts, "_root_v2", validate)
+    raw = _oversized_wire(ROOT_V2_SCHEMA, 8 * 1024 * 1024)
+
+    with pytest.raises(ValueError, match="absent or exceed the bound"):
+        decode_h1_delivery_evidence(raw)
+
+    assert dispatched == []
 
 
 def test_unknown_nested_key_duplicate_nested_key_and_malformed_base64_are_rejected() -> None:
