@@ -1,54 +1,53 @@
-"""The unowned H1 read plan must not manufacture an issuance manifest."""
+"""The live read-plan owner exposes no caller-shaped authority path."""
 
 from __future__ import annotations
+
+import copy
 
 import pytest
 
 
-class _HostileEvidence:
-    def __getattribute__(self, _: str) -> object:
-        raise AssertionError("deny-only source inspected caller evidence")
+def test_readplan_source_requires_the_exact_installed_runtime() -> None:
+    from chiplog.composition.h1_live_readplan_source import H1LiveReadPlanSource
+
+    with pytest.raises(TypeError, match="canonical installed runtime"):
+        H1LiveReadPlanSource(object())
 
 
-def test_uninstalled_readplan_source_has_no_manifest_or_predecessor_success_path() -> None:
-    """Caller-shaped reads cannot fill in for installed physical owners."""
+def test_readplan_capture_cannot_be_constructed_copied_or_serialized() -> None:
+    from chiplog.composition.h1_live_readplan_source import _H1ReadPlanCapture
+
+    with pytest.raises(TypeError, match="source-issued"):
+        _H1ReadPlanCapture()
+    capture = object.__new__(_H1ReadPlanCapture)
+    with pytest.raises(TypeError, match="cannot be copied"):
+        copy.copy(capture)
+    with pytest.raises(TypeError, match="cannot be serialized"):
+        capture.__reduce__()
+
+
+def test_writer_admission_requires_exact_once_issued_capture_and_same_session() -> None:
+    """A capture is not writer authority until this source consumed it for B."""
     from chiplog.composition.h1_live_readplan_source import (
         H1LiveReadPlanSource,
         H1ReadPlanSourceUnavailable,
+        _H1ReadPlanCapture,
     )
 
-    source = H1LiveReadPlanSource()
+    source = object.__new__(H1LiveReadPlanSource)
+    source._captures = {}
+    capture = object.__new__(_H1ReadPlanCapture)
+    session = object()
+    capture._session = session
+    capture._consumed = False
+    capture._issued = False
+    source._captures[id(capture)] = capture
 
-    for value in (
-        object(),
-        {"ordered_heads": (), "registry_head": "forged"},
-        _HostileEvidence(),
-    ):
-        with pytest.raises(H1ReadPlanSourceUnavailable, match="not installed"):
-            source.capture_predecessor(evidence=value)
-        with pytest.raises(H1ReadPlanSourceUnavailable, match="not installed"):
-            source.issue_manifest(evidence=value)
+    with pytest.raises(H1ReadPlanSourceUnavailable, match="not exactly issued"):
+        source._require_issued_capture(capture, session)
 
-
-def test_readplan_source_names_the_atomic_owner_extension_without_inventing_heads() -> None:
-    """The missing registry, not DTO data, must name each required observed head."""
-    from chiplog.composition.h1_live_readplan_source import (
-        H1LiveReadPlanSource,
-        H1ReadPlanOwnerExtension,
-    )
-
-    source = H1LiveReadPlanSource()
-    extension = source.required_owner_extension
-
-    assert isinstance(extension, H1ReadPlanOwnerExtension)
-    assert extension.operation == "agent_loop.complete_acceptance.v2"
-    assert extension.ordered_heads == ()
-    assert extension.reason == "no installed H1 completion read-plan/registry owner"
-    assert extension.requires_one_gate_cut is True
-    assert extension.requires_presence_and_absence is True
-    assert extension.required_physical_observations == (
-        "tenant frontier",
-        "materialization commitment",
-        "no pending owner/loop/gate publication",
-        "selected H1 publication registry revision/head/fingerprint",
-    )
+    capture._consumed = True
+    capture._issued = True
+    with pytest.raises(H1ReadPlanSourceUnavailable, match="not exactly issued"):
+        source._require_issued_capture(capture, object())
+    assert source._require_issued_capture(capture, session) is capture

@@ -45,6 +45,8 @@ from chiplog.composition.common_execution_driver_contracts import (
 )
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_preissuance_registration import H1PreissuanceSourceViolation
+from chiplog.composition.h1_preseal_p_scope_frames import decode_h1_preseal_p_scope_frames
+from chiplog.composition.h1_preseal_p_scope_wires import decode_h1_preseal_p_scope_wires
 from chiplog.composition.h1_preseal_pe_anchor_records import (
     decode_h1_preseal_pe_anchor_record,
 )
@@ -230,6 +232,13 @@ def _scope_wires(decision: dict[str, object]) -> dict[str, object]:
     return value
 
 
+def _scope_frames(decision: dict[str, object]) -> dict[str, object]:
+    value = decision.get("h1_preseal_p_scope_frames_v1")
+    if not isinstance(value, dict):
+        raise AssertionError("selected V2 DECIDED lacks P full-frame sibling")
+    return value
+
+
 def _strict_base64(value: object) -> bytes:
     if not isinstance(value, str):
         raise AssertionError("P scope-exchange payload is not base64 text")
@@ -377,6 +386,165 @@ async def test_p_scope_exchange_sibling_is_unchanged_after_restart_and_later_pub
             assert later_payloads == payloads
 
 
+@pytest.mark.asyncio
+async def test_historical_p_source_replays_exact_p_full_frames_after_restart(
+    tmp_path: Path,
+) -> None:
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
+            original, selected_seal, decision_id = await _seal_v3_prepare_as_v2(
+                runtime, text="full P frames"
+            )
+            _id, _raw, decision = _decision_by_id(runtime, decision_id)
+            anchor = decode_h1_preseal_pe_anchor_record(
+                _text(decision, "h1_preseal_pe_anchor").encode()
+            )
+            p = cast(dict[str, object], anchor.as_dict()["p"])
+            wires = _scope_wires(decision)
+            decoded_wires = decode_h1_preseal_p_scope_wires(
+                _canonical(wires),
+                anchor_binding=anchor.binding,
+                issue_digest=cast(str, p["accepted_issue_wire_digest"]),
+                current_digest=cast(str, p["accepted_current_wire_digest"]),
+            )
+            frames = decode_h1_preseal_p_scope_frames(
+                _canonical(_scope_frames(decision)),
+                anchor_binding=anchor.binding,
+                scope_wires=decoded_wires,
+            )
+            expected_wires = frames.wires(anchor_binding=anchor.binding, scope_wires=decoded_wires)
+            port = runtime._h1_preissuance_registration_source_port
+            assert port is not None
+            capability = port._issue_historical_recovery_source(
+                original_identity=original.identity,
+                original_fingerprint=original.original_driver_command_fingerprint(),
+                selected_seal=selected_seal,
+            )
+            assert port._replay_historical_scope_wires(capability) == expected_wires
+            with pytest.raises(H1PreissuanceSourceViolation, match="issuer-owned"):
+                port._replay_historical_scope_wires(object())
+            port._revoke_historical_recovery_source(capability)
+            with pytest.raises(H1PreissuanceSourceViolation, match="issuer-owned"):
+                port._replay_historical_scope_wires(capability)
+            frozen_v1 = _canonical(wires)
+            frozen_frames = _canonical(_scope_frames(decision))
+
+        async with open_installed_h1_runtime(
+            launch, resources=_resources(tmp_path, "-restart")
+        ) as reopened:
+            _id, _raw, replayed = _decision_by_id(reopened, decision_id)
+            assert _canonical(_scope_wires(replayed)) == frozen_v1
+            assert _canonical(_scope_frames(replayed)) == frozen_frames
+            port = reopened._h1_preissuance_registration_source_port
+            assert port is not None
+            capability = port._issue_historical_recovery_source(
+                original_identity=original.identity,
+                original_fingerprint=original.original_driver_command_fingerprint(),
+                selected_seal=selected_seal,
+            )
+            replay = port._replay_historical_scope_wires(capability)
+            assert replay == expected_wires
+            assert replay[0].sent.canonical_payload == _strict_base64(
+                cast(dict[str, object], wires["issue"])["sent_payload_base64"]
+            )
+            assert replay[1].returned.canonical_payload == _strict_base64(
+                cast(dict[str, object], wires["current"])["returned_payload_base64"]
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutated", "message"),
+    (("conversation", "conversation source changed"), ("effects", "effects source changed")),
+)
+async def test_historical_p_pair_replays_one_projection_and_rejects_changed_baselines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutated: str, message: str
+) -> None:
+    """The paired replay shares selection only; it retains both source comparisons."""
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
+            original, selected_seal, _decision_id = await _seal_v3_prepare_as_v2(
+                runtime, text="paired historical P replay"
+            )
+            port = runtime._h1_preissuance_registration_source_port
+            assert port is not None
+            port_type = type(port)
+            original_projection = port_type._historical_recovery_projection
+            calls = 0
+
+            def record_projection(owner: object, *args: object) -> object:
+                nonlocal calls
+                calls += 1
+                return original_projection(owner, *args)
+
+            monkeypatch.setattr(port_type, "_historical_recovery_projection", record_projection)
+            capability = port._issue_historical_recovery_source(
+                original_identity=original.identity,
+                original_fingerprint=original.original_driver_command_fingerprint(),
+                selected_seal=selected_seal,
+            )
+            calls = 0
+            conversation, effects = port._replay_historical_recovery_sources(capability)
+            assert calls == 1
+            assert conversation == port._replay_historical_conversation_policy(capability)
+            assert effects == port._replay_historical_effects_source(capability)
+            assert calls == 3
+
+            def changed_projection(owner: object, *args: object) -> object:
+                conversation_value, effects_value = original_projection(owner, *args)
+                if mutated == "conversation":
+                    return (
+                        replace(
+                            conversation_value,
+                            original_turn_id=conversation_value.original_turn_id + "-changed",
+                        ),
+                        effects_value,
+                    )
+                changed_origin = effects_value.retained_origin.model_copy(
+                    update={"admitted_record_digest": "0" * 64}
+                )
+                return conversation_value, replace(effects_value, retained_origin=changed_origin)
+
+            monkeypatch.setattr(port_type, "_historical_recovery_projection", changed_projection)
+            with pytest.raises(H1PreissuanceSourceViolation, match=message):
+                port._replay_historical_recovery_sources(capability)
+
+
+@pytest.mark.asyncio
+async def test_historical_p_pair_requires_its_exact_issuer_capability(tmp_path: Path) -> None:
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
+            original, selected_seal, _decision_id = await _seal_v3_prepare_as_v2(
+                runtime, text="paired historical P capability"
+            )
+            port = runtime._h1_preissuance_registration_source_port
+            assert port is not None
+            capability = port._issue_historical_recovery_source(
+                original_identity=original.identity,
+                original_fingerprint=original.original_driver_command_fingerprint(),
+                selected_seal=selected_seal,
+            )
+            with pytest.raises(H1PreissuanceSourceViolation, match="issuer-owned"):
+                port._replay_historical_recovery_sources(object())
+            port._revoke_historical_recovery_source(capability)
+            with pytest.raises(H1PreissuanceSourceViolation, match="issuer-owned"):
+                port._replay_historical_recovery_sources(capability)
+
+        async with open_installed_h1_runtime(
+            launch, resources=_resources(tmp_path, "-foreign")
+        ) as foreign:
+            foreign_port = foreign._h1_preissuance_registration_source_port
+            assert foreign_port is not None
+            with pytest.raises(H1PreissuanceSourceViolation, match="issuer-owned"):
+                foreign_port._replay_historical_recovery_sources(capability)
+
+
 def _mutate_residual(
     kind: Literal["missing", "unknown", "malformed", "payload", "anchor"],
 ) -> Callable[[dict[str, object]], None]:
@@ -401,10 +569,6 @@ def _mutate_residual(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ("missing", "unknown", "malformed", "payload", "anchor"))
-@pytest.mark.xfail(
-    strict=True,
-    reason="the installed V2 writer/reader has no retained P scope-exchange integrity boundary",
-)
 async def test_historical_p_reader_holds_on_genuinely_appended_invalid_scope_residual(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -418,7 +582,10 @@ async def test_historical_p_reader_holds_on_genuinely_appended_invalid_scope_res
             original_append = runtime._append_decision
 
             def append_mutated(decision: dict[str, object]) -> None:
-                if decision.get("kind") == "DECIDED":
+                if (
+                    decision.get("kind") == "DECIDED"
+                    and "h1_preseal_p_scope_wires_v1" in decision
+                ):
                     _mutate_residual(kind)(decision)
                 original_append(decision)
 

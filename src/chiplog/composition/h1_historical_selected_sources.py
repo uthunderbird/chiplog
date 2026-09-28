@@ -10,12 +10,27 @@ inside the same authority cut as the retained H0/R17/R16 and owner selection.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from chiplog.architecture.r7_storage_surface import AUTHORITY_STORAGE_SURFACE_DIGEST
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead, ProviderRecipient
+from chiplog.capabilities.agent_loop.execution_completion_contracts import (
+    PreparedExecutionCompletion,
+)
+from chiplog.capabilities.agent_loop.execution_completion_preparation import (
+    prepare_first_path_execution_completion,
+)
+from chiplog.capabilities.agent_loop.post_terminal_contracts import (
+    PreparedPostTerminalWork,
+)
+from chiplog.capabilities.agent_loop.post_terminal_record_contracts import (
+    validate_prepared_post_terminal_work,
+)
+from chiplog.capabilities.agent_loop.terminal_work_preparation import prepare_h1_terminal_work
 from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     H1OwnerCandidateCallV1,
     H1OwnerCandidateV1,
@@ -28,12 +43,32 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
     IssueHermeticOutputScopeV1,
     ReadCurrentHermeticExecutionScopeV1,
 )
+from chiplog.capabilities.effects.h1_local_preparation import prepare_h1_local_commentary
+from chiplog.capabilities.effects.h1_local_preparation_contracts import (
+    PreparedH1LocalCommentaryV1,
+)
+from chiplog.capabilities.projections.conversation_completion_owner import (
+    ConversationCompletionOwner,
+)
+from chiplog.capabilities.projections.conversation_preparation_contracts import (
+    PreparedConversationCompletionV1,
+)
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+from chiplog.composition.common_execution_driver_contracts import DriveInputRequestV1
+from chiplog.composition.h1_completion_readplan_registry import require_registry_identity
 from chiplog.composition.h1_first_path_sources import H1FirstPathSources
 from chiplog.composition.h1_historical_h0_r17 import (
     HistoricalH0R17Selection,
     read_historical_h0_r17,
 )
+from chiplog.composition.h1_historical_readplan import reconstruct_h1_historical_read_manifest
+from chiplog.composition.h1_postseal_recovery import H1PostSealRecoveryJournal
+from chiplog.composition.h1_postseal_recovery_source import H1PostSealRecoveryRootSource
+from chiplog.composition.h1_preseal_p_scope_frames import decode_h1_preseal_p_scope_frames
+from chiplog.composition.h1_preseal_p_scope_wires import decode_h1_preseal_p_scope_wires
+from chiplog.composition.h1_preseal_pe_anchor_records import decode_h1_preseal_pe_anchor_record
+from chiplog.composition.h1_v2_recovery_native_source import H1V2RecoveryNativeSource
+from chiplog.composition.h1_verified_snapshot_rows import H1VerifiedSnapshotRows
 from chiplog.composition.r16_dispatch_registry import (
     ResourceObservation,
     historical_recipient,
@@ -41,6 +76,7 @@ from chiplog.composition.r16_dispatch_registry import (
 )
 from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 from chiplog.platform.broker import PublicPortSuccess
+from chiplog.platform.owner_decision_journal import OwnerJournalSnapshot
 from chiplog.platform.owner_publications import SelectedOwnerDecision
 from chiplog.platform.r7_trust import decode_trust_owner_call_canonical
 
@@ -57,6 +93,10 @@ class H1HistoricalSelection:
 
     decision: SelectedOwnerDecision
     issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2
+
+
+class H1V2SelectedPresealFullFrameUnavailable(ValueError):
+    """A legacy selected V2 seal predates the required full-frame sibling."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +318,152 @@ def _selected_owner_decision(
     ):
         raise ValueError("H1 historical completion physical owner selection differs")
     return cast(SelectedOwnerDecision, decision)
+
+
+def _verify_selected_v2_delivery_closure(
+    decision: SelectedOwnerDecision, runtime: object
+) -> None:
+    """Reopen the selected V2 closure before consuming its issuance evidence.
+
+    The caller holds the installed authority gate.  This deliberately dispatches
+    from the public applicability schema, rather than decoding the issuance:
+    a corrupted selected V2 record therefore cannot trigger historical-source
+    reads merely to determine whether it has retained closure evidence.
+    """
+    from chiplog.composition.h1_completion_issuance import SCHEMA, V2_SCHEMA
+    from chiplog.composition.h1_delivery_evidence_contracts import (
+        ROOT_V2_SCHEMA,
+        H1DeliverySelectionClosureV2,
+    )
+    from chiplog.composition.h1_delivery_evidence_journal import H1DeliveryEvidenceJournal
+    from chiplog.platform.h1_delivery_binding_contracts import H1DeliveryBinding
+    from chiplog.platform.owner_decision_journal import canonical_owner_publication_bytes
+
+    batch = decision.prepared.request
+    if type(batch) is not CompleteDeliveryBatchV2:
+        raise ValueError("H1 selected delivery closure has the wrong batch")
+    applicability_schema = batch.authentication.applicability_schema
+    if applicability_schema == SCHEMA:
+        return
+    if applicability_schema != V2_SCHEMA:
+        raise ValueError("H1 selected delivery closure has unknown applicability")
+    gate_factory = getattr(runtime, "_authority_gate", None)
+    if not callable(gate_factory):
+        raise ValueError("H1 selected delivery closure lacks its authority gate")
+    gate = gate_factory()
+    require_held = getattr(gate, "require_held", None)
+    if not callable(require_held):
+        raise ValueError("H1 selected delivery closure has an unsupported authority gate")
+    require_held()
+    binding = decision.prepared.h1_delivery_binding
+    journal = getattr(runtime, "_h1_delivery_evidence_journal", None)
+    if (
+        type(binding) is not H1DeliveryBinding
+        or binding.closure_schema_id != ROOT_V2_SCHEMA
+        or type(journal) is not H1DeliveryEvidenceJournal
+    ):
+        raise ValueError("H1 selected V2 delivery closure is unavailable")
+    retained = journal.read_closure(binding)
+    if type(retained.record) is not H1DeliverySelectionClosureV2:
+        raise ValueError("H1 selected V2 delivery closure has the wrong record")
+    value = retained.record._value
+    try:
+        encoded_request = value["request_bytes_base64"]
+        if not isinstance(encoded_request, str):
+            raise ValueError("request bytes are not base64 text")
+        request_bytes = base64.b64decode(encoded_request, validate=True)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("H1 selected V2 delivery closure request bytes differ") from error
+    expected_frontier = value.get("expected_tenant_frontier")
+    if (
+        request_bytes != canonical_owner_publication_bytes(batch)
+        or value.get("predecessor_commitment") != decision.prepared.predecessor_commitment
+        or type(expected_frontier) is not int
+        or expected_frontier < 0
+        or expected_frontier != batch.expected.tenant_frontier
+        or decision.tenant_commit_sequence != expected_frontier + 1
+    ):
+        raise ValueError("H1 selected V2 delivery closure differs from selected decision")
+
+
+def _require_v2_read_plan_prechecks(
+    batch: CompleteDeliveryBatchV2,
+    issuance: H1CompletionIssuanceV2,
+    *,
+    runtime: CommonCliExecutionRuntime,
+    owner_journal: object,
+    decision: SelectedOwnerDecision,
+) -> tuple[H1VerifiedSnapshotRows, OwnerJournalSnapshot]:
+    """Bind V2 predecessor evidence before replaying its frozen selectors.
+
+    This deliberately establishes only the parts whose independent historical
+    inputs already exist here.  Selector replay remains a separate audited
+    resolver: neither today's inventory nor the live capture owner is a
+    substitute for it.
+    """
+    read_plan = issuance.read_plan
+    try:
+        registry = require_registry_identity(
+            canonical_bytes=read_plan.registry_bytes,
+            expected_head=batch.expected.registry_head,
+            expected_fingerprint=batch.expected.registry_fingerprint,
+        )
+    except ValueError as error:
+        raise ValueError("H1 V2 historical read-plan registry differs") from error
+    if (
+        registry.head != issuance.capture.expected.registry_head
+        or registry.fingerprint != issuance.capture.expected.registry_fingerprint
+    ):
+        raise ValueError("H1 V2 historical read-plan registry differs from capture")
+
+    raw_journal = getattr(owner_journal, "_raw", None)
+    entries = getattr(raw_journal, "entries", None)
+    snapshot_at = getattr(owner_journal, "snapshot_at", None)
+    if not callable(entries) or not callable(snapshot_at):
+        raise ValueError("H1 V2 historical read-plan lacks raw owner predecessor")
+    raw_entries = entries()
+    matching = [entry for entry in raw_entries if entry[0] == decision.decision_id]
+    if len(matching) != 1 or matching[0][1] != read_plan.predecessor_owner_head:
+        raise ValueError("H1 V2 historical read-plan owner predecessor differs")
+    # snapshot_at first validates the whole retained tail, then returns exactly
+    # the predecessor prefix.  Its head check prevents an adapter from treating
+    # an absent/null predecessor as an arbitrary empty cut.
+    predecessor = snapshot_at(read_plan.predecessor_owner_head)
+    if (
+        getattr(predecessor, "head", object()) != read_plan.predecessor_owner_head
+        or getattr(predecessor, "tenant_id", object()) != batch.identity.tenant_id
+        or any(
+            selected.prepared.request.identity.command_id
+            not in getattr(predecessor, "materialized_command_ids", frozenset())
+            for selected in getattr(predecessor, "decisions", ())
+        )
+    ):
+        raise ValueError("H1 V2 historical read-plan predecessor prefix differs")
+
+    checkpoint_factory = getattr(runtime, "_h1_checkpoint_store", None)
+    if not callable(checkpoint_factory):
+        raise ValueError("H1 V2 historical read-plan lacks checkpoint store")
+    checkpoint_store = checkpoint_factory()
+    resolve_verified = getattr(checkpoint_store, "resolve_verified", None)
+    if not callable(resolve_verified):
+        raise ValueError("H1 V2 historical read-plan has unsupported checkpoint store")
+    try:
+        verified = resolve_verified(
+            read_plan.predecessor_checkpoint,
+            expected_resulting=batch.expected.expected_materialization_commitment,
+            expected_surface_digest=AUTHORITY_STORAGE_SURFACE_DIGEST,
+        )
+        rows = H1VerifiedSnapshotRows.from_verified(verified)
+    except (TypeError, ValueError, RuntimeError) as error:
+        raise ValueError("H1 V2 historical read-plan checkpoint differs") from error
+    if (
+        rows.commitment != batch.expected.expected_materialization_commitment
+        or rows.tenant_head(batch.identity.tenant_id) != batch.expected.tenant_frontier
+    ):
+        raise ValueError("H1 V2 historical read-plan checkpoint frontier differs")
+    if not isinstance(predecessor, OwnerJournalSnapshot):
+        raise ValueError("H1 V2 historical read-plan predecessor snapshot differs")
+    return rows, predecessor
 
 
 def _verify_historical_scope(
@@ -547,6 +733,233 @@ def _verify_v2_current_as_of(
     )
 
 
+def _canonical_json_bytes(value: object, *, name: str) -> bytes:
+    """Encode an inert selected sibling or JSON-mode DTO without normalization."""
+    try:
+        return json.dumps(
+            value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"H1 V2 selected preseal {name} is malformed") from error
+
+
+def _full_frame_json(value: object, *, name: str) -> bytes:
+    dump = getattr(value, "model_dump", None)
+    if not callable(dump):
+        raise ValueError(f"H1 V2 selected preseal {name} is malformed")
+    try:
+        return _canonical_json_bytes(dump(mode="json"), name=name)
+    except TypeError as error:
+        raise ValueError(f"H1 V2 selected preseal {name} is malformed") from error
+
+
+def _require_v2_selected_preseal_scope_frames(
+    issuance: H1CompletionIssuanceV2, native: object
+) -> None:
+    """Join V2 issuance frames to their selected, authenticated P siblings.
+
+    The V1 sibling binds the accepted payload pairs.  This check additionally
+    requires the complete broker DTO JSON and both timestamps to be identical
+    to the selected seal, so a self-consistent frame cannot replace it.
+    """
+    try:
+        raw_decision = cast(Any, native).seal.raw_bytes
+        decision = json.loads(raw_decision)
+        if (
+            not isinstance(raw_decision, bytes)
+            or not isinstance(decision, dict)
+            or _canonical_json_bytes(decision, name="decision") != raw_decision
+        ):
+            raise ValueError("selected decision bytes differ")
+        raw_anchor = decision.get("h1_preseal_pe_anchor")
+        raw_wires = decision.get("h1_preseal_p_scope_wires_v1")
+        if raw_anchor is None or raw_wires is None:
+            raise ValueError("selected preseal sibling is absent")
+        raw_frames = decision.get("h1_preseal_p_scope_frames_v1")
+        if raw_frames is None:
+            raise H1V2SelectedPresealFullFrameUnavailable(
+                "H1 V2 selected preseal lacks full-frame sibling"
+            )
+        if not isinstance(raw_anchor, str):
+            raise ValueError("selected preseal anchor is malformed")
+        anchor = decode_h1_preseal_pe_anchor_record(raw_anchor.encode("utf-8"))
+        p = anchor.as_dict()["p"]
+        if not isinstance(p, dict):
+            raise ValueError("selected preseal anchor P binding is malformed")
+        wires = decode_h1_preseal_p_scope_wires(
+            _canonical_json_bytes(raw_wires, name="scope-wire sibling"),
+            anchor_binding=anchor.binding,
+            issue_digest=p["accepted_issue_wire_digest"],
+            current_digest=p["accepted_current_wire_digest"],
+        )
+        frames = decode_h1_preseal_p_scope_frames(
+            _canonical_json_bytes(raw_frames, name="full-frame sibling"),
+            anchor_binding=anchor.binding,
+            scope_wires=wires,
+        )
+        issue, current = frames.wires(anchor_binding=anchor.binding, scope_wires=wires)
+    except H1V2SelectedPresealFullFrameUnavailable:
+        raise
+    except (AttributeError, KeyError, TypeError, UnicodeDecodeError, ValueError) as error:
+        raise ValueError("H1 V2 selected preseal full-frame sibling is malformed") from error
+
+    for role, selected, retained in (
+        ("scope issue", issuance.scope_issue_exchange, issue),
+        ("scope current", issuance.scope_current_exchange, current),
+    ):
+        if (
+            _full_frame_json(selected.sent, name=f"{role} sent DTO")
+            != _full_frame_json(retained.sent, name=f"{role} sent DTO")
+            or _full_frame_json(selected.returned, name=f"{role} returned DTO")
+            != _full_frame_json(retained.returned, name=f"{role} returned DTO")
+            or selected.sent_at_ns != retained.sent_at_ns
+            or selected.returned_at_ns != retained.returned_at_ns
+        ):
+            raise ValueError(f"H1 V2 selected preseal full-frame {role} differs")
+
+
+def _verify_v2_selected_recovery(
+    issuance: H1CompletionIssuanceV2,
+    runtime: CommonCliExecutionRuntime,
+    h0: HistoricalH0R17Selection,
+) -> None:
+    """Join V2 issuance to a read-only, independently rebuilt recovery chain."""
+    try:
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+        )
+        from chiplog.composition.h1_conversation_sources import H1ConversationSources
+        original = DriveInputRequestV1.model_validate_json(h0.initialization.driver_request_bytes)
+        if original.canonical_bytes() != h0.initialization.driver_request_bytes:
+            raise ValueError("historical H0 request is noncanonical")
+        identity = original.identity
+        fingerprint = h0.initialization.driver_request_fingerprint
+        locator = H1V2RecoveryNativeSource(runtime).locate_selected_seal(
+            original_identity=identity, original_fingerprint=fingerprint
+        )
+        root = H1PostSealRecoveryRootSource(runtime).derive_on_restart(
+            identity, fingerprint, locator
+        )
+        journal = getattr(runtime, "_h1_postseal_recovery_journal", None)
+        mount = getattr(runtime, "_h1_recovery_mount", None)
+        if type(journal) is not H1PostSealRecoveryJournal or journal._mount is not mount:
+            raise ValueError("enrolled recovery journal is unavailable")
+        scan = journal.scan()
+        state = scan.state_for_root(root.root_id())
+        if (
+            state.root != root
+            or state.head is None
+            or tuple(stage for stage, _raw, _command in state.inputs)
+            != ("COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK")
+            or tuple(stage for stage, _raw in state.results)
+            != ("COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK")
+            or issuance.recovery.root_id != root.root_id()
+            or issuance.recovery.journal_instance_id != root.journal_instance_id
+            or issuance.recovery.completed_chain_head != state.head
+        ):
+            raise ValueError("H1 V2 selected recovery reference differs")
+        from chiplog.composition.h1_recovery_historical_pe_source import (
+            H1RecoveryHistoricalPESource,
+        )
+
+        completion_request, policy, effects_source = H1RecoveryHistoricalPESource(
+            runtime
+        ).read_selected_projection(
+            original_identity=identity,
+            original_fingerprint=fingerprint,
+            selected_seal=locator,
+        )
+        inputs = dict((stage, raw) for stage, raw, _command in state.inputs)
+        results = dict(state.results)
+        completion_raw = completion_request.canonical_bytes()
+        completion_result = PreparedExecutionCompletion.model_validate_json(results["COMPLETION"])
+        if (
+            inputs["COMPLETION"] != completion_raw
+            or completion_result.canonical_bytes() != results["COMPLETION"]
+            or prepare_first_path_execution_completion(completion_request) != completion_result
+        ):
+            raise ValueError("H1 V2 selected recovery completion differs")
+        conversation_source = getattr(runtime, "_h1_conversation_source_port", None)
+        if (
+            type(conversation_source) is not H1ConversationSources
+            or conversation_source._runtime is not runtime
+        ):
+            raise ValueError("H1 V2 selected recovery conversation source is unavailable")
+        conversation_request = conversation_source._read_selected_historical_conversation_request(
+            original_identity=identity,
+            original_fingerprint=fingerprint,
+            selected_seal=locator,
+            policy=policy,
+            completion_request_bytes=completion_raw,
+            completion_result_bytes=results["COMPLETION"],
+        )
+        conversation_raw = conversation_request.canonical_json_bytes()
+        conversation_result = PreparedConversationCompletionV1.model_validate_json(
+            results["CONVERSATION"]
+        )
+        if (
+            inputs["CONVERSATION"] != conversation_raw
+            or conversation_result.canonical_json_bytes() != results["CONVERSATION"]
+            or ConversationCompletionOwner().prepare_completion(conversation_request)
+            != conversation_result
+        ):
+            raise ValueError("H1 V2 selected recovery conversation differs")
+        command_id = state.stage_input("EFFECTS")[1]
+        if not isinstance(command_id, str):
+            raise ValueError("H1 V2 selected recovery effects command is absent")
+        effects_request = H1CompletionPreparationSession._build_historical_effects_request(
+            completion_request=completion_request,
+            completion_result=completion_result,
+            conversation_request=conversation_request,
+            conversation_result=conversation_result,
+            p_effects_source=effects_source,
+            fence=completion_request.fence,
+            effects_command_id=command_id,
+        )
+        effects_raw = effects_request.canonical_bytes()
+        effects_result = PreparedH1LocalCommentaryV1.model_validate_json(results["EFFECTS"])
+        assembly = issuance.assembly
+        effects_call = assembly.ordered_effects[0].owner_call
+        expected_effects = prepare_h1_local_commentary(effects_call)
+        if (
+            inputs["EFFECTS"] != effects_raw
+            or effects_result.canonical_bytes() != results["EFFECTS"]
+            or effects_call.request.canonical_bytes() != effects_raw
+            or effects_call.request.identity.command_id != command_id
+            or expected_effects != effects_result
+        ):
+            raise ValueError("H1 V2 selected recovery effects differs")
+        terminal_request = H1CompletionPreparationSession._build_historical_terminal_work_request(
+            completion_request=completion_request,
+            completion_result=completion_result,
+            effects_request=effects_request,
+            effects_result=effects_result,
+        )
+        terminal_raw = terminal_request.canonical_bytes()
+        terminal_result = PreparedPostTerminalWork.model_validate_json(results["TERMINAL_WORK"])
+        validate_prepared_post_terminal_work(terminal_request, terminal_result)
+        if (
+            inputs["TERMINAL_WORK"] != terminal_raw
+            or terminal_result.canonical_bytes() != results["TERMINAL_WORK"]
+            or prepare_h1_terminal_work(terminal_request) != terminal_result
+        ):
+            raise ValueError("H1 V2 selected recovery terminal-work differs")
+        if (
+            completion_raw != assembly.original_completion_request.canonical_bytes()
+            or results["COMPLETION"] != assembly.prepared_completion.canonical_bytes()
+            or conversation_raw != assembly.conversation_request.canonical_json_bytes()
+            or results["CONVERSATION"] != assembly.conversation_result.canonical_json_bytes()
+            or results["EFFECTS"] != assembly.ordered_effects[0].owner_result.canonical_bytes()
+            or terminal_raw != assembly.terminal_work_request.canonical_bytes()
+            or results["TERMINAL_WORK"] != assembly.terminal_work_result.canonical_bytes()
+        ):
+            raise ValueError("H1 V2 selected recovery differs from issuance assembly")
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        if isinstance(error, ValueError) and str(error).startswith("H1 V2 selected recovery"):
+            raise
+        raise ValueError("H1 V2 selected recovery is malformed") from error
+
+
 def _verify_historical_selection(
     batch: CompleteDeliveryBatchV2,
     issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
@@ -561,14 +974,17 @@ def _verify_historical_selection(
     # binder rather than re-read after release.
     with cast(Any, ports.gate).hold():
         custody, _, owner_journal, trust_reader = _open_historical_ports(ports)
+        decision = _selected_owner_decision(batch, owner_journal)
+        from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
+
+        if type(issuance) is H1CompletionIssuanceV2:
+            _verify_selected_v2_delivery_closure(decision, common_runtime)
         retained = _retained_origin(issuance)
         h0_r17 = read_historical_h0_r17(common_runtime, retained)
         _verify_historical_r16(issuance, h0_selection=h0_r17, custody=custody)
         _verify_historical_scope(issuance, trust_reader=trust_reader, gate=ports.gate)
         # V1 deliberately remains on its original two-wire route.  V2 adds
         # three independently prefix-bound CURRENT observations.
-        from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
-
         if type(issuance) is H1CompletionIssuanceV2:
             _verify_v2_current_as_of(
                 issuance,
@@ -588,11 +1004,36 @@ def _verify_historical_selection(
                 trust_reader=trust_reader,
                 gate=ports.gate,
             )
-        H1FirstPathSources(common_runtime).validate_historical(
-            issuance.assembly.original_completion_request.source,
-            initialization_envelope_bytes=retained.initialization_envelope_bytes,
-        )
-        return _selected_owner_decision(batch, owner_journal)
+        first_path = H1FirstPathSources(common_runtime)
+        native = None
+        if type(issuance) is H1CompletionIssuanceV2:
+            native = first_path.replay_selected_native_cut(
+                issuance.assembly.original_completion_request.source,
+                initialization_envelope_bytes=retained.initialization_envelope_bytes,
+            )
+            _require_v2_selected_preseal_scope_frames(issuance, native)
+            _verify_v2_selected_recovery(issuance, common_runtime, h0_r17)
+        else:
+            first_path.validate_historical(
+                issuance.assembly.original_completion_request.source,
+                initialization_envelope_bytes=retained.initialization_envelope_bytes,
+            )
+        if type(issuance) is H1CompletionIssuanceV2:
+            rows, predecessor_owner = _require_v2_read_plan_prechecks(
+                batch,
+                issuance,
+                runtime=common_runtime,
+                owner_journal=owner_journal,
+                decision=decision,
+            )
+            reconstruct_h1_historical_read_manifest(
+                batch=batch,
+                issuance=issuance,
+                native=cast(Any, native),
+                predecessor_rows=rows,
+                predecessor_owner=predecessor_owner,
+            )
+        return decision
 
 
 def verify_h1_historical_sources(

@@ -279,10 +279,26 @@ async def test_installed_restart_recovers_all_four_stages_then_replays_durable_s
 
         events: list[tuple[str, object]] = []
         async with open_installed_h1_runtime(launch, resources=resources) as restarted:
+            scope_port = restarted._h1_preissuance_registration_source_port
+            assert scope_port is not None
+
+            def ordinary_terminal_must_not_recheck_p(*_args: object) -> None:
+                pytest.fail("ordinary TERMINAL_WORK unexpectedly required finalization P clearance")
+
+            monkeypatch.setattr(
+                type(scope_port),
+                "_check_terminal_clearance_current",
+                ordinary_terminal_must_not_recheck_p,
+            )
             first_engine = _install_recorders(restarted, events, monkeypatch)
             receipt = await restarted.advance_execution(advance(initial, request))
             assert hasattr(receipt, "phase"), repr(receipt)
             assert receipt.phase == "RUNNING"
+            enrollment = restarted._h1_live_completion_enrollment
+            assert enrollment is not None
+            assert tuple(record.state for record in enrollment._recovery_records.values()) == (
+                "REVOKED",
+            )
             first_calls = _stage_calls(first_engine)
             _assert_readback_precedes_each_ipc(events, first_calls)
             _assert_durable_stage_evidence(restarted, first_engine, first_calls)

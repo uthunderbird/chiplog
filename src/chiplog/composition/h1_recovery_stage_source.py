@@ -12,7 +12,7 @@ import base64
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, Never, cast
+from typing import Literal, Never
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallSubjectHead,
@@ -402,7 +402,7 @@ class H1RecoveryStageSource:
         ):
             raise H1RecoveryStageSourceError("historical completion receipt is not issuer-owned")
         self._validate_inputs(original_identity, original_fingerprint, selected_seal)
-        receipt = cast(_AuthenticatedHistoricalCompletion, accepted_completion)
+        receipt = accepted_completion
         try:
             fresh = self._native.select(
                 original_identity=original_identity,
@@ -708,7 +708,7 @@ class H1RecoveryStageSource:
             is not accepted_conversation
         ):
             raise H1RecoveryStageSourceError("historical conversation receipt is not issuer-owned")
-        receipt = cast(_AuthenticatedHistoricalConversation, accepted_conversation)
+        receipt = accepted_conversation
         if receipt.completion is not completion or receipt.request_bytes != expected_input:
             raise H1RecoveryStageSourceError("historical conversation receipt differs")
         replayed = self._validate_conversation_result(
@@ -806,30 +806,36 @@ class H1RecoveryStageSource:
 
     def _require_current(self, context: object) -> None:
         """Re-select the full V2 cut; ROOT itself is never currentness evidence."""
-        state = self._context_state(context)
-        self.replay_completion_native(state.native)
-        rebuilt = self._historical_completion_bytes(
-            state.native.original_identity,
-            state.native.original_fingerprint,
-            state.native.selected_seal,
-        )
-        if rebuilt != state.completion_input:
-            raise H1RecoveryStageSourceError("selected historical completion input differs")
-        if state.p_source_cap is not None:
-            port = getattr(self._runtime, "_h1_preissuance_registration_source_port", None)
-            replay_conversation = getattr(port, "_replay_historical_conversation_policy", None)
-            replay_effects = getattr(port, "_replay_historical_effects_source", None)
-            if not callable(replay_conversation) or not callable(replay_effects):
-                raise H1RecoveryHistoricalPSourceUnavailable(
-                    "historical P source is no longer available"
-                )
+        with self._runtime._authority_gate().hold():
+            state = self._context_state(context)
+            self.replay_completion_native(state.native)
             try:
-                replay_conversation(state.p_source_cap)
-                replay_effects(state.p_source_cap)
-            except (RuntimeError, TypeError, ValueError) as error:
+                rebuilt = H1RecoveryHistoricalPESource(
+                    self._runtime
+                )._reconstruct_current_completion_bytes(
+                    original_identity=state.native.original_identity,
+                    original_fingerprint=state.native.original_fingerprint,
+                    selected_seal=state.native.selected_seal,
+                )
+            except H1RecoveryHistoricalPESourceError as error:
                 raise H1RecoveryHistoricalPSourceUnavailable(
-                    "historical P source differs on replay"
+                    "historical P/E completion source is unavailable or invalid"
                 ) from error
+            if rebuilt != state.completion_input:
+                raise H1RecoveryStageSourceError("selected historical completion input differs")
+            if state.p_source_cap is not None:
+                port = getattr(self._runtime, "_h1_preissuance_registration_source_port", None)
+                replay = getattr(port, "_replay_historical_recovery_sources", None)
+                if not callable(replay):
+                    raise H1RecoveryHistoricalPSourceUnavailable(
+                        "historical P source is no longer available"
+                    )
+                try:
+                    replay(state.p_source_cap)
+                except (RuntimeError, TypeError, ValueError) as error:
+                    raise H1RecoveryHistoricalPSourceUnavailable(
+                        "historical P source differs on replay"
+                    ) from error
 
     def _context_state(self, context: object) -> _RecoveryStageState:
         state = self._recovery_contexts.get(id(context))

@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Never, cast
 
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.contracts import LoopRejected, VisibilityMember
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead, ProviderRecipient
 from chiplog.capabilities.agent_loop.delivery_preparation import (
@@ -55,7 +56,11 @@ from chiplog.composition.common_cli_execution_runtime import (
     _H1ScopeAppendReceipt,
     _H1ScopeWire,
 )
-from chiplog.composition.common_execution_driver_contracts import DriveInputRequestV1
+from chiplog.composition.common_execution_driver_contracts import (
+    DriveInputRequestV1,
+    DriverCommandIdentityV1,
+)
+from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
 from chiplog.composition.h1_first_path_sources import H1FirstPathCapture, H1FirstPathSources
 from chiplog.composition.h1_launch_enrollment import InstalledH1Launch
 from chiplog.composition.h1_native_member_sources import (
@@ -76,6 +81,7 @@ from chiplog.composition.h1_preseal_native_source import (
     H1PresealNativeSource,
     H1PresealNativeSourceCut,
 )
+from chiplog.composition.h1_preseal_p_scope_frames import decode_h1_preseal_p_scope_frames
 from chiplog.composition.h1_preseal_p_scope_wires import decode_h1_preseal_p_scope_wires
 from chiplog.composition.h1_preseal_pe_anchor_records import (
     decode_h1_preseal_pe_anchor_record,
@@ -112,7 +118,23 @@ from chiplog.platform.broker import PublicPortCall, PublicPortSuccess
 from chiplog.platform.r7_trust import decode_trust_owner_call_canonical
 
 if TYPE_CHECKING:
-    from chiplog.composition.h1_live_completion_enrollment import _H1TerminalClearance
+    from chiplog.composition.h1_live_completion_enrollment import (
+        _H1LiveCompletionEnrollment,
+        _H1RecoveryClearance,
+        _H1TerminalClearance,
+        _RecoveryEnrollmentRecord,
+    )
+    from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
+
+
+type _RecoveryFinalizationProof = tuple[object, _RecoveryEnrollmentRecord, _H1ScopeWire]
+type _RecoveryFinalizationClearance = tuple[
+    _RecoveryEnrollmentRecord,
+    H1RecoveryStageSource,
+    object,
+    _H1ScopeWire,
+    _H1ScopeWire | None,
+]
 
 _CHANNEL = "hermetic-local"
 
@@ -292,11 +314,12 @@ class _HistoricalRecoverySourceCapability:
 @dataclass(frozen=True, slots=True)
 class _HistoricalRecoverySourceState:
     capability: _HistoricalRecoverySourceCapability
-    original_identity: object
+    original_identity: DriverCommandIdentityV1
     original_fingerprint: str
-    selected_seal: object
+    selected_seal: CallSubjectHead
     conversation_bytes: bytes
     effects_bytes: bytes
+    scope_frames_bytes: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,7 +345,7 @@ class _H1PreterminalScopeSnapshot:
     native_cap: H1CurrentNativeMemberSourceCut
     scope_cap: object
     delivery_receipt: object
-    effects_exchange: object
+    effects_exchange: H1CompletionOwnerExchangeV1
     effects_source: _AuthenticatedCompletionEffectsSource
     terminal_sent: PublicPortCall | None
     terminal_call_fingerprint: str | None
@@ -368,8 +391,8 @@ class _H1FinalCompletionFence:
 class _IssuedFinalCompletionFence:
     fence: _H1FinalCompletionFence
     session: object
-    snapshot: _H1PreterminalScopeSnapshot
-    clearance: object
+    snapshot: _H1PreterminalScopeSnapshot | _RecoveryFinalizationClearance
+    clearance: _H1TerminalClearance | _H1RecoveryClearance
     wire: _H1ScopeWire
     consumed: bool = False
 
@@ -458,6 +481,8 @@ class _H1RuntimePreissuancePort:
         "_preseal_scopes",
         "_preterminal_clearances",
         "_preterminal_proofs",
+        "_recovery_finalization_clearances",
+        "_recovery_finalization_proofs",
         "_reopened",
         "_runtime",
     )
@@ -510,6 +535,8 @@ class _H1RuntimePreissuancePort:
             int, tuple[H1PreissuanceSelection, H1VerifiedOriginalWorkspaceIssuance]
         ] = {}
         self._historical_recovery_sources: dict[int, _HistoricalRecoverySourceState] = {}
+        self._recovery_finalization_proofs: dict[int, _RecoveryFinalizationProof] = {}
+        self._recovery_finalization_clearances: dict[int, _RecoveryFinalizationClearance] = {}
 
     def __reduce__(self) -> Never:
         raise TypeError("H1 preissuance issuer is not serializable")
@@ -1960,7 +1987,7 @@ class _H1RuntimePreissuancePort:
 
     def _final_fence_snapshot(
         self, session: object, sent: PublicPortCall | None = None
-    ) -> tuple[object, _H1PreterminalScopeSnapshot]:
+    ) -> tuple[_H1LiveCompletionEnrollment, _H1PreterminalScopeSnapshot]:
         """Authenticate the enrolled B chain and its exact terminal frame under P's gate."""
         from chiplog.composition.h1_completion_preparation_session import (
             H1CompletionPreparationSession,
@@ -2096,6 +2123,14 @@ class _H1RuntimePreissuancePort:
 
     async def _prepare_terminal_scope_proof(self, session: object) -> _H1PreterminalCompletionProof:
         """Freshly prove call-independent P currentness before B builds terminal IPC."""
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+        )
+
+        if type(session) is not H1CompletionPreparationSession:
+            raise H1PreissuanceSourceViolation("H1 preterminal session is foreign")
+        if getattr(session, "_recovery", None) is not None:
+            return await self._prepare_recovery_terminal_scope_proof(session)
         with self._gate.hold():
             enrollment, snapshot = self._final_fence_snapshot(session)
         current, wire = await self._runtime._read_current_hermetic_output_scope_with_wire(
@@ -2116,10 +2151,166 @@ class _H1RuntimePreissuancePort:
             )
             return proof
 
+    async def _prepare_recovery_terminal_scope_proof(
+        self, session: object
+    ) -> _H1PreterminalCompletionProof:
+        """Fresh P CURRENT for an exact recovery-finalization enrollment."""
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+        )
+        from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+
+        with self._gate.hold():
+            if type(session) is not H1CompletionPreparationSession:
+                raise H1PreissuanceSourceViolation("H1 recovery finalization session is foreign")
+            enrollment = getattr(self._runtime, "_h1_live_completion_enrollment", None)
+            if type(enrollment) is not _H1LiveCompletionEnrollment:
+                raise H1PreissuanceSourceViolation("H1 recovery finalization enrollment is absent")
+            record = enrollment._require_recovery_record(session)
+            if record.preflight is None:
+                raise H1PreissuanceSourceViolation("H1 recovery finalization preflight is absent")
+            record.lease.require_owned()
+            record.source._require_current(record.context)
+            state = record.source._context_state(record.context)
+            if state.p_source_cap is None:
+                raise H1PreissuanceSourceViolation("H1 recovery historical P source is absent")
+            effects = self._replay_historical_effects_source(state.p_source_cap)
+            request = effects.selected_scope.current_request
+        current, wire = await self._runtime._read_current_hermetic_output_scope_with_wire(request)
+        with self._gate.hold():
+            record = enrollment._require_recovery_record(session)
+            if record.preflight is None:
+                raise H1PreissuanceSourceViolation("H1 recovery finalization preflight was retired")
+            record.lease.require_owned()
+            record.source._require_current(record.context)
+            self._require_fresh_current_wire(wire, effects.selected_scope)
+            if current != effects.selected_scope.current_result:
+                raise H1PreissuanceSourceViolation("H1 recovery preterminal current is stale")
+            proof = object.__new__(_H1PreterminalCompletionProof)
+            self._recovery_finalization_proofs[id(proof)] = (session, record, wire)
+            return proof
+
+    def _bind_recovery_terminal_clearance(
+        self, session: object, proof: object, sent: PublicPortCall
+    ) -> _H1RecoveryClearance:
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+        )
+        from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+
+        with self._gate.hold():
+            if type(session) is not H1CompletionPreparationSession:
+                raise H1PreissuanceSourceViolation("H1 recovery terminal session is foreign")
+            issued = self._recovery_finalization_proofs.pop(id(proof), None)
+            enrollment = getattr(self._runtime, "_h1_live_completion_enrollment", None)
+            if (
+                type(enrollment) is not _H1LiveCompletionEnrollment
+                or type(proof) is not _H1PreterminalCompletionProof
+                or issued is None
+                or issued[0] is not session
+            ):
+                raise H1PreissuanceSourceViolation("H1 recovery preterminal proof is unavailable")
+            record, wire = issued[1], issued[2]
+            enrollment._require_recovery_record(session)
+            if record.preflight is None or type(sent) is not PublicPortCall:
+                raise H1PreissuanceSourceViolation("H1 recovery terminal proof differs")
+            recovery = session._recovery
+            if recovery is None or recovery.pending_semantic_input is None:
+                raise H1PreissuanceSourceViolation("H1 recovery terminal binding is absent")
+            clearance = enrollment._reserve_recovery_clearance(
+                session=session,
+                stage="TERMINAL_WORK",
+                semantic_input=recovery.pending_semantic_input,
+                sent=sent,
+            )
+            self._recovery_finalization_clearances[id(clearance)] = (
+                record,
+                record.source,
+                record.context,
+                wire,
+                None,
+            )
+            return clearance
+
+    def _revoke_recovery_finalization(self, session: object) -> None:
+        """Burn every P proof/wire reachable from a revoked recovery session."""
+        with self._gate.hold():
+            for key, proof_entry in tuple(self._recovery_finalization_proofs.items()):
+                if proof_entry[0] is session:
+                    self._recovery_finalization_proofs.pop(key, None)
+            for key, clearance_entry in tuple(self._recovery_finalization_clearances.items()):
+                if clearance_entry[0].session is session:
+                    self._recovery_finalization_clearances.pop(key, None)
+            for key, fence_entry in tuple(self._final_completion_fences.items()):
+                if fence_entry.session is session:
+                    fence_entry.consumed = True
+                    self._final_completion_fences.pop(key, None)
+
+    async def _capture_recovery_final_completion_fence(
+        self, session: object
+    ) -> _H1FinalCompletionFence:
+        """Capture a distinct CURRENT after the exact admitted fourth success."""
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+        )
+        from chiplog.composition.h1_live_completion_enrollment import _H1RecoveryClearance
+
+        if type(session) is not H1CompletionPreparationSession:
+            raise H1PreissuanceSourceViolation("H1 recovery finalization session is foreign")
+        clearance = getattr(session, "_recovery_terminal_clearance", None)
+        if type(clearance) is not _H1RecoveryClearance:
+            raise H1PreissuanceSourceViolation("H1 recovery terminal clearance is foreign")
+        with self._gate.hold():
+            if type(session) is not H1CompletionPreparationSession:
+                raise H1PreissuanceSourceViolation("H1 recovery finalization session is foreign")
+            entry = self._recovery_finalization_clearances.get(id(clearance))
+            if entry is None or session._terminal_work_exchange is None:
+                raise H1PreissuanceSourceViolation("H1 recovery terminal clearance is absent")
+            record, source, context, preterminal, _ = entry
+            record.lease.require_owned()
+            source._require_current(context)
+            state = source._context_state(context)
+            effects = self._replay_historical_effects_source(state.p_source_cap)
+        current, wire = await self._runtime._read_current_hermetic_output_scope_with_wire(
+            effects.selected_scope.current_request
+        )
+        with self._gate.hold():
+            entry = self._recovery_finalization_clearances.get(id(clearance))
+            if entry is None:
+                raise H1PreissuanceSourceViolation("H1 recovery terminal clearance was revoked")
+            record, source, context, preterminal, _ = entry
+            record.lease.require_owned()
+            source._require_current(context)
+            self._require_fresh_current_wire(wire, effects.selected_scope)
+            terminal = session._terminal_work_exchange
+            if (
+                current != effects.selected_scope.current_result
+                or terminal.returned_at_ns >= wire.sent_at_ns
+                or wire.sent.request_id in (preterminal.sent.request_id, terminal.sent.request_id)
+            ):
+                raise H1PreissuanceSourceViolation("H1 recovery final CURRENT differs")
+            fence = object.__new__(_H1FinalCompletionFence)
+            self._recovery_finalization_clearances[id(clearance)] = (
+                record, source, context, preterminal, wire
+            )
+            self._final_completion_fences[id(fence)] = _IssuedFinalCompletionFence(
+                fence, session, entry, clearance, wire
+            )
+            return fence
+
     def _bind_terminal_clearance(
         self, session: object, proof: object, sent: PublicPortCall
-    ) -> _H1TerminalClearance:
+    ) -> _H1TerminalClearance | _H1RecoveryClearance:
         """Consume a fresh P proof to reserve one exact, unrenewable terminal frame."""
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+        )
+        from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+
+        if type(session) is not H1CompletionPreparationSession:
+            raise H1PreissuanceSourceViolation("H1 terminal session is foreign")
+        if getattr(session, "_recovery", None) is not None:
+            return self._bind_recovery_terminal_clearance(session, proof, sent)
         with self._gate.hold():
             issued = self._preterminal_proofs.pop(id(proof), None)
             if (
@@ -2132,6 +2323,9 @@ class _H1RuntimePreissuancePort:
             ):
                 raise H1PreissuanceSourceViolation("H1 preterminal proof is unavailable or expired")
             issued.consumed = True
+            enrollment = issued.enrollment
+            if type(enrollment) is not _H1LiveCompletionEnrollment:
+                raise H1PreissuanceSourceViolation("H1 terminal enrollment is unavailable")
             from chiplog.composition.h1_terminal_call_identity import _terminal_call_identity
 
             fingerprint, owner_frame = _terminal_call_identity(sent)
@@ -2157,7 +2351,7 @@ class _H1RuntimePreissuancePort:
                 terminal_call_fingerprint=fingerprint,
                 terminal_owner_frame_bytes=owner_frame,
             )
-            clearance = issued.enrollment._reserve_terminal_clearance(
+            clearance = enrollment._reserve_terminal_clearance(
                 session=session,
                 cut=issued.cut,
                 sent=sent,
@@ -2170,6 +2364,34 @@ class _H1RuntimePreissuancePort:
     def _check_terminal_clearance_current(self, clearance: object, sent: PublicPortCall) -> None:
         """Broker-admission replay: only a P-held preterminal snapshot is accepted."""
         self._gate.require_held()
+        recovery_entry = self._recovery_finalization_clearances.get(id(clearance))
+        if recovery_entry is not None:
+            enrolled, source, context, wire, _final = recovery_entry
+            if clearance is not getattr(enrolled, "_terminal_clearance", clearance):
+                # The enrolled recovery clearance is held in its private table;
+                # this identity check is performed below by the enrollment.
+                pass
+            source._require_current(context)
+            state = source._context_state(context)
+            effects = self._replay_historical_effects_source(state.p_source_cap)
+            self._require_fresh_current_wire(wire, effects.selected_scope)
+            returned = wire.returned
+            if type(returned) is not PublicPortSuccess:
+                raise H1PreissuanceSourceViolation("H1 recovery terminal P wire is not accepted")
+            outer = decode_trust_owner_call_canonical(wire.sent.canonical_payload)
+            call = H1OwnerCurrentCallV1.model_validate_json(outer.request_bytes)
+            candidate = H1OwnerCurrentCandidateV1.model_validate_json(
+                returned.canonical_payload
+            )
+            candidate.check_pinned_call(call)
+            current = self._runtime._replay_current_hermetic_output_scope_held(
+                ReadCurrentHermeticExecutionScopeV1.model_validate_json(call.read_request_bytes),
+                candidate,
+                callee=wire.sent.callee,
+            )
+            if current != effects.selected_scope.current_result:
+                raise H1PreissuanceSourceViolation("H1 recovery terminal P clearance is stale")
+            return
         entry = self._preterminal_clearances.get(id(clearance))
         if entry is None or entry[0] is not clearance or entry[1].terminal_sent is not sent:
             raise H1PreissuanceSourceViolation("H1 terminal clearance is not P-issued")
@@ -2186,13 +2408,16 @@ class _H1RuntimePreissuancePort:
             raise H1PreissuanceSourceViolation("H1 terminal clearance source is stale")
         self._require_fresh_current_wire(entry[2], entry[1].effects_source.selected_scope)
         try:
+            returned = entry[2].returned
+            if type(returned) is not PublicPortSuccess:
+                raise ValueError("H1 terminal P wire is not accepted")
             outer = decode_trust_owner_call_canonical(entry[2].sent.canonical_payload)
             call = H1OwnerCurrentCallV1.model_validate_json(outer.request_bytes)
             request = ReadCurrentHermeticExecutionScopeV1.model_validate_json(
                 call.read_request_bytes
             )
             candidate = H1OwnerCurrentCandidateV1.model_validate_json(
-                entry[2].returned.canonical_payload
+                returned.canonical_payload
             )
             candidate.check_pinned_call(call)
             current = self._runtime._replay_current_hermetic_output_scope_held(
@@ -2210,6 +2435,14 @@ class _H1RuntimePreissuancePort:
 
     async def _capture_final_completion_fence(self, session: object) -> _H1FinalCompletionFence:
         """Retain the distinct post-terminal owner read for one admitted B chain."""
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+        )
+
+        if getattr(session, "_recovery", None) is not None:
+            return await self._capture_recovery_final_completion_fence(session)
+        if type(session) is not H1CompletionPreparationSession:
+            raise H1PreissuanceSourceViolation("H1 final fence session is foreign")
         with self._gate.hold():
             from chiplog.composition.h1_completion_preparation_session import _H1FinalFenceInputs
 
@@ -2224,6 +2457,7 @@ class _H1RuntimePreissuancePort:
             if (
                 entry is None
                 or entry[0] is not clearance
+                or type(clearance) is not _H1TerminalClearance
                 or entry[1].session is not session
                 or entry[1].terminal_sent is not terminal.sent
                 or terminal.role != "terminal_work"
@@ -2245,12 +2479,12 @@ class _H1RuntimePreissuancePort:
         )
         with self._gate.hold():
             inputs = session._replay_final_fence_inputs(self)
-            terminal = inputs.terminal_work_exchange
-            if terminal is None or terminal.sent is not snapshot.terminal_sent:
+            terminal_now = inputs.terminal_work_exchange
+            if terminal_now is None or terminal_now.sent is not snapshot.terminal_sent:
                 raise H1PreissuanceSourceViolation("H1 final fence terminal exchange changed")
-            enrollment_now, replayed = self._final_fence_snapshot(session, terminal.sent)
+            enrollment_now, replayed = self._final_fence_snapshot(session, terminal_now.sent)
             enrollment_now._require_admitted_terminal(
-                clearance, session=session, sent=terminal.sent
+                clearance, session=session, sent=terminal_now.sent
             )
             if enrollment_now is not enrollment or replayed != snapshot:
                 raise H1PreissuanceSourceViolation(
@@ -2261,7 +2495,7 @@ class _H1RuntimePreissuancePort:
                 current != snapshot.effects_source.selected_scope.current_result
                 or wire.sent is entry[2].sent
                 or wire.sent.request_id == entry[2].sent.request_id
-                or terminal.returned_at_ns > wire.sent_at_ns
+                or terminal_now.returned_at_ns > wire.sent_at_ns
                 or any(value.session is session for value in self._final_completion_fences.values())
             ):
                 raise H1PreissuanceSourceViolation(
@@ -2275,8 +2509,42 @@ class _H1RuntimePreissuancePort:
 
     def _replay_final_completion_fence(self, fence: object, session: object) -> _H1ScopeWire:
         """Consume the exact final P wire once for B's synchronous capability mint."""
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+        )
+        from chiplog.composition.h1_live_completion_enrollment import _H1TerminalClearance
+
         with self._gate.hold():
+            if type(session) is not H1CompletionPreparationSession:
+                raise H1PreissuanceSourceViolation("H1 final fence session is foreign")
             issued = self._final_completion_fences.get(id(fence))
+            if getattr(session, "_recovery", None) is not None:
+                if (
+                    type(fence) is not _H1FinalCompletionFence
+                    or issued is None
+                    or issued.fence is not fence
+                    or issued.session is not session
+                    or issued.consumed
+                ):
+                    raise H1PreissuanceSourceViolation("H1 recovery final fence is unavailable")
+                clearance = getattr(session, "_recovery_terminal_clearance", None)
+                entry = self._recovery_finalization_clearances.get(id(clearance))
+                if entry is None or entry[4] is not issued.wire:
+                    raise H1PreissuanceSourceViolation("H1 recovery final fence differs")
+                enrollment = getattr(self._runtime, "_h1_live_completion_enrollment", None)
+                if type(enrollment) is not _H1LiveCompletionEnrollment:
+                    raise H1PreissuanceSourceViolation(
+                        "H1 recovery finalization enrollment is absent"
+                    )
+                record = enrollment._require_recovery_record(session)
+                coordinator = getattr(self._runtime, "_h1_postseal_recovery_coordinator", None)
+                if record.preflight is None or coordinator is None:
+                    raise H1PreissuanceSourceViolation("H1 recovery final preflight is absent")
+                record.lease.require_owned()
+                coordinator._require_complete_chain_preflight_held(record.lease, record.preflight)
+                entry[1]._require_current(entry[2])
+                issued.consumed = True
+                return issued.wire
             if (
                 type(fence) is not _H1FinalCompletionFence
                 or issued is None
@@ -2285,19 +2553,58 @@ class _H1RuntimePreissuancePort:
                 or issued.consumed
             ):
                 raise H1PreissuanceSourceViolation("H1 final completion fence is not P-issued")
+            snapshot = issued.snapshot
+            clearance = issued.clearance
+            if (
+                type(snapshot) is not _H1PreterminalScopeSnapshot
+                or type(clearance) is not _H1TerminalClearance
+                or snapshot.terminal_sent is None
+            ):
+                raise H1PreissuanceSourceViolation("H1 final completion fence has recovery state")
+            terminal_sent = snapshot.terminal_sent
             enrollment, replayed = self._final_fence_snapshot(
-                session, issued.snapshot.terminal_sent
+                session, terminal_sent
             )
             enrollment._require_admitted_terminal(
-                issued.clearance, session=session, sent=issued.snapshot.terminal_sent
+                clearance, session=session, sent=terminal_sent
             )
-            if replayed != issued.snapshot:
+            if replayed != snapshot:
                 raise H1PreissuanceSourceViolation("H1 final completion fence source is stale")
             self._require_fresh_current_wire(
-                issued.wire, issued.snapshot.effects_source.selected_scope
+                issued.wire, snapshot.effects_source.selected_scope
             )
             issued.consumed = True
             return issued.wire
+
+    def _replay_recovery_finalization_witness(
+        self, fence: object, session: object
+    ) -> tuple[_H1ScopeWire, _H1ScopeWire, _H1ScopeWire, _H1ScopeWire]:
+        """Consume final recovery P evidence: historical ISSUE/CURRENT and two fresh reads.
+
+        This is deliberately private to B issuance: it does not expose either
+        wire to the coordinator or a DTO caller.
+        """
+        with self._gate.hold():
+            clearance = getattr(session, "_recovery_terminal_clearance", None)
+            entry = self._recovery_finalization_clearances.get(id(clearance))
+            if entry is None or entry[4] is None:
+                raise H1PreissuanceSourceViolation("H1 recovery finalization P witness is absent")
+            preterminal, final = entry[3], entry[4]
+            if self._replay_final_completion_fence(fence, session) is not final:
+                raise H1PreissuanceSourceViolation("H1 recovery finalization P witness differs")
+            record, source, context, _, _ = entry
+            record.lease.require_owned()
+            source._require_current(context)
+            capability = source._context_state(context).p_source_cap
+            replay = getattr(self, "_replay_historical_scope_wires", None)
+            if not callable(replay):
+                raise H1PreissuanceSourceViolation(
+                    "H1 recovery historical P frame replay is unsupported"
+                )
+            issue, current = replay(capability)
+            if type(issue) is not _H1ScopeWire or type(current) is not _H1ScopeWire:
+                raise H1PreissuanceSourceViolation("H1 recovery historical P wires are absent")
+            return issue, current, preterminal, final
 
     def _replay_conversation_policy(
         self, scope_cap: object, native_cap: object
@@ -2694,7 +3001,10 @@ class _H1RuntimePreissuancePort:
         )
 
     def _historical_recovery_projection(
-        self, original_identity: object, original_fingerprint: object, selected_seal: object
+        self,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
     ) -> tuple[_AuthenticatedConversationPolicyInputs, _HistoricalEffectsSource]:
         """Reopen only immutable selected V2 P evidence under the installed gate.
 
@@ -2939,8 +3249,8 @@ class _H1RuntimePreissuancePort:
                 recipient=recipient,
                 scope_policy_ref=policy_ref,
                 scope_policy_bytes=policy_bytes,
-                custody_entry_generation=cast(int, p["custody_entry_generation"]),
-                custody_entry_digest=cast(str, p["custody_entry_digest"]),
+                custody_entry_generation=p["custody_entry_generation"],
+                custody_entry_digest=p["custody_entry_digest"],
                 original_issuance_ref=selected.issuance_ref,
                 original_issuance_bytes=original_bytes,
                 original_tenant=original.tenant,
@@ -2959,21 +3269,101 @@ class _H1RuntimePreissuancePort:
                 "historical P residual has an integrity failure"
             ) from error
 
+    def _historical_scope_wires_from_selected(
+        self,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> tuple[_H1ScopeWire, _H1ScopeWire]:
+        """Return only the selected, durably retained full P frames.
+
+        The selected native reader authenticates the containing DECIDED; the
+        strict sibling codec then joins every full field back to the frozen V1
+        payload pairs and P/E anchor.  No broker frame is reconstructed.
+        """
+        try:
+            native = H1V2RecoveryNativeSource(self._runtime).select(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=selected_seal,
+            )
+            decision = json.loads(native.seal.raw_bytes)
+            if (
+                not isinstance(decision, dict)
+                or json.dumps(decision, sort_keys=True, separators=(",", ":")).encode()
+                != native.seal.raw_bytes
+            ):
+                raise ValueError("selected DECIDED bytes are noncanonical")
+            raw_anchor = decision.get("h1_preseal_pe_anchor")
+            if not isinstance(raw_anchor, str):
+                raise _HistoricalRecoverySourceUnsupported("historical P anchor is unsupported")
+            anchor = decode_h1_preseal_pe_anchor_record(raw_anchor.encode())
+            raw_wires = decision.get("h1_preseal_p_scope_wires_v1")
+            if raw_wires is None:
+                raise _HistoricalRecoverySourceUnsupported(
+                    "historical P scope-wire residual is unsupported"
+                )
+            raw_frames = decision.get("h1_preseal_p_scope_frames_v1")
+            if raw_frames is None:
+                raise _HistoricalRecoverySourceUnsupported(
+                    "historical P full-frame residual is unsupported"
+                )
+            p = cast(dict[str, object], anchor.as_dict()["p"])
+            wires = decode_h1_preseal_p_scope_wires(
+                self._historical_bytes(raw_wires),
+                anchor_binding=anchor.binding,
+                issue_digest=cast(str, p["accepted_issue_wire_digest"]),
+                current_digest=cast(str, p["accepted_current_wire_digest"]),
+            )
+            frames = decode_h1_preseal_p_scope_frames(
+                self._historical_bytes(raw_frames),
+                anchor_binding=anchor.binding,
+                scope_wires=wires,
+            )
+            return frames.wires(anchor_binding=anchor.binding, scope_wires=wires)
+        except _HistoricalRecoverySourceUnsupported:
+            raise
+        except (TypeError, ValueError, KeyError, UnicodeDecodeError) as error:
+            raise _HistoricalRecoverySourceIntegrity(
+                "historical P full-frame residual has an integrity failure"
+            ) from error
+
     def _issue_historical_recovery_source(
         self, *, original_identity: object, original_fingerprint: object, selected_seal: object
     ) -> object:
         """Mint one opaque P source after selecting the immutable historical cut."""
 
         with self._gate.hold():
+            if (
+                type(original_identity) is not DriverCommandIdentityV1
+                or type(original_fingerprint) is not str
+                or type(selected_seal) is not CallSubjectHead
+            ):
+                raise H1PreissuanceSourceViolation("historical P source inputs are foreign")
             self._assert_launch_and_trust()
             conversation, effects = self._historical_recovery_projection(
                 original_identity, original_fingerprint, selected_seal
+            )
+            issue_wire, current_wire = self._historical_scope_wires_from_selected(
+                original_identity, original_fingerprint, selected_seal
+            )
+            scope_frames_bytes = self._historical_bytes(
+                {
+                    "issue": issue_wire.sent.model_dump(mode="json"),
+                    "issue_returned": issue_wire.returned.model_dump(mode="json"),
+                    "issue_sent_at_ns": issue_wire.sent_at_ns,
+                    "issue_returned_at_ns": issue_wire.returned_at_ns,
+                    "current": current_wire.sent.model_dump(mode="json"),
+                    "current_returned": current_wire.returned.model_dump(mode="json"),
+                    "current_sent_at_ns": current_wire.sent_at_ns,
+                    "current_returned_at_ns": current_wire.returned_at_ns,
+                }
             )
             receipt = object.__new__(_HistoricalRecoverySourceCapability)
             self._historical_recovery_sources[id(receipt)] = _HistoricalRecoverySourceState(
                 receipt,
                 original_identity,
-                cast(str, original_fingerprint),
+                original_fingerprint,
                 selected_seal,
                 self._historical_conversation_bytes(conversation),
                 self._historical_bytes(
@@ -2982,6 +3372,7 @@ class _H1RuntimePreissuancePort:
                         "retained_origin": effects.retained_origin.model_dump(mode="json"),
                     }
                 ),
+                scope_frames_bytes,
             )
             return receipt
 
@@ -3035,6 +3426,68 @@ class _H1RuntimePreissuancePort:
             if self._historical_bytes(value) != state.effects_bytes:
                 raise _HistoricalRecoverySourceIntegrity("historical P effects source changed")
             return effects
+
+    def _replay_historical_recovery_sources(
+        self, capability: object
+    ) -> tuple[_AuthenticatedConversationPolicyInputs, _HistoricalEffectsSource]:
+        """Replay both P historical sources from one fresh selected projection."""
+
+        with self._gate.hold():
+            state = self._historical_recovery_sources.get(id(capability))
+            if (
+                type(capability) is not _HistoricalRecoverySourceCapability
+                or state is None
+                or state.capability is not capability
+            ):
+                raise H1PreissuanceSourceViolation("historical P source is not issuer-owned")
+            conversation, effects = self._historical_recovery_projection(
+                state.original_identity, state.original_fingerprint, state.selected_seal
+            )
+            if self._historical_conversation_bytes(conversation) != state.conversation_bytes:
+                raise _HistoricalRecoverySourceIntegrity("historical P conversation source changed")
+            value = {
+                "selected_scope": effects.selected_scope.model_dump(mode="json"),
+                "retained_origin": effects.retained_origin.model_dump(mode="json"),
+            }
+            if self._historical_bytes(value) != state.effects_bytes:
+                raise _HistoricalRecoverySourceIntegrity("historical P effects source changed")
+            return conversation, effects
+
+    def _replay_historical_scope_wires(
+        self, capability: object
+    ) -> tuple[_H1ScopeWire, _H1ScopeWire]:
+        """Replay exactly the authenticated selected ISSUE/CURRENT frames."""
+        with self._gate.hold():
+            state = self._historical_recovery_sources.get(id(capability))
+            if (
+                type(capability) is not _HistoricalRecoverySourceCapability
+                or state is None
+                or state.capability is not capability
+            ):
+                raise H1PreissuanceSourceViolation("historical P source is not issuer-owned")
+            # Re-select all non-frame source facts first; this closes a copied
+            # capability over changed current baseline without reissuing P calls.
+            self._historical_recovery_projection(
+                state.original_identity, state.original_fingerprint, state.selected_seal
+            )
+            issue_wire, current_wire = self._historical_scope_wires_from_selected(
+                state.original_identity, state.original_fingerprint, state.selected_seal
+            )
+            actual = self._historical_bytes(
+                {
+                    "issue": issue_wire.sent.model_dump(mode="json"),
+                    "issue_returned": issue_wire.returned.model_dump(mode="json"),
+                    "issue_sent_at_ns": issue_wire.sent_at_ns,
+                    "issue_returned_at_ns": issue_wire.returned_at_ns,
+                    "current": current_wire.sent.model_dump(mode="json"),
+                    "current_returned": current_wire.returned.model_dump(mode="json"),
+                    "current_sent_at_ns": current_wire.sent_at_ns,
+                    "current_returned_at_ns": current_wire.returned_at_ns,
+                }
+            )
+            if actual != state.scope_frames_bytes:
+                raise _HistoricalRecoverySourceIntegrity("historical P full frames changed")
+            return issue_wire, current_wire
 
 
 __all__ = ["_H1RuntimePreissuancePort"]

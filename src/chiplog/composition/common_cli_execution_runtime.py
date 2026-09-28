@@ -19,6 +19,9 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallAuthorityObservation,
     CallSubjectHead,
 )
+from chiplog.capabilities.agent_loop.completion_owner_record_contracts import (
+    DELIVERY_ACCEPTANCE_SCHEMA,
+)
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopRejected
 from chiplog.capabilities.agent_loop.delivery_contracts import (
     ExactHead,
@@ -31,7 +34,16 @@ from chiplog.capabilities.agent_loop.execution_initialization_contracts import (
     SelectedAdmittedRunInput,
 )
 from chiplog.capabilities.agent_loop.execution_transition_contracts import CreateExecutionRun
+from chiplog.capabilities.agent_loop.post_terminal_record_contracts import (
+    EDGE_SCHEMA,
+    EPOCH_SCHEMA,
+    LEASE_SCHEMA,
+    ROLLOVER_SCHEMA,
+    SELECTOR_SCHEMA,
+    SUBJECT_SCHEMA,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
+from chiplog.capabilities.agent_loop.recovery_record_contracts import AGENT_LOOP_OWNER
 from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     BrokerSelectedH1EvidenceV1,
     H1BrokerRouteBindingV1,
@@ -55,7 +67,17 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
     NonIssuedHermeticOutputScopeV1,
     ReadCurrentHermeticExecutionScopeV1,
 )
+from chiplog.capabilities.effects.h1_local_preparation_record_contracts import (
+    SCHEMA_ID as H1_LOCAL_INTENT_SCHEMA,
+)
+from chiplog.capabilities.projections.conversation_preparation_contracts import (
+    ACCEPTED_ENTRY_SCHEMA,
+)
+from chiplog.capabilities.projections.conversation_preparation_contracts import (
+    OWNER as CONVERSATION_OWNER,
+)
 from chiplog.composition.common_execution_driver_contracts import (
+    AcceptedTerminalDetailV1,
     AdvanceExecutionRequestV1,
     CommonExecutionResultV1,
     DriveInputRequestV1,
@@ -64,6 +86,7 @@ from chiplog.composition.common_execution_driver_contracts import (
     ExecutionPendingReceiptV1,
     LookupExecutionRequestV1,
     SelectedExecutionReceiptV1,
+    UncertainExecutionPublicationV1,
 )
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r14_cancellation_contracts import CancelCallSubmission
@@ -99,6 +122,10 @@ R17_RETAINED_READER_ID = RETAINED_CLI_READER_ID
 
 class _DriverConflict(Exception):
     pass
+
+
+class _FinalizationReceiptIntegrityError(RuntimeError):
+    """A private finalization readback cannot be projected as a public receipt."""
 
 
 _H1ScopeRole = Literal["scope_issue", "scope_current"]
@@ -209,6 +236,17 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             (
                 *R17IngressRuntime._record_schema_variants,
                 *ExecutionDispatchRuntime._record_schema_variants,
+                (AGENT_LOOP_OWNER, DELIVERY_ACCEPTANCE_SCHEMA),
+                (AGENT_LOOP_OWNER, "chiplog.execution.terminal-manifest.v1"),
+                (AGENT_LOOP_OWNER, "chiplog.agent-loop.execution-record.v3"),
+                (AGENT_LOOP_OWNER, SUBJECT_SCHEMA),
+                (AGENT_LOOP_OWNER, EPOCH_SCHEMA),
+                (AGENT_LOOP_OWNER, SELECTOR_SCHEMA),
+                (AGENT_LOOP_OWNER, LEASE_SCHEMA),
+                (AGENT_LOOP_OWNER, ROLLOVER_SCHEMA),
+                (AGENT_LOOP_OWNER, EDGE_SCHEMA),
+                (CONVERSATION_OWNER, ACCEPTED_ENTRY_SCHEMA),
+                ("effects", H1_LOCAL_INTENT_SCHEMA),
             )
         )
     )
@@ -229,6 +267,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_pre_request_worker_evidence: Any | None
     _h1_completion_exchange_registry: Any | None
     _h1_conversation_source_port: Any | None
+    _h1_live_invocation_source: Any | None
+    _h1_live_readplan_source: Any | None
 
     async def cancel_execution_call(
         self, peer: str, submission: CancelCallSubmission
@@ -1178,6 +1218,197 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 reason=str(error),
             )
 
+    async def finalize_execution(
+        self, original_identity: DriverCommandIdentityV1, original_fingerprint: str
+    ) -> CommonExecutionResultV1:
+        """Run the separate installed H1 finalizer for one authenticated H0 input.
+
+        Unlike ``advance_execution``, this never creates or resumes recovery
+        evidence.  The coordinator first reconciles a selected/pending terminal
+        publication under its cross-process lease; only proven absence can enter
+        the installed B/P finalization continuation.
+        """
+        from chiplog.composition.h1_postseal_recovery_coordinator import (
+            H1PostSealRecoveryCoordinatorError,
+            H1PostSealRecoveryPublicationIntegrityError,
+            _H1FinalizationRejection,
+        )
+        from chiplog.platform._owner_publication_contracts import PublicationRejected
+        from chiplog.platform.owner_publications import OwnerPublicationUncertain
+
+        try:
+            await self._execution_actor("hermetic-ingress")
+            found = self._find(original_identity, original_fingerprint)
+            if found is None:
+                return ExecutionDriverRejectedV1(
+                    identity=original_identity,
+                    original_driver_command_fingerprint=original_fingerprint,
+                    code="HOLD",
+                    reason="selected H0 Run is unavailable for finalization",
+                )
+            coordinator = getattr(self, "_h1_postseal_recovery_coordinator", None)
+            if coordinator is None:
+                raise LoopRejected("installed H1 post-seal recovery coordinator is absent")
+            # The coordinator returns an authority-internal broker outcome.
+            # A selected broker decision is not a public terminal receipt: the
+            # latter also needs exact selected physical readback, the terminal
+            # native Run, and all AcceptedTerminalDetail heads.  No installed
+            # reader currently exports that complete authenticated projection.
+            outcome = await coordinator.finalize_selected(original_identity, original_fingerprint)
+            if type(outcome) is _H1FinalizationRejection:
+                publication = outcome.publication
+                if type(publication) is not PublicationRejected:
+                    raise _FinalizationReceiptIntegrityError(
+                        "finalization rejection outcome differs"
+                    )
+                return ExecutionDriverRejectedV1(
+                    identity=original_identity,
+                    original_driver_command_fingerprint=original_fingerprint,
+                    code=publication.kind,
+                    reason=publication.reason,
+                )
+            return self._project_finalization_receipt(
+                found[0], found[1], original_identity, original_fingerprint, outcome
+            )
+        except _DriverConflict as error:
+            return ExecutionDriverRejectedV1(
+                identity=original_identity,
+                original_driver_command_fingerprint=original_fingerprint,
+                code="CONFLICT",
+                reason=str(error),
+            )
+        except _FinalizationReceiptIntegrityError as error:
+            return ExecutionDriverRejectedV1(
+                identity=original_identity,
+                original_driver_command_fingerprint=original_fingerprint,
+                code="INTEGRITY_FAULT",
+                reason=str(error),
+            )
+        except H1PostSealRecoveryPublicationIntegrityError as error:
+            return ExecutionDriverRejectedV1(
+                identity=original_identity,
+                original_driver_command_fingerprint=original_fingerprint,
+                code="INTEGRITY_FAULT",
+                reason=str(error),
+            )
+        except OwnerPublicationUncertain as error:
+            return UncertainExecutionPublicationV1(
+                identity=original_identity,
+                original_driver_command_fingerprint=original_fingerprint,
+                operation="h1.finalize_execution",
+                reason=str(error),
+            )
+        except (
+            H1PostSealRecoveryCoordinatorError,
+            LoopRejected,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            return ExecutionDriverRejectedV1(
+                identity=original_identity,
+                original_driver_command_fingerprint=original_fingerprint,
+                code="HOLD",
+                reason=str(error),
+            )
+
+    def _project_finalization_receipt(
+        self,
+        evidence: RetainedInboxExecutionInitialization,
+        initialization_decision_id: str,
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        outcome: object,
+    ) -> SelectedExecutionReceiptV1:
+        """Project only the authority's exact terminal physical readback."""
+        from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+        from chiplog.composition.h1_live_publication_authority import (
+            _H1SelectedTerminalReadback,
+        )
+        from chiplog.composition.h1_postseal_recovery_coordinator import _H1FinalizationOutcome
+        from chiplog.platform._owner_publication_contracts import JournalSelectedPublication
+
+        if type(outcome) is not _H1FinalizationOutcome:
+            raise _FinalizationReceiptIntegrityError("finalization outcome differs")
+        publication, readback = outcome.publication, outcome.readback
+        if (
+            type(publication) is not JournalSelectedPublication
+            or type(readback) is not _H1SelectedTerminalReadback
+            or publication.kind not in ("COMMITTED", "EXACT_REPLAY")
+        ):
+            raise _FinalizationReceiptIntegrityError("finalization readback is unavailable")
+        selected = readback.selected_owner_decision
+        command = readback.physical_command
+        terminal = readback.terminal_run
+        if (
+            selected.decision_id != publication.decision_id
+            or selected.decision_head != publication.decision_head
+            or selected.decision_fingerprint != publication.decision_fingerprint
+            or selected.resulting_commitment != publication.resulting_commitment
+            or selected.tenant_commit_sequence != publication.tenant_commit_sequence
+            or command.idempotency_key != publication.command_id
+            or type(terminal) is not ExecutionRunRecord
+            or terminal.run_id != evidence.proposal.run.run_id
+            or terminal.state != "SUCCEEDED"
+            or terminal.event != "ExecutionCompleted"
+            or not any(
+                record.canonical_bytes == terminal.canonical_bytes() for record in command.records
+            )
+        ):
+            raise _FinalizationReceiptIntegrityError("finalization physical readback differs")
+        history = tuple(
+            record
+            for record in read_execution_history(self).records
+            if record.run_id == evidence.proposal.run.run_id
+        )
+        if not history or history[-1] != terminal:
+            raise _FinalizationReceiptIntegrityError("finalization terminal Run readback differs")
+        for head in (
+            readback.acceptance_head,
+            readback.delivery_manifest_head,
+            readback.committed_conversation_projection_head,
+        ):
+            if type(head) is not ExactHead:
+                raise _FinalizationReceiptIntegrityError(
+                    "finalization terminal detail head differs"
+                )
+
+        initial = self._receipt(evidence, initialization_decision_id, "EXACT_REPLAY")
+
+        def public_head(value: ExactHead) -> Head:
+            return Head(identity=value.identity, head=value.head, fingerprint=value.fingerprint)
+
+        return SelectedExecutionReceiptV1(
+            disposition=publication.kind,
+            identity=identity,
+            original_driver_command_fingerprint=original_fingerprint,
+            selected_ingress_decision=initial.selected_ingress_decision,
+            selected_custody=initial.selected_custody,
+            selected_admitted_input=initial.selected_admitted_input,
+            stable_run_lineage_id=terminal.run_id,
+            selected_run_head=Head(
+                identity=terminal.head,
+                head=terminal.head,
+                fingerprint=hashlib.sha256(terminal.canonical_bytes()).hexdigest(),
+            ),
+            selected_run_state=terminal.state,
+            selected_journal_decision=Head(
+                identity=publication.command_id,
+                head=publication.decision_head,
+                fingerprint=publication.decision_fingerprint,
+            ),
+            commit_sequence=publication.tenant_commit_sequence,
+            phase="TERMINAL",
+            terminal_detail=AcceptedTerminalDetailV1(
+                acceptance_head=public_head(readback.acceptance_head),
+                delivery_manifest_head=public_head(readback.delivery_manifest_head),
+                committed_conversation_projection_head=public_head(
+                    readback.committed_conversation_projection_head
+                ),
+            ),
+        )
+
     async def _resume_h1_postseal_recovery(
         self, identity: DriverCommandIdentityV1, original_fingerprint: str
     ) -> ExecutionDriverRejectedV1 | None:
@@ -1633,6 +1864,8 @@ async def open_installed_h1_runtime(
                 completion_exchange_registry: Any | None = None
                 conversation_sources: Any | None = None
                 live_enrollment: Any | None = None
+                live_invocation_source: Any | None = None
+                live_readplan_source: Any | None = None
                 try:
                     from chiplog.composition.h1_completion_exchange_registry import (
                         H1CompletionExchangeRegistry,
@@ -1646,6 +1879,10 @@ async def open_installed_h1_runtime(
                     from chiplog.composition.h1_live_completion_enrollment import (
                         _H1LiveCompletionEnrollment,
                     )
+                    from chiplog.composition.h1_live_invocation_source import (
+                        H1LiveInvocationSource,
+                    )
+                    from chiplog.composition.h1_live_readplan_source import H1LiveReadPlanSource
                     from chiplog.composition.h1_native_member_sources import H1NativeMemberSources
                     from chiplog.composition.h1_pre_request_member_evidence import (
                         H1PreRequestMemberEvidence,
@@ -1679,6 +1916,8 @@ async def open_installed_h1_runtime(
                             "_h1_completion_exchange_registry",
                             "_h1_conversation_source_port",
                             "_h1_live_completion_enrollment",
+                            "_h1_live_invocation_source",
+                            "_h1_live_readplan_source",
                         )
                     ):
                         raise RuntimeError("installed H1 worker sources are already mounted")
@@ -1732,6 +1971,11 @@ async def open_installed_h1_runtime(
                         gate=runtime._authority_gate(),
                     )
                     runtime._h1_live_completion_enrollment = live_enrollment  # type: ignore[attr-defined]
+                    live_invocation_source = H1LiveInvocationSource(runtime)
+                    runtime._h1_live_invocation_source = live_invocation_source
+                    live_readplan_source = H1LiveReadPlanSource(runtime)
+                    runtime._h1_live_readplan_source = live_readplan_source
+                    authority._bind_installed_runtime(runtime)
                     yield runtime
                 finally:
                     # This owner holds capabilities issued by the native, P, and E
@@ -1745,6 +1989,14 @@ async def open_installed_h1_runtime(
                         coordinator.close()
                     if hasattr(runtime, "_h1_postseal_recovery_coordinator"):
                         del runtime._h1_postseal_recovery_coordinator
+                    if live_invocation_source is not None:
+                        live_invocation_source._revoke_all()
+                    if hasattr(runtime, "_h1_live_invocation_source"):
+                        del runtime._h1_live_invocation_source
+                    if live_readplan_source is not None:
+                        live_readplan_source._revoke_all()
+                    if hasattr(runtime, "_h1_live_readplan_source"):
+                        del runtime._h1_live_readplan_source
                     if live_enrollment is not None:
                         live_enrollment._revoke_all()
                     if hasattr(runtime, "_h1_live_completion_enrollment"):
@@ -1800,6 +2052,14 @@ async def open_installed_h1_runtime(
                     coordinator.close()
                 if hasattr(runtime, "_h1_postseal_recovery_coordinator"):
                     del runtime._h1_postseal_recovery_coordinator
+                retained_invocation_source = getattr(runtime, "_h1_live_invocation_source", None)
+                if retained_invocation_source is not None:
+                    retained_invocation_source._revoke_all()
+                    del runtime._h1_live_invocation_source
+                retained_readplan_source = getattr(runtime, "_h1_live_readplan_source", None)
+                if retained_readplan_source is not None:
+                    retained_readplan_source._revoke_all()
+                    del runtime._h1_live_readplan_source
                 if hasattr(runtime, "_h1_postseal_recovery_journal"):
                     del runtime._h1_postseal_recovery_journal
                 if hasattr(runtime, "_h1_recovery_mount"):

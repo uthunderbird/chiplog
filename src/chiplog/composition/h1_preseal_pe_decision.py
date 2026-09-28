@@ -15,12 +15,13 @@ from dataclasses import dataclass
 from typing import Any, Never, cast
 
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
-from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime, _H1ScopeWire
 from chiplog.composition.h1_preseal_contracts import H1OwnerAsOfV1, H1V2SealPreflight
 from chiplog.composition.h1_preseal_native_source import (
     H1PresealNativeSource,
     H1PresealNativeSourceCut,
 )
+from chiplog.composition.h1_preseal_p_scope_frames import H1PresealPScopeFramesV1
 from chiplog.composition.h1_preseal_p_scope_wires import H1PresealPScopeWiresV1
 from chiplog.composition.h1_preseal_pe_anchor_records import H1PresealPEAnchorRecordV1
 from chiplog.composition.r14_execution_complete_seal_records import (
@@ -60,6 +61,7 @@ class H1PresealPEBoundDecision:
 
     anchor: H1PresealPEAnchorRecordV1
     scope_wires: H1PresealPScopeWiresV1
+    scope_frames: H1PresealPScopeFramesV1
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,7 +194,24 @@ class H1PresealPEDecisionOwner:
             issue_digest=cast(str, p["accepted_issue_wire_digest"]),
             current_digest=cast(str, p["accepted_current_wire_digest"]),
         )
-        return H1PresealPEBoundDecision(anchor=anchor, scope_wires=scope_wires)
+        try:
+            issue_wire = wires[0]
+            current_wire = wires[1]
+            if not isinstance(issue_wire, _H1ScopeWire) or not isinstance(
+                current_wire, _H1ScopeWire
+            ):
+                raise TypeError("P owner returned a foreign scope frame")
+            scope_frames = H1PresealPScopeFramesV1.from_wires(
+                binding=anchor.binding,
+                scope_wires=scope_wires,
+                issue_wire=issue_wire,
+                current_wire=current_wire,
+            )
+        except (TypeError, ValueError) as error:
+            raise H1PresealPEDecisionError("H1 preseal P full frames are unavailable") from error
+        return H1PresealPEBoundDecision(
+            anchor=anchor, scope_wires=scope_wires, scope_frames=scope_frames
+        )
 
     def revoke(self) -> None:
         """Permanently invalidate outstanding private P/E capture receipts."""

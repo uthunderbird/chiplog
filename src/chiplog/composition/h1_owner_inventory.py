@@ -100,6 +100,9 @@ def h1_owner_decoder_registry() -> dict[_Pair, str]:
     """Closed scope-extractor registry, separate from the SQL writer registry."""
     from chiplog.composition.h1_inventory_baseline import REGISTRATIONS as baseline_registrations
     from chiplog.composition.h1_inventory_call import REGISTRATIONS as call_registrations
+    from chiplog.composition.h1_inventory_completion import (
+        REGISTRATIONS as completion_registrations,
+    )
     from chiplog.composition.h1_inventory_effect_delivery import (
         REGISTRATIONS as effect_registrations,
     )
@@ -118,6 +121,7 @@ def h1_owner_decoder_registry() -> dict[_Pair, str]:
     leaf_groups = (
         ("baseline", baseline_registrations),
         ("call", call_registrations),
+        ("completion", completion_registrations),
         ("effect", effect_registrations),
         ("ingress", ingress_registrations),
         ("workspace", workspace_registrations),
@@ -245,8 +249,9 @@ def _reconcile_current_owner_cut(
     publications: tuple[tuple[object, ...], ...],
     records: tuple[_PhysicalRow, ...],
     phase: Phase,
+    owner_snapshot: OwnerJournalSnapshot,
     selected_input_decisions: tuple[Any, ...] = (),
-) -> None:
+) -> dict[str, object]:
     """Authenticate all current owner batches before using an empty snapshot."""
     from chiplog.composition.h1_inventory_owner_cut import (
         H1OwnerCutFailure,
@@ -295,7 +300,57 @@ def _reconcile_current_owner_cut(
             schema="chiplog.owner-decision.v1",
             locator=error.locator,
         ) from error
+    from chiplog.composition.h1_completion_issuance import decode_h1_completion_issuance
+    from chiplog.composition.h1_inventory_completion import H1CompletionInventoryCohort
+    from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
     from chiplog.platform.owner_publications import source_commands
+
+    cohorts: dict[str, object] = {}
+    completion_commands: set[str] = set()
+    try:
+        cut_by_command = {item.command_id: item for item in cut.decisions}
+        for selected in owner_snapshot.decisions:
+            batch = selected.prepared.request
+            if type(batch) is not CompleteDeliveryBatchV2:
+                continue
+            evidence = cut_by_command.get(batch.identity.command_id)
+            if evidence is None or not evidence.materialized:
+                continue
+            member_bytes = tuple(record.canonical_bytes for record in batch.complete_records)
+            if (
+                evidence.decision_id != selected.decision_id
+                or evidence.decision_fingerprint != selected.decision_fingerprint
+                or evidence.batch_kind != batch.kind
+                or evidence.tenant_commit_sequence != selected.tenant_commit_sequence
+                or evidence.source_command_bytes
+                != tuple(command.canonical_bytes for command in source_commands(batch))
+                or evidence.member_bytes != member_bytes
+            ):
+                raise ValueError("completion cohort differs from reconciled owner cut")
+            issuance = decode_h1_completion_issuance(batch)
+            cohort = H1CompletionInventoryCohort(
+                issuance.assembly.original_completion_request.run.run_id,
+                {
+                    record.record_id: (
+                        record.owner,
+                        record.schema_id,
+                        record.canonical_bytes,
+                        record.fingerprint,
+                    )
+                    for record in batch.complete_records
+                },
+            )
+            if len(cohort.members) != len(batch.complete_records):
+                raise ValueError("completion cohort has duplicate record IDs")
+            completion_commands.add(evidence.command_id)
+            for record_id in cohort.members:
+                if record_id in cohorts:
+                    raise ValueError("completion cohorts share a record ID")
+                cohorts[record_id] = cohort
+    except (AttributeError, TypeError, ValueError) as error:
+        raise H1OwnerInventoryFailure.corrupt(
+            family="COMPLETION", owner="owner-journal", schema="cohort", locator="decisions"
+        ) from error
 
     try:
         expected = {
@@ -325,6 +380,7 @@ def _reconcile_current_owner_cut(
             item.member_bytes,
         )
         for item in cut.decisions
+        if item.command_id not in completion_commands
     }
     if actual != expected:
         raise H1OwnerInventoryFailure.unsupported(
@@ -333,6 +389,7 @@ def _reconcile_current_owner_cut(
             schema="chiplog.owner-decision.v1",
             locator="decisions/" + repr(sorted(item[2] for item in actual ^ expected)),
         )
+    return cohorts
 
 
 def _reconcile_historical_owner_cut(
@@ -650,7 +707,9 @@ def _physical_item(row: _PhysicalRow, tenant: str) -> H1RawInventoryItem:
     )
 
 
-def _decode_leaf_row(row: _PhysicalRow, scope: H1Scope) -> H1DecodedInventoryItem:
+def _decode_leaf_row(
+    row: _PhysicalRow, scope: H1Scope, completion_cohorts: dict[str, Any]
+) -> H1DecodedInventoryItem:
     """Canonical-decode a registered physical member before global graph analysis."""
     item = _physical_item(row, scope.tenant)
     if (row.owner, row.schema) not in h1_owner_decoder_registry():
@@ -663,6 +722,10 @@ def _decode_leaf_row(row: _PhysicalRow, scope: H1Scope) -> H1DecodedInventoryIte
     from chiplog.composition.h1_inventory_baseline import decode_h1_baseline_scope
     from chiplog.composition.h1_inventory_call import REGISTRATIONS as call_registrations
     from chiplog.composition.h1_inventory_call import decode_h1_call_scope
+    from chiplog.composition.h1_inventory_completion import (
+        REGISTRATIONS as completion_registrations,
+    )
+    from chiplog.composition.h1_inventory_completion import decode_h1_completion_scope
     from chiplog.composition.h1_inventory_effect_delivery import (
         REGISTRATIONS as effect_registrations,
     )
@@ -691,6 +754,14 @@ def _decode_leaf_row(row: _PhysicalRow, scope: H1Scope) -> H1DecodedInventoryIte
             if decoder is not None:
                 raise RuntimeError(f"H1 physical decoder pair has competing leaves: {row.owner!r}")
             decoder = candidate
+    if any(
+        registration.surface == "PHYSICAL"
+        and (registration.owner, registration.schema) == (row.owner, row.schema)
+        for registration in completion_registrations
+    ):
+        if decoder is not None:
+            raise RuntimeError(f"H1 physical decoder pair has competing leaves: {row.owner!r}")
+        return decode_h1_completion_scope(item, completion_cohorts.get(row.record_id))
     if decoder is None:
         raise H1OwnerInventoryFailure.unsupported(
             family="UNMAPPED", owner=row.owner, schema=row.schema, locator=row.record_id
@@ -1111,7 +1182,10 @@ def _post_seal_delta(
 
 
 def _decode_native_row(
-    row: _PhysicalRow, scope: H1Scope, permitted_delta: dict[str, PhysicalRecord] | None = None
+    row: _PhysicalRow,
+    scope: H1Scope,
+    permitted_delta: dict[str, PhysicalRecord] | None = None,
+    completion_cohorts: dict[str, Any] | None = None,
 ) -> H1DecodedInventoryItem | None:
     """Prove relevance or irrelevance for the three native zero-call schemas."""
     permitted = None if permitted_delta is None else permitted_delta.get(row.record_id)
@@ -1174,7 +1248,7 @@ def _decode_native_row(
             )
         return None
     if (row.owner, row.schema) in h1_owner_decoder_registry():
-        return _decode_leaf_row(row, scope)
+        return _decode_leaf_row(row, scope, completion_cohorts or {})
     raise H1OwnerInventoryFailure.unsupported(
         family="UNMAPPED", owner=row.owner, schema=row.schema, locator=row.record_id
     )
@@ -1370,6 +1444,7 @@ def read_h1_scoped_owner_inventory(
         selected_input_bytes = b""
         selected_input_ids: frozenset[str] = frozenset()
         selected_input_decisions: tuple[Any, ...] = ()
+        completion_cohorts: dict[str, Any] = {}
         try:
             rows = tuple(
                 _PhysicalRow(str(a), str(b), str(c), d, e)
@@ -1389,6 +1464,16 @@ def read_h1_scoped_owner_inventory(
                     selected_input_bytes,
                     selected_input_decisions,
                 ) = _selected_input_roles(runtime, selected_prepare, captured, publications, rows)
+            if phase != "HISTORICAL":
+                completion_cohorts = _reconcile_current_owner_cut(
+                    scope.tenant,
+                    owner_entries,
+                    publications,
+                    rows,
+                    phase,
+                    owner_snapshot,
+                    selected_input_decisions,
+                )
             _validate_publication_membership(publications, rows, scope.tenant)
             _validate_v2_workspace_policy_publications(publications, rows)
             scope = _complete_run_ancestry(scope, rows)
@@ -1396,7 +1481,7 @@ def read_h1_scoped_owner_inventory(
                 _verify_selected_publication(selected_seal, publications)
             decoded_rows: list[tuple[_PhysicalRow, H1DecodedInventoryItem]] = []
             for row in rows:
-                decoded = _decode_native_row(row, scope, permitted_delta)
+                decoded = _decode_native_row(row, scope, permitted_delta, completion_cohorts)
                 if decoded is not None:
                     decoded_rows.append((row, decoded))
             _classify_leaf_scope(tuple(decoded_rows), scope, selected_input_ids)
@@ -1408,15 +1493,6 @@ def read_h1_scoped_owner_inventory(
             ) from error
         if evidence:
             _decode_evidence_items(_evidence_items(scope.tenant, evidence), scope)
-        if phase != "HISTORICAL":
-            _reconcile_current_owner_cut(
-                scope.tenant,
-                owner_entries,
-                publications,
-                rows,
-                phase,
-                selected_input_decisions,
-            )
         physical_bytes = _encoded_rows(tuple(tuple(row) for row in publications) + records_raw)
         evidence_bytes = _encoded_rows(evidence)
         pending_bytes = _canonical_json({"owner": [], "loop": [], "gate": []})

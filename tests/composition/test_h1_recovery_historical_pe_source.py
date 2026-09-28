@@ -49,6 +49,45 @@ from tests.support.h1_cli_execution import _admit
 from tests.support.h1_installed_launch import TENANT, installed_slot, prepare_installed_slot
 
 
+def test_current_historical_reader_reconstructs_once_and_rejects_noncanonical_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Currentness uses one source-owned rebuild, never a synthetic receipt."""
+    source_module = importlib.import_module("chiplog.composition.h1_recovery_historical_pe_source")
+    source_type = source_module.H1RecoveryHistoricalPESource
+    reader = object.__new__(source_type)
+    calls: list[object] = []
+
+    class Request:
+        def canonical_bytes(self) -> bytes:
+            return b"canonical"
+
+    monkeypatch.setattr(source_type, "_validate_inputs", staticmethod(lambda *_: None))
+    monkeypatch.setattr(
+        source_type,
+        "_reconstruct",
+        lambda _self, *_: calls.append("reconstruct") or Request(),
+    )
+    monkeypatch.setattr(source_module, "decode_first_path_completion_request", lambda _: Request())
+
+    assert reader._reconstruct_current_completion_bytes(
+        original_identity=object(), original_fingerprint="f", selected_seal=object()
+    ) == b"canonical"
+    assert calls == ["reconstruct"]
+
+    class Noncanonical(Request):
+        def canonical_bytes(self) -> bytes:
+            return b"different"
+
+    monkeypatch.setattr(
+        source_module, "decode_first_path_completion_request", lambda _: Noncanonical()
+    )
+    with pytest.raises(source_module.H1RecoveryHistoricalPESourceIntegrityError):
+        reader._reconstruct_current_completion_bytes(
+            original_identity=object(), original_fingerprint="f", selected_seal=object()
+        )
+
+
 def _resources(tmp_path: Path, label: str = "") -> HermeticDispatchResources:
     return HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / f"dispatch-custody{label}"

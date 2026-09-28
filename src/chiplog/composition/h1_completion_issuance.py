@@ -41,6 +41,7 @@ from chiplog.platform._owner_publication_contracts import (
     CompleteDeliveryBatchV2,
     InvocationProofRef,
 )
+from chiplog.platform.authority_checkpoint import AuthorityCheckpointRefV1
 from chiplog.platform.broker import (
     BrokerSession,
     PublicPortCall,
@@ -120,6 +121,14 @@ class H1CompletionTerminalAdmissionWitnessV1(DispatchObservationDTO):
     preterminal_current_exchange: H1CompletionOwnerExchangeV1
 
 
+class H1CompletionReadPlanEvidenceV1(DispatchObservationDTO):
+    """Closed V2 predecessor/read-plan evidence from the installed owner."""
+
+    predecessor_checkpoint: AuthorityCheckpointRefV1
+    predecessor_owner_head: Identity | None
+    registry_bytes: bytes = Field(min_length=1)
+
+
 class H1CompletionIssuanceV2(DispatchObservationDTO):
     """V2 evidence wire; it remains non-authorizing until installed validation."""
 
@@ -134,6 +143,7 @@ class H1CompletionIssuanceV2(DispatchObservationDTO):
     final_current_exchange: H1CompletionOwnerExchangeV1
     recovery: H1CompletionRecoveryRefV1
     terminal_admission: H1CompletionTerminalAdmissionWitnessV1
+    read_plan: H1CompletionReadPlanEvidenceV1
 
 
 def _forbid_json_number(value: str) -> object:
@@ -423,7 +433,6 @@ def _require_exchange_shape(value: H1CompletionIssuanceV1) -> None:
 def _require_historical_scope_issue_exchange_v2(
     exchange: H1CompletionOwnerExchangeV1,
     assembly: PrepareH1CompleteAcceptanceAssemblyV1,
-    capture: H1CompletionCaptureV1,
 ) -> None:
     """Validate the retained ISSUE wire without substituting the final capture.
 
@@ -436,7 +445,6 @@ def _require_historical_scope_issue_exchange_v2(
         or sent.schema_id != "chiplog.deployment-trust.owner-call.v1"
         or sent.caller.owner_id != "broker"
         or sent.callee.owner_id != "deployment_trust"
-        or sent.callee not in capture.sessions
     ):
         raise ValueError("H1 V2 historical scope issue exchange has a substituted route")
     wire = decode_trust_owner_call_canonical(sent.canonical_payload)
@@ -468,7 +476,6 @@ def _require_historical_scope_issue_exchange_v2(
 def _require_historical_scope_current_exchange_v2(
     exchange: H1CompletionOwnerExchangeV1,
     assembly: PrepareH1CompleteAcceptanceAssemblyV1,
-    capture: H1CompletionCaptureV1,
 ) -> None:
     """Validate one historical CURRENT wire; its own prefix is checked by the reader."""
     sent = exchange.sent
@@ -477,7 +484,6 @@ def _require_historical_scope_current_exchange_v2(
         or sent.schema_id != "chiplog.deployment-trust.owner-call.v1"
         or sent.caller.owner_id != "broker"
         or sent.callee.owner_id != "deployment_trust"
-        or sent.callee not in capture.sessions
     ):
         raise ValueError("H1 V2 historical scope current exchange has a substituted route")
     wire = decode_trust_owner_call_canonical(sent.canonical_payload)
@@ -608,10 +614,8 @@ def _require_v2_exchange_shape(value: H1CompletionIssuanceV2) -> None:
             callee_owner=owner,
             capture=value.capture,
         )
-    _require_historical_scope_issue_exchange_v2(value.scope_issue_exchange, assembly, value.capture)
-    _require_historical_scope_current_exchange_v2(
-        value.scope_current_exchange, assembly, value.capture
-    )
+    _require_historical_scope_issue_exchange_v2(value.scope_issue_exchange, assembly)
+    _require_historical_scope_current_exchange_v2(value.scope_current_exchange, assembly)
     _require_fresh_scope_current_exchange_v2(preterminal, assembly, value.capture)
     _require_fresh_scope_current_exchange_v2(final, assembly, value.capture)
 

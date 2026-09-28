@@ -211,6 +211,31 @@ def test_v2_selected_accepts_registered_v2_h1_applicability_with_exact_binding(
     assert selected.prepared.h1_delivery_binding == prepared.h1_delivery_binding
 
 
+def test_v2_selected_rejects_missing_closed_delivery_binding_before_append(tmp_path: Path) -> None:
+    batch = _h1_batch().model_copy(
+        update={
+            "authentication": _h1_batch().authentication.model_copy(
+                update={"applicability_schema": "chiplog.composition.h1-completion-issuance.v2"}
+            )
+        }
+    )
+    prepared = PreparedOwnerPublication(
+        batch,
+        "issuance",
+        "fence",
+        0,
+        batch.expected.expected_materialization_commitment,
+    )
+    journal = _journal(tmp_path)
+
+    with pytest.raises(OwnerJournalIntegrityError) as raised:
+        journal.select(prepared, digest(b"after"))
+    assert str(raised.value.__cause__) == (
+        "H1 V2 selected decision requires its closed delivery binding"
+    )
+    assert journal._raw.entries() == ()
+
+
 @pytest.mark.parametrize(
     "field,replacement",
     [

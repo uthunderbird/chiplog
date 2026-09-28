@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, cast
 
 from chiplog.composition.h1_completion_preparation_session import (
     H1CompletionPreparationSession,
@@ -134,9 +134,13 @@ class _RecoveryEnrollmentRecord:
     """One B session bound to the coordinator's mounted recovery source."""
 
     session: H1CompletionPreparationSession
-    source: object
+    source: H1RecoveryStageSource
     context: object
-    lease: object
+    lease: _H1RecoveryExecutionLease
+    # Finalization retains the opaque coordinator preflight rather than
+    # inventing a first-path cut.  Ordinary stage recovery deliberately has
+    # no such continuation.
+    preflight: object | None = None
     state: Literal["ACTIVE", "REVOKED"] = "ACTIVE"
 
 
@@ -155,17 +159,14 @@ class _RecoveryClearanceRecord:
 
 @dataclass
 class _IssuanceRecord:
-    """Future one-use B source, retained only behind the mounted gate.
+    """One retained recovery finalization payload behind the mounted gate."""
 
-    This table is intentionally unpopulated until B and authority agree on an
-    independently authenticated payload contract.  Keeping the transition
-    shape here prevents a future caller from substituting a DTO or rebuilding
-    source material outside enrollment.
-    """
-
-    enrollment: _EnrollmentRecord
+    enrollment: _RecoveryEnrollmentRecord
     source: _H1LiveCompletionIssuance
     authority: H1LivePublicationAuthority
+    issuance: object
+    batch: object
+    readplan_capture: object
     state: Literal["RESERVED", "ISSUED", "CONSUMED", "BURNED"] = "RESERVED"
 
 
@@ -290,6 +291,62 @@ class _H1LiveCompletionEnrollment:
                 session, source, context, lease
             )
             return session
+
+    def _open_finalization_session(self, *, preflight: object) -> H1CompletionPreparationSession:
+        """Open B only from the exact, held complete-chain continuation.
+
+        The coordinator owns both the preflight capability and its lease.  A
+        public root, DTO, or copied source context therefore never reaches the
+        recovery enrollment table.
+        """
+        from chiplog.composition.h1_postseal_recovery_coordinator import (
+            _H1CompleteChainPreflight,
+            _H1PostSealRecoveryCoordinator,
+        )
+
+        if type(preflight) is not _H1CompleteChainPreflight:
+            raise TypeError("H1 finalization requires the exact complete-chain preflight")
+        coordinator = preflight._coordinator
+        if (
+            type(coordinator) is not _H1PostSealRecoveryCoordinator
+            or coordinator is not getattr(self._runtime, "_h1_postseal_recovery_coordinator", None)
+            or coordinator._runtime is not self._runtime
+            or preflight._source is not coordinator._source
+        ):
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 finalization preflight is not installed"
+            )
+        lease = preflight._lease
+        # This authenticates the exact source/context/lease tuple before an
+        # enrollment record exists.  It also rejects retired/cross-lease
+        # preflights under the coordinator's own invariant.
+        coordinator._require_complete_chain_preflight_held(lease, preflight)
+        session = self._open_recovery_session(
+            source=preflight._source, context=preflight._context, lease=lease
+        )
+        try:
+            session._bind_recovery(
+                source=preflight._source, context=preflight._context, lease=lease
+            )
+            with self._gate.hold():
+                record = self._require_recovery_record(session)
+                coordinator._require_complete_chain_preflight_held(lease, preflight)
+                if (
+                    record.source is not preflight._source
+                    or record.context is not preflight._context
+                    or record.lease is not lease
+                ):
+                    raise H1LiveCompletionEnrollmentUnavailable(
+                        "H1 finalization recovery enrollment differs"
+                    )
+                record.preflight = preflight
+            return session
+        except BaseException:
+            with self._gate.hold():
+                failed_record = self._recovery_records.get(id(session))
+                if failed_record is not None and failed_record.session is session:
+                    failed_record.state = "REVOKED"
+            raise
 
     def _require_recovery_session(
         self,
@@ -416,6 +473,12 @@ class _H1LiveCompletionEnrollment:
     def _revoke_recovery_session(self, session: object) -> None:
         with self._gate.hold():
             record = self._require_recovery_record(session)
+            revoke = getattr(self._scope_port, "_revoke_recovery_finalization", None)
+            if callable(revoke):
+                revoke(session)
+            # P owns proof and wire retirement.  Do it before exposing this B
+            # enrollment as REVOKED: a P cleanup failure must retain ACTIVE so
+            # the opener guard cannot admit a competing recovery session.
             record.state = "REVOKED"
             for clearance in self._recovery_clearances.values():
                 if clearance.enrollment is record:
@@ -438,8 +501,13 @@ class _H1LiveCompletionEnrollment:
             ):
                 raise H1LiveCompletionEnrollmentUnavailable("H1 recovery call frame differs")
             try:
-                record.enrollment.lease._require_admission_current()
-                record.enrollment.source._require_current(record.enrollment.context)
+                cast(Any, record.enrollment.lease)._require_admission_current()
+                cast(Any, record.enrollment.source)._require_current(record.enrollment.context)
+                if record.stage == "TERMINAL_WORK" and record.enrollment.preflight is not None:
+                    recheck = getattr(self._scope_port, "_check_terminal_clearance_current", None)
+                    if not callable(recheck):
+                        raise ValueError("H1 recovery terminal P clearance is unavailable")
+                    recheck(clearance, sent)
             except (RuntimeError, TypeError, ValueError) as error:
                 record.state = "BURNED"
                 raise H1LiveCompletionEnrollmentUnavailable(
@@ -559,29 +627,23 @@ class _H1LiveCompletionEnrollment:
                 return
             for record in self._clearances.values():
                 record.state = "BURNED"
-            for record in self._recovery_clearances.values():
+            for record in getattr(self, "_recovery_clearances", {}).values():
                 record.state = "BURNED"
-            for record in self._recovery_records.values():
+            for record in getattr(self, "_recovery_records", {}).values():
                 record.state = "REVOKED"
             for issuance in self._issuances.values():
                 issuance.state = "BURNED"
             self._clearances.clear()
-            self._recovery_clearances.clear()
-            self._recovery_records.clear()
+            getattr(self, "_recovery_clearances", {}).clear()
+            getattr(self, "_recovery_records", {}).clear()
             self._issuances.clear()
             self._records.clear()
             self._closed = True
 
-    def _consume_authority_issuance(self, *, authority: object, source: object) -> None:
-        """Freeze the only future authority-private admission boundary.
-
-        A future authority calls this with its installed identity and the B
-        source marker only.  It must receive retained exact material solely
-        from the consumed record.  Until B supplies the four-exchange/final-P
-        producer and authority supplies independent invocation/manifest/root
-        capture, this boundary always denies before any authority, coordinator,
-        or journal operation.
-        """
+    def _consume_authority_issuance(
+        self, *, authority: object, source: object
+    ) -> _IssuanceRecord:
+        """Consume a recovery-issued source before writer reentry."""
         with self._gate.hold():
             self._require_open_and_mounted()
             if (
@@ -605,31 +667,57 @@ class _H1LiveCompletionEnrollment:
                     "H1 live issuance source is unavailable"
                 )
             try:
-                enrolled = self._require_bound_enrollment_cut(
-                    record.enrollment.session, record.enrollment.cut
-                )
-                if (
-                    enrolled is not record.enrollment
-                    or enrolled.handle is not record.enrollment.handle
-                ):
+                self._require_recovery_record_current(record.enrollment)
+                if record.enrollment.preflight is None:
                     raise H1LiveCompletionEnrollmentUnavailable(
-                        "H1 live issuance enrollment identity differs"
+                        "H1 live issuance finalization preflight differs"
                     )
-                self._require_live(record.enrollment.session, record.enrollment.cut)
             except BaseException:
                 # A stale/revoked source is ambiguous for a one-use handoff.
                 # Burn it before it can be observed by any later authority.
                 record.state = "BURNED"
                 raise
-            # A real B producer will atomically change RESERVED to ISSUED
-            # only after the exact four frames and P final fence, retaining
-            # independently captured batch/root inputs here.  No such payload
-            # contract exists today, so fail closed and burn before any
-            # potentially reentrant root or authority operation.
-            record.state = "BURNED"
-            raise H1LiveCompletionEnrollmentUnavailable(
-                "H1 live issuance payload contract is not mounted"
+            # This transition precedes every coordinator await and is the
+            # single use of the nonserializable marker.
+            record.state = "CONSUMED"
+            return record
+
+    def _issue_recovery_issuance(
+        self, *, session: object, issuance: object, batch: object, readplan_capture: object
+    ) -> _H1LiveCompletionIssuance:
+        """Register one fully assembled V2 source from the exact recovery session."""
+        from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
+        from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
+
+        with self._gate.hold():
+            record = self._require_recovery_record(session)
+            self._require_recovery_record_current(record)
+            if (
+                record.preflight is None
+                or type(issuance) is not H1CompletionIssuanceV2
+                or type(batch) is not CompleteDeliveryBatchV2
+                or batch.authentication.applicability_bytes != issuance.canonical_bytes()
+                or readplan_capture is None
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable(
+                    "H1 recovery issuance payload differs"
+                )
+            if any(
+                item.enrollment is record and item.state != "BURNED"
+                for item in self._issuances.values()
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable("H1 recovery issuance already exists")
+            source = object.__new__(_H1LiveCompletionIssuance)
+            self._issuances[id(source)] = _IssuanceRecord(
+                enrollment=record,
+                source=source,
+                authority=self._authority,
+                issuance=issuance,
+                batch=batch,
+                readplan_capture=readplan_capture,
+                state="ISSUED",
             )
+            return source
 
     def _require_open_and_mounted(self) -> None:
         if self._closed:
@@ -681,7 +769,7 @@ class _H1LiveCompletionEnrollment:
         from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
 
         runtime = self._runtime
-        coordinator = getattr(runtime, "_h1_postseal_recovery_coordinator", None)
+        coordinator = cast(Any, getattr(runtime, "_h1_postseal_recovery_coordinator", None))
         if (
             type(source) is not H1RecoveryStageSource
             or source._runtime is not runtime
@@ -690,15 +778,17 @@ class _H1LiveCompletionEnrollment:
             or getattr(runtime, "_h1_postseal_recovery_coordinator", None) is not coordinator
             or source is not getattr(coordinator, "_source", None)
             or type(lease) is not _H1RecoveryExecutionLease
-            or lease._fence is not coordinator._fence
+            or cast(Any, lease)._fence is not cast(Any, coordinator)._fence
         ):
             raise H1LiveCompletionEnrollmentUnavailable(
                 "H1 recovery source or lease is not installed"
             )
         try:
-            source._context_state(context)
-            lease.require_owned()
-            source._require_current(context)
+            installed_source = cast(Any, source)
+            installed_lease = cast(Any, lease)
+            installed_source._context_state(context)
+            installed_lease.require_owned()
+            installed_source._require_current(context)
         except (RuntimeError, TypeError, ValueError) as error:
             raise H1LiveCompletionEnrollmentUnavailable(
                 "H1 recovery context or lease is not current"
@@ -724,6 +814,63 @@ class _H1LiveCompletionEnrollment:
         )
         if record.state != "ACTIVE":
             raise H1LiveCompletionEnrollmentUnavailable("H1 recovery session was revoked")
+
+    def _require_recovery_record_bound_for_invocation(
+        self, record: _RecoveryEnrollmentRecord
+    ) -> None:
+        """Check the held finalization binding without replaying its V2 source.
+
+        AUTHENTICATE has an await between this check and materialization.  The
+        pre-auth gate and materialization both retain the full source replay;
+        this narrow post-auth check only establishes that the same installed
+        recovery continuation still belongs to this task while the gate is
+        held.
+        """
+        from chiplog.composition.h1_postseal_recovery_coordinator import (
+            _H1CompleteChainPreflight,
+            _H1PostSealRecoveryCoordinator,
+        )
+        from chiplog.composition.h1_recovery_execution_fence import _H1RecoveryExecutionLease
+        from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
+
+        with self._gate.hold():
+            registered = self._require_recovery_record(record.session)
+            runtime = self._runtime
+            coordinator = getattr(runtime, "_h1_postseal_recovery_coordinator", None)
+            preflight = record.preflight
+            source = cast(Any, record.source)
+            lease = cast(Any, record.lease)
+            installed_coordinator = cast(_H1PostSealRecoveryCoordinator, coordinator)
+            installed_preflight = cast(_H1CompleteChainPreflight, preflight)
+            if (
+                registered is not record
+                or record.state != "ACTIVE"
+                or type(record.source) is not H1RecoveryStageSource
+                or source._runtime is not runtime
+                or type(coordinator) is not _H1PostSealRecoveryCoordinator
+                or installed_coordinator._runtime is not runtime
+                or getattr(runtime, "_h1_postseal_recovery_coordinator", None)
+                is not installed_coordinator
+                or installed_coordinator._source is not record.source
+                or type(record.lease) is not _H1RecoveryExecutionLease
+                or lease._fence is not installed_coordinator._fence
+                or type(preflight) is not _H1CompleteChainPreflight
+                or installed_preflight._coordinator is not installed_coordinator
+                or installed_preflight._source is not record.source
+                or installed_preflight._context is not record.context
+                or installed_preflight._lease is not record.lease
+                or installed_preflight._retired
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable(
+                    "H1 recovery invocation binding differs"
+                )
+            try:
+                source._context_state(record.context)
+                lease.require_owned()
+            except (RuntimeError, TypeError, ValueError) as error:
+                raise H1LiveCompletionEnrollmentUnavailable(
+                    "H1 recovery invocation binding is no longer current"
+                ) from error
 
     @staticmethod
     def _recovery_call_identity(sent: PublicPortCall) -> tuple[str, bytes]:

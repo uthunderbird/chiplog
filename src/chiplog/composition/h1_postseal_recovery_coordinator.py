@@ -37,6 +37,10 @@ class H1PostSealRecoveryCoordinatorError(RuntimeError):
     """The installed seal cannot safely enter the recovery journal."""
 
 
+class H1PostSealRecoveryPublicationIntegrityError(H1PostSealRecoveryCoordinatorError):
+    """A finalization broker result is outside its exact public contract."""
+
+
 _H1RecoveryStage = Literal["COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK"]
 _STAGES: Final[tuple[_H1RecoveryStage, ...]] = (
     "COMPLETION",
@@ -68,6 +72,21 @@ class _H1CompleteChainPreflight:
     _state: H1PostSealRecoveryState
     _context: object
     _retired: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _H1FinalizationOutcome:
+    """Private broker result paired with its authority-owned terminal readback."""
+
+    publication: object
+    readback: object
+
+
+@dataclass(frozen=True, slots=True)
+class _H1FinalizationRejection:
+    """A definitive broker refusal, which has no selected physical readback."""
+
+    publication: object
 
 
 class _H1PostSealRecoveryCoordinator:
@@ -131,6 +150,173 @@ class _H1PostSealRecoveryCoordinator:
             raise H1PostSealRecoveryCoordinatorError(
                 "post-seal recovery ROOT cannot be safely resumed"
             ) from error
+
+    async def finalize_selected(
+        self, identity: DriverCommandIdentityV1, original_fingerprint: str
+    ) -> Any:
+        """Finalize one already-complete recovery cut through the installed writer.
+
+        This is intentionally separate from ``resume_selected``.  Recovery may
+        append a ROOT and its stage evidence; finalization first reconciles the
+        authority's durable decision and opens B only after authenticated
+        absence.  The single fence lease covers that classification, all fresh
+        B/P work, the writer task, its exact selected readback, and cleanup.
+        """
+        if self._closed:
+            raise H1PostSealRecoveryCoordinatorError("post-seal recovery coordinator is closed")
+        if type(identity) is not DriverCommandIdentityV1:
+            raise TypeError("finalization requires the exact original driver identity")
+        if not isinstance(original_fingerprint, str) or len(original_fingerprint) != 64:
+            raise H1PostSealRecoveryCoordinatorError("original driver fingerprint is invalid")
+
+        from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+        from chiplog.composition.h1_live_publication_authority import H1LivePublicationAuthority
+
+        authority = getattr(self._runtime, "_h1_live_publication_authority", None)
+        enrollment = getattr(self._runtime, "_h1_live_completion_enrollment", None)
+        if type(authority) is not H1LivePublicationAuthority:
+            raise H1PostSealRecoveryCoordinatorError(
+                "installed final publication authority is absent"
+            )
+        if type(enrollment) is not _H1LiveCompletionEnrollment:
+            raise H1PostSealRecoveryCoordinatorError("installed finalization enrollment is absent")
+
+        worker = asyncio.create_task(
+            self._finalize_selected_worker(
+                identity,
+                original_fingerprint,
+                authority=authority,
+                enrollment=enrollment,
+            )
+        )
+        deferred_cancellation: asyncio.CancelledError | None = None
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError as error:
+                if deferred_cancellation is None:
+                    deferred_cancellation = error
+        # Consume the worker result before honouring caller cancellation: an
+        # authority or cleanup failure is the integrity outcome, not a reason
+        # to hide it behind cancellation.
+        result = worker.result()
+        if deferred_cancellation is not None:
+            raise deferred_cancellation
+        return result
+
+    async def _finalize_selected_worker(
+        self,
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        *,
+        authority: Any,
+        enrollment: Any,
+    ) -> _H1FinalizationOutcome | _H1FinalizationRejection:
+        """Run all task-affine finalization work in the lease-owning task."""
+        result: _H1FinalizationOutcome | _H1FinalizationRejection | None = None
+        async with await self._fence.acquire() as lease:
+            # This call is the sole selected/pending/absence oracle.  In
+            # particular, None means B proved authenticated absence; HOLD,
+            # malformed history, and uncertainty leave through an exception.
+            classified = await authority._recover_finalization_held(
+                identity=identity,
+                original_fingerprint=original_fingerprint,
+                lease=lease,
+            )
+            if classified is not None:
+                result = await self._route_finalization_publication_held(
+                    authority=authority,
+                    identity=identity,
+                    original_fingerprint=original_fingerprint,
+                    publication=classified,
+                )
+            elif classified is None:
+                preflight: _H1CompleteChainPreflight | None = None
+                session: Any | None = None
+                try:
+                    preflight = self._preflight_complete_chain_held(
+                        lease, identity, original_fingerprint
+                    )
+                    # B owns the exact enrollment graph and rejects all foreign
+                    # continuation/capture/lease objects before making an owner call.
+                    session = enrollment._open_finalization_session(preflight=preflight)
+                    for stage in _STAGES:
+                        lease.require_owned()
+                        semantic_input, effects_command_id = preflight._state.stage_input(stage)
+                        predecessor_effects_input = self._terminal_effects_input(
+                            preflight._state, stage
+                        )
+                        self._require_effects_command_id(stage, semantic_input, effects_command_id)
+                        session._bind_recovery_stage(
+                            stage=stage,
+                            semantic_input=semantic_input,
+                            predecessor_effects_input=predecessor_effects_input,
+                        )
+                        exchange = await getattr(session, _PREPARE_METHODS[stage])()
+                        returned = getattr(exchange, "returned", None)
+                        result_bytes = getattr(returned, "canonical_payload", None)
+                        expected = dict(preflight._state.results).get(stage)
+                        if (
+                            not isinstance(result_bytes, bytes)
+                            or expected is None
+                            or result_bytes != expected
+                        ):
+                            raise H1PostSealRecoveryCoordinatorError(
+                                "finalization replay result differs from the durable pin"
+                            )
+
+                    issuance = await session._issue_finalization()
+                    publication = await authority._commit_finalization_held(source=issuance)
+                    result = await self._route_finalization_publication_held(
+                        authority=authority,
+                        identity=identity,
+                        original_fingerprint=original_fingerprint,
+                        publication=publication,
+                    )
+                finally:
+                    # A B/P task may have accepted work even when the caller
+                    # has cancelled repeatedly.  Drain it before burning its
+                    # enrolled context, then retire the opaque preflight while
+                    # the same cross-process lease remains owned.  A drain
+                    # failure remains an integrity outcome, but cannot skip
+                    # the retirement required for every captured continuation.
+                    try:
+                        if session is not None:
+                            await self._drain_session_held(lease, session)
+                    finally:
+                        if preflight is not None and not preflight._retired:
+                            self._retire_complete_chain_preflight_held(lease, preflight)
+
+        if result is None:
+            raise H1PostSealRecoveryCoordinatorError("finalization lease exited without a result")
+        return result
+
+    async def _route_finalization_publication_held(
+        self,
+        *,
+        authority: Any,
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        publication: object,
+    ) -> _H1FinalizationOutcome | _H1FinalizationRejection:
+        """Require an exact broker result before attempting selected readback."""
+        from chiplog.platform._owner_publication_contracts import (
+            JournalSelectedPublication,
+            PublicationRejected,
+        )
+
+        if type(publication) is JournalSelectedPublication:
+            readback = await authority._read_finalization_receipt_held(
+                identity=identity,
+                original_fingerprint=original_fingerprint,
+                publication=publication,
+            )
+            return _H1FinalizationOutcome(publication, readback)
+        if type(publication) is PublicationRejected:
+            return _H1FinalizationRejection(publication)
+        raise H1PostSealRecoveryPublicationIntegrityError(
+            "H1 finalization publication result differs"
+        )
 
     def _preflight_complete_chain_held(
         self,
@@ -417,7 +603,7 @@ class _H1PostSealRecoveryCoordinator:
             # Session cleanup owns any broker task that crossed IPC.  Keep the
             # execution lease until it settles even if this coordinator is
             # cancelled; releasing first would admit a competing B issuer.
-            await self._drain_session_held(session)
+            await self._drain_session_held(lease, session)
 
     def _append_stage_held(
         self,
@@ -537,7 +723,7 @@ class _H1PostSealRecoveryCoordinator:
         )
         return session
 
-    async def _drain_session_held(self, session: Any) -> None:
+    async def _drain_session_held(self, lease: Any, session: Any) -> None:
         drain = getattr(session, "_drain_recovery", None)
         if not callable(drain):
             raise H1PostSealRecoveryCoordinatorError("recovery B session lacks a drain")
@@ -551,6 +737,16 @@ class _H1PostSealRecoveryCoordinator:
         # Propagate a drain failure before re-raising cancellation: a failed
         # drain is an integrity hold, not permission to free the lease early.
         task.result()
+        # This coordinator task still owns the exact task-affine lease after
+        # the shielded broker task has settled.  Only then may the installed
+        # enrollment retire the ordinary/finalization B session.
+        lease.require_owned()
+        from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+
+        enrollment = getattr(self._runtime, "_h1_live_completion_enrollment", None)
+        if type(enrollment) is not _H1LiveCompletionEnrollment:
+            raise H1PostSealRecoveryCoordinatorError("installed recovery B enrollment is absent")
+        enrollment._revoke_recovery_session(session)
         if cancelled is not None:
             raise cancelled
 

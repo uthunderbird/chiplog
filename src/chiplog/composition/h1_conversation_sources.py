@@ -28,6 +28,9 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjec
 from chiplog.capabilities.agent_loop.execution_completion_contracts import (
     PreparedExecutionCompletion,
 )
+from chiplog.capabilities.agent_loop.execution_completion_preparation import (
+    prepare_first_path_execution_completion,
+)
 from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
     PrepareExecutionCompletionFirstPathV2,
     decode_completion_request,
@@ -57,6 +60,7 @@ from chiplog.composition.h1_conversation_policy import (
     derive_entry,
 )
 from chiplog.composition.h1_first_path_sources import H1FirstPathCapture, H1FirstPathSources
+from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_seal
 from chiplog.composition.r14_execution_completion_records import (
     RetainedCompleteAcceptanceExchangeV1,
     complete_acceptance_command,
@@ -1006,6 +1010,115 @@ class H1ConversationSources:
         except (AttributeError, TypeError, ValueError) as error:
             raise H1ConversationSourceUnavailable(
                 "H1 historical conversation source inputs do not authenticate one selected cut"
+            ) from error
+
+    def _read_selected_historical_conversation_request(
+        self,
+        *,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+        policy: object,
+        completion_request_bytes: bytes,
+        completion_result_bytes: bytes,
+    ) -> PrepareConversationCompletionV1:
+        """Rebuild selected historical conversation semantics without live receipts.
+
+        This reader receives only inert P projection data and canonical durable
+        completion bytes.  It neither mints a P capability nor consults the
+        post-seal coordinator/recovery stage source.
+        """
+        from chiplog.composition.h1_runtime_preissuance_port import (
+            _AuthenticatedConversationPolicyInputs,
+        )
+
+        if (
+            type(original_identity) is not DriverCommandIdentityV1
+            or not isinstance(original_fingerprint, str)
+            or len(original_fingerprint) != 64
+            or type(selected_seal) is not CallSubjectHead
+            or type(policy) is not _AuthenticatedConversationPolicyInputs
+            or not isinstance(completion_request_bytes, bytes)
+            or not isinstance(completion_result_bytes, bytes)
+        ):
+            raise H1ConversationSourceUnavailable("selected historical conversation inputs differ")
+        self._require_open()
+        if getattr(self._runtime, "_h1_conversation_source_port", None) is not self:
+            raise H1ConversationSourceUnavailable(
+                "H1 historical conversation source owner is not mounted"
+            )
+        try:
+            with self._gate.hold():
+                request = PrepareExecutionCompletionFirstPathV2.model_validate_json(
+                    completion_request_bytes
+                )
+                result = PreparedExecutionCompletion.model_validate_json(completion_result_bytes)
+                if (
+                    request.canonical_bytes() != completion_request_bytes
+                    or result.canonical_bytes() != completion_result_bytes
+                    or prepare_first_path_execution_completion(request) != result
+                ):
+                    raise ValueError("selected completion result differs")
+                selected_prepare = select_h1_v3_prepare_for_seal(
+                    self._runtime, selected_seal=selected_seal, historical=True
+                ).prepare
+                started = selected_prepare.started_run
+                registration = policy.workspace_policy.registration
+                if (
+                    policy.original_issuance_ref != selected_prepare.issuance_ref
+                    or policy.original_tenant != started.tenant
+                    or policy.original_run_id != started.run_id
+                    or policy.original_started_run_head != started.head
+                    or len(started.turns) != 1
+                    or policy.original_turn_id != started.turns[0].turn_id
+                    or policy.original_worker_session != started.worker_session
+                    or registration.generation != policy.custody_entry_generation
+                    or registration.custody_entry_digest != policy.custody_entry_digest
+                ):
+                    raise ValueError("selected historical policy differs")
+                reader = H1FirstPathSources(self._runtime)
+                historical = reader.issue_historical_v2_cut(
+                    original_identity, original_fingerprint, selected_seal
+                )
+                inventory = reader._read_historical_conversation_inventory(
+                    original_identity=original_identity,
+                    original_fingerprint=original_fingerprint,
+                    selected_seal=selected_seal,
+                )
+                if type(inventory) is not _AuthenticatedConversationInventory:
+                    raise TypeError("historical conversation inventory is not A-shaped")
+                if (
+                    request.source != historical.source
+                    or request.source.selected_response_seal != selected_seal
+                    or inventory.tenant_sequence != historical.source.tenant_commit_sequence
+                    or inventory.commitment != historical.source.materialization_commitment
+                    or inventory.database_identity != (
+                        historical.database_path,
+                        historical.database_device,
+                        historical.database_inode,
+                    )
+                ):
+                    raise ValueError("selected historical conversation cut differs")
+                history = decode_authenticated_conversation_history(
+                    historical.source.tenant_id, inventory.selected, inventory.physical
+                )
+                rebuilt, _capture = self._build_request(
+                    cast(H1FirstPathCapture, SimpleNamespace(source=historical.source)),
+                    SimpleNamespace(
+                        native_cap=SimpleNamespace(_native=historical),
+                        request_bytes=completion_request_bytes,
+                        result_bytes=completion_result_bytes,
+                    ),
+                    policy,
+                    inventory,
+                    history,
+                )
+                return cast(PrepareConversationCompletionV1, rebuilt)
+        except H1ConversationSourceUnavailable:
+            raise
+        except (AttributeError, TypeError, ValueError) as error:
+            raise H1ConversationSourceUnavailable(
+                "selected historical conversation source differs"
             ) from error
 
     def check_current(self, capture: object) -> bool:

@@ -534,6 +534,7 @@ async def publish_execution_fanout(
                     raise LoopRejected("H1 V2 preflight is stale at DECIDED")
                 decision["h1_preseal_pe_anchor"] = bound_decision.anchor.canonical_bytes().decode()
                 decision["h1_preseal_p_scope_wires_v1"] = bound_decision.scope_wires.as_dict()
+                decision["h1_preseal_p_scope_frames_v1"] = bound_decision.scope_frames.as_dict()
                 assert checkpoint_ref is not None
                 decision["h1_v2_authority_cut_v1"] = build_h1_v2_authority_cut(
                     command=command,

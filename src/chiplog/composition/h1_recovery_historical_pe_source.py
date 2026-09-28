@@ -175,6 +175,23 @@ class H1RecoveryHistoricalPESource:
         )
         return receipt
 
+    def read_selected_projection(
+        self,
+        *,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> tuple[
+        PrepareExecutionCompletionFirstPathV2,
+        _AuthenticatedConversationPolicyInputs,
+        _HistoricalEffectsSource,
+    ]:
+        """Read the immutable selected P/E projection without issuing a capability."""
+        self._validate_inputs(original_identity, original_fingerprint, selected_seal)
+        return self._read_selected_projection(
+            original_identity, original_fingerprint, selected_seal
+        )
+
     def reconstruct_completion_input(
         self, receipt: object
     ) -> PrepareExecutionCompletionFirstPathV2:
@@ -189,6 +206,27 @@ class H1RecoveryHistoricalPESource:
                 "historical P/E projection differs on issuer replay"
             )
         return decode_first_path_completion_request(state.canonical_request)
+
+    def _reconstruct_current_completion_bytes(
+        self,
+        *,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> bytes:
+        """Rebuild one current selected input without minting a replay receipt."""
+        self._validate_inputs(original_identity, original_fingerprint, selected_seal)
+        raw = self._reconstruct(
+            original_identity, original_fingerprint, selected_seal
+        ).canonical_bytes()
+        try:
+            if decode_first_path_completion_request(raw).canonical_bytes() != raw:
+                raise ValueError("current historical completion bytes are noncanonical")
+        except ValueError as error:
+            raise H1RecoveryHistoricalPESourceIntegrityError(
+                "current historical P/E projection is noncanonical"
+            ) from error
+        return raw
 
     @staticmethod
     def _validate_inputs(
@@ -207,6 +245,52 @@ class H1RecoveryHistoricalPESource:
         original_fingerprint: str,
         selected_seal: CallSubjectHead,
     ) -> PrepareExecutionCompletionFirstPathV2:
+        p_owner = getattr(self._runtime, "_h1_preissuance_registration_source_port", None)
+        if (
+            type(p_owner) is not _H1RuntimePreissuancePort
+            or p_owner._runtime is not self._runtime
+            or p_owner._gate is not self._gate
+        ):
+            raise H1RecoveryHistoricalPESourceUnavailable(
+                "immutable historical P source owner is unavailable"
+            )
+        capability = p_owner._issue_historical_recovery_source(
+            original_identity=original_identity,
+            original_fingerprint=original_fingerprint,
+            selected_seal=selected_seal,
+        )
+        replay_failed = False
+        try:
+            projection = p_owner._replay_historical_recovery_sources(capability)
+        except BaseException:
+            replay_failed = True
+            raise
+        finally:
+            try:
+                p_owner._revoke_historical_recovery_source(capability)
+            except BaseException:
+                if not replay_failed:
+                    raise
+        return self._read_selected_projection(
+            original_identity,
+            original_fingerprint,
+            selected_seal,
+            projection=projection,
+        )[0]
+
+    def _read_selected_projection(
+        self,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+        *,
+        projection: tuple[_AuthenticatedConversationPolicyInputs, _HistoricalEffectsSource]
+        | None = None,
+    ) -> tuple[
+        PrepareExecutionCompletionFirstPathV2,
+        _AuthenticatedConversationPolicyInputs,
+        _HistoricalEffectsSource,
+    ]:
         try:
             with self._gate.hold():
                 native = self._native.select(
@@ -244,24 +328,14 @@ class H1RecoveryHistoricalPESource:
                     raise H1RecoveryHistoricalPESourceUnavailable(
                         "immutable historical P source owner is unavailable"
                     )
-                p_capability = p_owner._issue_historical_recovery_source(
-                    original_identity=original_identity,
-                    original_fingerprint=original_fingerprint,
-                    selected_seal=selected_seal,
-                )
-                replay_failed = False
-                try:
-                    conversation = p_owner._replay_historical_conversation_policy(p_capability)
-                    effects = p_owner._replay_historical_effects_source(p_capability)
-                except BaseException:
-                    replay_failed = True
-                    raise
-                finally:
-                    try:
-                        p_owner._revoke_historical_recovery_source(p_capability)
-                    except BaseException:
-                        if not replay_failed:
-                            raise
+                if projection is None:
+                    # Selected recovery is a reader: it must reopen immutable
+                    # P evidence directly, never mint a recovery capability.
+                    conversation, effects = p_owner._historical_recovery_projection(
+                        original_identity, original_fingerprint, selected_seal
+                    )
+                else:
+                    conversation, effects = projection
                 decision = _strict_object(native.seal.raw_bytes, name="selected V2 decision")
                 raw_anchor = decision.get("h1_preseal_pe_anchor")
                 if not isinstance(raw_anchor, str):
@@ -279,8 +353,10 @@ class H1RecoveryHistoricalPESource:
                     conversation=conversation,
                     effects=effects,
                 )
-                return self._request(
-                    anchor, native.seal.decision_id, carrier.source, conversation
+                return (
+                    self._request(anchor, native.seal.decision_id, carrier.source, conversation),
+                    conversation,
+                    effects,
                 )
         except H1RecoveryHistoricalPESourceError:
             raise

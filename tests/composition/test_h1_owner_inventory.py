@@ -10,14 +10,38 @@ from typing import Any, cast
 
 import pytest
 
+from chiplog.capabilities.agent_loop.completion_owner_record_contracts import (
+    DELIVERY_ACCEPTANCE_SCHEMA,
+)
+from chiplog.capabilities.agent_loop.execution_recovery_observations import (
+    ExecutionTerminalManifest,
+)
+from chiplog.capabilities.agent_loop.post_terminal_record_contracts import WORK_RECORD_CONTRACTS
+from chiplog.capabilities.effects.h1_local_preparation_record_contracts import (
+    SCHEMA_ID as H1_LOCAL_INTENT_SCHEMA,
+)
+from chiplog.capabilities.projections.conversation_preparation_contracts import (
+    ACCEPTED_ENTRY_SCHEMA,
+)
+from chiplog.capabilities.projections.conversation_preparation_contracts import (
+    OWNER as CONVERSATION_OWNER,
+)
 from chiplog.capabilities.projections.workspace_boundary import DisclosureLabel, SourceReference
 from chiplog.composition.common_cli_execution_runtime import (
     CommonCliExecutionRuntime,
     open_common_cli_execution_runtime,
 )
 from chiplog.composition.h1_first_path_sources import H1FirstPathSources
+from chiplog.composition.h1_inventory_completion import (
+    REGISTRATIONS as COMPLETION_REGISTRATIONS,
+)
+from chiplog.composition.h1_inventory_completion import (
+    H1CompletionInventoryCohort,
+    decode_h1_completion_scope,
+)
 from chiplog.composition.h1_inventory_leaf_contracts import (
     H1DecodedInventoryItem,
+    H1RawInventoryItem,
     H1ScopeKey,
     H1ScopeRelation,
 )
@@ -38,7 +62,19 @@ from chiplog.composition.h1_selected_prepare import (
     reopen_selected_h1_workspace,
     select_h1_v3_prepare_for_candidate,
 )
+from chiplog.composition.r14_execution_completion_records import (
+    RetainedCompleteAcceptanceExchangeV1,
+    complete_acceptance_command,
+)
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.platform._sqlite import (
+    EventAppender,
+    FenceAdvanceCommand,
+    PublicationVerificationMode,
+    SQLiteMaterializer,
+    VerifiedOwnerPublication,
+)
+from tests.support.completion_assembly import accepted_completion_fixture
 from tests.support.h1_cli_execution import admit_complete_script, advance
 
 
@@ -53,6 +89,202 @@ def test_native_zero_call_pairs_have_explicit_decoders() -> None:
         ("planning", "chiplog.planning.record.v1"),
         ("effects", "chiplog.effects.record.v1"),
     } <= set(registry)
+
+
+def test_h1_completion_writer_pairs_have_closed_inventory_decoders() -> None:
+    """Every admitted H1 completion member has a closed inventory decoder."""
+    terminal_schema = cast(str, ExecutionTerminalManifest.model_fields["schema_id"].default)
+    expected = {
+        ("agent_loop", DELIVERY_ACCEPTANCE_SCHEMA),
+        ("agent_loop", terminal_schema),
+        ("agent_loop", "chiplog.agent-loop.execution-record.v3"),
+        *((contract.owner, contract.schema_id) for contract in WORK_RECORD_CONTRACTS),
+        (CONVERSATION_OWNER, ACCEPTED_ENTRY_SCHEMA),
+        ("effects", H1_LOCAL_INTENT_SCHEMA),
+    }
+
+    assert expected <= set(CommonCliExecutionRuntime._record_schema_variants)
+    assert expected <= set(h1_owner_decoder_registry())
+    assert unsupported_runtime_record_pairs(CommonCliExecutionRuntime) == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_synthetic_completion_leaf_cohort_decodes_members_as_run_scoped() -> None:
+    """A synthetic leaf cohort checks decoding only; it carries no H1 authority claim."""
+    fixture = await accepted_completion_fixture("v3", "nonempty")
+    cohort = H1CompletionInventoryCohort(
+        fixture.assembly.original_completion_request.run.run_id,
+        {
+            record.record_id: (
+                record.owner,
+                record.schema_id,
+                record.canonical_bytes,
+                record.fingerprint,
+            )
+            for record in fixture.batch.complete_records
+        },
+    )
+    completion_pairs = {
+        (registration.owner, registration.schema) for registration in COMPLETION_REGISTRATIONS
+    }
+    decoded = [
+        decode_h1_completion_scope(
+            H1RawInventoryItem(
+                "PHYSICAL",
+                "records/" + record.record_id,
+                fixture.batch.identity.tenant_id,
+                record.owner,
+                record.schema_id,
+                record.record_kind,
+                record.record_id,
+                record.fingerprint,
+                record.canonical_bytes,
+            ),
+            cohort,
+        )
+        for record in fixture.batch.complete_records
+        if (record.owner, record.schema_id)
+        in completion_pairs
+    ]
+
+    assert decoded
+    assert all(item.identities[1].namespace == "run" for item in decoded)
+    assert all(item.identities[1].identity == cohort.run_id for item in decoded)
+
+
+@pytest.mark.asyncio
+async def test_completion_v3_run_must_match_the_reconciled_cohort_run() -> None:
+    """The V3 Run member cannot acquire ancestry from a different cohort."""
+    fixture = await accepted_completion_fixture("v3", "nonempty")
+    run = next(
+        record
+        for record in fixture.batch.complete_records
+        if (record.owner, record.schema_id)
+        == ("agent_loop", "chiplog.agent-loop.execution-record.v3")
+    )
+    cohort = H1CompletionInventoryCohort(
+        "different-run",
+        {
+            run.record_id: (
+                run.owner,
+                run.schema_id,
+                run.canonical_bytes,
+                run.fingerprint,
+            )
+        },
+    )
+
+    with pytest.raises(H1OwnerInventoryFailure, match="CORRUPT"):
+        decode_h1_completion_scope(
+            H1RawInventoryItem(
+                "PHYSICAL",
+                "records/" + run.record_id,
+                fixture.batch.identity.tenant_id,
+                run.owner,
+                run.schema_id,
+                run.record_kind,
+                run.record_id,
+                run.fingerprint,
+                run.canonical_bytes,
+            ),
+            cohort,
+        )
+
+
+@pytest.mark.asyncio
+async def test_generic_completion_producer_batch_writes_through_test_local_registry(
+    tmp_path: Path,
+) -> None:
+    """A generic acceptance batch exercises writer mechanics, outside H1 issuance."""
+    fixture = await accepted_completion_fixture("v3", "nonempty")
+    batch = fixture.batch
+    command = complete_acceptance_command(
+        RetainedCompleteAcceptanceExchangeV1(
+            assembly=fixture.assembly,
+            batch=batch,
+            expected_head=batch.expected.tenant_frontier,
+            predecessor_commitment=batch.expected.expected_materialization_commitment,
+        )
+    )
+
+    class Resolver:
+        def __init__(self) -> None:
+            self.modes: list[PublicationVerificationMode] = []
+            self.resulting: str | None = None
+
+        def verify(
+            self, candidate: object, mode: PublicationVerificationMode
+        ) -> VerifiedOwnerPublication:
+            assert candidate == guarded
+            self.modes.append(mode)
+            if mode == "PRECOMMIT":
+                assert self.resulting is not None
+                return VerifiedOwnerPublication.from_command(
+                    guarded,
+                    binding_fingerprint="fixture-binding",
+                    selected_identity="fixture-selected",
+                    selected_fingerprint="f" * 64,
+                    expected_resulting=self.resulting,
+                    expected_commit_sequence=1,
+                )
+            return VerifiedOwnerPublication.from_command(
+                guarded,
+                binding_fingerprint="fixture-binding",
+                selected_identity=None,
+                selected_fingerprint=None,
+                expected_resulting=None,
+                expected_commit_sequence=None,
+            )
+
+    resolver = Resolver()
+
+    def decide(resulting: str) -> None:
+        resolver.resulting = resulting
+
+    guarded = replace(command, admission_guard=lambda: None, decision_guard=decide)
+    generic_pairs = tuple(
+        dict.fromkeys(
+            (
+                *CommonCliExecutionRuntime._record_schema_variants,
+                *((record.owner, record.schema_id) for record in batch.complete_records),
+            )
+        )
+    )
+    store = SQLiteMaterializer(
+        tmp_path / "completion.sqlite",
+        record_contracts=CommonCliExecutionRuntime._record_contracts,
+        record_schema_variants=generic_pairs,
+    )
+    store._mount_owner_publication_resolver(resolver)
+    appender = EventAppender(store, capacity=2)
+    await appender.advance_fence(
+        FenceAdvanceCommand(batch.identity.tenant_id, guarded.fence_generation, 0)
+    )
+    unknown = replace(
+        guarded,
+        records=(replace(guarded.records[0], schema_id="chiplog.unknown.v1"), *guarded.records[1:]),
+    )
+    with pytest.raises(ValueError, match="owner/schema"):
+        await appender.submit(unknown)
+    assert store.durable_records() == ()
+
+    assert (await appender.submit(guarded)).disposition == "COMMITTED"
+    assert resolver.modes == ["ABSENT", "PRESELECT", "PRECOMMIT"]
+    rows = store.durable_records()
+    assert rows == tuple(
+        sorted(
+            (
+                batch.identity.tenant_id,
+                record.record_id,
+                record.owner,
+                record.schema_id,
+                record.canonical_bytes,
+                1,
+            )
+            for record in guarded.records
+        )
+    )
+    await appender.close()
 
 
 def test_unknown_pair_is_explicitly_unsupported() -> None:

@@ -9,12 +9,23 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
+    H1OwnerCurrentCandidateV1,
+)
 from chiplog.composition import h1_completion_issuance as issuance
+from chiplog.composition.common_cli_execution_runtime import open_installed_h1_runtime
+from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
+from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
+from chiplog.platform.r7_trust import decode_trust_owner_call_canonical
+from tests.composition.test_h1_scope_current_wire_runtime import _current_request
+from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
 
 V1_SCHEMA = "chiplog.composition.h1-completion-issuance.v1"
 V2_SCHEMA = "chiplog.composition.h1-completion-issuance.v2"
@@ -33,19 +44,19 @@ def _v2_type(name: str) -> type[Any]:
 def _dispatch(outer_schema: str, raw: bytes) -> str:
     dispatcher = getattr(issuance, "dispatch_h1_completion_issuance_schema", None)
     assert callable(dispatcher), "H1 completion issuance V2 lacks its schema dispatcher"
-    return dispatcher(outer_schema, raw)
+    return cast(str, dispatcher(outer_schema, raw))
 
 
-def _decode_recovery(raw: bytes) -> object:
+def _decode_recovery(raw: bytes) -> issuance.H1CompletionRecoveryRefV1:
     decoder = getattr(issuance, "decode_h1_completion_recovery_ref_v1", None)
     assert callable(decoder), "H1 completion issuance V2 lacks its recovery-reference codec"
-    return decoder(raw)
+    return cast(issuance.H1CompletionRecoveryRefV1, decoder(raw))
 
 
-def _decode_admission_witness(raw: bytes) -> object:
+def _decode_admission_witness(raw: bytes) -> issuance.H1CompletionTerminalAdmissionWitnessV1:
     decoder = getattr(issuance, "decode_h1_completion_terminal_admission_witness_v1", None)
     assert callable(decoder), "H1 completion issuance V2 lacks its terminal-admission codec"
-    return decoder(raw)
+    return cast(issuance.H1CompletionTerminalAdmissionWitnessV1, decoder(raw))
 
 
 def _recovery() -> dict[str, str]:
@@ -214,8 +225,81 @@ def test_v2_outer_dto_exposes_only_the_frozen_evidence_members() -> None:
         "final_current_exchange",
         "recovery",
         "terminal_admission",
+        "read_plan",
     }
     assert value_type.model_fields["schema_id"].default == V2_SCHEMA
+
+
+@pytest.mark.asyncio
+async def test_v2_historical_current_uses_its_selected_frame_but_fresh_current_remains_bound(
+    tmp_path: Path,
+) -> None:
+    """A P-era CURRENT is historical evidence, while a new CURRENT needs the capture session."""
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
+    )
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=resources) as runtime:
+            request = await _current_request(runtime)
+            _current, wire = await runtime._read_current_hermetic_output_scope_with_wire(request)
+
+    exchange = issuance.H1CompletionOwnerExchangeV1(
+        role="scope_current",
+        sent=wire.sent,
+        returned=wire.returned,
+        sent_at_ns=wire.sent_at_ns,
+        returned_at_ns=wire.returned_at_ns,
+    )
+    assert isinstance(wire.returned, PublicPortSuccess)
+    candidate = H1OwnerCurrentCandidateV1.model_validate_json(wire.returned.canonical_payload)
+    assembly = cast(Any, SimpleNamespace(
+        ordered_effects=(
+            SimpleNamespace(
+                owner_call=SimpleNamespace(
+                    request=SimpleNamespace(
+                        selected_scope=SimpleNamespace(
+                            current_request=request, current_result=candidate.current
+                        )
+                    )
+                )
+            ),
+        )
+    ))
+    historical_session = wire.sent.callee
+    fresh_session = historical_session.model_copy(update={"session_id": "fresh-capture"})
+    historical_capture = cast(Any, SimpleNamespace(
+        sessions=(fresh_session,),
+        observed=SimpleNamespace(
+            observation=SimpleNamespace(
+                snapshot_bytes=decode_trust_owner_call_canonical(wire.sent.canonical_payload).snapshot_bytes
+            )
+        ),
+    ))
+
+    # The selected P frame remains valid even though the later capture records
+    # a different trust-owner session.
+    issuance._require_historical_scope_current_exchange_v2(exchange, assembly)
+
+    with pytest.raises(ValueError, match="substituted route"):
+        issuance._require_historical_scope_current_exchange_v2(
+            exchange.model_copy(
+                update={"sent": wire.sent.model_copy(update={"operation_id": "forged"})}
+            ),
+            assembly,
+        )
+    with pytest.raises(ValueError):
+        issuance._require_historical_scope_current_exchange_v2(
+            exchange.model_copy(
+                update={"sent": wire.sent.model_copy(update={"canonical_payload": b"{}"})}
+            ),
+            assembly,
+        )
+
+    # The same old frame cannot be substituted for a fresh final-fence read.
+    with pytest.raises(ValueError, match="substituted route"):
+        issuance._require_fresh_scope_current_exchange_v2(exchange, assembly, historical_capture)
 
 
 def test_v2_terminal_admission_fingerprint_is_checked_against_the_terminal_exchange(
