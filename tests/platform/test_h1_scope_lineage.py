@@ -23,6 +23,7 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
     HermeticOutputScopeAnchorV1,
     HermeticOutputScopeV1,
     HermeticOutputSourceV1,
+    HermeticTrustObservationV1,
     SelectedHermeticResourceObservationRefV1,
 )
 from chiplog.platform.authority_gate import AuthorityGate
@@ -236,3 +237,37 @@ def test_lineage_isolated_by_database_and_scope_identity(tmp_path: Path) -> None
         other_id, _, _ = bundle.durability.append_hermetic_output_scope(other.canonical_bytes())
 
         assert bundle.durability.historical_hermetic_output_scope(other).decision_id == other_id
+
+
+def test_reopened_historical_scope_accepts_persisted_json_and_rejects_invalid_scope(
+    tmp_path: Path,
+) -> None:
+    with _bundle(tmp_path) as bundle:
+        _bootstrap(bundle)
+        scope = _scope()
+        decision_id, _, _ = bundle.durability.append_hermetic_output_scope(
+            scope.canonical_bytes()
+        )
+        raw = bundle.durability._journal.entries()[-1][2]
+        logical_head = bundle.durability.owner_snapshot_entries()[-1][0]
+
+    with _bundle(tmp_path) as reopened:
+        record = reopened.durability.historical_record(decision_id, 1)
+        assert record.record_bytes == reopened.materializer.record(decision_id, 1)
+        observation = HermeticTrustObservationV1(
+            physical_journal_head=ExactHead(
+                identity="deployment-trust/journal",
+                head=decision_id,
+                fingerprint=hashlib.sha256(raw).hexdigest(),
+            ),
+            logical_snapshot_head=logical_head,
+        )
+        assert reopened.durability.historical_prefix(observation).observation == observation
+
+        payload = json.loads(record.envelope_bytes)["payload"]
+        assert payload["scope"] == scope.model_dump(mode="json")
+        del payload["scope"]["issuer"]
+        with pytest.raises(RuntimeError, match="historical H1 scope payload is invalid"):
+            reopened.durability._validate_historical_payload(
+                "HERMETIC_OUTPUT_SCOPE_V1", payload
+            )

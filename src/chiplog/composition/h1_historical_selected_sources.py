@@ -266,9 +266,17 @@ def _verify_historical_r16(
         provider_id=recipient.provider,
         account_id=recipient.account,
         recipient_id=recipient.recipient,
-        endpoint=ExactHead(**recipient.endpoint.model_dump()),
+        endpoint=ExactHead(
+            identity=recipient.endpoint.subject_id,
+            head=recipient.endpoint.head,
+            fingerprint=recipient.endpoint.fingerprint,
+        ),
         canonical_address=recipient.canonical_address,
-        credential_binding=ExactHead(**recipient.credential_binding.model_dump()),
+        credential_binding=ExactHead(
+            identity=recipient.credential_binding.subject_id,
+            head=recipient.credential_binding.head,
+            fingerprint=recipient.credential_binding.fingerprint,
+        ),
     )
     if expected_recipient != scope.recipient:
         raise ValueError("H1 historical R16 recipient differs from selected scope")
@@ -610,7 +618,9 @@ def _verify_historical_scope(
         envelope = json.loads(record.envelope_bytes)
         materialized = json.loads(record.record_bytes)
         raw_scope = materialized["scope"]
-        historical_scope = HermeticOutputScopeV1.model_validate(raw_scope)
+        historical_scope = HermeticOutputScopeV1.model_validate_json(
+            json.dumps(raw_scope, sort_keys=True, separators=(",", ":")).encode()
+        )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise ValueError("H1 historical trust scope materialization is malformed") from error
     if (
@@ -672,7 +682,11 @@ def _verify_historical_scope_lineage(
             envelope = json.loads(raw)
             if envelope.get("kind") != "HERMETIC_OUTPUT_SCOPE_V1":
                 continue
-            candidate = HermeticOutputScopeV1.model_validate(envelope["payload"]["scope"])
+            candidate = HermeticOutputScopeV1.model_validate_json(
+                json.dumps(
+                    envelope["payload"]["scope"], sort_keys=True, separators=(",", ":")
+                ).encode()
+            )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise ValueError("H1 historical trust lineage is malformed") from error
         if (candidate.database_id, candidate.scope_id) == (scope.database_id, scope.scope_id):
@@ -755,7 +769,9 @@ def _verify_v2_current_as_of(
     record = reader.historical_record(anchor.decision.head, anchor.record_ordinal)
     try:
         materialized = json.loads(record.record_bytes)
-        scope = HermeticOutputScopeV1.model_validate(materialized["scope"])
+        scope = HermeticOutputScopeV1.model_validate_json(
+            json.dumps(materialized["scope"], sort_keys=True, separators=(",", ":")).encode()
+        )
     except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise ValueError("H1 V2 historical current scope materialization is malformed") from error
     if (

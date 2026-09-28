@@ -340,7 +340,7 @@ class BrokerTrustDurability:
             if set(payload) != {"scope"} or not isinstance(scope_value, dict):
                 raise RuntimeError("historical H1 scope payload is invalid")
             try:
-                scope = HermeticOutputScopeV1.model_validate(scope_value)
+                scope = HermeticOutputScopeV1.model_validate_json(_canonical(scope_value))
             except ValueError as error:
                 raise RuntimeError("historical H1 scope payload is invalid") from error
             if scope.model_dump(mode="json") != scope_value:

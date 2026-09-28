@@ -14,6 +14,10 @@ from typing import cast
 import pytest
 
 import chiplog.composition.h1_historical_selected_sources as historical_sources
+from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead as DeliveryExactHead
+from chiplog.capabilities.agent_loop.delivery_contracts import (
+    ProviderRecipient as DeliveryProviderRecipient,
+)
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.h1_completion_issuance import (
     V2_SCHEMA,
@@ -21,12 +25,18 @@ from chiplog.composition.h1_completion_issuance import (
     H1CompletionIssuanceV2,
 )
 from chiplog.composition.h1_delivery_evidence_contracts import H1DeliverySelectionClosureV2
+from chiplog.composition.h1_historical_h0_r17 import HistoricalH0R17Selection
 from chiplog.composition.h1_historical_selected_sources import (
     _open_historical_ports,
     _require_historical_ports,
     _verify_historical_scope,
     bind_selected_h1_completion,
     verify_h1_historical_sources,
+)
+from chiplog.composition.r16_dispatch_custody import load_existing_historical_custody
+from chiplog.composition.r16_dispatch_registry import (
+    HermeticDispatchResources,
+    historical_recipient,
 )
 from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 from chiplog.platform.authority_gate import AuthorityGate
@@ -45,6 +55,96 @@ class _FrameDTO:
     def model_dump(self, *, mode: str) -> dict[str, object]:
         assert mode == "json"
         return self._value
+
+
+@pytest.mark.parametrize("changed_field", ("endpoint", "credential_binding"))
+def test_historical_r16_maps_effect_reference_subjects_to_delivery_exact_heads(
+    tmp_path: Path, changed_field: str
+) -> None:
+    """R16's effects references and the selected delivery recipient use different DTO names."""
+    custody_path = tmp_path / "r16-custody.json"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=custody_path
+    )
+    resources.bind(AuthorityGate(tmp_path / "r16-authority.sqlite3"))
+    observation = resources.observe()
+    custody = load_existing_historical_custody(custody_path)
+    effects_recipient = historical_recipient(custody, observation)
+    delivery_recipient = DeliveryProviderRecipient(
+        provider_id=effects_recipient.provider,
+        account_id=effects_recipient.account,
+        recipient_id=effects_recipient.recipient,
+        endpoint=DeliveryExactHead(
+            identity=effects_recipient.endpoint.subject_id,
+            head=effects_recipient.endpoint.head,
+            fingerprint=effects_recipient.endpoint.fingerprint,
+        ),
+        canonical_address=effects_recipient.canonical_address,
+        credential_binding=DeliveryExactHead(
+            identity=effects_recipient.credential_binding.subject_id,
+            head=effects_recipient.credential_binding.head,
+            fingerprint=effects_recipient.credential_binding.fingerprint,
+        ),
+    )
+    retained_initialization = b"selected-h0-initialization"
+    initialization = SimpleNamespace(
+        dispatch_grant_bytes=observation.grant_bytes,
+        dispatch_credential_bytes=observation.credential_bytes,
+        dispatch_endpoint_bytes=observation.endpoint_bytes,
+        dispatch_clock_epoch=observation.clock_epoch,
+        dispatch_signature=observation.signature,
+        proposal=SimpleNamespace(run=SimpleNamespace(head="selected-run-head")),
+    )
+    h0_selection = HistoricalH0R17Selection(
+        initialization=initialization,
+        initialization_decision_id="selected-h0-decision",
+        admitted_record=cast(object, object()),
+        admitted_decision=cast(SelectedOwnerDecision, object()),
+    )
+    resource_ref = SimpleNamespace(
+        signature_domain="dispatch-resources.v1",
+        selected_initialization=DeliveryExactHead(
+            identity="selected-run-head",
+            head="selected-h0-decision",
+            fingerprint=hashlib.sha256(retained_initialization).hexdigest(),
+        ),
+    )
+
+    def issuance_for(recipient: DeliveryProviderRecipient) -> H1CompletionIssuanceV1:
+        return H1CompletionIssuanceV1.model_construct(
+            assembly=SimpleNamespace(
+                ordered_effects=(
+                    SimpleNamespace(
+                        owner_call=SimpleNamespace(
+                            request=SimpleNamespace(
+                                retained_origin=SimpleNamespace(
+                                    initialization_envelope_bytes=retained_initialization
+                                ),
+                                selected_scope=SimpleNamespace(
+                                    scope=SimpleNamespace(
+                                        recipient=recipient,
+                                        selected_resource_observation_ref=resource_ref,
+                                    )
+                                ),
+                            )
+                        )
+                    ),
+                )
+            )
+        )
+
+    issuance = issuance_for(delivery_recipient)
+    historical_sources._verify_historical_r16(
+        issuance, h0_selection=h0_selection, custody=custody
+    )
+
+    original = getattr(delivery_recipient, changed_field)
+    changed = original.model_copy(update={"head": "different-r16-reference-head"})
+    mismatched = delivery_recipient.model_copy(update={changed_field: changed})
+    with pytest.raises(ValueError, match="R16 recipient differs"):
+        historical_sources._verify_historical_r16(
+            issuance_for(mismatched), h0_selection=h0_selection, custody=custody
+        )
 
 
 def _selected_recovery_seam_inputs(*, recovery_head: str = "head") -> tuple[object, object, object]:
@@ -886,7 +986,8 @@ class _Scope:
 
 class _ScopeCodec:
     @staticmethod
-    def model_validate(value: dict[str, object]) -> _Scope:
+    def model_validate_json(raw: bytes) -> _Scope:
+        value = json.loads(raw)
         return _Scope(
             database_id=cast(str, value["database_id"]),
             scope_id=cast(str, value["scope_id"]),

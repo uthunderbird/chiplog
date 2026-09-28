@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 from chiplog.adapters.driven.effects_queries import StoredEffectRow
 from chiplog.capabilities.effects.contracts import EffectRecord, ExactHead
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 PREPARATION_SCHEMA = "chiplog.effects.dispatch-preparation.v2"
 RECORD_SCHEMA = "chiplog.effects.dispatch-record.v2"
+H1_LOCAL_PREPARED_COMMENTARY_SCHEMA = "chiplog.effects.h1-local-prepared-commentary-intent.v1"
 
 
 @dataclass(frozen=True)
@@ -223,6 +224,29 @@ def verify_dispatch_history(
                 command_bytes=legacy.source_command,
                 record_bytes=raw.canonical_bytes,
             )
+        elif raw.schema_id == H1_LOCAL_PREPARED_COMMENTARY_SCHEMA:
+            from chiplog.capabilities.effects.h1_local_preparation_record_contracts import (
+                H1LocalPreparedCommentaryCanonicalMemberV1,
+                decode_h1_local_prepared_commentary_member,
+            )
+            from chiplog.composition.h1_completion_issuance import decode_h1_completion_issuance
+            from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
+
+            if type(batch) is not CompleteDeliveryBatchV2:
+                raise ValueError("H1 local preparation has another publication envelope")
+            local_member = H1LocalPreparedCommentaryCanonicalMemberV1(
+                owner=cast(Literal["effects"], raw.owner),
+                record_kind=cast(Literal["H1LocalPreparedCommentaryIntent"], raw.record_kind),
+                schema_id=cast(
+                    Literal["chiplog.effects.h1-local-prepared-commentary-intent.v1"], raw.schema_id
+                ),
+                record_id=raw.record_id,
+                canonical_record_bytes=raw.canonical_bytes,
+                fingerprint=raw.fingerprint,
+            )
+            decode_h1_local_prepared_commentary_member(local_member)
+            decode_h1_completion_issuance(batch)
+            continue
         else:
             raise ValueError("unregistered effects history schema")
         members.append(member)
