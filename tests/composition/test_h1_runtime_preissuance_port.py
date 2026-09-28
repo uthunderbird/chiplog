@@ -20,9 +20,11 @@ from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionR
 from chiplog.composition.h1_launch_enrollment import InstalledH1Launch
 from chiplog.composition.h1_preissuance_registration import H1PreissuanceSourceViolation
 from chiplog.composition.h1_runtime_preissuance_port import (
+    _H1FinalCompletionFence,
     _H1PreterminalCompletionProof,
     _H1PreterminalScopeSnapshot,
     _H1RuntimePreissuancePort,
+    _IssuedFinalCompletionFence,
     _IssuedPreterminalCompletionProof,
 )
 from chiplog.composition.h1_terminal_call_identity import _terminal_call_identity
@@ -61,6 +63,95 @@ class _Enrollment:
     def _reserve_terminal_clearance(self, **kwargs: object) -> object:
         self.reservations.append(kwargs)
         return object()
+
+
+def test_recovery_final_completion_fence_replays_exact_wire_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recovery fence reaches its installed enrollment type check at runtime."""
+    from chiplog.composition.h1_completion_preparation_session import (
+        H1CompletionPreparationSession,
+    )
+    from chiplog.composition.h1_live_completion_enrollment import (
+        _H1LiveCompletionEnrollment,
+        _H1RecoveryClearance,
+    )
+
+    class _Lease:
+        def __init__(self) -> None:
+            self.require_owned_calls = 0
+
+        def require_owned(self) -> None:
+            self.require_owned_calls += 1
+
+    class _Source:
+        def __init__(self) -> None:
+            self.current_contexts: list[object] = []
+
+        def _require_current(self, context: object) -> None:
+            self.current_contexts.append(context)
+
+    class _Coordinator:
+        def __init__(self) -> None:
+            self.preflight_calls: list[tuple[object, object]] = []
+
+        def _require_complete_chain_preflight_held(
+            self, lease: object, preflight: object
+        ) -> None:
+            self.preflight_calls.append((lease, preflight))
+
+    session = object.__new__(H1CompletionPreparationSession)
+    clearance = object.__new__(_H1RecoveryClearance)
+    object.__setattr__(session, "_recovery", object())
+    object.__setattr__(session, "_recovery_terminal_clearance", clearance)
+    fence = object.__new__(_H1FinalCompletionFence)
+    wire = cast("object", object())
+    lease = _Lease()
+    source = _Source()
+    context = object()
+    preflight = object()
+    record = SimpleNamespace(lease=lease, preflight=preflight)
+    enrollment = object.__new__(_H1LiveCompletionEnrollment)
+    coordinator = _Coordinator()
+    monkeypatch.setattr(
+        _H1LiveCompletionEnrollment,
+        "_require_recovery_record",
+        lambda _self, received_session: record
+        if received_session is session
+        else (_ for _ in ()).throw(AssertionError("foreign recovery session")),
+    )
+
+    issued = _IssuedFinalCompletionFence(
+        fence,
+        session,
+        cast("object", object()),
+        clearance,
+        wire,
+    )
+    port = object.__new__(_H1RuntimePreissuancePort)
+    object.__setattr__(port, "_gate", _HeldGate())
+    object.__setattr__(
+        port,
+        "_runtime",
+        SimpleNamespace(
+            _h1_live_completion_enrollment=enrollment,
+            _h1_postseal_recovery_coordinator=coordinator,
+        ),
+    )
+    object.__setattr__(port, "_final_completion_fences", {id(fence): issued})
+    object.__setattr__(
+        port,
+        "_recovery_finalization_clearances",
+        {id(clearance): (record, source, context, object(), wire)},
+    )
+
+    assert port._replay_final_completion_fence(fence, session) is wire
+    assert issued.consumed is True
+    assert lease.require_owned_calls == 1
+    assert source.current_contexts == [context]
+    assert coordinator.preflight_calls == [(lease, preflight)]
+    with pytest.raises(H1PreissuanceSourceViolation, match="recovery final fence is unavailable"):
+        port._replay_final_completion_fence(fence, session)
 
 
 def _terminal_call(*, deadline_ns: int = 100) -> PublicPortCall:

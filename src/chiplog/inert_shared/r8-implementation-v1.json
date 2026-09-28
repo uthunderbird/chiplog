@@ -244,7 +244,7 @@
   "composition/h1_recovery_historical_pe_source.py": "2c09d7abc22dd4e87703716b0ef3df9955a6d3bf3a7a3add49fdecca46980aaf",
   "composition/h1_recovery_stage_source.py": "844289a8895af89305bc01ab5449dbb7ad8b5915faf9dda2573cad8f343a57ea",
   "composition/h1_registration_custody.py": "2f08b4b778eb27ecd3b5ca689b8dda99876606d8f2d3ed7932a25f8370e3d80e",
-  "composition/h1_runtime_preissuance_port.py": "8cfa8db2895eda04c8370ce195199639b9d745c01f0e42041cf7896b35920eef",
+  "composition/h1_runtime_preissuance_port.py": "c8c7145afd32547b6ec2916594c9baae1d0b8fac0239165bbac02a14e53f484a",
   "composition/h1_selected_input_role.py": "c626029fd848e649ae194555490ef64a0fce3ca18afac3df43ffaa9c0036ab9f",
   "composition/h1_selected_output_sources.py": "45bdfc22a3e6001665fdd6659e1aae3a50f4dff30860cf3b4bcc029bb3093c7e",
   "composition/h1_selected_prepare.py": "b0e8ce8494cc3c50c404b2fa0d7ad8cf63264c7c51d16793d68a01e85ed2b0b1",

@@ -2512,7 +2512,10 @@ class _H1RuntimePreissuancePort:
         from chiplog.composition.h1_completion_preparation_session import (
             H1CompletionPreparationSession,
         )
-        from chiplog.composition.h1_live_completion_enrollment import _H1TerminalClearance
+        from chiplog.composition.h1_live_completion_enrollment import (
+            _H1LiveCompletionEnrollment,
+            _H1TerminalClearance,
+        )
 
         with self._gate.hold():
             if type(session) is not H1CompletionPreparationSession:
