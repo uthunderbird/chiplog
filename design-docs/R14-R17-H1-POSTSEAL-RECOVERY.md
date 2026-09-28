@@ -300,6 +300,16 @@ separates historical selected scope evidence from final invocation evidence,
 defines the writer-accepted admission witness and freezes dispatch/replay checks.
 It is a tests-first contract, not a claim of implemented finalization.
 
+Before the first genuine selected V2 completion, issuance requires nested
+`read_plan: H1CompletionReadPlanEvidenceV1`: immediate-predecessor
+`AuthorityCheckpointRefV1`, required nullable immediate-predecessor owner head,
+and durable canonical registry bytes. The seal checkpoint cannot replace that
+predecessor. Keep the manifest/expected DTO unchanged; authenticate the evidence
+with the complete V2 applicability and selected decision. Reconstruct historical
+ordered observations from the verified predecessor checkpoint and reconciled
+owner prefix using the retained registry revision after upgrades. Missing or
+ambiguous evidence denies V2; no optional fallback. Selected V1 remains unchanged.
+
 Publication preserves the existing `CompleteDeliveryBatchV2` physical envelope
 and fixed owner slots. Selection and exact physical readback precede a terminal
 selected receipt. Cancellation or uncertain commit revokes transient authority
@@ -309,6 +319,15 @@ and recovers an already selected batch without fresh B authority or current owne
 regeneration. Terminal selection alone does not assert hermetic delivery, SEND
 permission or outcome closure: those require their own selected intent and
 observed evidence through the installed driver.
+
+The public accepted terminal receipt for selected V2 includes
+`acceptance_head`, `delivery_manifest_head` and
+`committed_conversation_projection_head` only after exact physical readback of
+those members of the same selected completion. The conversation field denotes
+its exact `ConversationCanonicalMemberV2` entry,
+`Head(identity=member.record_id, head=member.record_id,
+fingerprint=member.fingerprint)`, not a conversation aggregate or later projection.
+Prepared results, an unmaterialized selection or mismatched/missing heads hold.
 
 ## Acceptance tests before implementation
 

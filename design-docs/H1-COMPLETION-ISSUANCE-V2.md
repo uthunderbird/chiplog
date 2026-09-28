@@ -27,6 +27,47 @@ is 64 lowercase hexadecimal characters. All listed fields are required.
 | `final_current_exchange` | `H1CompletionOwnerExchangeV1`, role `scope_current`; distinct postterminal CURRENT |
 | `recovery` | `H1CompletionRecoveryRefV1` below |
 | `terminal_admission` | `H1CompletionTerminalAdmissionWitnessV1` below |
+| `read_plan` | Required `H1CompletionReadPlanEvidenceV1` below; no default or fallback |
+
+`H1CompletionReadPlanEvidenceV1` has exactly these required fields:
+
+| Field | Exact type / meaning |
+| --- | --- |
+| `predecessor_checkpoint` | `AuthorityCheckpointRefV1`; immutable full-authority snapshot at the immediate completion predecessor |
+| `predecessor_owner_head` | `Identity \| None`; immediate predecessor owner-journal head; explicit `None` means the authenticated empty prefix, never an omitted field |
+| `registry_bytes` | Nonempty `bytes`; exact canonical durable bytes of the selected closed read-plan registry revision |
+
+Freeze this required evidence before the first genuine selected V2 decision.
+Missing evidence denies V2; there is no optional field, legacy-V2 fallback or
+substitution from today's registry. Selected V1 wire and verification remain
+unchanged. `AuthoritativeReadManifest` and `capture.expected` retain their
+existing shape; the enclosing applicability fingerprint and authenticated
+selected decision cover the complete nested evidence.
+
+The installed read-plan owner captures the immediate predecessor checkpoint,
+owner head and registry under one held authority gate, with authenticated
+physical state and no pending owner/loop/gate publications. The seal's authority
+checkpoint is a seal post-image and cannot substitute for this completion
+predecessor. Resolve the bound checkpoint through
+`AuthorityCheckpointStore.resolve_verified` and `H1VerifiedSnapshotRows.from_verified`;
+require its tenant frontier and verified authority commitment to equal
+`batch.expected.tenant_frontier` and
+`batch.expected.expected_materialization_commitment`. A bare blob hash alone
+does not establish this join. Recheck the captured cut at writer admission.
+
+Historical verification selects `snapshot_at(predecessor_owner_head)`, validates
+the full current journal tail, and reconciles that exact owner prefix with the
+checkpoint's selected/materialized publications and physical records through
+the predecessor sequence. The owner prefix alone is not an atomic SQL cut.
+Strict-decode retained `registry_bytes`, verify canonical encoding and their
+head/SHA-256 fingerprint against the manifest, and apply that recorded revision
+even after code upgrades. Resolve every ordered presence/absence selector as of
+this cut and independently reproduce the complete manifest, requiring equality
+with both batch expected and `capture.expected`. Never prove historical absence
+from current SQL or admit later records as predecessor presence. Missing blobs,
+registry bytes, unsupported revisions or ambiguous ordering deny validation.
+The registry's complete selector inventory requires a physical-writer audit;
+neither a caller DTO nor the owner decoder registry defines read-plan membership.
 
 `H1CompletionRecoveryRefV1` has exactly `root_id: Digest`,
 `journal_instance_id: Identity`, `completed_chain_head: Identity`.
@@ -38,7 +79,7 @@ the reader validates the full journal and selects the exact referenced prefix.
 `terminal_call_fingerprint: Digest` and
 `preterminal_current_exchange: H1CompletionOwnerExchangeV1` (role
 `scope_current`). Its binding is the complete enclosing V2 candidate, including
-assembly, capture, historical scope exchanges, final CURRENT and recovery ref;
+assembly, capture, historical scope exchanges, final CURRENT, recovery ref and read plan;
 it is not a separately transferable receipt. Derive the terminal fingerprint
 with the existing `_terminal_call_identity` algorithm over the actual fourth
 call, including its route, budget and owner frame.
@@ -128,6 +169,16 @@ admission requires reconciliation: return exact selected result when proven,
 otherwise existing pending/uncertain behavior. Only authenticated absence permits
 a new attempt with a fresh marker. A terminal receipt follows exact selection
 and physical readback, and asserts neither SEND permission nor delivery closure.
+For selected V2, the public accepted terminal receipt requires exact physical
+readback of the selected completion's accepted record, delivery manifest and
+`ConversationCanonicalMemberV2` entry. Its `AcceptedTerminalDetailV1` must carry
+the corresponding `acceptance_head`, `delivery_manifest_head` and
+`committed_conversation_projection_head`; all join the same exact selected batch.
+`committed_conversation_projection_head` denotes the exact physical conversation
+entry: `Head(identity=member.record_id, head=member.record_id,
+fingerprint=member.fingerprint)`. It is not a conversation aggregate or a later
+projection head. Prepared evidence, selection without materialization, or any
+missing/mismatched head cannot produce this receipt.
 
 ## Tests before production changes
 
@@ -142,6 +193,12 @@ First demonstrate missing behavior as RED, then prove:
   fail before selection; a copied/public marker never authorizes publication.
 - Missing/unknown/mixed applicability versions fail through every dispatch
   surface, including selected journal, delivery binding and pending recovery.
+- Missing `read_plan` or its required nullable owner-head field, forged/missing
+  predecessor checkpoint, frontier/commitment mismatch, later-record leakage,
+  and substituted registry bytes fail. Historical presence/absence and registry
+  replay remain exact after unrelated publication and registry-code upgrade.
+- Public accepted terminal receipt requires all three exact selected V2 physical
+  heads; absent/mismatched readback or a conversation aggregate head fails.
 - Selection-before-readback and uncertain response recover exact retained bytes
   without B IPC, fresh CURRENT, reissuance or second marker consumption; corrupt
   or missing dependencies hold. Concurrent attempts cannot select twice.
