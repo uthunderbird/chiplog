@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import pytest
 
+import chiplog.composition.r14_loop_history as loop_history
 from chiplog.composition.common_cli_execution_runtime import (
     CommonCliExecutionRuntime,
     _H1LiveCompletionMount,
@@ -14,6 +15,7 @@ from chiplog.composition.common_cli_execution_runtime import (
     open_installed_h1_runtime,
 )
 from chiplog.composition.h1_completion_preparation_session import H1CompletionSessionCut
+from chiplog.composition.h1_conversation_sources import H1ConversationSources
 from chiplog.composition.h1_delivery_evidence_journal import H1DeliveryEvidenceJournal
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_live_completion_enrollment import (
@@ -21,6 +23,7 @@ from chiplog.composition.h1_live_completion_enrollment import (
     _H1LiveCompletionEnrollment,
 )
 from chiplog.composition.h1_live_publication_authority import H1LivePublicationAuthority
+from chiplog.composition.h1_runtime_preissuance_port import _H1RuntimePreissuancePort
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._sqlite import EventAppender
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall
@@ -31,6 +34,65 @@ def _resources(tmp_path: Path) -> HermeticDispatchResources:
     return HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
     )
+
+
+@pytest.mark.asyncio
+async def test_installed_h1_mounts_historical_owners_before_selected_startup_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    observed: list[tuple[object, object]] = []
+    original = loop_history.validate_selected_h1_completions
+
+    def observe(runtime: CommonCliExecutionRuntime) -> None:
+        port = runtime._h1_preissuance_registration_source_port
+        conversation = runtime._h1_conversation_source_port
+        assert type(port) is _H1RuntimePreissuancePort
+        assert type(conversation) is H1ConversationSources
+        assert port._runtime is conversation._runtime is runtime
+        assert port._gate is conversation._gate is runtime._authority_gate()
+        observed.append((port, conversation))
+        original(runtime)
+
+    monkeypatch.setattr(loop_history, "validate_selected_h1_completions", observe)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
+            assert observed == [
+                (
+                    runtime._h1_preissuance_registration_source_port,
+                    runtime._h1_conversation_source_port,
+                )
+            ]
+        assert cast(H1ConversationSources, observed[0][1])._closed is True
+        assert not hasattr(runtime, "_h1_preissuance_registration_source_port")
+        assert not hasattr(runtime, "_h1_conversation_source_port")
+
+
+@pytest.mark.asyncio
+async def test_installed_h1_revokes_early_historical_owners_when_startup_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    observed: dict[str, object] = {}
+
+    def fail(runtime: CommonCliExecutionRuntime) -> None:
+        observed["runtime"] = runtime
+        observed["conversation"] = runtime._h1_conversation_source_port
+        raise RuntimeError("injected selected startup failure")
+
+    monkeypatch.setattr(loop_history, "validate_selected_h1_completions", fail)
+    with (
+        _open_installed_h1_launch(slot) as launch,
+        pytest.raises(RuntimeError, match="injected selected startup failure"),
+    ):
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)):
+            raise AssertionError("selected startup failure must prevent yielding")
+    runtime = observed["runtime"]
+    assert cast(H1ConversationSources, observed["conversation"])._closed is True
+    assert not hasattr(runtime, "_h1_preissuance_registration_source_port")
+    assert not hasattr(runtime, "_h1_conversation_source_port")
 
 
 @pytest.mark.asyncio

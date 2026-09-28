@@ -1789,8 +1789,10 @@ async def open_installed_h1_runtime(
             revoke_and_unbind_live_authority()
             raise
 
+    runtime: CommonCliExecutionRuntime | None = None
+
     def installed_runtime_setup(opened: object) -> None:
-        nonlocal root_bound
+        nonlocal root_bound, runtime
         runtime = cast(CommonCliExecutionRuntime, opened)
         runtime._bind_h1_historical_custody_path(resources._custody_path)
         if len(evidence_reader) != 1 or len(recovery_journal) != 1 or len(recovery_mount) != 1:
@@ -1825,8 +1827,19 @@ async def open_installed_h1_runtime(
         with cast(Any, authority_gate).hold():
             evidence_reader[0]._bind_private_root_issuer(authority, live_mount)
         root_bound = True
+        if getattr(runtime, "_h1_preissuance_registration_source_port", None) is not None:
+            raise RuntimeError("installed H1 runtime port is already mounted")
+        # Startup validates selected H1 completions before _open_runtime yields.
+        # Its historical P reader needs this installed owner at that point.
+        runtime._h1_preissuance_registration_source_port = _H1RuntimePreissuancePort(
+            runtime, launch
+        )
+        if getattr(runtime, "_h1_conversation_source_port", None) is not None:
+            raise RuntimeError("installed H1 conversation source is already mounted")
+        from chiplog.composition.h1_conversation_sources import H1ConversationSources
 
-    runtime: CommonCliExecutionRuntime | None = None
+        runtime._h1_conversation_source_port = H1ConversationSources(runtime)
+
     with _configured(resources):
         try:
             async with _open_runtime(
@@ -1853,16 +1866,16 @@ async def open_installed_h1_runtime(
                     raise RuntimeError("installed H1 preseal native source is already mounted")
                 preseal_native_source = H1PresealNativeSource(runtime)
                 runtime._h1_preseal_native_source = preseal_native_source  # type: ignore[attr-defined]
-                port = _H1RuntimePreissuancePort(runtime, launch)
-                if getattr(runtime, "_h1_preissuance_registration_source_port", None) is not None:
-                    raise RuntimeError("installed H1 runtime port is already mounted")
-                runtime._h1_preissuance_registration_source_port = port
+                port = cast(
+                    _H1RuntimePreissuancePort,
+                    runtime._h1_preissuance_registration_source_port,
+                )
                 worker_owner: Any | None = None
                 member_evidence: Any | None = None
                 worker_evidence: Any | None = None
                 decision_owner: Any | None = None
                 completion_exchange_registry: Any | None = None
-                conversation_sources: Any | None = None
+                conversation_sources: Any | None = runtime._h1_conversation_source_port
                 live_enrollment: Any | None = None
                 live_invocation_source: Any | None = None
                 live_readplan_source: Any | None = None
@@ -1870,7 +1883,6 @@ async def open_installed_h1_runtime(
                     from chiplog.composition.h1_completion_exchange_registry import (
                         H1CompletionExchangeRegistry,
                     )
-                    from chiplog.composition.h1_conversation_sources import H1ConversationSources
                     from chiplog.composition.h1_delivery_evidence_journal import (
                         H1DeliveryEvidenceJournal,
                     )
@@ -1914,7 +1926,6 @@ async def open_installed_h1_runtime(
                             "_h1_pre_request_member_evidence",
                             "_h1_pre_request_worker_evidence",
                             "_h1_completion_exchange_registry",
-                            "_h1_conversation_source_port",
                             "_h1_live_completion_enrollment",
                             "_h1_live_invocation_source",
                             "_h1_live_readplan_source",
@@ -1929,8 +1940,6 @@ async def open_installed_h1_runtime(
                         scope_port=runtime._h1_preissuance_registration_source_port,
                     )
                     runtime._h1_completion_exchange_registry = completion_exchange_registry
-                    conversation_sources = H1ConversationSources(runtime)
-                    runtime._h1_conversation_source_port = conversation_sources
                     journal = cast(H1DeliveryEvidenceJournal, runtime._h1_delivery_evidence_journal)
                     member_evidence = H1PreRequestMemberEvidence(
                         journal,
@@ -2060,6 +2069,12 @@ async def open_installed_h1_runtime(
                 if retained_readplan_source is not None:
                     retained_readplan_source._revoke_all()
                     del runtime._h1_live_readplan_source
+                retained_conversation_source = getattr(
+                    runtime, "_h1_conversation_source_port", None
+                )
+                if retained_conversation_source is not None:
+                    retained_conversation_source._revoke_all()
+                    del runtime._h1_conversation_source_port
                 if hasattr(runtime, "_h1_postseal_recovery_journal"):
                     del runtime._h1_postseal_recovery_journal
                 if hasattr(runtime, "_h1_recovery_mount"):
@@ -2068,6 +2083,8 @@ async def open_installed_h1_runtime(
                 if retained_preseal_native_source is not None:
                     retained_preseal_native_source.revoke()
                     delattr(runtime, "_h1_preseal_native_source")
+                if hasattr(runtime, "_h1_preissuance_registration_source_port"):
+                    del runtime._h1_preissuance_registration_source_port
             for opened in recovery_journal:
                 opened.close()
             for mounted_recovery in recovery_mount:
@@ -2076,5 +2093,5 @@ async def open_installed_h1_runtime(
                 reader.close()
             if authority_gate is not None:
                 launch.custody.unbind_authority_gate(authority_gate)
-            if runtime is not None:
+            if runtime is not None and hasattr(runtime, "_h1_delivery_evidence_journal"):
                 del runtime._h1_delivery_evidence_journal

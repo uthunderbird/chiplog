@@ -197,7 +197,7 @@
   "composition/__init__.py": "7bfa9e65269dbf64ac86df5cdb651a56ac8854c4efa6ce660a11ce202d282f17",
   "composition/_pure_bytes.py": "cf84181d436defb205e5442a19e8250eed52ba622c7a227680af77b6efca455e",
   "composition/codex_chat.py": "5408b664e5f2ef5addb2f5d83a91e53671240831ce3071f14cc1faa3d73d6d37",
-  "composition/common_cli_execution_runtime.py": "d4aaca402e07ca1dcad9824d5aea952126448efd2ed4ba08981a753b99c11a57",
+  "composition/common_cli_execution_runtime.py": "1f950afc06a9470245905e1cc5a04b8cd82dc371fccca037eaa12d70c3745a92",
   "composition/common_execution_driver_contracts.py": "24a934209a08dfdf0440f41bc987e3044bd35dc791c0cbe77990553a2e9f8fdd",
   "composition/completion_publication_contracts.py": "658c514af9288009d7ecb411f4a1bf11329c311e74374986bb08eda6bd2f54fc",
   "composition/h1_completion_exchange_registry.py": "c7fabf6e234e6e2f0ce47cd8969ac0ed454c2282cffa4806d8c705bd433098dc",
