@@ -14,6 +14,7 @@ from dataclasses import dataclass
 MEMBER_SCHEMA = "chiplog.execution.h1-member-evidence.v1"
 WORKER_SCHEMA = "chiplog.execution.h1-worker-fence.v1"
 ROOT_SCHEMA = "chiplog.execution.h1-delivery-selection-closure.v1"
+ROOT_V2_SCHEMA = "chiplog.execution.h1-delivery-selection-closure.v2"
 _MAX_BYTES = 1_000_000
 
 
@@ -603,6 +604,81 @@ def _root(value: dict[str, object]) -> None:
     _b64(data["observation_bytes_base64"], "observation_bytes_base64")
 
 
+def _root_v2(value: dict[str, object]) -> None:
+    """Decode the compact, pre-selection closure for one V2 H1 batch."""
+    fields = {
+        "schema_id",
+        "deployment_id",
+        "database_id",
+        "database_genesis_digest",
+        "tenant_id",
+        "principal_id",
+        "journal_role",
+        "journal_instance_id",
+        "command_id",
+        "command_fingerprint",
+        "request_digest",
+        "predecessor_commitment",
+        "expected_tenant_frontier",
+        "request_bytes_base64",
+    }
+    data = _exact(value, fields, "root v2")
+    if data["schema_id"] != ROOT_V2_SCHEMA or data["journal_role"] != "h1-delivery-evidence":
+        raise ValueError("root v2 schema or journal role differs")
+    for key in (
+        "deployment_id",
+        "database_id",
+        "tenant_id",
+        "principal_id",
+        "journal_instance_id",
+        "command_id",
+    ):
+        _text(data[key], key)
+    for key in (
+        "database_genesis_digest",
+        "command_fingerprint",
+        "request_digest",
+        "predecessor_commitment",
+    ):
+        _digest(data[key], key)
+    _index(data["expected_tenant_frontier"], "expected_tenant_frontier")
+    request = _b64(data["request_bytes_base64"], "request_bytes_base64")
+    if hashlib.sha256(request).hexdigest() != data["request_digest"]:
+        raise ValueError("root v2 request digest differs")
+    try:
+        from chiplog.composition.h1_completion_issuance import (
+            V2_SCHEMA as H1_COMPLETION_V2_SCHEMA,
+        )
+        from chiplog.composition.h1_completion_issuance import (
+            H1CompletionIssuanceV2,
+            decode_h1_completion_issuance,
+        )
+        from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
+        from chiplog.platform.owner_decision_journal import canonical_owner_publication_bytes
+
+        decoded = CompleteDeliveryBatchV2.model_validate_json(request)
+        if (
+            decoded.authentication.applicability_schema != H1_COMPLETION_V2_SCHEMA
+            or request != canonical_owner_publication_bytes(decoded)
+        ):
+            raise ValueError("root v2 request is not canonical H1 applicability")
+        issuance = decode_h1_completion_issuance(decoded)
+        if type(issuance) is not H1CompletionIssuanceV2:
+            raise ValueError("root v2 request does not carry a V2 issuance")
+    except (ImportError, ValueError) as error:
+        raise ValueError("root v2 request is not a closed H1 complete-delivery request") from error
+    if (
+        decoded.identity.tenant_id != data["tenant_id"]
+        or decoded.identity.command_id != data["command_id"]
+        or decoded.identity.command_fingerprint != data["command_fingerprint"]
+        or decoded.expected.expected_materialization_commitment != data["predecessor_commitment"]
+        or decoded.expected.tenant_frontier != data["expected_tenant_frontier"]
+        or issuance.assembly.original_completion_request.source.selected_admitted_input.principal_id
+        != data["principal_id"]
+    ):
+        raise ValueError("root v2 fields differ from its H1 request")
+
+
 @dataclass(frozen=True, slots=True)
 class _Evidence:
     _raw: bytes
@@ -632,6 +708,10 @@ class H1DeliverySelectionClosureV1(_Evidence):
     pass
 
 
+class H1DeliverySelectionClosureV2(_Evidence):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class H1DeliveryEvidenceLocatorV1:
     tenant: str
@@ -645,7 +725,10 @@ class H1DeliveryEvidenceLocatorV1:
 
 
 H1DeliveryEvidence = (
-    H1DeliveryMemberEvidenceV1 | H1DeliveryWorkerFenceV1 | H1DeliverySelectionClosureV1
+    H1DeliveryMemberEvidenceV1
+    | H1DeliveryWorkerFenceV1
+    | H1DeliverySelectionClosureV1
+    | H1DeliverySelectionClosureV2
 )
 
 
@@ -661,4 +744,7 @@ def decode_h1_delivery_evidence(raw: bytes) -> H1DeliveryEvidence:
     if schema == ROOT_SCHEMA:
         _root(value)
         return H1DeliverySelectionClosureV1(raw, value)
+    if schema == ROOT_V2_SCHEMA:
+        _root_v2(value)
+        return H1DeliverySelectionClosureV2(raw, value)
     raise ValueError("unknown H1 delivery evidence schema")
