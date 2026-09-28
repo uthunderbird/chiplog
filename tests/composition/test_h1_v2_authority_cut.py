@@ -430,6 +430,19 @@ async def test_pending_decided_v2_reconciles_exact_selected_cut_without_restagin
             )
             selected_source = reader._read_v2_source(selected_raw, historical=True)
             assert selected_source.selected_response_seal == selected_seal
+            issued = reader.issue_historical_v2_cut(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=selected_seal,
+            )
+            assert issued.seal.raw_bytes == raw
+            assert issued.source == selected_source
+            conversation_inventory = reader._read_historical_conversation_inventory(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=selected_seal,
+            )
+            assert conversation_inventory.commitment == selected_source.materialization_commitment
             assert runtime._pending() == pending
             descriptor = json.dumps(_cut(entry), sort_keys=True, separators=(",", ":")).encode()
             reference = AuthorityCheckpointRefV1.model_validate(_cut(entry)["reference"])

@@ -549,7 +549,8 @@ class H1FirstPathSources:
         if type(selected_seal) is not CallSubjectHead:
             raise TypeError("H1 historical V2 source requires an exact selected seal")
         with self._gate.hold():
-            self._runtime._require_no_pending()
+            # The selected publication itself may still be pending during
+            # recovery; the historical post-image authenticates this cut.
             raw = self._read_selected_cut(
                 original_identity=original_identity,
                 original_fingerprint=original_fingerprint,
@@ -593,7 +594,8 @@ class H1FirstPathSources:
         if type(selected_seal) is not CallSubjectHead:
             raise TypeError("H1 historical conversation inventory requires an exact seal")
         with self._gate.hold():
-            self._runtime._require_no_pending()
+            # Read the selected historical cut even while its live publication
+            # awaits reconciliation. Fresh selection remains guarded below.
             raw = self._read_selected_cut(
                 original_identity=original_identity,
                 original_fingerprint=original_fingerprint,
