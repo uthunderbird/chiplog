@@ -134,6 +134,24 @@ def _binding(
     )
 
 
+def _v2_binding(
+    locator: H1DeliveryEvidenceLocatorV1, batch: CompleteDeliveryBatchV2
+) -> H1DeliveryBinding:
+    return H1DeliveryBinding(
+        deployment_id="deployment",
+        database_id="database",
+        database_genesis_digest="0" * 64,
+        tenant_id=batch.identity.tenant_id,
+        journal_instance_id="journal",
+        closure_entry_id=locator.entry_id,
+        closure_payload_digest=locator.payload_digest,
+        closure_schema_id="chiplog.execution.h1-delivery-selection-closure.v2",
+        command_id=batch.identity.command_id,
+        command_fingerprint=batch.identity.command_fingerprint,
+        request_digest=hashlib.sha256(canonical_owner_publication_bytes(batch)).hexdigest(),
+    )
+
+
 def _synthetic_v2_envelope() -> tuple[CompleteDeliveryBatchV2, dict[str, object]]:
     """A structural envelope only; its applicability is deliberately not genuine."""
     def command(owner: str) -> OwnerCommandBytes:
@@ -267,6 +285,51 @@ def test_structural_v2_closure_journal_readback_rechecks_the_same_envelope(
     assert calls and all(candidate == batch for candidate in calls)
 
 
+def test_read_closure_reopens_only_the_exact_structural_v2_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch, value = _synthetic_v2_envelope()
+    request = canonical_owner_publication_bytes(batch)
+
+    def decode(candidate: CompleteDeliveryBatchV2) -> completion_issuance.H1CompletionIssuanceV2:
+        assert canonical_owner_publication_bytes(candidate) == request
+        return _structural_v2_issuance()
+
+    monkeypatch.setattr(completion_issuance, "decode_h1_completion_issuance", decode)
+    storage = _open(tmp_path / "journal")
+    locator = storage.issue(decode_h1_delivery_evidence(_canonical(value)))
+
+    class _MountedTestSeam:
+        tenant_id = "tenant"
+        journal_instance_id = "journal"
+
+        def assert_current(self) -> None:
+            return None
+
+    reader = H1DeliveryEvidenceJournal(storage._journal, _MountedTestSeam())  # type: ignore[arg-type]
+    binding = _v2_binding(locator, batch)
+    try:
+        assert type(reader.read_closure(binding).record) is H1DeliverySelectionClosureV2
+        for changed in (
+            {"deployment_id": "other"},
+            {"database_id": "other"},
+            {"database_genesis_digest": "1" * 64},
+            {"tenant_id": "other"},
+            {"journal_role": "other"},
+            {"journal_instance_id": "other"},
+            {"closure_entry_id": "1" * 64},
+            {"closure_payload_digest": "1" * 64},
+            {"closure_schema_id": "chiplog.execution.h1-delivery-selection-closure.v1"},
+            {"command_id": "other"},
+            {"command_fingerprint": "1" * 64},
+            {"request_digest": "1" * 64},
+        ):
+            with pytest.raises(ValueError):
+                reader.read_closure(binding.model_copy(update=changed))
+    finally:
+        reader.close()
+
+
 def test_v2_closure_rejects_a_schema_label_without_a_genuine_issuance() -> None:
     _batch, value = _synthetic_v2_envelope()
 
@@ -378,6 +441,10 @@ def test_private_root_issuer_rejects_an_uninstalled_exact_authority(tmp_path: Pa
         assert reader._root_installation is None
         with pytest.raises(ValueError, match="issuer differs"):
             reader._issue_from_bound_root_owner(root, issuer)
+        with pytest.raises(ValueError, match="issuer differs"):
+            reader._issue_from_bound_root_owner(
+                H1DeliverySelectionClosureV2(b"{}", {"schema_id": "unused"}), issuer
+            )
     finally:
         reader.close()
 

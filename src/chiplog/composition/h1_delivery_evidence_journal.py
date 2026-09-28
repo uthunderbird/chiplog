@@ -15,10 +15,13 @@ from typing import TYPE_CHECKING
 
 from chiplog.adapters.driven.deployment_trust._journal import IndependentTenantDecisionJournal
 from chiplog.composition.h1_delivery_evidence_contracts import (
+    ROOT_SCHEMA,
+    ROOT_V2_SCHEMA,
     H1DeliveryEvidence,
     H1DeliveryEvidenceLocatorV1,
     H1DeliveryMemberEvidenceV1,
     H1DeliverySelectionClosureV1,
+    H1DeliverySelectionClosureV2,
     H1DeliveryWorkerFenceV1,
     decode_h1_delivery_evidence,
 )
@@ -353,16 +356,22 @@ class H1DeliveryEvidenceJournal(_EvidenceStorage):
         self._member_issuer = None
 
     def _issue_from_bound_root_owner(
-        self, record: H1DeliverySelectionClosureV1, issuer: object
+        self,
+        record: H1DeliverySelectionClosureV1 | H1DeliverySelectionClosureV2,
+        issuer: object,
     ) -> H1DeliveryEvidenceLocatorV1:
         """Append a selected root only for the exact gate-held live issuer."""
-        if type(record) is not H1DeliverySelectionClosureV1:
+        if type(record) not in (H1DeliverySelectionClosureV1, H1DeliverySelectionClosureV2):
             raise TypeError("private root append accepts only selection closure evidence")
         if issuer is not self._root_issuer:
             raise ValueError("private root append issuer differs")
         installation = self._root_installation
         if installation is None:
             raise RuntimeError("private root append installation is absent")
+        from chiplog.composition.common_cli_execution_runtime import _H1LiveCompletionMount
+
+        if type(installation) is not _H1LiveCompletionMount:
+            raise RuntimeError("private root append installation differs")
         self._mount.assert_current()
         gate = self._journal.authority_gate
         if gate is None:
@@ -422,7 +431,14 @@ class H1DeliveryEvidenceJournal(_EvidenceStorage):
                 binding.closure_payload_digest,
             )
         )
-        if type(result.record) is not H1DeliverySelectionClosureV1:
+        expected_type: type[H1DeliverySelectionClosureV1 | H1DeliverySelectionClosureV2]
+        if binding.closure_schema_id == ROOT_SCHEMA:
+            expected_type = H1DeliverySelectionClosureV1
+        elif binding.closure_schema_id == ROOT_V2_SCHEMA:
+            expected_type = H1DeliverySelectionClosureV2
+        else:
+            raise ValueError("selected H1 delivery binding closure schema differs")
+        if type(result.record) is not expected_type:
             raise ValueError("selected H1 delivery binding does not locate a selection closure")
         value = result.record._value
         if (
