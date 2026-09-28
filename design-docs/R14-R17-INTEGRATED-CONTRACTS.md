@@ -340,13 +340,28 @@ new V3 issuance cannot reinterpret a selected local record. Before any EFFECTS
 pin exists, a fresh producer choice must itself be durable so a restart cannot
 silently change an older recovery prefix to the new route.
 
-The registered deployment-trust reader must issue and authenticate a separate
-versioned prepared-external-delivery grant with an explicit bounded communication
-and disclosure mandate. The historical H1 output scope authorizes local commentary
-only (`external_delivery=False`); selected R17 provenance and R16 resource
-availability cannot be substituted for this grant. At preparation, publication
-and SEND the reader rechecks the grant, current endpoint, credential, exact
-recipient, disclosure and origin under the shared authority gate. The effects owner
+The registered deployment-trust owner must issue and authenticate a separate
+versioned prepared-external-delivery grant from a selected, explicit ACTIVE
+operator policy. The policy's three permissions cover communication, disclosure
+of the exact rendered bytes and binding the exact recipient to the authenticated
+principal; each is checked independently. The grant's `communication_authority`,
+`disclosure_authority` and `self_recipient_binding` reference the same selected
+policy's canonical payload head. The owner retains and resolves its physical
+journal/materialized anchor as well as those canonical bytes. ISSUE and REVOKE
+require an offline Ed25519 operator statement over the exact canonical request
+bytes and scope. The trust owner resolves the retained signed source and a
+separately pinned, current public key, verifies the signature and key permission
+for that operation, and compares the trust and latest-policy anchors atomically;
+structurally valid signature DTOs alone confer nothing. CLI login and a
+trust-journal MAC do not suffice. There is no
+default active policy or grant. The historical H1 output scope authorizes local
+commentary only (`external_delivery=False`); selected R17 provenance and R16
+resource availability cannot be substituted for this grant. At preparation,
+publication and SEND the registered reader rechecks the grant, selected policy
+revision as the latest ACTIVE revision, current endpoint, credential, exact
+recipient, disclosure and origin under the shared authority gate. Updating or
+revoking a policy invalidates grants derived from its older revision; a later
+reissue cannot revive them. The effects owner
 prepares scoped V3 authorization and first SEND against that fresh cut. The broker
 rechecks the cut under the publication gate, selects authorization with its
 pre-send parent, then selects the first-SEND decision, child attempt and SEND

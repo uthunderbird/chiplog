@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "agent-dashboard>=1.0.0,<2",
+    "cryptography>=45,<47",
     "dishka>=1.10.1",
     "httpx==0.28.1",
     "oauth-cli-kit==0.1.3",
