@@ -36,7 +36,10 @@ from chiplog.composition.common_execution_driver_contracts import (
 )
 from chiplog.composition.h1_first_path_sources import H1FirstPathSources
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
-from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_candidate
+from chiplog.composition.h1_selected_prepare import (
+    _resolve_h1_selected_cut,
+    select_h1_v3_prepare_for_candidate,
+)
 from chiplog.composition.h1_v2_authority_cut import resolve_h1_v2_authority_cut
 from chiplog.composition.r14_execution_complete_seal_records import (
     ExecutionCompleteSealPhysicalEnvelopeV2,
@@ -408,6 +411,26 @@ async def test_pending_decided_v2_reconciles_exact_selected_cut_without_restagin
             operation_id = pending[0]["operation_id"]
             assert isinstance(operation_id, str)
             decision_id, raw, entry = _selected_decision(runtime, operation_id)
+            selected_seal = CallSubjectHead.model_validate_json(
+                json.dumps(_cut(entry)["selected_response_seal"]).encode()
+            )
+            with runtime._authority_gate().hold():
+                historical = _resolve_h1_selected_cut(runtime, selected_seal=selected_seal)
+            assert historical.decision_id == decision_id
+            assert historical.decision_bytes == raw
+            assert runtime._pending() == pending
+            with pytest.raises(RuntimeError, match="selected publication must finish"):
+                runtime._require_no_pending()
+            reader = H1FirstPathSources(runtime)
+            selected_raw = reader._read_selected_cut(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=selected_seal,
+                historical=True,
+            )
+            selected_source = reader._read_v2_source(selected_raw, historical=True)
+            assert selected_source.selected_response_seal == selected_seal
+            assert runtime._pending() == pending
             descriptor = json.dumps(_cut(entry), sort_keys=True, separators=(",", ":")).encode()
             reference = AuthorityCheckpointRefV1.model_validate(_cut(entry)["reference"])
             staged.append(reference.blob_sha256.encode())

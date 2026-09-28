@@ -360,7 +360,8 @@ def _resolve_h1_selected_cut(
     opening SQLite to discover a historical cut would make later authority state
     part of the locator.
     """
-    runtime._require_no_pending()
+    # Recovery reads the selected historical post-image while that same
+    # publication may still be pending; fresh selections have their own guard.
     runtime._check_database_identity()
     commands = _journal_commands(runtime)
     selected: (

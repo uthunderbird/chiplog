@@ -1375,7 +1375,13 @@ def read_h1_scoped_owner_inventory(
             scope, permitted_delta = _post_seal_delta(scope, selected_seal)
             if phase == "HISTORICAL":
                 loop_cut, boundary = selected_index + 1, selected_sequence
-        if runtime._pending_owners() or runtime._pending() or runtime._pending_gate_publications():
+        # Historical completeness belongs to the authenticated selected cut;
+        # a later (or selected) publication may still be pending in live state.
+        if phase != "HISTORICAL" and (
+            runtime._pending_owners()
+            or runtime._pending()
+            or runtime._pending_gate_publications()
+        ):
             raise H1OwnerInventoryFailure.incomplete(family="PENDING", locator="runtime")
 
         snapshot_rows: H1VerifiedSnapshotRows | None = None
