@@ -70,3 +70,24 @@ async def test_public_scoped_v3_send_boundary_requires_selected_delivery_route()
         )
     finally:
         assert provider.transfers == ()
+
+
+def test_h1_v3_delivery_producer_has_a_distinct_authenticated_issuance() -> None:
+    """Historical H1/V2 local commentary cannot become a V3 SEND source.
+
+    The fresh producer reuses the existing generic V3-capable completion
+    assembly, but its issuance must remain distinct from the selected H1/V2
+    local-only issuance.  The issuance carries the authenticated owner
+    exchanges that an installed witness will later follow to the selected V3
+    effects command and physical ``ExternalActionIntentV3`` record.
+    """
+    from chiplog.composition import completion_publication_contracts as publication
+    from chiplog.composition import h1_completion_issuance as issuance
+
+    v3 = getattr(issuance, "H1CompletionIssuanceV3", None)
+    assert v3 is not None, "missing versioned H1 V3 completion issuance"
+    assert v3 is not issuance.H1CompletionIssuanceV2
+
+    fields = v3.model_fields
+    assert {"assembly", "owner_exchanges", "recovery"} <= set(fields)
+    assert fields["assembly"].annotation is publication.PrepareCompleteAcceptanceAssemblyV1

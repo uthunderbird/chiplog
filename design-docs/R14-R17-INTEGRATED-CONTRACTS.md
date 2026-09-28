@@ -324,8 +324,29 @@ provider I/O. The current installed H1 producer selects an inert local commentar
 record, so producing and selecting a genuine V3 effects intent is the first
 unimplemented dependency of this seam.
 
-The registered trust/resource reader authenticates the current endpoint,
-credential, exact recipient, disclosure and origin inputs. The effects owner
+Fresh H1 post-seal recovery keeps its `H1_V2` preseal; the existing `H1_V3` seal
+profile has checkpoint semantics and is not a delivery route. A new authenticated
+effects owner call produces the scoped precursor and intent result, retains its
+selected scope and authority preimages, and pins that request as the durable
+EFFECTS semantic input before IPC. `H1CompletionIssuanceV3` binds the actual owner
+response to the existing `PrepareCompleteAcceptanceAssemblyV1`, which already
+supports first-path V2 completion and V3 effects exchange. Its validator requires
+one accepted delivery, one matching intent, the exact basis/recipient/payload and
+the four owner roles. Producer publication issues no SEND permit.
+
+Replay dispatches by selected issuance schema first, then by the pinned EFFECTS
+input schema. V2 issuance and local owner output retain their original bytes;
+new V3 issuance cannot reinterpret a selected local record. Before any EFFECTS
+pin exists, a fresh producer choice must itself be durable so a restart cannot
+silently change an older recovery prefix to the new route.
+
+The registered deployment-trust reader must issue and authenticate a separate
+versioned prepared-external-delivery grant with an explicit bounded communication
+and disclosure mandate. The historical H1 output scope authorizes local commentary
+only (`external_delivery=False`); selected R17 provenance and R16 resource
+availability cannot be substituted for this grant. At preparation, publication
+and SEND the reader rechecks the grant, current endpoint, credential, exact
+recipient, disclosure and origin under the shared authority gate. The effects owner
 prepares scoped V3 authorization and first SEND against that fresh cut. The broker
 rechecks the cut under the publication gate, selects authorization with its
 pre-send parent, then selects the first-SEND decision, child attempt and SEND

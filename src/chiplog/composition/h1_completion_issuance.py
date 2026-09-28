@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Self
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
+from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
+    PrepareExecutionCompletionFirstPathV2,
+)
 from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     H1OwnerCandidateCallV1,
     H1OwnerCandidateV1,
@@ -25,9 +28,16 @@ from chiplog.capabilities.effects.dispatch_authority_contracts import (
     DispatchObservationDTO,
     Identity,
 )
+from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
+    H1ScopedDeliveryOwnerCallV1,
+    PreparedH1ScopedDeliveryV1,
+)
+from chiplog.capabilities.effects.scoped_intent_contracts import PreparedDeliveryAuthority
 from chiplog.composition.common_execution_driver_contracts import DriveInputRequestV1
 from chiplog.composition.completion_publication_contracts import (
+    PrepareCompleteAcceptanceAssemblyV1,
     PrepareH1CompleteAcceptanceAssemblyV1,
+    expected_completion_records,
     validate_h1_complete_acceptance_batch,
 )
 from chiplog.composition.h1_historical_selected_sources import verify_h1_historical_sources
@@ -146,6 +156,105 @@ class H1CompletionIssuanceV2(DispatchObservationDTO):
     read_plan: H1CompletionReadPlanEvidenceV1
 
 
+class H1CompletionIssuanceV3(DispatchObservationDTO):
+    """Scoped producer evidence; no runtime dispatch or authority is implied."""
+
+    schema_id: Literal["chiplog.composition.h1-completion-issuance.v3"] = (
+        "chiplog.composition.h1-completion-issuance.v3"
+    )
+    assembly: PrepareCompleteAcceptanceAssemblyV1
+    capture: H1CompletionCaptureV1
+    owner_exchanges: tuple[H1CompletionOwnerExchangeV1, ...] = Field(min_length=4, max_length=4)
+    scope_issue_exchange: H1CompletionOwnerExchangeV1
+    scope_current_exchange: H1CompletionOwnerExchangeV1
+    final_current_exchange: H1CompletionOwnerExchangeV1
+    recovery: H1CompletionRecoveryRefV1
+    terminal_admission: H1CompletionTerminalAdmissionWitnessV1
+    read_plan: H1CompletionReadPlanEvidenceV1
+    effects_call: H1ScopedDeliveryOwnerCallV1
+    effects_result: PreparedH1ScopedDeliveryV1
+
+    @model_validator(mode="after")
+    def exact_scoped_exchange(self) -> Self:
+        assembly = self.assembly
+        if (
+            type(assembly.original_completion_request) is not PrepareExecutionCompletionFirstPathV2
+            or len(assembly.ordered_effects) != 1
+            or len(assembly.prepared_completion.delivery.manifest.ordered_deliveries) != 1
+            or tuple(exchange.role for exchange in self.owner_exchanges)
+            != ("completion", "conversation", "effects", "terminal_work")
+        ):
+            raise ValueError("H1 V3 requires the sole first-path scoped delivery exchange")
+        call = self.effects_call
+        result = self.effects_result
+        request = call.request
+        exchange = assembly.ordered_effects[0]
+        if (
+            request.original_completion_request != assembly.original_completion_request
+            or request.prepared_completion != assembly.prepared_completion
+            or result.source_request_fingerprint != call.request_digest
+            or result.precursor_request != call.request.precursor_request
+            or any(
+                getattr(result, field) != getattr(exchange, field)
+                for field in type(exchange).model_fields
+            )
+        ):
+            raise ValueError("H1 V3 scoped owner exchange differs from assembly")
+        authority = result.intent_request.intent.acquisition.authority
+        if (
+            not isinstance(authority, PreparedDeliveryAuthority)
+            or authority.preexisting_communication_authority
+            != call.request.preexisting_communication_authority
+            or authority.current_disclosure_authority != call.request.current_disclosure_authority
+            or result.intent_request.current != call.request.current
+            or result.intent_request.complete_current_origin_sources
+            != call.request.complete_current_origin_sources
+            or result.intent_request.intent.acquisition.original_sources
+            != call.request.original_sources
+            or result.retained_sources != call.request.retained_sources
+            or result.intent_request.identity != request.identity
+            or result.intent_request.expected_intent != request.expected_intent
+            or result.intent_request.fence != request.fence
+            or result.intent_request.intent.intent_id != request.intent_id
+        ):
+            raise ValueError("H1 V3 scoped result differs from pinned authority inputs")
+        expected_completion_records(assembly)
+        wire = self.owner_exchanges[2]
+        if (
+            wire.sent.operation_id != call.route.operation
+            or wire.sent.schema_id != call.schema_id
+            or wire.sent.canonical_payload != call.canonical_bytes()
+            or not isinstance(wire.returned, PublicPortSuccess)
+        ):
+            raise ValueError("H1 V3 effects wire differs from scoped owner call")
+        if (
+            wire.returned.schema_id != result.schema_id
+            or wire.returned.canonical_payload != result.canonical_bytes()
+            or wire.returned.request_id != wire.sent.request_id
+            or wire.returned.responder != wire.sent.callee
+            or wire.sent.caller.owner_id != "broker"
+            or wire.sent.callee.owner_id != "effects"
+            or wire.sent.request_id != call.route.request_id
+            or wire.sent.caller.tenant_id != call.route.tenant_id
+            or wire.sent.callee.tenant_id != call.route.tenant_id
+            or wire.sent.caller.broker_epoch != call.route.broker_epoch
+            or wire.sent.callee.broker_epoch != call.route.broker_epoch
+            or wire.sent.caller.generation_id != call.route.runtime_generation
+            or wire.sent.callee.generation_id != call.route.runtime_generation
+            or wire.sent.caller.session_id != call.route.broker_session_id
+            or wire.sent.callee.session_id != call.route.owner_session_id
+            or wire.sent.caller.broker_epoch != self.capture.broker_epoch
+            or wire.sent.caller.generation_id != self.capture.runtime_generation
+            or wire.sent.caller.session_id != self.capture.broker_session_id
+            or call.route.database_id != self.capture.database_id
+            or call.route.worker_session_id != self.capture.worker_session_id
+            or wire.sent.caller not in self.capture.sessions
+            or wire.sent.callee not in self.capture.sessions
+        ):
+            raise ValueError("H1 V3 effects wire differs from scoped owner result")
+        return self
+
+
 def _forbid_json_number(value: str) -> object:
     del value
     raise ValueError("H1 completion issuance does not permit non-integral JSON numbers")
@@ -241,6 +350,18 @@ def decode_h1_completion_issuance_v2(raw: bytes) -> H1CompletionIssuanceV2:
         raise ValueError("H1 completion issuance V2 is malformed") from error
     if decoded.canonical_bytes() != raw:
         raise ValueError("H1 completion issuance V2 is noncanonical")
+    return decoded
+
+
+def decode_h1_completion_issuance_v3(raw: bytes) -> H1CompletionIssuanceV3:
+    """Decode the new canonical wire without admitting it to runtime dispatch."""
+    _strict_canonical_json_object(raw)
+    try:
+        decoded = H1CompletionIssuanceV3.model_validate_json(raw)
+    except ValidationError as error:
+        raise ValueError("H1 completion issuance V3 is malformed") from error
+    if decoded.canonical_bytes() != raw:
+        raise ValueError("H1 completion issuance V3 is noncanonical")
     return decoded
 
 
