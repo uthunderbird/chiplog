@@ -1250,10 +1250,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             if coordinator is None:
                 raise LoopRejected("installed H1 post-seal recovery coordinator is absent")
             # The coordinator returns an authority-internal broker outcome.
-            # A selected broker decision is not a public terminal receipt: the
-            # latter also needs exact selected physical readback, the terminal
-            # native Run, and all AcceptedTerminalDetail heads.  No installed
-            # reader currently exports that complete authenticated projection.
+            # The selected broker decision needs its exact physical readback
+            # before it can become a public terminal receipt.
             outcome = await coordinator.finalize_selected(original_identity, original_fingerprint)
             if type(outcome) is _H1FinalizationRejection:
                 publication = outcome.publication
@@ -1268,7 +1266,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                     reason=publication.reason,
                 )
             return self._project_finalization_receipt(
-                found[0], found[1], original_identity, original_fingerprint, outcome
+                found[0], original_identity, original_fingerprint, outcome
             )
         except _DriverConflict as error:
             return ExecutionDriverRejectedV1(
@@ -1316,7 +1314,6 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     def _project_finalization_receipt(
         self,
         evidence: RetainedInboxExecutionInitialization,
-        initialization_decision_id: str,
         identity: DriverCommandIdentityV1,
         original_fingerprint: str,
         outcome: object,
@@ -1328,6 +1325,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         )
         from chiplog.composition.h1_postseal_recovery_coordinator import _H1FinalizationOutcome
         from chiplog.platform._owner_publication_contracts import JournalSelectedPublication
+        from chiplog.platform._sqlite import PhysicalPublicationCommand
+        from chiplog.platform.owner_publications import SelectedOwnerDecision
 
         if type(outcome) is not _H1FinalizationOutcome:
             raise _FinalizationReceiptIntegrityError("finalization outcome differs")
@@ -1341,6 +1340,29 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         selected = readback.selected_owner_decision
         command = readback.physical_command
         terminal = readback.terminal_run
+        if (
+            type(selected) is not SelectedOwnerDecision
+            or type(command) is not PhysicalPublicationCommand
+        ):
+            raise _FinalizationReceiptIntegrityError("finalization physical readback is untyped")
+        if (
+            type(readback.retained_h0) is not RetainedInboxExecutionInitialization
+            or readback.retained_h0 != evidence
+        ):
+            raise _FinalizationReceiptIntegrityError("finalization retained H0 differs")
+        try:
+            driver = DriveInputRequestV1.model_validate_json(evidence.driver_request_bytes)
+        except ValueError as error:
+            raise _FinalizationReceiptIntegrityError(
+                "finalization retained H0 is invalid"
+            ) from error
+        if (
+            driver.canonical_bytes() != evidence.driver_request_bytes
+            or driver.identity != identity
+            or driver.original_driver_command_fingerprint() != original_fingerprint
+            or evidence.driver_request_fingerprint != original_fingerprint
+        ):
+            raise _FinalizationReceiptIntegrityError("finalization retained H0 caller differs")
         if (
             selected.decision_id != publication.decision_id
             or selected.decision_head != publication.decision_head
@@ -1357,13 +1379,6 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             )
         ):
             raise _FinalizationReceiptIntegrityError("finalization physical readback differs")
-        history = tuple(
-            record
-            for record in read_execution_history(self).records
-            if record.run_id == evidence.proposal.run.run_id
-        )
-        if not history or history[-1] != terminal:
-            raise _FinalizationReceiptIntegrityError("finalization terminal Run readback differs")
         for head in (
             readback.acceptance_head,
             readback.delivery_manifest_head,
@@ -1374,7 +1389,16 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                     "finalization terminal detail head differs"
                 )
 
-        initial = self._receipt(evidence, initialization_decision_id, "EXACT_REPLAY")
+        admitted = evidence.request.admitted
+
+        def ingress_head(value: CallSubjectHead) -> Head:
+            if type(value) is not CallSubjectHead or type(value.revision) is not Present:
+                raise _FinalizationReceiptIntegrityError("finalization retained H0 head differs")
+            return Head(
+                identity=value.subject_id,
+                head=value.revision.head,
+                fingerprint=value.revision.fingerprint,
+            )
 
         def public_head(value: ExactHead) -> Head:
             return Head(identity=value.identity, head=value.head, fingerprint=value.fingerprint)
@@ -1383,9 +1407,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             disposition=publication.kind,
             identity=identity,
             original_driver_command_fingerprint=original_fingerprint,
-            selected_ingress_decision=initial.selected_ingress_decision,
-            selected_custody=initial.selected_custody,
-            selected_admitted_input=initial.selected_admitted_input,
+            selected_ingress_decision=ingress_head(admitted.selected_decision),
+            selected_custody=ingress_head(admitted.custody),
+            selected_admitted_input=ingress_head(admitted.inbox),
             stable_run_lineage_id=terminal.run_id,
             selected_run_head=Head(
                 identity=terminal.head,
