@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import sqlite3
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -40,6 +41,7 @@ from chiplog.composition.common_execution_driver_contracts import (
     SelectedExecutionReceiptV1,
     UncertainExecutionPublicationV1,
 )
+from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_live_publication_authority import (
     H1LivePublicationAuthority,
@@ -52,12 +54,15 @@ from chiplog.composition.h1_postseal_recovery_coordinator import (
     _H1PostSealRecoveryCoordinator,
 )
 from chiplog.composition.h1_recovery_execution_fence import _H1RecoveryExecutionFence
+from chiplog.composition.r14_execution_completion_records import COMPLETE_ACCEPTANCE_OPERATION
 from chiplog.composition.r14_execution_inbox_records import RetainedInboxExecutionInitialization
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._ingress_contracts import Head, SourceBinding, UnknownEndpoint
 from chiplog.platform._owner_publication_contracts import (
+    CompleteDeliveryBatchV2,
     JournalSelectedPublication,
     PublicationRejected,
+    WorkerAuthentication,
 )
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.ingress_source_contracts import CliPeerObservation
@@ -622,6 +627,43 @@ async def test_installed_finalizer_returns_the_exact_selected_readback_on_replay
                 ),
                 disposition="COMMITTED",
             )
+            selected = tuple(
+                decision
+                for decision in runtime._owner_decisions().snapshot().decisions
+                if type(decision.prepared.request) is CompleteDeliveryBatchV2
+                and decision.prepared.request.operation == COMPLETE_ACCEPTANCE_OPERATION
+            )
+            assert len(selected) == 1
+            batch = selected[0].prepared.request
+            enrollment = cast(Any, runtime)._h1_live_completion_enrollment
+            markers = tuple(enrollment._issuances.values())
+            assert len(markers) == 1
+            marker = markers[0]
+            assert marker.state == "CONSUMED"
+            assert type(marker.issuance) is H1CompletionIssuanceV2
+            assert marker.batch == batch
+            assert type(batch.authentication) is WorkerAuthentication
+            assert batch.authentication.applicability_bytes == marker.issuance.canonical_bytes()
+            assert tuple(exchange.role for exchange in marker.issuance.owner_exchanges) == (
+                "completion", "conversation", "effects", "terminal_work"
+            )
+            current_ids = (
+                marker.issuance.scope_current_exchange.sent.request_id,
+                marker.issuance.terminal_admission.preterminal_current_exchange.sent.request_id,
+                marker.issuance.final_current_exchange.sent.request_id,
+            )
+            assert len(set(current_ids)) == 3
+            command = runtime._owner_command(selected[0])
+            with sqlite3.connect(runtime._database) as connection:
+                physical = tuple(
+                    row[0]
+                    for record in command.records
+                    for row in connection.execute(
+                        "SELECT canonical_bytes FROM records WHERE record_id = ?",
+                        (record.record_id,),
+                    ).fetchall()
+                )
+            assert physical == tuple(record.canonical_bytes for record in command.records)
             replay = _require_terminal_receipt(
                 await runtime.finalize_execution(
                     request.identity, request.original_driver_command_fingerprint()
@@ -638,3 +680,4 @@ async def test_installed_finalizer_returns_the_exact_selected_readback_on_replay
             assert replay.selected_journal_decision == first.selected_journal_decision
             assert replay.selected_run_head == first.selected_run_head
             assert replay.terminal_detail == first.terminal_detail
+            assert len(enrollment._issuances) == 1

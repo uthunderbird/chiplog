@@ -304,6 +304,45 @@ These two files are new Phase-C consumers relative to main. Explicit mypy passed
 on the three affected source modules and two consumers. Full regression/red-team
 remain reserved for integration. This checkpoint establishes representation only.
 
+### Selected prepared-delivery SEND seam (J7)
+
+The planned public mounted operation is
+`CommonCliExecutionRuntime.send_selected_scoped_delivery_v3(peer, intent_id,
+act_id, worker_run_id)`. These strings locate the actor, selected intent, durable
+command and current dispatch worker; composition authenticates the peer and obtains
+the fence. A caller-supplied `SelectedEffectsSource` or `WorkerFence` grants nothing.
+Its result identifies the original intent, selected first SEND and durable
+consumption, its `COMMITTED`/`REPLAYED` disposition, and a `CONFIRMED`/`NO_EFFECT`/
+`UNKNOWN` outcome; rejection and uncertain publication remain distinct. Composition
+will read the selected H1 completion decision, prove the complete effects command
+contains that intent,
+join its record ID and canonical bytes to retained SQL, and return an exact
+selected source. `decode_selected_delivery_intent` checks the wire after that
+join; its envelope and hash checks alone confer no authority. Absence, duplicate
+membership, altered physical bytes, or a mismatched completion basis fails before
+provider I/O. The current installed H1 producer selects an inert local commentary
+record, so producing and selecting a genuine V3 effects intent is the first
+unimplemented dependency of this seam.
+
+The registered trust/resource reader authenticates the current endpoint,
+credential, exact recipient, disclosure and origin inputs. The effects owner
+prepares scoped V3 authorization and first SEND against that fresh cut. The broker
+rechecks the cut under the publication gate, selects authorization with its
+pre-send parent, then selects the first-SEND decision, child attempt and SEND
+parent atomically against that authorization. It durably opens the original
+obligation before provider consumption. A successful durable first-SEND consumption
+is the only source of a one-shot provider permit; replay or reopen cannot issue a
+second permit. The V2 `DispatchRecordV2` route remains separate. Provider
+submission does not prove remote success: effects prepares outcome/reconciliation
+from authenticated evidence, and broker selection closes the original obligation
+only when that evidence supports it. Lost response keeps it open/unknown.
+
+The first connected witnesses are a mounted stale-endpoint/no-source rejection
+before I/O, one exact CONFIRM transfer, and lost-response reopen without resend.
+Both recipient modes, full disclosure mutations, committed rendering and
+CLI/Telegram parity remain required for J7 exit; broad interleavings and load
+belong to Phase D.
+
 ## Executable history-tool containment
 
 `execution_history_contracts` adds an explicitly versioned v3 response/artifact,
