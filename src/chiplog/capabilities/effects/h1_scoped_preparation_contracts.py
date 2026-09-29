@@ -38,15 +38,13 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_con
 )
 
 from .contracts import CommandIdentity
-from .dispatch_authority_contracts import (
-    Digest,
-    DispatchObservationDTO,
-    DispatchSourceInventory,
-    Identity,
-)
-from .dispatch_v2_contracts import CurrentDispatchInputsV2
+from .dispatch_authority_contracts import Digest, DispatchObservationDTO, Identity
 from .fences import Absent, WorkerFence
 from .h1_local_preparation_contracts import H1SelectedScopeSourceV1
+from .h1_producer_source_contracts import (
+    H1ProducerCurrentInputsV1,
+    H1ProducerSourceInventoryV1,
+)
 from .scoped_intent_contracts import (
     PreparedDeliveryBasisV3,
     PreparedScopedIntentPublication,
@@ -131,8 +129,8 @@ class PrepareH1ScopedDeliveryV1(DispatchObservationDTO):
     precursor_request: ScopedPrecursorRequest
     preexisting_communication_authority: ScopedAuthorityRecord
     current_disclosure_authority: ScopedAuthorityRecord
-    original_sources: DispatchSourceInventory
-    current: CurrentDispatchInputsV2
+    original_sources: H1ProducerSourceInventoryV1
+    current: H1ProducerCurrentInputsV1
     complete_current_origin_sources: tuple[ScopedAuthorityRecord, ...]
     retained_sources: tuple[RetainedOriginalSourceV3, ...]
 

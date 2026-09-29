@@ -31,6 +31,10 @@ from .dispatch_v2_contracts import (
     PlanEffectOrigin,
 )
 from .fences import Absent, WorkerFence
+from .h1_producer_source_contracts import (
+    H1ProducerCurrentInputsV1,
+    H1ProducerSourceInventoryV1,
+)
 
 
 class CompensationOriginV3(DispatchObservationDTO):
@@ -187,7 +191,7 @@ class ScopedDispatchAcquisition(DispatchObservationDTO):
     authority: ScopedAcquisitionAuthority
     precursor_request: ScopedPrecursorRequest
     precursor_result: ScopedPrecursorResult
-    original_sources: DispatchSourceInventory
+    original_sources: DispatchSourceInventory | H1ProducerSourceInventoryV1
 
 
 class ExternalActionIntentV3(DispatchObservationDTO):
@@ -207,7 +211,7 @@ class PrepareScopedIntentPublication(DispatchObservationDTO):
     identity: CommandIdentity
     intent: ExternalActionIntentV3
     expected_intent: Absent
-    current: CurrentDispatchInputsV2
+    current: CurrentDispatchInputsV2 | H1ProducerCurrentInputsV1
     complete_current_origin_sources: tuple[ScopedAuthorityRecord, ...]
     fence: WorkerFence
 

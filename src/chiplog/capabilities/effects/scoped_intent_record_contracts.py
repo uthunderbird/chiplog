@@ -25,6 +25,11 @@ from chiplog.capabilities.agent_loop.delivery_preparation import (
 
 from .contracts import ExactHead, ProviderRecipient
 from .dispatch_authority_contracts import CapturedSource, DispatchSourceInventory
+from .dispatch_v2_contracts import CurrentDispatchInputsV2
+from .h1_producer_source_contracts import (
+    H1ProducerNotApplicableV1,
+    H1ProducerSourceInventoryV1,
+)
 from .scoped_intent_contracts import (
     SCOPED_AUTHORITY_MATRIX,
     ExternalActionIntentV3,
@@ -254,12 +259,13 @@ def make_scoped_intent_retained_exchange(
                 ),
             )
         )
-    sources.extend(
-        _captured_inventory_sources("request-inventory", request.current.observation.sources)
+    current_inventory = (
+        request.current.observation.sources
+        if isinstance(request.current, CurrentDispatchInputsV2)
+        else request.current.sources
     )
-    sources.extend(
-        _captured_inventory_sources("acquisition-inventory", acquisition.original_sources)
-    )
+    sources.extend(_inventory_sources("request-inventory", current_inventory))
+    sources.extend(_inventory_sources("acquisition-inventory", acquisition.original_sources))
     _validate_retained_source_fingerprints(tuple(sources))
     return ScopedIntentRetainedExchangeV3(
         precursor_request_bytes=acquisition.precursor_request.canonical_bytes(),
@@ -270,8 +276,8 @@ def make_scoped_intent_retained_exchange(
     )
 
 
-def _captured_inventory_sources(
-    prefix: str, inventory: DispatchSourceInventory
+def _inventory_sources(
+    prefix: str, inventory: DispatchSourceInventory | H1ProducerSourceInventoryV1
 ) -> tuple[RetainedOriginalSourceV3, ...]:
     sources: list[RetainedOriginalSourceV3] = []
     for role in type(inventory).model_fields:
@@ -284,6 +290,23 @@ def _captured_inventory_sources(
                     schema_id=observed.source_version,
                     canonical_record_bytes=observed.canonical_value,
                     selected_decision=observed.head,
+                )
+            )
+        elif isinstance(observed, H1ProducerNotApplicableV1):
+            canonical_record_bytes = observed.canonical_bytes()
+            fingerprint = _sha256(canonical_record_bytes)
+            reference = ExactHead(
+                subject_id=f"h1-producer-not-applicable:{role}",
+                head=f"h1-producer-not-applicable:{fingerprint}",
+                fingerprint=fingerprint,
+            )
+            sources.append(
+                RetainedOriginalSourceV3(
+                    role=f"{prefix}-{role}",
+                    reference=reference,
+                    schema_id=observed.schema_id,
+                    canonical_record_bytes=canonical_record_bytes,
+                    selected_decision=reference,
                 )
             )
     return tuple(sources)

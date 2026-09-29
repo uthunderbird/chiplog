@@ -40,8 +40,17 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_con
 )
 from chiplog.capabilities.effects._h1_scoped_process import ROUTE, ROUTES, dispatch
 from chiplog.capabilities.effects.contracts import CommandIdentity
+from chiplog.capabilities.effects.contracts import ExactHead as EffectHead
+from chiplog.capabilities.effects.dispatch_authority_contracts import CapturedSource
 from chiplog.capabilities.effects.fences import NonSchedulerFence, NotApplicable
 from chiplog.capabilities.effects.h1_local_preparation_contracts import PREPARE_SCHEMA
+from chiplog.capabilities.effects.h1_producer_source_contracts import (
+    H1PreparedDeliveryMandateCandidateV1,
+    H1ProducerCurrentInputsV1,
+    H1ProducerNotApplicableV1,
+    H1ProducerSourceInventoryV1,
+    H1ProducerSourceObservationV1,
+)
 from chiplog.capabilities.effects.h1_scoped_preparation import (
     _delivery_binding,
     _effect_head,
@@ -74,6 +83,53 @@ def _sha(raw: bytes) -> str:
 
 def _head(name: str, raw: bytes = b"h1") -> LoopHead:
     return LoopHead(identity=name, head=name + ":head", fingerprint=_sha(raw))
+
+
+def _captured_source(role: str) -> CapturedSource:
+    raw = f"h1-source:{role}".encode()
+    head = EffectHead(
+        subject_id=f"h1-source:{role}",
+        head=f"h1-source:{role}:head",
+        fingerprint=_sha(raw),
+    )
+    return CapturedSource(
+        source_id=f"h1-source:{role}",
+        source_version="chiplog.h1-source.v1",
+        owner_id="broker-reader",
+        reader_id="broker-reader",
+        invalidation_manifest=head,
+        head=head,
+        canonical_value=raw,
+        clock_contract="clock-contract",
+        clock_epoch="epoch",
+        valid_until_ns=200,
+    )
+
+
+def _h1_sources(
+    candidate: H1PreparedDeliveryMandateCandidateV1,
+) -> H1ProducerSourceInventoryV1:
+    values: dict[str, CapturedSource | H1ProducerSourceObservationV1] = {
+        role: _captured_source(role)
+        for role in (
+            "trust",
+            "planning",
+            "semantic_registry",
+            "original_adoption",
+            "runtime_and_fence",
+            "endpoint",
+            "credential_lifecycle",
+            "deployment_entitlement",
+            "clock",
+            "effects_history",
+            "normative_conflict_generation",
+        )
+    }
+    values["planning"] = H1ProducerNotApplicableV1(role="planning", candidate=candidate)
+    values["original_adoption"] = H1ProducerNotApplicableV1(
+        role="original_adoption", candidate=candidate
+    )
+    return H1ProducerSourceInventoryV1.model_validate(values)
 
 
 async def _call() -> H1ScopedDeliveryOwnerCallV1:
@@ -243,7 +299,7 @@ async def _call() -> H1ScopedDeliveryOwnerCallV1:
         trust_observation=scope.current_request.expected_trust_observation,
     )
     record = _policy_record(policy, policy_raw, evidence)
-    current = prepared_acceptance().effects_request.current.model_copy(
+    v2_current = prepared_acceptance().effects_request.current.model_copy(
         update={
             "command_fingerprint": _sha(b"command"),
             "clock_contract": "clock-contract",
@@ -294,7 +350,35 @@ async def _call() -> H1ScopedDeliveryOwnerCallV1:
             expires_at_ns=200,
             continuity_policy=policy_effect_head,
         ),
-        semantics=current.supported_semantics,
+        semantics=v2_current.supported_semantics,
+    )
+    candidate = H1PreparedDeliveryMandateCandidateV1(
+        prepared_delivery_basis_bytes=basis.canonical_bytes(),
+        grant_anchor=grant_anchor,
+        policy_anchor=policy_anchor,
+        canonical_mandate_bytes=derived.canonical_bytes(),
+        mandate_fingerprint=_sha(derived.canonical_bytes()),
+    )
+    original_sources = _h1_sources(candidate)
+    current = H1ProducerCurrentInputsV1(
+        command_fingerprint=_sha(b"command"),
+        immutable_mandate_candidate=candidate,
+        physical_cut=EffectHead(
+            subject_id="h1-current-cut",
+            head="h1-current-cut:head",
+            fingerprint=_sha(b"h1-current-cut"),
+        ),
+        history_observation=EffectHead(
+            subject_id="h1-current-history",
+            head="h1-current-history:head",
+            fingerprint=_sha(b"h1-current-history"),
+        ),
+        sources=_h1_sources(candidate),
+        supported_semantics=v2_current.supported_semantics,
+        clock_contract="clock-contract",
+        clock_epoch="epoch",
+        observed_time_ns=150,
+        lease_expires_at_ns=200,
     )
     precursor = ScopedPrecursorRequest(
         request_id="h1-scoped-precursor:"
@@ -342,7 +426,7 @@ async def _call() -> H1ScopedDeliveryOwnerCallV1:
         precursor_request=precursor,
         preexisting_communication_authority=record,
         current_disclosure_authority=record,
-        original_sources=prepared_acceptance().effects_proposal.snapshot.intent.acquisition.original_sources,
+        original_sources=original_sources,
         current=current,
         complete_current_origin_sources=(record,),
         retained_sources=(),
@@ -434,6 +518,69 @@ async def test_scoped_owner_derives_canonical_result_and_rejects_mutated_evidenc
         )
     )
     assert denied.disposition == "DENIED"
+
+
+async def test_scoped_owner_retains_h1_source_bytes_and_refuses_forged_candidate() -> None:
+    call = await _call()
+    result = prepare_h1_scoped_delivery(call)
+    assert isinstance(result, PreparedH1ScopedDeliveryV1)
+
+    retained = {source.role: source for source in result.retained_sources}
+    assert (
+        retained["acquisition-inventory-trust"].canonical_record_bytes
+        == call.request.original_sources.trust.canonical_value
+    )
+    assert (
+        retained["request-inventory-endpoint"].canonical_record_bytes
+        == call.request.current.sources.endpoint.canonical_value
+    )
+    assert (
+        retained["acquisition-inventory-planning"].canonical_record_bytes
+        == call.request.original_sources.planning.canonical_bytes()
+    )
+    for prefix, inventory in (
+        ("request-inventory", call.request.current.sources),
+        ("acquisition-inventory", call.request.original_sources),
+    ):
+        for role in type(inventory).model_fields:
+            source = getattr(inventory, role)
+            if isinstance(source, CapturedSource):
+                expected_bytes = source.canonical_value
+            elif isinstance(source, H1ProducerNotApplicableV1):
+                expected_bytes = source.canonical_bytes()
+            else:
+                continue
+            assert retained[f"{prefix}-{role}"].canonical_record_bytes == expected_bytes
+
+    planning = call.request.original_sources.planning
+    assert isinstance(planning, H1ProducerNotApplicableV1)
+    forged_candidate = planning.candidate.model_copy(
+        update={"prepared_delivery_basis_bytes": b"forged"}
+    )
+    forged_planning = planning.model_copy(
+        update={"candidate": forged_candidate}
+    )
+    forged_sources = call.request.original_sources.model_copy(
+        update={"planning": forged_planning}
+    )
+    forged_request = call.request.model_copy(update={"original_sources": forged_sources})
+    forged_call = call.model_copy(
+        update={
+            "request": forged_request,
+            "request_digest": _sha(forged_request.canonical_bytes()),
+        }
+    )
+    assert prepare_h1_scoped_delivery(forged_call).disposition == "DENIED"
+
+    stale_current = call.request.current.model_copy(update={"clock_epoch": "other-epoch"})
+    stale_request = call.request.model_copy(update={"current": stale_current})
+    stale_call = call.model_copy(
+        update={
+            "request": stale_request,
+            "request_digest": _sha(stale_request.canonical_bytes()),
+        }
+    )
+    assert prepare_h1_scoped_delivery(stale_call).disposition == "DENIED"
 
 
 async def test_scoped_process_accepts_only_canonical_owner_envelopes() -> None:

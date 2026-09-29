@@ -27,6 +27,10 @@ from .contracts import DeliverySendBinding, ExactHead, OriginSelection, Provider
 from .dispatch_v2_contracts import MandateHorizon
 from .fences import NonSchedulerFence
 from .h1_prepared_delivery_basis import derive_h1_prepared_delivery_basis
+from .h1_producer_source_contracts import (
+    require_h1_prepared_delivery_candidate,
+    require_h1_prepared_delivery_sources,
+)
 from .h1_scoped_preparation_contracts import (
     H1ScopedDeliveryOwnerCallV1,
     H1ScopedDeliveryRejectedV1,
@@ -306,6 +310,29 @@ def prepare_h1_scoped_delivery(
                 continuity_policy=policy_head,
             ),
             semantics=request.current.supported_semantics,
+        )
+        basis_bytes = basis.canonical_bytes()
+        mandate_bytes = derived.canonical_bytes()
+        require_h1_prepared_delivery_sources(
+            request.original_sources,
+            basis_bytes=basis_bytes,
+            grant_anchor=evidence.grant_anchor,
+            policy_anchor=evidence.policy_anchor,
+            mandate_bytes=mandate_bytes,
+        )
+        require_h1_prepared_delivery_candidate(
+            request.current.immutable_mandate_candidate,
+            basis_bytes=basis_bytes,
+            grant_anchor=evidence.grant_anchor,
+            policy_anchor=evidence.policy_anchor,
+            mandate_bytes=mandate_bytes,
+        )
+        require_h1_prepared_delivery_sources(
+            request.current.sources,
+            basis_bytes=basis_bytes,
+            grant_anchor=evidence.grant_anchor,
+            policy_anchor=evidence.policy_anchor,
+            mandate_bytes=mandate_bytes,
         )
         precursor = ScopedPrecursorRequest(
             request_id=_derived_precursor_id(grant, delivery),
