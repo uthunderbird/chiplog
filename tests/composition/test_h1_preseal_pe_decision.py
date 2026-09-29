@@ -41,6 +41,7 @@ from chiplog.composition.h1_preseal_pe_anchor_records import (
     H1PresealPEAnchorRecordV1,
     decode_h1_preseal_pe_anchor_record,
 )
+from chiplog.composition.h1_preseal_pe_decision import H1PresealPEDecisionError
 from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_candidate
 from chiplog.composition.h1_v2_recovery_native_source import H1V2RecoveryNativeSource
 from chiplog.composition.r14_execution_complete_seal_records import (
@@ -112,6 +113,19 @@ def _selected_decision(
     return decision_id, raw, decoded
 
 
+def _physical_publication_snapshot(database: Path) -> tuple[tuple[object, ...], tuple[object, ...]]:
+    with sqlite3.connect(database) as connection:
+        publications = tuple(
+            connection.execute(
+                "SELECT * FROM publications ORDER BY commit_sequence, rowid"
+            ).fetchall()
+        )
+        records = tuple(
+            connection.execute("SELECT * FROM records ORDER BY commit_sequence, rowid").fetchall()
+        )
+    return publications, records
+
+
 def _assert_anchor_is_sibling_and_physical_members_stay_native(
     runtime: CommonCliExecutionRuntime,
     request: Any,
@@ -176,6 +190,70 @@ async def test_installed_v3_prepare_v2_decided_entry_authenticates_pe_anchor_wit
                 runtime, request, sealed, decision_id, raw, decision
             )
             assert anchor.canonical_bytes() == _text(decision, "h1_preseal_pe_anchor").encode()
+
+
+@pytest.mark.asyncio
+async def test_v2_preseal_owner_change_after_capture_rejects_before_decided_or_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The installed owner rejects an E worker change between capture and DECIDED."""
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
+            _request, run_id, captured_head = await _prepared_runtime_cut(runtime)
+            owner = cast(Any, runtime)._h1_preseal_pe_decision_owner
+            owner_type = type(owner)
+            original_capture = owner_type.capture
+            original_bind = owner_type.recheck_and_bind
+            worker_owner = runtime._h1_installed_worker_evidence_owner
+            original_lifetime = worker_owner._lifetime_id
+            calls = {"capture": 0, "bind": 0}
+            before_decisions = runtime._loop_decisions().entries()
+            before_pending = runtime._pending()
+            evidence_journal = runtime._h1_delivery_evidence_journal
+            assert evidence_journal is not None
+            before_evidence = evidence_journal._entries()
+            before_physical = _physical_publication_snapshot(runtime._database)
+            before_commitment = runtime._commitment_journal.load(runtime._tenant_id)
+
+            async def captured_then_changed(owner: object, preflight: object) -> object:
+                calls["capture"] += 1
+                receipt = await original_capture(owner, preflight)
+                worker_owner._lifetime_id = "changed-after-preseal-capture"
+                return receipt
+
+            def traced_bind(
+                owner: object,
+                receipt: object,
+                preflight: object,
+                command: object,
+                retained_v2: object,
+                owner_asof: object,
+            ) -> object:
+                calls["bind"] += 1
+                return original_bind(owner, receipt, preflight, command, retained_v2, owner_asof)
+
+            monkeypatch.setattr(owner_type, "capture", captured_then_changed)
+            monkeypatch.setattr(owner_type, "recheck_and_bind", traced_bind)
+            try:
+                with pytest.raises(
+                    LoopRejected, match="H1 V2 P/E preseal anchor is unproven"
+                ) as rejected:
+                    await runtime.seal_execution_complete(
+                        "hermetic-ingress", run_id, captured_head, profile="H1_V2"
+                    )
+            finally:
+                worker_owner._lifetime_id = original_lifetime
+
+            assert isinstance(rejected.value.__cause__, H1PresealPEDecisionError)
+            assert str(rejected.value.__cause__) == "H1 preseal P/E source changed after capture"
+            assert calls == {"capture": 1, "bind": 1}
+            assert runtime._loop_decisions().entries() == before_decisions
+            assert runtime._pending() == before_pending
+            assert evidence_journal._entries() == before_evidence
+            assert _physical_publication_snapshot(runtime._database) == before_physical
+            assert runtime._commitment_journal.load(runtime._tenant_id) == before_commitment
 
 
 @pytest.mark.asyncio

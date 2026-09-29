@@ -7,6 +7,7 @@ owners must capture and bind their own facts before the native V2 decision.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib
 import json
@@ -30,6 +31,9 @@ from chiplog.composition.common_execution_driver_contracts import (
     SelectedExecutionReceiptV1,
 )
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
+from chiplog.composition.h1_preseal_pe_anchor_records import (
+    decode_h1_preseal_pe_anchor_record,
+)
 from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_candidate
 from chiplog.composition.h1_v2_recovery_native_source import H1V2RecoveryNativeSource
 from chiplog.composition.r14_execution_complete_seal_records import (
@@ -104,10 +108,13 @@ async def _direct_v3_prepare_then_v2_seal(
 
 
 @pytest.mark.asyncio
-async def test_current_installed_v2_seal_has_no_preseal_pe_anchor_or_extra_member(
+async def test_current_installed_v2_seal_has_canonical_preseal_pe_anchor_and_three_native_members(
     tmp_path: Path,
 ) -> None:
-    """Regression witness for the precise gap that the new anchor must close."""
+    """Replace the old no-anchor nodeid with selected typed-sibling evidence.
+
+    Historical nodeid: test_current_installed_v2_seal_has_no_preseal_pe_anchor_or_extra_member.
+    """
     slot, expected = installed_slot(tmp_path)
     await prepare_installed_slot(slot, expected, tmp_path)
     with _open_installed_h1_launch(slot) as launch:
@@ -115,6 +122,7 @@ async def test_current_installed_v2_seal_has_no_preseal_pe_anchor_or_extra_membe
             request, locator, decision_id, raw, decision = await _direct_v3_prepare_then_v2_seal(
                 runtime
             )
+            assert decision.get("kind") == "DECIDED"
 
             # Raw journal shape is insufficient authority.  The installed V2
             # reader independently authenticates and selects this exact entry.
@@ -137,9 +145,16 @@ async def test_current_installed_v2_seal_has_no_preseal_pe_anchor_or_extra_membe
             assert tuple(member.record_id for member in envelope.records) == (
                 retained.exchange.proposal.sealed_run.head,
                 "record:" + retained.exchange.proposal.fan_out.response_seal.digest(),
-                envelope.records[2].record_id,
+                "recovery-frontier-registry:"
+                + retained.exchange.proposal.sealed_run.head
+                + ":"
+                + hashlib.sha256(
+                    base64.b64decode(retained.canonical_registry_base64, validate=True)
+                ).hexdigest(),
             )
-            assert "h1_preseal_pe_anchor" not in decision
+            anchor_bytes = _decision_text(decision, "h1_preseal_pe_anchor").encode()
+            anchor = decode_h1_preseal_pe_anchor_record(anchor_bytes)
+            assert anchor.canonical_bytes() == anchor_bytes
             journal = runtime._h1_delivery_evidence_journal
             assert journal is not None
             assert journal._entries() == ()
