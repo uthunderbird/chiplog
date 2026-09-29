@@ -252,7 +252,7 @@ class R7RuntimeSupervisor:
         A missing or invalid provisioning file leaves the H1 owner available; its
         J7-only operation is then denied by the owner evaluator.
         """
-        if self._manifest.manifest_version != 19:
+        if self._manifest.manifest_version not in (19, 20):
             self._j7_operator_policy_key_pin = None
             return None
         gate = self._authority_gate
@@ -278,7 +278,7 @@ class R7RuntimeSupervisor:
             return pin
 
     def _install_j7_operator_grant_key_pin(self) -> PinnedOperatorGrantKey | None:
-        if self._manifest.manifest_version != 19:
+        if self._manifest.manifest_version not in (19, 20):
             self._j7_operator_grant_key_pin = None
             return None
         gate, trust = self._authority_gate, self._trust

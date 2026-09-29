@@ -18,8 +18,23 @@ from chiplog.capabilities.agent_loop.execution_completion_contracts import (
 from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
     PrepareExecutionCompletionFirstPathV2,
 )
+from chiplog.capabilities.deployment_trust import (
+    prepared_external_delivery_policy_owner_contracts as policy_owner,
+)
 from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     H1RetainedSelectedWrapperV1,
+)
+from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+    HermeticTrustObservationV1,
+)
+from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts import (
+    PreparedExternalDeliveryGrantAnchorV2,
+    PreparedExternalDeliveryGrantV2,
+    prepared_external_delivery_grant_content_head_v2,
+)
+from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_contracts import (
+    PreparedExternalSelfDeliveryPolicyAnchorV1,
+    PreparedExternalSelfDeliveryPolicyV1,
 )
 
 from .contracts import CommandIdentity
@@ -43,6 +58,57 @@ from .scoped_intent_contracts import (
 from .scoped_intent_record_contracts import RetainedOriginalSourceV3
 
 
+class H1ScopedDeliveryAuthorityEvidenceV1(DispatchObservationDTO):
+    """Pinned candidate authority revisions for one scoped producer call.
+
+    This validates only the selected immutable bytes.  It cannot establish that
+    the revisions remain latest/current, that their journal retention is
+    authentic, or that signatures are valid; the broker does those checks under
+    its AuthorityGate before publication and again at the SEND fence.
+    """
+
+    grant_anchor: PreparedExternalDeliveryGrantAnchorV2
+    canonical_grant_bytes: bytes = Field(min_length=1)
+    policy_anchor: PreparedExternalSelfDeliveryPolicyAnchorV1
+    canonical_policy_bytes: bytes = Field(min_length=1)
+    trust_observation: HermeticTrustObservationV1
+
+    @model_validator(mode="after")
+    def exact_candidate_revisions(self) -> Self:
+        grant = PreparedExternalDeliveryGrantV2.model_validate_json(self.canonical_grant_bytes)
+        policy = PreparedExternalSelfDeliveryPolicyV1.model_validate_json(
+            self.canonical_policy_bytes
+        )
+        if (
+            grant.canonical_bytes() != self.canonical_grant_bytes
+            or policy.canonical_bytes() != self.canonical_policy_bytes
+        ):
+            raise ValueError("H1 authority evidence bytes are not canonical")
+        grant_head = self.grant_anchor.grant
+        if (
+            grant_head.identity != grant.grant_id
+            or grant_head.head
+            != prepared_external_delivery_grant_content_head_v2(self.canonical_grant_bytes)
+            or grant_head.fingerprint != hashlib.sha256(self.canonical_grant_bytes).hexdigest()
+            or self.grant_anchor.revision != grant.revision
+        ):
+            raise ValueError("H1 authority evidence grant anchor differs from bytes")
+        policy_head = self.policy_anchor.policy
+        policy_content_head = policy_owner.prepared_self_delivery_policy_content_head
+        if (
+            policy_head.identity != policy.policy_id
+            or policy_head.head != policy_content_head(self.canonical_policy_bytes)
+            or policy_head.fingerprint != hashlib.sha256(self.canonical_policy_bytes).hexdigest()
+            or self.policy_anchor.revision != policy.revision
+        ):
+            raise ValueError("H1 authority evidence policy anchor differs from bytes")
+        if grant.status != "ACTIVE" or policy.status != "ACTIVE":
+            raise ValueError("H1 authority evidence requires selected ACTIVE revisions")
+        if grant.selected_policy_anchor != self.policy_anchor:
+            raise ValueError("H1 grant selected policy differs from evidence policy")
+        return self
+
+
 class PrepareH1ScopedDeliveryV1(DispatchObservationDTO):
     """Pinned producer input with separately authenticated authority sources.
 
@@ -61,6 +127,7 @@ class PrepareH1ScopedDeliveryV1(DispatchObservationDTO):
     selected_scope: H1SelectedScopeSourceV1
     retained_origin: H1RetainedSelectedWrapperV1
     fence: WorkerFence
+    authority_evidence: H1ScopedDeliveryAuthorityEvidenceV1
     precursor_request: ScopedPrecursorRequest
     preexisting_communication_authority: ScopedAuthorityRecord
     current_disclosure_authority: ScopedAuthorityRecord
@@ -115,6 +182,7 @@ class PreparedH1ScopedDeliveryV1(DispatchObservationDTO):
     )
     disposition: Literal["PREPARED"] = "PREPARED"
     source_request_fingerprint: Digest
+    authority_evidence: H1ScopedDeliveryAuthorityEvidenceV1
     delivery_id: str = Field(min_length=1)
     basis: PreparedDeliveryBasisV3
     precursor_request: ScopedPrecursorRequest

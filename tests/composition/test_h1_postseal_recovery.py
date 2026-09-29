@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
 from typing import Literal
 
 import pytest
@@ -341,6 +342,111 @@ def test_effects_input_pins_inner_command_id_and_exact_semantic_bytes_across_res
         "effects-command-id",
     )
     assert recovered.next_stage == "EFFECTS"
+
+
+def test_selected_root_entries_pin_durable_ids_bytes_and_reject_tampered_prefix() -> None:
+    """The enrolled reader retains records, rather than lossy stage-state tuples."""
+
+    class Gate:
+        @contextmanager
+        def hold(self):
+            yield
+
+        def require_held(self) -> None:
+            return None
+
+    class Mount:
+        tenant_id = "tenant"
+        journal_instance_id = "h1-postseal-recovery"
+        authority_gate = Gate()
+
+        def assert_current(self) -> None:
+            return None
+
+    class Journal:
+        def __init__(self) -> None:
+            self.records: list[tuple[str, str | None, bytes]] = []
+
+        def entries(self) -> tuple[tuple[str, str | None, bytes], ...]:
+            return tuple(self.records)
+
+        def append(self, raw: bytes, predecessor: str | None) -> str:
+            entry_id = "entry-" + str(len(self.records))
+            self.records.append((entry_id, predecessor, raw))
+            return entry_id
+
+        def close(self) -> None:
+            return None
+
+    mount, backend = Mount(), Journal()
+    journal = H1PostSealRecoveryJournal(mount=mount, journal=backend)  # type: ignore[arg-type]
+    root = _root()
+    state = H1PostSealRecoveryState.empty(root)
+    root_receipt = journal.append_transition(
+        H1PostSealRecoveryTransition.begin_selected(state, producer_choice="SCOPED_V3"),
+        expected_global_tip=None,
+    )
+    state = root_receipt.scan.state_for_root(root.root_id())
+    completion_input = H1PostSealRecoveryTransition.pin_input(
+        state, stage="COMPLETION", semantic_input=b'{"completion":"input"}'
+    )
+    completion_input_receipt = journal.append_transition(
+        completion_input, expected_global_tip=root_receipt.entry_id
+    )
+    state = completion_input_receipt.scan.state_for_root(root.root_id())
+    completion_result = H1PostSealRecoveryTransition.commit_result(
+        state, stage="COMPLETION", result_bytes=b'{"completion":"result"}'
+    )
+    completion_result_receipt = journal.append_transition(
+        completion_result, expected_global_tip=completion_input_receipt.entry_id
+    )
+    state = completion_result_receipt.scan.state_for_root(root.root_id())
+    conversation_input = H1PostSealRecoveryTransition.pin_input(
+        state, stage="CONVERSATION", semantic_input=b'{"conversation":"input"}'
+    )
+    conversation_input_receipt = journal.append_transition(
+        conversation_input, expected_global_tip=completion_result_receipt.entry_id
+    )
+    state = conversation_input_receipt.scan.state_for_root(root.root_id())
+    conversation_result = H1PostSealRecoveryTransition.commit_result(
+        state, stage="CONVERSATION", result_bytes=b'{"conversation":"result"}'
+    )
+    conversation_result_receipt = journal.append_transition(
+        conversation_result, expected_global_tip=conversation_input_receipt.entry_id
+    )
+
+    reopened = H1PostSealRecoveryJournal(mount=mount, journal=backend)  # type: ignore[arg-type]
+    with mount.authority_gate.hold():
+        selected = reopened._read_selected_root_entries_held(root.root_id())
+    assert [(entry.entry_id, entry.canonical_bytes) for entry in selected.records] == [
+        (root_receipt.entry_id, root_receipt.scan.state_for_root(root.root_id()).root_record_bytes),
+        (completion_input_receipt.entry_id, completion_input.canonical_bytes()),
+        (completion_result_receipt.entry_id, completion_result.canonical_bytes()),
+        (conversation_input_receipt.entry_id, conversation_input.canonical_bytes()),
+        (conversation_result_receipt.entry_id, conversation_result.canonical_bytes()),
+    ]
+
+    tampered_id, predecessor, raw = backend.records[2]
+    backend.records[2] = (tampered_id, predecessor, raw.replace(b"result", b"tamper"))
+    with mount.authority_gate.hold(), pytest.raises(H1PostSealRecoveryRecordError):
+        reopened._read_selected_root_entries_held(root.root_id())
+    backend.records[2] = (tampered_id, predecessor, raw)
+
+    removed = backend.records.pop(2)
+    with mount.authority_gate.hold(), pytest.raises(H1PostSealRecoveryRecordError):
+        reopened._read_selected_root_entries_held(root.root_id())
+    backend.records.insert(2, removed)
+
+    rival = completion_input.model_copy(
+        predecessor_entry_id=conversation_result_receipt.entry_id,
+        semantic_input=b'{"completion":"rival"}',
+        semantic_input_digest=_digest(b'{"completion":"rival"}'),
+    )
+    backend.records.append(
+        ("rival-entry", conversation_result_receipt.entry_id, rival.canonical_bytes())
+    )
+    with mount.authority_gate.hold(), pytest.raises(H1PostSealRecoveryRecordError):
+        reopened._read_selected_root_entries_held(root.root_id())
 
 
 def test_prefix_rejects_wrong_root_rival_pin_and_noncanonical_payload() -> None:

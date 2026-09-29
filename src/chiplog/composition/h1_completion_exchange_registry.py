@@ -101,7 +101,7 @@ class H1HistoricalPreparedDeliveryCapture:
     """Registry-issued handle for P/B evidence captured before a J7 ISSUE."""
 
     __slots__ = ("_record",)
-    _record: _CompletionExchangeRecord
+    _record: object
 
     def __init__(self) -> None:
         raise TypeError("H1 historical prepared delivery captures are registry-issued")
@@ -242,7 +242,7 @@ class H1CompletionExchangeRegistry:
             int, tuple[H1PreparedDeliveryCapture, _CompletionExchangeRecord]
         ] = {}
         self._historical_prepared_captures: dict[
-            int, tuple[H1HistoricalPreparedDeliveryCapture, _CompletionExchangeRecord]
+            int, tuple[H1HistoricalPreparedDeliveryCapture, object]
         ] = {}
         self._closed = False
 
@@ -473,7 +473,70 @@ class H1CompletionExchangeRegistry:
                 raise H1CompletionExchangeRegistryViolation(
                     "H1 historical prepared delivery capture is not registry-issued"
                 )
-            return self._project_prepared_delivery_historical_held(issued[1])
+            record = issued[1]
+            if type(record) is _CompletionExchangeRecord:
+                return self._project_prepared_delivery_historical_held(record)
+            from chiplog.composition.h1_v3_recovery_historical_source import (
+                H1V3RecoveredPreparedDelivery,
+                H1V3RecoveryHistoricalSource,
+                H1V3RecoveryHistoricalSourceError,
+            )
+
+            if type(record) is not H1V3RecoveredPreparedDelivery:
+                raise H1CompletionExchangeRegistryViolation(
+                    "H1 historical prepared delivery record is unknown"
+                )
+            try:
+                replayed = H1V3RecoveryHistoricalSource(self._runtime).replay(record)
+                return self._project_recovered_prepared_delivery_held(replayed)
+            except H1V3RecoveryHistoricalSourceError as error:
+                raise H1CompletionExchangeRegistryViolation(
+                    "H1 recovered historical prepared delivery replay differs"
+                ) from error
+
+    def capture_recovered_prepared_delivery_historical(
+        self,
+        *,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> H1HistoricalPreparedDeliveryCapture:
+        """Capture V3 B evidence from its enrolled durable recovery records."""
+        if self._closed:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 completion registry is closed and revoked"
+            )
+        if (
+            type(original_identity) is not DriverCommandIdentityV1
+            or not isinstance(original_fingerprint, str)
+            or len(original_fingerprint) != 64
+            or type(selected_seal) is not CallSubjectHead
+        ):
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 recovered historical prepared delivery locator differs"
+            )
+        from chiplog.composition.h1_v3_recovery_historical_source import (
+            H1V3RecoveryHistoricalSource,
+            H1V3RecoveryHistoricalSourceError,
+        )
+
+        with self._runtime._authority_gate().hold():
+            self._require_mounted_current_held()
+            try:
+                record = H1V3RecoveryHistoricalSource(self._runtime).capture(
+                    original_identity=original_identity,
+                    original_fingerprint=original_fingerprint,
+                    selected_seal=selected_seal,
+                )
+                self._project_recovered_prepared_delivery_held(record)
+            except H1V3RecoveryHistoricalSourceError as error:
+                raise H1CompletionExchangeRegistryViolation(
+                    "H1 recovered historical prepared delivery is unavailable"
+                ) from error
+            capture = object.__new__(H1HistoricalPreparedDeliveryCapture)
+            capture._record = record
+            self._historical_prepared_captures[id(capture)] = (capture, record)
+            return capture
 
     def _require_mounted_current_held(self) -> None:
         self._runtime._authority_gate().require_held()
@@ -760,6 +823,81 @@ class H1CompletionExchangeRegistry:
         except (TypeError, ValueError, AttributeError) as error:
             raise H1CompletionExchangeRegistryViolation(
                 "H1 historical prepared delivery replay differs"
+            ) from error
+
+    def _project_recovered_prepared_delivery_held(
+        self, record: object
+    ) -> H1PreparedDeliveryProjection:
+        """Build the inert B projection from durable V3 records and historical P/E."""
+        self._runtime._authority_gate().require_held()
+        from chiplog.capabilities.effects.h1_prepared_delivery_basis import (
+            derive_h1_prepared_delivery_basis,
+        )
+        from chiplog.composition.h1_v3_recovery_historical_source import (
+            H1V3RecoveredPreparedDelivery,
+        )
+
+        if type(record) is not H1V3RecoveredPreparedDelivery:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 recovered historical prepared delivery record differs"
+            )
+        try:
+            request = record.completion_request
+            prepared = record.completion_result
+            effects_source = record.effects_source
+            if (
+                request.canonical_bytes() != record.pinned_records[1].canonical_bytes
+                or prepared.canonical_bytes() != record.pinned_records[2].canonical_bytes
+                or len(record.pinned_records) != 5
+            ):
+                raise ValueError("recovered completion records differ")
+            basis = derive_h1_prepared_delivery_basis(request, prepared)
+            deliveries = prepared.delivery.manifest.ordered_deliveries
+            if (
+                len(deliveries) != 1
+                or not isinstance(deliveries[0], AcceptedDelivery)
+                or not deliveries[0].rendered_bytes
+                or getattr(deliveries[0].selection, "recipient", None) is None
+            ):
+                raise ValueError("recovered prepared delivery is not sole and rendered")
+            selected_scope = effects_source.selected_scope
+            retained_origin = effects_source.retained_origin
+            selected = selected_scope.scope
+            run, attempt = request.run, request.selected_attempt
+            if (
+                deliveries[0].selection.recipient != run.origin.recipient
+                or deliveries[0].selection.recipient != selected.recipient
+                or deliveries[0].policy != selected.disclosure_policy.ref
+                or selected.tenant_id != run.tenant
+                or selected.database_id != request.source.database_id
+                or selected.principal_id != run.principal
+                or selected.worker_session_id != run.worker_session
+                or record.fence.canonical_bytes() != request.fence.canonical_bytes()
+                or not retained_origin.initialization_envelope_bytes
+            ):
+                raise ValueError("recovered prepared delivery joins differ")
+            return H1PreparedDeliveryProjection(
+                basis=basis,
+                selected_scope=selected_scope,
+                retained_origin=retained_origin,
+                fence=record.fence,
+                tenant_id=run.tenant,
+                database_id=request.source.database_id,
+                principal_id=run.principal,
+                worker_session_id=run.worker_session,
+                original_run=LoopHead(
+                    identity=run.run_id, head=run.head, fingerprint=run.digest()
+                ),
+                captured_attempt=LoopHead(
+                    identity=attempt.subject_id,
+                    head=attempt.revision.head,
+                    fingerprint=attempt.revision.fingerprint,
+                ),
+                delivery=deliveries[0],
+            )
+        except (AttributeError, TypeError, ValueError, IndexError) as error:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 recovered historical prepared delivery projection differs"
             ) from error
 
     @staticmethod

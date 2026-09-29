@@ -19,6 +19,8 @@ from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import (
     R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
+    R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
+    RuntimeAssemblyManifest,
 )
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallAuthorityObservation,
@@ -2239,11 +2241,12 @@ async def open_common_cli_execution_runtime(
 
 
 @asynccontextmanager
-async def open_installed_h1_runtime(
+async def _open_installed_h1_runtime(
     launch: object,
     *,
     resources: HermeticDispatchResources,
     responses: tuple[bytes, ...] = (),
+    manifest: RuntimeAssemblyManifest,
 ) -> AsyncIterator[CommonCliExecutionRuntime]:
     """Open the one enrolled H1 slot without bootstrap or caller-selected storage."""
     # These imports must remain local: the private port imports this module's
@@ -2402,7 +2405,7 @@ async def open_installed_h1_runtime(
                 tenant_id=launch._slot.tenant_id,
                 operator_secret=b"r13-hermetic-only",
                 runtime_type=CommonCliExecutionRuntime,
-                manifest=R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
+                manifest=manifest,
                 extra_leaves={
                     "model": model,
                     "effects_transport": resources.require_original_provider(),
@@ -2650,3 +2653,37 @@ async def open_installed_h1_runtime(
                 launch.custody.unbind_authority_gate(authority_gate)
             if runtime is not None and hasattr(runtime, "_h1_delivery_evidence_journal"):
                 del runtime._h1_delivery_evidence_journal
+
+
+@asynccontextmanager
+async def open_installed_h1_runtime(
+    launch: object,
+    *,
+    resources: HermeticDispatchResources,
+    responses: tuple[bytes, ...] = (),
+) -> AsyncIterator[CommonCliExecutionRuntime]:
+    """Open the installed v19 H1 local-effects graph."""
+    async with _open_installed_h1_runtime(
+        launch,
+        resources=resources,
+        responses=responses,
+        manifest=R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
+    ) as runtime:
+        yield runtime
+
+
+@asynccontextmanager
+async def open_installed_h1_scoped_runtime(
+    launch: object,
+    *,
+    resources: HermeticDispatchResources,
+    responses: tuple[bytes, ...] = (),
+) -> AsyncIterator[CommonCliExecutionRuntime]:
+    """Open the separately registered v20 scoped-effects graph."""
+    async with _open_installed_h1_runtime(
+        launch,
+        resources=resources,
+        responses=responses,
+        manifest=R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
+    ) as runtime:
+        yield runtime

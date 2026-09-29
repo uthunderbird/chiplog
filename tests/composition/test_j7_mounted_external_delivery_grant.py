@@ -30,6 +30,7 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_con
 )
 from chiplog.composition.common_cli_execution_runtime import open_installed_h1_runtime
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
+from chiplog.composition.h1_scoped_delivery_authority import H1ScopedDeliveryAuthorityReader
 from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSources
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.operator_grant_key_pin import OperatorGrantKeyPinFileV2
@@ -118,6 +119,11 @@ async def test_mounted_j7_issue_appends_and_reopens_historical_lifecycle(tmp_pat
             request, seal, _session, _exchange = await _completed_session(runtime)
             registry = runtime._h1_completion_exchange_registry
             assert registry is not None
+            historical_capture = registry.capture_prepared_delivery_historical(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=seal,
+            )
             capture = registry.capture_prepared_delivery_current(
                 original_identity=request.identity,
                 original_fingerprint=request.original_driver_command_fingerprint(),
@@ -226,6 +232,16 @@ async def test_mounted_j7_issue_appends_and_reopens_historical_lifecycle(tmp_pat
             assert issued.grant.status == "ACTIVE"
             assert runtime._trust._journal.entries()[:-1] == before
             after_issue = runtime._trust._journal.entries()
+            authority_reader = H1ScopedDeliveryAuthorityReader(runtime)
+            authority = await authority_reader.read(
+                historical_b_capture=historical_capture, grant_id="grant"
+            )
+            assert authority.evidence.grant_anchor == issued.anchor
+            assert authority.evidence.canonical_grant_bytes == issued.grant.canonical_bytes()
+            assert authority.historical_projection == registry.replay_prepared_delivery_historical(
+                historical_capture
+            )
+            authority_reader.recheck(authority)
             forged = issue.model_copy(
                 update={
                     "proposed_scope": scope.model_copy(

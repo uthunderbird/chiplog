@@ -477,6 +477,30 @@ class H1PostSealRecoveryAppendReceipt:
     scan: H1PostSealRecoveryScan
 
 
+@dataclass(frozen=True, slots=True)
+class H1PostSealRecoverySelectedRecord:
+    """One exact authenticated record retained for a selected recovery root."""
+
+    entry_id: str
+    canonical_bytes: bytes
+    kind: Literal["ROOT", "STAGE_INPUT", "STAGE_RESULT"]
+    stage: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class H1PostSealRecoverySelectedRootEntries:
+    """Authenticated raw records for one root, including durable entry identities.
+
+    This is deliberately a private enrolled-reader result.  It is not a writer
+    capability and is exposed only while the recovery mount's authority gate is
+    held, so a historical reader can pin exact records rather than lossy state
+    tuples.
+    """
+
+    state: H1PostSealRecoveryState
+    records: tuple[H1PostSealRecoverySelectedRecord, ...]
+
+
 def apply_authenticated_prefix(
     entries: tuple[tuple[str, str | None, bytes], ...], root: H1PostSealRecoveryRootV1
 ) -> H1PostSealRecoveryState:
@@ -779,6 +803,50 @@ class H1PostSealRecoveryJournal:
             journal_instance_id=self._mount.journal_instance_id,
         )
 
+    def _read_selected_root_entries_held(
+        self, root_id: str
+    ) -> H1PostSealRecoverySelectedRootEntries:
+        """Return exact authenticated bytes and IDs for one selected root.
+
+        The caller must already hold the enrolled authority gate.  Reading the
+        raw entries and scanning that same tuple avoids treating the summary
+        state as evidence of a particular durable record identity.
+        """
+        self._require_open()
+        if self._gate is not self._mount.authority_gate:
+            raise H1PostSealRecoveryRecordError("recovery mount gate identity differs")
+        self._gate.require_held()
+        self._mount.assert_current()
+        _require_digest(root_id, "recovery root")
+        entries = self._journal.entries()
+        scan = scan_authenticated_prefix(
+            entries,
+            tenant_id=self._mount.tenant_id,
+            journal_instance_id=self._mount.journal_instance_id,
+        )
+        state = scan.state_for_root(root_id)
+        selected: list[H1PostSealRecoverySelectedRecord] = []
+        for entry_id, _predecessor, raw in entries:
+            record = _decode_record(raw)
+            if record.root_id == root_id:
+                selected.append(
+                    H1PostSealRecoverySelectedRecord(
+                        entry_id,
+                        raw,
+                        record.kind,
+                        record.stage if type(record) is H1PostSealRecoveryRecordV1 else None,
+                    )
+                )
+        if (
+            not selected
+            or selected[0].kind != "ROOT"
+            or selected[0].entry_id != state.root_entry_id
+            or selected[0].canonical_bytes != state.root_record_bytes
+        ):
+            raise H1PostSealRecoveryRecordError("selected recovery root evidence differs")
+        self._mount.assert_current()
+        return H1PostSealRecoverySelectedRootEntries(state, tuple(selected))
+
     def _validate_next(
         self,
         before: H1PostSealRecoveryScan,
@@ -831,6 +899,8 @@ __all__ = [
     "H1PostSealRecoveryRootEvidence",
     "H1PostSealRecoveryRootV1",
     "H1PostSealRecoveryScan",
+    "H1PostSealRecoverySelectedRecord",
+    "H1PostSealRecoverySelectedRootEntries",
     "H1PostSealRecoveryState",
     "H1PostSealRecoveryTransition",
     "H1PostSealRecoveryUnavailable",

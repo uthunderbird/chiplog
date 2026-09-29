@@ -19,6 +19,7 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
 )
 from chiplog.capabilities.deployment_trust.operator_grant_authorization_contracts import (
     RetainedOperatorGrantAuthorizationSourceV2,
+    SignedOperatorGrantAuthorizationV2,
 )
 from chiplog.capabilities.deployment_trust.operator_grant_command_verifier import (
     verify_operator_grant_request,
@@ -31,7 +32,9 @@ from chiplog.capabilities.deployment_trust.operator_policy_command_verifier impo
     verify_operator_policy_command,
 )
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts import (
+    IssuePreparedExternalDeliveryGrantRequestV2,
     ObservedPreparedExternalDeliveryGrantLifecycleV2,
+    PreparedExternalDeliveryGrantAnchorV2,
     PreparedExternalDeliveryGrantLifecycleResultV2,
     PreparedExternalDeliveryGrantV2,
     ReadPreparedExternalDeliveryGrantLifecycleV2,
@@ -40,6 +43,7 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts 
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_grant_owner_contracts import (
     AuthorizePreparedExternalDeliveryGrantCallV2,
     PreparedExternalDeliveryGrantProposalV2,
+    prepared_external_delivery_grant_request_content_head_v2,
 )
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_contracts import (
     IssuePreparedExternalSelfDeliveryPolicyRequestV1,
@@ -86,9 +90,7 @@ _TYPES = {
         "chiplog.deployment_trust.tenant_principal_contour",
     ),
     "HERMETIC_OUTPUT_SCOPE_V1": ("chiplog.deployment_trust.hermetic_output_scope",),
-    "PREPARED_SELF_DELIVERY_POLICY_V1": (
-        "chiplog.deployment_trust.prepared_self_delivery_policy",
-    ),
+    "PREPARED_SELF_DELIVERY_POLICY_V1": ("chiplog.deployment_trust.prepared_self_delivery_policy",),
     "PREPARED_EXTERNAL_DELIVERY_GRANT_V2": (
         "chiplog.deployment_trust.prepared_external_delivery_grant",
     ),
@@ -581,9 +583,7 @@ class BrokerTrustDurability:
                 None,
             )
 
-    def current_hermetic_output_scope(
-        self, anchor: object
-    ) -> AuthenticatedHermeticOutputScope:
+    def current_hermetic_output_scope(self, anchor: object) -> AuthenticatedHermeticOutputScope:
         """Resolve one exact anchor only when it remains latest for its scope key."""
         from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
             HermeticOutputScopeAnchorV1,
@@ -633,10 +633,10 @@ class BrokerTrustDurability:
                 proposal.policy.database_id,
                 proposal.policy.policy_id,
             )
-            if (
-                call.latest_policy_anchor != (None if latest is None else latest.anchor)
-                or call.latest_policy_bytes
-                != (None if latest is None else latest.policy.canonical_bytes())
+            if call.latest_policy_anchor != (
+                None if latest is None else latest.anchor
+            ) or call.latest_policy_bytes != (
+                None if latest is None else latest.policy.canonical_bytes()
             ):
                 raise RuntimeError("prepared self-delivery policy physical CAS differs")
             try:
@@ -900,10 +900,10 @@ class BrokerTrustDurability:
                 proposal.grant.database_id,
                 proposal.grant.grant_id,
             )
-            if (
-                call.latest_grant_anchor != (None if latest is None else latest.anchor)
-                or call.latest_grant_bytes
-                != (None if latest is None else latest.grant.canonical_bytes())
+            if call.latest_grant_anchor != (
+                None if latest is None else latest.anchor
+            ) or call.latest_grant_bytes != (
+                None if latest is None else latest.grant.canonical_bytes()
             ):
                 raise RuntimeError("prepared external delivery grant physical CAS differs")
             if latest is not None:
@@ -950,6 +950,42 @@ class BrokerTrustDurability:
                 database_id,
                 grant_id,
             )
+
+    def current_signed_prepared_external_delivery_grant(
+        self, anchor: PreparedExternalDeliveryGrantAnchorV2
+    ) -> AuthenticatedPreparedExternalDeliveryGrant:
+        """Resolve one latest ACTIVE grant and reverify its retained ISSUE source.
+
+        This is deliberately distinct from the historical lifecycle reader.  It
+        authenticates the complete live journal and SQLite materialization,
+        selects the latest revision at the supplied physical anchor, then
+        verifies the retained ISSUE bytes against the current protected grant
+        signing-key pin while the same AuthorityGate remains held.
+        """
+        if not isinstance(anchor, PreparedExternalDeliveryGrantAnchorV2):
+            raise TypeError("prepared external delivery grant currentness requires its anchor type")
+        gate = self._authority_gate
+        if gate is None:
+            raise RuntimeError(
+                "signed prepared external delivery grant reads require an authority gate"
+            )
+        with gate.hold():
+            grants = self._locked_authenticated_prepared_external_delivery_grants()
+            selected = next((item for item in grants if item.anchor == anchor), None)
+            if selected is None:
+                raise RuntimeError("prepared external delivery grant current anchor differs")
+            latest = self._latest_prepared_external_delivery_grant(
+                grants,
+                selected.grant.tenant_id,
+                selected.grant.database_id,
+                selected.grant.grant_id,
+            )
+            if latest != selected:
+                raise RuntimeError("prepared external delivery grant current anchor is superseded")
+            if selected.grant.status != "ACTIVE":
+                raise RuntimeError("prepared external delivery grant is revoked")
+            self._verify_current_signed_prepared_external_delivery_grant(selected)
+            return selected
 
     def read_prepared_external_delivery_grant_lifecycle(
         self, request: ReadPreparedExternalDeliveryGrantLifecycleV2
@@ -1057,6 +1093,55 @@ class BrokerTrustDurability:
         except Exception as error:
             raise RuntimeError(
                 "prepared external delivery grant authorization is invalid"
+            ) from error
+
+    def _verify_current_signed_prepared_external_delivery_grant(
+        self, selected: AuthenticatedPreparedExternalDeliveryGrant
+    ) -> None:
+        """Verify the retained ISSUE statement that derived one selected grant."""
+        gate = self._authority_gate
+        if gate is None:
+            raise RuntimeError(
+                "signed prepared external delivery grant reads require an authority gate"
+            )
+        try:
+            source = selected.operator_source
+            signed = SignedOperatorGrantAuthorizationV2.model_validate_json(
+                source.canonical_source_bytes
+            )
+            if signed.canonical_bytes() != source.canonical_source_bytes:
+                raise ValueError("retained operator grant source is not canonical")
+            if signed.payload.operation != "ISSUE_PREPARED_EXTERNAL_DELIVERY_GRANT":
+                raise ValueError("ACTIVE grant was not derived from an ISSUE command")
+            request = request_from_source(source.canonical_source_bytes)
+            if not isinstance(request, IssuePreparedExternalDeliveryGrantRequestV2):
+                raise ValueError("retained grant request is not an ISSUE command")
+            if request.canonical_bytes() != signed.payload.canonical_request_bytes:
+                raise ValueError("retained grant ISSUE request is not canonical")
+            expected_command = ExactHead(
+                identity=request.command_id,
+                head=prepared_external_delivery_grant_request_content_head_v2(
+                    request.canonical_bytes()
+                ),
+                fingerprint=hashlib.sha256(request.canonical_bytes()).hexdigest(),
+            )
+            if (
+                selected.grant.authorization_source != source.ref
+                or selected.grant.authorization_command != expected_command
+            ):
+                raise ValueError("grant authorization references differ from retained ISSUE")
+            pin = load_operator_grant_key_pin(
+                gate,
+                tenant_id=selected.grant.tenant_id,
+                database_id=selected.grant.database_id,
+            )
+            verify_operator_grant_request(
+                request, retained_source=source, current_binding=pin.binding
+            )
+            pin.assert_current()
+        except Exception as error:
+            raise RuntimeError(
+                "current prepared external delivery grant authorization is invalid"
             ) from error
 
     @staticmethod
