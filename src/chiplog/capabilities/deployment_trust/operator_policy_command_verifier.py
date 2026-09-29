@@ -64,6 +64,11 @@ def preload_operator_policy_verifier() -> None:
     )
 
 
+def _verify_ed25519_signature(public_key: bytes, signature: bytes, message: bytes) -> None:
+    """Verify one Ed25519 signature from the sole R8-approved crypto leaf."""
+    Ed25519PublicKey.from_public_bytes(public_key).verify(signature, message)
+
+
 class OperatorPolicyKeyBindingV1(CliCustodyDTO):
     """A caller-supplied binding whose provenance/currentness this module does not claim."""
 
@@ -125,8 +130,8 @@ def verify_operator_policy_command(
         ):
             raise OperatorPolicyVerificationError("operator key binding does not authorize command")
 
-        Ed25519PublicKey.from_public_bytes(verified_binding.public_key).verify(
-            signed.signature, payload.canonical_bytes()
+        _verify_ed25519_signature(
+            verified_binding.public_key, signed.signature, payload.canonical_bytes()
         )
     except OperatorPolicyVerificationError:
         raise
