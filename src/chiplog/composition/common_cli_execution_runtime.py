@@ -299,6 +299,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_pre_request_member_evidence: Any | None
     _h1_pre_request_worker_evidence: Any | None
     _h1_completion_exchange_registry: Any | None
+    _h1_scoped_delivery_authority_reader: Any | None
+    _h1_producer_source_reader: Any | None
     _h1_conversation_source_port: Any | None
     _h1_live_invocation_source: Any | None
     _h1_live_readplan_source: Any | None
@@ -2437,6 +2439,8 @@ async def _open_installed_h1_runtime(
                 live_enrollment: Any | None = None
                 live_invocation_source: Any | None = None
                 live_readplan_source: Any | None = None
+                scoped_delivery_authority_reader: Any | None = None
+                producer_source_reader: Any | None = None
                 try:
                     from chiplog.composition.h1_completion_exchange_registry import (
                         H1CompletionExchangeRegistry,
@@ -2487,6 +2491,8 @@ async def _open_installed_h1_runtime(
                             "_h1_live_completion_enrollment",
                             "_h1_live_invocation_source",
                             "_h1_live_readplan_source",
+                            "_h1_scoped_delivery_authority_reader",
+                            "_h1_producer_source_reader",
                         )
                     ):
                         raise RuntimeError("installed H1 worker sources are already mounted")
@@ -2542,9 +2548,36 @@ async def _open_installed_h1_runtime(
                     runtime._h1_live_invocation_source = live_invocation_source
                     live_readplan_source = H1LiveReadPlanSource(runtime)
                     runtime._h1_live_readplan_source = live_readplan_source
+                    if manifest is R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST:
+                        from chiplog.composition.h1_producer_sources import H1ProducerSourceReader
+                        from chiplog.composition.h1_scoped_delivery_authority import (
+                            H1ScopedDeliveryAuthorityReader,
+                        )
+
+                        if (
+                            hasattr(runtime, "_h1_scoped_delivery_authority_reader")
+                            or hasattr(runtime, "_h1_producer_source_reader")
+                        ):
+                            raise RuntimeError(
+                                "installed H1 scoped source readers are already mounted"
+                            )
+                        scoped_delivery_authority_reader = H1ScopedDeliveryAuthorityReader(runtime)
+                        producer_source_reader = H1ProducerSourceReader(
+                            runtime, scoped_delivery_authority_reader
+                        )
+                        runtime._h1_scoped_delivery_authority_reader = (
+                            scoped_delivery_authority_reader
+                        )
+                        runtime._h1_producer_source_reader = producer_source_reader
                     authority._bind_installed_runtime(runtime)
                     yield runtime
                 finally:
+                    if producer_source_reader is not None:
+                        producer_source_reader.close()
+                    if hasattr(runtime, "_h1_producer_source_reader"):
+                        del runtime._h1_producer_source_reader
+                    if hasattr(runtime, "_h1_scoped_delivery_authority_reader"):
+                        del runtime._h1_scoped_delivery_authority_reader
                     # This owner holds capabilities issued by the native, P, and E
                     # owners below.  Revoke it while all of them are still live.
                     if decision_owner is not None:
@@ -2608,8 +2641,17 @@ async def _open_installed_h1_runtime(
             # Covers failures before _open_runtime can yield its runtime.  On
             # the ordinary path the inner finally already released this while
             # the appender remained open.
-            revoke_and_unbind_live_authority()
             if runtime is not None:
+                retained_producer_source_reader = getattr(
+                    runtime, "_h1_producer_source_reader", None
+                )
+                if retained_producer_source_reader is not None:
+                    retained_producer_source_reader.close()
+                if hasattr(runtime, "_h1_producer_source_reader"):
+                    del runtime._h1_producer_source_reader
+                if hasattr(runtime, "_h1_scoped_delivery_authority_reader"):
+                    del runtime._h1_scoped_delivery_authority_reader
+                revoke_and_unbind_live_authority()
                 retained_decision_owner = getattr(runtime, "_h1_preseal_pe_decision_owner", None)
                 if retained_decision_owner is not None:
                     retained_decision_owner.revoke()
@@ -2633,6 +2675,12 @@ async def _open_installed_h1_runtime(
                 if retained_conversation_source is not None:
                     retained_conversation_source._revoke_all()
                     del runtime._h1_conversation_source_port
+                retained_completion_exchange_registry = getattr(
+                    runtime, "_h1_completion_exchange_registry", None
+                )
+                if retained_completion_exchange_registry is not None:
+                    retained_completion_exchange_registry._revoke_all()
+                    del runtime._h1_completion_exchange_registry
                 if hasattr(runtime, "_h1_postseal_recovery_journal"):
                     del runtime._h1_postseal_recovery_journal
                 if hasattr(runtime, "_h1_recovery_mount"):
@@ -2643,6 +2691,8 @@ async def _open_installed_h1_runtime(
                     delattr(runtime, "_h1_preseal_native_source")
                 if hasattr(runtime, "_h1_preissuance_registration_source_port"):
                     del runtime._h1_preissuance_registration_source_port
+            else:
+                revoke_and_unbind_live_authority()
             for opened in recovery_journal:
                 opened.close()
             for mounted_recovery in recovery_mount:
