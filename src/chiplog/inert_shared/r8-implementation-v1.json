@@ -146,6 +146,7 @@
   "capabilities/deployment_trust/operator_policy_command_verifier.py": "45f2c6ba0627c622e0fc620fc3b96139747f28905e56f1c183e6abb038f72fe4",
   "capabilities/deployment_trust/prepared_external_delivery_contracts.py": "84e2dac07da0d5fafd0b4fa60ee26e179a5f5542e8ab58fd6e283db2f154e9bc",
   "capabilities/deployment_trust/prepared_external_delivery_policy_contracts.py": "e6168eb6f7d2ae5ded184d23ad1ad267134d23946935b5d230e314d4dfd3b16c",
+  "capabilities/deployment_trust/prepared_external_delivery_policy_owner_contracts.py": "6264669e336df14192542e3c1e6c5311c053bef95d8d0a4ef5b0f1bbbf678d19",
   "capabilities/effects/__init__.py": "ba88ecacdd1c7320169502ea9b6a54092c8577831b9f87a5f3c4580479a18cc5",
   "capabilities/effects/_dispatch_process.py": "36a75a922d763d63f528dbfb50e3c2fcdad6915814f5ee6406a5c0a3e839e24e",
   "capabilities/effects/_h1_local_process.py": "c2a98440d03b43d14dbd2019e7dad308802fd3ef4e8c40039dfe820ebbf020d7",
