@@ -90,13 +90,27 @@ class SignedOperatorPolicyAuthorizationV1(CliCustodyDTO):
     signature: bytes = Field(min_length=64, max_length=64)
 
 
+def operator_policy_source_content_head(canonical_source_bytes: bytes) -> str:
+    """Return the immutable content revision of a complete canonical signed wrapper.
+
+    This domain-separated digest is not a physical journal head or evidence of
+    signature validity, authenticated retention, or current lineage.
+    """
+    return hashlib.sha256(
+        b"chiplog.deployment-trust.operator-policy-source-content-head.v1\x00"
+        + canonical_source_bytes
+    ).hexdigest()
+
+
 class RetainedOperatorPolicyAuthorizationSourceV1(CliCustodyDTO):
     """Retained source preimage, not evidence of authenticated storage/selection.
 
     ref.identity is payload.source_id; ref.fingerprint is SHA256 of the complete
-    canonical signed wrapper. ref.head is the owner's retained source revision,
-    which the owner must resolve independently and compare to the command's
-    authenticated_operator_source. Source and request bytes remain immutable.
+    canonical signed wrapper. ref.head is its domain-separated immutable content
+    revision, not a physical journal head. The owner must independently authenticate
+    the containing physical policy decision and current lineage, and compare ref
+    to the command's authenticated_operator_source. Source and request bytes remain
+    immutable; their content head can be computed before the atomic policy decision.
     """
 
     ref: ExactHead
@@ -113,4 +127,6 @@ class RetainedOperatorPolicyAuthorizationSourceV1(CliCustodyDTO):
             raise ValueError("operator source identity mismatch")
         if hashlib.sha256(self.canonical_source_bytes).hexdigest() != self.ref.fingerprint:
             raise ValueError("operator source fingerprint mismatch")
+        if operator_policy_source_content_head(self.canonical_source_bytes) != self.ref.head:
+            raise ValueError("operator source content head mismatch")
         return self

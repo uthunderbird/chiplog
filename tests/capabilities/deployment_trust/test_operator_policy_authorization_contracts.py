@@ -14,6 +14,7 @@ from chiplog.capabilities.deployment_trust.operator_policy_authorization_contrac
     OperatorPolicyAuthorizationPayloadV1,
     RetainedOperatorPolicyAuthorizationSourceV1,
     SignedOperatorPolicyAuthorizationV1,
+    operator_policy_source_content_head,
 )
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_contracts import (
     IssuePreparedExternalSelfDeliveryPolicyRequestV1,
@@ -135,7 +136,7 @@ def test_all_operator_authorization_dtos_roundtrip_canonical_json(
     retained = RetainedOperatorPolicyAuthorizationSourceV1(
         ref=ExactHead(
             identity=payload.source_id,
-            head="retained-source:head",
+            head=operator_policy_source_content_head(signed.canonical_bytes()),
             fingerprint=hashlib.sha256(signed.canonical_bytes()).hexdigest(),
         ),
         canonical_source_bytes=signed.canonical_bytes(),
@@ -229,15 +230,16 @@ def test_signed_wrapper_requires_exact_signature_length_but_does_not_authorize()
     assert len(signed.signature) == 64
 
 
-def test_retained_source_binds_full_signed_wrapper_hash_identity_and_canonical_bytes() -> None:
+def test_retained_source_binds_hash_identity_content_head_and_canonical_bytes() -> None:
     payload = payload_for(issue_request())
     signed = SignedOperatorPolicyAuthorizationV1(payload=payload, signature=bytes(range(64)))
     source_bytes = signed.canonical_bytes()
     fingerprint = hashlib.sha256(source_bytes).hexdigest()
+    content_head = operator_policy_source_content_head(source_bytes)
 
     retained = RetainedOperatorPolicyAuthorizationSourceV1(
         ref=ExactHead(
-            identity="operator-source", head="retained-source:head", fingerprint=fingerprint
+            identity="operator-source", head=content_head, fingerprint=fingerprint
         ),
         canonical_source_bytes=source_bytes,
     )
@@ -245,22 +247,31 @@ def test_retained_source_binds_full_signed_wrapper_hash_identity_and_canonical_b
     assert retained.ref.fingerprint == (
         "c7e3f34c57385dd07a7fce9e3cf596a134477b134f283c5681e5dc1e4b76da26"
     )
+    assert retained.ref.head == content_head
 
     for ref in (
-        ExactHead(identity="other-source", head="retained-source:head", fingerprint=fingerprint),
-        ExactHead(identity="operator-source", head="retained-source:head", fingerprint="0" * 64),
+        ExactHead(identity="other-source", head=content_head, fingerprint=fingerprint),
+        ExactHead(identity="operator-source", head=content_head, fingerprint="0" * 64),
     ):
         with pytest.raises(ValidationError):
             RetainedOperatorPolicyAuthorizationSourceV1(
                 ref=ref, canonical_source_bytes=source_bytes
             )
 
+    with pytest.raises(ValidationError, match="source content head mismatch"):
+        RetainedOperatorPolicyAuthorizationSourceV1(
+            ref=ExactHead(
+                identity="operator-source", head="wrong-content-head", fingerprint=fingerprint
+            ),
+            canonical_source_bytes=source_bytes,
+        )
+
     noncanonical = json.dumps(json.loads(source_bytes), separators=(",", ": ")).encode()
     with pytest.raises(ValidationError, match="source bytes must be canonical"):
         RetainedOperatorPolicyAuthorizationSourceV1(
             ref=ExactHead(
                 identity="operator-source",
-                head="retained-source:head",
+                head=operator_policy_source_content_head(noncanonical),
                 fingerprint=hashlib.sha256(noncanonical).hexdigest(),
             ),
             canonical_source_bytes=noncanonical,

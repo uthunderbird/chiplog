@@ -352,9 +352,13 @@ require an offline Ed25519 operator statement over the exact canonical request
 bytes and scope. The trust owner resolves the retained signed source and a
 separately pinned, current public key, verifies the signature and key permission
 for that operation, and compares the trust and latest-policy anchors atomically;
-structurally valid signature DTOs alone confer nothing. CLI login and a
-trust-journal MAC do not suffice. There is no
-default active policy or grant. The historical H1 output scope authorizes local
+structurally valid signature DTOs alone confer nothing. The complete signed
+source and policy payload may be retained in one atomic trust decision:
+`source.head` is a domain-separated content revision computed before append,
+while the physical journal/materialized decision independently proves retention
+and current lineage. A historical source head alone never revives permission.
+CLI login and a trust-journal MAC do not suffice. There is no default active
+policy or grant. The historical H1 output scope authorizes local
 commentary only (`external_delivery=False`); selected R17 provenance and R16
 resource availability cannot be substituted for this grant. At preparation,
 publication and SEND the registered reader rechecks the grant, selected policy
