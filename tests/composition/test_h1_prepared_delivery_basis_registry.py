@@ -107,6 +107,39 @@ async def test_installed_registry_captures_and_replays_only_a_genuine_b_completi
             assert first.delivery.selection.recipient == scope.recipient
             assert first.delivery.policy == scope.scope.disclosure_policy.ref
 
+            historical = registry.capture_prepared_delivery_historical(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=seal,
+            )
+            preimages = registry.replay_prepared_delivery_preimages(historical)
+            assert (
+                preimages.original_completion_request.canonical_bytes()
+                == exchange.sent.canonical_payload
+            )
+            assert (
+                preimages.prepared_completion.canonical_bytes()
+                == exchange.returned.canonical_payload
+            )
+            assert preimages.original_completion_request == session._preflight.request
+
+            forged = object.__new__(type(historical))
+            forged._record = object()
+            with pytest.raises(
+                H1CompletionExchangeRegistryViolation, match="not registry-issued"
+            ):
+                registry.replay_prepared_delivery_preimages(forged)
+
+            retained_sent = historical._record.exchange.sent.canonical_payload
+            try:
+                object.__setattr__(historical._record.exchange.sent, "canonical_payload", b"{}")
+                with pytest.raises(H1CompletionExchangeRegistryViolation):
+                    registry.replay_prepared_delivery_preimages(historical)
+            finally:
+                object.__setattr__(
+                    historical._record.exchange.sent, "canonical_payload", retained_sent
+                )
+
             with pytest.raises(TypeError, match="cannot be copied"):
                 copy.copy(capture)
             with pytest.raises(H1CompletionExchangeRegistryViolation, match="locator"):

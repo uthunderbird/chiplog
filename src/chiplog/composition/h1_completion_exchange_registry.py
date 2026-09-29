@@ -134,6 +134,14 @@ class H1PreparedDeliveryProjection:
     delivery: AcceptedDelivery
 
 
+@dataclass(frozen=True, slots=True)
+class H1CompletionPreimages:
+    """Exact decoded B inputs and result from one retained historical capture."""
+
+    original_completion_request: PrepareExecutionCompletionFirstPathV2
+    prepared_completion: PreparedExecutionCompletion
+
+
 class _AuthenticatedCompletionExchangeInputs:
     """Inert view issued only by :class:`H1CompletionExchangeRegistry`."""
 
@@ -493,6 +501,107 @@ class H1CompletionExchangeRegistry:
                 raise H1CompletionExchangeRegistryViolation(
                     "H1 recovered historical prepared delivery replay differs"
                 ) from error
+
+    def replay_prepared_delivery_preimages(
+        self, capture: H1HistoricalPreparedDeliveryCapture
+    ) -> H1CompletionPreimages:
+        """Decode the exact historical B request and result from retained bytes.
+
+        The opaque capture is authenticated before its private record is read.
+        Replaying the historical source establishes the durable/current joins;
+        the returned DTOs are separately decoded from the retained canonical
+        payloads rather than reconstructed from a delivery projection.
+        """
+        if self._closed:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 completion registry is closed and revoked"
+            )
+        with self._runtime._authority_gate().hold():
+            self._require_mounted_current_held()
+            issued = self._historical_prepared_captures.get(id(capture))
+            if (
+                type(capture) is not H1HistoricalPreparedDeliveryCapture
+                or issued is None
+                or issued[0] is not capture
+                or issued[1] is not capture._record
+            ):
+                raise H1CompletionExchangeRegistryViolation(
+                    "H1 historical prepared delivery capture is not registry-issued"
+                )
+            record = issued[1]
+            if type(record) is _CompletionExchangeRecord:
+                self._project_prepared_delivery_historical_held(record)
+                sent = record.exchange.sent.canonical_payload
+                response = record.exchange.returned
+                if type(response) is not PublicPortSuccess:
+                    raise H1CompletionExchangeRegistryViolation(
+                        "H1 retained completion reply is not successful"
+                    )
+                returned = response.canonical_payload
+                return self._decode_completion_preimages(
+                    sent=sent, returned=returned, exchange=record.exchange
+                )
+
+            from chiplog.composition.h1_v3_recovery_historical_source import (
+                H1V3RecoveredPreparedDelivery,
+                H1V3RecoveryHistoricalSource,
+                H1V3RecoveryHistoricalSourceError,
+            )
+
+            if type(record) is not H1V3RecoveredPreparedDelivery:
+                raise H1CompletionExchangeRegistryViolation(
+                    "H1 historical prepared delivery record is unknown"
+                )
+            try:
+                replayed = H1V3RecoveryHistoricalSource(self._runtime).replay(record)
+                self._project_recovered_prepared_delivery_held(replayed)
+                from chiplog.composition.h1_postseal_recovery_source import (
+                    H1PostSealRecoveryRootSource,
+                )
+
+                root = H1PostSealRecoveryRootSource(self._runtime).derive_on_restart(
+                    replayed.original_identity,
+                    replayed.original_fingerprint,
+                    replayed.selected_seal,
+                )
+                decoded = H1V3RecoveryHistoricalSource._decode_required_records(
+                    replayed.pinned_records, root=root
+                )
+                sent = H1V3RecoveryHistoricalSource._stage_payload(
+                    decoded[1], kind="STAGE_INPUT", stage="COMPLETION"
+                )
+                returned = H1V3RecoveryHistoricalSource._stage_payload(
+                    decoded[2], kind="STAGE_RESULT", stage="COMPLETION"
+                )
+                return self._decode_completion_preimages(sent=sent, returned=returned)
+            except H1V3RecoveryHistoricalSourceError as error:
+                raise H1CompletionExchangeRegistryViolation(
+                    "H1 recovered historical prepared delivery preimages differ"
+                ) from error
+
+    @staticmethod
+    def _decode_completion_preimages(
+        *,
+        sent: bytes,
+        returned: bytes,
+        exchange: H1CompletionOwnerExchangeV1 | None = None,
+    ) -> H1CompletionPreimages:
+        try:
+            request = decode_first_path_completion_request(sent)
+            prepared = PreparedExecutionCompletion.model_validate_json(returned)
+            if (
+                request.canonical_bytes() != sent
+                or prepared.canonical_bytes() != returned
+                or prepare_first_path_execution_completion(request) != prepared
+            ):
+                raise ValueError("retained completion preimages differ")
+            if exchange is not None:
+                H1CompletionExchangeRegistry._require_success(exchange, request)
+            return H1CompletionPreimages(request, prepared)
+        except (TypeError, ValueError, AttributeError) as error:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 retained completion preimages differ"
+            ) from error
 
     def capture_recovered_prepared_delivery_historical(
         self,
@@ -961,6 +1070,7 @@ class H1CompletionExchangeRegistry:
 __all__ = [
     "H1CompletionExchangeRegistry",
     "H1CompletionExchangeRegistryViolation",
+    "H1CompletionPreimages",
     "H1HistoricalPreparedDeliveryCapture",
     "H1PreparedDeliveryCapture",
     "H1PreparedDeliveryProjection",

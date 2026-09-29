@@ -61,6 +61,7 @@ from chiplog.composition.h1_scoped_delivery_authority import (
 from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSources
 from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_candidate
 from chiplog.composition.h1_v2_recovery_native_source import H1V2RecoveryNativeSource
+from chiplog.composition.h1_v3_recovery_historical_source import H1V3RecoveryHistoricalSource
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.operator_grant_key_pin import OperatorGrantKeyPinFileV2
 from chiplog.platform.operator_policy_key_pin import OperatorPolicyKeyPinFileV1
@@ -483,7 +484,38 @@ async def test_scoped_v3_j7_recovers_the_two_b_stage_prefix_before_registry_capt
                 selected_seal=locator,
             )
             projection = registry.replay_prepared_delivery_historical(capture)
+            preimages = registry.replay_prepared_delivery_preimages(capture)
+            recovered = cast(Any, capture._record)
+            root = H1PostSealRecoveryRootSource(runtime).derive_on_restart(
+                request.identity,
+                request.original_driver_command_fingerprint(),
+                locator,
+            )
+            records = H1V3RecoveryHistoricalSource._decode_required_records(
+                recovered.pinned_records, root=root
+            )
+            completion_input = H1V3RecoveryHistoricalSource._stage_payload(
+                records[1], kind="STAGE_INPUT", stage="COMPLETION"
+            )
+            completion_result = H1V3RecoveryHistoricalSource._stage_payload(
+                records[2], kind="STAGE_RESULT", stage="COMPLETION"
+            )
+            assert (
+                preimages.original_completion_request.canonical_bytes()
+                == completion_input
+            )
+            assert preimages.prepared_completion.canonical_bytes() == completion_result
             assert projection.delivery.rendered_bytes
+
+            retained_input = recovered.pinned_records[1].canonical_bytes
+            try:
+                object.__setattr__(recovered.pinned_records[1], "canonical_bytes", b"{}")
+                with pytest.raises(H1CompletionExchangeRegistryViolation):
+                    registry.replay_prepared_delivery_preimages(capture)
+            finally:
+                object.__setattr__(
+                    recovered.pinned_records[1], "canonical_bytes", retained_input
+                )
 
             def live_v2_capture_must_not_run(
                 _captured_registry: H1CompletionExchangeRegistry, **_kwargs: object

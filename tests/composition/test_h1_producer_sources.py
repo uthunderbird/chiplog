@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import chiplog.composition.h1_producer_sources as sources
+import chiplog.composition.h1_scoped_delivery_authority as authority
 from chiplog.adapters.driven.effects_queries import StoredEffectRow
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts import (
     BoundedExternalSelfSendMandateV1,
@@ -239,6 +240,80 @@ async def test_reader_uses_real_mounted_physical_cut_and_rejects_foreign_capture
                 assert reader.recheck_held(captured) is captured
             with pytest.raises(TypeError, match="cannot be copied"):
                 copy.copy(captured)
+
+
+@pytest.mark.asyncio
+async def test_scoped_authority_recheck_keeps_same_epoch_clock_advance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later monotonic reading is not a changed authority source."""
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    _write_pin(slot.database_path)
+    _write_grant_pin(slot.database_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_scoped_runtime(
+            launch, resources=_resources(tmp_path)
+        ) as runtime:
+            reader, captured = await _real_authority(runtime)
+            epoch, issued_at = captured.clock
+            resources = runtime._require_dispatch_resources()
+            monkeypatch.setattr(resources, "clock", lambda: (epoch, issued_at + 1))
+
+            assert reader.recheck(captured) is captured
+
+
+@pytest.mark.asyncio
+async def test_scoped_authority_recheck_rejects_changed_rebuilt_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid rebuilt authority record cannot silently replace issued trust evidence."""
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    _write_pin(slot.database_path)
+    _write_grant_pin(slot.database_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_scoped_runtime(
+            launch, resources=_resources(tmp_path)
+        ) as runtime:
+            reader, captured = await _real_authority(runtime)
+            original = authority.H1ScopedDeliveryAuthorityReader._evidence
+
+            def advanced_evidence(
+                issuer: authority.H1ScopedDeliveryAuthorityReader, grant: object, policy: object
+            ) -> object:
+                evidence = original(issuer, grant, policy)
+                rebuilt = evidence.model_dump(mode="python")
+                rebuilt["trust_observation"]["logical_snapshot_head"] = "valid-new-trust-head"
+                return type(evidence).model_validate(rebuilt)
+
+            monkeypatch.setattr(
+                authority.H1ScopedDeliveryAuthorityReader, "_evidence", advanced_evidence
+            )
+            with pytest.raises(
+                authority.H1ScopedDeliveryAuthorityViolation, match="authority sources changed"
+            ):
+                reader.recheck(captured)
+
+
+@pytest.mark.asyncio
+async def test_scoped_authority_recheck_rejects_revoked_real_selected_source(
+    tmp_path: Path,
+) -> None:
+    """Revoking the mounted R16 resource invalidates the issued selected source."""
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    _write_pin(slot.database_path)
+    _write_grant_pin(slot.database_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_scoped_runtime(
+            launch, resources=_resources(tmp_path)
+        ) as runtime:
+            reader, captured = await _real_authority(runtime)
+            runtime._require_dispatch_resources().revoke()
+
+            with pytest.raises(authority.H1ScopedDeliveryAuthorityViolation):
+                reader.recheck(captured)
 
 
 @pytest.mark.asyncio

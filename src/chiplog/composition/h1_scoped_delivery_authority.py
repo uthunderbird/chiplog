@@ -342,16 +342,22 @@ class H1ScopedDeliveryAuthorityReader:
                 raise H1ScopedDeliveryAuthorityViolation(
                     "reconstructed prepared delivery grant anchor differs"
                 )
-            return
-        assert record.grant_id is not None
-        self._build_record_held(
-            record.historical_capture,
-            record.grant_id,
-            record.projection,
-            record.fresh_scope_request,
-            record.fresh_scope_result,
-            record.fresh_scope_wire,
-        )
+        else:
+            assert record.grant_id is not None
+            rebuilt = self._build_record_held(
+                record.historical_capture,
+                record.grant_id,
+                record.projection,
+                record.fresh_scope_request,
+                record.fresh_scope_result,
+                record.fresh_scope_wire,
+            )
+        if (
+            rebuilt.evidence != record.evidence
+            or rebuilt.selected_sources != record.selected_sources
+            or rebuilt.clock_epoch != record.clock_epoch
+        ):
+            raise H1ScopedDeliveryAuthorityViolation("current H1 authority sources changed")
 
     def _build_reconstructed_record_held(
         self,
