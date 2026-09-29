@@ -20,10 +20,12 @@ from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJo
 from chiplog.composition.h1_launch_enrollment import EnrolledH1RecoveryMount
 
 _SCHEMA = "chiplog.h1.postseal-recovery-record.v1"
+_ROOT_V2_SCHEMA = "chiplog.h1.postseal-recovery-record.v2"
 _DOMAIN = b"chiplog.h1.postseal-recovery-root.v1\x00"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _RUN_HEAD = re.compile(r"^loop:[0-9a-f]{64}$")
 _STAGES = ("COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK")
+_PRODUCER_CHOICES = ("LOCAL_V2", "SCOPED_V3")
 
 
 class H1PostSealRecoveryUnavailable(RuntimeError):
@@ -258,6 +260,44 @@ class H1PostSealRecoveryRecordV1:
         return _canonical(self.as_dict())
 
 
+@dataclass(frozen=True, slots=True)
+class H1PostSealRecoveryRecordV2:
+    """A ROOT-only producer selection; successor records remain V1 forever."""
+
+    kind: Literal["ROOT"]
+    root_id: str
+    predecessor_entry_id: None
+    root: H1PostSealRecoveryRootV1
+    producer_choice: Literal["LOCAL_V2", "SCOPED_V3"]
+
+    def __post_init__(self) -> None:
+        _require_digest(self.root_id, "root_id")
+        if (
+            self.kind != "ROOT"
+            or self.predecessor_entry_id is not None
+            or type(self.root) is not H1PostSealRecoveryRootV1
+            or self.root.root_id() != self.root_id
+            or self.producer_choice not in _PRODUCER_CHOICES
+        ):
+            raise H1PostSealRecoveryRecordError("V2 root record differs from recovery root")
+
+    def model_copy(self, **changes: object) -> H1PostSealRecoveryRecordV2:
+        return replace(self, **cast(Any, changes))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_id": _ROOT_V2_SCHEMA,
+            "kind": self.kind,
+            "root_id": self.root_id,
+            "predecessor_entry_id": self.predecessor_entry_id,
+            "root": self.root.as_dict(),
+            "producer_choice": self.producer_choice,
+        }
+
+    def canonical_bytes(self) -> bytes:
+        return _canonical(self.as_dict())
+
+
 def _validate_bytes(value: object, commitment: object, name: str) -> None:
     if not isinstance(value, bytes):
         raise H1PostSealRecoveryRecordError(f"{name} bytes are invalid")
@@ -265,25 +305,43 @@ def _validate_bytes(value: object, commitment: object, name: str) -> None:
         raise H1PostSealRecoveryRecordError(f"{name} commitment differs")
 
 
-def _decode_record(raw: bytes) -> H1PostSealRecoveryRecordV1:
+def _decode_root(root_value: object) -> H1PostSealRecoveryRootV1:
+    if not isinstance(root_value, dict):
+        raise ValueError("root fields differ")
+    root_data = dict(root_value)
+    identity = root_data.pop("database_identity", None)
+    if not isinstance(identity, list) or len(identity) != 3:
+        raise ValueError("database identity differs")
+    return H1PostSealRecoveryRootV1(database_identity=tuple(identity), **root_data)
+
+
+def _decode_record(raw: bytes) -> H1PostSealRecoveryRecordV1 | H1PostSealRecoveryRecordV2:
     try:
+        record: H1PostSealRecoveryRecordV1 | H1PostSealRecoveryRecordV2
         decoded = json.loads(raw, object_pairs_hook=_unique_object)
-        if not isinstance(decoded, dict) or decoded.get("schema_id") != _SCHEMA:
+        if not isinstance(decoded, dict):
             raise ValueError("schema differs")
+        schema_id = decoded.get("schema_id")
         kind = decoded.get("kind")
         common = {"schema_id", "kind", "root_id", "predecessor_entry_id"}
-        if kind == "ROOT":
-            if set(decoded) != common | {"root"} or not isinstance(decoded["root"], dict):
+        if schema_id == _SCHEMA and kind == "ROOT":
+            if set(decoded) != common | {"root"}:
                 raise ValueError("root fields differ")
-            root_data = dict(decoded["root"])
-            identity = root_data.pop("database_identity", None)
-            if not isinstance(identity, list) or len(identity) != 3:
-                raise ValueError("database identity differs")
-            root = H1PostSealRecoveryRootV1(database_identity=tuple(identity), **root_data)
+            root = _decode_root(decoded["root"])
             record = H1PostSealRecoveryRecordV1(
                 "ROOT", decoded["root_id"], decoded["predecessor_entry_id"], root=root
             )
-        elif kind == "STAGE_INPUT":
+        elif schema_id == _ROOT_V2_SCHEMA and kind == "ROOT":
+            if set(decoded) != common | {"root", "producer_choice"}:
+                raise ValueError("V2 root fields differ")
+            record = H1PostSealRecoveryRecordV2(
+                "ROOT",
+                decoded["root_id"],
+                decoded["predecessor_entry_id"],
+                _decode_root(decoded["root"]),
+                decoded["producer_choice"],
+            )
+        elif schema_id == _SCHEMA and kind == "STAGE_INPUT":
             required = common | {
                 "stage",
                 "stage_ordinal",
@@ -304,7 +362,7 @@ def _decode_record(raw: bytes) -> H1PostSealRecoveryRecordV1:
                 semantic_input_digest=decoded["semantic_input_digest"],
                 effects_command_id=decoded["effects_command_id"],
             )
-        elif kind == "STAGE_RESULT":
+        elif schema_id == _SCHEMA and kind == "STAGE_RESULT":
             required = common | {"stage", "stage_ordinal", "result_base64", "result_digest"}
             if set(decoded) != required:
                 raise ValueError("result fields differ")
@@ -337,15 +395,50 @@ def _decode_base64(value: object) -> bytes:
 
 
 @dataclass(frozen=True, slots=True)
+class H1PostSealRecoveryRootEvidence:
+    """The authenticated ROOT wire that selected this recovery producer."""
+
+    producer_choice: Literal["LOCAL_V2", "SCOPED_V3"]
+    root_id: str
+    entry_id: str
+    canonical_bytes: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class H1PostSealRecoveryState:
     root: H1PostSealRecoveryRootV1
     head: str | None
     inputs: tuple[tuple[str, bytes, str | None], ...] = ()
     results: tuple[tuple[str, bytes], ...] = ()
+    producer_choice: Literal["LOCAL_V2", "SCOPED_V3"] = "LOCAL_V2"
+    root_entry_id: str | None = None
+    root_record_bytes: bytes | None = None
 
     @classmethod
     def empty(cls, root: H1PostSealRecoveryRootV1) -> H1PostSealRecoveryState:
         return cls(root, None)
+
+    @property
+    def selected_producer(self) -> Literal["LOCAL_V2", "SCOPED_V3"]:
+        """The producer selected by the authenticated ROOT wire."""
+        return self.producer_choice
+
+    @property
+    def root_record_identity(self) -> str | None:
+        """Exact authenticated journal identity of the ROOT record."""
+        return self.root_entry_id
+
+    @property
+    def root_evidence(self) -> H1PostSealRecoveryRootEvidence | None:
+        """Bind producer selection to the exact ROOT entry and validated bytes."""
+        if self.root_entry_id is None or self.root_record_bytes is None:
+            return None
+        return H1PostSealRecoveryRootEvidence(
+            self.producer_choice,
+            self.root.root_id(),
+            self.root_entry_id,
+            self.root_record_bytes,
+        )
 
     @property
     def next_stage(self) -> str:
@@ -402,6 +495,12 @@ def apply_authenticated_prefix(
                 raise H1PostSealRecoveryRecordError("recovery root is repeated")
             if record.root != root:
                 raise H1PostSealRecoveryRecordError("recovery root differs")
+            state = replace(
+                state,
+                producer_choice=_producer_choice(record),
+                root_entry_id=entry_id,
+                root_record_bytes=raw,
+            )
         else:
             if state.head is None or record.predecessor_entry_id != state.head:
                 raise H1PostSealRecoveryRecordError("recovery successor predecessor differs")
@@ -419,6 +518,15 @@ def _selected_seal_key(root: H1PostSealRecoveryRootV1) -> tuple[str, str, str, s
         root.selected_seal_head,
         root.selected_seal_fingerprint,
     )
+
+
+def _producer_choice(
+    record: H1PostSealRecoveryRecordV1 | H1PostSealRecoveryRecordV2,
+) -> Literal["LOCAL_V2", "SCOPED_V3"]:
+    """V1 roots permanently mean LOCAL_V2; V2 makes the choice explicit."""
+    if type(record) is H1PostSealRecoveryRecordV2:
+        return record.producer_choice
+    return "LOCAL_V2"
 
 
 def scan_authenticated_prefix(
@@ -448,7 +556,13 @@ def scan_authenticated_prefix(
                 raise H1PostSealRecoveryRecordError("recovery root is repeated")
             if seal_key in seals:
                 raise H1PostSealRecoveryRecordError("selected seal has competing recovery roots")
-            states[record.root_id] = H1PostSealRecoveryState(root, entry_id)
+            states[record.root_id] = H1PostSealRecoveryState(
+                root,
+                entry_id,
+                producer_choice=_producer_choice(record),
+                root_entry_id=entry_id,
+                root_record_bytes=raw,
+            )
             seals[seal_key] = record.root_id
         else:
             state = states.get(record.root_id)
@@ -506,6 +620,19 @@ class H1PostSealRecoveryTransition:
         if state.head is not None:
             raise H1PostSealRecoveryRecordError("recovery root is already durable")
         return H1PostSealRecoveryRecordV1("ROOT", state.root.root_id(), None, root=state.root)
+
+    @staticmethod
+    def begin_selected(
+        state: H1PostSealRecoveryState,
+        *,
+        producer_choice: Literal["LOCAL_V2", "SCOPED_V3"],
+    ) -> H1PostSealRecoveryRecordV2:
+        """Construct the V2 ROOT that durably selects a recovery producer."""
+        if state.head is not None:
+            raise H1PostSealRecoveryRecordError("recovery root is already durable")
+        return H1PostSealRecoveryRecordV2(
+            "ROOT", state.root.root_id(), None, state.root, producer_choice
+        )
 
     @staticmethod
     def pin_input(
@@ -606,13 +733,13 @@ class H1PostSealRecoveryJournal:
 
     def append_transition(
         self,
-        record: H1PostSealRecoveryRecordV1,
+        record: H1PostSealRecoveryRecordV1 | H1PostSealRecoveryRecordV2,
         *,
         expected_global_tip: str | None,
     ) -> H1PostSealRecoveryAppendReceipt:
         """Scan, compare, CAS append and exact readback under one authority gate."""
         self._require_open()
-        if type(record) is not H1PostSealRecoveryRecordV1:
+        if type(record) not in (H1PostSealRecoveryRecordV1, H1PostSealRecoveryRecordV2):
             raise TypeError("recovery transition requires an exact canonical record")
         with self._gate.hold():
             self._mount.assert_current()
@@ -653,7 +780,9 @@ class H1PostSealRecoveryJournal:
         )
 
     def _validate_next(
-        self, before: H1PostSealRecoveryScan, record: H1PostSealRecoveryRecordV1
+        self,
+        before: H1PostSealRecoveryScan,
+        record: H1PostSealRecoveryRecordV1 | H1PostSealRecoveryRecordV2,
     ) -> None:
         if record.kind == "ROOT":
             if record.root_id in dict(before.states_by_root):
@@ -680,6 +809,8 @@ class H1PostSealRecoveryJournal:
             raise H1PostSealRecoveryRecordError("recovery transition root or predecessor differs")
         # Reuse the pure prefix decoder to make the transition checks exactly
         # match restart scan behavior before any durable write.
+        if type(record) is not H1PostSealRecoveryRecordV1:
+            raise H1PostSealRecoveryRecordError("recovery transition has an invalid schema")
         _apply_stage(state, record)
 
 
@@ -696,6 +827,8 @@ __all__ = [
     "H1PostSealRecoveryJournal",
     "H1PostSealRecoveryRecordError",
     "H1PostSealRecoveryRecordV1",
+    "H1PostSealRecoveryRecordV2",
+    "H1PostSealRecoveryRootEvidence",
     "H1PostSealRecoveryRootV1",
     "H1PostSealRecoveryScan",
     "H1PostSealRecoveryState",

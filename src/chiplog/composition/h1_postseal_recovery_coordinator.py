@@ -215,6 +215,12 @@ class _H1PostSealRecoveryCoordinator:
         """Run all task-affine finalization work in the lease-owning task."""
         result: _H1FinalizationOutcome | _H1FinalizationRejection | None = None
         async with await self._fence.acquire() as lease:
+            # The finalization authority is downstream of the producer choice.
+            # Do this read-only durable check before asking it to classify or
+            # resume anything: SCOPED_V3 has no local mounted implementation.
+            self._require_selected_local_producer_held(
+                lease, identity, original_fingerprint
+            )
             # This call is the sole selected/pending/absence oracle.  In
             # particular, None means B proved authenticated absence; HOLD,
             # malformed history, and uncertainty leave through an exception.
@@ -372,6 +378,7 @@ class _H1PostSealRecoveryCoordinator:
                     or state.root.as_dict() != derived_root.as_dict()
                 ):
                     raise H1PostSealRecoveryCoordinatorError("durable recovery ROOT differs")
+                self._require_local_producer(state)
                 self._require_complete_chain_shape(state)
                 context = self._source._capture_recovery(
                     original_identity=identity,
@@ -405,6 +412,7 @@ class _H1PostSealRecoveryCoordinator:
             or capture._retired
         ):
             raise H1PostSealRecoveryCoordinatorError("complete-chain preflight differs")
+        self._require_local_producer(capture._state)
         self._source._require_current(capture._context)
         return capture._state
 
@@ -466,6 +474,7 @@ class _H1PostSealRecoveryCoordinator:
     ) -> H1PostSealRecoveryState:
         """Run one source context and retire it before the lease can be released."""
         lease.require_owned()
+        self._require_local_producer(state)
         contexts: list[object] = []
         try:
             return await self._resume_stages_inner_held(
@@ -492,6 +501,7 @@ class _H1PostSealRecoveryCoordinator:
         cross-process owner.
         """
         lease.require_owned()
+        self._require_local_producer(state)
         source = self._source
         locator = CallSubjectHead(
             subject_id=state.root.selected_seal_subject_id,
@@ -838,6 +848,7 @@ class _H1PostSealRecoveryCoordinator:
             state = scan.state_for_root(root_id)
             if state.root.as_dict() != root.as_dict():
                 raise H1PostSealRecoveryCoordinatorError("durable recovery ROOT differs")
+            self._require_local_producer(state)
             return state
         except H1PostSealRecoveryCoordinatorError:
             raise
@@ -851,6 +862,56 @@ class _H1PostSealRecoveryCoordinator:
         if type(journal) is not H1PostSealRecoveryJournal or journal._mount is not self._mount:
             raise H1PostSealRecoveryCoordinatorError("installed recovery journal differs")
         return journal
+
+    @staticmethod
+    def _require_local_producer(state: H1PostSealRecoveryState) -> None:
+        """Reject a durable producer choice that this mounted coordinator cannot run."""
+        if state.selected_producer != "LOCAL_V2":
+            raise H1PostSealRecoveryCoordinatorError(
+                "selected recovery producer is unavailable to the local coordinator"
+            )
+
+    def _require_selected_local_producer_held(
+        self,
+        lease: _H1RecoveryExecutionLease,
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+    ) -> None:
+        """Fail closed on a selected scoped ROOT before finalization authority work.
+
+        Absence remains the finalization authority's concern, so this helper
+        only rejects a matching durable ROOT whose producer is unavailable.
+        """
+        if type(lease) is not _H1RecoveryExecutionLease:
+            raise TypeError("producer check requires the exact recovery lease")
+        lease.require_owned()
+        self._mount.assert_current()
+        with self._runtime._authority_gate().hold():
+            locator = H1V2RecoveryNativeSource(self._runtime).locate_selected_seal(
+                original_identity=identity, original_fingerprint=original_fingerprint
+            )
+            derived_root = H1PostSealRecoveryRootSource(self._runtime).derive_on_restart(
+                identity, original_fingerprint, locator
+            )
+            scan = self._journal().scan()
+            root_id = dict(scan.root_id_by_selected_seal).get(
+                (
+                    derived_root.tenant_id,
+                    derived_root.database_id,
+                    derived_root.selected_seal_subject_id,
+                    derived_root.selected_seal_head,
+                    derived_root.selected_seal_fingerprint,
+                )
+            )
+            if root_id is None:
+                return
+            state = scan.state_for_root(root_id)
+            if (
+                state.root.root_id() != derived_root.root_id()
+                or state.root.as_dict() != derived_root.as_dict()
+            ):
+                raise H1PostSealRecoveryCoordinatorError("durable recovery ROOT differs")
+            self._require_local_producer(state)
 
     def close(self) -> None:
         if self._closed:

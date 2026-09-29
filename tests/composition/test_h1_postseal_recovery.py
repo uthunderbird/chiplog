@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Literal
 
 import pytest
 
 from chiplog.composition.h1_postseal_recovery import (
     H1PostSealRecoveryJournal,
     H1PostSealRecoveryRecordError,
+    H1PostSealRecoveryRecordV2,
     H1PostSealRecoveryRootV1,
     H1PostSealRecoveryState,
     H1PostSealRecoveryTransition,
@@ -98,6 +100,168 @@ def test_root_requires_the_installed_loop_head_shape() -> None:
     assert _root().selected_run_head == "loop:" + "d" * 64
     with pytest.raises(H1PostSealRecoveryRecordError, match="selected_run_head"):
         _root().model_copy(selected_run_head="d" * 64)
+
+
+def test_v1_root_and_stage_wire_fixtures_remain_stable_and_mean_local_v2() -> None:
+    root = _root()
+    v1_root = H1PostSealRecoveryTransition.begin(H1PostSealRecoveryState.empty(root))
+    state = apply_authenticated_prefix((("root-entry", None, v1_root.canonical_bytes()),), root)
+    stage = H1PostSealRecoveryTransition.pin_input(
+        state, stage="COMPLETION", semantic_input=b"fixture-input"
+    )
+
+    assert _digest(v1_root.canonical_bytes()) == (
+        "1f4c7148ce368dbcd38beff18de22ea3a5497d30268f42cf8fb587cbdc14d37a"
+    )
+    assert _digest(stage.canonical_bytes()) == (
+        "092d678e9b977e32527119b53e3d6f4a393c8230714ef397748bcb7c09a784cc"
+    )
+    assert state.selected_producer == "LOCAL_V2"
+    assert state.root_record_identity == "root-entry"
+    assert state.root_record_bytes == v1_root.canonical_bytes()
+    assert state.root_evidence is not None
+    assert state.root_evidence.canonical_bytes == v1_root.canonical_bytes()
+
+
+@pytest.mark.parametrize("producer_choice", ("LOCAL_V2", "SCOPED_V3"))
+def test_v2_root_choice_and_evidence_survive_scan_and_stage_replay(
+    producer_choice: Literal["LOCAL_V2", "SCOPED_V3"],
+) -> None:
+    root = _root()
+    root_record = H1PostSealRecoveryTransition.begin_selected(
+        H1PostSealRecoveryState.empty(root), producer_choice=producer_choice
+    )
+    assert type(root_record) is H1PostSealRecoveryRecordV2
+    assert root_record.root_id == root.root_id()
+    entries = (("root-entry", None, root_record.canonical_bytes()),)
+    state = apply_authenticated_prefix(entries, root)
+    stage = H1PostSealRecoveryTransition.pin_input(
+        state, stage="COMPLETION", semantic_input=b"v2-root-stage"
+    )
+    replayed = scan_authenticated_prefix(
+        (*entries, ("stage-entry", "root-entry", stage.canonical_bytes())),
+        tenant_id="tenant",
+        journal_instance_id="h1-postseal-recovery",
+    ).state_for_root(root.root_id())
+    reopened = scan_authenticated_prefix(
+        (*entries, ("stage-entry", "root-entry", stage.canonical_bytes())),
+        tenant_id="tenant",
+        journal_instance_id="h1-postseal-recovery",
+    ).state_for_root(root.root_id())
+
+    assert replayed.selected_producer == producer_choice
+    assert replayed.root_record_identity == "root-entry"
+    assert replayed.root_record_bytes == root_record.canonical_bytes()
+    assert replayed.root_evidence == reopened.root_evidence
+    assert replayed.stage_input("COMPLETION") == (b"v2-root-stage", None)
+
+
+def test_v2_root_rejects_missing_extra_duplicate_and_invalid_choice() -> None:
+    root_record = H1PostSealRecoveryTransition.begin_selected(
+        H1PostSealRecoveryState.empty(_root()), producer_choice="SCOPED_V3"
+    )
+    decoded = json.loads(root_record.canonical_bytes())
+    malformed: list[bytes] = []
+    missing = dict(decoded)
+    del missing["producer_choice"]
+    malformed.append(json.dumps(missing, sort_keys=True, separators=(",", ":")).encode())
+    extra = dict(decoded, unexpected="value")
+    malformed.append(json.dumps(extra, sort_keys=True, separators=(",", ":")).encode())
+    invalid_choice = dict(decoded, producer_choice="UNAUTHORISED")
+    malformed.append(json.dumps(invalid_choice, sort_keys=True, separators=(",", ":")).encode())
+    malformed.append(
+        root_record.canonical_bytes().replace(
+            b'"producer_choice":"SCOPED_V3"',
+            b'"producer_choice":"SCOPED_V3","producer_choice":"LOCAL_V2"',
+        )
+    )
+
+    for raw in malformed:
+        with pytest.raises(H1PostSealRecoveryRecordError):
+            scan_authenticated_prefix(
+                (("root-entry", None, raw),),
+                tenant_id="tenant",
+                journal_instance_id="h1-postseal-recovery",
+            )
+
+
+def test_same_selected_seal_with_competing_v2_choice_is_rejected() -> None:
+    root = _root()
+    local = H1PostSealRecoveryTransition.begin_selected(
+        H1PostSealRecoveryState.empty(root), producer_choice="LOCAL_V2"
+    )
+    scoped = H1PostSealRecoveryTransition.begin_selected(
+        H1PostSealRecoveryState.empty(root.model_copy(source_commitment="8" * 64)),
+        producer_choice="SCOPED_V3",
+    )
+
+    with pytest.raises(H1PostSealRecoveryRecordError, match="competing recovery roots"):
+        scan_authenticated_prefix(
+            (
+                ("local", None, local.canonical_bytes()),
+                ("scoped", "local", scoped.canonical_bytes()),
+            ),
+            tenant_id="tenant",
+            journal_instance_id="h1-postseal-recovery",
+        )
+
+
+def test_journal_rejects_competing_choice_before_second_append() -> None:
+    class Gate:
+        held = False
+
+        def hold(self) -> Gate:
+            return self
+
+        def __enter__(self) -> None:
+            self.held = True
+
+        def __exit__(self, *_: object) -> None:
+            self.held = False
+
+        def require_held(self) -> None:
+            assert self.held
+
+    class Mount:
+        tenant_id = "tenant"
+        journal_instance_id = "h1-postseal-recovery"
+        authority_gate = Gate()
+
+        def assert_current(self) -> None:
+            return None
+
+    class Journal:
+        def __init__(self) -> None:
+            self.records: list[tuple[str, str | None, bytes]] = []
+            self.append_calls = 0
+
+        def entries(self) -> tuple[tuple[str, str | None, bytes], ...]:
+            return tuple(self.records)
+
+        def append(self, raw: bytes, predecessor: str | None) -> str:
+            self.append_calls += 1
+            entry_id = f"entry-{self.append_calls}"
+            self.records.append((entry_id, predecessor, raw))
+            return entry_id
+
+        def close(self) -> None:
+            return None
+
+    root = _root()
+    local = H1PostSealRecoveryTransition.begin_selected(
+        H1PostSealRecoveryState.empty(root), producer_choice="LOCAL_V2"
+    )
+    scoped = H1PostSealRecoveryTransition.begin_selected(
+        H1PostSealRecoveryState.empty(root.model_copy(source_commitment="8" * 64)),
+        producer_choice="SCOPED_V3",
+    )
+    journal_backend = Journal()
+    journal = H1PostSealRecoveryJournal(mount=Mount(), journal=journal_backend)  # type: ignore[arg-type]
+    first = journal.append_transition(local, expected_global_tip=None)
+
+    with pytest.raises(H1PostSealRecoveryRecordError, match="selected seal has a recovery root"):
+        journal.append_transition(scoped, expected_global_tip=first.entry_id)
+    assert journal_backend.append_calls == 1
 
 
 def test_effects_input_pins_inner_command_id_and_exact_semantic_bytes_across_restart() -> None:
@@ -292,6 +456,6 @@ def test_transition_rejects_changed_effects_id_and_result_before_durable_append(
         denied_production_recovery_journal("arbitrary-path", object())
 
     with pytest.raises((H1PostSealRecoveryRecordError, H1PostSealRecoveryUnavailable)):
-        H1PostSealRecoveryJournal.open_enrolled(object())
+        H1PostSealRecoveryJournal.open_enrolled(object())  # type: ignore[arg-type]
 
     assert H1PostSealRecoveryUnavailable.__name__ == "H1PostSealRecoveryUnavailable"
