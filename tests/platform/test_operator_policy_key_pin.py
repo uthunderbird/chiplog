@@ -273,6 +273,30 @@ def test_assert_current_requires_its_gate_to_be_held(tmp_path: Path) -> None:
         pin.assert_current()
 
 
+def test_assert_current_ignores_benign_sibling_but_rejects_identical_pin_replacement(
+    tmp_path: Path,
+) -> None:
+    _, gate, path, _ = _provision(tmp_path)
+
+    with gate.hold():
+        pin = _load(gate)
+        before_parent_ctime = path.parent.lstat().st_ctime_ns
+        sidecar = path.with_name("authority.sqlite3-sidecar")
+        sidecar.write_text("benign")
+        assert path.parent.lstat().st_ctime_ns != before_parent_ctime
+        pin.assert_current()
+
+        before_inode = path.stat().st_ino
+        replacement = path.with_name("replacement.operator-policy-key.json")
+        replacement.write_bytes(path.read_bytes())
+        replacement.chmod(0o600)
+        os.replace(replacement, path)
+        assert path.stat().st_ino != before_inode
+
+        with pytest.raises(OperatorPolicyPinError):
+            pin.assert_current()
+
+
 @pytest.mark.parametrize(
     "mutation",
     ("changed_bytes_rewrite", "identical_bytes_rewrite", "identical_bytes_inode_replacement"),

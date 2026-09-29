@@ -1,7 +1,8 @@
 """Inert private owner calls and proposals; construction grants no authority.
 
 The broker authenticates snapshot and physical policy selection before calling.
-The owner independently resolves operator keys from that authenticated snapshot.
+The owner receives an operator binding derived from the protected broker pin at
+startup; it does not resolve operator keys from the snapshot.
 A proposal is not durable issuance: the broker must authenticate its origin,
 compare its pinned call and repeat trust/latest-policy CAS at fenced append.
 """
@@ -87,8 +88,8 @@ class AuthorizePreparedSelfDeliveryPolicyCallV1(CliCustodyDTO):
 class PreparedSelfDeliveryPolicyProposalV1(CliCustodyDTO):
     """Uncommitted owner proposal; consistency is not signature authentication."""
 
-    schema_id: Literal["chiplog.deployment-trust.self-delivery-policy-proposal.v1"] = (
-        "chiplog.deployment-trust.self-delivery-policy-proposal.v1"
+    schema_id: Literal["chiplog.deployment-trust.self-delivery-policy-result.v1"] = (
+        "chiplog.deployment-trust.self-delivery-policy-result.v1"
     )
     disposition: Literal["PROPOSED"] = "PROPOSED"
     call_sha256: Digest
@@ -164,6 +165,9 @@ class PreparedSelfDeliveryPolicyProposalV1(CliCustodyDTO):
 
 
 class PreparedSelfDeliveryPolicyRejectedV1(CliCustodyDTO):
+    schema_id: Literal["chiplog.deployment-trust.self-delivery-policy-result.v1"] = (
+        "chiplog.deployment-trust.self-delivery-policy-result.v1"
+    )
     disposition: Literal["DENIED", "STALE"]
     call_sha256: Digest
     reason: Identity

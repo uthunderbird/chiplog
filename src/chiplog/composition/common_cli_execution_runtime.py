@@ -13,8 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
+from pydantic import TypeAdapter
+
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
-from chiplog.architecture.r7_runtime import R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import (
+    R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
+    R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
+)
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallAuthorityObservation,
     CallSubjectHead,
@@ -67,6 +72,15 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
     NonIssuedHermeticOutputScopeV1,
     ReadCurrentHermeticExecutionScopeV1,
 )
+from chiplog.capabilities.deployment_trust.operator_policy_authorization_contracts import (
+    SignedOperatorPolicyAuthorizationV1,
+)
+from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_owner_contracts import (  # noqa: E501
+    AuthorizePreparedSelfDeliveryPolicyCallV1,
+    PreparedSelfDeliveryPolicyProposalV1,
+    PreparedSelfDeliveryPolicyRejectedV1,
+    PreparedSelfDeliveryPolicyResultV1,
+)
 from chiplog.capabilities.effects.h1_local_preparation_record_contracts import (
     SCHEMA_ID as H1_LOCAL_INTENT_SCHEMA,
 )
@@ -114,6 +128,9 @@ from chiplog.platform.broker import (
 )
 from chiplog.platform.ingress_custody_records import canonical, reference
 from chiplog.platform.ingress_transition_contracts import RetainedIngressSource
+from chiplog.platform.prepared_self_delivery_policy_lineage import (
+    AuthenticatedPreparedSelfDeliveryPolicy,
+)
 from chiplog.platform.r7_trust import TrustOwnerCall
 from chiplog.platform.r7_trust_durability import FrozenTrustObservation
 
@@ -269,6 +286,155 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_conversation_source_port: Any | None
     _h1_live_invocation_source: Any | None
     _h1_live_readplan_source: Any | None
+    _j7_operator_policy_key_pin: Any | None
+
+    async def authorize_prepared_self_delivery_policy(
+        self, canonical_signed_source_bytes: bytes, *, request_id: str
+    ) -> AuthenticatedPreparedSelfDeliveryPolicy:
+        """Authorize and append one J7 policy through the mounted trust owner.
+
+        The caller supplies only the signed source.  The broker captures every
+        mutable authority input under its gate, releases that gate for owner
+        IPC, then repeats the whole cut before the durable append.
+        """
+        if type(canonical_signed_source_bytes) is not bytes or not canonical_signed_source_bytes:
+            raise PermissionError("J7 authorization requires nonempty signed source bytes")
+        if type(request_id) is not str or not request_id:
+            raise ValueError("J7 authorization requires a nonempty request id")
+        try:
+            signed = SignedOperatorPolicyAuthorizationV1.model_validate_json(
+                canonical_signed_source_bytes
+            )
+            if signed.canonical_bytes() != canonical_signed_source_bytes:
+                raise ValueError("signed operator source is not canonical")
+        except (TypeError, ValueError) as error:
+            raise PermissionError("J7 signed operator source is invalid") from error
+
+        gate = self._authority_gate()
+        with gate.hold():
+            pin = getattr(self, "_j7_operator_policy_key_pin", None)
+            if pin is None:
+                raise PermissionError("J7 operator policy pin is unavailable")
+            try:
+                pin.assert_current()
+            except Exception as error:
+                raise PermissionError("J7 operator policy pin is not current") from error
+            payload = signed.payload
+            if (
+                payload.tenant_id != self._tenant_id
+                or payload.tenant_id != pin.binding.tenant_id
+                or payload.database_id != pin.binding.database_id
+                or payload.policy_id != pin.binding.policy_id
+                or payload.operator_key_id != pin.binding.operator_key_id
+            ):
+                raise PermissionError("J7 signed source scope differs from installed pin")
+            frozen = self._trust.capture_verified_observation()
+            entries = self._trust._journal.entries()
+            if not entries:
+                raise RuntimeError("J7 trust journal is empty")
+            decision_id, _, decision_bytes = entries[-1]
+            logical_entries = self._trust.owner_snapshot_entries()
+            if not logical_entries:
+                raise RuntimeError("J7 trust snapshot is empty")
+            observation = HermeticTrustObservationV1(
+                physical_journal_head=ExactHead(
+                    identity="deployment-trust/journal",
+                    head=decision_id,
+                    fingerprint=hashlib.sha256(decision_bytes).hexdigest(),
+                ),
+                logical_snapshot_head=logical_entries[-1][0],
+            )
+            latest = self._trust.latest_prepared_self_delivery_policy(
+                payload.tenant_id, payload.database_id, payload.policy_id
+            )
+            call = AuthorizePreparedSelfDeliveryPolicyCallV1(
+                canonical_signed_source_bytes=canonical_signed_source_bytes,
+                snapshot_bytes=frozen.snapshot_bytes,
+                expected_trust_observation=observation,
+                latest_policy_anchor=None if latest is None else latest.anchor,
+                latest_policy_bytes=None if latest is None else latest.policy.canonical_bytes(),
+            )
+            callee = self._supervisor.runtime().session("deployment_trust")
+            broker_call = PublicPortCall(
+                operation_id="deployment_trust.authorize_prepared_external_self_delivery_policy",
+                request_id=request_id,
+                caller=BrokerSession(
+                    tenant_id=self._tenant_id,
+                    broker_epoch=callee.broker_epoch,
+                    generation_id=callee.generation_id,
+                    owner_id="broker",
+                    session_id="broker:" + callee.generation_id,
+                ),
+                callee=callee,
+                schema_id="chiplog.deployment-trust.authorize-self-delivery-policy-call.v1",
+                canonical_payload=call.canonical_bytes(),
+                budget=CallBudget(
+                    remaining_calls=1,
+                    remaining_depth=1,
+                    absolute_deadline_ns=time.monotonic_ns() + 5_000_000_000,
+                    policy_version=1,
+                ),
+            )
+
+        response = await self._supervisor.runtime().call(broker_call)
+        if (
+            not isinstance(response, PublicPortSuccess)
+            or response.request_id != broker_call.request_id
+            or response.responder != callee
+            or response.schema_id
+            != "chiplog.deployment-trust.self-delivery-policy-result.v1"
+            or time.monotonic_ns() >= broker_call.budget.absolute_deadline_ns
+        ):
+            raise PermissionError("J7 owner response is not authenticated and current")
+        try:
+            result = TypeAdapter(PreparedSelfDeliveryPolicyResultV1).validate_json(
+                response.canonical_payload
+            )
+            if result.canonical_bytes() != response.canonical_payload:
+                raise ValueError("owner result is not canonical")
+            if result.call_sha256 != hashlib.sha256(call.canonical_bytes()).hexdigest():
+                raise ValueError("owner result call SHA256 mismatch")
+        except (TypeError, ValueError) as error:
+            raise PermissionError("J7 owner result is invalid") from error
+        if isinstance(result, PreparedSelfDeliveryPolicyRejectedV1):
+            raise PermissionError("J7 owner denied authorization: " + result.reason)
+        proposal = result
+        if not isinstance(proposal, PreparedSelfDeliveryPolicyProposalV1):
+            raise PermissionError("J7 owner result has an unknown disposition")
+        try:
+            proposal.check_pinned_call(call)
+        except (TypeError, ValueError) as error:
+            raise PermissionError("J7 owner proposal is invalid") from error
+
+        with gate.hold():
+            pin = getattr(self, "_j7_operator_policy_key_pin", None)
+            if pin is None:
+                raise PermissionError("J7 operator policy pin is unavailable")
+            try:
+                pin.assert_current()
+            except Exception as error:
+                raise PermissionError(
+                    "J7 operator policy pin changed during authorization"
+                ) from error
+            if (
+                self._trust.capture_verified_observation() != frozen
+                or self._supervisor.runtime().session("deployment_trust") != callee
+                or self._trust.latest_prepared_self_delivery_policy(
+                    signed.payload.tenant_id,
+                    signed.payload.database_id,
+                    signed.payload.policy_id,
+                )
+                != latest
+            ):
+                raise PermissionError("J7 authorization inputs became stale")
+            try:
+                proposal.check_pinned_call(call)
+                authenticated = self._trust.append_prepared_self_delivery_policy(call, proposal)
+            except (TypeError, ValueError, RuntimeError) as error:
+                raise PermissionError("J7 policy append was rejected") from error
+            if authenticated.policy != proposal.policy:
+                raise RuntimeError("J7 durable policy differs from owner proposal")
+            return authenticated
 
     async def cancel_execution_call(
         self, peer: str, submission: CancelCallSubmission
@@ -1819,6 +1985,14 @@ async def open_installed_h1_runtime(
         nonlocal root_bound, runtime
         runtime = cast(CommonCliExecutionRuntime, opened)
         runtime._bind_h1_historical_custody_path(resources._custody_path)
+        if hasattr(runtime, "_j7_operator_policy_key_pin"):
+            raise RuntimeError("installed J7 operator policy pin is already mounted")
+        # The supervisor derives the trusted tenant/database scope from its
+        # authenticated startup state.  An absent or invalid provisioned pin
+        # leaves H1 available, but the public J7 route denies closed.
+        runtime._j7_operator_policy_key_pin = (
+            runtime._supervisor._install_j7_operator_policy_key_pin()
+        )
         if len(evidence_reader) != 1 or len(recovery_journal) != 1 or len(recovery_mount) != 1:
             raise RuntimeError("installed H1 role reader is absent")
         runtime._h1_delivery_evidence_journal = evidence_reader[0]
@@ -1871,7 +2045,7 @@ async def open_installed_h1_runtime(
                 tenant_id=launch._slot.tenant_id,
                 operator_secret=b"r13-hermetic-only",
                 runtime_type=CommonCliExecutionRuntime,
-                manifest=R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
+                manifest=R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
                 extra_leaves={
                     "model": model,
                     "effects_transport": resources.require_original_provider(),

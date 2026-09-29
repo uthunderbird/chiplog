@@ -208,6 +208,22 @@ def verify_offline_import_boundary(root: Path) -> None:
                 modules = tuple(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
                 modules = (node.module,)
+            if (
+                relative
+                == "chiplog/capabilities/deployment_trust/operator_policy_command_verifier.py"
+                and isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module == "cryptography.hazmat.primitives.asymmetric.ed25519"
+                and len(node.names) == 1
+                and node.names[0].name == "Ed25519PublicKey"
+                and node.names[0].asname is None
+            ):
+                continue
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module == "cryptography.hazmat.primitives.asymmetric.ed25519"
+            ):
+                raise R8SurfaceViolation("offline graph acquired an unregistered dependency")
             # Registered opt-in auth/model leaves, not part of the hermetic assembly.
             if relative == "chiplog/adapters/driven/codex_auth.py" and all(
                 module in {"oauth_cli_kit", "oauth_cli_kit.models"} for module in modules

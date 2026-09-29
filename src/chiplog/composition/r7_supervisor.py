@@ -25,6 +25,11 @@ from chiplog.platform.broker import (
     PublicPortRejected,
     PublicPortResult,
 )
+from chiplog.platform.operator_policy_key_pin import (
+    OperatorPolicyPinError,
+    PinnedOperatorPolicyKey,
+    load_operator_policy_key_pin,
+)
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime, OwnerProcessAttestation
 from chiplog.platform.r7_trust import TrustOwnerCall, TrustOwnerResult, encode_trust_journal
 from chiplog.platform.r7_trust_durability import BrokerTrustDurability, FrozenTrustObservation
@@ -230,9 +235,41 @@ class R7RuntimeSupervisor:
         self._evidence: RuntimeAdmissionEvidence | None = None
         self._reconciled: tuple[str, ...] = ()
         self._graph: RuntimeGraphGeneration | None = None
+        self._j7_operator_policy_key_pin: PinnedOperatorPolicyKey | None = None
 
     def _authority_scope(self) -> AbstractContextManager[None]:
         return nullcontext() if self._authority_gate is None else self._authority_gate.hold()
+
+    def _install_j7_operator_policy_key_pin(self) -> PinnedOperatorPolicyKey | None:
+        """Load the J7 pin from the admitted authority bundle for a future generation.
+
+        A missing or invalid provisioning file leaves the H1 owner available; its
+        J7-only operation is then denied by the owner evaluator.
+        """
+        if self._manifest.manifest_version != 19:
+            self._j7_operator_policy_key_pin = None
+            return None
+        gate = self._authority_gate
+        trust = self._trust
+        if gate is None or trust is None:
+            self._j7_operator_policy_key_pin = None
+            return None
+        with self._lifecycle_lock, gate.hold():
+            try:
+                state = trust.verify()
+                if state is None or state.tenant_id != self._tenant_id:
+                    raise OperatorPolicyPinError("operator policy pin trust scope is unavailable")
+                pin = load_operator_policy_key_pin(
+                    gate,
+                    tenant_id=state.tenant_id,
+                    database_id=state.database_instance_id,
+                )
+                pin.assert_current()
+            except OperatorPolicyPinError:
+                self._j7_operator_policy_key_pin = None
+                return None
+            self._j7_operator_policy_key_pin = pin
+            return pin
 
     @property
     def broker_epoch(self) -> int | None:
@@ -415,7 +452,19 @@ class R7RuntimeSupervisor:
             self._realized_leaves,
         )
         try:
-            runtime.start()
+            pin = self._j7_operator_policy_key_pin
+            if pin is None:
+                runtime.start()
+            else:
+                with self._authority_scope():
+                    try:
+                        runtime._install_j7_operator_policy_key_pin(pin)
+                    except OperatorPolicyPinError:
+                        self._j7_operator_policy_key_pin = None
+                    else:
+                        runtime.start()
+                if self._j7_operator_policy_key_pin is None:
+                    runtime.start()
             graph = runtime.graph_generation()
             _verify_realized_graph_exact(
                 self._manifest, graph, generation_id, self._tenant_id, epoch

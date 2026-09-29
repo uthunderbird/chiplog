@@ -39,10 +39,29 @@ OperatorPolicyRequest = (
     IssuePreparedExternalSelfDeliveryPolicyRequestV1
     | RevokePreparedExternalSelfDeliveryPolicyRequestV1
 )
+_ED25519_PRELOAD_PUBLIC_KEY = bytes.fromhex(
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+)
+_ED25519_PRELOAD_SIGNATURE = bytes.fromhex(
+    "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+    "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+)
 
 
 class OperatorPolicyVerificationError(ValueError):
     """The supplied operator authorization does not verify for this command."""
+
+
+def preload_operator_policy_verifier() -> None:
+    """Resolve Ed25519's lazy backend before raw authority is denied.
+
+    This RFC 8032 empty-message test vector is fixed and has no authority
+    input. The actual request verifier may then run after the owner audit hook
+    denies filesystem access.
+    """
+    Ed25519PublicKey.from_public_bytes(_ED25519_PRELOAD_PUBLIC_KEY).verify(
+        _ED25519_PRELOAD_SIGNATURE, b""
+    )
 
 
 class OperatorPolicyKeyBindingV1(CliCustodyDTO):

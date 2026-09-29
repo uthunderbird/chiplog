@@ -48,7 +48,7 @@ class OperatorPolicyKeyPinFileV1(CliCustodyDTO):
 
 
 _FileMetadata = tuple[int, int, int, int, int, int, int, int]
-_ParentMetadata = tuple[int, int, int, int, int]
+_ParentMetadata = tuple[int, int, int, int]
 
 
 @dataclass(frozen=True)
@@ -172,7 +172,6 @@ def _checked_parent(parent: Path) -> _ParentMetadata:
         metadata.st_ino,
         metadata.st_mode,
         metadata.st_uid,
-        metadata.st_ctime_ns,
     )
 
 

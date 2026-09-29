@@ -35,6 +35,7 @@ from chiplog.platform.broker import (
     PublicPortResult,
     PublicPortSuccess,
 )
+from chiplog.platform.operator_policy_key_pin import PinnedOperatorPolicyKey
 
 _MAX_FRAME_BYTES = 8 * 1024 * 1024
 
@@ -77,7 +78,13 @@ class _OwnerService:
 
     def attest(self) -> dict[str, object]:
         handler_module = sys.modules[self._handler.__module__]
-        routes = cast(tuple[tuple[str, str, str, str, str], ...], handler_module.__dict__["ROUTES"])
+        routes = tuple(
+            route
+            for route in cast(
+                tuple[tuple[str, str, str, str, str], ...], handler_module.__dict__["ROUTES"]
+            )
+            if route[0] in self.identity.capability_ids
+        )
         filesystem_denied = False
         network_denied = False
         process_spawn_denied = False
@@ -187,7 +194,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             )
         ):
             return "chiplog.capabilities.deployment_trust._cli_custody_process"
-        if identity.capability_ids == tuple(
+        h1_capabilities = tuple(
             sorted(
                 (
                     *legacy,
@@ -197,6 +204,17 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
                     "deployment_trust.read_current_hermetic_output_scope",
                 )
             )
+        )
+        if identity.capability_ids in (
+            h1_capabilities,
+            tuple(
+                sorted(
+                    (
+                        *h1_capabilities,
+                        "deployment_trust.authorize_prepared_external_self_delivery_policy",
+                    )
+                )
+            ),
         ):
             return "chiplog.capabilities.deployment_trust._h1_process"
         raise OwnerProcessFailure("unknown deployment-trust capability partition")
@@ -433,6 +451,7 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
             "chiplog.capabilities.deployment_trust._cli_custody_process",
             "chiplog.capabilities.deployment_trust._h1_process",
             "chiplog.capabilities.deployment_trust._ingress_process",
+            "chiplog.capabilities.deployment_trust._j7_process",
             "chiplog.capabilities.deployment_trust._r17_process",
             "chiplog.capabilities.deployment_trust._r7_process",
         )
@@ -466,8 +485,20 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
 
 def _load_owner_handler(
     identity: OwnerProcessIdentity,
+    operator_policy_key_binding_bytes: bytes | None = None,
 ) -> Callable[[str, bytes], dict[str, object]]:
     module = importlib.import_module(_owner_module(identity))
+    if (
+        module.__name__ == "chiplog.capabilities.deployment_trust._h1_process"
+        and "deployment_trust.authorize_prepared_external_self_delivery_policy"
+        in identity.capability_ids
+    ):
+        return cast(
+            Callable[[str, bytes], dict[str, object]],
+            module.install_j7_owner_evaluator(
+                operator_policy_key_binding_bytes=operator_policy_key_binding_bytes
+            ),
+        )
     return cast(Callable[[str, bytes], dict[str, object]], module.dispatch)
 
 
@@ -537,8 +568,9 @@ def _owner_process_main(
     secret: bytes,
     identity: OwnerProcessIdentity,
     ready: Any,
+    operator_policy_key_binding_bytes: bytes | None = None,
 ) -> None:
-    handler = _load_owner_handler(identity)
+    handler = _load_owner_handler(identity, operator_policy_key_binding_bytes)
     with (
         make_container(_OwnerProvider(identity, handler)) as container,
         socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener,
@@ -615,6 +647,7 @@ class AuthorityBrokerRuntime:
         self._identities: dict[str, OwnerProcessIdentity] = {}
         self._owner_secrets: dict[str, bytes] = {}
         self._connection_locks: dict[str, threading.Lock] = {}
+        self._j7_operator_policy_key_pin: PinnedOperatorPolicyKey | None = None
         self._drain = threading.Condition()
         self._draining = False
         self._inflight = 0
@@ -649,6 +682,24 @@ class AuthorityBrokerRuntime:
     ) -> None:
         self.close()
 
+    def _install_j7_operator_policy_key_pin(self, pin: PinnedOperatorPolicyKey) -> None:
+        """Install one broker-private pin before a J7 generation is started."""
+        if self._manifest.manifest_version != 19:
+            raise OwnerProcessFailure("operator policy key pin is only valid for the J7 manifest")
+        if self._temporary is not None:
+            raise OwnerProcessFailure("operator policy key pin must precede owner startup")
+        pin.assert_current()
+        self._j7_operator_policy_key_pin = pin
+
+    def _j7_binding_bytes_for_owner(self, identity: OwnerProcessIdentity) -> bytes | None:
+        if self._manifest.manifest_version != 19 or identity.owner_id != "deployment_trust":
+            return None
+        pin = self._j7_operator_policy_key_pin
+        if pin is None:
+            return None
+        pin.assert_current()
+        return pin.binding.canonical_bytes()
+
     def start(self) -> None:
         if self._temporary is not None:
             raise OwnerProcessFailure("runtime generation already started")
@@ -670,9 +721,12 @@ class AuthorityBrokerRuntime:
                 "sha256",
             )
             ready = context.Event()
+            binding_bytes = self._j7_binding_bytes_for_owner(identity)
             process = context.Process(
                 target=_owner_process_main,
-                args=(path, owner_secret, identity, ready),
+                args=(path, owner_secret, identity, ready)
+                if binding_bytes is None
+                else (path, owner_secret, identity, ready, binding_bytes),
                 name=f"chiplog-r7-{owner.owner_id}",
             )
             process.start()

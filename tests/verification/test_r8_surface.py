@@ -138,6 +138,66 @@ def test_offline_gate_accepts_only_registered_scheduler_version_query(tmp_path: 
     verify_offline_import_boundary(tmp_path)
 
 
+def test_offline_gate_accepts_exact_operator_policy_ed25519_import(tmp_path: Path) -> None:
+    target = (
+        tmp_path
+        / "src/chiplog/capabilities/deployment_trust/operator_policy_command_verifier.py"
+    )
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey\n"
+    )
+    verify_offline_import_boundary(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "relative,statement",
+    [
+        (
+            "capabilities/deployment_trust/operator_policy_command_verifier_neighbor.py",
+            "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey",
+        ),
+        (
+            "capabilities/deployment_trust/operator_policy_command_verifier.py",
+            "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey",
+        ),
+        (
+            "capabilities/deployment_trust/operator_policy_command_verifier.py",
+            "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey as Key",
+        ),
+        (
+            "capabilities/deployment_trust/operator_policy_command_verifier.py",
+            "from cryptography.hazmat.primitives.asymmetric.ed25519 import "
+            "Ed25519PublicKey, Ed25519PrivateKey",
+        ),
+        (
+            "capabilities/deployment_trust/operator_policy_command_verifier.py",
+            "from cryptography.hazmat.primitives.asymmetric.ed25519 import *",
+        ),
+        (
+            "capabilities/deployment_trust/operator_policy_command_verifier.py",
+            "from .cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey",
+        ),
+        (
+            "capabilities/deployment_trust/operator_policy_command_verifier.py",
+            "import cryptography.hazmat.primitives.asymmetric.ed25519",
+        ),
+        (
+            "capabilities/deployment_trust/operator_policy_command_verifier.py",
+            "import httpx",
+        ),
+    ],
+)
+def test_offline_gate_rejects_other_operator_policy_imports(
+    tmp_path: Path, relative: str, statement: str
+) -> None:
+    target = tmp_path / "src/chiplog" / relative
+    target.parent.mkdir(parents=True)
+    target.write_text(statement + "\n")
+    with pytest.raises(R8SurfaceViolation):
+        verify_offline_import_boundary(tmp_path)
+
+
 def test_offline_gate_accepts_exact_cli_peer_leaf(tmp_path: Path) -> None:
     target = tmp_path / "src/chiplog/adapters/driven/cli_custody_socket.py"
     target.parent.mkdir(parents=True)

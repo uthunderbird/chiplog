@@ -889,6 +889,55 @@ R14_R17_H1_LOCAL_EFFECTS_EVALUATION_MANIFEST = replace(
     R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST, environment="evaluation"
 )
 
+# J7 extends the mounted H1 local-effects graph with an inert owner result
+# for a broker-authenticated prepared external self-delivery policy.
+_J7_SELF_DELIVERY_POLICY_ROUTE = RoutedCallDecl(
+    "deployment_trust.authorize_prepared_external_self_delivery_policy",
+    "broker",
+    "deployment_trust",
+    "chiplog.deployment-trust.authorize-self-delivery-policy-call.v1",
+    "chiplog.deployment-trust.self-delivery-policy-result.v1",
+)
+_J7_TRUST_OPERATIONS = tuple(
+    sorted(
+        (
+            *next(
+                owner.capability_ids
+                for owner in R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST.owners
+                if owner.owner_id == "deployment_trust"
+            ),
+            _J7_SELF_DELIVERY_POLICY_ROUTE.operation_id,
+        )
+    )
+)
+R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST = replace(
+    R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
+    manifest_version=19,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_J7_TRUST_OPERATIONS,
+            public_operations=_J7_TRUST_OPERATIONS,
+            target_ids=("chiplog.capabilities.deployment_trust._h1_process:dispatch",),
+        )
+        if owner.owner_id == "deployment_trust"
+        else owner
+        for owner in R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST.routes,
+                _J7_SELF_DELIVERY_POLICY_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_R17_H1_LOCAL_EFFECTS_J7_EVALUATION_MANIFEST = replace(
+    R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST, environment="evaluation"
+)
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -919,6 +968,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         16,
         17,
         18,
+        19,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -938,6 +988,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         14: R14_R17_H0_PRODUCTION_MANIFEST,
         17: R14_R17_H1_PRODUCTION_MANIFEST,
         18: R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
+        19: R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
@@ -1023,6 +1074,8 @@ __all__ = [
     "R7_PRODUCTION_MANIFEST",
     "R8_EVALUATION_MANIFEST",
     "R8_PRODUCTION_MANIFEST",
+    "R14_R17_H1_LOCAL_EFFECTS_J7_EVALUATION_MANIFEST",
+    "R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST",
     "LeafBinding",
     "OwnerProcessDecl",
     "RoutedCallDecl",
