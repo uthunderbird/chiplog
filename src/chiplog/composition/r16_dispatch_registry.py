@@ -131,6 +131,60 @@ def historical_recipient(
     )
 
 
+def historical_grant_reference(
+    custody: HistoricalDispatchCustody, observation: ResourceObservation
+) -> ExactHead:
+    """Return the authenticated original grant head without renewing it."""
+    if not verify_historical_observation(custody, observation):
+        raise ValueError("historical offline grant observation is unauthentic")
+    try:
+        grant = json.loads(observation.grant_bytes)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("historical offline grant observation is malformed") from error
+    if not isinstance(grant, dict) or canonical(grant) != observation.grant_bytes:
+        raise ValueError("historical offline grant observation is not canonical JSON")
+
+    grant_id = grant.get("grant_id")
+    call_grant_id = custody.grant_id + "/initialized-call.v1"
+    if (
+        set(grant)
+        != {
+            "schema",
+            "grant_id",
+            "version",
+            "status",
+            "cap",
+            "policy",
+            "tenant",
+            "recipient",
+            "provider",
+            "clock_epoch",
+        }
+        or grant.get("schema") != "chiplog.hermetic.dispatch-grant.v1"
+        or type(grant_id) is not str
+        or not grant_id
+        or grant_id not in (custody.grant_id, call_grant_id)
+        or type(grant.get("version")) is not int
+        or grant["version"] < 0
+        or grant.get("status") not in ("ACTIVE", "REVOKED")
+        or grant.get("cap") != custody.cap
+        or grant.get("tenant") != "hermetic-tenant"
+        or grant.get("recipient") != "hermetic-principal"
+        or grant.get("provider") != "hermetic-effects"
+        or grant.get("clock_epoch") != observation.clock_epoch
+        or type(observation.clock_epoch) is not str
+        or not observation.clock_epoch
+        or grant.get("policy")
+        != (
+            policy_reference().model_dump(mode="json")
+            if grant_id == custody.grant_id
+            else call_policy_reference().model_dump(mode="json")
+        )
+    ):
+        raise ValueError("historical offline grant schema or custody facts differ")
+    return reference(grant_id, observation.grant_bytes)
+
+
 class HermeticDispatchResources:
     """Independent offline leaf/grant custody, never an injectable permission DTO."""
 
@@ -342,6 +396,21 @@ class HermeticDispatchResources:
             observation,
         )
 
+    def _historical_custody(self) -> HistoricalDispatchCustody:
+        return HistoricalDispatchCustody(
+            issuer_key=self._key,
+            credential_id=self._credential_id,
+            grant_id=self._grant_id,
+            cap=self._cap,
+        )
+
+    def grant_reference(self, observation: ResourceObservation) -> ExactHead:
+        """Read the current, registered grant as its original exact byte head."""
+        with self._require_gate().hold():
+            if not self.verify_current(observation):
+                raise ValueError("offline grant observation is no longer current")
+            return historical_grant_reference(self._historical_custody(), observation)
+
     def recipient(self, observation: ResourceObservation) -> ProviderRecipient:
         if not self.verify_current(observation):
             raise ValueError("offline endpoint/credential/grant observation no longer current")
@@ -349,15 +418,7 @@ class HermeticDispatchResources:
 
     def historical_recipient(self, observation: ResourceObservation) -> ProviderRecipient:
         """Read an originally signed recipient without renewing its current authority."""
-        return historical_recipient(
-            HistoricalDispatchCustody(
-                issuer_key=self._key,
-                credential_id=self._credential_id,
-                grant_id=self._grant_id,
-                cap=self._cap,
-            ),
-            observation,
-        )
+        return historical_recipient(self._historical_custody(), observation)
 
     def clock(self) -> tuple[str, int]:
         with self._require_gate().hold():

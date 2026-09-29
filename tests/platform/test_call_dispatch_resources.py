@@ -1,11 +1,19 @@
 """Fixed call-policy resource issuance shares original custody and revocation."""
 
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from chiplog.composition.r14_call_dispatch_policy import policy_reference as call_policy
-from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources, policy_reference
+from chiplog.composition.r16_dispatch_custody import HistoricalDispatchCustody
+from chiplog.composition.r16_dispatch_registry import (
+    HermeticDispatchResources,
+    historical_grant_reference,
+    policy_reference,
+)
 from chiplog.platform.authority_gate import AuthorityGate
 
 
@@ -65,3 +73,29 @@ def test_call_and_legacy_grants_share_revocation_and_original_epoch(tmp_path: Pa
         assert not original.verify_current(observation)
         assert original.verify_historical(observation)
     assert not original.verify_current(original.observe_call())
+
+
+def test_registered_grant_reference_preserves_original_bytes_and_is_current_only(
+    tmp_path: Path,
+) -> None:
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1)
+    resources.bind(AuthorityGate(tmp_path / "authority.db"))
+    observation = resources.observe()
+
+    current = resources.grant_reference(observation)
+    assert current.subject_id == resources.grant_identity
+    assert current.fingerprint == hashlib.sha256(observation.grant_bytes).hexdigest()
+    resources.revoke()
+    with pytest.raises(ValueError, match="no longer current"):
+        resources.grant_reference(observation)
+
+    historical = historical_grant_reference(
+        HistoricalDispatchCustody(
+            issuer_key=resources._key,
+            credential_id=resources._credential_id,
+            grant_id=resources.grant_identity,
+            cap=resources.cap,
+        ),
+        observation,
+    )
+    assert historical == current
