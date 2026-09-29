@@ -271,7 +271,7 @@
   "composition/h1_terminal_call_identity.py": "0ab54e61e47265baa348310a5a42afb3cd5a1c97ce2e2399ea44c9859e9742d6",
   "composition/h1_v2_authority_cut.py": "cbf3c2a5e4ae53769cf3fd41890a512595778d8f9dcb67c1a69fc68ff92b5b0b",
   "composition/h1_v2_recovery_native_source.py": "2a51675d9d658400bc93a838354e0b67ab5d182b6eaa610fe3ef201c25fefcc7",
-  "composition/h1_v3_recovery_historical_source.py": "a5c7472882dd3b100c29115572b4819bfe5453737ffe2fb0295a8bcddc680b9e",
+  "composition/h1_v3_recovery_historical_source.py": "62bed9063a91e98698fb618bb986dddf7c2c9c5fd7e467c17dd53deac0fecad0",
   "composition/h1_verified_snapshot_rows.py": "09b89e15d35ed4678e091b1970058249fb721fe8a10fa733364de362edd2c60e",
   "composition/h1_worker_evidence.py": "06c3819c9e89f583f49e361c33f91f99225eacc41cb1e8b4522661e1c117e2c6",
   "composition/h1_workspace_policy_v2.py": "286004d66d1e4e7920d146a9e5a2175ac33cf69b2add23bdb822e719f3625f4d",
