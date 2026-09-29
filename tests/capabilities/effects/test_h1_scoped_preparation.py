@@ -52,7 +52,6 @@ from chiplog.capabilities.effects.h1_normative_conflict_generation import (
     h1_effects_history_head,
     h1_normative_conflict_generation,
     h1_normative_conflict_generation_capture,
-    h1_normative_conflict_generation_head,
 )
 from chiplog.capabilities.effects.h1_producer_semantics import (
     H1_PRODUCER_SEMANTICS,
@@ -66,11 +65,11 @@ from chiplog.capabilities.effects.h1_producer_source_contracts import (
     H1ProducerSourceObservationV1,
 )
 from chiplog.capabilities.effects.h1_scoped_preparation import (
-    _delivery_binding,
+    H1ScopedDeliveryDerivationV1,
     _effect_head,
     _loop_head,
-    _policy_record,
     _run_head,
+    derive_h1_scoped_delivery,
     prepare_h1_scoped_delivery,
 )
 from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
@@ -79,12 +78,6 @@ from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
     H1ScopedDeliveryRouteV1,
     PreparedH1ScopedDeliveryV1,
     PrepareH1ScopedDeliveryV1,
-)
-from chiplog.capabilities.effects.scoped_intent_contracts import (
-    DispatchMandateV3,
-    MandateHorizon,
-    PreparedDeliveryOriginV3,
-    ScopedPrecursorRequest,
 )
 from chiplog.capabilities.effects.scoped_intent_record_contracts import (
     make_scoped_intent_retained_exchange,
@@ -356,61 +349,43 @@ async def _call(*, selected_intent_id: str | None = None) -> H1ScopedDeliveryOwn
         canonical_policy_bytes=policy_raw,
         trust_observation=scope.current_request.expected_trust_observation,
     )
-    record = _policy_record(policy, policy_raw, evidence)
+    history_capture = h1_effects_history_capture(
+        history,
+        clock_contract="clock-contract",
+        clock_epoch="epoch",
+        valid_until_ns=175,
+    )
+    generation_capture = h1_normative_conflict_generation_capture(
+        h1_normative_conflict_generation(history),
+        clock_contract="clock-contract",
+        clock_epoch="epoch",
+        valid_until_ns=175,
+    )
+    derivation = derive_h1_scoped_delivery(
+        basis=basis,
+        original_run=_run_head(first.run),
+        captured_attempt=_loop_head(first.selected_attempt),
+        delivery=delivery,
+        evidence=evidence,
+        grant=grant,
+        policy=policy,
+        # The fixture can deliberately build a self-consistent invalid owner
+        # request; the owner must reject its actual intent against history.
+        target_intent_id="fixture-intent",
+        original_history=history_capture,
+        current_history=history_capture,
+        original_generation=generation_capture,
+        current_generation=generation_capture,
+        history_observation=h1_effects_history_head(history),
+        clock_contract="clock-contract",
+        clock_epoch="epoch",
+        valid_until_ns=175,
+    )
+    candidate = derivation.candidate
+    derived = derivation.mandate
+    record = derivation.policy_record
     grant_head = _effect_head(grant_anchor.grant)
     policy_effect_head = _effect_head(policy_anchor.policy)
-    command_head = _effect_head(grant.authorization_command)
-    source_head = _effect_head(grant.authorization_source)
-    derived = DispatchMandateV3(
-        mandate_id="h1-scoped-mandate:"
-        + _sha((grant.grant_id + "\x00" + delivery.delivery_id).encode()),
-        tenant_id=grant.tenant_id,
-        principal_id=grant.scope.principal_id,
-        actor_id=grant.scope.principal_id,
-        operation_profile=policy_effect_head,
-        origin=PreparedDeliveryOriginV3(
-            original_run=_run_head(first.run),
-            captured_attempt=_loop_head(first.selected_attempt),
-            binding=_delivery_binding(delivery),
-            preparation_basis=_effect_head(prepared_delivery_basis_head_v3(basis)),
-        ),
-        planning_revision=policy_effect_head,
-        preexisting_authority_basis=grant_head,
-        authority_sources=(policy_effect_head, command_head, source_head),
-        affected_party_constraints=(),
-        normative_conflict_generation=h1_normative_conflict_generation_head(
-            h1_normative_conflict_generation(history)
-        ),
-        dependencies=(),
-        factual_assertion_evidence=(source_head,),
-        verification_contradiction=(),
-        authority_applicability=(policy_effect_head,),
-        consequence_scope=grant_head,
-        communication_mandate=policy_effect_head,
-        disclosure_projection=policy_effect_head,
-        channel_class="channel",
-        interaction_context=grant_head,
-        recipient=_delivery_binding(delivery).selection.recipient,
-        payload=delivery.rendered_bytes,
-        effect_fingerprint=_sha(delivery.rendered_bytes),
-        bundle_members=(grant_head,),
-        idempotency_fence_key="grant:" + delivery.delivery_id,
-        horizon=MandateHorizon(
-            clock_contract="clock-contract",
-            clock_epoch="epoch",
-            not_before_ns=100,
-            expires_at_ns=200,
-            continuity_policy=policy_effect_head,
-        ),
-        semantics=H1_PRODUCER_SEMANTICS,
-    )
-    candidate = H1PreparedDeliveryMandateCandidateV1(
-        prepared_delivery_basis_bytes=basis.canonical_bytes(),
-        grant_anchor=grant_anchor,
-        policy_anchor=policy_anchor,
-        canonical_mandate_bytes=derived.canonical_bytes(),
-        mandate_fingerprint=_sha(derived.canonical_bytes()),
-    )
     original_sources = _h1_sources(candidate, history)
     current = H1ProducerCurrentInputsV1(
         command_fingerprint=_sha(b"command"),
@@ -428,17 +403,7 @@ async def _call(*, selected_intent_id: str | None = None) -> H1ScopedDeliveryOwn
         observed_time_ns=150,
         lease_expires_at_ns=175,
     )
-    precursor = ScopedPrecursorRequest(
-        request_id="h1-scoped-precursor:"
-        + _sha(
-            b'["chiplog.effects.h1-scoped-precursor.v1","grant","'
-            + delivery.delivery_id.encode()
-            + b'"]'
-        ),
-        mandate=derived,
-        interpretation_policy=record,
-        preexisting_sources=(record,),
-    )
+    precursor = derivation.precursor_request
     fence = NonSchedulerFence(
         lineage=NotApplicable(),
         physical_root=NotApplicable(),
@@ -574,6 +539,136 @@ def _with_request(
     return call.model_copy(
         update={"request": request, "request_digest": _sha(request.canonical_bytes())}
     )
+
+
+def _derive_from_call(
+    call: H1ScopedDeliveryOwnerCallV1,
+    *,
+    grant: PreparedExternalDeliveryGrantV2 | None = None,
+    policy: PreparedExternalSelfDeliveryPolicyV1 | None = None,
+    history: H1EffectsHistoryV1 | None = None,
+) -> H1ScopedDeliveryDerivationV1:
+    request = call.request
+    evidence = request.authority_evidence
+    first = request.original_completion_request
+    basis = __import__(
+        "chiplog.capabilities.effects.h1_prepared_delivery_basis", fromlist=["x"]
+    ).derive_h1_prepared_delivery_basis(first, request.prepared_completion)
+    grant = grant or PreparedExternalDeliveryGrantV2.model_validate_json(
+        evidence.canonical_grant_bytes
+    )
+    policy = policy or PreparedExternalSelfDeliveryPolicyV1.model_validate_json(
+        evidence.canonical_policy_bytes
+    )
+    history = history or H1EffectsHistoryV1.model_validate_json(
+        request.current.sources.effects_history.canonical_value
+    )
+    history_capture = h1_effects_history_capture(
+        history,
+        clock_contract=request.current.clock_contract,
+        clock_epoch=request.current.clock_epoch,
+        valid_until_ns=request.current.lease_expires_at_ns,
+    )
+    generation_capture = h1_normative_conflict_generation_capture(
+        h1_normative_conflict_generation(history),
+        clock_contract=request.current.clock_contract,
+        clock_epoch=request.current.clock_epoch,
+        valid_until_ns=request.current.lease_expires_at_ns,
+    )
+    return derive_h1_scoped_delivery(
+        basis=basis,
+        original_run=_run_head(first.run),
+        captured_attempt=_loop_head(first.selected_attempt),
+        delivery=request.prepared_completion.delivery.manifest.ordered_deliveries[0],
+        evidence=evidence,
+        grant=grant,
+        policy=policy,
+        target_intent_id=request.intent_id,
+        original_history=history_capture,
+        current_history=history_capture,
+        original_generation=generation_capture,
+        current_generation=generation_capture,
+        history_observation=h1_effects_history_head(history),
+        clock_contract=request.current.clock_contract,
+        clock_epoch=request.current.clock_epoch,
+        valid_until_ns=request.current.lease_expires_at_ns,
+    )
+
+
+async def test_scoped_owner_uses_pure_derivation_and_rejects_stale_authority_proof() -> None:
+    call = await _call()
+    owner_result = prepare_h1_scoped_delivery(call)
+    assert isinstance(owner_result, PreparedH1ScopedDeliveryV1)
+
+    # Compatibility goldens from the isolated pre-change fixture:
+    # HEAD b08a44ecc1d6ba0d0f567c9451e0a44fba674339; uv.lock blob
+    # 50ba3c14844c84ab2d7821dee0187c7ad9738574; selector is this test's _call().
+    assert _sha(owner_result.canonical_bytes()) == (
+        "8990f2143e0d0764012f643648e94740749be20a895669306c43e25ef77e8578"
+    )
+    assert _sha(owner_result.mandate_bytes) == (
+        "c1de670e28f20b0d8b2d0826ac711391a3b10e5ce0258831e0baf49a8aa33c2b"
+    )
+    assert _sha(owner_result.precursor_request.canonical_bytes()) == (
+        "7b555b9d4a3f75751ad0bee4330c93d5f542a11d7da3b57ae28a1dbb639956b4"
+    )
+    derivation = _derive_from_call(call)
+    assert owner_result.mandate_bytes == derivation.candidate.canonical_mandate_bytes
+    assert owner_result.precursor_request == derivation.precursor_request
+    assert owner_result.intent_result.intent.mandate == derivation.mandate
+
+    grant = PreparedExternalDeliveryGrantV2.model_validate_json(
+        call.request.authority_evidence.canonical_grant_bytes
+    )
+    changed_grant = grant.model_copy(update={"grant_id": "changed-grant"})
+    with pytest.raises(ValueError, match="differs from closed authority evidence"):
+        _derive_from_call(call, grant=changed_grant)
+    changed_evidence = call.request.authority_evidence.model_copy(
+        update={"canonical_grant_bytes": changed_grant.canonical_bytes()}
+    )
+    changed_request = call.request.model_copy(update={"authority_evidence": changed_evidence})
+    assert prepare_h1_scoped_delivery(_with_request(call, changed_request)).disposition == "DENIED"
+
+
+async def test_pure_derivation_binds_policy_and_history_generation_changes() -> None:
+    call = await _call()
+    derivation = _derive_from_call(call)
+    policy = PreparedExternalSelfDeliveryPolicyV1.model_validate_json(
+        call.request.authority_evidence.canonical_policy_bytes
+    )
+    changed_policy = policy.model_copy(
+        update={"terms": policy.terms.model_copy(update={"channel_id": "changed-channel"})}
+    )
+    with pytest.raises(ValueError, match="differs from closed authority evidence"):
+        _derive_from_call(call, policy=changed_policy)
+
+    alternate_history = H1EffectsHistoryV1(
+        tenant_id=call.request.original_completion_request.run.tenant,
+        owner_journal_head="alternate-history-head",
+        ordered_members=(),
+        digest=h1_effects_history_digest(
+            call.request.original_completion_request.run.tenant,
+            "alternate-history-head",
+            (),
+        ),
+    )
+    assert (
+        _derive_from_call(call, history=alternate_history).candidate.canonical_mandate_bytes
+        != derivation.candidate.canonical_mandate_bytes
+    )
+
+    changed_generation = h1_normative_conflict_generation_capture(
+        h1_normative_conflict_generation(alternate_history),
+        clock_contract=call.request.current.clock_contract,
+        clock_epoch=call.request.current.clock_epoch,
+        valid_until_ns=call.request.current.lease_expires_at_ns,
+    )
+    changed_sources = call.request.current.sources.model_copy(
+        update={"normative_conflict_generation": changed_generation}
+    )
+    changed_current = call.request.current.model_copy(update={"sources": changed_sources})
+    changed_request = call.request.model_copy(update={"current": changed_current})
+    assert prepare_h1_scoped_delivery(_with_request(call, changed_request)).disposition == "DENIED"
 
 
 async def test_scoped_owner_separates_policy_horizon_from_observation_capture_lease() -> None:

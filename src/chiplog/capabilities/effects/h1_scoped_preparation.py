@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from chiplog.capabilities.agent_loop.delivery_contracts import AcceptedDelivery
@@ -24,16 +25,19 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_con
 )
 
 from .contracts import DeliverySendBinding, ExactHead, OriginSelection, ProviderRecipient
+from .dispatch_authority_contracts import CapturedSource, Identity
 from .dispatch_v2_contracts import MandateHorizon
 from .fences import NonSchedulerFence
 from .h1_normative_conflict_generation import require_h1_history_and_normative_conflict_generation
 from .h1_prepared_delivery_basis import derive_h1_prepared_delivery_basis
 from .h1_producer_semantics import H1_PRODUCER_SEMANTICS, require_h1_producer_semantics
 from .h1_producer_source_contracts import (
+    H1PreparedDeliveryMandateCandidateV1,
     require_h1_prepared_delivery_candidate,
     require_h1_prepared_delivery_sources,
 )
 from .h1_scoped_preparation_contracts import (
+    H1ScopedDeliveryAuthorityEvidenceV1,
     H1ScopedDeliveryOwnerCallV1,
     H1ScopedDeliveryRejectedV1,
     PreparedH1ScopedDeliveryV1,
@@ -42,6 +46,7 @@ from .scoped_intent_contracts import (
     DispatchMandateV3,
     ExternalActionIntentV3,
     PreparedDeliveryAuthority,
+    PreparedDeliveryBasisV3,
     PreparedDeliveryOriginV3,
     PreparedScopedIntentPublication,
     PrepareScopedIntentPublication,
@@ -57,6 +62,21 @@ from .scoped_intent_record_contracts import (
     scoped_intent_fingerprint,
     validate_scoped_intent_publication,
 )
+
+
+@dataclass(frozen=True)
+class H1ScopedDeliveryDerivationV1:
+    """Canonical H1 output from closed candidate inputs.
+
+    This is a pure projection.  Its inputs can be authenticated by a mounted
+    broker, but this function neither authenticates them nor establishes their
+    currentness.
+    """
+
+    candidate: H1PreparedDeliveryMandateCandidateV1
+    mandate: DispatchMandateV3
+    policy_record: ScopedAuthorityRecord
+    precursor_request: ScopedPrecursorRequest
 
 
 def _sha(raw: bytes) -> str:
@@ -157,6 +177,118 @@ def _same_head(left: Any, right: ExactHead) -> bool:
     )
 
 
+def derive_h1_scoped_delivery(
+    *,
+    basis: PreparedDeliveryBasisV3,
+    original_run: ExactHead,
+    captured_attempt: ExactHead,
+    delivery: AcceptedDelivery,
+    evidence: H1ScopedDeliveryAuthorityEvidenceV1,
+    grant: PreparedExternalDeliveryGrantV2,
+    policy: PreparedExternalSelfDeliveryPolicyV1,
+    target_intent_id: Identity,
+    original_history: CapturedSource,
+    current_history: CapturedSource,
+    original_generation: CapturedSource,
+    current_generation: CapturedSource,
+    history_observation: ExactHead,
+    clock_contract: Identity,
+    clock_epoch: Identity,
+    valid_until_ns: int,
+) -> H1ScopedDeliveryDerivationV1:
+    """Derive the exact H1 candidate projection from closed owner DTOs.
+
+    Checks that grant and policy bytes equal the closed evidence and
+    reconstructs exact history/generation captures.  The caller must already
+    validate grant, delivery, policy, and basis semantic joins.  This function
+    neither authenticates inputs nor establishes their currentness.
+    """
+    if (
+        grant.canonical_bytes() != evidence.canonical_grant_bytes
+        or policy.canonical_bytes() != evidence.canonical_policy_bytes
+    ):
+        raise ValueError("H1 derivation grant or policy differs from closed authority evidence")
+    normative_conflict_generation = require_h1_history_and_normative_conflict_generation(
+        tenant_id=grant.tenant_id,
+        target_intent_id=target_intent_id,
+        original_history=original_history,
+        current_history=current_history,
+        original_generation=original_generation,
+        current_generation=current_generation,
+        history_observation=history_observation,
+        clock_contract=clock_contract,
+        clock_epoch=clock_epoch,
+        valid_until_ns=valid_until_ns,
+    )
+    grant_scope = grant.scope
+    terms = policy.terms
+    policy_record = _policy_record(policy, evidence.canonical_policy_bytes, evidence)
+    policy_head = _effect_head(evidence.policy_anchor.policy)
+    grant_head = _effect_head(evidence.grant_anchor.grant)
+    source_head = _effect_head(grant.authorization_source)
+    command_head = _effect_head(grant.authorization_command)
+    derived = DispatchMandateV3(
+        mandate_id=_derived_mandate_id(grant, delivery),
+        tenant_id=grant.tenant_id,
+        principal_id=grant_scope.principal_id,
+        actor_id=grant_scope.principal_id,
+        operation_profile=policy_head,
+        origin=PreparedDeliveryOriginV3(
+            original_run=original_run,
+            captured_attempt=captured_attempt,
+            binding=_delivery_binding(delivery),
+            preparation_basis=_effect_head(prepared_delivery_basis_head_v3(basis)),
+        ),
+        planning_revision=policy_head,
+        preexisting_authority_basis=grant_head,
+        authority_sources=(policy_head, command_head, source_head),
+        affected_party_constraints=(),
+        normative_conflict_generation=normative_conflict_generation,
+        dependencies=(),
+        factual_assertion_evidence=(source_head,),
+        verification_contradiction=(),
+        authority_applicability=(policy_head,),
+        consequence_scope=grant_head,
+        communication_mandate=policy_head,
+        disclosure_projection=policy_head,
+        channel_class=terms.channel_id,
+        interaction_context=grant_head,
+        recipient=_recipient(delivery.selection.recipient),
+        payload=delivery.rendered_bytes,
+        effect_fingerprint=_sha(delivery.rendered_bytes),
+        bundle_members=(grant_head,),
+        idempotency_fence_key=grant.grant_id + ":" + delivery.delivery_id,
+        horizon=MandateHorizon(
+            clock_contract=terms.clock_contract,
+            clock_epoch=terms.clock_epoch,
+            not_before_ns=terms.not_before_ns,
+            expires_at_ns=terms.expires_at_ns,
+            continuity_policy=policy_head,
+        ),
+        semantics=H1_PRODUCER_SEMANTICS,
+    )
+    mandate_bytes = derived.canonical_bytes()
+    candidate = H1PreparedDeliveryMandateCandidateV1(
+        prepared_delivery_basis_bytes=basis.canonical_bytes(),
+        grant_anchor=evidence.grant_anchor,
+        policy_anchor=evidence.policy_anchor,
+        canonical_mandate_bytes=mandate_bytes,
+        mandate_fingerprint=_sha(mandate_bytes),
+    )
+    precursor = ScopedPrecursorRequest(
+        request_id=_derived_precursor_id(grant, delivery),
+        mandate=derived,
+        interpretation_policy=policy_record,
+        preexisting_sources=(policy_record,),
+    )
+    return H1ScopedDeliveryDerivationV1(
+        candidate=candidate,
+        mandate=derived,
+        policy_record=policy_record,
+        precursor_request=precursor,
+    )
+
+
 def prepare_h1_scoped_delivery(
     call: H1ScopedDeliveryOwnerCallV1,
 ) -> PreparedH1ScopedDeliveryV1 | H1ScopedDeliveryRejectedV1:
@@ -179,19 +311,15 @@ def prepare_h1_scoped_delivery(
         delivery = request.prepared_completion.delivery.manifest.ordered_deliveries[0]
         if delivery.selection.kind != "ORIGIN_EXACT":
             return _reject("H1 external delivery requires ORIGIN_EXACT selection")
-        binding = _delivery_binding(delivery)
         grant_scope = grant.scope
         terms = policy.terms
         mandate = grant_scope.mandate
         policy_record = _policy_record(policy, evidence.canonical_policy_bytes, evidence)
         policy_head = _effect_head(evidence.policy_anchor.policy)
         grant_head = _effect_head(evidence.grant_anchor.grant)
-        source_head = _effect_head(grant.authorization_source)
-        command_head = _effect_head(grant.authorization_command)
         original_run = _run_head(first.run)
         attempt = _loop_head(first.selected_attempt)
         loop_basis_head = prepared_delivery_basis_head_v3(basis)
-        basis_head = _effect_head(loop_basis_head)
 
         if request.current.supported_semantics != H1_PRODUCER_SEMANTICS:
             return _reject("H1 scoped delivery needs registered producer semantics")
@@ -280,8 +408,14 @@ def prepare_h1_scoped_delivery(
             clock_epoch=terms.clock_epoch,
             valid_until_ns=request.current.lease_expires_at_ns,
         )
-        normative_conflict_generation = require_h1_history_and_normative_conflict_generation(
-            tenant_id=grant.tenant_id,
+        derivation = derive_h1_scoped_delivery(
+            basis=basis,
+            original_run=original_run,
+            captured_attempt=attempt,
+            delivery=delivery,
+            evidence=evidence,
+            grant=grant,
+            policy=policy,
             target_intent_id=request.intent_id,
             original_history=request.original_sources.effects_history,
             current_history=request.current.sources.effects_history,
@@ -292,75 +426,32 @@ def prepare_h1_scoped_delivery(
             clock_epoch=terms.clock_epoch,
             valid_until_ns=request.current.lease_expires_at_ns,
         )
-
-        derived = DispatchMandateV3(
-            mandate_id=_derived_mandate_id(grant, delivery),
-            tenant_id=grant.tenant_id,
-            principal_id=grant_scope.principal_id,
-            actor_id=grant_scope.principal_id,
-            operation_profile=policy_head,
-            origin=PreparedDeliveryOriginV3(
-                original_run=original_run,
-                captured_attempt=attempt,
-                binding=binding,
-                preparation_basis=basis_head,
-            ),
-            planning_revision=policy_head,
-            preexisting_authority_basis=grant_head,
-            authority_sources=(policy_head, command_head, source_head),
-            affected_party_constraints=(),
-            normative_conflict_generation=normative_conflict_generation,
-            dependencies=(),
-            factual_assertion_evidence=(source_head,),
-            verification_contradiction=(),
-            authority_applicability=(policy_head,),
-            consequence_scope=grant_head,
-            communication_mandate=policy_head,
-            disclosure_projection=policy_head,
-            channel_class=terms.channel_id,
-            interaction_context=grant_head,
-            recipient=_recipient(delivery.selection.recipient),
-            payload=delivery.rendered_bytes,
-            effect_fingerprint=_sha(delivery.rendered_bytes),
-            bundle_members=(grant_head,),
-            idempotency_fence_key=grant.grant_id + ":" + delivery.delivery_id,
-            horizon=MandateHorizon(
-                clock_contract=terms.clock_contract,
-                clock_epoch=terms.clock_epoch,
-                not_before_ns=terms.not_before_ns,
-                expires_at_ns=terms.expires_at_ns,
-                continuity_policy=policy_head,
-            ),
-            semantics=H1_PRODUCER_SEMANTICS,
-        )
-        basis_bytes = basis.canonical_bytes()
-        mandate_bytes = derived.canonical_bytes()
+        candidate = derivation.candidate
+        derived = derivation.mandate
+        policy_record = derivation.policy_record
+        precursor = derivation.precursor_request
+        basis_bytes = candidate.prepared_delivery_basis_bytes
+        mandate_bytes = candidate.canonical_mandate_bytes
         require_h1_prepared_delivery_sources(
             request.original_sources,
             basis_bytes=basis_bytes,
-            grant_anchor=evidence.grant_anchor,
-            policy_anchor=evidence.policy_anchor,
+            grant_anchor=candidate.grant_anchor,
+            policy_anchor=candidate.policy_anchor,
             mandate_bytes=mandate_bytes,
         )
         require_h1_prepared_delivery_candidate(
             request.current.immutable_mandate_candidate,
             basis_bytes=basis_bytes,
-            grant_anchor=evidence.grant_anchor,
-            policy_anchor=evidence.policy_anchor,
+            grant_anchor=candidate.grant_anchor,
+            policy_anchor=candidate.policy_anchor,
             mandate_bytes=mandate_bytes,
         )
         require_h1_prepared_delivery_sources(
             request.current.sources,
             basis_bytes=basis_bytes,
-            grant_anchor=evidence.grant_anchor,
-            policy_anchor=evidence.policy_anchor,
+            grant_anchor=candidate.grant_anchor,
+            policy_anchor=candidate.policy_anchor,
             mandate_bytes=mandate_bytes,
-        )
-        precursor = ScopedPrecursorRequest(
-            request_id=_derived_precursor_id(grant, delivery),
-            mandate=derived,
-            interpretation_policy=policy_record,
-            preexisting_sources=(policy_record,),
         )
         if request.precursor_request != precursor:
             return _reject("H1 scoped delivery precursor request differs from authority projection")
@@ -432,4 +523,8 @@ def prepare_h1_scoped_delivery(
         return _reject(str(error))
 
 
-__all__ = ["prepare_h1_scoped_delivery"]
+__all__ = [
+    "H1ScopedDeliveryDerivationV1",
+    "derive_h1_scoped_delivery",
+    "prepare_h1_scoped_delivery",
+]
