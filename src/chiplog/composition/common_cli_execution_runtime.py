@@ -75,6 +75,17 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
 from chiplog.capabilities.deployment_trust.operator_policy_authorization_contracts import (
     SignedOperatorPolicyAuthorizationV1,
 )
+from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts import (
+    ReadPreparedExternalDeliveryGrantLifecycleV2,
+)
+from chiplog.capabilities.deployment_trust.prepared_external_delivery_grant_owner_contracts import (
+    AuthorizePreparedExternalDeliveryGrantCallV2,
+    PreparedExternalDeliveryGrantEvidenceV2,
+    PreparedExternalDeliveryGrantProposalV2,
+    PreparedExternalDeliveryGrantRejectedV2,
+    PreparedExternalDeliveryGrantResultV2,
+    PreparedExternalDeliveryGrantRouteV2,
+)
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_owner_contracts import (  # noqa: E501
     AuthorizePreparedSelfDeliveryPolicyCallV1,
     PreparedSelfDeliveryPolicyProposalV1,
@@ -128,10 +139,13 @@ from chiplog.platform.broker import (
 )
 from chiplog.platform.ingress_custody_records import canonical, reference
 from chiplog.platform.ingress_transition_contracts import RetainedIngressSource
+from chiplog.platform.prepared_external_delivery_grant_lineage import (
+    AuthenticatedPreparedExternalDeliveryGrant,
+)
 from chiplog.platform.prepared_self_delivery_policy_lineage import (
     AuthenticatedPreparedSelfDeliveryPolicy,
 )
-from chiplog.platform.r7_trust import TrustOwnerCall
+from chiplog.platform.r7_trust import TrustOwnerCall, encode_trust_journal
 from chiplog.platform.r7_trust_durability import FrozenTrustObservation
 
 R17_RETAINED_READER_ID = RETAINED_CLI_READER_ID
@@ -287,6 +301,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_live_invocation_source: Any | None
     _h1_live_readplan_source: Any | None
     _j7_operator_policy_key_pin: Any | None
+    _j7_operator_grant_key_pin: Any | None
 
     async def authorize_prepared_self_delivery_policy(
         self, canonical_signed_source_bytes: bytes, *, request_id: str
@@ -387,7 +402,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         ):
             raise PermissionError("J7 owner response is not authenticated and current")
         try:
-            result = TypeAdapter(PreparedSelfDeliveryPolicyResultV1).validate_json(
+            result: PreparedSelfDeliveryPolicyResultV1 = TypeAdapter(
+                PreparedSelfDeliveryPolicyResultV1
+            ).validate_json(
                 response.canonical_payload
             )
             if result.canonical_bytes() != response.canonical_payload:
@@ -435,6 +452,343 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             if authenticated.policy != proposal.policy:
                 raise RuntimeError("J7 durable policy differs from owner proposal")
             return authenticated
+
+    async def authorize_prepared_external_delivery_grant(
+        self,
+        canonical_signed_source_bytes: bytes,
+        *,
+        request_id: str,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> AuthenticatedPreparedExternalDeliveryGrant:
+        """Issue one mounted J7 V2 grant from a replayed B completion only."""
+        from chiplog.capabilities.deployment_trust._j7_grant_process import (
+            _validate_issue,
+            derive_grant,
+            request_from_source,
+            retained_source,
+        )
+        from chiplog.composition.h1_completion_exchange_registry import (
+            H1CompletionExchangeRegistry,
+        )
+        from chiplog.composition.h1_preissuance_registration import (
+            H1PreissuanceSourceViolation,
+        )
+        from chiplog.composition.h1_runtime_preissuance_port import (
+            _CHANNEL,
+            _H1RuntimePreissuancePort,
+        )
+        from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSources
+
+        if type(canonical_signed_source_bytes) is not bytes or not canonical_signed_source_bytes:
+            raise PermissionError("J7 grant authorization requires signed source bytes")
+        if type(request_id) is not str or not request_id:
+            raise ValueError("J7 grant authorization requires a request id")
+        try:
+            request = request_from_source(canonical_signed_source_bytes)
+        except (TypeError, ValueError) as error:
+            raise PermissionError("J7 grant signed source is invalid") from error
+
+        gate = self._authority_gate()
+
+        with gate.hold():
+            registry = getattr(self, "_h1_completion_exchange_registry", None)
+            if type(registry) is not H1CompletionExchangeRegistry:
+                raise PermissionError("J7 H1 completion registry is unavailable")
+            historical_capture = registry.capture_prepared_delivery_historical(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=selected_seal,
+            )
+            historical = registry.replay_prepared_delivery_historical(historical_capture)
+            entries = self._trust._journal.entries()
+            logical = self._trust.owner_snapshot_entries()
+            if not entries or not logical:
+                raise PermissionError("J7 trust history is unavailable")
+            post_policy_observation = HermeticTrustObservationV1(
+                physical_journal_head=ExactHead(
+                    identity="deployment-trust/journal",
+                    head=entries[-1][0],
+                    fingerprint=hashlib.sha256(entries[-1][2]).hexdigest(),
+                ),
+                logical_snapshot_head=logical[-1][0],
+            )
+            fresh_scope_request = historical.selected_scope.current_request.model_copy(
+                update={"expected_trust_observation": post_policy_observation}
+            )
+        fresh_result, fresh_wire = await self._read_current_hermetic_output_scope_with_wire(
+            fresh_scope_request
+        )
+        if (
+            not isinstance(fresh_result, CurrentHermeticExecutionScopeV1)
+            or not isinstance(fresh_wire.returned, PublicPortSuccess)
+        ):
+            raise PermissionError("J7 fresh H1 scope read is not current")
+        try:
+            fresh_candidate = H1OwnerCurrentCandidateV1.model_validate_json(
+                fresh_wire.returned.canonical_payload
+            )
+            if fresh_candidate.canonical_bytes() != fresh_wire.returned.canonical_payload:
+                raise ValueError("fresh H1 scope response is noncanonical")
+        except (AttributeError, ValueError) as error:
+            raise PermissionError("J7 fresh H1 scope response is invalid") from error
+
+        def capture_call(existing_capture: object | None = None) -> tuple[Any, ...]:
+            gate.require_held()
+            registry = getattr(self, "_h1_completion_exchange_registry", None)
+            if type(registry) is not H1CompletionExchangeRegistry:
+                raise PermissionError("J7 H1 completion registry is unavailable")
+            grant_pin = getattr(self, "_j7_operator_grant_key_pin", None)
+            if grant_pin is None:
+                raise PermissionError("J7 operator grant pin is unavailable")
+            try:
+                grant_pin.assert_current()
+            except Exception as error:
+                raise PermissionError("J7 operator grant pin is not current") from error
+            if existing_capture is not None and existing_capture is not historical_capture:
+                raise PermissionError("J7 historical H1 capture differs")
+            capture = historical_capture
+            projection = registry.replay_prepared_delivery_historical(cast(Any, capture))
+            replayed_current = self._replay_current_hermetic_output_scope_held(
+                fresh_scope_request,
+                fresh_candidate,
+                callee=fresh_wire.sent.callee,
+            )
+            if replayed_current != fresh_result:
+                raise PermissionError("J7 fresh H1 scope replay differs")
+            selected_scope = projection.selected_scope.model_copy(
+                update={
+                    "current_request": fresh_scope_request,
+                    "current_result": fresh_result,
+                }
+            )
+            port = getattr(self, "_h1_preissuance_registration_source_port", None)
+            if type(port) is not _H1RuntimePreissuancePort:
+                raise PermissionError("J7 H1 preissuance port is unavailable")
+            try:
+                port._require_fresh_current_wire(fresh_wire, selected_scope)
+            except H1PreissuanceSourceViolation as error:
+                raise PermissionError("J7 fresh H1 scope wire differs") from error
+            scope = selected_scope.scope
+            selected = H1SelectedOutputSources(self).capture_scope_selected_current(
+                scope
+            )
+            if selected is None:
+                raise PermissionError("J7 selected H1 sources are not current")
+            if (
+                selected.initialization_envelope_bytes
+                != projection.retained_origin.initialization_envelope_bytes
+                or selected.admitted_record_bytes
+                != projection.retained_origin.admitted_record_bytes
+                or selected.selected_admitted_record_ref
+                != projection.retained_origin.selected_admitted_record_ref
+                or selected.authentication_result_bytes
+                != projection.retained_origin.authentication_result_bytes
+                or selected.selected_source.selected_initialization
+                != scope.selected_resource_observation_ref.selected_initialization
+                or selected.selected_source.admitted_authentication
+                != scope.admitted_authentication
+                or selected.verified.recipient != projection.delivery.selection.recipient
+            ):
+                raise PermissionError("J7 selected H1 source replay differs")
+            policy = self._trust.current_signed_prepared_self_delivery_policy(
+                request.selected_policy_anchor
+            )
+            frozen = self._trust.capture_verified_observation()
+            entries = self._trust._journal.entries()
+            logical = self._trust.owner_snapshot_entries()
+            if not entries or not logical:
+                raise PermissionError("J7 trust history is unavailable")
+            decision_id, _, decision_bytes = entries[-1]
+            observation = HermeticTrustObservationV1(
+                physical_journal_head=ExactHead(
+                    identity="deployment-trust/journal",
+                    head=decision_id,
+                    fingerprint=hashlib.sha256(decision_bytes).hexdigest(),
+                ),
+                logical_snapshot_head=logical[-1][0],
+            )
+            latest = self._trust.latest_prepared_external_delivery_grant(
+                request.tenant_id, request.database_id, request.grant_id
+            )
+            callee = self._supervisor.runtime().session("deployment_trust")
+            epoch, now_ns = self._require_dispatch_resources().clock()
+            evidence = PreparedExternalDeliveryGrantEvidenceV2(
+                basis=projection.basis,
+                selected_scope=selected_scope,
+                retained_origin=projection.retained_origin,
+                selected_source=selected.selected_source,
+                fence=projection.fence,
+                original_run=projection.original_run,
+                captured_attempt=projection.captured_attempt,
+                accepted_delivery=projection.delivery,
+                channel_id=_CHANNEL,
+                resource_grant=selected.resource_grant,
+                canonical_resource_grant_bytes=selected.resource_grant_bytes,
+                clock_contract="chiplog.dispatch.monotonic.v2",
+                clock_epoch=epoch,
+                now_ns=now_ns,
+                route=PreparedExternalDeliveryGrantRouteV2(
+                    tenant_id=projection.tenant_id,
+                    database_id=projection.database_id,
+                    worker_session_id=projection.worker_session_id,
+                    broker_epoch=callee.broker_epoch,
+                    runtime_generation=callee.generation_id,
+                    broker_session_id="broker:" + callee.generation_id,
+                    owner_session_id=callee.session_id,
+                    request_id=request_id,
+                ),
+            )
+            call = AuthorizePreparedExternalDeliveryGrantCallV2(
+                canonical_signed_source_bytes=canonical_signed_source_bytes,
+                snapshot_bytes=frozen.snapshot_bytes,
+                expected_trust_observation=observation,
+                latest_grant_anchor=None if latest is None else latest.anchor,
+                latest_grant_bytes=None if latest is None else latest.grant.canonical_bytes(),
+                current_policy_anchor=policy.anchor,
+                current_policy_bytes=policy.policy.canonical_bytes(),
+                evidence=evidence,
+            )
+            old_prefix = self._trust.historical_prefix(
+                projection.selected_scope.current_request.expected_trust_observation
+            )
+            current_prefix = self._trust.historical_prefix(observation)
+            if not old_prefix.physical_entries:
+                raise PermissionError("J7 historical H1 trust prefix is empty")
+            expected_policy_entry = (
+                policy.decision_id,
+                old_prefix.physical_entries[-1][0],
+                policy.decision_bytes,
+            )
+            if (
+                current_prefix.physical_entries
+                != (*old_prefix.physical_entries, expected_policy_entry)
+                or old_prefix.snapshot_bytes != encode_trust_journal(logical[:-1])
+                or current_prefix.snapshot_bytes != encode_trust_journal(logical)
+                or logical[-1][1] != old_prefix.observation.logical_snapshot_head
+            ):
+                raise PermissionError("J7 policy ISSUE is not the sole trust suffix")
+            if (
+                request.expected_trust_observation != observation
+                or request.expected_grant != call.latest_grant_anchor
+                or request.proposed_scope
+                != derive_grant(
+                    request, retained_source(canonical_signed_source_bytes).ref, call
+                ).scope
+            ):
+                raise PermissionError("J7 signed grant scope differs from live H1 scope")
+            try:
+                _validate_issue(request, call)
+            except (TypeError, ValueError) as error:
+                raise PermissionError("J7 live grant terms are invalid") from error
+            return capture, call, frozen, policy, latest, callee
+
+        with gate.hold():
+            capture, call, frozen, policy, latest, callee = capture_call(historical_capture)
+            broker_call = PublicPortCall(
+                operation_id="deployment_trust.authorize_prepared_external_delivery_grant",
+                request_id=request_id,
+                caller=BrokerSession(
+                    tenant_id=self._tenant_id,
+                    broker_epoch=callee.broker_epoch,
+                    generation_id=callee.generation_id,
+                    owner_id="broker",
+                    session_id="broker:" + callee.generation_id,
+                ),
+                callee=callee,
+                schema_id="chiplog.deployment-trust.authorize-prepared-external-delivery-grant-call.v2",
+                canonical_payload=call.canonical_bytes(),
+                budget=CallBudget(
+                    remaining_calls=1,
+                    remaining_depth=1,
+                    absolute_deadline_ns=time.monotonic_ns() + 5_000_000_000,
+                    policy_version=1,
+                ),
+            )
+        response = await self._supervisor.runtime().call(broker_call)
+        if (
+            not isinstance(response, PublicPortSuccess)
+            or response.request_id != broker_call.request_id
+            or response.responder != callee
+            or response.schema_id
+            != "chiplog.deployment-trust.prepared-external-delivery-grant-result.v2"
+            or time.monotonic_ns() >= broker_call.budget.absolute_deadline_ns
+        ):
+            raise PermissionError("J7 grant owner response is not authenticated")
+        try:
+            result: PreparedExternalDeliveryGrantResultV2 = TypeAdapter(
+                PreparedExternalDeliveryGrantResultV2
+            ).validate_json(
+                response.canonical_payload
+            )
+            if (
+                result.canonical_bytes() != response.canonical_payload
+                or result.call_sha256 != hashlib.sha256(call.canonical_bytes()).hexdigest()
+            ):
+                raise ValueError("owner result differs from broker call")
+        except (TypeError, ValueError) as error:
+            raise PermissionError("J7 grant owner result is invalid") from error
+        if isinstance(result, PreparedExternalDeliveryGrantRejectedV2):
+            raise PermissionError("J7 grant owner denied authorization: " + result.reason)
+        if not isinstance(result, PreparedExternalDeliveryGrantProposalV2):
+            raise PermissionError("J7 grant owner result has an unknown disposition")
+
+        fresh_result, fresh_wire = await self._read_current_hermetic_output_scope_with_wire(
+            fresh_scope_request
+        )
+        if (
+            not isinstance(fresh_result, CurrentHermeticExecutionScopeV1)
+            or not isinstance(fresh_wire.returned, PublicPortSuccess)
+        ):
+            raise PermissionError("J7 post-owner H1 scope read is not current")
+        try:
+            fresh_candidate = H1OwnerCurrentCandidateV1.model_validate_json(
+                fresh_wire.returned.canonical_payload
+            )
+            if fresh_candidate.canonical_bytes() != fresh_wire.returned.canonical_payload:
+                raise ValueError("post-owner H1 scope response is noncanonical")
+        except (AttributeError, ValueError) as error:
+            raise PermissionError("J7 post-owner H1 scope response is invalid") from error
+
+        with gate.hold():
+            (
+                replay_capture,
+                replay_call,
+                replay_frozen,
+                replay_policy,
+                replay_latest,
+                replay_callee,
+            ) = capture_call(capture)
+            replay_evidence = replay_call.evidence.model_copy(
+                update={"now_ns": call.evidence.now_ns}
+            )
+            terms = replay_policy.policy.terms
+            if (
+                replay_capture is not capture
+                or replay_call.model_copy(update={"evidence": replay_evidence}) != call
+                or replay_frozen != frozen
+                or replay_policy != policy
+                or replay_latest != latest
+                or replay_callee != callee
+                or self._supervisor.runtime().session("deployment_trust") != callee
+                or not (
+                    terms.not_before_ns
+                    <= replay_call.evidence.now_ns
+                    < terms.expires_at_ns
+                )
+            ):
+                raise PermissionError("J7 grant authorization inputs became stale")
+            try:
+                result.check_pinned_call(call)
+                return self._trust.append_prepared_external_delivery_grant(call, result)
+            except (TypeError, ValueError, RuntimeError) as error:
+                raise PermissionError("J7 grant append was rejected") from error
+
+    def read_prepared_external_delivery_grant_lifecycle(
+        self, request: ReadPreparedExternalDeliveryGrantLifecycleV2
+    ) -> object:
+        return self._trust.read_prepared_external_delivery_grant_lifecycle(request)
 
     async def cancel_execution_call(
         self, peer: str, submission: CancelCallSubmission
@@ -1992,6 +2346,9 @@ async def open_installed_h1_runtime(
         # leaves H1 available, but the public J7 route denies closed.
         runtime._j7_operator_policy_key_pin = (
             runtime._supervisor._install_j7_operator_policy_key_pin()
+        )
+        runtime._j7_operator_grant_key_pin = (
+            runtime._supervisor._install_j7_operator_grant_key_pin()
         )
         if len(evidence_reader) != 1 or len(recovery_journal) != 1 or len(recovery_mount) != 1:
             raise RuntimeError("installed H1 role reader is absent")

@@ -9,7 +9,11 @@ from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead, Provid
 from chiplog.capabilities.deployment_trust import TrustReference
 from chiplog.capabilities.deployment_trust._output_scope_profile import VerifiedH1SelectedSources
 from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+    HermeticOutputScopeV1,
     SelectedHermeticResourceObservationRefV1,
+)
+from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts import (
+    SelectedExternalDeliverySourceV1,
 )
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.common_execution_driver_contracts import DriveInputRequestV1
@@ -34,6 +38,7 @@ class H1SelectedOutputCapture:
     authentication_result_bytes: bytes
     resource_grant: ExactHead
     resource_grant_bytes: bytes
+    selected_source: SelectedExternalDeliverySourceV1
 
 
 class H1SelectedOutputSources:
@@ -196,7 +201,70 @@ class H1SelectedOutputSources:
                     fingerprint=grant.fingerprint,
                 ),
                 resource_grant_bytes=evidence.dispatch_grant_bytes,
+                selected_source=SelectedExternalDeliverySourceV1(
+                    source_class="CLI",
+                    selected_initialization=resource_ref.selected_initialization,
+                    selected_admission_decision=ExactHead(
+                        identity=admitted.selected_decision.identity,
+                        head=admitted.selected_decision.head,
+                        fingerprint=admitted.selected_decision.fingerprint,
+                    ),
+                    selected_admission_record=selected_ref,
+                    admitted_authentication=admitted_authentication_ref,
+                    ingress_binding=evidence.request.admitted.origin.ingress_binding,
+                ),
             )
+
+    def capture_scope_selected_current(
+        self, scope: HermeticOutputScopeV1
+    ) -> H1SelectedOutputCapture | None:
+        """Derive selected evidence from an authenticated H1 replay, never request DTOs.
+
+        The full CLI trust reference is recovered from the retained authenticated
+        admission before delegating to the normal selected-current reader.
+        """
+        if type(scope) is not HermeticOutputScopeV1:
+            raise TypeError("H1 selected scope capture requires an exact scope")
+        with self._gate.hold():
+            selected = self._selected_initialization(scope.selected_resource_observation_ref)
+            if selected is None:
+                return None
+            evidence, _ = selected
+            wire = DriveInputRequestV1.model_validate_json(evidence.driver_request_bytes)
+            admitted = self._runtime.read_admitted_inbox(
+                wire.identity.original_ingress_identity.command_id
+            )
+            if admitted is None:
+                return None
+            owner_call, authenticated = decode_authentication(admitted.record.command)
+            reference = TrustReference(
+                tenant_id=TenantId(authenticated.reference.tenant_id),
+                principal_id=PrincipalId(authenticated.reference.principal_id),
+                contour=authenticated.reference.contour,
+                credential_head=authenticated.reference.credential_head,
+                session_head=authenticated.reference.session_head,
+                source_head="local",
+                trust_head=authenticated.reference.trust_head,
+                materialization_head=authenticated.reference.materialization_head,
+                freshness_sequence=authenticated.reference.freshness_sequence,
+                peer_credential=f"uid:{owner_call.request.socket.peer.uid}",
+            )
+            captured = self.capture_selected_current(
+                scope.selected_resource_observation_ref,
+                scope.admitted_authentication,
+                reference,
+            )
+            if captured is None or (
+                captured.verified.recipient != scope.recipient
+                or captured.verified.admitted_authentication_ref != scope.admitted_authentication
+                or captured.verified.authenticated_cli_ref.credential_head
+                != scope.authenticated_cli_state.credential_head
+                or captured.verified.authenticated_cli_ref.session_head
+                != scope.authenticated_cli_state.session_head
+                or captured.verified.authenticated_cli_ref.contour != scope.contour_head
+            ):
+                return None
+            return captured
 
     def _selected_initialization(
         self, resource_ref: SelectedHermeticResourceObservationRefV1

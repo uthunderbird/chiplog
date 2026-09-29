@@ -35,6 +35,7 @@ from chiplog.platform.broker import (
     PublicPortResult,
     PublicPortSuccess,
 )
+from chiplog.platform.operator_grant_key_pin import PinnedOperatorGrantKey
 from chiplog.platform.operator_policy_key_pin import PinnedOperatorPolicyKey
 
 _MAX_FRAME_BYTES = 8 * 1024 * 1024
@@ -212,6 +213,15 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
                     (
                         *h1_capabilities,
                         "deployment_trust.authorize_prepared_external_self_delivery_policy",
+                    )
+                )
+            ),
+            tuple(
+                sorted(
+                    (
+                        *h1_capabilities,
+                        "deployment_trust.authorize_prepared_external_self_delivery_policy",
+                        "deployment_trust.authorize_prepared_external_delivery_grant",
                     )
                 )
             ),
@@ -451,6 +461,7 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
             "chiplog.capabilities.deployment_trust._cli_custody_process",
             "chiplog.capabilities.deployment_trust._h1_process",
             "chiplog.capabilities.deployment_trust._ingress_process",
+            "chiplog.capabilities.deployment_trust._j7_grant_process",
             "chiplog.capabilities.deployment_trust._j7_process",
             "chiplog.capabilities.deployment_trust._r17_process",
             "chiplog.capabilities.deployment_trust._r7_process",
@@ -486,6 +497,7 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
 def _load_owner_handler(
     identity: OwnerProcessIdentity,
     operator_policy_key_binding_bytes: bytes | None = None,
+    operator_grant_key_binding_bytes: bytes | None = None,
 ) -> Callable[[str, bytes], dict[str, object]]:
     module = importlib.import_module(_owner_module(identity))
     if (
@@ -496,7 +508,8 @@ def _load_owner_handler(
         return cast(
             Callable[[str, bytes], dict[str, object]],
             module.install_j7_owner_evaluator(
-                operator_policy_key_binding_bytes=operator_policy_key_binding_bytes
+                operator_policy_key_binding_bytes=operator_policy_key_binding_bytes,
+                operator_grant_key_binding_bytes=operator_grant_key_binding_bytes,
             ),
         )
     return cast(Callable[[str, bytes], dict[str, object]], module.dispatch)
@@ -569,8 +582,11 @@ def _owner_process_main(
     identity: OwnerProcessIdentity,
     ready: Any,
     operator_policy_key_binding_bytes: bytes | None = None,
+    operator_grant_key_binding_bytes: bytes | None = None,
 ) -> None:
-    handler = _load_owner_handler(identity, operator_policy_key_binding_bytes)
+    handler = _load_owner_handler(
+        identity, operator_policy_key_binding_bytes, operator_grant_key_binding_bytes
+    )
     with (
         make_container(_OwnerProvider(identity, handler)) as container,
         socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener,
@@ -648,6 +664,7 @@ class AuthorityBrokerRuntime:
         self._owner_secrets: dict[str, bytes] = {}
         self._connection_locks: dict[str, threading.Lock] = {}
         self._j7_operator_policy_key_pin: PinnedOperatorPolicyKey | None = None
+        self._j7_operator_grant_key_pin: PinnedOperatorGrantKey | None = None
         self._drain = threading.Condition()
         self._draining = False
         self._inflight = 0
@@ -691,10 +708,27 @@ class AuthorityBrokerRuntime:
         pin.assert_current()
         self._j7_operator_policy_key_pin = pin
 
+    def _install_j7_operator_grant_key_pin(self, pin: PinnedOperatorGrantKey) -> None:
+        if self._manifest.manifest_version != 19:
+            raise OwnerProcessFailure("operator grant key pin is only valid for the J7 manifest")
+        if self._temporary is not None:
+            raise OwnerProcessFailure("operator grant key pin must precede owner startup")
+        pin.assert_current()
+        self._j7_operator_grant_key_pin = pin
+
     def _j7_binding_bytes_for_owner(self, identity: OwnerProcessIdentity) -> bytes | None:
         if self._manifest.manifest_version != 19 or identity.owner_id != "deployment_trust":
             return None
         pin = self._j7_operator_policy_key_pin
+        if pin is None:
+            return None
+        pin.assert_current()
+        return pin.binding.canonical_bytes()
+
+    def _j7_grant_binding_bytes_for_owner(self, identity: OwnerProcessIdentity) -> bytes | None:
+        if self._manifest.manifest_version != 19 or identity.owner_id != "deployment_trust":
+            return None
+        pin = self._j7_operator_grant_key_pin
         if pin is None:
             return None
         pin.assert_current()
@@ -722,11 +756,10 @@ class AuthorityBrokerRuntime:
             )
             ready = context.Event()
             binding_bytes = self._j7_binding_bytes_for_owner(identity)
+            grant_binding_bytes = self._j7_grant_binding_bytes_for_owner(identity)
             process = context.Process(
                 target=_owner_process_main,
-                args=(path, owner_secret, identity, ready)
-                if binding_bytes is None
-                else (path, owner_secret, identity, ready, binding_bytes),
+                args=(path, owner_secret, identity, ready, binding_bytes, grant_binding_bytes),
                 name=f"chiplog-r7-{owner.owner_id}",
             )
             process.start()

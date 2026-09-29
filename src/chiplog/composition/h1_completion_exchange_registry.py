@@ -73,6 +73,7 @@ class _CompletionExchangeRecord:
     original_identity: DriverCommandIdentityV1
     original_fingerprint: str
     selected_seal: CallSubjectHead
+    historical_p_evidence: object
 
 
 class H1PreparedDeliveryCapture:
@@ -94,6 +95,26 @@ class H1PreparedDeliveryCapture:
 
     def __reduce__(self) -> str | tuple[object, ...]:
         raise TypeError("H1 prepared delivery captures cannot be serialized")
+
+
+class H1HistoricalPreparedDeliveryCapture:
+    """Registry-issued handle for P/B evidence captured before a J7 ISSUE."""
+
+    __slots__ = ("_record",)
+    _record: _CompletionExchangeRecord
+
+    def __init__(self) -> None:
+        raise TypeError("H1 historical prepared delivery captures are registry-issued")
+
+    def __copy__(self) -> H1HistoricalPreparedDeliveryCapture:
+        raise TypeError("H1 historical prepared delivery captures cannot be copied")
+
+    def __deepcopy__(self, memo: dict[int, object]) -> H1HistoricalPreparedDeliveryCapture:
+        del memo
+        raise TypeError("H1 historical prepared delivery captures cannot be copied")
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        raise TypeError("H1 historical prepared delivery captures cannot be serialized")
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +206,7 @@ class H1CompletionExchangeRegistry:
 
     __slots__ = (
         "_closed",
+        "_historical_prepared_captures",
         "_native_sources",
         "_prepared_captures",
         "_records",
@@ -219,12 +241,16 @@ class H1CompletionExchangeRegistry:
         self._prepared_captures: dict[
             int, tuple[H1PreparedDeliveryCapture, _CompletionExchangeRecord]
         ] = {}
+        self._historical_prepared_captures: dict[
+            int, tuple[H1HistoricalPreparedDeliveryCapture, _CompletionExchangeRecord]
+        ] = {}
         self._closed = False
 
     def _revoke_all(self) -> None:
         """Make this runtime-bound past-stage table permanently unusable."""
         self._records.clear()
         getattr(self, "_prepared_captures", {}).clear()
+        getattr(self, "_historical_prepared_captures", {}).clear()
         self._closed = True
 
     def _register_actual_success(self, session: object) -> None:
@@ -291,6 +317,21 @@ class H1CompletionExchangeRegistry:
             raise H1CompletionExchangeRegistryViolation(
                 "H1 completion registry session is duplicate"
             )
+        capture_historical = getattr(
+            self._scope_port, "_capture_j7_historical_completion_evidence", None
+        )
+        if not callable(capture_historical):
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 completion registry historical P capture is absent"
+            )
+        try:
+            historical_p_evidence = capture_historical(
+                scope_cap, native_cap, delivery_receipt, first_path
+            )
+        except (TypeError, ValueError, AttributeError) as error:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 completion registry historical P capture differs"
+            ) from error
         self._records.append(
             _CompletionExchangeRecord(
                 session,
@@ -302,6 +343,7 @@ class H1CompletionExchangeRegistry:
                 cut.original_identity,
                 cut.original_fingerprint,
                 cut.selected_seal,
+                historical_p_evidence,
             )
         )
 
@@ -379,6 +421,59 @@ class H1CompletionExchangeRegistry:
                     "H1 prepared delivery replay differs from capture"
                 )
             return projection
+
+    def capture_prepared_delivery_historical(
+        self,
+        *,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> H1HistoricalPreparedDeliveryCapture:
+        """Return a handle to P/B evidence captured when this B session was live."""
+        if self._closed:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 completion registry is closed and revoked"
+            )
+        if (
+            type(original_identity) is not DriverCommandIdentityV1
+            or not isinstance(original_fingerprint, str)
+            or len(original_fingerprint) != 64
+            or type(selected_seal) is not CallSubjectHead
+        ):
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 historical prepared delivery locator differs"
+            )
+        with self._runtime._authority_gate().hold():
+            self._require_mounted_current_held()
+            record = self._find_prepared_delivery_record_held(
+                original_identity, original_fingerprint, selected_seal
+            )
+            capture = object.__new__(H1HistoricalPreparedDeliveryCapture)
+            capture._record = record
+            self._historical_prepared_captures[id(capture)] = (capture, record)
+            return capture
+
+    def replay_prepared_delivery_historical(
+        self, capture: H1HistoricalPreparedDeliveryCapture
+    ) -> H1PreparedDeliveryProjection:
+        """Replay the original B/P cut after J7 has advanced the live trust head."""
+        if self._closed:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 completion registry is closed and revoked"
+            )
+        with self._runtime._authority_gate().hold():
+            self._require_mounted_current_held()
+            issued = self._historical_prepared_captures.get(id(capture))
+            if (
+                type(capture) is not H1HistoricalPreparedDeliveryCapture
+                or issued is None
+                or issued[0] is not capture
+                or issued[1] is not capture._record
+            ):
+                raise H1CompletionExchangeRegistryViolation(
+                    "H1 historical prepared delivery capture is not registry-issued"
+                )
+            return self._project_prepared_delivery_historical_held(issued[1])
 
     def _require_mounted_current_held(self) -> None:
         self._runtime._authority_gate().require_held()
@@ -548,6 +643,125 @@ class H1CompletionExchangeRegistry:
                 "H1 prepared delivery replay is not current"
             ) from error
 
+    def _project_prepared_delivery_historical_held(
+        self, record: _CompletionExchangeRecord
+    ) -> H1PreparedDeliveryProjection:
+        """Join P's pre-ISSUE evidence to the exact retained B exchange only."""
+        self._runtime._authority_gate().require_held()
+        from chiplog.capabilities.effects.h1_prepared_delivery_basis import (
+            derive_h1_prepared_delivery_basis,
+        )
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+            H1CompletionSessionCut,
+        )
+        from chiplog.composition.h1_runtime_preissuance_port import (
+            _AuthenticatedCompletionEffectsSource,
+        )
+
+        session = record.session
+        if type(session) is not H1CompletionPreparationSession:
+            raise H1CompletionExchangeRegistryViolation("H1 registered historical session differs")
+        cut = session._cut
+        preflight = session._preflight
+        if (
+            type(cut) is not H1CompletionSessionCut
+            or cut.first_path is not record.first_path
+            or cut.original_identity != record.original_identity
+            or cut.original_fingerprint != record.original_fingerprint
+            or cut.selected_seal != record.selected_seal
+            or preflight is None
+            or getattr(preflight, "native_cap", None) is not record.native_cap
+            or getattr(preflight, "scope_cap", None) is not record.scope_cap
+            or getattr(preflight, "delivery_receipt", None) is not record.delivery_receipt
+            or session._completion_exchange is not record.exchange
+        ):
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 registered historical completion differs"
+            )
+        replay = getattr(self._scope_port, "_replay_j7_historical_completion_evidence", None)
+        if not callable(replay):
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 historical prepared delivery P replay is absent"
+            )
+        try:
+            scope, effects_source, delivery_observation = replay(record.historical_p_evidence)
+            if type(effects_source) is not _AuthenticatedCompletionEffectsSource:
+                raise TypeError("historical effects source is invalid")
+            request = decode_first_path_completion_request(record.exchange.sent.canonical_payload)
+            if request.canonical_bytes() != record.exchange.sent.canonical_payload:
+                raise ValueError("retained historical completion request is noncanonical")
+            if (
+                request.source != record.first_path.source
+                or request.delivery != delivery_observation
+                or request.fence.canonical_bytes() != effects_source.fence.canonical_bytes()
+            ):
+                raise ValueError("retained historical completion request differs")
+            self._require_success(record.exchange, request)
+            returned = record.exchange.returned
+            assert isinstance(returned, PublicPortSuccess)
+            prepared = PreparedExecutionCompletion.model_validate_json(returned.canonical_payload)
+            if prepared.canonical_bytes() != returned.canonical_payload:
+                raise ValueError("retained historical completion reply is noncanonical")
+            expected = prepare_first_path_execution_completion(request)
+            if type(expected) is not PreparedExecutionCompletion or prepared != expected:
+                raise ValueError(
+                    "retained historical completion reply differs from pure preparation"
+                )
+            basis = derive_h1_prepared_delivery_basis(request, prepared)
+            deliveries = prepared.delivery.manifest.ordered_deliveries
+            if (
+                len(deliveries) != 1
+                or not isinstance(deliveries[0], AcceptedDelivery)
+                or not deliveries[0].rendered_bytes
+                or getattr(deliveries[0].selection, "recipient", None) is None
+            ):
+                raise ValueError("H1 historical prepared delivery is not sole and rendered")
+            run, attempt = request.run, request.selected_attempt
+            selected_scope = effects_source.selected_scope
+            retained_origin = effects_source.retained_origin
+            fence = effects_source.fence
+            selected = selected_scope.scope
+            if (
+                deliveries[0].selection.recipient != run.origin.recipient
+                or deliveries[0].selection.recipient != scope.recipient
+                or deliveries[0].policy != scope.policy_ref
+                or retained_origin.initialization_envelope_bytes
+                != record.first_path.initialization_envelope_bytes
+                or selected != scope.scope
+                or selected.tenant_id != run.tenant
+                or selected.database_id != request.source.database_id
+                or selected.principal_id != run.principal
+                or selected.worker_session_id != run.worker_session
+                or deliveries[0].selection.recipient != selected.recipient
+                or deliveries[0].policy != selected.disclosure_policy.ref
+                or fence.canonical_bytes() != request.fence.canonical_bytes()
+            ):
+                raise ValueError("H1 historical prepared delivery joins differ")
+            return H1PreparedDeliveryProjection(
+                basis=basis,
+                selected_scope=selected_scope,
+                retained_origin=retained_origin,
+                fence=fence,
+                tenant_id=run.tenant,
+                database_id=request.source.database_id,
+                principal_id=run.principal,
+                worker_session_id=run.worker_session,
+                original_run=LoopHead(
+                    identity=run.run_id, head=run.head, fingerprint=run.digest()
+                ),
+                captured_attempt=LoopHead(
+                    identity=attempt.subject_id,
+                    head=attempt.revision.head,
+                    fingerprint=attempt.revision.fingerprint,
+                ),
+                delivery=deliveries[0],
+            )
+        except (TypeError, ValueError, AttributeError) as error:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 historical prepared delivery replay differs"
+            ) from error
+
     @staticmethod
     def _require_success(
         exchange: H1CompletionOwnerExchangeV1,
@@ -589,6 +803,7 @@ class H1CompletionExchangeRegistry:
 __all__ = [
     "H1CompletionExchangeRegistry",
     "H1CompletionExchangeRegistryViolation",
+    "H1HistoricalPreparedDeliveryCapture",
     "H1PreparedDeliveryCapture",
     "H1PreparedDeliveryProjection",
 ]

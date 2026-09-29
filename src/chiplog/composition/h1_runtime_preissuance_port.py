@@ -292,6 +292,43 @@ class _AuthenticatedCompletionEffectsSource:
     fence: EffectsNonSchedulerFence
 
 
+class _H1J7HistoricalCompletionEvidence:
+    """P-owned handle for one B exchange captured before J7 advances trust."""
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        raise TypeError("J7 historical completion evidence is issued only by the P owner")
+
+    def __copy__(self) -> Never:
+        raise TypeError("J7 historical completion evidence cannot be copied")
+
+    def __deepcopy__(self, memo: object) -> Never:
+        del memo
+        raise TypeError("J7 historical completion evidence cannot be copied")
+
+    def __reduce__(self) -> Never:
+        raise TypeError("J7 historical completion evidence cannot be serialized")
+
+
+@dataclass(frozen=True, slots=True)
+class _J7HistoricalCompletionEvidenceState:
+    evidence: _H1J7HistoricalCompletionEvidence
+    scope_cap: _AcceptedH1CompletionScopeCapability
+    native_cap: H1CurrentNativeMemberSourceCut
+    delivery_receipt: _H1PreRequestDeliveryReceipt
+    first_path: H1FirstPathCapture
+    trust: HermeticTrustObservationV1
+    scope: _AcceptedH1CompletionScopeProjection
+    effects: _AuthenticatedCompletionEffectsSource
+    delivery: DeliveryObservation
+    scope_issue_wire: _H1ScopeWire
+    scope_current_wire: _H1ScopeWire
+    scope_bytes: bytes
+    delivery_bytes: bytes
+    fence_bytes: bytes
+
+
 class _HistoricalRecoverySourceCapability:
     """Runtime-private handle for one retained V2 P reconstruction."""
 
@@ -476,6 +513,7 @@ class _H1RuntimePreissuancePort:
         "_final_completion_fences",
         "_gate",
         "_historical_recovery_sources",
+        "_j7_historical_completion_evidence",
         "_launch",
         "_originals",
         "_preseal_scopes",
@@ -523,6 +561,9 @@ class _H1RuntimePreissuancePort:
             int, tuple[_AcceptedH1CompletionScopeCapability, _CompletionScopeCut]
         ] = {}
         self._delivery_receipts: dict[int, _IssuedPreRequestDelivery] = {}
+        self._j7_historical_completion_evidence: dict[
+            int, _J7HistoricalCompletionEvidenceState
+        ] = {}
         self._preterminal_clearances: dict[
             int, tuple[object, _H1PreterminalScopeSnapshot, _H1ScopeWire]
         ] = {}
@@ -1984,6 +2025,247 @@ class _H1RuntimePreissuancePort:
                 retained_origin=retained,
                 fence=effects_fence,
             )
+
+    def _capture_j7_historical_completion_evidence(
+        self,
+        scope_cap: object,
+        native_cap: object,
+        delivery_receipt: object,
+        first_path: object,
+    ) -> _H1J7HistoricalCompletionEvidence:
+        """Freeze P's already-current B inputs before J7 can append trust.
+
+        This is intentionally private and identity-only.  The later replay is
+        historical evidence, never a substitute for the live completion path.
+        """
+        with self._gate.hold():
+            scope = self._replay_completion_scope(scope_cap, native_cap)
+            effects = self._replay_completion_effects_source(
+                scope_cap, native_cap, delivery_receipt, first_path
+            )
+            issued_scope = self._completion_scopes.get(id(scope_cap))
+            issued_delivery = self._delivery_receipts.get(id(delivery_receipt))
+            if (
+                type(scope_cap) is not _AcceptedH1CompletionScopeCapability
+                or type(native_cap) is not H1CurrentNativeMemberSourceCut
+                or type(delivery_receipt) is not _H1PreRequestDeliveryReceipt
+                or type(first_path) is not H1FirstPathCapture
+                or issued_scope is None
+                or issued_scope[0] is not scope_cap
+                or issued_delivery is None
+                or issued_delivery.receipt is not delivery_receipt
+                or issued_delivery.scope_cap is not scope_cap
+                or issued_delivery.native_cap is not native_cap
+                or issued_delivery.first_path is not first_path
+            ):
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion evidence identity differs"
+                )
+            cut = issued_scope[1]
+            evidence = object.__new__(_H1J7HistoricalCompletionEvidence)
+            state = _J7HistoricalCompletionEvidenceState(
+                evidence=evidence,
+                scope_cap=scope_cap,
+                native_cap=native_cap,
+                delivery_receipt=delivery_receipt,
+                first_path=first_path,
+                trust=cut.trust,
+                scope=scope,
+                effects=effects,
+                delivery=issued_delivery.observation,
+                scope_issue_wire=cut.scope_issue_wire,
+                scope_current_wire=cut.scope_current_wire,
+                scope_bytes=scope.scope_bytes,
+                delivery_bytes=issued_delivery.observation.canonical_bytes(),
+                fence_bytes=effects.fence.canonical_bytes(),
+            )
+            self._j7_historical_completion_evidence[id(evidence)] = state
+            return evidence
+
+    def _replay_j7_historical_completion_evidence(
+        self, evidence: object
+    ) -> tuple[
+        _AcceptedH1CompletionScopeProjection,
+        _AuthenticatedCompletionEffectsSource,
+        DeliveryObservation,
+    ]:
+        """Reauthenticate the pre-ISSUE P cut without reading live P/E state."""
+        with self._gate.hold():
+            state = self._j7_historical_completion_evidence.get(id(evidence))
+            if (
+                type(evidence) is not _H1J7HistoricalCompletionEvidence
+                or state is None
+                or state.evidence is not evidence
+            ):
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion evidence is not P-issued"
+                )
+            cut_entry = self._completion_scopes.get(id(state.scope_cap))
+            delivery = self._delivery_receipts.get(id(state.delivery_receipt))
+            if (
+                cut_entry is None
+                or cut_entry[0] is not state.scope_cap
+                or delivery is None
+                or delivery.receipt is not state.delivery_receipt
+                or delivery.scope_cap is not state.scope_cap
+                or delivery.native_cap is not state.native_cap
+                or delivery.first_path is not state.first_path
+            ):
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion P source differs"
+                )
+            cut = cut_entry[1]
+            if (
+                cut.trust != state.trust
+                or cut.scope != state.scope.scope
+                or cut.scope_issue_wire != state.scope_issue_wire
+                or cut.scope_current_wire != state.scope_current_wire
+                or delivery.observation.canonical_bytes() != state.delivery_bytes
+                or delivery.fence.canonical_bytes() != state.fence_bytes
+                or state.scope.scope_bytes != state.scope_bytes
+                or state.effects.fence.canonical_bytes() != state.fence_bytes
+            ):
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion captured P evidence differs"
+                )
+            first_path = getattr(self._runtime, "_h1_first_path_sources", None)
+            native_sources = getattr(self._runtime, "_h1_native_member_sources", None)
+            if (
+                type(first_path) is not H1FirstPathSources
+                or type(native_sources) is not H1NativeMemberSources
+                or native_sources._runtime is not self._runtime
+                or native_sources._first_path is not first_path
+            ):
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion native owners are unavailable"
+                )
+            try:
+                native = first_path.replay_selected_native_cut(
+                    state.first_path.source,
+                    initialization_envelope_bytes=state.first_path.initialization_envelope_bytes,
+                )
+                historical_native_cap = native_sources.capture(
+                    state.first_path.source,
+                    initialization_envelope_bytes=state.first_path.initialization_envelope_bytes,
+                )
+                validated = native_sources.validate_historical(
+                    state.first_path.source,
+                    initialization_envelope_bytes=state.first_path.initialization_envelope_bytes,
+                    member_parts=native_sources.project(historical_native_cap),
+                )
+            except (TypeError, ValueError, AttributeError) as error:
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion native source differs"
+                ) from error
+            if validated.native != native:
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion native cut differs"
+                )
+            try:
+                issue_sent, issue_returned = (
+                    state.scope_issue_wire.sent,
+                    state.scope_issue_wire.returned,
+                )
+                current_sent, current_returned = (
+                    state.scope_current_wire.sent,
+                    state.scope_current_wire.returned,
+                )
+                if (
+                    type(issue_returned) is not PublicPortSuccess
+                    or type(current_returned) is not PublicPortSuccess
+                ):
+                    raise ValueError("historical P wire did not return success")
+                issue_outer = decode_trust_owner_call_canonical(issue_sent.canonical_payload)
+                current_outer = decode_trust_owner_call_canonical(current_sent.canonical_payload)
+                issue_call = H1OwnerCandidateCallV1.model_validate_json(issue_outer.request_bytes)
+                issue_result = H1OwnerCandidateV1.model_validate_json(
+                    issue_returned.canonical_payload
+                )
+                current_call = H1OwnerCurrentCallV1.model_validate_json(current_outer.request_bytes)
+                current_request = ReadCurrentHermeticExecutionScopeV1.model_validate_json(
+                    current_call.read_request_bytes
+                )
+                current_result = H1OwnerCurrentCandidateV1.model_validate_json(
+                    current_returned.canonical_payload
+                )
+                issue_result.check_pinned_call(issue_call)
+                current_result.check_pinned_call(current_call)
+            except (AttributeError, TypeError, ValueError) as error:
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion P wires are malformed"
+                ) from error
+            if (
+                issue_outer.canonical_bytes() != issue_sent.canonical_payload
+                or issue_outer.mode != "ISSUE_HERMETIC_OUTPUT_SCOPE_V1"
+                or current_outer.canonical_bytes() != current_sent.canonical_payload
+                or current_outer.mode != "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1"
+                or issue_call.canonical_bytes() != issue_outer.request_bytes
+                or issue_result.canonical_bytes() != issue_returned.canonical_payload
+                or current_call.canonical_bytes() != current_outer.request_bytes
+                or current_request.canonical_bytes() != current_call.read_request_bytes
+                or current_result.canonical_bytes() != current_returned.canonical_payload
+                or current_request.expected_trust_observation != state.trust
+                or current_request != cut.original_cut.read
+                or current_result.current != cut.current
+                or issue_result.scope != state.scope.scope
+                or current_result.current.source_anchor != cut.original_cut.cut.issued.anchor
+            ):
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion ISSUE/CURRENT join differs"
+                )
+            historical_reader_factory = getattr(
+                self._runtime, "_h1_historical_trust_reader", None
+            )
+            if not callable(historical_reader_factory):
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion trust reader is unavailable"
+                )
+            try:
+                historical_reader = historical_reader_factory()
+                if getattr(historical_reader, "authority_gate", None) is not self._gate:
+                    raise ValueError("historical trust reader gate differs")
+                prefix = historical_reader.historical_prefix(state.trust)
+            except (AttributeError, TypeError, ValueError) as error:
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion trust prefix differs"
+                ) from error
+            if prefix.observation != state.trust:
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion trust observation differs"
+                )
+            observation = state.trust.physical_journal_head
+            entries = self._runtime._trust._journal.entries()
+            observed = next((raw for key, _, raw in entries if key == observation.head), None)
+            anchor = cut.original_cut.cut.issued.anchor
+            decision = next((raw for key, _, raw in entries if key == anchor.decision.head), None)
+            record = self._runtime._trust._materializer.record(
+                anchor.decision.head, anchor.record_ordinal
+            )
+            if (
+                observed is None
+                or hashlib.sha256(observed).hexdigest() != observation.fingerprint
+                or decision is None
+                or hashlib.sha256(decision).hexdigest() != anchor.decision.fingerprint
+                or record is None
+                or hashlib.sha256(record).hexdigest() != anchor.record.fingerprint
+            ):
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion trust or physical scope differs"
+                )
+            if (
+                state.effects.selected_scope.anchor != anchor
+                or state.effects.selected_scope.scope != state.scope.scope
+                or state.effects.selected_scope.current_request != current_request
+                or state.effects.selected_scope.current_result != current_result.current
+                or state.effects.selected_scope.selected_decision_bytes != decision
+                or state.effects.selected_scope.selected_record_bytes != record
+                or state.effects.retained_origin.initialization_envelope_bytes
+                != state.first_path.initialization_envelope_bytes
+            ):
+                raise H1PreissuanceSourceViolation(
+                    "J7 historical completion effects source differs"
+                )
+            return state.scope, state.effects, state.delivery
 
     def _final_fence_snapshot(
         self, session: object, sent: PublicPortCall | None = None

@@ -25,6 +25,11 @@ from chiplog.platform.broker import (
     PublicPortRejected,
     PublicPortResult,
 )
+from chiplog.platform.operator_grant_key_pin import (
+    OperatorGrantPinError,
+    PinnedOperatorGrantKey,
+    load_operator_grant_key_pin,
+)
 from chiplog.platform.operator_policy_key_pin import (
     OperatorPolicyPinError,
     PinnedOperatorPolicyKey,
@@ -236,6 +241,7 @@ class R7RuntimeSupervisor:
         self._reconciled: tuple[str, ...] = ()
         self._graph: RuntimeGraphGeneration | None = None
         self._j7_operator_policy_key_pin: PinnedOperatorPolicyKey | None = None
+        self._j7_operator_grant_key_pin: PinnedOperatorGrantKey | None = None
 
     def _authority_scope(self) -> AbstractContextManager[None]:
         return nullcontext() if self._authority_gate is None else self._authority_gate.hold()
@@ -269,6 +275,29 @@ class R7RuntimeSupervisor:
                 self._j7_operator_policy_key_pin = None
                 return None
             self._j7_operator_policy_key_pin = pin
+            return pin
+
+    def _install_j7_operator_grant_key_pin(self) -> PinnedOperatorGrantKey | None:
+        if self._manifest.manifest_version != 19:
+            self._j7_operator_grant_key_pin = None
+            return None
+        gate, trust = self._authority_gate, self._trust
+        if gate is None or trust is None:
+            self._j7_operator_grant_key_pin = None
+            return None
+        with self._lifecycle_lock, gate.hold():
+            try:
+                state = trust.verify()
+                if state is None or state.tenant_id != self._tenant_id:
+                    raise OperatorGrantPinError("operator grant pin trust scope is unavailable")
+                pin = load_operator_grant_key_pin(
+                    gate, tenant_id=state.tenant_id, database_id=state.database_instance_id
+                )
+                pin.assert_current()
+            except OperatorGrantPinError:
+                self._j7_operator_grant_key_pin = None
+                return None
+            self._j7_operator_grant_key_pin = pin
             return pin
 
     @property
@@ -453,17 +482,25 @@ class R7RuntimeSupervisor:
         )
         try:
             pin = self._j7_operator_policy_key_pin
-            if pin is None:
+            grant_pin = self._j7_operator_grant_key_pin
+            if pin is None and grant_pin is None:
                 runtime.start()
             else:
                 with self._authority_scope():
                     try:
-                        runtime._install_j7_operator_policy_key_pin(pin)
-                    except OperatorPolicyPinError:
+                        if pin is not None:
+                            runtime._install_j7_operator_policy_key_pin(pin)
+                        if grant_pin is not None:
+                            runtime._install_j7_operator_grant_key_pin(grant_pin)
+                    except (OperatorPolicyPinError, OperatorGrantPinError):
                         self._j7_operator_policy_key_pin = None
+                        self._j7_operator_grant_key_pin = None
                     else:
                         runtime.start()
-                if self._j7_operator_policy_key_pin is None:
+                if (
+                    self._j7_operator_policy_key_pin is None
+                    and self._j7_operator_grant_key_pin is None
+                ):
                     runtime.start()
             graph = runtime.graph_generation()
             _verify_realized_graph_exact(

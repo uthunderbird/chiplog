@@ -898,6 +898,13 @@ _J7_SELF_DELIVERY_POLICY_ROUTE = RoutedCallDecl(
     "chiplog.deployment-trust.authorize-self-delivery-policy-call.v1",
     "chiplog.deployment-trust.self-delivery-policy-result.v1",
 )
+_J7_PREPARED_EXTERNAL_DELIVERY_GRANT_ROUTE = RoutedCallDecl(
+    "deployment_trust.authorize_prepared_external_delivery_grant",
+    "broker",
+    "deployment_trust",
+    "chiplog.deployment-trust.authorize-prepared-external-delivery-grant-call.v2",
+    "chiplog.deployment-trust.prepared-external-delivery-grant-result.v2",
+)
 _J7_TRUST_OPERATIONS = tuple(
     sorted(
         (
@@ -907,6 +914,7 @@ _J7_TRUST_OPERATIONS = tuple(
                 if owner.owner_id == "deployment_trust"
             ),
             _J7_SELF_DELIVERY_POLICY_ROUTE.operation_id,
+            _J7_PREPARED_EXTERNAL_DELIVERY_GRANT_ROUTE.operation_id,
         )
     )
 )
@@ -929,6 +937,7 @@ R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST = replace(
             (
                 *R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST.routes,
                 _J7_SELF_DELIVERY_POLICY_ROUTE,
+                _J7_PREPARED_EXTERNAL_DELIVERY_GRANT_ROUTE,
             ),
             key=lambda route: (route.callee_owner_id, route.operation_id),
         )

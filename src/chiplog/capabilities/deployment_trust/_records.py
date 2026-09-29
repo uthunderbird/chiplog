@@ -12,6 +12,7 @@ RECORD_TYPE_IDS = (
     "chiplog.deployment_trust.poll_cursor_applied",
     "chiplog.deployment_trust.poll_member_disposition",
     "chiplog.deployment_trust.poll_response_page_manifest",
+    "chiplog.deployment_trust.prepared_external_delivery_grant",
     "chiplog.deployment_trust.prepared_self_delivery_policy",
     "chiplog.deployment_trust.principal_contour_prerequisite",
     "chiplog.deployment_trust.principal_registry_entry",
@@ -85,5 +86,8 @@ KIND_RECORD_TYPES: dict[str, tuple[str, ...]] = {
     "AUTHENTICATED_LATE_EVIDENCE": ("chiplog.deployment_trust.evidence_authentication_binding",),
     "PREPARED_SELF_DELIVERY_POLICY_V1": (
         "chiplog.deployment_trust.prepared_self_delivery_policy",
+    ),
+    "PREPARED_EXTERNAL_DELIVERY_GRANT_V2": (
+        "chiplog.deployment_trust.prepared_external_delivery_grant",
     ),
 }
