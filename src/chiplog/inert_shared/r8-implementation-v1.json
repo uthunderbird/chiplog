@@ -210,7 +210,7 @@
   "composition/common_cli_execution_runtime.py": "0b7fa95eefae65ad5af74ccb4f3a390ce4cb6515c0d1dc3cfac32d76fb4a1bbb",
   "composition/common_execution_driver_contracts.py": "24a934209a08dfdf0440f41bc987e3044bd35dc791c0cbe77990553a2e9f8fdd",
   "composition/completion_publication_contracts.py": "658c514af9288009d7ecb411f4a1bf11329c311e74374986bb08eda6bd2f54fc",
-  "composition/h1_completion_exchange_registry.py": "dd902b040fca829f4ad8f0476fb0fff294b08ba2a8908cd26d89645543cdce3f",
+  "composition/h1_completion_exchange_registry.py": "f68289c3530bfa027c76ae4bc8e0d60472c81871c5e6f134c86fbf13d7fc8c5a",
   "composition/h1_completion_issuance.py": "de7fa0b6687a38b5386095908b4a2584a7499f7bc648c84891c0cee4f312aea4",
   "composition/h1_completion_preparation_session.py": "1eace72b09428de054568e2cc3aa1ecd99a92c5cf4637962dbe9dfd1075ca8ad",
   "composition/h1_completion_readplan_registry.py": "a4ddebf0358101aa1a35a362cbe5666e8abf182fe0d1235ac93d74c7fc74cebb",

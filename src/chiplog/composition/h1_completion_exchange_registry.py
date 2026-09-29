@@ -25,6 +25,11 @@ from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts i
     decode_first_path_completion_request,
     first_path_completion_request_fingerprint,
 )
+from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
+    H1RetainedSelectedWrapperV1,
+)
+from chiplog.capabilities.effects.fences import NonSchedulerFence as EffectsNonSchedulerFence
+from chiplog.capabilities.effects.h1_local_preparation_contracts import H1SelectedScopeSourceV1
 from chiplog.capabilities.effects.scoped_intent_contracts import PreparedDeliveryBasisV3
 from chiplog.composition.common_execution_driver_contracts import DriverCommandIdentityV1
 from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
@@ -45,6 +50,14 @@ class H1CompletionExchangeRegistryViolation(ValueError):
 
 class _CompletionScopeReplayPort(Protocol):
     def _replay_completion_scope(self, capability: object, native_cut: object) -> object: ...
+
+    def _replay_completion_effects_source(
+        self,
+        scope_cap: object,
+        native_cap: object,
+        delivery_receipt: object,
+        first_path: object,
+    ) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +101,9 @@ class H1PreparedDeliveryProjection:
     """Inert live replay of one loop-prepared delivery; it grants no action."""
 
     basis: PreparedDeliveryBasisV3
+    selected_scope: H1SelectedScopeSourceV1
+    retained_origin: H1RetainedSelectedWrapperV1
+    fence: EffectsNonSchedulerFence
     tenant_id: str
     database_id: str
     principal_id: str
@@ -409,6 +425,9 @@ class H1CompletionExchangeRegistry:
             H1CompletionPreparationSession,
             H1CompletionSessionCut,
         )
+        from chiplog.composition.h1_runtime_preissuance_port import (
+            _AuthenticatedCompletionEffectsSource,
+        )
 
         session = record.session
         if type(session) is not H1CompletionPreparationSession:
@@ -480,8 +499,36 @@ class H1CompletionExchangeRegistry:
                 or deliveries[0].policy != getattr(scope_policy, "ref", None)
             ):
                 raise ValueError("H1 prepared delivery recipient or policy differs from scope")
+            effects_source = self._scope_port._replay_completion_effects_source(
+                record.scope_cap,
+                record.native_cap,
+                record.delivery_receipt,
+                record.first_path,
+            )
+            if type(effects_source) is not _AuthenticatedCompletionEffectsSource:
+                raise TypeError("H1 prepared delivery effects source is invalid")
+            selected_scope = effects_source.selected_scope
+            retained_origin = effects_source.retained_origin
+            fence = effects_source.fence
+            selected = selected_scope.scope
+            if (
+                retained_origin.initialization_envelope_bytes
+                != record.first_path.initialization_envelope_bytes
+                or selected != getattr(scope, "scope", None)
+                or selected.tenant_id != run.tenant
+                or selected.database_id != request.source.database_id
+                or selected.principal_id != run.principal
+                or selected.worker_session_id != run.worker_session
+                or deliveries[0].selection.recipient != selected.recipient
+                or deliveries[0].policy != selected.disclosure_policy.ref
+                or fence.canonical_bytes() != request.fence.canonical_bytes()
+            ):
+                raise ValueError("H1 prepared delivery effects source differs")
             return H1PreparedDeliveryProjection(
                 basis=basis,
+                selected_scope=selected_scope,
+                retained_origin=retained_origin,
+                fence=fence,
                 tenant_id=run.tenant,
                 database_id=request.source.database_id,
                 principal_id=run.principal,

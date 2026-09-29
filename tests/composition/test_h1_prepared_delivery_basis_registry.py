@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,24 @@ async def test_installed_registry_captures_and_replays_only_a_genuine_b_completi
             scope = port._replay_completion_scope(
                 session._preflight.scope_cap, session._preflight.native_cap
             )
+            effects_source = port._replay_completion_effects_source(
+                session._preflight.scope_cap,
+                session._preflight.native_cap,
+                session._preflight.delivery_receipt,
+                session._cut.first_path,
+            )
+            assert first.selected_scope == effects_source.selected_scope
+            assert first.retained_origin == effects_source.retained_origin
+            assert first.fence == effects_source.fence
+            assert (
+                first.retained_origin.initialization_envelope_bytes
+                == session._cut.first_path.initialization_envelope_bytes
+            )
+            assert (
+                first.fence.canonical_bytes()
+                == session._preflight.request.fence.canonical_bytes()
+            )
+            assert journal._entries() == before
             assert first.delivery.selection.recipient == scope.recipient
             assert first.delivery.policy == scope.scope.disclosure_policy.ref
 
@@ -179,6 +198,42 @@ async def test_registry_rejects_a_changed_a_capture_source(tmp_path: Path) -> No
             )
 
             sources._issued.clear()
+
+            with pytest.raises(H1CompletionExchangeRegistryViolation, match="not current"):
+                registry.replay_prepared_delivery_current(capture)
+
+
+@pytest.mark.asyncio
+async def test_registry_rejects_changed_p_current_source_after_capture(tmp_path: Path) -> None:
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
+    )
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=resources) as runtime:
+            request, seal, session, _exchange = await _completed_session(runtime)
+            registry = runtime._h1_completion_exchange_registry
+            port = runtime._h1_preissuance_registration_source_port
+            assert registry is not None
+            assert port is not None
+            capture = registry.capture_prepared_delivery_current(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=seal,
+            )
+
+            issued, cut = port._completion_scopes[id(session._preflight.scope_cap)]
+            changed_returned = cut.scope_current_wire.returned.model_copy(
+                update={"request_id": "changed-after-capture"}
+            )
+            port._completion_scopes[id(session._preflight.scope_cap)] = (
+                issued,
+                replace(
+                    cut,
+                    scope_current_wire=replace(cut.scope_current_wire, returned=changed_returned),
+                ),
+            )
 
             with pytest.raises(H1CompletionExchangeRegistryViolation, match="not current"):
                 registry.replay_prepared_delivery_current(capture)
