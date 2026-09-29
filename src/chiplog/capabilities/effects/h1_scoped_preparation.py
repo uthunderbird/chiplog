@@ -26,6 +26,7 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_con
 from .contracts import DeliverySendBinding, ExactHead, OriginSelection, ProviderRecipient
 from .dispatch_v2_contracts import MandateHorizon
 from .fences import NonSchedulerFence
+from .h1_normative_conflict_generation import require_h1_history_and_normative_conflict_generation
 from .h1_prepared_delivery_basis import derive_h1_prepared_delivery_basis
 from .h1_producer_semantics import H1_PRODUCER_SEMANTICS, require_h1_producer_semantics
 from .h1_producer_source_contracts import (
@@ -279,6 +280,18 @@ def prepare_h1_scoped_delivery(
             clock_epoch=terms.clock_epoch,
             valid_until_ns=terms.expires_at_ns,
         )
+        normative_conflict_generation = require_h1_history_and_normative_conflict_generation(
+            tenant_id=grant.tenant_id,
+            target_intent_id=request.intent_id,
+            original_history=request.original_sources.effects_history,
+            current_history=request.current.sources.effects_history,
+            original_generation=request.original_sources.normative_conflict_generation,
+            current_generation=request.current.sources.normative_conflict_generation,
+            history_observation=request.current.history_observation,
+            clock_contract=terms.clock_contract,
+            clock_epoch=terms.clock_epoch,
+            valid_until_ns=terms.expires_at_ns,
+        )
 
         derived = DispatchMandateV3(
             mandate_id=_derived_mandate_id(grant, delivery),
@@ -296,7 +309,7 @@ def prepare_h1_scoped_delivery(
             preexisting_authority_basis=grant_head,
             authority_sources=(policy_head, command_head, source_head),
             affected_party_constraints=(),
-            normative_conflict_generation=policy_head,
+            normative_conflict_generation=normative_conflict_generation,
             dependencies=(),
             factual_assertion_evidence=(source_head,),
             verification_contradiction=(),

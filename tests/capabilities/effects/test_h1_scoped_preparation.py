@@ -44,6 +44,16 @@ from chiplog.capabilities.effects.contracts import ExactHead as EffectHead
 from chiplog.capabilities.effects.dispatch_authority_contracts import CapturedSource
 from chiplog.capabilities.effects.fences import NonSchedulerFence, NotApplicable
 from chiplog.capabilities.effects.h1_local_preparation_contracts import PREPARE_SCHEMA
+from chiplog.capabilities.effects.h1_normative_conflict_generation import (
+    H1EffectsHistoryMemberV1,
+    H1EffectsHistoryV1,
+    h1_effects_history_capture,
+    h1_effects_history_digest,
+    h1_effects_history_head,
+    h1_normative_conflict_generation,
+    h1_normative_conflict_generation_capture,
+    h1_normative_conflict_generation_head,
+)
 from chiplog.capabilities.effects.h1_producer_semantics import (
     H1_PRODUCER_SEMANTICS,
     h1_producer_semantic_registry_capture,
@@ -115,7 +125,7 @@ def _captured_source(role: str) -> CapturedSource:
 
 
 def _h1_sources(
-    candidate: H1PreparedDeliveryMandateCandidateV1,
+    candidate: H1PreparedDeliveryMandateCandidateV1, history: H1EffectsHistoryV1
 ) -> H1ProducerSourceInventoryV1:
     values: dict[str, CapturedSource | H1ProducerSourceObservationV1] = {
         role: _captured_source(role)
@@ -129,10 +139,15 @@ def _h1_sources(
             "credential_lifecycle",
             "deployment_entitlement",
             "clock",
-            "effects_history",
-            "normative_conflict_generation",
         )
     }
+    generation = h1_normative_conflict_generation(history)
+    values["effects_history"] = h1_effects_history_capture(
+        history, clock_contract="clock-contract", clock_epoch="epoch", valid_until_ns=200
+    )
+    values["normative_conflict_generation"] = h1_normative_conflict_generation_capture(
+        generation, clock_contract="clock-contract", clock_epoch="epoch", valid_until_ns=200
+    )
     values["planning"] = H1ProducerNotApplicableV1(role="planning", candidate=candidate)
     values["original_adoption"] = H1ProducerNotApplicableV1(
         role="original_adoption", candidate=candidate
@@ -140,9 +155,35 @@ def _h1_sources(
     return H1ProducerSourceInventoryV1.model_validate(values)
 
 
-async def _call() -> H1ScopedDeliveryOwnerCallV1:
+async def _call(*, selected_intent_id: str | None = None) -> H1ScopedDeliveryOwnerCallV1:
     first = await first_path_request(canonical_response=True)
     prepared = prepare_first_path_execution_completion(first)
+    members = ()
+    if selected_intent_id is not None:
+        raw = b"selected-history-member"
+        members = (
+            H1EffectsHistoryMemberV1(
+                selected_decision=EffectHead(
+                    subject_id="selected-decision",
+                    head="selected-decision/head",
+                    fingerprint=_sha(b"selected-decision"),
+                ),
+                tenant_commit_sequence=0,
+                publication_ordinal=0,
+                record_id="selected-record",
+                record_kind="effects.INTENT_RECORDED",
+                schema_id="chiplog.effects.record.v1",
+                fingerprint=_sha(raw),
+                canonical_record_bytes=raw,
+                intent_id=selected_intent_id,
+            ),
+        )
+    history = H1EffectsHistoryV1(
+        tenant_id=first.run.tenant,
+        owner_journal_head=None,
+        ordered_members=members,
+        digest=h1_effects_history_digest(first.run.tenant, None, members),
+    )
     delivery = prepared.delivery.manifest.ordered_deliveries[0]
     basis = __import__(
         "chiplog.capabilities.effects.h1_prepared_delivery_basis", fromlist=["x"]
@@ -328,7 +369,9 @@ async def _call() -> H1ScopedDeliveryOwnerCallV1:
         preexisting_authority_basis=grant_head,
         authority_sources=(policy_effect_head, command_head, source_head),
         affected_party_constraints=(),
-        normative_conflict_generation=policy_effect_head,
+        normative_conflict_generation=h1_normative_conflict_generation_head(
+            h1_normative_conflict_generation(history)
+        ),
         dependencies=(),
         factual_assertion_evidence=(source_head,),
         verification_contradiction=(),
@@ -359,7 +402,7 @@ async def _call() -> H1ScopedDeliveryOwnerCallV1:
         canonical_mandate_bytes=derived.canonical_bytes(),
         mandate_fingerprint=_sha(derived.canonical_bytes()),
     )
-    original_sources = _h1_sources(candidate)
+    original_sources = _h1_sources(candidate, history)
     current = H1ProducerCurrentInputsV1(
         command_fingerprint=_sha(b"command"),
         immutable_mandate_candidate=candidate,
@@ -368,12 +411,8 @@ async def _call() -> H1ScopedDeliveryOwnerCallV1:
             head="h1-current-cut:head",
             fingerprint=_sha(b"h1-current-cut"),
         ),
-        history_observation=EffectHead(
-            subject_id="h1-current-history",
-            head="h1-current-history:head",
-            fingerprint=_sha(b"h1-current-history"),
-        ),
-        sources=_h1_sources(candidate),
+        history_observation=h1_effects_history_head(history),
+        sources=_h1_sources(candidate, history),
         supported_semantics=H1_PRODUCER_SEMANTICS,
         clock_contract="clock-contract",
         clock_epoch="epoch",
@@ -593,6 +632,79 @@ async def test_scoped_owner_requires_current_h1_semantic_registry_capture_to_mat
     assert prepare_h1_scoped_delivery(
         _with_request(call, call.request.model_copy(update={"current": current}))
     ).disposition == "DENIED"
+
+
+@pytest.mark.parametrize(
+    ("role", "field", "replacement"),
+    (
+        ("effects_history", "source_id", "forged-history-source"),
+        ("effects_history", "reader_id", "forged-history-reader"),
+        ("effects_history", "clock_epoch", "forged-epoch"),
+        ("effects_history", "canonical_value", b'{"fabricated":true}'),
+        ("normative_conflict_generation", "source_version", "forged-generation-version"),
+        ("normative_conflict_generation", "owner_id", "forged-generation-owner"),
+        ("normative_conflict_generation", "valid_until_ns", 199),
+        ("normative_conflict_generation", "canonical_value", b'{"fabricated":true}'),
+    ),
+)
+async def test_scoped_owner_requires_exact_history_and_generation_capture_metadata(
+    role: str, field: str, replacement: str | bytes | int
+) -> None:
+    call = await _call()
+    source = getattr(call.request.current.sources, role).model_copy(update={field: replacement})
+    sources = call.request.current.sources.model_copy(update={role: source})
+    current = call.request.current.model_copy(update={"sources": sources})
+    assert prepare_h1_scoped_delivery(
+        _with_request(call, call.request.model_copy(update={"current": current}))
+    ).disposition == "DENIED"
+
+
+async def test_scoped_owner_requires_equal_original_history_and_generation_captures() -> None:
+    call = await _call()
+    changed_history = call.request.original_sources.effects_history.model_copy(
+        update={"reader_id": "another-reader"}
+    )
+    original_sources = call.request.original_sources.model_copy(
+        update={"effects_history": changed_history}
+    )
+    assert prepare_h1_scoped_delivery(
+        _with_request(call, call.request.model_copy(update={"original_sources": original_sources}))
+    ).disposition == "DENIED"
+
+    changed_generation = call.request.original_sources.normative_conflict_generation.model_copy(
+        update={"reader_id": "another-reader"}
+    )
+    original_sources = call.request.original_sources.model_copy(
+        update={"normative_conflict_generation": changed_generation}
+    )
+    assert prepare_h1_scoped_delivery(
+        _with_request(call, call.request.model_copy(update={"original_sources": original_sources}))
+    ).disposition == "DENIED"
+
+
+async def test_scoped_owner_binds_history_observation_and_generation_not_policy_head() -> None:
+    call = await _call()
+    result = prepare_h1_scoped_delivery(call)
+    assert isinstance(result, PreparedH1ScopedDeliveryV1)
+    mandate = result.intent_result.intent.mandate
+    generation_capture = call.request.current.sources.normative_conflict_generation
+    assert mandate.normative_conflict_generation == generation_capture.invalidation_manifest
+    assert mandate.normative_conflict_generation != generation_capture.head
+    assert mandate.normative_conflict_generation != _effect_head(
+        call.request.authority_evidence.policy_anchor.policy
+    )
+
+    current = call.request.current.model_copy(
+        update={"history_observation": generation_capture.invalidation_manifest}
+    )
+    assert prepare_h1_scoped_delivery(
+        _with_request(call, call.request.model_copy(update={"current": current}))
+    ).disposition == "DENIED"
+
+
+async def test_scoped_owner_rejects_self_consistent_history_containing_target_intent() -> None:
+    call = await _call(selected_intent_id="intent")
+    assert prepare_h1_scoped_delivery(call).disposition == "DENIED"
 
 
 async def test_scoped_owner_retains_h1_source_bytes_and_refuses_forged_candidate() -> None:

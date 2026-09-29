@@ -58,6 +58,7 @@ class H1ProducerSemanticManifestV1(DispatchObservationDTO):
         Literal[
             "VALIDATE_CANONICAL_OWNER_CALL",
             "VALIDATE_PREPARED_DELIVERY_INPUTS",
+            "VALIDATE_H1_HISTORY_GENERATION",
             "DERIVE_SCOPED_INTENT",
             "RETURN_PREPARED_H1_SCOPED_DELIVERY",
             "RETURN_DENIED",
@@ -66,6 +67,7 @@ class H1ProducerSemanticManifestV1(DispatchObservationDTO):
     ] = (
         "VALIDATE_CANONICAL_OWNER_CALL",
         "VALIDATE_PREPARED_DELIVERY_INPUTS",
+        "VALIDATE_H1_HISTORY_GENERATION",
         "DERIVE_SCOPED_INTENT",
         "RETURN_PREPARED_H1_SCOPED_DELIVERY",
         "RETURN_DENIED",
