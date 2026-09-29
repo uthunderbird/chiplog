@@ -17,6 +17,9 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
     HermeticTrustObservationV1,
     ReadCurrentHermeticExecutionScopeV1,
 )
+from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts import (
+    PreparedExternalDeliveryGrantAnchorV2,
+)
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_grant_owner_contracts import (
     prepared_delivery_basis_head_v3,
 )
@@ -44,7 +47,9 @@ class H1ScopedDeliveryAuthorityViolation(PermissionError):
 @dataclass(frozen=True, slots=True)
 class _AuthorityRecord:
     historical_capture: H1HistoricalPreparedDeliveryCapture
-    grant_id: str
+    grant_id: str | None
+    reconstructed: bool
+    pinned_grant_anchor: PreparedExternalDeliveryGrantAnchorV2 | None
     projection: H1PreparedDeliveryProjection
     fresh_scope_request: ReadCurrentHermeticExecutionScopeV1
     fresh_scope_result: CurrentHermeticExecutionScopeV1
@@ -134,6 +139,42 @@ class H1ScopedDeliveryAuthorityReader:
                 historical_b_capture, grant_id, projection, request, result, wire
             )
 
+    async def read_reconstructed(
+        self, *, historical_b_capture: H1HistoricalPreparedDeliveryCapture
+    ) -> H1ScopedDeliveryAuthorityCapture:
+        """Read recovered V3 authority without caller-selected grant identity."""
+        return await self._read_reconstructed(historical_b_capture=historical_b_capture)
+
+    async def _read_reconstructed(
+        self,
+        *,
+        historical_b_capture: H1HistoricalPreparedDeliveryCapture,
+        expected_grant_anchor: PreparedExternalDeliveryGrantAnchorV2 | None = None,
+    ) -> H1ScopedDeliveryAuthorityCapture:
+        if type(historical_b_capture) is not H1HistoricalPreparedDeliveryCapture:
+            raise H1ScopedDeliveryAuthorityViolation("historical B capture is not registry-issued")
+        with self._runtime._authority_gate().hold():
+            projection, request = self._capture_reconstructed_historical_and_scope_request_held(
+                historical_b_capture
+            )
+        try:
+            result, wire = await self._runtime._read_current_hermetic_output_scope_with_wire(
+                request
+            )
+        except Exception as error:
+            raise H1ScopedDeliveryAuthorityViolation("fresh H1 scope owner read failed") from error
+        if not isinstance(result, CurrentHermeticExecutionScopeV1):
+            raise H1ScopedDeliveryAuthorityViolation("fresh H1 scope is not current")
+        with self._runtime._authority_gate().hold():
+            return self._issue_reconstructed_held(
+                historical_b_capture,
+                projection,
+                request,
+                result,
+                wire,
+                expected_grant_anchor=expected_grant_anchor,
+            )
+
     def recheck(
         self, capture: H1ScopedDeliveryAuthorityCapture
     ) -> H1ScopedDeliveryAuthorityCapture:
@@ -149,6 +190,13 @@ class H1ScopedDeliveryAuthorityReader:
         """Obtain a new owner current-scope proof after a trust-head advance."""
         with self._runtime._authority_gate().hold():
             record = self._issued_record_held(capture)
+        if record.reconstructed:
+            assert record.pinned_grant_anchor is not None
+            return await self._read_reconstructed(
+                historical_b_capture=record.historical_capture,
+                expected_grant_anchor=record.pinned_grant_anchor,
+            )
+        assert record.grant_id is not None
         return await self.read(
             historical_b_capture=record.historical_capture, grant_id=record.grant_id
         )
@@ -169,6 +217,21 @@ class H1ScopedDeliveryAuthorityReader:
             raise H1ScopedDeliveryAuthorityViolation("current grant policy anchor is invalid")
         return projection, request
 
+    def _capture_reconstructed_historical_and_scope_request_held(
+        self, historical_capture: H1HistoricalPreparedDeliveryCapture
+    ) -> tuple[H1PreparedDeliveryProjection, ReadCurrentHermeticExecutionScopeV1]:
+        """Capture only historical B and fresh scope inputs before the owner IPC."""
+        self._runtime._authority_gate().require_held()
+        self._require_reconstructed_historical_capture_held(historical_capture)
+        projection = self._historical_projection_held(historical_capture)
+        observation = self._trust_observation_held()
+        request = projection.selected_scope.current_request.model_copy(
+            update={"expected_trust_observation": observation}
+        )
+        if request.source_anchor != projection.selected_scope.current_request.source_anchor:
+            raise H1ScopedDeliveryAuthorityViolation("fresh H1 scope source anchor differs")
+        return projection, request
+
     def _issue_held(
         self,
         historical_capture: H1HistoricalPreparedDeliveryCapture,
@@ -181,6 +244,30 @@ class H1ScopedDeliveryAuthorityReader:
         self._runtime._authority_gate().require_held()
         record = self._build_record_held(
             historical_capture, grant_id, projection, request, result, wire
+        )
+        capture = object.__new__(H1ScopedDeliveryAuthorityCapture)
+        capture._record = record
+        self._issued[id(capture)] = (capture, record)
+        return capture
+
+    def _issue_reconstructed_held(
+        self,
+        historical_capture: H1HistoricalPreparedDeliveryCapture,
+        projection: H1PreparedDeliveryProjection,
+        request: ReadCurrentHermeticExecutionScopeV1,
+        result: CurrentHermeticExecutionScopeV1,
+        wire: Any,
+        *,
+        expected_grant_anchor: PreparedExternalDeliveryGrantAnchorV2 | None,
+    ) -> H1ScopedDeliveryAuthorityCapture:
+        self._runtime._authority_gate().require_held()
+        record = self._build_reconstructed_record_held(
+            historical_capture,
+            projection,
+            request,
+            result,
+            wire,
+            expected_grant_anchor=expected_grant_anchor,
         )
         capture = object.__new__(H1ScopedDeliveryAuthorityCapture)
         capture._record = record
@@ -228,6 +315,8 @@ class H1ScopedDeliveryAuthorityReader:
         return _AuthorityRecord(
             historical_capture=historical_capture,
             grant_id=grant_id,
+            reconstructed=False,
+            pinned_grant_anchor=None,
             projection=projection,
             fresh_scope_request=request,
             fresh_scope_result=result,
@@ -240,6 +329,21 @@ class H1ScopedDeliveryAuthorityReader:
 
     def _verify_record_held(self, record: _AuthorityRecord) -> None:
         self._runtime._authority_gate().require_held()
+        if record.reconstructed:
+            rebuilt = self._build_reconstructed_record_held(
+                record.historical_capture,
+                record.projection,
+                record.fresh_scope_request,
+                record.fresh_scope_result,
+                record.fresh_scope_wire,
+                expected_grant_anchor=record.pinned_grant_anchor,
+            )
+            if rebuilt.pinned_grant_anchor != record.pinned_grant_anchor:
+                raise H1ScopedDeliveryAuthorityViolation(
+                    "reconstructed prepared delivery grant anchor differs"
+                )
+            return
+        assert record.grant_id is not None
         self._build_record_held(
             record.historical_capture,
             record.grant_id,
@@ -248,6 +352,73 @@ class H1ScopedDeliveryAuthorityReader:
             record.fresh_scope_result,
             record.fresh_scope_wire,
         )
+
+    def _build_reconstructed_record_held(
+        self,
+        historical_capture: H1HistoricalPreparedDeliveryCapture,
+        projection: H1PreparedDeliveryProjection,
+        request: ReadCurrentHermeticExecutionScopeV1,
+        result: CurrentHermeticExecutionScopeV1,
+        wire: Any,
+        *,
+        expected_grant_anchor: PreparedExternalDeliveryGrantAnchorV2 | None,
+    ) -> _AuthorityRecord:
+        """Rebuild V3 authority from historical B facts and current owner state."""
+        self._runtime._authority_gate().require_held()
+        self._require_reconstructed_historical_capture_held(historical_capture)
+        replayed = self._historical_projection_held(historical_capture)
+        if replayed != projection:
+            raise H1ScopedDeliveryAuthorityViolation(
+                "historical B projection changed during scope read"
+            )
+        selected_scope = projection.selected_scope.model_copy(
+            update={"current_request": request, "current_result": result}
+        )
+        self._verify_fresh_scope_wire_held(request, result, wire, selected_scope)
+        selected = self._selected_sources_held(projection, selected_scope)
+        selector = self._reconstructed_grant_selector_held(projection, selected_scope, selected)
+        grant = self._current_reconstructed_grant_held(selector)
+        if expected_grant_anchor is not None and grant.anchor != expected_grant_anchor:
+            raise H1ScopedDeliveryAuthorityViolation(
+                "reconstructed prepared delivery grant anchor differs"
+            )
+        policy = self._runtime._trust.current_signed_prepared_self_delivery_policy(
+            grant.grant.selected_policy_anchor
+        )
+        epoch, now_ns = self._runtime._require_dispatch_resources().clock()
+        self._validate_joins(projection, selected_scope, selected, grant, policy, epoch, now_ns)
+        evidence = self._evidence(grant, policy)
+        return _AuthorityRecord(
+            historical_capture=historical_capture,
+            grant_id=None,
+            reconstructed=True,
+            pinned_grant_anchor=grant.anchor,
+            projection=projection,
+            fresh_scope_request=request,
+            fresh_scope_result=result,
+            fresh_scope_wire=wire,
+            evidence=evidence,
+            selected_sources=selected,
+            clock_epoch=epoch,
+            now_ns=now_ns,
+        )
+
+    def _require_reconstructed_historical_capture_held(
+        self, capture: H1HistoricalPreparedDeliveryCapture
+    ) -> None:
+        """Keep the grant-free route exclusive to durable SCOPED_V3 recovery."""
+        self._runtime._authority_gate().require_held()
+        try:
+            from chiplog.composition.h1_v3_recovery_historical_source import (
+                H1V3RecoveredPreparedDelivery,
+            )
+
+            if type(capture._record) is not H1V3RecoveredPreparedDelivery:
+                raise TypeError("historical capture is not recovered SCOPED_V3 evidence")
+        except Exception as error:
+            raise H1ScopedDeliveryAuthorityViolation(
+                "historical B capture is not recovered SCOPED_V3 evidence"
+            ) from error
 
     def _historical_projection_held(
         self, capture: H1HistoricalPreparedDeliveryCapture
@@ -285,6 +456,51 @@ class H1ScopedDeliveryAuthorityReader:
         except Exception as error:
             raise H1ScopedDeliveryAuthorityViolation(
                 "current prepared delivery grant is invalid"
+            ) from error
+
+    def _reconstructed_grant_selector_held(
+        self,
+        projection: H1PreparedDeliveryProjection,
+        selected_scope: H1SelectedScopeSourceV1,
+        selected: H1SelectedOutputCapture,
+    ) -> Any:
+        """Build the grant-selection preimage only from replayed and read sources."""
+        self._runtime._authority_gate().require_held()
+        try:
+            from chiplog.capabilities.deployment_trust import (
+                prepared_external_delivery_grant_owner_contracts as grant_contracts,
+            )
+
+            return grant_contracts.ReconstructedPreparedExternalDeliveryGrantSelectorV1(
+                basis=projection.basis,
+                scope_anchor=selected_scope.anchor,
+                scope=selected_scope.scope,
+                selected_decision_bytes=selected_scope.selected_decision_bytes,
+                selected_record_bytes=selected_scope.selected_record_bytes,
+                retained_origin=projection.retained_origin,
+                selected_source=selected.selected_source,
+                fence=projection.fence,
+                original_run=projection.original_run,
+                captured_attempt=projection.captured_attempt,
+                accepted_delivery=projection.delivery,
+                resource_grant=selected.resource_grant,
+                canonical_resource_grant_bytes=selected.resource_grant_bytes,
+            )
+        except Exception as error:
+            raise H1ScopedDeliveryAuthorityViolation(
+                "reconstructed prepared delivery selector is invalid"
+            ) from error
+
+    def _current_reconstructed_grant_held(self, selector: Any) -> Any:
+        self._runtime._authority_gate().require_held()
+        try:
+            method = (
+                self._runtime._trust.current_signed_prepared_external_delivery_grant_for_reconstructed_evidence
+            )
+            return method(selector)
+        except Exception as error:
+            raise H1ScopedDeliveryAuthorityViolation(
+                "current reconstructed prepared delivery grant is invalid"
             ) from error
 
     def _trust_observation_held(self) -> HermeticTrustObservationV1:

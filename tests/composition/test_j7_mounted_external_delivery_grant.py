@@ -22,16 +22,23 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts 
     ReadPreparedExternalDeliveryGrantLifecycleV2,
 )
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_grant_owner_contracts import (
+    PreparedExternalDeliveryGrantEvidenceV2,
+    ReconstructedPreparedExternalDeliveryGrantSelectorV1,
     prepared_delivery_basis_head_v3,
 )
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_contracts import (
     IssuePreparedExternalSelfDeliveryPolicyRequestV1,
     PreparedExternalSelfDeliveryPolicyTermsV1,
 )
+from chiplog.capabilities.effects.h1_local_preparation_contracts import H1SelectedScopeSourceV1
 from chiplog.composition.common_cli_execution_runtime import open_installed_h1_runtime
+from chiplog.composition.h1_completion_exchange_registry import H1PreparedDeliveryProjection
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_scoped_delivery_authority import H1ScopedDeliveryAuthorityReader
-from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSources
+from chiplog.composition.h1_selected_output_sources import (
+    H1SelectedOutputCapture,
+    H1SelectedOutputSources,
+)
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.operator_grant_key_pin import OperatorGrantKeyPinFileV2
 from tests.composition.test_h1_prepared_delivery_basis_registry import _completed_session
@@ -106,6 +113,42 @@ def _signed_grant(request: IssuePreparedExternalDeliveryGrantRequestV2) -> bytes
     return SignedOperatorGrantAuthorizationV2(
         payload=payload, signature=_KEY.sign(payload.canonical_bytes())
     ).canonical_bytes()
+
+
+def _reconstructed_grant_selector(
+    evidence: PreparedExternalDeliveryGrantEvidenceV2,
+    projection: H1PreparedDeliveryProjection,
+    selected: H1SelectedOutputCapture,
+) -> ReconstructedPreparedExternalDeliveryGrantSelectorV1:
+    """Project immutable B facts from the authenticated historical sources."""
+    selected_scope: H1SelectedScopeSourceV1 = projection.selected_scope
+    if (
+        evidence.basis != projection.basis
+        or evidence.retained_origin != projection.retained_origin
+        or evidence.fence != projection.fence
+        or evidence.original_run != projection.original_run
+        or evidence.captured_attempt != projection.captured_attempt
+        or evidence.accepted_delivery != projection.delivery
+        or evidence.selected_source != selected.selected_source
+        or evidence.resource_grant != selected.resource_grant
+        or evidence.canonical_resource_grant_bytes != selected.resource_grant_bytes
+    ):
+        raise AssertionError("historical reconstructed grant selector differs from issued evidence")
+    return ReconstructedPreparedExternalDeliveryGrantSelectorV1(
+        basis=projection.basis,
+        scope_anchor=selected_scope.anchor,
+        scope=selected_scope.scope,
+        selected_decision_bytes=selected_scope.selected_decision_bytes,
+        selected_record_bytes=selected_scope.selected_record_bytes,
+        retained_origin=projection.retained_origin,
+        selected_source=selected.selected_source,
+        fence=projection.fence,
+        original_run=projection.original_run,
+        captured_attempt=projection.captured_attempt,
+        accepted_delivery=projection.delivery,
+        resource_grant=selected.resource_grant,
+        canonical_resource_grant_bytes=selected.resource_grant_bytes,
+    )
 
 
 @pytest.mark.asyncio
@@ -232,15 +275,34 @@ async def test_mounted_j7_issue_appends_and_reopens_historical_lifecycle(tmp_pat
             assert issued.grant.status == "ACTIVE"
             assert runtime._trust._journal.entries()[:-1] == before
             after_issue = runtime._trust._journal.entries()
+            historical_projection = registry.replay_prepared_delivery_historical(historical_capture)
+            reconstructed_selector = _reconstructed_grant_selector(
+                issued.call.evidence, historical_projection, selected
+            )
+            assert (
+                historical_projection.selected_scope.current_request
+                != issued.call.evidence.selected_scope.current_request
+            )
+            assert (
+                runtime._trust.current_signed_prepared_external_delivery_grant_for_reconstructed_evidence(
+                    reconstructed_selector
+                )
+                == issued
+            )
+            changed_b = reconstructed_selector.model_copy(
+                update={"selected_record_bytes": b"different"}
+            )
+            with pytest.raises(RuntimeError, match="does not identify one active grant"):
+                runtime._trust.current_signed_prepared_external_delivery_grant_for_reconstructed_evidence(
+                    changed_b
+                )
             authority_reader = H1ScopedDeliveryAuthorityReader(runtime)
             authority = await authority_reader.read(
                 historical_b_capture=historical_capture, grant_id="grant"
             )
             assert authority.evidence.grant_anchor == issued.anchor
             assert authority.evidence.canonical_grant_bytes == issued.grant.canonical_bytes()
-            assert authority.historical_projection == registry.replay_prepared_delivery_historical(
-                historical_capture
-            )
+            assert authority.historical_projection == historical_projection
             authority_reader.recheck(authority)
             forged = issue.model_copy(
                 update={
@@ -259,6 +321,15 @@ async def test_mounted_j7_issue_appends_and_reopens_historical_lifecycle(tmp_pat
                 )
             assert runtime._trust._journal.entries() == after_issue
             _write_grant_pin(slot.database_path, _CHANGED_KEY)
+            with pytest.raises(
+                RuntimeError,
+                match="current prepared external delivery grant authorization is invalid",
+            ):
+                runtime._trust.current_signed_prepared_external_delivery_grant_for_reconstructed_evidence(
+                    _reconstructed_grant_selector(
+                        issued.call.evidence, historical_projection, selected
+                    )
+                )
             with pytest.raises(PermissionError, match="operator grant pin is not current"):
                 await runtime.authorize_prepared_external_delivery_grant(
                     _signed_grant(issue),

@@ -43,6 +43,7 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts 
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_grant_owner_contracts import (
     AuthorizePreparedExternalDeliveryGrantCallV2,
     PreparedExternalDeliveryGrantProposalV2,
+    ReconstructedPreparedExternalDeliveryGrantSelectorV1,
     prepared_external_delivery_grant_request_content_head_v2,
 )
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_contracts import (
@@ -987,6 +988,44 @@ class BrokerTrustDurability:
             self._verify_current_signed_prepared_external_delivery_grant(selected)
             return selected
 
+    def current_signed_prepared_external_delivery_grant_for_reconstructed_evidence(
+        self, selector: ReconstructedPreparedExternalDeliveryGrantSelectorV1
+    ) -> AuthenticatedPreparedExternalDeliveryGrant:
+        """Resolve the one current, signed grant for reconstructed H1 B evidence.
+
+        ``selector`` is typed reconstructed evidence, never an authority grant.  The result
+        remains an inert authenticated durable record.  The lookup authenticates
+        the entire live journal and materialization before selecting, compares the
+        retained ISSUE evidence on every B-semantic field, and refuses to infer a
+        grant identity from an arbitrary latest revision.
+        """
+        if not isinstance(selector, ReconstructedPreparedExternalDeliveryGrantSelectorV1):
+            raise TypeError("reconstructed prepared delivery evidence has the wrong type")
+        gate = self._authority_gate
+        if gate is None:
+            raise RuntimeError(
+                "signed prepared external delivery grant reads require an authority gate"
+            )
+        with gate.hold():
+            grants = self._locked_authenticated_prepared_external_delivery_grants()
+            latest_by_grant = {
+                (item.grant.tenant_id, item.grant.database_id, item.grant.grant_id): item
+                for item in grants
+            }
+            matches = tuple(
+                item
+                for item in latest_by_grant.values()
+                if item.grant.status == "ACTIVE"
+                and self._matches_reconstructed_prepared_delivery_selector(item, selector)
+            )
+            if len(matches) != 1:
+                raise RuntimeError(
+                    "reconstructed prepared delivery evidence does not identify one active grant"
+            )
+            selected = matches[0]
+            self._verify_current_signed_prepared_external_delivery_grant(selected)
+            return selected
+
     def read_prepared_external_delivery_grant_lifecycle(
         self, request: ReadPreparedExternalDeliveryGrantLifecycleV2
     ) -> PreparedExternalDeliveryGrantLifecycleResultV2:
@@ -1027,6 +1066,35 @@ class BrokerTrustDurability:
         self.capture_verified_observation()
         return authenticated_prepared_external_delivery_grant_lineage(
             self._journal.entries(), self._materializer.record
+        )
+
+    @staticmethod
+    def _matches_reconstructed_prepared_delivery_selector(
+        item: AuthenticatedPreparedExternalDeliveryGrant,
+        selector: ReconstructedPreparedExternalDeliveryGrantSelectorV1,
+    ) -> bool:
+        """Compare immutable B facts; route and observation time are issuance-local."""
+        retained = item.call.evidence
+        return (
+            retained.basis == selector.basis
+            and retained.selected_scope.anchor == selector.scope_anchor
+            and retained.selected_scope.scope == selector.scope
+            and (
+                retained.selected_scope.selected_decision_bytes
+                == selector.selected_decision_bytes
+            )
+            and (
+                retained.selected_scope.selected_record_bytes
+                == selector.selected_record_bytes
+            )
+            and retained.retained_origin == selector.retained_origin
+            and retained.selected_source == selector.selected_source
+            and retained.fence == selector.fence
+            and retained.original_run == selector.original_run
+            and retained.captured_attempt == selector.captured_attempt
+            and retained.accepted_delivery == selector.accepted_delivery
+            and retained.resource_grant == selector.resource_grant
+            and retained.canonical_resource_grant_bytes == selector.canonical_resource_grant_bytes
         )
 
     @staticmethod

@@ -457,6 +457,113 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 raise RuntimeError("J7 durable policy differs from owner proposal")
             return authenticated
 
+    def _capture_selected_prepared_delivery_historical_held(
+        self,
+        *,
+        registry: object,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> Any:
+        """Capture historical B facts only from the authenticated selected ROOT."""
+        from chiplog.composition.h1_completion_exchange_registry import (
+            H1CompletionExchangeRegistry,
+        )
+        from chiplog.composition.h1_launch_enrollment import H1RecoveryMountError
+        from chiplog.composition.h1_postseal_recovery import (
+            H1PostSealRecoveryJournal,
+            H1PostSealRecoveryRecordError,
+            H1PostSealRecoveryUnavailable,
+        )
+        from chiplog.composition.h1_postseal_recovery_source import (
+            H1PostSealRecoveryRootSource,
+            H1PostSealRecoverySourceError,
+        )
+        from chiplog.composition.h1_v2_recovery_native_source import (
+            H1V2RecoveryNativeSource,
+            H1V2RecoveryNativeSourceError,
+        )
+
+        gate = self._authority_gate()
+        gate.require_held()
+        if type(registry) is not H1CompletionExchangeRegistry:
+            raise PermissionError("J7 H1 completion registry is unavailable")
+
+        journal = getattr(self, "_h1_postseal_recovery_journal", None)
+        mount = getattr(self, "_h1_recovery_mount", None)
+        if type(journal) is not H1PostSealRecoveryJournal or journal._mount is not mount:
+            raise PermissionError("J7 enrolled recovery journal is unavailable")
+        if (
+            type(original_identity) is not DriverCommandIdentityV1
+            or type(selected_seal) is not CallSubjectHead
+        ):
+            raise PermissionError("J7 historical prepared delivery locator differs")
+
+        try:
+            journal._require_open()
+            mount.assert_current()
+            scan = journal._scan_held()
+            mount.assert_current()
+        except (
+            H1PostSealRecoveryRecordError,
+            H1PostSealRecoveryUnavailable,
+            H1RecoveryMountError,
+        ) as error:
+            raise PermissionError("J7 selected recovery producer is unavailable") from error
+
+        root_id = dict(scan.root_id_by_selected_seal).get(
+            (
+                original_identity.tenant_id,
+                original_identity.database_id,
+                selected_seal.subject_id,
+                selected_seal.revision.head,
+                selected_seal.revision.fingerprint,
+            )
+        )
+        if root_id is None:
+            return registry.capture_prepared_delivery_historical(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=selected_seal,
+            )
+
+        try:
+            locator = H1V2RecoveryNativeSource(self).locate_selected_seal(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+            )
+            if locator != selected_seal:
+                raise H1V2RecoveryNativeSourceError(
+                    "requested selected seal differs from the installed selection"
+                )
+            root = H1PostSealRecoveryRootSource(self).derive_on_restart(
+                original_identity, original_fingerprint, locator
+            )
+            selected = journal._read_selected_root_entries_held(root_id)
+            state = selected.state
+            if state.root != root or state.root_evidence is None:
+                raise H1PostSealRecoveryRecordError("selected recovery ROOT differs")
+        except (
+            H1PostSealRecoveryRecordError,
+            H1PostSealRecoverySourceError,
+            H1V2RecoveryNativeSourceError,
+        ) as error:
+            raise PermissionError("J7 selected recovery producer is unavailable") from error
+
+        if state.selected_producer == "LOCAL_V2":
+            return registry.capture_prepared_delivery_historical(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=locator,
+            )
+        if state.selected_producer == "SCOPED_V3":
+            return registry.capture_recovered_prepared_delivery_historical(
+                original_identity=original_identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=locator,
+            )
+        raise PermissionError("J7 selected recovery producer is unknown")
+
     async def authorize_prepared_external_delivery_grant(
         self,
         canonical_signed_source_bytes: bytes,
@@ -500,7 +607,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             registry = getattr(self, "_h1_completion_exchange_registry", None)
             if type(registry) is not H1CompletionExchangeRegistry:
                 raise PermissionError("J7 H1 completion registry is unavailable")
-            historical_capture = registry.capture_prepared_delivery_historical(
+            historical_capture = self._capture_selected_prepared_delivery_historical_held(
+                registry=registry,
                 original_identity=original_identity,
                 original_fingerprint=original_fingerprint,
                 selected_seal=selected_seal,

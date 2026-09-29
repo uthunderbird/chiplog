@@ -34,7 +34,11 @@ from chiplog.composition.h1_conversation_sources import H1ConversationSources
 from chiplog.composition.h1_postseal_recovery import (
     H1PostSealRecoveryJournal,
     H1PostSealRecoveryRecordError,
+    H1PostSealRecoveryRecordV1,
+    H1PostSealRecoveryRecordV2,
+    H1PostSealRecoveryRootV1,
     H1PostSealRecoverySelectedRecord,
+    _decode_record,
 )
 from chiplog.composition.h1_postseal_recovery_source import H1PostSealRecoveryRootSource
 from chiplog.composition.h1_recovery_historical_pe_source import (
@@ -138,10 +142,19 @@ class H1V3RecoveryHistoricalSource:
                 records = self._required_records(selected.records)
                 if pinned is not None and records != pinned:
                     raise ValueError("pinned recovery records differ")
-                completion_input = records[1].canonical_bytes
-                completion_result_bytes = records[2].canonical_bytes
-                conversation_input = records[3].canonical_bytes
-                conversation_result_bytes = records[4].canonical_bytes
+                decoded_records = self._decode_required_records(records, root=root)
+                completion_input = self._stage_payload(
+                    decoded_records[1], kind="STAGE_INPUT", stage="COMPLETION"
+                )
+                completion_result_bytes = self._stage_payload(
+                    decoded_records[2], kind="STAGE_RESULT", stage="COMPLETION"
+                )
+                conversation_input = self._stage_payload(
+                    decoded_records[3], kind="STAGE_INPUT", stage="CONVERSATION"
+                )
+                conversation_result_bytes = self._stage_payload(
+                    decoded_records[4], kind="STAGE_RESULT", stage="CONVERSATION"
+                )
                 completion, policy, effects = H1RecoveryHistoricalPESource(
                     self._runtime
                 ).read_selected_projection(
@@ -211,7 +224,7 @@ class H1V3RecoveryHistoricalSource:
 
     @staticmethod
     def _required_records(
-        records: tuple[H1PostSealRecoverySelectedRecord, ...]
+        records: tuple[H1PostSealRecoverySelectedRecord, ...],
     ) -> tuple[H1PostSealRecoverySelectedRecord, ...]:
         wanted = (
             ("ROOT", None),
@@ -226,6 +239,68 @@ class H1V3RecoveryHistoricalSource:
                 "V3 recovery completion/conversation pairs are absent"
             )
         return found
+
+    @staticmethod
+    def _decode_required_records(
+        records: tuple[H1PostSealRecoverySelectedRecord, ...], *, root: H1PostSealRecoveryRootV1
+    ) -> tuple[
+        H1PostSealRecoveryRecordV1 | H1PostSealRecoveryRecordV2,
+        H1PostSealRecoveryRecordV1,
+        H1PostSealRecoveryRecordV1,
+        H1PostSealRecoveryRecordV1,
+        H1PostSealRecoveryRecordV1,
+    ]:
+        decoded = tuple(_decode_record(record.canonical_bytes) for record in records)
+        if len(decoded) != 5:
+            raise H1V3RecoveryHistoricalSourceError("V3 recovery record envelopes differ")
+        root_record = decoded[0]
+        completion_input_record = decoded[1]
+        completion_result_record = decoded[2]
+        conversation_input_record = decoded[3]
+        conversation_result_record = decoded[4]
+        if (
+            type(root_record) is not H1PostSealRecoveryRecordV2
+            or root_record.producer_choice != "SCOPED_V3"
+            or root_record.root is None
+            or root_record.root != root
+        ):
+            raise H1V3RecoveryHistoricalSourceError("V3 recovery root envelope differs")
+        if (
+            root_record.root_id != root.root_id()
+            or root_record.predecessor_entry_id is not None
+            or any(
+                record.root_id != root.root_id()
+                or record.kind != selected.kind
+                or (record.stage if type(record) is H1PostSealRecoveryRecordV1 else None)
+                != selected.stage
+                for record, selected in zip(decoded, records, strict=True)
+            )
+            or any(
+                record.predecessor_entry_id != records[index - 1].entry_id
+                for index, record in enumerate(decoded[1:], start=1)
+            )
+            or type(completion_input_record) is not H1PostSealRecoveryRecordV1
+            or type(completion_result_record) is not H1PostSealRecoveryRecordV1
+            or type(conversation_input_record) is not H1PostSealRecoveryRecordV1
+            or type(conversation_result_record) is not H1PostSealRecoveryRecordV1
+        ):
+            raise H1V3RecoveryHistoricalSourceError("V3 recovery record envelopes differ")
+        return (
+            root_record,
+            completion_input_record,
+            completion_result_record,
+            conversation_input_record,
+            conversation_result_record,
+        )
+
+    @staticmethod
+    def _stage_payload(record: H1PostSealRecoveryRecordV1, *, kind: str, stage: str) -> bytes:
+        if record.kind != kind or record.stage != stage:
+            raise H1V3RecoveryHistoricalSourceError("V3 recovery stage envelope differs")
+        payload = record.semantic_input if kind == "STAGE_INPUT" else record.result_bytes
+        if type(payload) is not bytes:
+            raise H1V3RecoveryHistoricalSourceError("V3 recovery stage payload is absent")
+        return payload
 
 
 __all__ = [

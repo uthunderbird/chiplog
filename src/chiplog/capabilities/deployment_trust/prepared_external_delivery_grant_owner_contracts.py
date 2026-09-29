@@ -17,7 +17,11 @@ from chiplog.capabilities.effects.scoped_intent_contracts import PreparedDeliver
 
 from .cli_custody_contracts import CliCustodyDTO, Digest, Identity, UInt64
 from .h1_broker_evidence_contracts import H1RetainedSelectedWrapperV1
-from .hermetic_output_scope_contracts import HermeticTrustObservationV1
+from .hermetic_output_scope_contracts import (
+    HermeticOutputScopeAnchorV1,
+    HermeticOutputScopeV1,
+    HermeticTrustObservationV1,
+)
 from .operator_grant_authorization_contracts import (
     RetainedOperatorGrantAuthorizationSourceV2,
     SignedOperatorGrantAuthorizationV2,
@@ -135,6 +139,52 @@ class PreparedExternalDeliveryGrantEvidenceV2(CliCustodyDTO):
             != hashlib.sha256(self.accepted_delivery.rendered_bytes).hexdigest()
         ):
             raise ValueError("accepted delivery rendered bytes differ from digest")
+        return self
+
+
+class ReconstructedPreparedExternalDeliveryGrantSelectorV1(CliCustodyDTO):
+    """Immutable B evidence used only to select a current durable grant.
+
+    This intentionally omits the issuance-local route, channel, and clock facts
+    carried by ``PreparedExternalDeliveryGrantEvidenceV2``.  It is not a grant
+    and cannot establish provenance without the authenticated durable lookup.
+    """
+
+    basis: PreparedDeliveryBasisV3
+    scope_anchor: HermeticOutputScopeAnchorV1
+    scope: HermeticOutputScopeV1
+    selected_decision_bytes: bytes = Field(min_length=1)
+    selected_record_bytes: bytes = Field(min_length=1)
+    retained_origin: H1RetainedSelectedWrapperV1
+    selected_source: SelectedExternalDeliverySourceV1
+    fence: EffectsNonSchedulerFence
+    original_run: ExactHead
+    captured_attempt: ExactHead
+    accepted_delivery: AcceptedDelivery
+    resource_grant: ExactHead
+    canonical_resource_grant_bytes: bytes = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def exact_scope_basis(self) -> Self:
+        if (
+            self.resource_grant.fingerprint
+            != hashlib.sha256(self.canonical_resource_grant_bytes).hexdigest()
+        ):
+            raise ValueError("resource grant bytes differ from resource grant head")
+        if (
+            hashlib.sha256(self.selected_decision_bytes).hexdigest()
+            != self.scope_anchor.decision.fingerprint
+            or hashlib.sha256(self.selected_record_bytes).hexdigest()
+            != self.scope_anchor.record.fingerprint
+        ):
+            raise ValueError("retained scope bytes differ from physical anchor")
+        if (
+            self.scope_anchor.scope_revision != self.scope.revision
+            or self.scope_anchor.predecessor != self.scope.predecessor
+            or self.scope_anchor.selected_resource_observation_ref
+            != self.scope.selected_resource_observation_ref
+        ):
+            raise ValueError("scope differs from physical anchor")
         return self
 
 

@@ -833,8 +833,12 @@ class H1CompletionExchangeRegistry:
         from chiplog.capabilities.effects.h1_prepared_delivery_basis import (
             derive_h1_prepared_delivery_basis,
         )
+        from chiplog.composition.h1_postseal_recovery_source import (
+            H1PostSealRecoveryRootSource,
+        )
         from chiplog.composition.h1_v3_recovery_historical_source import (
             H1V3RecoveredPreparedDelivery,
+            H1V3RecoveryHistoricalSource,
         )
 
         if type(record) is not H1V3RecoveredPreparedDelivery:
@@ -845,10 +849,26 @@ class H1CompletionExchangeRegistry:
             request = record.completion_request
             prepared = record.completion_result
             effects_source = record.effects_source
+            pinned_records = record.pinned_records
+            if type(pinned_records) is not tuple or len(pinned_records) != 5:
+                raise ValueError("recovered completion records differ")
+            root = H1PostSealRecoveryRootSource(self._runtime).derive_on_restart(
+                record.original_identity,
+                record.original_fingerprint,
+                record.selected_seal,
+            )
+            decoded_records = H1V3RecoveryHistoricalSource._decode_required_records(
+                pinned_records, root=root
+            )
+            completion_input = H1V3RecoveryHistoricalSource._stage_payload(
+                decoded_records[1], kind="STAGE_INPUT", stage="COMPLETION"
+            )
+            completion_result_bytes = H1V3RecoveryHistoricalSource._stage_payload(
+                decoded_records[2], kind="STAGE_RESULT", stage="COMPLETION"
+            )
             if (
-                request.canonical_bytes() != record.pinned_records[1].canonical_bytes
-                or prepared.canonical_bytes() != record.pinned_records[2].canonical_bytes
-                or len(record.pinned_records) != 5
+                request.canonical_bytes() != completion_input
+                or prepared.canonical_bytes() != completion_result_bytes
             ):
                 raise ValueError("recovered completion records differ")
             basis = derive_h1_prepared_delivery_basis(request, prepared)
