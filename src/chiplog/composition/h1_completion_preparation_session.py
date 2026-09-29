@@ -696,6 +696,19 @@ class H1CompletionPreparationSession:
                 context=recovery.context,
                 lease=recovery.lease,
             )
+            if expected_stage == "EFFECTS" and finalization:
+                # ROOT selects the producer before the effects frame exists.
+                # This session currently has only the mounted LOCAL_V2 owner
+                # call builder below.  A SCOPED_V3 root must therefore stop
+                # here until its own P-derived scoped call/result route is
+                # mounted; reusing the local evidence would forge V3 input.
+                producer = enrollment._selected_recovery_producer(
+                    enrollment._require_recovery_record(self)
+                )
+                if producer != "LOCAL_V2":
+                    raise H1CompletionPreparationUnavailable(
+                        "H1 scoped recovery effects exchange is not mounted"
+                    )
             engine = runtime._supervisor.runtime()
             if expected_stage == "TERMINAL_WORK" and finalization:
                 from chiplog.composition.h1_runtime_preissuance_port import (

@@ -66,6 +66,7 @@ if TYPE_CHECKING:
 
 SCHEMA = "chiplog.composition.h1-completion-issuance.v1"
 V2_SCHEMA = "chiplog.composition.h1-completion-issuance.v2"
+V3_SCHEMA = "chiplog.composition.h1-completion-issuance.v3"
 
 
 class H1CompletionOwnerExchangeV1(DispatchObservationDTO):
@@ -316,7 +317,9 @@ def decode_h1_completion_terminal_admission_witness_v1(
     return decoded
 
 
-def dispatch_h1_completion_issuance_schema(outer_schema: str, raw: bytes) -> Literal["V1", "V2"]:
+def dispatch_h1_completion_issuance_schema(
+    outer_schema: str, raw: bytes
+) -> Literal["V1", "V2", "V3"]:
     """Fail closed unless the retained outer and inner issuance versions agree.
 
     A schema-marker-only object is accepted for routing probes.  A complete
@@ -328,10 +331,13 @@ def dispatch_h1_completion_issuance_schema(outer_schema: str, raw: bytes) -> Lit
         raise ValueError("H1 completion issuance outer and inner schemas differ")
     if outer_schema == SCHEMA:
         fields = set(H1CompletionIssuanceV1.model_fields)
-        version: Literal["V1", "V2"] = "V1"
+        version: Literal["V1", "V2", "V3"] = "V1"
     elif outer_schema == V2_SCHEMA:
         fields = set(H1CompletionIssuanceV2.model_fields)
         version = "V2"
+    elif outer_schema == V3_SCHEMA:
+        fields = set(H1CompletionIssuanceV3.model_fields)
+        version = "V3"
     else:
         raise ValueError("H1 completion issuance schema is unsupported")
     if set(value) not in ({"schema_id"}, fields):
@@ -355,13 +361,15 @@ def decode_h1_completion_issuance_v2(raw: bytes) -> H1CompletionIssuanceV2:
 
 def decode_h1_completion_issuance_v3(raw: bytes) -> H1CompletionIssuanceV3:
     """Decode the new canonical wire without admitting it to runtime dispatch."""
-    _strict_canonical_json_object(raw)
+    if dispatch_h1_completion_issuance_schema(V3_SCHEMA, raw) != "V3":
+        raise ValueError("H1 completion issuance is not V3")
     try:
         decoded = H1CompletionIssuanceV3.model_validate_json(raw)
     except ValidationError as error:
         raise ValueError("H1 completion issuance V3 is malformed") from error
     if decoded.canonical_bytes() != raw:
         raise ValueError("H1 completion issuance V3 is noncanonical")
+    _require_v3_exchange_shape(decoded)
     return decoded
 
 
@@ -739,6 +747,91 @@ def _require_v2_exchange_shape(value: H1CompletionIssuanceV2) -> None:
     _require_historical_scope_current_exchange_v2(value.scope_current_exchange, assembly)
     _require_fresh_scope_current_exchange_v2(preterminal, assembly, value.capture)
     _require_fresh_scope_current_exchange_v2(final, assembly, value.capture)
+
+
+def _require_v3_exchange_shape(value: H1CompletionIssuanceV3) -> None:
+    """Close all four retained V3 owner frames without granting authority."""
+    if tuple(item.role for item in value.owner_exchanges) != (
+        "completion",
+        "conversation",
+        "effects",
+        "terminal_work",
+    ):
+        raise ValueError("H1 V3 completion owner exchanges have a noncanonical role order")
+    exchanges = (
+        *value.owner_exchanges,
+        value.scope_issue_exchange,
+        value.scope_current_exchange,
+        value.final_current_exchange,
+        value.terminal_admission.preterminal_current_exchange,
+    )
+    if any(
+        exchange.returned_at_ns < exchange.sent_at_ns
+        or exchange.returned_at_ns >= exchange.sent.budget.absolute_deadline_ns
+        for exchange in exchanges
+    ):
+        raise ValueError("H1 V3 owner exchange timing differs")
+    assembly = value.assembly
+    completion, conversation, effects, terminal_work = value.owner_exchanges
+    for (
+        exchange,
+        operation,
+        request_schema,
+        request_bytes,
+        response_schema,
+        response_bytes,
+        owner,
+    ) in (
+        (
+            completion,
+            "agent_loop.prepare_first_path_completion",
+            "chiplog.execution.first-path-completion.v2",
+            assembly.original_completion_request.canonical_bytes(),
+            "chiplog.agent-loop.prepared-execution-completion-result.v1",
+            assembly.prepared_completion.canonical_bytes(),
+            "agent_loop",
+        ),
+        (
+            conversation,
+            "projections.prepare_conversation_completion",
+            "chiplog.conversation.prepare-completion.v1",
+            assembly.conversation_request.canonical_json_bytes(),
+            "chiplog.conversation.prepared-completion-result.v1",
+            assembly.conversation_result.canonical_json_bytes(),
+            "projections",
+        ),
+        (
+            effects,
+            "effects.prepare_h1_scoped_delivery",
+            value.effects_call.schema_id,
+            value.effects_call.canonical_bytes(),
+            value.effects_result.schema_id,
+            value.effects_result.canonical_bytes(),
+            "effects",
+        ),
+        (
+            terminal_work,
+            "agent_loop.prepare_terminal_work",
+            "chiplog.agent-loop.prepare-terminal-work.v1",
+            assembly.terminal_work_request.canonical_bytes(),
+            "chiplog.agent-loop.prepared-post-terminal-work-result.v1",
+            assembly.terminal_work_result.canonical_bytes(),
+            "agent_loop",
+        ),
+    ):
+        _require_success_exchange(
+            exchange,
+            operation=operation,
+            request_schema=request_schema,
+            request_bytes=request_bytes,
+            response_schema=response_schema,
+            response_bytes=response_bytes,
+            callee_owner=owner,
+            capture=value.capture,
+        )
+    from chiplog.composition.completion_publication_contracts import _validate_h1_scoped_v3_exchange
+
+    _validate_h1_scoped_v3_exchange(assembly, value.effects_call, value.effects_result)
 
 
 def _h1_identity(assembly: PrepareH1CompleteAcceptanceAssemblyV1) -> tuple[str, str]:

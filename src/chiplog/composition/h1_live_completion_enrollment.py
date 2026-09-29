@@ -685,22 +685,39 @@ class _H1LiveCompletionEnrollment:
     def _issue_recovery_issuance(
         self, *, session: object, issuance: object, batch: object, readplan_capture: object
     ) -> _H1LiveCompletionIssuance:
-        """Register one fully assembled V2 source from the exact recovery session."""
-        from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
+        """Register the selected producer's exact recovery issuance evidence."""
+        from chiplog.composition.h1_completion_issuance import (
+            V2_SCHEMA,
+            V3_SCHEMA,
+            H1CompletionIssuanceV2,
+            H1CompletionIssuanceV3,
+        )
         from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 
         with self._gate.hold():
             record = self._require_recovery_record(session)
             self._require_recovery_record_current(record)
+            producer = self._selected_recovery_producer(record)
+            expected_type: type[H1CompletionIssuanceV2] | type[H1CompletionIssuanceV3]
+            expected_schema: str
+            if producer == "LOCAL_V2":
+                expected_type = H1CompletionIssuanceV2
+                expected_schema = V2_SCHEMA
+            else:
+                expected_type = H1CompletionIssuanceV3
+                expected_schema = V3_SCHEMA
             if (
                 record.preflight is None
-                or type(issuance) is not H1CompletionIssuanceV2
+                or type(issuance) is not expected_type
                 or type(batch) is not CompleteDeliveryBatchV2
+                or batch.authentication.applicability_schema != expected_schema
                 or batch.authentication.applicability_bytes != issuance.canonical_bytes()
+                or hashlib.sha256(batch.authentication.applicability_bytes).hexdigest()
+                != batch.authentication.applicability_fingerprint
                 or readplan_capture is None
             ):
                 raise H1LiveCompletionEnrollmentUnavailable(
-                    "H1 recovery issuance payload differs"
+                    "H1 recovery issuance producer, schema, or payload differs"
                 )
             if any(
                 item.enrollment is record and item.state != "BURNED"
@@ -718,6 +735,49 @@ class _H1LiveCompletionEnrollment:
                 state="ISSUED",
             )
             return source
+
+    def _selected_recovery_producer(
+        self, record: _RecoveryEnrollmentRecord
+    ) -> Literal["LOCAL_V2", "SCOPED_V3"]:
+        """Read the exact producer choice retained by the held ROOT preflight.
+
+        The coordinator authenticated this state from its durable ROOT before
+        opening B.  Requiring the same preflight, source context, root, and
+        lease here prevents a V2/V3 applicability wire from being registered
+        against an unrelated or mutable producer choice.
+        """
+        from chiplog.composition.h1_postseal_recovery_coordinator import (
+            _H1CompleteChainPreflight,
+            _H1PostSealRecoveryCoordinator,
+        )
+
+        preflight = record.preflight
+        coordinator = getattr(self._runtime, "_h1_postseal_recovery_coordinator", None)
+        if (
+            type(preflight) is not _H1CompleteChainPreflight
+            or type(coordinator) is not _H1PostSealRecoveryCoordinator
+            or preflight._coordinator is not coordinator
+            or preflight._source is not record.source
+            or preflight._context is not record.context
+            or preflight._lease is not record.lease
+            or preflight._retired
+        ):
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 recovery producer preflight differs"
+            )
+        try:
+            context_state = cast(Any, record.source)._context_state(record.context)
+            root = context_state.root
+            state = preflight._state
+            if state.root != root or state.selected_producer not in ("LOCAL_V2", "SCOPED_V3"):
+                raise ValueError("selected producer differs from recovery ROOT")
+            cast(Any, record.lease).require_owned()
+            cast(Any, record.source)._require_current(record.context)
+        except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 recovery producer ROOT is not current"
+            ) from error
+        return state.selected_producer
 
     def _require_open_and_mounted(self) -> None:
         if self._closed:
