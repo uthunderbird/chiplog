@@ -12,13 +12,38 @@ from chiplog.adapters.driven.deployment_trust import (
     IndependentTenantDecisionJournal,
     SQLiteTrustMaterializer,
 )
+from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
 from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
     HermeticTrustObservationV1,
+)
+from chiplog.capabilities.deployment_trust.operator_policy_authorization_contracts import (
+    RetainedOperatorPolicyAuthorizationSourceV1,
+    SignedOperatorPolicyAuthorizationV1,
+)
+from chiplog.capabilities.deployment_trust.operator_policy_command_verifier import (
+    verify_operator_policy_command,
+)
+from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_contracts import (
+    IssuePreparedExternalSelfDeliveryPolicyRequestV1,
+    IssuePreparedExternalSelfDeliveryPolicyV1,
+    PreparedExternalSelfDeliveryPolicyAnchorV1,
+    PreparedExternalSelfDeliveryPolicyV1,
+    RevokePreparedExternalSelfDeliveryPolicyRequestV1,
+    RevokePreparedExternalSelfDeliveryPolicyV1,
+)
+from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_owner_contracts import (  # noqa: E501
+    AuthorizePreparedSelfDeliveryPolicyCallV1,
+    PreparedSelfDeliveryPolicyProposalV1,
 )
 from chiplog.platform.authority_gate import AuthorityGate, FileIdentity
 from chiplog.platform.h1_scope_lineage import (
     AuthenticatedHermeticOutputScope,
     authenticated_h1_scope_lineage,
+)
+from chiplog.platform.operator_policy_key_pin import load_operator_policy_key_pin
+from chiplog.platform.prepared_self_delivery_policy_lineage import (
+    AuthenticatedPreparedSelfDeliveryPolicy,
+    authenticated_prepared_self_delivery_policy_lineage,
 )
 from chiplog.platform.r7_trust import encode_trust_journal
 
@@ -37,6 +62,9 @@ _TYPES = {
         "chiplog.deployment_trust.tenant_principal_contour",
     ),
     "HERMETIC_OUTPUT_SCOPE_V1": ("chiplog.deployment_trust.hermetic_output_scope",),
+    "PREPARED_SELF_DELIVERY_POLICY_V1": (
+        "chiplog.deployment_trust.prepared_self_delivery_policy",
+    ),
 }
 
 
@@ -331,7 +359,7 @@ class BrokerTrustDurability:
                 or not isinstance(credential["revoked"], bool)
             ):
                 raise RuntimeError("historical BOOTSTRAP payload is invalid")
-        else:
+        elif kind == "HERMETIC_OUTPUT_SCOPE_V1":
             from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
                 HermeticOutputScopeV1,
             )
@@ -345,6 +373,31 @@ class BrokerTrustDurability:
                 raise RuntimeError("historical H1 scope payload is invalid") from error
             if scope.model_dump(mode="json") != scope_value:
                 raise RuntimeError("historical H1 scope payload is not canonical")
+        elif kind == "PREPARED_SELF_DELIVERY_POLICY_V1":
+            source_value, policy_value = payload.get("operator_source"), payload.get("policy")
+            if (
+                set(payload) != {"operator_source", "policy"}
+                or not isinstance(source_value, dict)
+                or not isinstance(policy_value, dict)
+            ):
+                raise RuntimeError("historical prepared self-delivery policy payload is invalid")
+            try:
+                source_bytes = _canonical(source_value)
+                policy_bytes = _canonical(policy_value)
+                source = RetainedOperatorPolicyAuthorizationSourceV1.model_validate_json(
+                    source_bytes
+                )
+                policy = PreparedExternalSelfDeliveryPolicyV1.model_validate_json(policy_bytes)
+            except ValueError as error:
+                raise RuntimeError(
+                    "historical prepared self-delivery policy payload is invalid"
+                ) from error
+            if source.canonical_bytes() != source_bytes or policy.canonical_bytes() != policy_bytes:
+                raise RuntimeError(
+                    "historical prepared self-delivery policy payload is not canonical"
+                )
+        else:
+            raise RuntimeError("historical trust payload kind is unsupported")
 
     def _verify_historical_genesis(self, envelope: dict[str, object]) -> None:
         if envelope["kind"] != "INITIALIZE":
@@ -493,6 +546,202 @@ class BrokerTrustDurability:
             if latest != selected:
                 raise RuntimeError("H1 scope current anchor is superseded")
             return selected
+
+    def append_prepared_self_delivery_policy(
+        self,
+        call: AuthorizePreparedSelfDeliveryPolicyCallV1,
+        proposal: PreparedSelfDeliveryPolicyProposalV1,
+    ) -> AuthenticatedPreparedSelfDeliveryPolicy:
+        """Durably append one independently pinned, current policy proposal.
+
+        The journal HMAC authenticates this broker envelope only.  Operator
+        permission is established separately by the protected Ed25519 pin.
+        """
+        gate = self._authority_gate
+        if gate is None:
+            raise RuntimeError("prepared self-delivery policy append requires an authority gate")
+        if not isinstance(call, AuthorizePreparedSelfDeliveryPolicyCallV1):
+            raise TypeError("prepared self-delivery policy call has the wrong type")
+        if not isinstance(proposal, PreparedSelfDeliveryPolicyProposalV1):
+            raise TypeError("prepared self-delivery policy proposal has the wrong type")
+        with gate.hold():
+            frozen = self.capture_verified_observation()
+            self._require_current_policy_observation(call, frozen)
+            policies = self._locked_authenticated_prepared_self_delivery_policies()
+            latest = self._latest_prepared_self_delivery_policy(
+                policies,
+                proposal.policy.tenant_id,
+                proposal.policy.database_id,
+                proposal.policy.policy_id,
+            )
+            if (
+                call.latest_policy_anchor != (None if latest is None else latest.anchor)
+                or call.latest_policy_bytes
+                != (None if latest is None else latest.policy.canonical_bytes())
+            ):
+                raise RuntimeError("prepared self-delivery policy physical CAS differs")
+            try:
+                proposal.check_pinned_call(call)
+            except ValueError as error:
+                raise RuntimeError(
+                    "prepared self-delivery policy proposal differs from pinned call"
+                ) from error
+            self._verify_pinned_operator_policy_command(call, proposal)
+            payload: dict[str, object] = {
+                "operator_source": proposal.operator_source.model_dump(mode="json"),
+                "policy": proposal.policy.model_dump(mode="json"),
+            }
+            decision_id = self._locked_append("PREPARED_SELF_DELIVERY_POLICY_V1", payload)
+            record = self._materializer.record(decision_id, 1)
+            if record is None:
+                raise RuntimeError("prepared self-delivery policy materialization is absent")
+            return AuthenticatedPreparedSelfDeliveryPolicy(
+                decision_id=decision_id,
+                decision_bytes=self._journal.entries()[-1][2],
+                record_ordinal=1,
+                record_bytes=record,
+                operator_source=proposal.operator_source,
+                policy=proposal.policy,
+            )
+
+    def latest_prepared_self_delivery_policy(
+        self, tenant_id: str, database_id: str, policy_id: str
+    ) -> AuthenticatedPreparedSelfDeliveryPolicy | None:
+        """Return the latest authenticated revision, including an explicit revocation."""
+        if not all(type(value) is str and value for value in (tenant_id, database_id, policy_id)):
+            raise ValueError("prepared self-delivery policy scope must contain nonempty strings")
+        with self._authority_scope():
+            policies = self._locked_authenticated_prepared_self_delivery_policies()
+            return self._latest_prepared_self_delivery_policy(
+                policies, tenant_id, database_id, policy_id
+            )
+
+    def current_prepared_self_delivery_policy(
+        self, anchor: PreparedExternalSelfDeliveryPolicyAnchorV1
+    ) -> AuthenticatedPreparedSelfDeliveryPolicy:
+        """Resolve an exact anchor only if it remains latest and ACTIVE."""
+        if not isinstance(anchor, PreparedExternalSelfDeliveryPolicyAnchorV1):
+            raise TypeError("prepared self-delivery policy currentness requires its anchor type")
+        with self._authority_scope():
+            policies = self._locked_authenticated_prepared_self_delivery_policies()
+            selected = next((item for item in policies if item.anchor == anchor), None)
+            if selected is None:
+                raise RuntimeError("prepared self-delivery policy current anchor differs")
+            latest = self._latest_prepared_self_delivery_policy(
+                policies,
+                selected.policy.tenant_id,
+                selected.policy.database_id,
+                selected.policy.policy_id,
+            )
+            if latest != selected:
+                raise RuntimeError("prepared self-delivery policy current anchor is superseded")
+            if selected.policy.status != "ACTIVE":
+                raise RuntimeError("prepared self-delivery policy is revoked")
+            return selected
+
+    def _locked_authenticated_prepared_self_delivery_policies(
+        self,
+    ) -> tuple[AuthenticatedPreparedSelfDeliveryPolicy, ...]:
+        """Authenticate complete durable state before selecting policy lineage."""
+        self.capture_verified_observation()
+        return authenticated_prepared_self_delivery_policy_lineage(
+            self._journal.entries(), self._materializer.record
+        )
+
+    @staticmethod
+    def _latest_prepared_self_delivery_policy(
+        policies: tuple[AuthenticatedPreparedSelfDeliveryPolicy, ...],
+        tenant_id: str,
+        database_id: str,
+        policy_id: str,
+    ) -> AuthenticatedPreparedSelfDeliveryPolicy | None:
+        return next(
+            (
+                item
+                for item in reversed(policies)
+                if (item.policy.tenant_id, item.policy.database_id, item.policy.policy_id)
+                == (tenant_id, database_id, policy_id)
+            ),
+            None,
+        )
+
+    def _require_current_policy_observation(
+        self,
+        call: AuthorizePreparedSelfDeliveryPolicyCallV1,
+        frozen: FrozenTrustObservation,
+    ) -> None:
+        if call.snapshot_bytes != frozen.snapshot_bytes:
+            raise RuntimeError("prepared self-delivery policy snapshot differs")
+        entries = self._journal.entries()
+        if not entries or frozen.journal_head != entries[-1][0]:
+            raise RuntimeError("prepared self-delivery policy trust observation differs")
+        decision_id, _, raw = entries[-1]
+        expected_observation = HermeticTrustObservationV1(
+            physical_journal_head=ExactHead(
+                identity="deployment-trust/journal",
+                head=decision_id,
+                fingerprint=hashlib.sha256(raw).hexdigest(),
+            ),
+            logical_snapshot_head=self._locked_owner_snapshot_entries()[-1][0],
+        )
+        if call.expected_trust_observation != expected_observation:
+            raise RuntimeError("prepared self-delivery policy trust observation differs")
+        prefix = self.historical_prefix(call.expected_trust_observation)
+        if prefix.snapshot_bytes != call.snapshot_bytes:
+            raise RuntimeError("prepared self-delivery policy snapshot differs")
+
+    def _verify_pinned_operator_policy_command(
+        self,
+        call: AuthorizePreparedSelfDeliveryPolicyCallV1,
+        proposal: PreparedSelfDeliveryPolicyProposalV1,
+    ) -> None:
+        signed = SignedOperatorPolicyAuthorizationV1.model_validate_json(
+            call.canonical_signed_source_bytes
+        )
+        request_bytes = signed.payload.canonical_request_bytes
+        gate = self._authority_gate
+        if gate is None:
+            raise RuntimeError("prepared self-delivery policy append requires an authority gate")
+        try:
+            request: (
+                IssuePreparedExternalSelfDeliveryPolicyRequestV1
+                | RevokePreparedExternalSelfDeliveryPolicyRequestV1
+            )
+            command: (
+                IssuePreparedExternalSelfDeliveryPolicyV1
+                | RevokePreparedExternalSelfDeliveryPolicyV1
+            )
+            if signed.payload.operation == "ISSUE_PREPARED_EXTERNAL_SELF_DELIVERY_POLICY":
+                request = IssuePreparedExternalSelfDeliveryPolicyRequestV1.model_validate_json(
+                    request_bytes
+                )
+                command = IssuePreparedExternalSelfDeliveryPolicyV1(
+                    request=request,
+                    authenticated_operator_source=proposal.operator_source.ref,
+                )
+            else:
+                request = RevokePreparedExternalSelfDeliveryPolicyRequestV1.model_validate_json(
+                    request_bytes
+                )
+                command = RevokePreparedExternalSelfDeliveryPolicyV1(
+                    request=request,
+                    authenticated_operator_source=proposal.operator_source.ref,
+                )
+            pin = load_operator_policy_key_pin(
+                gate,
+                tenant_id=proposal.policy.tenant_id,
+                database_id=proposal.policy.database_id,
+            )
+            verify_operator_policy_command(
+                command,
+                retained_source=proposal.operator_source,
+                current_binding=pin.binding,
+            )
+            pin.assert_current()
+        except Exception as error:
+            raise RuntimeError(
+                "prepared self-delivery operator authorization is invalid"
+            ) from error
 
     @staticmethod
     def _expected_records(
