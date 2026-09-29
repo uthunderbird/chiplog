@@ -12,6 +12,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead as LoopExactHead
 from chiplog.capabilities.effects.contracts import ExactHead
 from chiplog.capabilities.effects.h1_normative_conflict_generation import (
     H1EffectsHistoryMemberV1,
@@ -29,8 +30,13 @@ from chiplog.composition.h1_scoped_delivery_authority import (
     H1ScopedDeliveryAuthorityCapture,
     H1ScopedDeliveryAuthorityReader,
     H1ScopedDeliveryAuthorityViolation,
+    _AuthorityRecord,
 )
-from chiplog.composition.r16_effects import _read_materialized_effects_with_history
+from chiplog.composition.r16_effects import (
+    CurrentEffectsWorker,
+    EffectsCurrentWorkerHold,
+    _read_materialized_effects_with_history,
+)
 
 if TYPE_CHECKING:
     from chiplog.capabilities.effects.dispatch_authority_contracts import CapturedSource
@@ -52,6 +58,7 @@ class _SourceRecord:
     authority_capture: H1ScopedDeliveryAuthorityCapture
     intent_id: str
     physical_cut: MaterializedEffectsCut
+    worker: CurrentEffectsWorker
     physical_cut_head: ExactHead
     owner_snapshot: OwnerJournalSnapshot
     history: H1EffectsHistoryV1
@@ -94,6 +101,11 @@ class H1ProducerSourceCapture:
     def physical_cut(self) -> ExactHead:
         """Authenticated physical-cut observation; it confers no SEND authority."""
         return self._record.physical_cut_head
+
+    @property
+    def current_worker(self) -> CurrentEffectsWorker:
+        """The exact live worker authenticated for the retained original Run."""
+        return self._record.worker
 
     @property
     def effects_history(self) -> CapturedSource:
@@ -148,7 +160,6 @@ class H1ProducerSourceReader:
             raise TypeError("H1 producer intent identity must be a nonempty string")
         with self._runtime._authority_gate().hold():
             self._require_mounted_held()
-            self._recheck_authority_held(authority_capture)
             record = self._read_record_held(authority_capture, intent_id)
             capture = object.__new__(H1ProducerSourceCapture)
             capture._record = record
@@ -160,7 +171,6 @@ class H1ProducerSourceReader:
         self._runtime._authority_gate().require_held()
         self._require_mounted_held()
         record = self._issued_record_held(capture)
-        self._recheck_authority_held(record.authority_capture)
         current = self._read_record_held(record.authority_capture, record.intent_id)
         if not _same_physical_sources(record, current):
             raise H1ProducerSourceViolation("H1 producer physical effects source changed")
@@ -193,8 +203,7 @@ class H1ProducerSourceReader:
         if (
             getattr(getattr(self._runtime, "_supervisor", None), "_manifest", None)
             is not R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST
-            or
-            getattr(self._runtime, "_h1_preissuance_registration_source_port", None) is None
+            or getattr(self._runtime, "_h1_preissuance_registration_source_port", None) is None
             or getattr(self._runtime, "_h1_completion_exchange_registry", None) is None
             or getattr(self._runtime, "_h1_live_completion_enrollment", None) is None
         ):
@@ -202,20 +211,35 @@ class H1ProducerSourceReader:
                 "H1 producer sources require an open mounted scoped runtime"
             )
 
-    def _recheck_authority_held(self, capture: H1ScopedDeliveryAuthorityCapture) -> None:
+    def _authority_record_held(self, capture: H1ScopedDeliveryAuthorityCapture) -> _AuthorityRecord:
+        """Return the issuer-held authority record after authenticating it."""
         self._runtime._authority_gate().require_held()
         try:
             record = self._authority_reader._issued_record_held(capture)
             self._authority_reader._verify_record_held(record)
         except (H1ScopedDeliveryAuthorityViolation, TypeError, ValueError) as error:
             raise H1ProducerSourceViolation("H1 scoped authority capture is not current") from error
+        return record
 
     def _read_record_held(
         self, authority_capture: H1ScopedDeliveryAuthorityCapture, intent_id: str
     ) -> _SourceRecord:
         self._runtime._authority_gate().require_held()
-        cut, journal = _read_materialized_effects_with_history(
-            self._runtime, self._runtime._owner_decisions(), run_id=None
+        authority_record = self._authority_record_held(authority_capture)
+        projection = authority_record.projection
+        original_run = projection.original_run
+        try:
+            cut, journal = _read_materialized_effects_with_history(
+                self._runtime, self._runtime._owner_decisions(), run_id=original_run.identity
+            )
+        except EffectsCurrentWorkerHold as error:
+            raise H1ProducerSourceViolation(
+                "H1 producer original Run no longer has its authenticated live worker; HOLD"
+            ) from error
+        worker = _require_original_live_worker(
+            cut,
+            original_run=original_run,
+            worker_session_id=projection.worker_session_id,
         )
         interpreted = interpret_h1_producer_effects_history(cut, journal)
         interpreted.require_intent_absent(intent_id)
@@ -241,6 +265,7 @@ class H1ProducerSourceReader:
             authority_capture=authority_capture,
             intent_id=intent_id,
             physical_cut=cut,
+            worker=worker,
             physical_cut_head=_physical_cut_head(cut, history),
             owner_snapshot=journal,
             history=history,
@@ -288,12 +313,37 @@ def _effects_history(interpreted: H1ProducerEffectsHistory) -> H1EffectsHistoryV
     )
 
 
+def _require_original_live_worker(
+    cut: MaterializedEffectsCut, *, original_run: LoopExactHead, worker_session_id: str
+) -> CurrentEffectsWorker:
+    """Bind the physical cut to the original B Run's still-live worker.
+
+    The historical projection supplies the original identity and head.  The
+    physical reader, parameterized by that identity, supplies the current
+    worker; neither a historical fence nor a caller-selected Run can stand in
+    for it.  An unavailable or replaced worker leaves the caller on HOLD.
+    """
+    worker = cut.worker
+    if (
+        type(worker) is not CurrentEffectsWorker
+        or worker.run.run_id != original_run.identity
+        or worker.run.head != original_run.head
+        or worker.run.worker_session != worker_session_id
+        or worker.fence.run_id != original_run.identity
+        or worker.fence.run_head != original_run.head
+        or worker.fence.worker_session_id != worker_session_id
+        or worker.fence.runtime_generation != worker.owner_session.generation_id
+    ):
+        raise H1ProducerSourceViolation(
+            "H1 producer original Run no longer has its authenticated live worker; HOLD"
+        )
+    return worker
+
+
 _PHYSICAL_CUT_SUBJECT = "chiplog.h1-producer.physical-cut.v1"
 
 
-def _physical_cut_head(
-    cut: MaterializedEffectsCut, history: H1EffectsHistoryV1
-) -> ExactHead:
+def _physical_cut_head(cut: MaterializedEffectsCut, history: H1EffectsHistoryV1) -> ExactHead:
     """Commit the complete authenticated physical cut under a fixed domain.
 
     The SHA-256 preimage is UTF-8 compact, sorted JSON with the fixed
@@ -349,9 +399,7 @@ def _physical_cut_head(
                 "session_id": worker.owner_session.session_id,
             },
         },
-        "latest_runs_canonical_bytes_hex": [
-            run.canonical_bytes().hex() for run in cut.latest_runs
-        ],
+        "latest_runs_canonical_bytes_hex": [run.canonical_bytes().hex() for run in cut.latest_runs],
         "selected_effects_history": {
             "digest": history.digest,
             "members": [
@@ -380,6 +428,7 @@ def _same_physical_sources(original: _SourceRecord, current: _SourceRecord) -> b
         original.authority_capture is current.authority_capture
         and original.intent_id == current.intent_id
         and original.physical_cut == current.physical_cut
+        and original.worker == current.worker
         and original.physical_cut_head == current.physical_cut_head
         and original.owner_snapshot == current.owner_snapshot
         and original.history == current.history

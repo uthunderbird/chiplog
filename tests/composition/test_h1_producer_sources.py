@@ -62,31 +62,6 @@ def _resources(tmp_path: Path) -> HermeticDispatchResources:
     )
 
 
-def _synthetic_issued_authority(
-    monkeypatch: pytest.MonkeyPatch,
-) -> H1ScopedDeliveryAuthorityCapture:
-    """Isolate the physical-reader test from the separately tested J7 grant route.
-
-    The source reader still uses the real installed runtime, authority gate,
-    owner journal and SQLite materialization.  The J7 authority reader has its
-    own mounted integration suite; this seam only substitutes its held-record
-    replay so this focused test does not recreate the policy/grant ceremony.
-    """
-    capture = object.__new__(H1ScopedDeliveryAuthorityCapture)
-    capture._record = object()
-    monkeypatch.setattr(
-        H1ScopedDeliveryAuthorityReader,
-        "_issued_record_held",
-        lambda self, held: held._record,
-    )
-    monkeypatch.setattr(
-        H1ScopedDeliveryAuthorityReader,
-        "_verify_record_held",
-        lambda self, record: None,
-    )
-    return capture
-
-
 async def _real_authority(runtime: object) -> tuple[H1ScopedDeliveryAuthorityReader, object]:
     """Issue a real J7 grant and return its reader-issued authority capture."""
     request, seal, _session, _exchange = await _completed_session(runtime)
@@ -221,6 +196,8 @@ async def test_reader_uses_real_mounted_physical_cut_and_rejects_foreign_capture
             authority_reader, authority = await _real_authority(runtime)
             reader = sources.H1ProducerSourceReader(runtime, authority_reader)
             captured = await reader.read(authority_capture=authority, intent_id="new-intent")
+            worker = captured.current_worker
+            projection = authority.historical_projection
 
             assert captured.history.tenant_id == runtime._tenant_id
             assert captured.history.digest
@@ -236,6 +213,12 @@ async def test_reader_uses_real_mounted_physical_cut_and_rejects_foreign_capture
             epoch, observed, horizon = captured.clock
             assert epoch == captured.effects_history.clock_epoch
             assert observed < horizon
+            assert worker.run.run_id == projection.original_run.identity
+            assert worker.run.head == projection.original_run.head
+            assert worker.run.worker_session == projection.worker_session_id
+            assert worker.fence.run_id == projection.original_run.identity
+            assert worker.fence.run_head == projection.original_run.head
+            assert worker.fence.worker_session_id == projection.worker_session_id
             with runtime._authority_gate().hold():
                 assert reader.recheck_held(captured) is captured
             with pytest.raises(TypeError, match="cannot be copied"):
@@ -322,13 +305,14 @@ async def test_recheck_detects_a_changed_physical_cut(
 ) -> None:
     slot, expected = installed_slot(tmp_path)
     await prepare_installed_slot(slot, expected, tmp_path)
+    _write_pin(slot.database_path)
+    _write_grant_pin(slot.database_path)
     with _open_installed_h1_launch(slot) as launch:
         async with open_installed_h1_scoped_runtime(
             launch, resources=_resources(tmp_path)
         ) as runtime:
-            authority_reader = H1ScopedDeliveryAuthorityReader(runtime)
+            authority_reader, authority = await _real_authority(runtime)
             reader = sources.H1ProducerSourceReader(runtime, authority_reader)
-            authority = _synthetic_issued_authority(monkeypatch)
             captured = await reader.read(authority_capture=authority, intent_id="new-intent")
             record = captured._record
             changed_cut = replace(
@@ -341,8 +325,10 @@ async def test_recheck_detects_a_changed_physical_cut(
             assert sources._physical_cut_head(changed_cut, record.history) != captured.physical_cut
             assert record.history.digest == captured.history.digest
             original = sources._read_materialized_effects_with_history
+            observed_run_ids: list[str | None] = []
 
             def appended(runtime: object, journal: object, *, run_id: str | None = None) -> object:
+                observed_run_ids.append(run_id)
                 cut, snapshot = original(runtime, journal, run_id=run_id)
                 return replace(cut, tenant_frontier=cut.tenant_frontier + 1), snapshot
 
@@ -352,6 +338,33 @@ async def test_recheck_detects_a_changed_physical_cut(
                     runtime._authority_gate().hold(),
                     pytest.raises(
                         sources.H1ProducerSourceViolation, match="physical effects source changed"
+                    ),
+                ):
+                    reader.recheck_held(captured)
+            assert observed_run_ids == [authority.historical_projection.original_run.identity]
+
+            def replaced_live_worker(
+                runtime: object, journal: object, *, run_id: str | None = None
+            ) -> object:
+                cut, snapshot = original(runtime, journal, run_id=run_id)
+                assert cut.worker is not None
+                return replace(
+                    cut,
+                    worker=replace(
+                        cut.worker,
+                        run=cut.worker.run.model_copy(update={"head": "replaced-live-worker-head"}),
+                    ),
+                ), snapshot
+
+            with monkeypatch.context() as context:
+                context.setattr(
+                    sources, "_read_materialized_effects_with_history", replaced_live_worker
+                )
+                with (
+                    runtime._authority_gate().hold(),
+                    pytest.raises(
+                        sources.H1ProducerSourceViolation,
+                        match="authenticated live worker; HOLD",
                     ),
                 ):
                     reader.recheck_held(captured)
