@@ -34,6 +34,7 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_con
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_owner_contracts import (  # noqa: E501
     AuthorizePreparedSelfDeliveryPolicyCallV1,
     PreparedSelfDeliveryPolicyProposalV1,
+    prepared_self_delivery_policy_request_content_head,
 )
 from chiplog.platform.authority_gate import AuthorityGate, FileIdentity
 from chiplog.platform.h1_scope_lineage import (
@@ -639,6 +640,28 @@ class BrokerTrustDurability:
                 raise RuntimeError("prepared self-delivery policy is revoked")
             return selected
 
+    def current_signed_prepared_self_delivery_policy(
+        self, anchor: PreparedExternalSelfDeliveryPolicyAnchorV1
+    ) -> AuthenticatedPreparedSelfDeliveryPolicy:
+        """Return one current ACTIVE policy after rechecking its retained ISSUE authority.
+
+        The exact physical anchor is selected from the complete authenticated
+        trust lineage.  Its retained operator source is then reconstructed as
+        the exact ISSUE command and verified against the current protected
+        operator-key pin while the same AuthorityGate remains held.
+        """
+        if not isinstance(anchor, PreparedExternalSelfDeliveryPolicyAnchorV1):
+            raise TypeError("prepared self-delivery policy currentness requires its anchor type")
+        gate = self._authority_gate
+        if gate is None:
+            raise RuntimeError(
+                "signed prepared self-delivery policy reads require an authority gate"
+            )
+        with gate.hold():
+            selected = self.current_prepared_self_delivery_policy(anchor)
+            self._verify_current_signed_prepared_self_delivery_policy(selected)
+            return selected
+
     def _locked_authenticated_prepared_self_delivery_policies(
         self,
     ) -> tuple[AuthenticatedPreparedSelfDeliveryPolicy, ...]:
@@ -741,6 +764,59 @@ class BrokerTrustDurability:
         except Exception as error:
             raise RuntimeError(
                 "prepared self-delivery operator authorization is invalid"
+            ) from error
+
+    def _verify_current_signed_prepared_self_delivery_policy(
+        self, selected: AuthenticatedPreparedSelfDeliveryPolicy
+    ) -> None:
+        """Verify the retained ISSUE source which derived one selected ACTIVE policy."""
+        gate = self._authority_gate
+        if gate is None:
+            raise RuntimeError(
+                "signed prepared self-delivery policy reads require an authority gate"
+            )
+        try:
+            source = selected.operator_source
+            signed = SignedOperatorPolicyAuthorizationV1.model_validate_json(
+                source.canonical_source_bytes
+            )
+            if signed.canonical_bytes() != source.canonical_source_bytes:
+                raise ValueError("retained operator source is not canonical")
+            if signed.payload.operation != "ISSUE_PREPARED_EXTERNAL_SELF_DELIVERY_POLICY":
+                raise ValueError("ACTIVE policy was not derived from an ISSUE command")
+            request = IssuePreparedExternalSelfDeliveryPolicyRequestV1.model_validate_json(
+                signed.payload.canonical_request_bytes
+            )
+            if request.canonical_bytes() != signed.payload.canonical_request_bytes:
+                raise ValueError("retained ISSUE request is not canonical")
+            command = IssuePreparedExternalSelfDeliveryPolicyV1(
+                request=request,
+                authenticated_operator_source=source.ref,
+            )
+            expected_command = ExactHead(
+                identity=request.command_id,
+                head=prepared_self_delivery_policy_request_content_head(request.canonical_bytes()),
+                fingerprint=hashlib.sha256(request.canonical_bytes()).hexdigest(),
+            )
+            if (
+                selected.policy.authorization_source != source.ref
+                or selected.policy.authorization_command != expected_command
+            ):
+                raise ValueError("policy authorization references differ from retained ISSUE")
+            pin = load_operator_policy_key_pin(
+                gate,
+                tenant_id=selected.policy.tenant_id,
+                database_id=selected.policy.database_id,
+            )
+            verify_operator_policy_command(
+                command,
+                retained_source=source,
+                current_binding=pin.binding,
+            )
+            pin.assert_current()
+        except Exception as error:
+            raise RuntimeError(
+                "current prepared self-delivery policy authorization is invalid"
             ) from error
 
     @staticmethod
