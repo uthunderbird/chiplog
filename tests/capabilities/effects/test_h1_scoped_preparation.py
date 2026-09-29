@@ -5,11 +5,11 @@ from __future__ import annotations
 import base64
 import hashlib
 
+import pytest
 from tests.capabilities.agent_loop.test_execution_first_path_completion_contracts import (
     request as first_path_request,
 )
 from tests.capabilities.effects.test_h1_local_preparation_record_contracts import _scope_source
-from tests.capabilities.effects.test_scoped_intent_contracts import prepared_acceptance
 
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead as LoopHead
 from chiplog.capabilities.agent_loop.execution_completion_preparation import (
@@ -44,6 +44,10 @@ from chiplog.capabilities.effects.contracts import ExactHead as EffectHead
 from chiplog.capabilities.effects.dispatch_authority_contracts import CapturedSource
 from chiplog.capabilities.effects.fences import NonSchedulerFence, NotApplicable
 from chiplog.capabilities.effects.h1_local_preparation_contracts import PREPARE_SCHEMA
+from chiplog.capabilities.effects.h1_producer_semantics import (
+    H1_PRODUCER_SEMANTICS,
+    h1_producer_semantic_registry_capture,
+)
 from chiplog.capabilities.effects.h1_producer_source_contracts import (
     H1PreparedDeliveryMandateCandidateV1,
     H1ProducerCurrentInputsV1,
@@ -86,6 +90,10 @@ def _head(name: str, raw: bytes = b"h1") -> LoopHead:
 
 
 def _captured_source(role: str) -> CapturedSource:
+    if role == "semantic_registry":
+        return h1_producer_semantic_registry_capture(
+            clock_contract="clock-contract", clock_epoch="epoch", valid_until_ns=200
+        )
     raw = f"h1-source:{role}".encode()
     head = EffectHead(
         subject_id=f"h1-source:{role}",
@@ -299,14 +307,6 @@ async def _call() -> H1ScopedDeliveryOwnerCallV1:
         trust_observation=scope.current_request.expected_trust_observation,
     )
     record = _policy_record(policy, policy_raw, evidence)
-    v2_current = prepared_acceptance().effects_request.current.model_copy(
-        update={
-            "command_fingerprint": _sha(b"command"),
-            "clock_contract": "clock-contract",
-            "clock_epoch": "epoch",
-            "observed_time_ns": 150,
-        }
-    )
     grant_head = _effect_head(grant_anchor.grant)
     policy_effect_head = _effect_head(policy_anchor.policy)
     command_head = _effect_head(grant.authorization_command)
@@ -350,7 +350,7 @@ async def _call() -> H1ScopedDeliveryOwnerCallV1:
             expires_at_ns=200,
             continuity_policy=policy_effect_head,
         ),
-        semantics=v2_current.supported_semantics,
+        semantics=H1_PRODUCER_SEMANTICS,
     )
     candidate = H1PreparedDeliveryMandateCandidateV1(
         prepared_delivery_basis_bytes=basis.canonical_bytes(),
@@ -374,7 +374,7 @@ async def _call() -> H1ScopedDeliveryOwnerCallV1:
             fingerprint=_sha(b"h1-current-history"),
         ),
         sources=_h1_sources(candidate),
-        supported_semantics=v2_current.supported_semantics,
+        supported_semantics=H1_PRODUCER_SEMANTICS,
         clock_contract="clock-contract",
         clock_epoch="epoch",
         observed_time_ns=150,
@@ -518,6 +518,81 @@ async def test_scoped_owner_derives_canonical_result_and_rejects_mutated_evidenc
         )
     )
     assert denied.disposition == "DENIED"
+
+
+def _with_request(
+    call: H1ScopedDeliveryOwnerCallV1, request: PrepareH1ScopedDeliveryV1
+) -> H1ScopedDeliveryOwnerCallV1:
+    return call.model_copy(
+        update={"request": request, "request_digest": _sha(request.canonical_bytes())}
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("normative_manifest", "forged-manifest"),
+        ("reducer_version", "forged-reducer"),
+        ("transition_registry_version", "forged-transitions"),
+        ("canonicalization_fingerprint_version", "forged-canonicalization"),
+        ("adapter_contract_version", "forged-adapter"),
+    ),
+)
+async def test_scoped_owner_requires_each_h1_producer_semantic_binding_field(
+    field: str, replacement: str
+) -> None:
+    call = await _call()
+    semantics = H1_PRODUCER_SEMANTICS.model_copy(update={field: replacement})
+    current = call.request.current.model_copy(update={"supported_semantics": semantics})
+    request = call.request.model_copy(update={"current": current})
+    assert prepare_h1_scoped_delivery(_with_request(call, request)).disposition == "DENIED"
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("source_id", "forged-source"),
+        ("source_version", "forged-version"),
+        ("owner_id", "forged-owner"),
+        ("canonical_value", b"forged-bytes"),
+        (
+            "head",
+            EffectHead(
+                subject_id="forged-source",
+                head="forged-source/head",
+                fingerprint=_sha(b"forged-head"),
+            ),
+        ),
+    ),
+)
+async def test_scoped_owner_requires_exact_h1_semantic_registry_capture(
+    field: str, replacement: str | bytes | EffectHead
+) -> None:
+    call = await _call()
+    original = call.request.original_sources.semantic_registry.model_copy(
+        update={field: replacement}
+    )
+    original_sources = call.request.original_sources.model_copy(
+        update={"semantic_registry": original}
+    )
+    assert prepare_h1_scoped_delivery(
+        _with_request(call, call.request.model_copy(update={"original_sources": original_sources}))
+    ).disposition == "DENIED"
+
+
+async def test_scoped_owner_requires_current_h1_semantic_registry_capture_to_match_original(
+) -> None:
+    call = await _call()
+    current_registry = call.request.current.sources.semantic_registry.model_copy(
+        update={"reader_id": "forged-reader"}
+    )
+    current_sources = call.request.current.sources.model_copy(
+        update={"semantic_registry": current_registry}
+    )
+    current = call.request.current.model_copy(update={"sources": current_sources})
+    assert prepare_h1_scoped_delivery(
+        _with_request(call, call.request.model_copy(update={"current": current}))
+    ).disposition == "DENIED"
 
 
 async def test_scoped_owner_retains_h1_source_bytes_and_refuses_forged_candidate() -> None:

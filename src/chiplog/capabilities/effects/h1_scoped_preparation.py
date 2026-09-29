@@ -27,6 +27,7 @@ from .contracts import DeliverySendBinding, ExactHead, OriginSelection, Provider
 from .dispatch_v2_contracts import MandateHorizon
 from .fences import NonSchedulerFence
 from .h1_prepared_delivery_basis import derive_h1_prepared_delivery_basis
+from .h1_producer_semantics import H1_PRODUCER_SEMANTICS, require_h1_producer_semantics
 from .h1_producer_source_contracts import (
     require_h1_prepared_delivery_candidate,
     require_h1_prepared_delivery_sources,
@@ -191,8 +192,8 @@ def prepare_h1_scoped_delivery(
         loop_basis_head = prepared_delivery_basis_head_v3(basis)
         basis_head = _effect_head(loop_basis_head)
 
-        if request.current.supported_semantics is None:
-            return _reject("H1 scoped delivery needs supported dispatch semantics")
+        if request.current.supported_semantics != H1_PRODUCER_SEMANTICS:
+            return _reject("H1 scoped delivery needs registered producer semantics")
         if not isinstance(request.fence, NonSchedulerFence):
             return _reject("H1 scoped delivery requires a non-scheduler fence")
         if (
@@ -270,6 +271,14 @@ def prepare_h1_scoped_delivery(
             or request.complete_current_origin_sources != (policy_record,)
         ):
             return _reject("H1 scoped delivery authority records differ from policy projection")
+        require_h1_producer_semantics(
+            supported_semantics=request.current.supported_semantics,
+            original=request.original_sources.semantic_registry,
+            current=request.current.sources.semantic_registry,
+            clock_contract=terms.clock_contract,
+            clock_epoch=terms.clock_epoch,
+            valid_until_ns=terms.expires_at_ns,
+        )
 
         derived = DispatchMandateV3(
             mandate_id=_derived_mandate_id(grant, delivery),
@@ -309,7 +318,7 @@ def prepare_h1_scoped_delivery(
                 expires_at_ns=terms.expires_at_ns,
                 continuity_policy=policy_head,
             ),
-            semantics=request.current.supported_semantics,
+            semantics=H1_PRODUCER_SEMANTICS,
         )
         basis_bytes = basis.canonical_bytes()
         mandate_bytes = derived.canonical_bytes()
