@@ -122,9 +122,49 @@ def order_entries_by_history(root, entries):
             ).stdout.strip()
         except subprocess.CalledProcessError:
             created = ""
+        if not created:
+            # A retro first appearing in a merge has no ordinary add record.
+            try:
+                created = subprocess.run(
+                    [
+                        "git", "-C", str(root), "log", "--first-parent", "-m",
+                        "--diff-filter=A", "-1", "--format=%H", "--", historical_path,
+                    ],
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+            except subprocess.CalledProcessError:
+                created = ""
         return (positions.get(created, len(positions)), path.name)
 
     return sorted(entries, key=key)
+
+
+def committed_retro_outcomes(root):
+    """Read the last committed retro history, excluding working drafts and edits."""
+    try:
+        names = subprocess.run(
+            [
+                "git", "-C", str(root), "ls-tree", "-r", "-z", "--name-only",
+                "HEAD", "--", ".harness/retro",
+            ],
+            capture_output=True, check=True,
+        ).stdout.split(b"\0")
+    except subprocess.CalledProcessError:
+        return []
+    paths = [
+        root / name.decode("utf-8") for name in names if name
+        and pathlib.Path(name.decode("utf-8")).name not in ("README.md", "TEMPLATE.md")
+        and name.endswith(b".md")
+    ]
+    outcomes = []
+    for path in order_entries_by_history(root, paths):
+        relative = path.relative_to(root).as_posix()
+        raw = subprocess.run(
+            ["git", "-C", str(root), "show", f"HEAD:{relative}"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        outcomes.append(parse_frontmatter(raw).get("outcome", ""))
+    return outcomes
 
 
 def main():
@@ -145,8 +185,7 @@ def main():
     if args.status:
         # Пороги живут здесь и только здесь. Дашборд их рендерит, а не хранит.
         streak = 0
-        for outcome in reversed([parse_frontmatter(p.read_text(encoding="utf-8")).get("outcome", "")
-                                 for p in entries]):
+        for outcome in reversed(committed_retro_outcomes(root)):
             if outcome.lower() == "skip":
                 streak += 1
             else:

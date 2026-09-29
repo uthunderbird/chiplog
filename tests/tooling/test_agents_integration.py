@@ -422,3 +422,49 @@ def test_retro_skip_streak_uses_commit_order_not_same_day_filename_order(
         text=True,
     )
     assert "retro_skips=0" in staged_rename_status
+
+
+def test_retro_status_keeps_committed_skip_streak_during_new_draft(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    checks = project / ".harness/scripts/checks"
+    retro = project / ".harness/retro"
+    checks.mkdir(parents=True)
+    retro.mkdir(parents=True)
+    shutil.copy2(ROOT / ".harness/scripts/checks/retro_due.py", checks / "retro_due.py")
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "retro@example.invalid"], cwd=project, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Retro"], cwd=project, check=True)
+
+    (retro / "2026-09-28.md").write_text(
+        "---\ndate: 2026-09-28\noutcome: skip\nreason: no reproducer\n---\n"
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "committed skip"], cwd=project, check=True)
+    (retro / "2026-09-29.md").write_text(
+        "---\ndate: 2026-09-29\noutcome:\nrule:\nreason:\n---\n"
+    )
+
+    def status() -> str:
+        return subprocess.check_output(
+            ["python3", str(checks / "retro_due.py"), "--root", str(project), "--status"],
+            text=True,
+        )
+
+    assert "retro_skips=1" in status()
+    incomplete = subprocess.run(
+        ["python3", str(checks / "retro_due.py"), "--root", str(project)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert incomplete.returncode != 0
+    assert "outcome не change и не skip" in incomplete.stderr
+
+    (retro / "2026-09-29.md").write_text(
+        "---\ndate: 2026-09-29\noutcome: change\nrule: .harness/scripts/checks/retro_due.py\n---\n"
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "committed change"], cwd=project, check=True)
+    assert "retro_skips=0" in status()
