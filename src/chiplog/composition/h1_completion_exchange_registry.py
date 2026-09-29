@@ -11,15 +11,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.delivery_contracts import AcceptedDelivery
+from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead as LoopHead
 from chiplog.capabilities.agent_loop.execution_completion_contracts import (
     PreparedExecutionCompletion,
 )
+from chiplog.capabilities.agent_loop.execution_completion_preparation import (
+    prepare_first_path_execution_completion,
+)
 from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
     PrepareExecutionCompletionFirstPathV2,
+    decode_first_path_completion_request,
     first_path_completion_request_fingerprint,
 )
+from chiplog.capabilities.effects.scoped_intent_contracts import PreparedDeliveryBasisV3
+from chiplog.composition.common_execution_driver_contracts import DriverCommandIdentityV1
 from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
-from chiplog.composition.h1_first_path_sources import H1FirstPathCapture
+from chiplog.composition.h1_first_path_sources import H1FirstPathCapture, H1FirstPathSources
 from chiplog.composition.h1_native_member_sources import (
     H1CurrentNativeMemberSourceCut,
     H1NativeMemberSources,
@@ -47,6 +56,45 @@ class _CompletionExchangeRecord:
     exchange: H1CompletionOwnerExchangeV1
     native_cap: H1CurrentNativeMemberSourceCut
     scope_cap: object
+    delivery_receipt: object
+    original_identity: DriverCommandIdentityV1
+    original_fingerprint: str
+    selected_seal: CallSubjectHead
+
+
+class H1PreparedDeliveryCapture:
+    """Registry-issued identity token for one retained, live B completion."""
+
+    __slots__ = ("_projection", "_record")
+    _record: _CompletionExchangeRecord
+    _projection: H1PreparedDeliveryProjection
+
+    def __init__(self) -> None:
+        raise TypeError("H1 prepared delivery captures are registry-issued")
+
+    def __copy__(self) -> H1PreparedDeliveryCapture:
+        raise TypeError("H1 prepared delivery captures cannot be copied")
+
+    def __deepcopy__(self, memo: dict[int, object]) -> H1PreparedDeliveryCapture:
+        del memo
+        raise TypeError("H1 prepared delivery captures cannot be copied")
+
+    def __reduce__(self) -> str | tuple[object, ...]:
+        raise TypeError("H1 prepared delivery captures cannot be serialized")
+
+
+@dataclass(frozen=True, slots=True)
+class H1PreparedDeliveryProjection:
+    """Inert live replay of one loop-prepared delivery; it grants no action."""
+
+    basis: PreparedDeliveryBasisV3
+    tenant_id: str
+    database_id: str
+    principal_id: str
+    worker_session_id: str
+    original_run: LoopHead
+    captured_attempt: LoopHead
+    delivery: AcceptedDelivery
 
 
 class _AuthenticatedCompletionExchangeInputs:
@@ -119,7 +167,14 @@ class H1CompletionExchangeRegistry:
     session-held completion reply to copied or stale native/P capabilities.
     """
 
-    __slots__ = ("_closed", "_native_sources", "_records", "_runtime", "_scope_port")
+    __slots__ = (
+        "_closed",
+        "_native_sources",
+        "_prepared_captures",
+        "_records",
+        "_runtime",
+        "_scope_port",
+    )
 
     def __init__(
         self,
@@ -145,11 +200,15 @@ class H1CompletionExchangeRegistry:
         self._native_sources = native_sources
         self._scope_port: _CompletionScopeReplayPort = cast(_CompletionScopeReplayPort, scope_port)
         self._records: list[_CompletionExchangeRecord] = []
+        self._prepared_captures: dict[
+            int, tuple[H1PreparedDeliveryCapture, _CompletionExchangeRecord]
+        ] = {}
         self._closed = False
 
     def _revoke_all(self) -> None:
         """Make this runtime-bound past-stage table permanently unusable."""
         self._records.clear()
+        getattr(self, "_prepared_captures", {}).clear()
         self._closed = True
 
     def _register_actual_success(self, session: object) -> None:
@@ -179,29 +238,55 @@ class H1CompletionExchangeRegistry:
         first_path = cut.first_path
         native_cap = getattr(preflight, "native_cap", None)
         scope_cap = getattr(preflight, "scope_cap", None)
+        delivery_receipt = getattr(preflight, "delivery_receipt", None)
         request = getattr(preflight, "request", None)
         if (
             type(first_path) is not H1FirstPathCapture
             or getattr(preflight, "first_path", None) is not first_path
             or type(native_cap) is not H1CurrentNativeMemberSourceCut
+            or delivery_receipt is None
             or type(request) is not PrepareExecutionCompletionFirstPathV2
             or exchange is None
         ):
             raise H1CompletionExchangeRegistryViolation("H1 completion registry binding is absent")
         if native_cap._capture is not first_path or request.source != first_path.source:
             raise H1CompletionExchangeRegistryViolation("H1 completion registry source differs")
+        if (
+            type(cut.original_identity) is not DriverCommandIdentityV1
+            or type(cut.selected_seal) is not CallSubjectHead
+            or not isinstance(cut.original_fingerprint, str)
+            or len(cut.original_fingerprint) != 64
+            or cut.selected_seal != first_path.source.selected_response_seal
+        ):
+            raise H1CompletionExchangeRegistryViolation("H1 completion registry locator differs")
         self._require_success(exchange, request)
         # Both concrete owners retain their own private identity tables.  The
         # return values are intentionally discarded: replay is the authority
         # check, while this registry only retains the exact capabilities.
         self._native_sources.replay_current(native_cap)
         self._scope_port._replay_completion_scope(scope_cap, native_cap)
+        replay_delivery = getattr(self._scope_port, "_replay_delivery_inputs", None)
+        if not callable(replay_delivery):
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 completion registry delivery replay is absent"
+            )
+        replay_delivery(delivery_receipt, first_path)
         if any(record.session is session for record in self._records):
             raise H1CompletionExchangeRegistryViolation(
                 "H1 completion registry session is duplicate"
             )
         self._records.append(
-            _CompletionExchangeRecord(session, first_path, exchange, native_cap, scope_cap)
+            _CompletionExchangeRecord(
+                session,
+                first_path,
+                exchange,
+                native_cap,
+                scope_cap,
+                delivery_receipt,
+                cut.original_identity,
+                cut.original_fingerprint,
+                cut.selected_seal,
+            )
         )
 
     def _replay_completion_exchange(
@@ -220,6 +305,201 @@ class H1CompletionExchangeRegistry:
                 inputs._record = record
                 return inputs
         raise H1CompletionExchangeRegistryViolation("H1 completion exchange is not B-registered")
+
+    def capture_prepared_delivery_current(
+        self,
+        *,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> H1PreparedDeliveryCapture:
+        """Capture one exactly located, currently replayable B completion."""
+        if self._closed:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 completion registry is closed and revoked"
+            )
+        if (
+            type(original_identity) is not DriverCommandIdentityV1
+            or not isinstance(original_fingerprint, str)
+            or len(original_fingerprint) != 64
+            or type(selected_seal) is not CallSubjectHead
+        ):
+            raise H1CompletionExchangeRegistryViolation("H1 prepared delivery locator differs")
+        with self._runtime._authority_gate().hold():
+            self._require_mounted_current_held()
+            record = self._find_prepared_delivery_record_held(
+                original_identity, original_fingerprint, selected_seal
+            )
+            projection = self._project_prepared_delivery_held(record)
+            capture = object.__new__(H1PreparedDeliveryCapture)
+            capture._record = record
+            capture._projection = projection
+            self._prepared_captures[id(capture)] = (capture, record)
+            return capture
+
+    def replay_prepared_delivery_current(
+        self, capture: H1PreparedDeliveryCapture
+    ) -> H1PreparedDeliveryProjection:
+        """Reauthenticate and replay an opaque prepared-delivery capture."""
+        if self._closed:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 completion registry is closed and revoked"
+            )
+        with self._runtime._authority_gate().hold():
+            self._require_mounted_current_held()
+            issued = self._prepared_captures.get(id(capture))
+            if (
+                type(capture) is not H1PreparedDeliveryCapture
+                or issued is None
+                or issued[0] is not capture
+                or issued[1] is not capture._record
+            ):
+                raise H1CompletionExchangeRegistryViolation(
+                    "H1 prepared delivery capture is not registry-issued"
+                )
+            projection = self._project_prepared_delivery_held(issued[1])
+            if projection != capture._projection:
+                raise H1CompletionExchangeRegistryViolation(
+                    "H1 prepared delivery replay differs from capture"
+                )
+            return projection
+
+    def _require_mounted_current_held(self) -> None:
+        self._runtime._authority_gate().require_held()
+        if (
+            self._closed
+            or getattr(self._runtime, "_h1_completion_exchange_registry", None) is not self
+            or self._native_sources._runtime is not self._runtime
+            or self._scope_port
+            is not getattr(self._runtime, "_h1_preissuance_registration_source_port", None)
+        ):
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 completion registry is not mounted and current"
+            )
+
+    def _find_prepared_delivery_record_held(
+        self,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> _CompletionExchangeRecord:
+        self._runtime._authority_gate().require_held()
+        matches = [
+            record
+            for record in self._records
+            if record.original_identity == original_identity
+            and record.original_fingerprint == original_fingerprint
+            and record.selected_seal == selected_seal
+        ]
+        if len(matches) != 1:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 prepared delivery locator does not identify one B registration"
+            )
+        return matches[0]
+
+    def _project_prepared_delivery_held(
+        self, record: _CompletionExchangeRecord
+    ) -> H1PreparedDeliveryProjection:
+        """Replay A/P/B evidence and construct only inert loop-derived values."""
+        self._runtime._authority_gate().require_held()
+        from chiplog.capabilities.effects.h1_prepared_delivery_basis import (
+            derive_h1_prepared_delivery_basis,
+        )
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+            H1CompletionSessionCut,
+        )
+
+        session = record.session
+        if type(session) is not H1CompletionPreparationSession:
+            raise H1CompletionExchangeRegistryViolation("H1 registered session differs")
+        cut = session._cut
+        preflight = session._preflight
+        if (
+            type(cut) is not H1CompletionSessionCut
+            or cut.first_path is not record.first_path
+            or cut.original_identity != record.original_identity
+            or cut.original_fingerprint != record.original_fingerprint
+            or cut.selected_seal != record.selected_seal
+            or preflight is None
+            or getattr(preflight, "native_cap", None) is not record.native_cap
+            or getattr(preflight, "scope_cap", None) is not record.scope_cap
+            or getattr(preflight, "delivery_receipt", None) is not record.delivery_receipt
+            or session._completion_exchange is not record.exchange
+        ):
+            raise H1CompletionExchangeRegistryViolation("H1 registered completion differs")
+
+        try:
+            self._native_sources.replay_current(record.native_cap)
+            scope = self._scope_port._replay_completion_scope(
+                record.scope_cap, record.native_cap
+            )
+            replay_delivery = getattr(self._scope_port, "_replay_delivery_inputs", None)
+            if not callable(replay_delivery):
+                raise TypeError("delivery receipt replay is unavailable")
+            replay_delivery(record.delivery_receipt, record.first_path)
+            sources = getattr(self._runtime, "_h1_first_path_sources", None)
+            if type(sources) is not H1FirstPathSources or sources._runtime is not self._runtime:
+                raise TypeError("first-path sources are unavailable")
+            request_builder = getattr(sources, "_prepare_first_path_completion_request", None)
+            if not callable(request_builder):
+                raise TypeError("first-path request builder is unavailable")
+            request = decode_first_path_completion_request(record.exchange.sent.canonical_payload)
+            rebuilt = request_builder(record.first_path, record.delivery_receipt)
+            if (
+                type(rebuilt) is not PrepareExecutionCompletionFirstPathV2
+                or rebuilt.canonical_bytes() != record.exchange.sent.canonical_payload
+                or request.canonical_bytes() != record.exchange.sent.canonical_payload
+            ):
+                raise ValueError("retained completion request differs")
+            self._require_success(record.exchange, request)
+            returned = record.exchange.returned
+            assert isinstance(returned, PublicPortSuccess)
+            prepared = PreparedExecutionCompletion.model_validate_json(returned.canonical_payload)
+            if prepared.canonical_bytes() != returned.canonical_payload:
+                raise ValueError("retained completion reply is not canonical")
+            expected = prepare_first_path_execution_completion(request)
+            if type(expected) is not PreparedExecutionCompletion or prepared != expected:
+                raise ValueError("retained completion reply differs from pure preparation")
+            basis = derive_h1_prepared_delivery_basis(request, prepared)
+            deliveries = prepared.delivery.manifest.ordered_deliveries
+            if (
+                len(deliveries) != 1
+                or not isinstance(deliveries[0], AcceptedDelivery)
+                or not deliveries[0].rendered_bytes
+                or getattr(deliveries[0].selection, "recipient", None) is None
+            ):
+                raise ValueError("H1 prepared delivery is not sole and rendered")
+            run = request.run
+            attempt = request.selected_attempt
+            scope_recipient = getattr(scope, "recipient", None)
+            scope_policy = getattr(getattr(scope, "scope", None), "disclosure_policy", None)
+            if (
+                deliveries[0].selection.recipient != run.origin.recipient
+                or deliveries[0].selection.recipient != scope_recipient
+                or deliveries[0].policy != getattr(scope_policy, "ref", None)
+            ):
+                raise ValueError("H1 prepared delivery recipient or policy differs from scope")
+            return H1PreparedDeliveryProjection(
+                basis=basis,
+                tenant_id=run.tenant,
+                database_id=request.source.database_id,
+                principal_id=run.principal,
+                worker_session_id=run.worker_session,
+                original_run=LoopHead(
+                    identity=run.run_id, head=run.head, fingerprint=run.digest()
+                ),
+                captured_attempt=LoopHead(
+                    identity=attempt.subject_id,
+                    head=attempt.revision.head,
+                    fingerprint=attempt.revision.fingerprint,
+                ),
+                delivery=deliveries[0],
+            )
+        except (TypeError, ValueError, AttributeError) as error:
+            raise H1CompletionExchangeRegistryViolation(
+                "H1 prepared delivery replay is not current"
+            ) from error
 
     @staticmethod
     def _require_success(
@@ -262,4 +542,6 @@ class H1CompletionExchangeRegistry:
 __all__ = [
     "H1CompletionExchangeRegistry",
     "H1CompletionExchangeRegistryViolation",
+    "H1PreparedDeliveryCapture",
+    "H1PreparedDeliveryProjection",
 ]

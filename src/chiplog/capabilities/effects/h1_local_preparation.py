@@ -11,7 +11,6 @@ import hashlib
 import json
 
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead as LoopHead
-from chiplog.capabilities.agent_loop.delivery_preparation import Commentary, DeliveryCompletion
 from chiplog.capabilities.agent_loop.execution_completion_preparation import (
     prepare_first_path_execution_completion,
 )
@@ -19,7 +18,6 @@ from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts i
     first_path_completion_request_fingerprint,
 )
 
-from .contracts import ExactHead
 from .h1_local_preparation_contracts import (
     H1LocalCommentaryOwnerCallV1,
     H1LocalCommentaryRejectedV1,
@@ -31,7 +29,7 @@ from .h1_local_preparation_record_contracts import (
     h1_local_intent_fingerprint,
     make_h1_local_prepared_commentary_member,
 )
-from .scoped_intent_contracts import PreparedDeliveryBasisV3
+from .h1_prepared_delivery_basis import derive_h1_prepared_delivery_basis
 
 
 def _sha(raw: bytes) -> str:
@@ -40,10 +38,6 @@ def _sha(raw: bytes) -> str:
 
 def _loop_head(subject: str, head: str, fingerprint: str) -> LoopHead:
     return LoopHead(identity=subject, head=head, fingerprint=fingerprint)
-
-
-def _effects_head(value: LoopHead) -> ExactHead:
-    return ExactHead(subject_id=value.identity, head=value.head, fingerprint=value.fingerprint)
 
 
 def _intent_id(call: H1LocalCommentaryOwnerCallV1, delivery_id: str) -> str:
@@ -76,17 +70,8 @@ def prepare_h1_local_commentary(
             return _reject("prepared completion differs from first-path loop result")
         if prepared.source_request_fingerprint != first_path_completion_request_fingerprint(first):
             return _reject("prepared completion source fingerprint differs")
-        completion = DeliveryCompletion.model_validate_json(first.exact_captured_response)
-        if completion.canonical_bytes() != first.exact_captured_response:
-            return _reject("captured completion response is not canonical")
-        if len(completion.deliveries) != 1 or len(completion.deliveries[0].payload) != 1:
-            return _reject("H1 requires exactly one delivery with one payload")
-        if not isinstance(completion.deliveries[0].payload[0], Commentary):
-            return _reject("H1 requires NonAuthoritativeText Commentary")
-        deliveries = prepared.delivery.manifest.ordered_deliveries
-        if len(deliveries) != 1:
-            return _reject("H1 accepted manifest must contain exactly one delivery")
-        delivery = deliveries[0]
+        basis = derive_h1_prepared_delivery_basis(first, prepared)
+        delivery = prepared.delivery.manifest.ordered_deliveries[0]
         scope = request.selected_scope
         run = first.run
         if (
@@ -102,20 +87,6 @@ def prepare_h1_local_commentary(
         ):
             return _reject("H1 owner request does not bind selected native origin")
         attempt = first.selected_attempt
-        source_cut = _effects_head(
-            _loop_head(
-                first.source.current_run.subject_id,
-                first.source.current_run.revision.head,
-                first.source.current_run.revision.fingerprint,
-            )
-        )
-        basis = PreparedDeliveryBasisV3(
-            source_cut=source_cut,
-            acceptance=_effects_head(delivery.acceptance),
-            completion_command_bytes=first.exact_captured_response,
-            delivery_observation_bytes=first.delivery.canonical_bytes(),
-            loop_proposal_bytes=prepared.delivery.canonical_bytes(),
-        )
         unsigned = H1LocalPreparedCommentaryIntentV1(
             intent_id=request.intent_id,
             tenant_id=run.tenant,
