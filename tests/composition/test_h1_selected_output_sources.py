@@ -264,7 +264,7 @@ async def test_selected_h0_r16_r17_sources_resolve_to_the_exact_binding(tmp_path
         )
 
 
-async def test_selected_capture_retains_exact_registered_grant_head_and_bytes(
+async def test_selected_capture_retains_exact_signed_resource_observation_and_grant(
     tmp_path: Path,
 ) -> None:
     resources = HermeticDispatchResources(
@@ -282,6 +282,14 @@ async def test_selected_capture_retains_exact_registered_grant_head_and_bytes(
             sources.resource_ref
         ) or pytest.fail("selected initialization disappeared")
         grant = json.loads(evidence.dispatch_grant_bytes)
+        assert captured.resource_observation == ResourceObservation(
+            grant_bytes=evidence.dispatch_grant_bytes,
+            credential_bytes=evidence.dispatch_credential_bytes,
+            endpoint_bytes=evidence.dispatch_endpoint_bytes,
+            clock_epoch=evidence.dispatch_clock_epoch,
+            signature=evidence.dispatch_signature,
+        )
+        assert captured.resource_observation == resources.observe()
         assert captured.verified.recipient == sources.expected.recipient
         assert captured.resource_grant.identity == grant["grant_id"]
         assert captured.resource_grant.fingerprint == hashlib.sha256(
@@ -291,10 +299,12 @@ async def test_selected_capture_retains_exact_registered_grant_head_and_bytes(
             grant["grant_id"] + "/" + hashlib.sha256(evidence.dispatch_grant_bytes).hexdigest()
         )
         assert captured.resource_grant_bytes == evidence.dispatch_grant_bytes
+        assert captured.resource_grant_bytes == captured.resource_observation.grant_bytes
         recaptured = H1SelectedOutputSources(runtime).capture_selected_current(
             sources.resource_ref, sources.authentication_ref, sources.authenticated_cli_ref
         )
         assert recaptured is not None
+        assert recaptured.resource_observation == captured.resource_observation
         assert recaptured.resource_grant_bytes == captured.resource_grant_bytes
 
 

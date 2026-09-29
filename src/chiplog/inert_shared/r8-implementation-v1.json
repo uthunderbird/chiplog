@@ -266,7 +266,7 @@
   "composition/h1_runtime_preissuance_port.py": "0c39ea8b062e31c6ab8dbd70ea97051603443362895e368de92a4d005c0aa216",
   "composition/h1_scoped_delivery_authority.py": "db14702785a10e083732d03466907c34fd99f0ebe3792b8ea7fb47370a65479a",
   "composition/h1_selected_input_role.py": "c626029fd848e649ae194555490ef64a0fce3ca18afac3df43ffaa9c0036ab9f",
-  "composition/h1_selected_output_sources.py": "61e42c9682896be1f88cc34b3460988a42116af9d5ea3e298e9e6dfeff309387",
+  "composition/h1_selected_output_sources.py": "51bcb6036af42f677006fe3e6b2fa83105f50e7441856ab8b820bd34087087b1",
   "composition/h1_selected_prepare.py": "3e3903950e03837537c0f1c0bd7dcbee097a803a59cc48d64080f56f70d39c8e",
   "composition/h1_terminal_call_identity.py": "0ab54e61e47265baa348310a5a42afb3cd5a1c97ce2e2399ea44c9859e9742d6",
   "composition/h1_v2_authority_cut.py": "cbf3c2a5e4ae53769cf3fd41890a512595778d8f9dcb67c1a69fc68ff92b5b0b",

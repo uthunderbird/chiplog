@@ -36,6 +36,7 @@ class H1SelectedOutputCapture:
     admitted_record_bytes: bytes
     selected_admitted_record_ref: ExactHead
     authentication_result_bytes: bytes
+    resource_observation: ResourceObservation
     resource_grant: ExactHead
     resource_grant_bytes: bytes
     selected_source: SelectedExternalDeliverySourceV1
@@ -180,21 +181,21 @@ class H1SelectedOutputSources:
             selected_ref = ExactHead(**admitted.physical_record.model_dump())
             if selected_ref.fingerprint != hashlib.sha256(record_bytes).hexdigest():
                 return None
-            grant = self._resources.grant_reference(
-                ResourceObservation(
-                    evidence.dispatch_grant_bytes,
-                    evidence.dispatch_credential_bytes,
-                    evidence.dispatch_endpoint_bytes,
-                    evidence.dispatch_clock_epoch,
-                    evidence.dispatch_signature,
-                )
+            resource_observation = ResourceObservation(
+                evidence.dispatch_grant_bytes,
+                evidence.dispatch_credential_bytes,
+                evidence.dispatch_endpoint_bytes,
+                evidence.dispatch_clock_epoch,
+                evidence.dispatch_signature,
             )
+            grant = self._resources.grant_reference(resource_observation)
             return H1SelectedOutputCapture(
                 verified=verified,
                 initialization_envelope_bytes=raw,
                 admitted_record_bytes=record_bytes,
                 selected_admitted_record_ref=selected_ref,
                 authentication_result_bytes=admitted.record.command.authentication_result_bytes,
+                resource_observation=resource_observation,
                 resource_grant=ExactHead(
                     identity=grant.subject_id,
                     head=grant.head,
