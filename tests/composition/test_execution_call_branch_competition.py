@@ -10,11 +10,12 @@ import sqlite3
 import struct
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
+from chiplog.adapters.driven.effects_broker import EffectsIntegrityError
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.execution_contracts import (
@@ -56,10 +57,13 @@ from chiplog.composition.r14_fanout_records import reference
 from chiplog.composition.r14_loop_history import read_execution_call_history
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PublicationResult
+from chiplog.platform.broker import PublicPortCall, PublicPortResult
 from chiplog.platform.ingress_transition_contracts import (
     IngressCommandIdentity,
     RetainedIngressSource,
 )
+from chiplog.platform.owner_publications import OwnerPublicationPending, OwnerPublicationUncertain
+from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
 
 
 async def _custody_client(path: Path) -> None:
@@ -211,6 +215,157 @@ async def _rejected_by_winner(task: asyncio.Task[object]) -> LoopRejected:
         await asyncio.wait_for(task, timeout=10)
     assert task.done() and not task.cancelled()
     return caught.value
+
+
+def _selected_members(
+    runtime: CommonCliExecutionRuntime, winner: str
+) -> tuple[tuple[str, str, bytes], ...]:
+    """Capture the selected batch before recovery can materialize it."""
+    if winner == "acceptance":
+        selected = runtime._owner_decisions().snapshot().decisions[-1]
+        return tuple(
+            (record.record_id, record.schema_id, record.canonical_bytes)
+            for record in selected.prepared.request.complete_records
+        )
+    decisions = tuple(
+        item
+        for item in _decision_entries(runtime)
+        if item["kind"] == "DECIDED"
+        and item["operation_kind"] == EXECUTION_CANCELLATION_OPERATION
+    )
+    assert len(decisions) == 1
+    records = decisions[0]["records"]
+    assert isinstance(records, list)
+    return tuple(
+        (
+            str(record["record_id"]),
+            str(record["schema"]),
+            base64.b64decode(str(record["payload"]), validate=True),
+        )
+        for record in records
+    )
+
+
+@pytest.mark.parametrize("winner", ("acceptance", "cancellation"))
+async def test_selected_unmaterialized_cross_family_winner_recovers_before_rival_replays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winner: str
+) -> None:
+    """A selected but uncommitted winner excludes its rival through restart."""
+    response = ExecutionContinue(
+        kind="Continue",
+        tool_calls=(
+            ConsequentialToolCall(
+                call_id="effect",
+                tool="request_self_effect",
+                arguments=SelfEffectArguments(payload=b"branch", bundle_members=("one",)),
+            ),
+        ),
+    ).model_dump_json().encode()
+    async with _initialized_branch(tmp_path) as branch:
+        runtime = branch.runtime
+        preview = await runtime.preview_call_acceptance("hermetic-ingress", branch.target)
+        adoption = branch.adoption.model_copy(update={"preview_bytes": preview.canonical_bytes()})
+        before = read_execution_call_history(runtime)
+        submit = runtime._appender.submit
+        selected_operation = (
+            "effects.accept_call" if winner == "acceptance" else EXECUTION_CANCELLATION_OPERATION
+        )
+
+        async def crash_selected(command: PhysicalPublicationCommand) -> PublicationResult:
+            if command.operation_kind == selected_operation:
+                command = replace(command, fault="before_commit")
+            return await submit(command)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(runtime._appender, "submit", crash_selected)
+            if winner == "acceptance":
+                with pytest.raises(OwnerPublicationUncertain):
+                    await runtime.accept_call("hermetic-ingress", adoption)
+            else:
+                with pytest.raises(RuntimeError, match="injected fault before commit"):
+                    await runtime.cancel_execution_call("hermetic-ingress", branch.cancellation)
+
+        pending_owner = runtime._owner_decisions().snapshot()
+        pending_loop = _decision_entries(runtime)
+        expected_members = _selected_members(runtime, winner)
+        expected_sequence = before[0].tenant_head + 1
+        assert _physical_members(branch.database, runtime._tenant_id, expected_sequence) == ()
+        assert len(runtime._pending_owners()) + len(runtime._pending()) == 1
+
+        if winner == "acceptance":
+            with pytest.raises(OwnerPublicationPending, match="selected publication"):
+                await runtime.cancel_execution_call("hermetic-ingress", branch.cancellation)
+        else:
+            with pytest.raises(EffectsIntegrityError) as rejected:
+                await runtime.accept_call("hermetic-ingress", adoption)
+            assert isinstance(rejected.value.__cause__, EffectsIntegrityError)
+            assert isinstance(rejected.value.__cause__.__cause__, OwnerPublicationPending)
+            assert "selected publication" in str(rejected.value.__cause__.__cause__)
+        assert runtime._owner_decisions().snapshot() == pending_owner
+        assert _decision_entries(runtime) == pending_loop
+        assert _physical_members(branch.database, runtime._tenant_id, expected_sequence) == ()
+        assert branch.resources.require_original_provider().transfers == ()
+
+    original_call = AuthorityBrokerRuntime.call
+
+    async def forbid_selected_owner_reissue(
+        self: AuthorityBrokerRuntime, request: PublicPortCall
+    ) -> PublicPortResult:
+        assert request.operation_id != (
+            "agent_loop.prepare_consequential_acceptance"
+            if winner == "acceptance"
+            else "agent_loop.prepare_pre_accept_cancellation"
+        )
+        return await original_call(self, request)
+
+    # The guard is present while startup recovers the pending selected bytes.
+    monkeypatch.setattr(AuthorityBrokerRuntime, "call", forbid_selected_owner_reissue)
+    reopened_resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
+    )
+    async with open_common_cli_execution_runtime(
+        branch.database, resources=reopened_resources, responses=(response,)
+    ) as reopened:
+        history, inventory, _ = read_execution_call_history(reopened)
+        assert history.tenant_head == before[0].tenant_head + 1
+        assert not reopened._pending_owners() and not reopened._pending()
+        assert (
+            _physical_members(reopened._database, reopened._tenant_id, history.tenant_head)
+            == expected_members
+        )
+        recovered_owner = reopened._owner_decisions().snapshot()
+        recovered_loop = _decision_entries(reopened)
+        with sqlite3.connect(reopened._database) as connection:
+            sequences = connection.execute(
+                "SELECT DISTINCT commit_sequence FROM records WHERE tenant_id=? "
+                "AND record_id IN (" + ", ".join("?" for _ in expected_members) + ")",
+                (reopened._tenant_id, *(record_id for record_id, _, _ in expected_members)),
+            ).fetchall()
+        assert sequences == [(history.tenant_head,)]
+        if winner == "acceptance":
+            accepted = await reopened.accept_call("hermetic-ingress", adoption)
+            assert isinstance(accepted, AcceptedCallReceipt)
+            with pytest.raises(LoopRejected):
+                await reopened.cancel_execution_call("hermetic-ingress", branch.cancellation)
+            assert inventory.ordered_calls[0].acceptance.kind == "CONSEQUENTIAL_ACCEPTED"
+        else:
+            cancelled = await reopened.cancel_execution_call(
+                "hermetic-ingress", branch.cancellation
+            )
+            assert isinstance(cancelled, ExecutionCancelledCallReceipt)
+            with pytest.raises(LoopRejected):
+                await reopened.accept_call("hermetic-ingress", adoption)
+            assert inventory.ordered_calls[0].terminal == cancelled.terminal.revision
+        after_replays = read_execution_call_history(reopened)
+        assert after_replays[0].tenant_head == history.tenant_head
+        assert not reopened._pending_owners() and not reopened._pending()
+        assert reopened._owner_decisions().snapshot() == recovered_owner
+        assert _decision_entries(reopened) == recovered_loop
+        assert (
+            _physical_members(reopened._database, reopened._tenant_id, history.tenant_head)
+            == expected_members
+        )
+        assert reopened_resources.require_original_provider().transfers == ()
 
 
 @pytest.mark.parametrize("winner", ("acceptance", "cancellation"))
