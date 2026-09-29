@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import chiplog.composition.h1_producer_sources as sources
+from chiplog.adapters.driven.effects_queries import StoredEffectRow
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts import (
     BoundedExternalSelfSendMandateV1,
     ExternalDeliveryResourcesV1,
@@ -37,6 +38,8 @@ from chiplog.composition.h1_scoped_delivery_authority import (
 )
 from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSources
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.composition.r16_effects import MaterializedEffectsCut
+from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
 from tests.composition.test_h1_prepared_delivery_basis_registry import _completed_session
 from tests.composition.test_j7_mounted_external_delivery_grant import (
     _signed_grant,
@@ -220,6 +223,10 @@ async def test_reader_uses_real_mounted_physical_cut_and_rejects_foreign_capture
 
             assert captured.history.tenant_id == runtime._tenant_id
             assert captured.history.digest
+            assert captured.physical_cut.subject_id == "chiplog.h1-producer.physical-cut.v1"
+            assert captured.physical_cut.head == (
+                captured.physical_cut.subject_id + "/" + captured.physical_cut.fingerprint
+            )
             assert captured.effects_history.canonical_value == captured.history.canonical_bytes()
             assert (
                 captured.normative_conflict_generation.clock_epoch
@@ -248,20 +255,52 @@ async def test_recheck_detects_a_changed_physical_cut(
             reader = sources.H1ProducerSourceReader(runtime, authority_reader)
             authority = _synthetic_issued_authority(monkeypatch)
             captured = await reader.read(authority_capture=authority, intent_id="new-intent")
+            record = captured._record
+            changed_cut = replace(
+                record.physical_cut,
+                tenant_frontier=record.physical_cut.tenant_frontier + 1,
+            )
+
+            # The selected effects history and its digest do not cover the
+            # physical frontier.  The domain-separated physical cut head does.
+            assert sources._physical_cut_head(changed_cut, record.history) != captured.physical_cut
+            assert record.history.digest == captured.history.digest
             original = sources._read_materialized_effects_with_history
 
             def appended(runtime: object, journal: object, *, run_id: str | None = None) -> object:
                 cut, snapshot = original(runtime, journal, run_id=run_id)
                 return replace(cut, tenant_frontier=cut.tenant_frontier + 1), snapshot
 
-            monkeypatch.setattr(sources, "_read_materialized_effects_with_history", appended)
+            with monkeypatch.context() as context:
+                context.setattr(sources, "_read_materialized_effects_with_history", appended)
+                with (
+                    runtime._authority_gate().hold(),
+                    pytest.raises(
+                        sources.H1ProducerSourceViolation, match="physical effects source changed"
+                    ),
+                ):
+                    reader.recheck_held(captured)
+
+            second_reader = sources.H1ProducerSourceReader(runtime, authority_reader)
+            foreign = await second_reader.read(authority_capture=authority, intent_id="new-intent")
             with (
                 runtime._authority_gate().hold(),
-                pytest.raises(
-                    sources.H1ProducerSourceViolation, match="physical effects source changed"
-                ),
+                pytest.raises(sources.H1ProducerSourceViolation, match="not reader-issued"),
+            ):
+                reader.recheck_held(foreign)
+            reader.release(captured)
+            with (
+                runtime._authority_gate().hold(),
+                pytest.raises(sources.H1ProducerSourceViolation, match="not reader-issued"),
             ):
                 reader.recheck_held(captured)
+            forged = object.__new__(sources.H1ProducerSourceCapture)
+            forged._record = record
+            with (
+                runtime._authority_gate().hold(),
+                pytest.raises(sources.H1ProducerSourceViolation, match="not reader-issued"),
+            ):
+                reader.recheck_held(forged)
 
 
 def test_conversion_preserves_selected_bytes_and_rejects_duplicate_intent() -> None:
@@ -310,3 +349,58 @@ def test_conversion_preserves_selected_bytes_and_rejects_duplicate_intent() -> N
             canonical_record_bytes=raw + b" ",
             intent_id=member.intent_id,
         )
+
+
+def test_physical_cut_head_commits_frontier_outside_history_digest() -> None:
+    raw = b'{"record":"exact"}'
+    fingerprint = hashlib.sha256(raw).hexdigest()
+    selected = ExactHead(subject_id="selected", head="selected/head", fingerprint="a" * 64)
+    history_member = sources.H1EffectsHistoryMemberV1(
+        selected_decision=selected,
+        tenant_commit_sequence=1,
+        publication_ordinal=0,
+        record_id="record",
+        record_kind="effects.INTENT_RECORDED",
+        schema_id="chiplog.effects.record.v1",
+        fingerprint=fingerprint,
+        canonical_record_bytes=raw,
+        intent_id="intent",
+    )
+    history = sources.H1EffectsHistoryV1(
+        tenant_id="tenant",
+        owner_journal_head="owner-head",
+        ordered_members=(history_member,),
+        digest=h1_effects_history_digest("tenant", "owner-head", (history_member,)),
+    )
+    row = StoredEffectRow(
+        commit_sequence=1,
+        publication_ordinal=0,
+        batch_record_ids=("record",),
+        record=OwnerRecordBytes(
+            owner="effects",
+            record_kind="effects.INTENT_RECORDED",
+            record_id="record",
+            schema_id="chiplog.effects.record.v1",
+            canonical_bytes=raw,
+            fingerprint=fingerprint,
+        ),
+    )
+    cut = MaterializedEffectsCut(
+        tenant_id="tenant",
+        tenant_frontier=1,
+        materialization_commitment="commitment",
+        owner_journal_head="owner-head",
+        physical_path="/authenticated/database.sqlite3",
+        physical_device=1,
+        physical_inode=2,
+        rows=(row,),
+        worker=None,
+        latest_runs=(),
+    )
+
+    head = sources._physical_cut_head(cut, history)
+    assert head == sources._physical_cut_head(cut, history)
+    assert head.subject_id == "chiplog.h1-producer.physical-cut.v1"
+    assert head.head == head.subject_id + "/" + head.fingerprint
+    assert sources._physical_cut_head(replace(cut, tenant_frontier=2), history) != head
+    assert history.digest == h1_effects_history_digest("tenant", "owner-head", (history_member,))

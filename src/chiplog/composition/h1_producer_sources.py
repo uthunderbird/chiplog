@@ -7,9 +7,12 @@ or an owner request.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from chiplog.capabilities.effects.contracts import ExactHead
 from chiplog.capabilities.effects.h1_normative_conflict_generation import (
     H1EffectsHistoryMemberV1,
     H1EffectsHistoryV1,
@@ -49,6 +52,7 @@ class _SourceRecord:
     authority_capture: H1ScopedDeliveryAuthorityCapture
     intent_id: str
     physical_cut: MaterializedEffectsCut
+    physical_cut_head: ExactHead
     owner_snapshot: OwnerJournalSnapshot
     history: H1EffectsHistoryV1
     generation: H1NormativeConflictGenerationV1
@@ -85,6 +89,11 @@ class H1ProducerSourceCapture:
     @property
     def generation(self) -> H1NormativeConflictGenerationV1:
         return self._record.generation
+
+    @property
+    def physical_cut(self) -> ExactHead:
+        """Authenticated physical-cut observation; it confers no SEND authority."""
+        return self._record.physical_cut_head
 
     @property
     def effects_history(self) -> CapturedSource:
@@ -232,6 +241,7 @@ class H1ProducerSourceReader:
             authority_capture=authority_capture,
             intent_id=intent_id,
             physical_cut=cut,
+            physical_cut_head=_physical_cut_head(cut, history),
             owner_snapshot=journal,
             history=history,
             generation=generation,
@@ -278,12 +288,99 @@ def _effects_history(interpreted: H1ProducerEffectsHistory) -> H1EffectsHistoryV
     )
 
 
+_PHYSICAL_CUT_SUBJECT = "chiplog.h1-producer.physical-cut.v1"
+
+
+def _physical_cut_head(
+    cut: MaterializedEffectsCut, history: H1EffectsHistoryV1
+) -> ExactHead:
+    """Commit the complete authenticated physical cut under a fixed domain.
+
+    The SHA-256 preimage is UTF-8 compact, sorted JSON with the fixed
+    ``domain`` below.  It contains every ``MaterializedEffectsCut`` field:
+    tenant, frontier, SQLite materialization commitment, selected owner head,
+    physical database identity, all effects rows (including their exact record
+    bytes), current worker, and every reconstructed latest Run.  It also
+    contains the selected decision heads paired with the authenticated effects
+    history records.  Bytes are represented only as lower-case hexadecimal;
+    nested DTOs use their own canonical bytes.  All values come from the
+    authenticated materialized-effects reader and interpreter, never a caller
+    DTO.  This is an observation commitment, not an owner-currentness or SEND
+    authorization assertion.
+    """
+    worker = cut.worker
+    preimage = {
+        "domain": _PHYSICAL_CUT_SUBJECT,
+        "tenant_id": cut.tenant_id,
+        "tenant_frontier": cut.tenant_frontier,
+        "materialization_commitment": cut.materialization_commitment,
+        "owner_journal_head": cut.owner_journal_head,
+        "physical_database": {
+            "path": cut.physical_path,
+            "device": cut.physical_device,
+            "inode": cut.physical_inode,
+        },
+        "rows": [
+            {
+                "commit_sequence": row.commit_sequence,
+                "publication_ordinal": row.publication_ordinal,
+                "batch_record_ids": list(row.batch_record_ids),
+                "record": {
+                    "owner": row.record.owner,
+                    "record_kind": row.record.record_kind,
+                    "record_id": row.record.record_id,
+                    "schema_id": row.record.schema_id,
+                    "canonical_bytes_hex": row.record.canonical_bytes.hex(),
+                    "fingerprint": row.record.fingerprint,
+                },
+            }
+            for row in cut.rows
+        ],
+        "worker": None
+        if worker is None
+        else {
+            "run_canonical_bytes_hex": worker.run.canonical_bytes().hex(),
+            "fence_canonical_bytes_hex": worker.fence.canonical_bytes().hex(),
+            "owner_session": {
+                "tenant_id": worker.owner_session.tenant_id,
+                "broker_epoch": worker.owner_session.broker_epoch,
+                "generation_id": worker.owner_session.generation_id,
+                "owner_id": worker.owner_session.owner_id,
+                "session_id": worker.owner_session.session_id,
+            },
+        },
+        "latest_runs_canonical_bytes_hex": [
+            run.canonical_bytes().hex() for run in cut.latest_runs
+        ],
+        "selected_effects_history": {
+            "digest": history.digest,
+            "members": [
+                {
+                    "record_id": member.record_id,
+                    "selected_decision": member.selected_decision.model_dump(mode="json"),
+                }
+                for member in history.ordered_members
+            ],
+        },
+    }
+    canonical = json.dumps(
+        preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+    digest = hashlib.sha256(canonical).hexdigest()
+    return ExactHead(
+        subject_id=_PHYSICAL_CUT_SUBJECT,
+        head=f"{_PHYSICAL_CUT_SUBJECT}/{digest}",
+        fingerprint=digest,
+    )
+
+
 def _same_physical_sources(original: _SourceRecord, current: _SourceRecord) -> bool:
     """Compare the immutable physical source result apart from the live clock read."""
     return (
         original.authority_capture is current.authority_capture
         and original.intent_id == current.intent_id
         and original.physical_cut == current.physical_cut
+        and original.physical_cut_head == current.physical_cut_head
         and original.owner_snapshot == current.owner_snapshot
         and original.history == current.history
         and original.generation == current.generation

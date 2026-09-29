@@ -99,10 +99,10 @@ def _head(name: str, raw: bytes = b"h1") -> LoopHead:
     return LoopHead(identity=name, head=name + ":head", fingerprint=_sha(raw))
 
 
-def _captured_source(role: str) -> CapturedSource:
+def _captured_source(role: str, *, valid_until_ns: int) -> CapturedSource:
     if role == "semantic_registry":
         return h1_producer_semantic_registry_capture(
-            clock_contract="clock-contract", clock_epoch="epoch", valid_until_ns=200
+            clock_contract="clock-contract", clock_epoch="epoch", valid_until_ns=valid_until_ns
         )
     raw = f"h1-source:{role}".encode()
     head = EffectHead(
@@ -120,15 +120,18 @@ def _captured_source(role: str) -> CapturedSource:
         canonical_value=raw,
         clock_contract="clock-contract",
         clock_epoch="epoch",
-        valid_until_ns=200,
+        valid_until_ns=valid_until_ns,
     )
 
 
 def _h1_sources(
-    candidate: H1PreparedDeliveryMandateCandidateV1, history: H1EffectsHistoryV1
+    candidate: H1PreparedDeliveryMandateCandidateV1,
+    history: H1EffectsHistoryV1,
+    *,
+    valid_until_ns: int = 175,
 ) -> H1ProducerSourceInventoryV1:
     values: dict[str, CapturedSource | H1ProducerSourceObservationV1] = {
-        role: _captured_source(role)
+        role: _captured_source(role, valid_until_ns=valid_until_ns)
         for role in (
             "trust",
             "planning",
@@ -143,10 +146,16 @@ def _h1_sources(
     }
     generation = h1_normative_conflict_generation(history)
     values["effects_history"] = h1_effects_history_capture(
-        history, clock_contract="clock-contract", clock_epoch="epoch", valid_until_ns=200
+        history,
+        clock_contract="clock-contract",
+        clock_epoch="epoch",
+        valid_until_ns=valid_until_ns,
     )
     values["normative_conflict_generation"] = h1_normative_conflict_generation_capture(
-        generation, clock_contract="clock-contract", clock_epoch="epoch", valid_until_ns=200
+        generation,
+        clock_contract="clock-contract",
+        clock_epoch="epoch",
+        valid_until_ns=valid_until_ns,
     )
     values["planning"] = H1ProducerNotApplicableV1(role="planning", candidate=candidate)
     values["original_adoption"] = H1ProducerNotApplicableV1(
@@ -417,7 +426,7 @@ async def _call(*, selected_intent_id: str | None = None) -> H1ScopedDeliveryOwn
         clock_contract="clock-contract",
         clock_epoch="epoch",
         observed_time_ns=150,
-        lease_expires_at_ns=200,
+        lease_expires_at_ns=175,
     )
     precursor = ScopedPrecursorRequest(
         request_id="h1-scoped-precursor:"
@@ -565,6 +574,61 @@ def _with_request(
     return call.model_copy(
         update={"request": request, "request_digest": _sha(request.canonical_bytes())}
     )
+
+
+async def test_scoped_owner_separates_policy_horizon_from_observation_capture_lease() -> None:
+    call = await _call()
+
+    result = prepare_h1_scoped_delivery(call)
+
+    assert isinstance(result, PreparedH1ScopedDeliveryV1)
+    assert result.intent_result.intent.mandate.horizon.expires_at_ns == 200
+    assert call.request.current.lease_expires_at_ns == 175
+    assert call.request.original_sources.semantic_registry.valid_until_ns == 175
+    assert call.request.current.sources.effects_history.valid_until_ns == 175
+    assert call.request.current.sources.normative_conflict_generation.valid_until_ns == 175
+
+
+async def test_scoped_owner_rejects_capture_deadline_that_uses_policy_horizon() -> None:
+    call = await _call()
+    history = H1EffectsHistoryV1.model_validate_json(
+        call.request.current.sources.effects_history.canonical_value
+    )
+    wrong_sources = _h1_sources(
+        call.request.current.immutable_mandate_candidate, history, valid_until_ns=200
+    )
+    current = call.request.current.model_copy(update={"sources": wrong_sources})
+    request = call.request.model_copy(
+        update={"original_sources": wrong_sources, "current": current}
+    )
+
+    assert prepare_h1_scoped_delivery(_with_request(call, request)).disposition == "DENIED"
+
+
+async def test_scoped_owner_rejects_expired_observation_lease_while_policy_is_current() -> None:
+    call = await _call()
+    current = call.request.current.model_copy(
+        update={"observed_time_ns": 175, "lease_expires_at_ns": 175}
+    )
+    request = call.request.model_copy(update={"current": current})
+
+    assert prepare_h1_scoped_delivery(_with_request(call, request)).disposition == "DENIED"
+
+
+async def test_scoped_owner_rejects_expired_policy_while_observation_lease_is_current() -> None:
+    call = await _call()
+    history = H1EffectsHistoryV1.model_validate_json(
+        call.request.current.sources.effects_history.canonical_value
+    )
+    sources = _h1_sources(
+        call.request.current.immutable_mandate_candidate, history, valid_until_ns=225
+    )
+    current = call.request.current.model_copy(
+        update={"sources": sources, "observed_time_ns": 200, "lease_expires_at_ns": 225}
+    )
+    request = call.request.model_copy(update={"original_sources": sources, "current": current})
+
+    assert prepare_h1_scoped_delivery(_with_request(call, request)).disposition == "DENIED"
 
 
 @pytest.mark.parametrize(

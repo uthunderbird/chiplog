@@ -278,7 +278,7 @@ def prepare_h1_scoped_delivery(
             current=request.current.sources.semantic_registry,
             clock_contract=terms.clock_contract,
             clock_epoch=terms.clock_epoch,
-            valid_until_ns=terms.expires_at_ns,
+            valid_until_ns=request.current.lease_expires_at_ns,
         )
         normative_conflict_generation = require_h1_history_and_normative_conflict_generation(
             tenant_id=grant.tenant_id,
@@ -290,7 +290,7 @@ def prepare_h1_scoped_delivery(
             history_observation=request.current.history_observation,
             clock_contract=terms.clock_contract,
             clock_epoch=terms.clock_epoch,
-            valid_until_ns=terms.expires_at_ns,
+            valid_until_ns=request.current.lease_expires_at_ns,
         )
 
         derived = DispatchMandateV3(
