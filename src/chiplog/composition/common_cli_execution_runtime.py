@@ -301,6 +301,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_completion_exchange_registry: Any | None
     _h1_scoped_delivery_authority_reader: Any | None
     _h1_producer_source_reader: Any | None
+    _h1_producer_inventory_reader: Any | None
     _h1_conversation_source_port: Any | None
     _h1_live_invocation_source: Any | None
     _h1_live_readplan_source: Any | None
@@ -2549,6 +2550,7 @@ async def _open_installed_h1_runtime(
                 live_readplan_source: Any | None = None
                 scoped_delivery_authority_reader: Any | None = None
                 producer_source_reader: Any | None = None
+                producer_inventory_reader: Any | None = None
                 try:
                     from chiplog.composition.h1_completion_exchange_registry import (
                         H1CompletionExchangeRegistry,
@@ -2601,6 +2603,7 @@ async def _open_installed_h1_runtime(
                             "_h1_live_readplan_source",
                             "_h1_scoped_delivery_authority_reader",
                             "_h1_producer_source_reader",
+                            "_h1_producer_inventory_reader",
                         )
                     ):
                         raise RuntimeError("installed H1 worker sources are already mounted")
@@ -2657,6 +2660,9 @@ async def _open_installed_h1_runtime(
                     live_readplan_source = H1LiveReadPlanSource(runtime)
                     runtime._h1_live_readplan_source = live_readplan_source
                     if manifest is R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST:
+                        from chiplog.composition.h1_producer_inventory import (
+                            H1ProducerInventoryReader,
+                        )
                         from chiplog.composition.h1_producer_sources import H1ProducerSourceReader
                         from chiplog.composition.h1_scoped_delivery_authority import (
                             H1ScopedDeliveryAuthorityReader,
@@ -2665,6 +2671,7 @@ async def _open_installed_h1_runtime(
                         if (
                             hasattr(runtime, "_h1_scoped_delivery_authority_reader")
                             or hasattr(runtime, "_h1_producer_source_reader")
+                            or hasattr(runtime, "_h1_producer_inventory_reader")
                         ):
                             raise RuntimeError(
                                 "installed H1 scoped source readers are already mounted"
@@ -2673,13 +2680,21 @@ async def _open_installed_h1_runtime(
                         producer_source_reader = H1ProducerSourceReader(
                             runtime, scoped_delivery_authority_reader
                         )
+                        producer_inventory_reader = H1ProducerInventoryReader(
+                            runtime, scoped_delivery_authority_reader, producer_source_reader
+                        )
                         runtime._h1_scoped_delivery_authority_reader = (
                             scoped_delivery_authority_reader
                         )
                         runtime._h1_producer_source_reader = producer_source_reader
+                        runtime._h1_producer_inventory_reader = producer_inventory_reader
                     authority._bind_installed_runtime(runtime)
                     yield runtime
                 finally:
+                    if producer_inventory_reader is not None:
+                        producer_inventory_reader.close()
+                    if hasattr(runtime, "_h1_producer_inventory_reader"):
+                        del runtime._h1_producer_inventory_reader
                     if producer_source_reader is not None:
                         producer_source_reader.close()
                     if hasattr(runtime, "_h1_producer_source_reader"):
@@ -2750,6 +2765,13 @@ async def _open_installed_h1_runtime(
             # the ordinary path the inner finally already released this while
             # the appender remained open.
             if runtime is not None:
+                retained_inventory_reader = getattr(
+                    runtime, "_h1_producer_inventory_reader", None
+                )
+                if retained_inventory_reader is not None:
+                    retained_inventory_reader.close()
+                if hasattr(runtime, "_h1_producer_inventory_reader"):
+                    del runtime._h1_producer_inventory_reader
                 retained_producer_source_reader = getattr(
                     runtime, "_h1_producer_source_reader", None
                 )
