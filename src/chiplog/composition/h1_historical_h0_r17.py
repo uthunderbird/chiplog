@@ -25,7 +25,7 @@ from chiplog.composition.r17_authenticated_records import (
     decode_authentication,
 )
 from chiplog.composition.r17_ingress_history import (
-    is_ingress,
+    is_custody_ingress,
     record_head,
     validate_selected_ingress,
     wire_record,
@@ -102,8 +102,10 @@ def _raw_r17(
         raise ValueError("retained R17 record is noncanonical")
     history = runtime._owner_decisions().snapshot()
     replayed, _custody = validate_selected_ingress(history)
-    ingress = tuple(decision for decision in history.decisions if is_ingress(decision))
-    if len(replayed) != len(ingress):
+    custody_ingress = tuple(
+        decision for decision in history.decisions if is_custody_ingress(decision)
+    )
+    if len(replayed) != len(custody_ingress):
         raise ValueError("selected R17 history has unpaired custody decisions")
     matches: list[tuple[AuthenticatedCustodyRecord, SelectedOwnerDecision]] = []
     for decision in history.decisions:
@@ -144,8 +146,8 @@ def _raw_r17(
         if (
             not batch.complete_records
             or batch.complete_records[0] != row
-            or decision not in ingress
-            or replayed[ingress.index(decision)] != record
+            or decision not in custody_ingress
+            or replayed[custody_ingress.index(decision)] != record
         ):
             raise ValueError("selected R17 physical record membership differs")
         matches.append((record, decision))

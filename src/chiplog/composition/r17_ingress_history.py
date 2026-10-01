@@ -153,6 +153,16 @@ def is_ingress(decision: SelectedOwnerDecision) -> bool:
     )
 
 
+def is_custody_ingress(decision: SelectedOwnerDecision) -> bool:
+    """Whether an ingress decision carries one retained custody command."""
+    batch = decision.prepared.request
+    return (
+        is_ingress(decision)
+        and isinstance(batch, SingleOwnerBatch)
+        and batch.command.schema_id in (COMMAND_SCHEMA, AUTH_COMMAND_SCHEMA)
+    )
+
+
 def validate_selected_ingress(
     history: OwnerJournalSnapshot,
 ) -> tuple[tuple[HistoryRecord, ...], CustodySnapshot]:

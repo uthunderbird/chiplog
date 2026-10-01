@@ -10,7 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from chiplog.adapters.driven.loop_hermetic import HermeticModel
+from chiplog.adapters.driven.loop_prompts import OwnedStaticPrompts
+from chiplog.capabilities.agent_loop.application import AgentLoop
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
+from chiplog.capabilities.agent_loop.contracts import BudgetPolicy
 from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     CliCustodyOffer,
     CliCustodyResponse,
@@ -34,6 +38,8 @@ from chiplog.composition.r14_execution_inbox_records import (
     EXECUTION_INBOX_INITIALIZATION_OPERATION,
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.composition.r16_effects import R16EffectsProducer
+from chiplog.composition.r14_loop_store import R14LoopStore
 from chiplog.platform.ingress_authenticated_contracts import AuthenticatedCustodyRecord
 from chiplog.platform.ingress_custody_records import digest
 from chiplog.platform.ingress_record_contracts import canonical_ingress_record_bytes
@@ -41,6 +47,8 @@ from chiplog.platform.ingress_transition_contracts import (
     IngressCommandIdentity,
     RetainedIngressSource,
 )
+from chiplog.capabilities.agent_loop.contracts import EndpointSelection
+from tests.composition.test_plan_effect_publication import response
 
 
 async def _client(path: Path) -> None:
@@ -121,6 +129,31 @@ async def _retained(
     )
 
 
+async def _publish_ordinary(database: Path, resources: HermeticDispatchResources) -> None:
+    async with open_common_cli_execution_runtime(
+        database, resources=resources, responses=(response(),)
+    ) as runtime:
+        model = HermeticModel((response(),))
+        model.session = runtime
+        loop = AgentLoop(
+            R14LoopStore(runtime), model, OwnedStaticPrompts(), tenant="hermetic-tenant",
+            principal="hermetic-principal", origin=EndpointSelection(
+                kind="ORIGIN_EXACT", ingress_binding_head="hermetic-ingress-v1",
+                endpoint_head="hermetic-endpoint-v1", endpoint_id="hermetic-local",
+                provider="hermetic-local", recipient="hermetic-principal",
+                canonical_address="local://hermetic-principal", credential_binding_head="hermetic-v1",
+            ), contour_head="hermetic-contour-v1", policy_head="hermetic-policy-v1",
+            worker_session=runtime.current_worker(), planning=runtime,
+        )
+        created = await loop.create("r", "Propose my exact hermetic action", BudgetPolicy())
+        active = await loop.activate("r", created.head)
+        await loop.step("r", active.head)
+        display = await R16EffectsProducer(runtime).display_effect("r/turn/1/proposal/effect")
+        await runtime.publish_effect(
+            "hermetic-ingress", display.display_id, display.display_digest, display.adoption_act_id
+        )
+
+
 @pytest.mark.asyncio
 async def test_reads_real_selected_cli_h0_and_r17_without_current_reader(tmp_path: Path) -> None:
     resources = HermeticDispatchResources(
@@ -134,6 +167,21 @@ async def test_reads_real_selected_cli_h0_and_r17_without_current_reader(tmp_pat
 
     assert result.initialization_decision_id
     assert result.admitted_decision.prepared.request.identity.tenant_id == "hermetic-tenant"
+
+
+@pytest.mark.asyncio
+async def test_historical_r17_after_restart_accepts_prior_ordinary_claim(tmp_path: Path) -> None:
+    database, custody = tmp_path / "state.sqlite", tmp_path / "custody"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM", "CONFIRM"), cap=2, custody_path=custody
+    )
+    await _publish_ordinary(database, resources)
+    async with open_common_cli_execution_runtime(database, resources=resources) as runtime:
+        retained = await _retained(runtime)
+    async with open_common_cli_execution_runtime(database, resources=resources) as reopened:
+        result = read_historical_h0_r17(reopened, retained)
+
+    assert result.admitted_record.command.token.receive_slot == "h0-r17"
 
 
 @pytest.mark.asyncio

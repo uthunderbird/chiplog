@@ -6,16 +6,21 @@ import asyncio
 import hashlib
 import sqlite3
 import struct
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from chiplog.adapters.driven.loop_hermetic import HermeticModel
+from chiplog.adapters.driven.loop_prompts import OwnedStaticPrompts
+from chiplog.capabilities.agent_loop.application import AgentLoop
 from chiplog.capabilities.agent_loop.delivery_preparation import (
     Commentary,
     DeliveryCompletion,
     ProposedDelivery,
 )
+from chiplog.capabilities.agent_loop.contracts import BudgetPolicy
 from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     CliCustodyOffer,
     CliCustodyResponse,
@@ -33,11 +38,17 @@ from chiplog.composition.common_execution_driver_contracts import (
 from chiplog.composition.h1_selected_input_role import read_h1_selected_input_role
 from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_candidate
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.composition.r16_effects import R16EffectsProducer
+from chiplog.composition.r14_loop_store import R14LoopStore
+from chiplog.platform._owner_publication_contracts import SelectedPlanEffectBatchV2
 from chiplog.platform.ingress_custody_records import canonical
 from chiplog.platform.ingress_transition_contracts import (
     IngressCommandIdentity,
     RetainedIngressSource,
 )
+from chiplog.platform.owner_decision_journal import OwnerJournalIntegrityError
+from chiplog.capabilities.agent_loop.contracts import EndpointSelection
+from tests.composition.test_plan_effect_publication import response
 
 
 async def _client(path: Path) -> None:
@@ -111,6 +122,31 @@ async def _mounted_candidate(database: Path, custody: Path) -> tuple[DriveInputR
     return request, complete.canonical_bytes()
 
 
+async def _publish_ordinary(database: Path, resources: HermeticDispatchResources) -> None:
+    async with open_common_cli_execution_runtime(
+        database, resources=resources, responses=(response(),)
+    ) as runtime:
+        model = HermeticModel((response(),))
+        model.session = runtime
+        loop = AgentLoop(
+            R14LoopStore(runtime), model, OwnedStaticPrompts(), tenant="hermetic-tenant",
+            principal="hermetic-principal", origin=EndpointSelection(
+                kind="ORIGIN_EXACT", ingress_binding_head="hermetic-ingress-v1",
+                endpoint_head="hermetic-endpoint-v1", endpoint_id="hermetic-local",
+                provider="hermetic-local", recipient="hermetic-principal",
+                canonical_address="local://hermetic-principal", credential_binding_head="hermetic-v1",
+            ), contour_head="hermetic-contour-v1", policy_head="hermetic-policy-v1",
+            worker_session=runtime.current_worker(), planning=runtime,
+        )
+        created = await loop.create("r", "Propose my exact hermetic action", BudgetPolicy())
+        active = await loop.activate("r", created.head)
+        await loop.step("r", active.head)
+        display = await R16EffectsProducer(runtime).display_effect("r/turn/1/proposal/effect")
+        await runtime.publish_effect(
+            "hermetic-ingress", display.display_id, display.display_digest, display.adoption_act_id
+        )
+
+
 @pytest.mark.asyncio
 async def test_mounted_selected_h0_r17_witness_uses_retained_not_current_input(
     tmp_path: Path,
@@ -177,6 +213,69 @@ async def test_mounted_selected_h0_r17_witness_uses_retained_not_current_input(
         == admission.prepared.request.complete_records[0].canonical_bytes
     )
     assert witness.occurrences[3].canonical_bytes == canonical(witness.admitted_record)
+
+
+@pytest.mark.asyncio
+async def test_mounted_selected_h0_r17_witness_accepts_prior_ordinary_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database, custody = tmp_path / "state.sqlite", tmp_path / "custody"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM", "CONFIRM"), cap=2, custody_path=custody
+    )
+    async with open_common_cli_execution_runtime(database, resources=resources) as runtime:
+        request = await _admit(runtime)
+        admitted = runtime._selected_input(request, resources.observe())
+        run_id = runtime._run_id(admitted)
+    complete = DeliveryCompletion(
+        tenant="hermetic-tenant",
+        run_id=run_id,
+        turn_id=run_id + "/turn/1",
+        deliveries=(ProposedDelivery(payload=(Commentary(text="Hello"),)),),
+    ).canonical_bytes()
+    async with open_common_cli_execution_runtime(
+        database, resources=resources, responses=(complete,)
+    ) as runtime:
+        initial = cast(SelectedExecutionReceiptV1, await runtime.drive_input(request))
+        started = await runtime.begin_execution(
+            "hermetic-ingress", initial.stable_run_lineage_id, initial.selected_run_head.head
+        )
+        captured = await runtime.capture_execution(
+            "hermetic-ingress", initial.stable_run_lineage_id, started.head
+        )
+        selected = select_h1_v3_prepare_for_candidate(
+            runtime, captured, expected_head=captured.head
+        )
+    await _publish_ordinary(database, resources)
+    async with open_common_cli_execution_runtime(database, resources=resources) as runtime:
+        witness = read_h1_selected_input_role(runtime, selected, captured)
+        history = runtime._owner_decisions().snapshot()
+        ordinary_index = next(
+            index
+            for index, decision in enumerate(history.decisions)
+            if isinstance(decision.prepared.request, SelectedPlanEffectBatchV2)
+        )
+        ordinary = history.decisions[ordinary_index]
+        batch = ordinary.prepared.request
+        corrupted = replace(
+            ordinary,
+            prepared=replace(
+                ordinary.prepared, request=batch.model_copy(update={"admission_records": ()})
+            ),
+        )
+        corrupted_history = replace(
+            history,
+            decisions=history.decisions[:ordinary_index]
+            + (corrupted,)
+            + history.decisions[ordinary_index + 1 :],
+        )
+        monkeypatch.setattr(
+            runtime, "_owner_decisions", lambda: type("SnapshotOnly", (), {"snapshot": lambda _: corrupted_history})()
+        )
+        with pytest.raises(OwnerJournalIntegrityError, match="ingress_history"):
+            read_h1_selected_input_role(runtime, selected, captured)
+
+    assert witness.admitted_record.command.token.receive_slot == "selected"
 
 
 @pytest.mark.asyncio

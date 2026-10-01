@@ -34,7 +34,7 @@ from chiplog.composition.r14_execution_inbox_records import (
 )
 from chiplog.composition.r17_authenticated_records import COMMAND_SCHEMA, decode_authentication
 from chiplog.composition.r17_ingress_history import (
-    is_ingress,
+    is_custody_ingress,
     record_head,
     validate_selected_ingress,
     wire_record,
@@ -460,8 +460,10 @@ def _r17(
 ]:
     # This is retained-history validation, not a current inbox/source read.
     records, _custody = validate_selected_ingress(history)
-    ingress = tuple(decision for decision in history.decisions if is_ingress(decision))
-    if len(records) != len(ingress):
+    custody_ingress = tuple(
+        decision for decision in history.decisions if is_custody_ingress(decision)
+    )
+    if len(records) != len(custody_ingress):
         raise ValueError("selected R17 history has unpaired custody decisions")
     selected = wire.selected_source.selected_ingress_decision
     matches: list[
@@ -544,7 +546,9 @@ def _r17(
             ),
         )
         candidates: list[tuple[int, SelectedOwnerDecision, CustodyRecord]] = []
-        for index, (ancestor, replayed) in enumerate(zip(ingress, records, strict=True)):
+        for index, (ancestor, replayed) in enumerate(
+            zip(custody_ingress, records, strict=True)
+        ):
             if isinstance(replayed, CustodyRecord):
                 candidates.append((index, ancestor, replayed))
         stages = [
