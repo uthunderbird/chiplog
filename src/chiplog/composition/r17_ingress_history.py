@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from chiplog.composition.r17_admission_records import (
+    SCHEMA_EPOCH_V2,
     CapacityClaimed,
     EpochOpened,
+    EpochOpenedV2,
     cli_batch_events,
     selected_aggregate,
 )
@@ -283,13 +285,23 @@ def validate_selected_ingress(
                     raw_bytes=command.raw_bytes,
                     commit_sequence=decision.tenant_commit_sequence,
                     aggregate=aggregate,
+                    epoch_schema=(
+                        "v2"
+                        if aggregate.epoch is None
+                        and any(row.schema_id == SCHEMA_EPOCH_V2 for row in batch.complete_records)
+                        else "v1"
+                        if aggregate.epoch is None
+                        else "v2"
+                        if isinstance(aggregate.epoch, EpochOpenedV2)
+                        else "v1"
+                    ),
                 )
                 expected_records = (
                     wire,
                     *tuple(
                         admission_wire(
                             "ingress.admission.epoch:" + command.profile.epoch().identity
-                            if isinstance(event, EpochOpened)
+                            if isinstance(event, (EpochOpened, EpochOpenedV2))
                             else event.claim_id
                             if isinstance(event, CapacityClaimed)
                             else "ingress.admission.ready:" + command.token.token_id,

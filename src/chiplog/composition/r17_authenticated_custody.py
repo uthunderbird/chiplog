@@ -17,6 +17,7 @@ from chiplog.capabilities.deployment_trust.cli_custody_validation import CliCust
 from chiplog.composition.r17_admission_records import (
     CapacityClaimed,
     EpochOpened,
+    EpochOpenedV2,
     cli_batch_events,
     selected_aggregate,
 )
@@ -186,7 +187,7 @@ class AuthenticatedIngressAuthority(IngressAuthority):
                 *tuple(
                     admission_wire(
                         "ingress.admission.epoch:" + command.profile.epoch().identity
-                        if isinstance(event, EpochOpened)
+                        if isinstance(event, (EpochOpened, EpochOpenedV2))
                         else event.claim_id
                         if isinstance(event, CapacityClaimed)
                         else "ingress.admission.ready:" + command.token.token_id,
@@ -282,7 +283,7 @@ class AuthenticatedIngressAuthority(IngressAuthority):
             admission_wires = tuple(
                 admission_wire(
                     "ingress.admission.epoch:" + command.profile.epoch().identity
-                    if isinstance(event, EpochOpened)
+                    if isinstance(event, (EpochOpened, EpochOpenedV2))
                     else event.claim_id
                     if isinstance(event, CapacityClaimed)
                     else "ingress.admission.ready:" + command.token.token_id,

@@ -19,7 +19,12 @@ from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import R17_CUSTODY_PRODUCTION_MANIFEST
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r14_runtime import R14PlanningRuntime
-from chiplog.composition.r17_admission_records import SCHEMA_CAPACITY, SCHEMA_EPOCH, SCHEMA_READY
+from chiplog.composition.r17_admission_records import (
+    SCHEMA_CAPACITY,
+    SCHEMA_EPOCH,
+    SCHEMA_EPOCH_V2,
+    SCHEMA_READY,
+)
 from chiplog.composition.r17_ingress_authority import IngressAuthority
 from chiplog.composition.r17_ingress_history import (
     IngressHistory,
@@ -78,6 +83,7 @@ class R17IngressRuntime(R14PlanningRuntime):
         *R14PlanningRuntime._record_schema_variants,
         ("broker_ingress", "chiplog.ingress.authenticated-record.v2"),
         ("broker_ingress", SCHEMA_EPOCH),
+        ("broker_ingress", SCHEMA_EPOCH_V2),
         ("broker_ingress", SCHEMA_CAPACITY),
         ("broker_ingress", SCHEMA_READY),
     )

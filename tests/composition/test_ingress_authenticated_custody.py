@@ -20,7 +20,7 @@ from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
 )
 from chiplog.composition.r17_admission_records import (
     SCHEMA_CAPACITY,
-    SCHEMA_EPOCH,
+    SCHEMA_EPOCH_V2,
     SCHEMA_READY,
     selected_aggregate,
 )
@@ -41,6 +41,27 @@ from chiplog.platform.owner_publications import (
     SelectedOwnerDecision,
     selected_records,
 )
+
+
+def _selected_bytes(decision: SelectedOwnerDecision) -> bytes:
+    return json.dumps(
+        {
+            "prepared": {
+                "request": decision.prepared.request.model_dump(mode="json"),
+                "issuance_id": decision.prepared.issuance_id,
+                "fence_generation": decision.prepared.fence_generation,
+                "fence_frontier": decision.prepared.fence_frontier,
+                "predecessor_commitment": decision.prepared.predecessor_commitment,
+            },
+            "decision_id": decision.decision_id,
+            "decision_head": decision.decision_head,
+            "decision_fingerprint": decision.decision_fingerprint,
+            "resulting_commitment": decision.resulting_commitment,
+            "tenant_commit_sequence": decision.tenant_commit_sequence,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
 
 
 async def _client(path: Path, *, mutation: str = "none") -> CliCustodyOffer:
@@ -117,7 +138,7 @@ async def test_actual_peer_admits_one_embedded_inbox_and_replays_after_restart(
         assert actual == (result.complete_records[0].canonical_bytes,)
         assert tuple(row.schema_id for row in result.complete_records) == (
             "chiplog.ingress.authenticated-record.v2",
-            SCHEMA_EPOCH,
+            SCHEMA_EPOCH_V2,
             SCHEMA_CAPACITY,
             SCHEMA_READY,
         )
@@ -137,6 +158,70 @@ async def test_actual_peer_admits_one_embedded_inbox_and_replays_after_restart(
             await client
         assert replay.kind == "EXACT_REPLAY"
         assert reopened.ingress_history().records == before
+
+
+async def test_selected_v1_cli_admission_replays_exact_bytes_then_keeps_v1_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stored v1 epoch fixes its profile across reopen; it never upgrades in place."""
+    from chiplog.composition import r17_authenticated_custody
+
+    database = tmp_path / "selected-v1.sqlite"
+    original_builder = r17_authenticated_custody.cli_batch_events
+
+    def v1_builder(**kwargs: object):
+        return original_builder(**kwargs, epoch_schema="v1")  # type: ignore[arg-type]
+
+    async with open_r17_runtime(database) as runtime:
+        await _stage(runtime)
+        with monkeypatch.context() as patch:
+            patch.setattr(r17_authenticated_custody, "cli_batch_events", v1_builder)
+            async with runtime.cli_custody("slot") as admission:
+                client = asyncio.create_task(_client(admission.socket.path))
+                first = await admission.admit()
+                await client
+        assert isinstance(first, JournalSelectedPublication)
+        decision = runtime._owner_decisions().snapshot().decisions[-1]
+        assert (
+            decision.prepared.request.complete_records[1].schema_id
+            == "chiplog.ingress.admission-epoch.v1"
+        )
+        selected_before = _selected_bytes(decision)
+        with sqlite3.connect(database) as connection:
+            physical_before = tuple(
+                connection.execute(
+                    "SELECT record_id, canonical_bytes FROM records WHERE tenant_id=? "
+                    "AND commit_sequence=? ORDER BY rowid",
+                    ("hermetic-tenant", decision.tenant_commit_sequence),
+                )
+            )
+    async with open_r17_runtime(database) as reopened:
+        restored = reopened._owner_decisions().lookup(
+            "hermetic-tenant", decision.prepared.request.identity.command_id
+        )
+        assert restored is not None and _selected_bytes(restored) == selected_before
+        with sqlite3.connect(database) as connection:
+            assert (
+                tuple(
+                    connection.execute(
+                        "SELECT record_id, canonical_bytes FROM records WHERE tenant_id=? "
+                        "AND commit_sequence=? ORDER BY rowid",
+                        ("hermetic-tenant", decision.tenant_commit_sequence),
+                    )
+                )
+                == physical_before
+            )
+        reopened.provision_retained("second", b"v1 second item")
+        assert (await reopened.allocate_receipt("second")).kind == "COMMITTED"
+        assert (await reopened.stage_receipt("second")).kind == "COMMITTED"
+        async with reopened.cli_custody("second") as admission:
+            client = asyncio.create_task(_client(admission.socket.path))
+            second = await admission.admit()
+            await client
+        assert isinstance(second, JournalSelectedPublication)
+        assert "chiplog.ingress.admission-epoch.v2" not in {
+            item.schema_id for item in second.complete_records
+        }
 
 
 @pytest.mark.parametrize(
