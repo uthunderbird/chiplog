@@ -377,6 +377,7 @@
   "composition/r9.py": "e4c6464e8c52f7ef37c246d7f4f6560ae6b678728b64c71b70f72816253211cf",
   "composition/scheduler_source_registry.py": "216dd46bedbeb6476a2490c701c496f364e2706de39284021195e673204a95ff",
   "composition/scoped_delivery_atomic_outcome_contracts.py": "9a3f4683b78243ed3b30f1c5c249342cbb361ec2260af63713d6c8dd4b6b7bd5",
+  "composition/scoped_delivery_send_contracts.py": "6dd072ee5a71188a0971eda54d864ace17749d4c437add7026ff519a4c713f09",
   "domain_primitives/__init__.py": "53c93ff53644262f31d50b2732ef0f453f8c8c65360078c80eb2b00aa77da977",
   "domain_primitives/canonical.py": "afc797f551f952854082bffe2833cd523c44376759ed3acc617382df9b518918",
   "domain_primitives/codec.py": "938a79819c30b7ee693a1547632202efd170889e07e34f6340479f856bd25d54",
