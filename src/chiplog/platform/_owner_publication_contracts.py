@@ -548,6 +548,7 @@ class ExactReplayQuery(BrokerDTO):
             "agent_loop.complete_acceptance",
             "agent_loop.complete_acceptance.v2",
             "agent_loop.reject_completion.v1",
+            "agent_loop.delivery_work.genesis.v1",
         ]
     )
     current_invocation: InvocationProofRef

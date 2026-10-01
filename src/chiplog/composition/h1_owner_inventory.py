@@ -300,9 +300,15 @@ def _reconcile_current_owner_cut(
             schema="chiplog.owner-decision.v1",
             locator=error.locator,
         ) from error
+    from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+        prepare_delivery_work_genesis,
+    )
     from chiplog.composition.h1_completion_issuance import decode_h1_completion_issuance
     from chiplog.composition.h1_inventory_completion import H1CompletionInventoryCohort
-    from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
+    from chiplog.platform._owner_publication_contracts import (
+        CompleteDeliveryBatchV2,
+        DeliveryWorkGenesisBatchV1,
+    )
     from chiplog.platform.owner_publications import source_commands
 
     cohorts: dict[str, object] = {}
@@ -342,6 +348,69 @@ def _reconcile_current_owner_cut(
             )
             if len(cohort.members) != len(batch.complete_records):
                 raise ValueError("completion cohort has duplicate record IDs")
+            completion_commands.add(evidence.command_id)
+            for record_id in cohort.members:
+                if record_id in cohorts:
+                    raise ValueError("completion cohorts share a record ID")
+                cohorts[record_id] = cohort
+        for selected in owner_snapshot.decisions:
+            batch = selected.prepared.request
+            if type(batch) is not DeliveryWorkGenesisBatchV1:
+                continue
+            evidence = cut_by_command.get(batch.identity.command_id)
+            if evidence is None or not evidence.materialized:
+                continue
+            member_bytes = tuple(record.canonical_bytes for record in batch.complete_records)
+            if (
+                evidence.decision_id != selected.decision_id
+                or evidence.decision_fingerprint != selected.decision_fingerprint
+                or evidence.batch_kind != batch.kind
+                or evidence.tenant_commit_sequence != selected.tenant_commit_sequence
+                or evidence.source_command_bytes
+                != tuple(command.canonical_bytes for command in source_commands(batch))
+                or evidence.member_bytes != member_bytes
+            ):
+                raise ValueError("genesis cohort differs from reconciled owner cut")
+            predecessors = tuple(
+                item
+                for item in owner_snapshot.decisions
+                if item.decision_id == batch.selected_decision_id
+                and item.decision_fingerprint == batch.selected_decision_fingerprint
+            )
+            if (
+                len(predecessors) != 1
+                or type(predecessors[0].prepared.request) is not CompleteDeliveryBatchV2
+            ):
+                raise ValueError("genesis cohort selected V4 predecessor is absent")
+            predecessor = predecessors[0]
+            prior = predecessor.prepared.request
+            prior_evidence = cut_by_command.get(prior.identity.command_id)
+            if (
+                prior.authentication.applicability_schema
+                != "chiplog.composition.h1-completion-issuance.v4"
+                or prior_evidence is None
+                or not prior_evidence.materialized
+                or prior_evidence.decision_id != predecessor.decision_id
+                or prior_evidence.decision_fingerprint != predecessor.decision_fingerprint
+                or batch.complete_records[0].canonical_bytes
+                != prepare_delivery_work_genesis(batch.selected_source).canonical_bytes()
+            ):
+                raise ValueError("genesis cohort selected V4 predecessor differs")
+            issuance = decode_h1_completion_issuance(prior)
+            cohort = H1CompletionInventoryCohort(
+                issuance.assembly.original_completion_request.run.run_id,
+                {
+                    record.record_id: (
+                        record.owner,
+                        record.schema_id,
+                        record.canonical_bytes,
+                        record.fingerprint,
+                    )
+                    for record in batch.complete_records
+                },
+            )
+            if len(cohort.members) != 1:
+                raise ValueError("genesis cohort has wrong member count")
             completion_commands.add(evidence.command_id)
             for record_id in cohort.members:
                 if record_id in cohorts:

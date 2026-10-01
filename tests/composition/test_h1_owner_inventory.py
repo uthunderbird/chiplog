@@ -13,6 +13,11 @@ import pytest
 from chiplog.capabilities.agent_loop.completion_owner_record_contracts import (
     DELIVERY_ACCEPTANCE_SCHEMA,
 )
+from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+    DeliveryWorkSourceMemberV1,
+    DeliveryWorkSourceV1,
+    prepare_delivery_work_genesis,
+)
 from chiplog.capabilities.agent_loop.execution_recovery_observations import (
     ExecutionTerminalManifest,
 )
@@ -143,8 +148,7 @@ async def test_synthetic_completion_leaf_cohort_decodes_members_as_run_scoped() 
             cohort,
         )
         for record in fixture.batch.complete_records
-        if (record.owner, record.schema_id)
-        in completion_pairs
+        if (record.owner, record.schema_id) in completion_pairs
     ]
 
     assert decoded
@@ -192,6 +196,76 @@ async def test_completion_v3_run_must_match_the_reconciled_cohort_run() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delivery_work_genesis_decodes_only_in_its_parent_v4_run_cohort() -> None:
+    """A materialized GENESIS record retains the predecessor completion Run."""
+    fixture = await accepted_completion_fixture("v3", "nonempty")
+    records = fixture.batch.complete_records
+
+    def source_member(owner: str, record_kind: str):
+        return next(
+            record
+            for record in records
+            if (record.owner, record.record_kind) == (owner, record_kind)
+        )
+
+    def member(owner: str, record_kind: str) -> DeliveryWorkSourceMemberV1:
+        record = source_member(owner, record_kind)
+        return DeliveryWorkSourceMemberV1(
+            owner=record.owner,
+            record_kind=record.record_kind,
+            record_id=record.record_id,
+            schema_id=record.schema_id,
+            canonical_record_bytes=record.canonical_bytes,
+            fingerprint=record.fingerprint,
+        )
+
+    source = DeliveryWorkSourceV1(
+        tenant_id=fixture.batch.identity.tenant_id,
+        intent_id=source_member("effects", "ExternalActionIntent").record_id,
+        selected_decision_id="selected-v4",
+        selected_decision_fingerprint="a" * 64,
+        terminal_run=member("agent_loop", "Run"),
+        terminal_manifest=member("agent_loop", "TERMINAL_MANIFEST"),
+        intent=member("effects", "ExternalActionIntent"),
+    )
+    genesis = prepare_delivery_work_genesis(source)
+    cohort = H1CompletionInventoryCohort(
+        fixture.assembly.original_completion_request.run.run_id,
+        {
+            genesis.record_id: (
+                "agent_loop",
+                genesis.schema_id,
+                genesis.canonical_bytes(),
+                hashlib.sha256(genesis.canonical_bytes()).hexdigest(),
+            )
+        },
+    )
+    item = H1RawInventoryItem(
+        "PHYSICAL",
+        "records/" + genesis.record_id,
+        fixture.batch.identity.tenant_id,
+        "agent_loop",
+        genesis.schema_id,
+        "DELIVERY_WORK_STATE",
+        genesis.record_id,
+        hashlib.sha256(genesis.canonical_bytes()).hexdigest(),
+        genesis.canonical_bytes(),
+    )
+
+    decoded = decode_h1_completion_scope(item, cohort)
+
+    assert decoded.identities[1] == H1ScopeKey(
+        fixture.batch.identity.tenant_id,
+        "run",
+        fixture.assembly.original_completion_request.run.run_id,
+        None,
+    )
+
+    with pytest.raises(H1OwnerInventoryFailure, match="CORRUPT"):
+        decode_h1_completion_scope(replace(item, raw=b"{}"), cohort)
+
+
+@pytest.mark.asyncio
 async def test_generic_completion_producer_batch_writes_through_test_local_registry(
     tmp_path: Path,
 ) -> None:
@@ -213,7 +287,7 @@ async def test_generic_completion_producer_batch_writes_through_test_local_regis
             self.resulting: str | None = None
 
         def verify(
-            self, candidate: object, mode: PublicationVerificationMode
+            self, candidate: object, mode: PublicationVerificationMode, _connection: object
         ) -> VerifiedOwnerPublication:
             assert candidate == guarded
             self.modes.append(mode)

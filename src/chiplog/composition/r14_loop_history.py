@@ -93,7 +93,10 @@ from chiplog.composition.r14_fanout_records import (
     physical_command,
 )
 from chiplog.composition.r14_h1_workspace_issuance import verify_h1_original_workspace
-from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
+from chiplog.platform._owner_publication_contracts import (
+    CompleteDeliveryBatchV2,
+    DeliveryWorkGenesisBatchV1,
+)
 from chiplog.platform._sqlite import PhysicalPublicationCommand
 from chiplog.platform.authority_checkpoint import (
     AuthorityCheckpointRefV1,
@@ -443,6 +446,23 @@ def _read_call_history(
                 )
                 expected_ids: set[str] = set()
                 expected_publications: set[tuple[str, str]] = set()
+                for owner_decision in runtime._owner_decisions().snapshot().decisions:
+                    owner_request = owner_decision.prepared.request
+                    if not isinstance(owner_request, DeliveryWorkGenesisBatchV1):
+                        continue
+                    owner_command = runtime._owner_command(owner_decision)
+                    state = inspect_publication(
+                        connection, owner_command, owner_decision.tenant_commit_sequence
+                    )
+                    if state == "CONFLICT" or (state == "ABSENT" and not selected_only):
+                        raise ValueError("selected delivery-work genesis physical state differs")
+                    if state == "COMPLETE":
+                        expected_ids.update(
+                            row.record_id for row in owner_command.records if row.owner == OWNER
+                        )
+                        expected_publications.add(
+                            (owner_command.operation_kind, owner_command.idempotency_key)
+                        )
                 records: list[RunRecord] = []
                 mixed_records: list[RunRecord | ExecutionRunRecord] = []
                 latest: dict[str, RunRecord | ExecutionRunRecord] = {}
@@ -1103,6 +1123,32 @@ def validate_selected_h1_completions(runtime: R14PlanningRuntime) -> None:
         except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
             raise LoopIntegrityError(
                 f"operation=startup_h1_completion tenant={runtime._tenant_id} "
+                f"record_id={batch.identity.command_id}"
+            ) from error
+
+
+def validate_selected_delivery_work_genesis(runtime: R14PlanningRuntime) -> None:
+    """Reject partial or foreign GENESIS before startup owner recovery writes SQL."""
+    for decision in runtime._owner_decisions().snapshot().decisions:
+        batch = decision.prepared.request
+        if not isinstance(batch, DeliveryWorkGenesisBatchV1):
+            continue
+        try:
+            if batch.operation != "agent_loop.delivery_work.genesis.v1":
+                raise ValueError("unknown delivery-work genesis operation")
+            command = runtime._owner_command(decision)
+            with read_connection(runtime._database) as connection:
+                state = inspect_publication(connection, command, decision.tenant_commit_sequence)
+                subject_id = batch.complete_records[0].record_id.removesuffix("g0")
+                occupied = connection.execute(
+                    "SELECT 1 FROM records WHERE tenant_id=? AND record_id=?",
+                    (batch.identity.tenant_id, subject_id + "g1"),
+                ).fetchone()
+            if state == "CONFLICT" or occupied is not None:
+                raise ValueError("selected delivery-work genesis has corrupt physical members")
+        except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
+            raise LoopIntegrityError(
+                f"operation=startup_delivery_work_genesis tenant={runtime._tenant_id} "
                 f"record_id={batch.identity.command_id}"
             ) from error
 

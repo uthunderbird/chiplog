@@ -273,6 +273,85 @@ class _Scan:
     materialized: frozenset[str]
 
 
+def _scan_entries(
+    entries: tuple[tuple[str, str | None, bytes], ...],
+    tenant: str,
+    operation: str,
+    record: str,
+) -> _Scan:
+    """Strictly decode one already captured tenant journal image."""
+    try:
+        selected: dict[str, SelectedOwnerDecision] = {}
+        materialized: set[str] = set()
+        predecessor: str | None = None
+        for entry_id, entry_predecessor, payload in entries:
+            if (
+                not isinstance(entry_id, str)
+                or (entry_predecessor is not None and not isinstance(entry_predecessor, str))
+                or not isinstance(payload, bytes)
+                or entry_predecessor != predecessor
+                or entry_id
+                != hashlib.sha256(
+                    (predecessor or "GENESIS").encode() + b"\x00" + payload
+                ).hexdigest()
+            ):
+                raise ValueError("journal prefix or predecessor differs")
+            entry = _decode(payload)
+            if _canonical(entry) != payload:
+                raise ValueError("noncanonical journal entry")
+            if isinstance(entry, (_Selected, _SelectedV2, _SelectedV3)):
+                _validate_selected_envelope(entry)
+                request = entry.request
+                if isinstance(entry, _SelectedV3):
+                    _validate_v3_selected_predecessor(entry.delivery_work_genesis_binding, selected)
+                _validate_bytes(request)
+                _validate_successor(request, selected, materialized)
+                command = request.identity.command_id
+                if request.identity.tenant_id != tenant or command in selected:
+                    raise ValueError("foreign tenant or duplicate selected command")
+                if (
+                    request.expected.tenant_id != tenant
+                    or entry.predecessor_commitment
+                    != request.expected.expected_materialization_commitment
+                    or request.expected.tenant_frontier == 2**64 - 1
+                ):
+                    raise ValueError("inconsistent selected predecessor or exhausted frontier")
+                selected[command] = SelectedOwnerDecision(
+                    PreparedOwnerPublication(
+                        request,
+                        entry.issuance_id,
+                        entry.fence_generation,
+                        entry.fence_frontier,
+                        entry.predecessor_commitment,
+                        entry.h1_delivery_binding if isinstance(entry, _SelectedV2) else None,
+                        entry.delivery_work_genesis_binding
+                        if isinstance(entry, _SelectedV3)
+                        else None,
+                    ),
+                    entry_id,
+                    entry_id,
+                    hashlib.sha256(payload).hexdigest(),
+                    entry.resulting_commitment,
+                    request.expected.tenant_frontier + 1,
+                )
+            else:
+                decision = selected.get(entry.command_id)
+                if (
+                    entry.tenant_id != tenant
+                    or decision is None
+                    or entry.command_id in materialized
+                    or entry.decision_id != decision.decision_id
+                    or entry.decision_fingerprint != decision.decision_fingerprint
+                    or entry.resulting_commitment != decision.resulting_commitment
+                ):
+                    raise ValueError("orphan, rival or duplicate materialization marker")
+                materialized.add(entry.command_id)
+            predecessor = entry_id
+        return _Scan(entries[-1][0] if entries else None, selected, frozenset(materialized))
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+        raise OwnerJournalIntegrityError(operation, tenant, record) from error
+
+
 @dataclass(frozen=True)
 class OwnerJournalSnapshot:
     """Complete authenticated journal cut, including pending selected decisions.
@@ -285,6 +364,16 @@ class OwnerJournalSnapshot:
     head: str | None
     decisions: tuple[SelectedOwnerDecision, ...]
     materialized_command_ids: frozenset[str]
+
+
+def snapshot_from_captured_entries(
+    entries: tuple[tuple[str, str | None, bytes], ...], tenant_id: str
+) -> OwnerJournalSnapshot:
+    """Return the strict snapshot of immutable, caller-captured journal entries."""
+    scan = _scan_entries(entries, tenant_id, "captured_snapshot", "entries")
+    return OwnerJournalSnapshot(
+        tenant_id, scan.head, tuple(scan.selected.values()), scan.materialized
+    )
 
 
 class IndependentOwnerDecisionJournal:
@@ -310,7 +399,7 @@ class IndependentOwnerDecisionJournal:
     def _scan(self, operation: str, record: str) -> _Scan:
         try:
             entries = self._raw.entries()
-            return self._scan_entries(entries, operation, record)
+            return _scan_entries(entries, self._tenant, operation, record)
         except OwnerJournalIntegrityError:
             raise
         except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
@@ -322,65 +411,7 @@ class IndependentOwnerDecisionJournal:
         operation: str,
         record: str,
     ) -> _Scan:
-        try:
-            selected: dict[str, SelectedOwnerDecision] = {}
-            materialized: set[str] = set()
-            for record, _, payload in entries:
-                entry = _decode(payload)
-                if _canonical(entry) != payload:
-                    raise ValueError("noncanonical journal entry")
-                if isinstance(entry, (_Selected, _SelectedV2, _SelectedV3)):
-                    _validate_selected_envelope(entry)
-                    request = entry.request
-                    if isinstance(entry, _SelectedV3):
-                        _validate_v3_selected_predecessor(
-                            entry.delivery_work_genesis_binding, selected
-                        )
-                    _validate_bytes(request)
-                    _validate_successor(request, selected, materialized)
-                    command = request.identity.command_id
-                    if request.identity.tenant_id != self._tenant or command in selected:
-                        raise ValueError("foreign tenant or duplicate selected command")
-                    if (
-                        request.expected.tenant_id != self._tenant
-                        or entry.predecessor_commitment
-                        != request.expected.expected_materialization_commitment
-                        or request.expected.tenant_frontier == 2**64 - 1
-                    ):
-                        raise ValueError("inconsistent selected predecessor or exhausted frontier")
-                    selected[command] = SelectedOwnerDecision(
-                        PreparedOwnerPublication(
-                            request,
-                            entry.issuance_id,
-                            entry.fence_generation,
-                            entry.fence_frontier,
-                            entry.predecessor_commitment,
-                            entry.h1_delivery_binding if isinstance(entry, _SelectedV2) else None,
-                            entry.delivery_work_genesis_binding
-                            if isinstance(entry, _SelectedV3)
-                            else None,
-                        ),
-                        record,
-                        record,
-                        hashlib.sha256(payload).hexdigest(),
-                        entry.resulting_commitment,
-                        request.expected.tenant_frontier + 1,
-                    )
-                else:
-                    decision = selected.get(entry.command_id)
-                    if (
-                        entry.tenant_id != self._tenant
-                        or decision is None
-                        or entry.command_id in materialized
-                        or entry.decision_id != decision.decision_id
-                        or entry.decision_fingerprint != decision.decision_fingerprint
-                        or entry.resulting_commitment != decision.resulting_commitment
-                    ):
-                        raise ValueError("orphan, rival or duplicate materialization marker")
-                    materialized.add(entry.command_id)
-            return _Scan(entries[-1][0] if entries else None, selected, frozenset(materialized))
-        except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
-            raise OwnerJournalIntegrityError(operation, self._tenant, record) from error
+        return _scan_entries(entries, self._tenant, operation, record)
 
     def lookup(self, tenant_id: str, command_id: str) -> SelectedOwnerDecision | None:
         if tenant_id != self._tenant:

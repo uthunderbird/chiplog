@@ -35,6 +35,35 @@ def _digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+@pytest.mark.parametrize("phase", ("PRE_SEAL", "POST_SEAL"))
+def test_unclaimed_delivery_work_genesis_publication_is_corrupt(phase: str) -> None:
+    with pytest.raises(H1OwnerCutFailure) as caught:
+        reconcile_h1_owner_cut(
+            tenant="tenant",
+            raw_entries=(),
+            publications=(
+                OwnerJournalSqlPublication(
+                    "agent_loop.delivery_work.genesis.v1",
+                    "unclaimed-genesis",
+                    _digest(b"command"),
+                    1,
+                    ("delivery-work:unclaimed:g0",),
+                ),
+            ),
+            records=(
+                OwnerJournalSqlRecord(
+                    "delivery-work:unclaimed:g0",
+                    "agent_loop",
+                    "chiplog.delivery-work.subject.v1",
+                    b"unclaimed",
+                    1,
+                ),
+            ),
+            phase=phase,
+        )
+    assert caught.value.code == "CORRUPT"
+
+
 def _invocation() -> InvocationProofRef:
     return InvocationProofRef(
         issuance_id="fixture-issued",
@@ -199,6 +228,7 @@ def test_registry_covers_every_registered_owner_envelope_variant() -> None:
             "COMPLETE_DELIVERY_ATOMIC",
             "COMPLETE_DELIVERY_ATOMIC_V2",
             "REJECTED_COMPLETION_ATOMIC_V1",
+            "DELIVERY_WORK_GENESIS_V1",
         }
     )
 

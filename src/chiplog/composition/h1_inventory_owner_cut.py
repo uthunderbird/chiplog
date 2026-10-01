@@ -30,6 +30,7 @@ from chiplog.platform.owner_decision_journal import (
     IndependentOwnerDecisionJournal,
     OwnerJournalIntegrityError,
     OwnerJournalSnapshot,
+    snapshot_from_captured_entries,
 )
 from chiplog.platform.owner_publications import source_commands
 
@@ -46,10 +47,15 @@ OWNER_BATCH_KINDS = frozenset(
         "COMPLETE_DELIVERY_ATOMIC",
         "COMPLETE_DELIVERY_ATOMIC_V2",
         "REJECTED_COMPLETION_ATOMIC_V1",
+        "DELIVERY_WORK_GENESIS_V1",
     }
 )
 OWNER_PUBLICATION_OPERATIONS = frozenset(
-    (*get_args(BrokerOperation), "effects.publish_plan_effect.v2")
+    (
+        *get_args(BrokerOperation),
+        "effects.publish_plan_effect.v2",
+        "agent_loop.delivery_work.genesis.v1",
+    )
 )
 _REGISTERED_PUBLICATION: TypeAdapter[RegisteredPublication] = TypeAdapter(RegisteredPublication)
 
@@ -136,103 +142,11 @@ def _corrupt(locator: str) -> H1OwnerCutFailure:
 def _parse_raw_entries(
     entries: tuple[tuple[str, str | None, bytes], ...], tenant: str
 ) -> tuple[dict[str, _ParsedDecision], frozenset[str]]:
-    selected: dict[str, _ParsedDecision] = {}
-    materialized: set[str] = set()
-    for index, (entry_id, predecessor, raw) in enumerate(entries):
-        locator = f"owner-journal/{index}"
-        if not isinstance(entry_id, str) or (
-            predecessor is not None and not isinstance(predecessor, str)
-        ):
-            raise _corrupt(locator)
-        if not isinstance(raw, bytes):
-            raise _corrupt(locator)
-        try:
-            decoded = json.loads(raw)
-        except (TypeError, ValueError, json.JSONDecodeError) as error:
-            raise _corrupt(locator) from error
-        if not isinstance(decoded, dict) or _canonical(decoded) != raw:
-            raise _corrupt(locator)
-        if decoded.get("schema_id") != "chiplog.owner-decision.v1":
-            raise _corrupt(locator)
-        kind = decoded.get("kind")
-        if kind == "SELECTED":
-            try:
-                request = _REGISTERED_PUBLICATION.validate_json(_canonical(decoded["request"]))
-            except (KeyError, TypeError, ValidationError) as error:
-                raise _corrupt(locator) from error
-            command_id = request.identity.command_id
-            if (
-                request.kind not in OWNER_BATCH_KINDS
-                or request.identity.tenant_id != tenant
-                or request.expected.tenant_id != tenant
-                or command_id in selected
-                or not isinstance(decoded.get("issuance_id"), str)
-                or not isinstance(decoded.get("fence_generation"), str)
-                or type(decoded.get("fence_frontier")) is not int
-                or not isinstance(decoded.get("predecessor_commitment"), str)
-                or not isinstance(decoded.get("resulting_commitment"), str)
-            ):
-                raise _corrupt(locator)
-            if selected:
-                if set(selected) - materialized:
-                    raise _corrupt(locator)
-                previous = next(reversed(selected.values()))
-                frontier = request.expected.tenant_frontier
-                if frontier < previous.evidence.tenant_commit_sequence or (
-                    frontier == previous.evidence.tenant_commit_sequence
-                    and request.expected.expected_materialization_commitment
-                    != previous.resulting_commitment
-                ):
-                    raise _corrupt(locator)
-            source: tuple[OwnerCommandBytes, ...] = source_commands(request)
-            members: tuple[OwnerRecordBytes, ...] = request.complete_records
-            source_has_bad_fingerprint = any(
-                hashlib.sha256(item.canonical_bytes).hexdigest() != item.fingerprint
-                for item in source
-            )
-            members_have_bad_fingerprint = any(
-                hashlib.sha256(item.canonical_bytes).hexdigest() != item.fingerprint
-                for item in members
-            )
-            if (
-                source_has_bad_fingerprint
-                or members_have_bad_fingerprint
-                or len({item.record_id for item in members}) != len(members)
-            ):
-                raise _corrupt(locator)
-            selected[command_id] = _ParsedDecision(
-                H1OwnerDecision(
-                    entry_id,
-                    hashlib.sha256(raw).hexdigest(),
-                    command_id,
-                    request.kind,
-                    request.expected.tenant_frontier + 1,
-                    tuple(item.canonical_bytes for item in source),
-                    tuple(item.canonical_bytes for item in members),
-                    False,
-                ),
-                request,
-                str(decoded["resulting_commitment"]),
-            )
-        elif kind == "MATERIALIZED":
-            raw_command_id = decoded.get("command_id")
-            if not isinstance(raw_command_id, str):
-                raise _corrupt(locator)
-            command_id = str(raw_command_id)
-            decision = selected.get(command_id)
-            if (
-                decision is None
-                or command_id in materialized
-                or decoded.get("tenant_id") != tenant
-                or decoded.get("decision_id") != decision.evidence.decision_id
-                or decoded.get("decision_fingerprint") != decision.evidence.decision_fingerprint
-                or decoded.get("resulting_commitment") != decision.resulting_commitment
-            ):
-                raise _corrupt(locator)
-            materialized.add(command_id)
-        else:
-            raise _corrupt(locator)
-    return selected, frozenset(materialized)
+    try:
+        snapshot = snapshot_from_captured_entries(entries, tenant)
+        return _parsed_snapshot(snapshot, tenant), snapshot.materialized_command_ids
+    except OwnerJournalIntegrityError as error:
+        raise _corrupt("owner-journal") from error
 
 
 def _validate_sql_membership(
@@ -512,6 +426,10 @@ def reconcile_h1_owner_cut(
     selected, materialized = _parse_raw_entries(raw_entries, tenant)
     sql = _validate_sql_membership(publications, records)
     decisions = _reconcile_materialized(selected, materialized, sql, records)
+    claimed = {decision.tenant_commit_sequence for decision in decisions}
+    for sequence, publication in sql.items():
+        if publication.operation in OWNER_PUBLICATION_OPERATIONS and sequence not in claimed:
+            raise _corrupt(f"owner-publication/unclaimed/{sequence}")
     if phase == "HISTORICAL":
         raise H1OwnerCutFailure("UNSUPPORTED", "HISTORICAL_OWNER")
     return H1OwnerCut(decisions, materialized)

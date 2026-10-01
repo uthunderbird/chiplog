@@ -17,6 +17,11 @@ from chiplog.capabilities.agent_loop.completion_owner_record_contracts import (
     decode_completion_canonical_member,
 )
 from chiplog.capabilities.agent_loop.delivery_preparation import DeliveryAcceptanceProposal
+from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+    DELIVERY_WORK_SCHEMA,
+    DeliveryWorkStateV1,
+    prepare_delivery_work_genesis,
+)
 from chiplog.capabilities.agent_loop.execution_history_contracts import ExecutionRunRecordV3
 from chiplog.capabilities.agent_loop.execution_recovery_observations import (
     ExecutionTerminalManifest,
@@ -82,6 +87,13 @@ REGISTRATIONS: tuple[H1LeafRegistration, ...] = (
     H1LeafRegistration("PHYSICAL", _AGENT_LOOP, DELIVERY_ACCEPTANCE_SCHEMA, None, "completion-v2"),
     H1LeafRegistration("PHYSICAL", _AGENT_LOOP, _TERMINAL_MANIFEST_SCHEMA, None, "completion-v2"),
     H1LeafRegistration("PHYSICAL", _AGENT_LOOP, _TERMINAL_RUN_V3_SCHEMA, None, "completion-v3"),
+    H1LeafRegistration(
+        "PHYSICAL",
+        _AGENT_LOOP,
+        DELIVERY_WORK_SCHEMA,
+        "DELIVERY_WORK_STATE",
+        "delivery-work-genesis-v1",
+    ),
     *(
         H1LeafRegistration("PHYSICAL", _AGENT_LOOP, schema, None, "post-terminal-v1")
         for schema in _WORK_SCHEMAS
@@ -215,6 +227,21 @@ def _scoped_effects(item: H1RawInventoryItem) -> None:
         raise _failure(item, "CORRUPT") from error
 
 
+def _delivery_work_genesis(item: H1RawInventoryItem) -> None:
+    try:
+        record = DeliveryWorkStateV1.model_validate_json(item.raw)
+        expected = prepare_delivery_work_genesis(record.selected_source)
+    except ValueError as error:
+        raise _failure(item, "CORRUPT") from error
+    if (
+        record.canonical_bytes() != item.raw
+        or record != expected
+        or record.record_id != item.record_id
+        or record.schema_id != item.schema
+    ):
+        raise _failure(item, "CORRUPT")
+
+
 def decode_h1_completion_scope(
     item: H1RawInventoryItem, cohort: H1CompletionInventoryCohort | None
 ) -> H1DecodedInventoryItem:
@@ -238,6 +265,8 @@ def decode_h1_completion_scope(
         _effects(item)
     elif item.schema == H1_SCOPED_INTENT_SCHEMA:
         _scoped_effects(item)
+    elif item.schema == DELIVERY_WORK_SCHEMA:
+        _delivery_work_genesis(item)
     else:  # pragma: no cover - closed registrations above
         raise _failure(item, "UNSUPPORTED")
     record = H1ScopeKey(item.tenant, "record", item.record_id or "", item.fingerprint)

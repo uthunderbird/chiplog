@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+    DELIVERY_WORK_GENESIS_COMMAND_SCHEMA,
+    DELIVERY_WORK_OWNER,
+    DELIVERY_WORK_SCHEMA,
+    PrepareDeliveryWorkGenesisV1,
+    prepare_delivery_work_genesis,
+)
 from chiplog.composition.common_cli_execution_runtime import (
     open_installed_h1_scoped_v22_runtime,
 )
@@ -18,7 +26,14 @@ from chiplog.composition.h1_delivery_work_sources import (
 from chiplog.composition.h1_historical_selected_sources import bind_selected_h1_completion
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_scoped_delivery_authority import H1ScopedDeliveryAuthorityReader
-from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
+from chiplog.platform._owner_publication_contracts import (
+    CompleteDeliveryBatchV2,
+    DeliveryWorkGenesisBatchV1,
+    OwnerCommandBytes,
+    OwnerRecordBytes,
+    PublicationIdentity,
+)
+from chiplog.platform.authority_reads import capture_authority_storage_state
 from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
 from tests.support.h1_scoped_first_b import scoped_resources, write_scoped_pins
 from tests.support.h1_v3_recovery import (
@@ -172,6 +187,54 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
             assert replay.disposition == "EXACT_REPLAY"
             assert calls.count("effects.prepare_h1_scoped_delivery_v2") == 1
 
+            source = delivery_work.owner_source()
+            genesis_state = prepare_delivery_work_genesis(source)
+            genesis_command = PrepareDeliveryWorkGenesisV1(
+                selected_decision_id=decision.decision_id,
+                selected_decision_fingerprint=decision.decision_fingerprint,
+                selected_source=source,
+            )
+            genesis_record = OwnerRecordBytes(
+                owner=DELIVERY_WORK_OWNER,
+                record_kind="DELIVERY_WORK_STATE",
+                record_id=genesis_state.record_id,
+                schema_id=DELIVERY_WORK_SCHEMA,
+                canonical_bytes=genesis_state.canonical_bytes(),
+                fingerprint=hashlib.sha256(genesis_state.canonical_bytes()).hexdigest(),
+            )
+            genesis = DeliveryWorkGenesisBatchV1(
+                identity=PublicationIdentity(
+                    tenant_id=batch.identity.tenant_id,
+                    command_id="delivery-work-genesis:" + source.intent_id,
+                    command_fingerprint=hashlib.sha256(
+                        ("delivery-work-genesis:" + source.intent_id).encode()
+                    ).hexdigest(),
+                    canonicalization_version="chiplog.owner-publication.v1",
+                ),
+                authentication=batch.authentication,
+                expected=batch.expected.model_copy(
+                    update={
+                        "tenant_frontier": decision.tenant_commit_sequence,
+                        "expected_materialization_commitment": decision.resulting_commitment,
+                    }
+                ),
+                selected_decision_id=decision.decision_id,
+                selected_decision_fingerprint=decision.decision_fingerprint,
+                selected_source=source,
+                genesis_command=OwnerCommandBytes(
+                    owner=DELIVERY_WORK_OWNER,
+                    schema_id=DELIVERY_WORK_GENESIS_COMMAND_SCHEMA,
+                    canonical_bytes=genesis_command.canonical_bytes(),
+                    fingerprint=hashlib.sha256(genesis_command.canonical_bytes()).hexdigest(),
+                ),
+                complete_records=(genesis_record,),
+                complete_batch_fingerprint=hashlib.sha256(b"delivery-work-genesis").hexdigest(),
+            )
+            genesis_coordinator = runtime._h1_delivery_work_publication_coordinator
+            committed_genesis = await genesis_coordinator.commit(genesis)
+            assert committed_genesis.kind == "COMMITTED"
+            assert (await genesis_coordinator.commit(genesis)).kind == "EXACT_REPLAY"
+            assert capture_authority_storage_state(slot.database_path)[0]
     with _open_installed_h1_launch(slot) as reopened_launch:
         async with open_installed_h1_scoped_v22_runtime(
             reopened_launch, resources=scoped_resources(tmp_path)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -121,13 +122,17 @@ class H1LivePublicationAuthority:
         self._runtime = runtime
 
     def verify(
-        self, command: PhysicalPublicationCommand, mode: PublicationVerificationMode
+        self,
+        command: PhysicalPublicationCommand,
+        mode: PublicationVerificationMode,
+        connection: sqlite3.Connection | None = None,
     ) -> VerifiedOwnerPublication:
         """Resolve only the retained issued or selected H1 batch at the physical cut."""
         from chiplog.composition.h1_completion_issuance import h1_completion_exchange
         from chiplog.composition.r14_execution_completion_records import complete_acceptance_command
         from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 
+        del connection
         runtime = self._runtime
         if self._revoked:
             raise StoreAdmissionError("live H1 publication authority is revoked")
@@ -488,10 +493,9 @@ class H1LivePublicationAuthority:
 
         try:
             if type(issuance) in (H1CompletionIssuanceV3, H1CompletionIssuanceV4):
-                raw = (
-                    cast(Any, issuance)
-                    .effects_call.request.retained_origin.initialization_envelope_bytes
-                )
+                raw = cast(
+                    Any, issuance
+                ).effects_call.request.retained_origin.initialization_envelope_bytes
             else:
                 effects = issuance.assembly.ordered_effects  # type: ignore[attr-defined]
                 if type(effects) is not tuple or len(effects) != 1:
@@ -655,9 +659,7 @@ class H1LivePublicationAuthority:
                 launch.assert_current()
                 slot = launch._slot
                 genesis_digest = launch.custody._binding._genesis
-                first_request = cast(
-                    Any, value.assembly.original_completion_request
-                )
+                first_request = cast(Any, value.assembly.original_completion_request)
                 principal_id = first_request.source.selected_admitted_input.principal_id
                 if not isinstance(principal_id, str) or not principal_id:
                     raise ValueError("issued H1 completion principal differs")

@@ -23,6 +23,7 @@ from chiplog.composition.h1_live_completion_enrollment import (
     _H1LiveCompletionEnrollment,
 )
 from chiplog.composition.h1_live_publication_authority import H1LivePublicationAuthority
+from chiplog.composition.h1_publication_resolver_mux import H1PublicationResolverMux
 from chiplog.composition.h1_runtime_preissuance_port import _H1RuntimePreissuancePort
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._sqlite import EventAppender
@@ -120,8 +121,11 @@ async def test_installed_h1_mounts_exact_store_resolver_before_event_appender(
             coordinator = private_runtime._h1_live_publication_coordinator
 
             assert type(authority) is H1LivePublicationAuthority
-            assert observed_resolvers == [authority]
-            assert private_runtime._appender._materializer._owner_publication_resolver is authority
+            resolver = private_runtime._h1_publication_resolver_mux
+            assert type(resolver) is H1PublicationResolverMux
+            assert observed_resolvers == [resolver]
+            assert private_runtime._appender._materializer._owner_publication_resolver is resolver
+            assert resolver._completion is authority
             assert journal._root_issuer is authority
             assert coordinator._authority is authority
             assert coordinator._appender is runtime._appender
@@ -158,7 +162,8 @@ async def test_installed_h1_binds_root_only_after_the_runtime_graph_is_mounted(
         assert runtime._h1_live_completion_mount is installation
         assert runtime._h1_live_publication_authority is issuer
         assert runtime._h1_live_publication_coordinator._authority is issuer
-        assert runtime._appender._materializer._owner_publication_resolver is issuer
+        resolver = runtime._appender._materializer._owner_publication_resolver
+        assert type(resolver) is H1PublicationResolverMux and resolver._completion is issuer
         assert runtime._appender._materializer._writer_token is not None
         runtime._authority_gate().require_held()
         original_bind(self, issuer, installation)

@@ -37,6 +37,7 @@ from chiplog.capabilities.agent_loop.delivery_contracts import (
     OriginSelection,
     ProviderRecipient,
 )
+from chiplog.capabilities.agent_loop.delivery_work_contracts import DELIVERY_WORK_SCHEMA
 from chiplog.capabilities.agent_loop.execution_initialization_contracts import (
     ExecutionInitializationCut,
     PrepareInboxExecution,
@@ -234,7 +235,8 @@ class _H1LiveCompletionMount:
             installed_journal._journal.authority_gate is not gate
             or installed_journal._mount.authority_gate is not gate
             or getattr(store, "authority_gate", None) is not gate
-            or getattr(store, "_owner_publication_resolver", None) is not issuer
+            or getattr(getattr(store, "_owner_publication_resolver", None), "_completion", None)
+            is not issuer
         ):
             raise RuntimeError("live H1 root gate or store resolver differs")
         gate.require_held()
@@ -287,6 +289,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 (CONVERSATION_OWNER, ACCEPTED_ENTRY_SCHEMA),
                 ("effects", H1_LOCAL_INTENT_SCHEMA),
                 ("effects", H1_SCOPED_INTENT_SCHEMA),
+                (AGENT_LOOP_OWNER, DELIVERY_WORK_SCHEMA),
             )
         )
     )
@@ -2353,8 +2356,10 @@ async def _open_installed_h1_runtime(
     """Open the one enrolled H1 slot without bootstrap or caller-selected storage."""
     # These imports must remain local: the private port imports this module's
     # canonical runtime class and a module-level reciprocal import is cyclic.
+    from chiplog.composition.delivery_work_genesis_authority import DeliveryWorkGenesisAuthority
     from chiplog.composition.h1_launch_enrollment import InstalledH1Launch
     from chiplog.composition.h1_live_publication_authority import H1LivePublicationAuthority
+    from chiplog.composition.h1_publication_resolver_mux import H1PublicationResolverMux
     from chiplog.composition.h1_runtime_preissuance_port import _H1RuntimePreissuancePort
     from chiplog.platform.owner_publications import BrokerPublicationCoordinator
 
@@ -2371,6 +2376,8 @@ async def _open_installed_h1_runtime(
     recovery_journal: list[Any] = []
     recovery_mount: list[Any] = []
     authority = H1LivePublicationAuthority()
+    genesis_authority = DeliveryWorkGenesisAuthority()
+    resolver_mux = H1PublicationResolverMux(authority, genesis_authority)
     authority_gate: Any | None = None
     root_bound = False
 
@@ -2430,7 +2437,7 @@ async def _open_installed_h1_runtime(
             # This existing-only opener scans the complete authenticated
             # prefix under the exact runtime gate before it is retained.
             recovery_journal.append(H1PostSealRecoveryJournal.open_enrolled(mounted_recovery))
-            cast(Any, store)._mount_owner_publication_resolver(authority)
+            cast(Any, store)._mount_owner_publication_resolver(resolver_mux)
         except BaseException:
             for opened in recovery_journal:
                 opened.close()
@@ -2488,8 +2495,19 @@ async def _open_installed_h1_runtime(
         live_mount._bind_runtime(runtime)
         runtime._h1_live_completion_mount = live_mount  # type: ignore[attr-defined]
         runtime._h1_live_publication_authority = authority  # type: ignore[attr-defined]
+        runtime._h1_publication_resolver_mux = resolver_mux  # type: ignore[attr-defined]
         runtime._h1_live_publication_coordinator = BrokerPublicationCoordinator(  # type: ignore[attr-defined]
             runtime._appender, authority, runtime._owner_decisions()
+        )
+        from chiplog.composition.h1_delivery_work_sources import H1DeliveryWorkSources
+
+        runtime._h1_delivery_work_sources = H1DeliveryWorkSources(runtime)  # type: ignore[attr-defined]
+        genesis_authority._bind_installed_runtime(runtime)
+        runtime._h1_delivery_work_genesis_authority = genesis_authority  # type: ignore[attr-defined]
+        runtime._h1_delivery_work_publication_coordinator = (  # type: ignore[attr-defined]
+            BrokerPublicationCoordinator(
+                runtime._appender, genesis_authority, runtime._owner_decisions()
+            )
         )
         if authority_gate is None:
             raise RuntimeError("installed live H1 root gate is absent")
@@ -2802,6 +2820,10 @@ async def _open_installed_h1_runtime(
                     delattr(runtime, "_h1_preseal_native_source")
                     revoke_and_unbind_live_authority()
                     for name in (
+                        "_h1_delivery_work_publication_coordinator",
+                        "_h1_delivery_work_genesis_authority",
+                        "_h1_delivery_work_sources",
+                        "_h1_publication_resolver_mux",
                         "_h1_live_publication_coordinator",
                         "_h1_live_publication_authority",
                         "_h1_live_completion_mount",

@@ -275,7 +275,10 @@ class VerifiedOwnerPublication:
 
 class OwnerPublicationResolver(Protocol):
     def verify(
-        self, command: PhysicalPublicationCommand, mode: PublicationVerificationMode
+        self,
+        command: PhysicalPublicationCommand,
+        mode: PublicationVerificationMode,
+        connection: sqlite3.Connection,
     ) -> VerifiedOwnerPublication: ...
 
 
@@ -720,7 +723,7 @@ class SQLiteMaterializer:
         resolver = self._owner_publication_resolver
         if resolver is None:
             raise StoreAdmissionError("H1 publication resolver is not mounted")
-        verified = resolver.verify(command, mode)
+        verified = resolver.verify(command, mode, self._connection)
         if not isinstance(verified, VerifiedOwnerPublication):
             raise StoreAdmissionError("owner publication resolver returned an invalid proof")
         if not self._projection_matches(command, verified):

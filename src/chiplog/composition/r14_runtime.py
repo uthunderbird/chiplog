@@ -603,6 +603,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
         with self._authority_gate().hold():
             from chiplog.composition.r14_loop_history import (
                 validate_selected_cancellations,
+                validate_selected_delivery_work_genesis,
                 validate_selected_executions,
                 validate_selected_h1_completions,
             )
@@ -610,6 +611,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
             from chiplog.composition.r17_ingress_history import validate_selected_ingress
 
             validate_selected_h1_completions(self)
+            validate_selected_delivery_work_genesis(self)
             validate_selected_cancellations(self)
             validate_selected_executions(self)
             validate_selected_denials(self._owner_decisions().snapshot())

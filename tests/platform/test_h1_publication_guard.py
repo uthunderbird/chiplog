@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from chiplog.composition.h1_publication_resolver_mux import H1PublicationResolverMux
 from chiplog.platform._sqlite import (
     EventAppender,
     FenceAdvanceCommand,
@@ -279,7 +280,10 @@ class _Resolver:
         self.modes: list[PublicationVerificationMode] = []
 
     def verify(
-        self, command: PhysicalPublicationCommand, mode: PublicationVerificationMode
+        self,
+        command: PhysicalPublicationCommand,
+        mode: PublicationVerificationMode,
+        _connection: object,
     ) -> VerifiedOwnerPublication:
         self.modes.append(mode)
         return VerifiedOwnerPublication.from_command(
@@ -298,6 +302,26 @@ class _Observer:
 
     def publication_committed(self, command: PhysicalPublicationCommand) -> None:
         raise AssertionError("V2 must not publish through an observer")
+
+
+def test_h1_resolver_mux_dispatches_only_completion_and_genesis(tmp_path: Path) -> None:
+    store = SQLiteMaterializer(
+        tmp_path / "store.sqlite", record_contracts={"agent_loop": "chiplog.agent-loop.record.v1"}
+    )
+    completion, genesis = _Resolver(_command()), _Resolver(_command())
+    mux = H1PublicationResolverMux(completion, genesis)
+    genesis_command = _command(operation=DELIVERY_WORK_GENESIS, records=(_record("work"),))
+
+    mux.verify(_command(), "ABSENT", store._connection)
+    mux.verify(genesis_command, "ABSENT", store._connection)
+    with pytest.raises(StoreAdmissionError, match="not registered"):
+        mux.verify(
+            _command(operation="agent_loop.delivery_work.claim.v1"), "ABSENT", store._connection
+        )
+
+    assert completion.modes == ["ABSENT"]
+    assert genesis.modes == ["ABSENT"]
+    store.close()
 
 
 async def test_mounted_v2_verifier_runs_store_derived_absent_preselect_and_precommit_modes(
@@ -326,7 +350,10 @@ async def test_v2_precommit_reopens_selected_only_after_decision_guard(tmp_path:
 
     class Resolver(_Resolver):
         def verify(
-            self, candidate: PhysicalPublicationCommand, mode: PublicationVerificationMode
+            self,
+            candidate: PhysicalPublicationCommand,
+            mode: PublicationVerificationMode,
+            connection: object,
         ) -> VerifiedOwnerPublication:
             if mode == "PRECOMMIT":
                 self.modes.append(mode)
@@ -339,7 +366,7 @@ async def test_v2_precommit_reopens_selected_only_after_decision_guard(tmp_path:
                     expected_resulting="not-the-physical-result",
                     expected_commit_sequence=1,
                 )
-            return super().verify(candidate, mode)
+            return super().verify(candidate, mode, connection)
 
     store = SQLiteMaterializer(
         tmp_path / "store.sqlite", record_contracts={"agent_loop": "chiplog.agent-loop.record.v1"}
