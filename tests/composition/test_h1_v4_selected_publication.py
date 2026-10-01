@@ -11,6 +11,10 @@ from chiplog.composition.common_cli_execution_runtime import (
     open_installed_h1_scoped_v22_runtime,
 )
 from chiplog.composition.h1_completion_issuance import V4_SCHEMA, H1CompletionIssuanceV4
+from chiplog.composition.h1_delivery_work_sources import (
+    DeliveryWorkLocatorV1,
+    H1DeliveryWorkSources,
+)
 from chiplog.composition.h1_historical_selected_sources import bind_selected_h1_completion
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_scoped_delivery_authority import H1ScopedDeliveryAuthorityReader
@@ -102,7 +106,14 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
             )
             assert retained[0].batch == batch and retained[0].state == "CONSUMED"
             assert bind_selected_h1_completion(batch, runtime).decision == decision
-
+            delivery_work = H1DeliveryWorkSources(runtime).read_absent(
+                DeliveryWorkLocatorV1(issuance.effects_result.intent_result.intent.intent_id)
+            )
+            assert delivery_work.decision_id == decision.decision_id
+            assert (
+                delivery_work.intent.record_id
+                == issuance.effects_result.intent_result.intent.intent_id
+            )
             # The selected V4 envelope preserves a V2 scoped Effects exchange,
             # but its mutable authority must be reread from the independently
             # authenticated recovery prefix.  This is the only admissible
@@ -117,9 +128,7 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
                 original_fingerprint=request.original_driver_command_fingerprint(),
                 selected_seal=locator,
             )
-            authority = await authority_reader.read_reconstructed(
-                historical_b_capture=historical
-            )
+            authority = await authority_reader.read_reconstructed(historical_b_capture=historical)
             assert authority.clock[1] > 0
             assert (
                 authority.historical_projection.delivery.delivery_id
@@ -185,7 +194,4 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
             historical = bind_selected_h1_completion(batch, reopened)
             assert historical.decision == decision
             assert type(historical.issuance) is H1CompletionIssuanceV4
-            assert (
-                historical.issuance.canonical_bytes()
-                == batch.authentication.applicability_bytes
-            )
+            assert historical.issuance.canonical_bytes() == batch.authentication.applicability_bytes
