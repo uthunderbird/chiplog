@@ -25,7 +25,7 @@ from chiplog.capabilities.planning._planning import _PlanningPublication
 from chiplog.capabilities.planning._r8_authority import decode_trace
 from chiplog.composition.r16_effects import _decode_request, read_materialized_effects
 from chiplog.domain_primitives import TenantId
-from chiplog.platform._owner_publication_contracts import PlanEffectBatch
+from chiplog.platform._owner_publication_contracts import PlanEffectBatch, SelectedPlanEffectBatchV2
 from chiplog.platform.owner_publications import SelectedOwnerDecision
 
 if TYPE_CHECKING:
@@ -92,9 +92,32 @@ def _digest(raw: bytes) -> str:
 
 def _project(decision: SelectedOwnerDecision, tenant: str) -> _PlanningPublication:
     batch = decision.prepared.request
+    if isinstance(batch, SelectedPlanEffectBatchV2):
+        batch = original_plan_effect_batch(batch)
     if not isinstance(batch, PlanEffectBatch):
         raise ValueError("foreign or non-PlanEffect selection")
     return validate_plan_effect_records(batch, tenant, decision.tenant_commit_sequence)
+
+
+def original_plan_effect_batch(batch: SelectedPlanEffectBatchV2) -> PlanEffectBatch:
+    """Project the immutable six owner records; never hash admission rows as owner output."""
+    records = batch.original_records
+    return PlanEffectBatch(
+        identity=batch.identity,
+        authentication=batch.authentication,
+        expected=batch.expected,
+        planning_command=batch.planning_command,
+        effects_command=batch.effects_command,
+        complete_records=records,
+        complete_batch_fingerprint=_digest(
+            json.dumps(
+                [row.model_dump(mode="json") for row in records],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ),
+    )
 
 
 def validate_plan_effect_records(
@@ -372,7 +395,7 @@ def read_plan_effect_publications(
         publications = tuple(
             _project(decision, runtime._tenant_id)
             for decision in before.decisions
-            if isinstance(decision.prepared.request, PlanEffectBatch)
+            if isinstance(decision.prepared.request, (PlanEffectBatch, SelectedPlanEffectBatchV2))
         )
         return publications, cut.tenant_frontier
     except (ValueError, TypeError, KeyError) as error:

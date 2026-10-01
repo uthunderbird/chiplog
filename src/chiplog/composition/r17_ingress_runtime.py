@@ -19,16 +19,9 @@ from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import R17_CUSTODY_PRODUCTION_MANIFEST
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r14_runtime import R14PlanningRuntime
-from chiplog.composition.r17_admission_records import (
-    SCHEMA_CAPACITY,
-    SCHEMA_EPOCH,
-    SCHEMA_EPOCH_V2,
-    SCHEMA_READY,
-)
 from chiplog.composition.r17_ingress_authority import IngressAuthority
 from chiplog.composition.r17_ingress_history import (
     IngressHistory,
-    is_ingress,
     read_ingress_history,
 )
 from chiplog.composition.r17_ingress_registry import retained_cli_profile
@@ -81,11 +74,6 @@ def _descriptor(fd: int) -> Iterator[int]:
 class R17IngressRuntime(R14PlanningRuntime):
     _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = (
         *R14PlanningRuntime._record_schema_variants,
-        ("broker_ingress", "chiplog.ingress.authenticated-record.v2"),
-        ("broker_ingress", SCHEMA_EPOCH),
-        ("broker_ingress", SCHEMA_EPOCH_V2),
-        ("broker_ingress", SCHEMA_CAPACITY),
-        ("broker_ingress", SCHEMA_READY),
     )
     _record_contracts: ClassVar[dict[str, str]] = {
         **R14PlanningRuntime._record_contracts,
@@ -151,7 +139,10 @@ class R17IngressRuntime(R14PlanningRuntime):
                 self._source_sentinel(directory, sentinel, create=False)
                 return self._source_adapter
             selected = self._owner_decisions().snapshot()
-            if not sentinel_present and any(is_ingress(item) for item in selected.decisions):
+            if not sentinel_present and any(
+                item.prepared.request.operation.startswith("ingress.")
+                for item in selected.decisions
+            ):
                 raise ValueError("selected custody lost its retained source root sentinel")
             if sentinel_present:
                 self._source_sentinel(directory, sentinel, create=False)

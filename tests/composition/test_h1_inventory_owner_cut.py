@@ -194,6 +194,7 @@ def test_registry_covers_every_registered_owner_envelope_variant() -> None:
         == {
             "SINGLE_OWNER",
             "PLAN_EFFECT_ATOMIC",
+            "PLAN_EFFECT_ATOMIC_V2",
             "CALL_EFFECT_ATOMIC",
             "COMPLETE_DELIVERY_ATOMIC",
             "COMPLETE_DELIVERY_ATOMIC_V2",

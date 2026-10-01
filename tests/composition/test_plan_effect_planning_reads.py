@@ -22,12 +22,14 @@ from chiplog.composition.r16_planning_reads import (
     _OwnerResult,
     _project,
     merge_planning_publications,
+    original_plan_effect_batch,
     read_plan_effect_publications,
 )
 from chiplog.domain_primitives import RecordId, TenantId
 from chiplog.platform._owner_publication_contracts import (
     JournalSelectedPublication,
     PlanEffectBatch,
+    SelectedPlanEffectBatchV2,
 )
 from chiplog.platform.authority_gate import AuthorityGateError
 from chiplog.platform.broker import PublicPortCall, PublicPortResult
@@ -141,7 +143,9 @@ async def test_plan_effect_planning_reads_survive_later_commit_and_restart(tmp_p
         assert decision is not None
         with pytest.raises(ValueError, match="head differs"):
             _project(replace(decision, tenant_commit_sequence=frontier + 1), runtime._tenant_id)
-        batch = decision.prepared.request
+        selected_batch = decision.prepared.request
+        assert isinstance(selected_batch, SelectedPlanEffectBatchV2)
+        batch = original_plan_effect_batch(selected_batch)
         assert isinstance(batch, PlanEffectBatch)
         missing = batch.model_copy(update={"complete_records": batch.complete_records[:-1]})
         with pytest.raises(ValueError, match="exact planning records"):

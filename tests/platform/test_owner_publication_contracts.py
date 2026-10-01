@@ -20,6 +20,7 @@ def test_closed_batch_variants_separate_multiowner_publication() -> None:
     assert set(schema["discriminator"]["mapping"]) == {
         "SINGLE_OWNER",
         "PLAN_EFFECT_ATOMIC",
+        "PLAN_EFFECT_ATOMIC_V2",
         "CALL_EFFECT_ATOMIC",
         "COMPLETE_DELIVERY_ATOMIC",
         "COMPLETE_DELIVERY_ATOMIC_V2",
@@ -30,6 +31,7 @@ def test_closed_batch_variants_separate_multiowner_publication() -> None:
         "effects.accept_call",
         "effects.prepare_delivery",
         "effects.publish_plan_effect",
+        "effects.publish_plan_effect.v2",
         "agent_loop.complete_acceptance",
         "arbitrary.sql",
     ):

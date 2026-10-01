@@ -21,6 +21,7 @@ from chiplog.platform._owner_publication_contracts import (
     PublicationIdentity,
     PublicationRejected,
     RegisteredPublication,
+    SelectedPlanEffectBatchV2,
 )
 from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.broker import PublicPortCall, PublicPortResult
@@ -92,7 +93,7 @@ class R16PlanEffectAuthority:
 
     def register_prepared(
         self,
-        batch: PlanEffectBatch,
+        batch: PlanEffectBatch | SelectedPlanEffectBatchV2,
         adoption: PreparedEffectAdoption,
         sources: EffectSources,
         sent: PublicPortCall,
@@ -127,7 +128,8 @@ class R16PlanEffectAuthority:
                 or entry.reference != query.current_invocation
                 or entry.identity != query.identity
                 or entry.commands != query.original_commands
-                or query.operation != "effects.publish_plan_effect"
+                or query.operation
+                not in ("effects.publish_plan_effect", "effects.publish_plan_effect.v2")
                 or self._runtime._trust_observation_guard(entry.observed) is not None
             ):
                 return PublicationRejected(
@@ -167,6 +169,40 @@ class R16PlanEffectAuthority:
             try:
                 if capture_sources(self._runtime, entry.adoption, self._registry) != entry.sources:
                     return "STALE"
+                batch = prepared.request
+                if isinstance(batch, SelectedPlanEffectBatchV2):
+                    from chiplog.composition.r16_planning_reads import original_plan_effect_batch
+                    from chiplog.composition.r17_admission_records import (
+                        EpochOpenedV2,
+                        ordinary_plan_effect_events,
+                        selected_aggregate,
+                    )
+                    from chiplog.composition.r17_admission_records import (
+                        wire as admission_wire,
+                    )
+                    from chiplog.composition.r17_ingress_history import validate_selected_ingress
+                    from chiplog.composition.r17_ingress_registry import retained_cli_profile
+
+                    history = self._runtime._owner_decisions().snapshot()
+                    validate_selected_ingress(history)
+                    events = ordinary_plan_effect_events(
+                        batch=original_plan_effect_batch(batch),
+                        retained_cli_profile=retained_cli_profile(
+                            self._runtime._tenant_id, "hermetic-database"
+                        ),
+                        aggregate=selected_aggregate(history.decisions),
+                    )
+                    expected = tuple(
+                        admission_wire(
+                            "ingress.admission.epoch:" + event.epoch.identity
+                            if isinstance(event, EpochOpenedV2)
+                            else event.claim_id,
+                            event,
+                        )
+                        for event in events
+                    )
+                    if batch.admission_records != expected:
+                        return "STALE"
             except LoopRejected, ValueError, RuntimeError:
                 return "STALE"
             if time.monotonic_ns() >= entry.sent.budget.absolute_deadline_ns:

@@ -291,6 +291,40 @@ class PlanEffectBatch(BrokerDTO):
     complete_batch_fingerprint: Digest
 
 
+class SelectedPlanEffectBatchV2(BrokerDTO):
+    """Original six PlanEffect records followed by selected ORDINARY admission rows."""
+
+    kind: Literal["PLAN_EFFECT_ATOMIC_V2"] = "PLAN_EFFECT_ATOMIC_V2"
+    schema_id: Literal["chiplog.owner-publication.plan-effect.v2"] = (
+        "chiplog.owner-publication.plan-effect.v2"
+    )
+    operation: Literal["effects.publish_plan_effect.v2"] = "effects.publish_plan_effect.v2"
+    identity: PublicationIdentity
+    authentication: WorkerAuthentication
+    expected: AuthoritativeReadManifest
+    planning_command: OwnerCommandBytes
+    effects_command: OwnerCommandBytes
+    original_records: tuple[OwnerRecordBytes, ...] = Field(min_length=6, max_length=6)
+    admission_records: tuple[OwnerRecordBytes, ...] = Field(min_length=1, max_length=2)
+    complete_records: tuple[OwnerRecordBytes, ...] = Field(min_length=7, max_length=8)
+    complete_batch_fingerprint: Digest
+
+    @model_validator(mode="after")
+    def exact_member_order(self) -> SelectedPlanEffectBatchV2:
+        if self.complete_records != self.original_records + self.admission_records:
+            raise ValueError("selected PlanEffect v2 member order differs")
+        schemas = tuple(row.schema_id for row in self.admission_records)
+        if schemas not in (
+            ("chiplog.ingress.admission-capacity.v1",),
+            (
+                "chiplog.ingress.admission-epoch.v2",
+                "chiplog.ingress.admission-capacity.v1",
+            ),
+        ):
+            raise ValueError("selected PlanEffect v2 requires optional epoch and ordinary claim")
+        return self
+
+
 class NoPlanningParticipant(BrokerDTO):
     kind: Literal["NOT_APPLICABLE"] = "NOT_APPLICABLE"
 
@@ -386,6 +420,7 @@ class RejectedCompletionBatchV1(BrokerDTO):
 RegisteredPublication = Annotated[
     SingleOwnerBatch
     | PlanEffectBatch
+    | SelectedPlanEffectBatchV2
     | CallEffectBatch
     | CompleteDeliveryBatch
     | CompleteDeliveryBatchV2
@@ -431,6 +466,7 @@ class ExactReplayQuery(BrokerDTO):
         | Literal[
             "effects.accept_call",
             "effects.publish_plan_effect",
+            "effects.publish_plan_effect.v2",
             "agent_loop.complete_acceptance",
             "agent_loop.complete_acceptance.v2",
             "agent_loop.reject_completion.v1",

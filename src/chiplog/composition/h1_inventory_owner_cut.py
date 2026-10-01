@@ -41,13 +41,16 @@ OWNER_BATCH_KINDS = frozenset(
     {
         "SINGLE_OWNER",
         "PLAN_EFFECT_ATOMIC",
+        "PLAN_EFFECT_ATOMIC_V2",
         "CALL_EFFECT_ATOMIC",
         "COMPLETE_DELIVERY_ATOMIC",
         "COMPLETE_DELIVERY_ATOMIC_V2",
         "REJECTED_COMPLETION_ATOMIC_V1",
     }
 )
-OWNER_PUBLICATION_OPERATIONS = frozenset(get_args(BrokerOperation))
+OWNER_PUBLICATION_OPERATIONS = frozenset(
+    (*get_args(BrokerOperation), "effects.publish_plan_effect.v2")
+)
 _REGISTERED_PUBLICATION: TypeAdapter[RegisteredPublication] = TypeAdapter(RegisteredPublication)
 
 

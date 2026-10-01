@@ -15,9 +15,9 @@ from chiplog.composition.r16_effects_authority import R16PlanEffectAuthority
 from chiplog.platform._owner_publication_contracts import (
     BrokerPublicationResult,
     JournalSelectedPublication,
-    PlanEffectBatch,
     PublicationRejected,
     RegisteredPublication,
+    SelectedPlanEffectBatchV2,
 )
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PublicationResult
 from chiplog.platform.authority_gate import AuthorityGateError
@@ -93,7 +93,9 @@ async def test_real_effects_ipc_unlocked_and_run_mutation_rejects(
             )
             assert isinstance(result, JournalSelectedPublication)
             assert result.kind == "COMMITTED"
-            assert {record.owner for record in result.complete_records} == {"planning", "effects"}
+            assert {record.owner for record in result.complete_records} == {
+                "planning", "effects", "broker_ingress"
+            }
         assert len(observed) == 1
         assert observed[0][1].request_id == observed[0][0].request_id
 
@@ -109,7 +111,7 @@ async def test_writer_guard_rechecks_independent_sources_before_selection(
 
         async def submit(command: PhysicalPublicationCommand) -> PublicationResult:
             nonlocal mutated
-            if command.operation_kind == "effects.publish_plan_effect" and not mutated:
+            if command.operation_kind == "effects.publish_plan_effect.v2" and not mutated:
                 mutated = True
                 if mutation == "storage":
                     # Workspace admission rejects instance dispatch overrides. Restore
@@ -154,12 +156,12 @@ async def test_changed_actual_issued_batch_has_no_selection(
     async with open_r14_loop(tmp_path / "batch.sqlite", responses=(_response(),)) as loop:
         runtime, display = await _display(loop)
         original = BrokerPublicationCoordinator.commit
-        intercepted: list[PlanEffectBatch] = []
+        intercepted: list[SelectedPlanEffectBatchV2] = []
 
         async def commit(
             coordinator: BrokerPublicationCoordinator, request: RegisteredPublication
         ) -> BrokerPublicationResult:
-            assert isinstance(request, PlanEffectBatch)
+            assert isinstance(request, SelectedPlanEffectBatchV2)
             intercepted.append(request)
             if mutation.startswith("invocation"):
                 proof = request.authentication.invocation.model_copy(

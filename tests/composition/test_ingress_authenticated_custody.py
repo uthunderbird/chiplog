@@ -18,6 +18,7 @@ from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     CliCustodyOffer,
     CliCustodyResponse,
 )
+from chiplog.composition.r14 import open_r14_loop
 from chiplog.composition.r17_admission_records import (
     SCHEMA_CAPACITY,
     SCHEMA_EPOCH_V2,
@@ -41,6 +42,7 @@ from chiplog.platform.owner_publications import (
     SelectedOwnerDecision,
     selected_records,
 )
+from tests.composition.test_plan_effect_publication import prepare_display, response
 
 
 def _selected_bytes(decision: SelectedOwnerDecision) -> bytes:
@@ -160,6 +162,65 @@ async def test_actual_peer_admits_one_embedded_inbox_and_replays_after_restart(
         assert reopened.ingress_history().records == before
 
 
+async def test_ordinary_first_then_cli_reconstructs_one_chronological_admission(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "mixed-ordinary-cli.sqlite"
+    async with open_r14_loop(database, responses=(response(),)) as loop:
+        runtime, display = await prepare_display(loop)
+        ordinary = await runtime.publish_effect(
+            "hermetic-ingress", display.display_id, display.display_digest, display.adoption_act_id
+        )
+        assert isinstance(ordinary, JournalSelectedPublication)
+        assert tuple(row.schema_id for row in ordinary.complete_records[-2:]) == (
+            SCHEMA_EPOCH_V2,
+            SCHEMA_CAPACITY,
+        )
+    async with open_r17_runtime(database) as runtime:
+        token = await _stage(runtime)
+        async with runtime.cli_custody("slot") as admission:
+            client = asyncio.create_task(_client(admission.socket.path))
+            cli = await admission.admit()
+            await client
+        assert isinstance(cli, JournalSelectedPublication)
+        assert runtime.read_admitted_inbox(token) is not None
+        aggregate = selected_aggregate(runtime._owner_decisions().snapshot().decisions)
+        assert tuple(claim.source_class for claim in aggregate.claims) == ("ORDINARY", "CLI")
+        assert len(runtime.ingress_history().records) == 3
+    async with open_r17_runtime(database) as reopened:
+        aggregate = selected_aggregate(reopened._owner_decisions().snapshot().decisions)
+        assert tuple(claim.source_class for claim in aggregate.claims) == ("ORDINARY", "CLI")
+        assert reopened.read_admitted_inbox(token) is not None
+
+
+async def test_cli_v2_first_then_ordinary_reconstructs_one_chronological_admission(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "mixed-cli-ordinary.sqlite"
+    async with open_r17_runtime(database) as runtime:
+        token = await _stage(runtime)
+        async with runtime.cli_custody("slot") as admission:
+            client = asyncio.create_task(_client(admission.socket.path))
+            cli = await admission.admit()
+            await client
+        assert isinstance(cli, JournalSelectedPublication)
+        assert SCHEMA_EPOCH_V2 in {row.schema_id for row in cli.complete_records}
+    async with open_r14_loop(database, responses=(response(),)) as loop:
+        runtime, display = await prepare_display(loop)
+        ordinary = await runtime.publish_effect(
+            "hermetic-ingress", display.display_id, display.display_digest, display.adoption_act_id
+        )
+        assert isinstance(ordinary, JournalSelectedPublication)
+        assert ordinary.complete_records[-1].schema_id == SCHEMA_CAPACITY
+        assert sum(row.schema_id == SCHEMA_EPOCH_V2 for row in ordinary.complete_records) == 0
+        aggregate = selected_aggregate(runtime._owner_decisions().snapshot().decisions)
+        assert tuple(claim.source_class for claim in aggregate.claims) == ("CLI", "ORDINARY")
+    async with open_r17_runtime(database) as reopened:
+        assert reopened.read_admitted_inbox(token) is not None
+        aggregate = selected_aggregate(reopened._owner_decisions().snapshot().decisions)
+        assert tuple(claim.source_class for claim in aggregate.claims) == ("CLI", "ORDINARY")
+
+
 async def test_selected_v1_cli_admission_replays_exact_bytes_then_keeps_v1_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -222,6 +283,15 @@ async def test_selected_v1_cli_admission_replays_exact_bytes_then_keeps_v1_profi
         assert "chiplog.ingress.admission-epoch.v2" not in {
             item.schema_id for item in second.complete_records
         }
+    async with open_r14_loop(database, responses=(response(),)) as loop:
+        runtime, display = await prepare_display(loop)
+        with pytest.raises(ValueError, match="epoch differs"):
+            await runtime.publish_effect(
+                "hermetic-ingress",
+                display.display_id,
+                display.display_digest,
+                display.adoption_act_id,
+            )
 
 
 @pytest.mark.parametrize(

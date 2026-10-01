@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,11 +23,14 @@ from chiplog.composition.r16_effects import (
     R16EffectsProducer,
 )
 from chiplog.composition.r16_effects_authority import R16PlanEffectAuthority
+from chiplog.composition.r17_admission_records import CapacityClaimed
+from chiplog.composition.r17_admission_records import wire as admission_wire
+from chiplog.composition.r17_ingress_history import validate_selected_ingress
 from chiplog.platform._owner_publication_contracts import (
     ExactReplayQuery,
     JournalSelectedPublication,
-    PlanEffectBatch,
     PublicationRejected,
+    SelectedPlanEffectBatchV2,
 )
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PublicationResult
 from chiplog.platform.authority_reads import capture_authority_storage_state
@@ -84,12 +88,12 @@ async def test_actual_plan_effect_commit_and_historical_replay(tmp_path: Path) -
         assert isinstance(result, JournalSelectedPublication), result
         assert result.kind == "COMMITTED"
         assert tuple(row.owner for row in result.complete_records) == ("planning",) * 5 + (
-            "effects",
+            "effects", "broker_ingress", "broker_ingress",
         )
         selected = runtime._owner_decisions().lookup(runtime._tenant_id, result.command_id)
         assert selected is not None
         batch = selected.prepared.request
-        assert isinstance(batch, PlanEffectBatch)
+        assert isinstance(batch, SelectedPlanEffectBatchV2)
         binding = EffectPreviewBinding.model_validate_json(display.canonical_command)
         assert batch.planning_command.canonical_bytes == base64.b64decode(
             binding.planning_request_base64
@@ -123,6 +127,88 @@ async def test_actual_plan_effect_commit_and_historical_replay(tmp_path: Path) -
         )
         assert isinstance(replay, JournalSelectedPublication)
         assert replay.kind == "EXACT_REPLAY"
+
+
+@pytest.mark.parametrize("damage", ("missing_claim", "altered_claim", "stale_prefix"))
+async def test_selected_ordinary_history_rejects_missing_or_altered_claim(
+    tmp_path: Path, damage: str
+) -> None:
+    async with open_r14_loop(tmp_path / "ordinary-history.sqlite", responses=(response(),)) as loop:
+        runtime, display = await prepare_display(loop)
+        await runtime.publish_effect(
+            "hermetic-ingress", display.display_id, display.display_digest, display.adoption_act_id
+        )
+        history = runtime._owner_decisions().snapshot()
+        validate_selected_ingress(history)
+        decision = history.decisions[-1]
+        batch = decision.prepared.request
+        assert isinstance(batch, SelectedPlanEffectBatchV2)
+        if damage == "missing_claim":
+            admission = batch.admission_records[:-1]
+        elif damage == "altered_claim":
+            claim = batch.admission_records[-1]
+            admission = (
+                *batch.admission_records[:-1],
+                claim.model_copy(update={"canonical_bytes": claim.canonical_bytes + b" "}),
+            )
+        else:
+            claim = CapacityClaimed.model_validate_json(
+                batch.admission_records[-1].canonical_bytes
+            )
+            stale = claim.model_copy(update={"predecessor": claim.epoch})
+            admission = (*batch.admission_records[:-1], admission_wire(stale.claim_id, stale))
+        corrupted = batch.model_copy(
+            update={
+                "admission_records": admission,
+                "complete_records": batch.original_records + admission,
+            }
+        )
+        history = replace(
+            history,
+            decisions=(
+                *history.decisions[:-1],
+                replace(decision, prepared=replace(decision.prepared, request=corrupted)),
+            ),
+        )
+        with pytest.raises(OwnerJournalIntegrityError, match="ingress_history"):
+            validate_selected_ingress(history)
+
+
+async def test_selected_ordinary_recovers_on_restart_without_owner_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "ordinary-restart-recovery.sqlite"
+    async with open_r14_loop(database, responses=(response(),)) as loop:
+        runtime, display = await prepare_display(loop)
+        journal = runtime._owner_decisions()
+        select = journal.select
+
+        def lost_ack(prepared: PreparedOwnerPublication, commitment: str) -> SelectedOwnerDecision:
+            select(prepared, commitment)
+            raise RuntimeError("selected before SQL")
+
+        monkeypatch.setattr(journal, "select", lost_ack)
+        with pytest.raises(OwnerPublicationUncertain):
+            await runtime.publish_effect(
+                "hermetic-ingress",
+                display.display_id,
+                display.display_digest,
+                display.adoption_act_id,
+            )
+        selected = journal.snapshot().decisions[-1]
+        assert isinstance(selected.prepared.request, SelectedPlanEffectBatchV2)
+        validate_selected_ingress(journal.snapshot())
+    async with open_r14_loop(database, responses=()) as reopened:
+        runtime = reopened._planning
+        assert isinstance(runtime, R14PlanningRuntime)
+        snapshot = runtime._owner_decisions().snapshot()
+        assert selected.prepared.request.identity.command_id in snapshot.materialized_command_ids
+        validate_selected_ingress(snapshot)
+        with sqlite3.connect(database) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM records WHERE tenant_id=? AND commit_sequence=?",
+                (runtime._tenant_id, selected.tenant_commit_sequence),
+            ).fetchone() == (len(selected.prepared.request.complete_records),)
 
 
 @pytest.mark.parametrize(

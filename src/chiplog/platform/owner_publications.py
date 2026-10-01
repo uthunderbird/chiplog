@@ -98,7 +98,7 @@ class BrokerPublicationAuthority(Protocol):
 def source_commands(request: RegisteredPublication) -> tuple[OwnerCommandBytes, ...]:
     if request.kind == "SINGLE_OWNER":
         return (request.command,)
-    if request.kind == "PLAN_EFFECT_ATOMIC":
+    if request.kind in ("PLAN_EFFECT_ATOMIC", "PLAN_EFFECT_ATOMIC_V2"):
         return (request.planning_command, request.effects_command)
     if request.kind == "CALL_EFFECT_ATOMIC":
         return (
@@ -132,7 +132,7 @@ def selected_records(decision: SelectedOwnerDecision) -> tuple[OwnerRecordBytes,
     request = decision.prepared.request
     if request.kind == "SINGLE_OWNER":
         return request.complete_records
-    if request.kind == "PLAN_EFFECT_ATOMIC":
+    if request.kind in ("PLAN_EFFECT_ATOMIC", "PLAN_EFFECT_ATOMIC_V2"):
         return request.complete_records
     if request.kind == "CALL_EFFECT_ATOMIC":
         return request.complete_records

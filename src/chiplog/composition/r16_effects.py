@@ -472,8 +472,10 @@ def _read_materialized_effects_with_history(
     try:
         before = journal.snapshot()
         from chiplog.composition.r16_denial_history import validate_selected_denials
+        from chiplog.composition.r17_ingress_history import validate_selected_ingress
 
         validate_selected_denials(before)
+        validate_selected_ingress(before)
         if before.tenant_id != tenant:
             raise ValueError("foreign independent owner journal")
         if {d.prepared.request.identity.command_id for d in before.decisions} != set(

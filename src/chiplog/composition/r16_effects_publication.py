@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import time
+from functools import partial
 from typing import TYPE_CHECKING
 
 from chiplog.adapters.driven.effects_broker import validate_preparation_pair
@@ -28,6 +29,16 @@ from chiplog.composition.r16_effects_inputs import (
 )
 from chiplog.composition.r16_effects_registry import HermeticPlanEffectRegistry
 from chiplog.composition.r16_planning_reads import validate_plan_effect_records
+from chiplog.composition.r17_admission_records import (
+    EpochOpenedV2,
+    ordinary_plan_effect_events,
+    selected_aggregate,
+)
+from chiplog.composition.r17_admission_records import (
+    wire as admission_wire,
+)
+from chiplog.composition.r17_ingress_history import read_ingress_history, validate_selected_ingress
+from chiplog.composition.r17_ingress_registry import retained_cli_profile
 from chiplog.platform._owner_publication_contracts import (
     AuthoritativeReadManifest,
     BrokerPublicationResult,
@@ -41,6 +52,7 @@ from chiplog.platform._owner_publication_contracts import (
     PlanEffectBatch,
     PublicationIdentity,
     PublicationRejected,
+    SelectedPlanEffectBatchV2,
     WorkerAuthentication,
 )
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortRejected
@@ -88,7 +100,7 @@ async def publish_plan_effect(
         selected = journal.lookup(runtime._tenant_id, command_id)
         if selected is not None:
             original = selected.prepared.request
-            if not isinstance(original, PlanEffectBatch):
+            if not isinstance(original, (PlanEffectBatch, SelectedPlanEffectBatchV2)):
                 raise LoopRejected("selected identity belongs to another operation")
             preparation = EffectPreparationRequest.model_validate_json(
                 original.effects_command.canonical_bytes
@@ -122,7 +134,22 @@ async def publish_plan_effect(
             if authority.materialization_state(selected) != "ABSENT":
                 return replay
     if selected is not None:
-        return await coordinator.recover_selected(runtime._tenant_id, command_id)
+        read_ingress_history(runtime, allow_pending=True)
+        await runtime._recover_exact(
+            runtime._owner_command(selected),
+            selected.prepared.predecessor_commitment,
+            selected.resulting_commitment,
+            is_materialized=partial(runtime._owner_decision_materialized, selected),
+        )
+        journal.materialized(selected)
+        return coordinator.lookup_exact(
+            ExactReplayQuery(
+                identity=original.identity,
+                operation=original.operation,
+                current_invocation=invocation,
+                original_commands=source_commands(original),
+            )
+        )
 
     adoption = await R16EffectsProducer(runtime).adopt_effect(
         peer,
@@ -270,7 +297,7 @@ async def publish_plan_effect(
                 subject_id=command.intent.intent_id,
             ),
         )
-        batch = PlanEffectBatch(
+        original_batch = PlanEffectBatch(
             identity=identity,
             authentication=WorkerAuthentication(
                 invocation=invocation,
@@ -292,6 +319,37 @@ async def publish_plan_effect(
             complete_records=records,
             complete_batch_fingerprint=digest(canonical(records)),
         )
-        validate_plan_effect_records(batch, runtime._tenant_id, sources.cut.tenant_frontier + 1)
+        validate_plan_effect_records(
+            original_batch, runtime._tenant_id, sources.cut.tenant_frontier + 1
+        )
+        history = runtime._owner_decisions().snapshot()
+        validate_selected_ingress(history)
+        read_ingress_history(runtime)
+        events = ordinary_plan_effect_events(
+            batch=original_batch,
+            retained_cli_profile=retained_cli_profile(runtime._tenant_id, "hermetic-database"),
+            aggregate=selected_aggregate(history.decisions),
+        )
+        admission = tuple(
+            admission_wire(
+                "ingress.admission.epoch:" + event.epoch.identity
+                if isinstance(event, EpochOpenedV2)
+                else event.claim_id,
+                event,
+            )
+            for event in events
+        )
+        all_records = records + admission
+        batch = SelectedPlanEffectBatchV2(
+            identity=original_batch.identity,
+            authentication=original_batch.authentication,
+            expected=original_batch.expected,
+            planning_command=original_batch.planning_command,
+            effects_command=original_batch.effects_command,
+            original_records=records,
+            admission_records=admission,
+            complete_records=all_records,
+            complete_batch_fingerprint=digest(canonical(all_records)),
+        )
         authority.register_prepared(batch, adoption, sources, sent, response)
     return await coordinator.commit(batch)

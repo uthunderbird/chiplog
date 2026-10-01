@@ -13,6 +13,7 @@ from chiplog.composition.r17_admission_records import (
     EpochOpened,
     EpochOpenedV2,
     cli_batch_events,
+    ordinary_plan_effect_events,
     selected_aggregate,
 )
 from chiplog.composition.r17_admission_records import (
@@ -33,6 +34,7 @@ from chiplog.platform._owner_publication_contracts import (
     ExactRecordHead,
     ObservedPresence,
     OwnerRecordBytes,
+    SelectedPlanEffectBatchV2,
     SingleOwnerBatch,
 )
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
@@ -167,6 +169,48 @@ def validate_selected_ingress(
                 continue  # Other owner operations are outside the closed ingress slice.
             batch = decision.prepared.request
             identity = batch.identity.command_id
+            if isinstance(batch, SelectedPlanEffectBatchV2):
+                from chiplog.composition.r16_planning_reads import (
+                    original_plan_effect_batch,
+                    validate_plan_effect_records,
+                )
+
+                original = original_plan_effect_batch(batch)
+                validate_plan_effect_records(
+                    original, history.tenant_id, decision.tenant_commit_sequence
+                )
+                events = ordinary_plan_effect_events(
+                    batch=original,
+                    retained_cli_profile=retained_cli_profile(
+                        history.tenant_id, "hermetic-database"
+                    ),
+                    aggregate=selected_aggregate(tuple(admission_decisions)),
+                )
+                admission_rows = tuple(
+                    admission_wire(
+                        "ingress.admission.epoch:" + event.epoch.identity
+                        if isinstance(event, EpochOpenedV2)
+                        else event.claim_id,
+                        event,
+                    )
+                    for event in events
+                )
+                if (
+                    batch.admission_records != admission_rows
+                    or batch.complete_records != original.complete_records + admission_rows
+                    or batch.complete_batch_fingerprint
+                    != digest(
+                        json.dumps(
+                            [item.model_dump(mode="json") for item in batch.complete_records],
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        ).encode()
+                    )
+                ):
+                    raise ValueError("selected ordinary admission differs from exact prefix")
+                admission_decisions.append(decision)
+                continue
             if not isinstance(batch, SingleOwnerBatch) or batch.command.schema_id not in (
                 COMMAND_SCHEMA,
                 AUTH_COMMAND_SCHEMA,
@@ -442,7 +486,13 @@ def read_ingress_history(
                         raise ValueError(
                             "complete pending custody has another resulting commitment"
                         )
-                    expected_ids.update(row.record_id for row in batch.complete_records)
+                    expected_ids.update(
+                        row.record_id
+                        for row in batch.complete_records
+                        if row.owner == "broker_ingress"
+                        or row.schema_id.startswith("chiplog.ingress.")
+                        or _retained_schema(row.canonical_bytes)
+                    )
                     expected_publications.add((batch.operation, identity))
                 observed_ids = {
                     row[0]
@@ -460,7 +510,9 @@ def read_ingress_history(
                 observed_publications = set(
                     connection.execute(
                         "SELECT operation_kind,idempotency_key FROM publications "
-                        "WHERE tenant_id=? AND operation_kind LIKE 'ingress.%'",
+                    "WHERE tenant_id=? AND "
+                    "(operation_kind LIKE 'ingress.%' OR "
+                    "operation_kind='effects.publish_plan_effect.v2')",
                         (runtime._tenant_id,),
                     )
                 )

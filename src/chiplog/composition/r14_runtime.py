@@ -161,6 +161,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
     _record_contracts: ClassVar[dict[str, str]] = {
         **R13PlanningRuntime._record_contracts,
         "effects": "chiplog.effects.record.v1",
+        "broker_ingress": "chiplog.ingress.custody-record.v1",
     }
     _checkpoint_bundle_admission: ClassVar[bool] = True
     _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = (
@@ -169,6 +170,11 @@ class R14PlanningRuntime(R13PlanningRuntime):
         ("agent_loop", INITIALIZED_SCHEMA),
         ("agent_loop", CANCELLATION_SCHEMA),
         ("agent_loop", NOT_EXECUTED_SCHEMA),
+        ("broker_ingress", "chiplog.ingress.admission-epoch.v2"),
+        ("broker_ingress", "chiplog.ingress.admission-capacity.v1"),
+        ("broker_ingress", "chiplog.ingress.authenticated-record.v2"),
+        ("broker_ingress", "chiplog.ingress.admission-epoch.v1"),
+        ("broker_ingress", "chiplog.ingress.admission-ready.v1"),
     )
     _owner_journal: AnchoredOwnerDecisionJournal | None = None
     _database_identity: tuple[str, int, int]
@@ -601,11 +607,13 @@ class R14PlanningRuntime(R13PlanningRuntime):
                 validate_selected_h1_completions,
             )
             from chiplog.composition.r16_denial_history import validate_selected_denials
+            from chiplog.composition.r17_ingress_history import validate_selected_ingress
 
             validate_selected_h1_completions(self)
             validate_selected_cancellations(self)
             validate_selected_executions(self)
             validate_selected_denials(self._owner_decisions().snapshot())
+            validate_selected_ingress(self._owner_decisions().snapshot())
             owners, loops, gates = (
                 self._pending_owners(),
                 self._pending(),
