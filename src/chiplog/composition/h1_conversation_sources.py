@@ -63,6 +63,8 @@ from chiplog.composition.h1_first_path_sources import H1FirstPathCapture, H1Firs
 from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_seal
 from chiplog.composition.r14_execution_completion_records import (
     RetainedCompleteAcceptanceExchangeV1,
+    RetainedH1ScopedV3CompleteAcceptanceExchangeV1,
+    RetainedH1ScopedV4CompleteAcceptanceExchangeV1,
     complete_acceptance_command,
 )
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
@@ -102,12 +104,17 @@ class H1ConversationPhysicalMember:
 
 @dataclass(frozen=True, slots=True)
 class H1SelectedConversationPublication:
-    """One raw selected command, with V2's retained reconstruction evidence."""
+    """One raw selected command, with retained completion reconstruction evidence."""
 
     decision_id: str
     decision_bytes: bytes
     command: PhysicalPublicationCommand
-    complete_acceptance: RetainedCompleteAcceptanceExchangeV1 | None
+    complete_acceptance: (
+        RetainedCompleteAcceptanceExchangeV1
+        | RetainedH1ScopedV3CompleteAcceptanceExchangeV1
+        | RetainedH1ScopedV4CompleteAcceptanceExchangeV1
+        | None
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,8 +230,9 @@ def decode_authenticated_conversation_history(
     The caller must obtain both inventories within one authority-gate-held SQL
     transaction.  This function refuses partial command membership, an
     unselected physical conversation record, unknown schemas, and sequence or
-    identity ambiguity.  V2 members additionally require the retained owner
-    exchange that reconstructs their exact complete-acceptance command.
+    identity ambiguity. Accepted completion members additionally require
+    retained owner evidence that reconstructs their exact complete-acceptance
+    command.
     """
     _require(isinstance(tenant_id, str) and bool(tenant_id), "tenant is invalid")
     _require(
@@ -589,8 +597,13 @@ class H1ConversationSources:
     @staticmethod
     def _complete_acceptance_evidence(
         request: object, command: PhysicalPublicationCommand
-    ) -> RetainedCompleteAcceptanceExchangeV1 | None:
-        """Reconstruct V2 evidence only from the protected selected H1 batch."""
+    ) -> (
+        RetainedCompleteAcceptanceExchangeV1
+        | RetainedH1ScopedV3CompleteAcceptanceExchangeV1
+        | RetainedH1ScopedV4CompleteAcceptanceExchangeV1
+        | None
+    ):
+        """Reconstruct retained evidence only from the protected selected H1 batch."""
         if not any(record.schema_id == ACCEPTED_ENTRY_SCHEMA for record in command.records):
             return None
         try:
@@ -598,14 +611,14 @@ class H1ConversationSources:
             from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 
             if type(request) is not CompleteDeliveryBatchV2:
-                raise ValueError("V2 conversation record lacks a complete delivery batch")
+                raise ValueError("conversation record lacks a complete delivery batch")
             evidence = h1_completion_exchange(request)
             if complete_acceptance_command(evidence) != command:
-                raise ValueError("V2 selected command differs from retained owner exchange")
+                raise ValueError("selected command differs from retained owner exchange")
             return evidence
         except (ImportError, TypeError, ValueError) as error:
             raise H1ConversationSourceUnavailable(
-                "H1 conversation V2 record lacks authenticated complete-acceptance evidence"
+                "H1 conversation record lacks authenticated complete-acceptance evidence"
             ) from error
 
     def capture_current(

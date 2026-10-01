@@ -18,6 +18,12 @@ from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
     H1ScopedDeliveryOwnerCallV1,
     PreparedH1ScopedDeliveryV1,
 )
+from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
+    H1ScopedDeliveryOwnerCallV2,
+    H1ScopedDeliveryRouteV2,
+    PreparedH1ScopedDeliveryV2,
+    PrepareH1ScopedDeliveryV2,
+)
 from chiplog.capabilities.projections.conversation_preparation_contracts import (
     ConversationCompletionEntryV1,
     conversation_complete_owner_commitment,
@@ -226,3 +232,73 @@ async def test_scoped_v3_validator_rejects_result_command_source_and_record_muta
         assembly, call, result, wrong_records
     )
     assert failure is not None and failure.code == "RECORDS"
+
+
+def _v2_exchange(
+    call: H1ScopedDeliveryOwnerCallV1, result: PreparedH1ScopedDeliveryV1
+) -> tuple[H1ScopedDeliveryOwnerCallV2, PreparedH1ScopedDeliveryV2]:
+    """Retype closed V1 fixture fields as the distinct V2 wire for B tests."""
+    request = PrepareH1ScopedDeliveryV2.model_construct(
+        **(call.request.__dict__ | {"schema_id": "chiplog.effects.prepare-h1-scoped-delivery.v2"})
+    )
+    route = H1ScopedDeliveryRouteV2.model_construct(
+        **(call.route.__dict__ | {"operation": "effects.prepare_h1_scoped_delivery_v2"})
+    )
+    v2_call = H1ScopedDeliveryOwnerCallV2.model_construct(
+        route=route,
+        request=request,
+        request_digest=hashlib.sha256(request.canonical_bytes()).hexdigest(),
+    )
+    v2_result = PreparedH1ScopedDeliveryV2.model_construct(
+        **(
+            result.__dict__
+            | {
+                "schema_id": "chiplog.effects.prepared-h1-scoped-delivery.v2",
+                "source_request_fingerprint": v2_call.request_digest,
+            }
+        )
+    )
+    return v2_call, v2_result
+
+
+@pytest.mark.asyncio
+async def test_scoped_v4_builder_retains_exact_v2_owner_bytes() -> None:
+    assembly, v1_call, v1_result = await _scoped_assembly()
+    call, result = _v2_exchange(v1_call, v1_result)
+    source = await accepted_completion_fixture("v3", "empty")
+
+    batch = publication.build_h1_scoped_v4_complete_acceptance_batch(
+        assembly,
+        call,
+        result,
+        identity=source.batch.identity,
+        authentication=source.batch.authentication,
+        expected=source.batch.expected,
+    )
+
+    assert batch.prepared_effects_commands == (
+        publication.h1_scoped_v4_acceptance_commands(assembly, call, result)[2],
+    )
+    assert batch.prepared_effects_commands[0].schema_id == call.schema_id
+    assert batch.prepared_effects_commands[0].canonical_bytes == call.canonical_bytes()
+    assert publication.validate_h1_scoped_v4_complete_acceptance_batch(
+        assembly, call, result, batch
+    ) is None
+    assert publication.validate_h1_scoped_v4_complete_acceptance_batch(
+        assembly, call, result, batch.model_copy(update={"complete_batch_fingerprint": "0" * 64})
+    ).code == "RECORDS"
+
+
+@pytest.mark.asyncio
+async def test_scoped_v4_rejects_crossed_v1_owner_exchange() -> None:
+    assembly, call, result = await _scoped_assembly()
+    source = await accepted_completion_fixture("v3", "empty")
+    with pytest.raises((TypeError, ValueError)):
+        publication.build_h1_scoped_v4_complete_acceptance_batch(
+            assembly,
+            call,  # type: ignore[arg-type]
+            result,  # type: ignore[arg-type]
+            identity=source.batch.identity,
+            authentication=source.batch.authentication,
+            expected=source.batch.expected,
+        )

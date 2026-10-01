@@ -14,7 +14,9 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallInvent
 from chiplog.capabilities.agent_loop.contracts import LoopSnapshot, RunRecord
 from chiplog.capabilities.agent_loop.domain import validate_record
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+from chiplog.capabilities.agent_loop.execution_history_contracts import ExecutionRunRecordV3
 from chiplog.capabilities.agent_loop.execution_run_record_contracts import (
+    EXECUTION_RUN_V3_SCHEMA,
     ExecutionRunCanonicalMember,
     decode_execution_run_member,
 )
@@ -233,8 +235,10 @@ def _verify_checkpoint_selected_membership(
         raise ValueError("checkpoint lacks exact selected physical membership") from error
 
 
-def completion_v2_terminal_run(command: PhysicalPublicationCommand) -> ExecutionRunRecord:
-    """Decode the sole native-v2 terminal Run in a selected V2 completion batch.
+def completion_v2_terminal_run(
+    command: PhysicalPublicationCommand,
+) -> ExecutionRunRecord | ExecutionRunRecordV3:
+    """Decode the sole native terminal Run in a selected H1 completion batch.
 
     The surrounding selected-issuance verifier establishes the batch's owner
     exchanges. This small projection keeps the history reader from treating a
@@ -243,7 +247,8 @@ def completion_v2_terminal_run(command: PhysicalPublicationCommand) -> Execution
     members = tuple(
         record
         for record in command.records
-        if record.owner == OWNER and record.schema_id == EXECUTION_RUN_SCHEMA
+        if record.owner == OWNER
+        and record.schema_id in (EXECUTION_RUN_SCHEMA, EXECUTION_RUN_V3_SCHEMA)
     )
     if len(members) != 1:
         raise ValueError("selected complete delivery has no unique native terminal Run")
@@ -260,13 +265,15 @@ def completion_v2_terminal_run(command: PhysicalPublicationCommand) -> Execution
             fingerprint=record.fingerprint,
         )
     )
-    if not isinstance(decoded.run, ExecutionRunRecord) or decoded.run.state != "SUCCEEDED":
+    if type(decoded.run) not in (ExecutionRunRecord, ExecutionRunRecordV3) or (
+        decoded.run.state != "SUCCEEDED"
+    ):
         raise ValueError("selected complete delivery Run is not a native succeeded terminal")
     return decoded.run
 
 
 def _completion_v2_schema_dispatch(batch: CompleteDeliveryBatchV2) -> Literal["H1"]:
-    """Route supported H1 applicability schemas without validating issuance authority."""
+    """Route selected H1 V1/V2/V3/V4 applicability without granting authority."""
     from chiplog.composition.h1_completion_issuance import dispatch_h1_completion_issuance_schema
 
     if (
@@ -274,7 +281,7 @@ def _completion_v2_schema_dispatch(batch: CompleteDeliveryBatchV2) -> Literal["H
             batch.authentication.applicability_schema,
             batch.authentication.applicability_bytes,
         )
-        in ("V1", "V2")
+        in ("V1", "V2", "V3", "V4")
     ):
         return "H1"
     raise AssertionError("H1 completion issuance schema dispatcher returned an unknown route")
@@ -282,7 +289,11 @@ def _completion_v2_schema_dispatch(batch: CompleteDeliveryBatchV2) -> Literal["H
 
 def _selected_h1_completion(
     runtime: R14PlanningRuntime, decision: object
-) -> tuple[PhysicalPublicationCommand, ExecutionRunRecord, ExecutionRunRecord]:
+) -> tuple[
+    PhysicalPublicationCommand,
+    ExecutionRunRecord | ExecutionRunRecordV3,
+    ExecutionRunRecord | ExecutionRunRecordV3,
+]:
     """Authenticate and project one owners-journal H1 completion selection.
 
     The issuance validator reads the selected source journals directly.  It is
@@ -496,9 +507,9 @@ def _read_call_history(
                     if command.operation_kind == COMPLETE_ACCEPTANCE_OPERATION:
                         terminal = entry.get("h1_completion_terminal")
                         predecessor = entry.get("h1_completion_predecessor")
-                        if not isinstance(terminal, ExecutionRunRecord) or not isinstance(
-                            predecessor, ExecutionRunRecord
-                        ):
+                        if type(terminal) not in (ExecutionRunRecord, ExecutionRunRecordV3) or type(
+                            predecessor
+                        ) not in (ExecutionRunRecord, ExecutionRunRecordV3):
                             raise ValueError("H1 completion lacks its retained native Run lineage")
                         if (
                             terminal.predecessor != predecessor.head

@@ -32,8 +32,34 @@ from chiplog.capabilities.effects.dispatch_v2_contracts import (
     PlanEffectOrigin,
     PublishDispatchIntentV2,
 )
+from chiplog.capabilities.effects.scoped_authorization_record_contracts import (
+    AUTHORIZATION_SCHEMA as SCOPED_AUTHORIZATION_SCHEMA,
+)
+from chiplog.capabilities.effects.scoped_authorization_record_contracts import (
+    REVISION_SCHEMA as SCOPED_AUTHORIZATION_PARENT_SCHEMA,
+)
+from chiplog.capabilities.effects.scoped_authorization_record_contracts import (
+    decode_scoped_authorization_owner_records,
+)
+from chiplog.capabilities.effects.scoped_intent_record_contracts import (
+    SCHEMA_ID as SCOPED_INTENT_SCHEMA,
+)
+from chiplog.capabilities.effects.scoped_intent_record_contracts import (
+    ScopedIntentCanonicalMemberV3,
+    decode_scoped_intent_member,
+    make_scoped_intent_member,
+)
 from chiplog.capabilities.planning._planning import _PlanningPublication
+from chiplog.composition.h1_scoped_authorization_issuance_v3 import (
+    SCHEMA as SCOPED_AUTHORIZATION_ISSUANCE_SCHEMA,
+)
+from chiplog.composition.h1_scoped_authorization_issuance_v3 import (
+    ScopedAuthorizationIssuanceV3,
+)
 from chiplog.composition.r16_effects import MaterializedEffectsCut
+from chiplog.composition.scoped_authorization_history import (
+    decode_scoped_authorization_batch_v3,
+)
 from chiplog.platform.owner_decision_journal import OwnerJournalSnapshot
 from chiplog.platform.owner_publications import SelectedOwnerDecision
 
@@ -43,12 +69,59 @@ if TYPE_CHECKING:
 PREPARATION_SCHEMA = "chiplog.effects.dispatch-preparation.v2"
 RECORD_SCHEMA = "chiplog.effects.dispatch-record.v2"
 H1_LOCAL_PREPARED_COMMENTARY_SCHEMA = "chiplog.effects.h1-local-prepared-commentary-intent.v1"
+SCOPED_AUTHORIZATION_OPERATION = "effects.authorize_scoped_delivery_v3"
+_SCOPED_AUTHORIZATION_RECORD_SCHEMAS = frozenset(
+    (SCOPED_AUTHORIZATION_SCHEMA, SCOPED_AUTHORIZATION_PARENT_SCHEMA)
+)
 
 
 @dataclass(frozen=True)
 class VerifiedDispatchHistory:
     members: tuple[SelectedEffectHistoryMember, ...]
     v2_records: tuple[DispatchRecordV2 | DispatchOutcomeRecordV2, ...]
+
+
+def _scoped_authorization_marker(batch: object) -> bool:
+    """Recognize every V3 authorization-shaped selected batch before row dispatch."""
+    from chiplog.platform._owner_publication_contracts import WorkerAuthentication
+
+    authentication = getattr(batch, "authentication", None)
+    records = getattr(batch, "complete_records", ())
+    return (
+        getattr(batch, "operation", None) == SCOPED_AUTHORIZATION_OPERATION
+        or (
+            type(authentication) is WorkerAuthentication
+            and authentication.applicability_schema == SCOPED_AUTHORIZATION_ISSUANCE_SCHEMA
+        )
+        or any(
+            getattr(record, "schema_id", None) in _SCOPED_AUTHORIZATION_RECORD_SCHEMAS
+            for record in records
+        )
+    )
+
+
+def decode_selected_scoped_authorization_batch_v3(
+    decision: SelectedOwnerDecision,
+) -> ScopedAuthorizationIssuanceV3 | None:
+    """Decode a complete selected V3 authorization pair, or report no V3 marker.
+
+    This is structural only. It validates malformed markers before a caller can
+    fall through to row-by-row legacy interpretation.
+    """
+    batch = decision.prepared.request
+    if not _scoped_authorization_marker(batch):
+        return None
+    try:
+        issuance = decode_scoped_authorization_batch_v3(batch)  # type: ignore[arg-type]
+        decode_scoped_authorization_owner_records(
+            issuance.output_records,
+            observed=issuance.original_cut.observed,
+            current=issuance.original_cut.current,
+            complete_current_origin_sources=issuance.original_cut.complete_current_origin_sources,
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("selected scoped authorization V3 batch is not its exact pair") from error
+    return issuance
 
 
 def _request(decision: SelectedOwnerDecision) -> DispatchPreparationV2:
@@ -80,11 +153,46 @@ def _request(decision: SelectedOwnerDecision) -> DispatchPreparationV2:
     return request
 
 
+def _validate_scoped_v3_member(batch: object, raw: object) -> None:
+    """Bind the shared scoped wire to its exact selected V3 or V4 issuance."""
+    from chiplog.composition.h1_completion_issuance import (
+        H1CompletionIssuanceV3,
+        H1CompletionIssuanceV4,
+        decode_h1_completion_issuance,
+    )
+    from chiplog.platform._owner_publication_contracts import (
+        CompleteDeliveryBatchV2,
+        OwnerRecordBytes,
+    )
+
+    if type(batch) is not CompleteDeliveryBatchV2 or type(raw) is not OwnerRecordBytes:
+        raise ValueError("scoped V3 effect has another publication envelope")
+    issuance = decode_h1_completion_issuance(batch)
+    if type(issuance) in (H1CompletionIssuanceV3, H1CompletionIssuanceV4):
+        scoped_issuance = cast(H1CompletionIssuanceV3 | H1CompletionIssuanceV4, issuance)
+        expected = make_scoped_intent_member(scoped_issuance.effects_result.intent_result.intent)
+    else:
+        raise ValueError("scoped V3 effect has unsupported issuance")
+    if (
+        raw.record_kind != expected.record_kind
+        or raw.schema_id != expected.schema_id
+        or raw.record_id != expected.record_id
+        or raw.canonical_bytes != expected.canonical_record_bytes
+        or raw.fingerprint != expected.fingerprint
+    ):
+        raise ValueError("scoped V3 effect differs from selected issuance")
+
+
 def verify_dispatch_history(
     cut: MaterializedEffectsCut, journal: OwnerJournalSnapshot
 ) -> VerifiedDispatchHistory:
     if cut.owner_journal_head != journal.head or cut.tenant_id != journal.tenant_id:
         raise ValueError("effects history and authenticated selection cuts differ")
+    scoped_authorizations = {
+        id(decision): issuance
+        for decision in journal.decisions
+        if (issuance := decode_selected_scoped_authorization_batch_v3(decision)) is not None
+    }
     selected = {
         record.record_id: (decision, ordinal)
         for decision in journal.decisions
@@ -115,6 +223,18 @@ def verify_dispatch_history(
         batch = decision.prepared.request
         if raw != batch.complete_records[ordinal] or raw.fingerprint != digest(raw.canonical_bytes):
             raise ValueError("effect canonical selected bytes substituted")
+        if id(decision) in scoped_authorizations:
+            expected_ids = tuple(record.record_id for record in batch.complete_records)
+            if (
+                ordinal not in (0, 1)
+                or row.commit_sequence != decision.tenant_commit_sequence
+                or row.publication_ordinal != ordinal
+                or row.batch_record_ids != expected_ids
+                or raw.schema_id not in _SCOPED_AUTHORIZATION_RECORD_SCHEMAS
+            ):
+                raise ValueError("scoped authorization V3 SQL membership or order differs")
+            # This closed pair is neither a V2 predecessor nor a normative member.
+            continue
         selected_cut = reference(
             "selected-cut/" + batch.identity.command_id,
             canonical(batch.expected.model_dump(mode="json")),
@@ -247,6 +367,17 @@ def verify_dispatch_history(
             decode_h1_local_prepared_commentary_member(local_member)
             decode_h1_completion_issuance(batch)
             continue
+        elif raw.schema_id == SCOPED_INTENT_SCHEMA:
+            scoped_member = ScopedIntentCanonicalMemberV3(
+                record_kind=cast(Literal["ExternalActionIntent"], raw.record_kind),
+                schema_id=raw.schema_id,
+                record_id=raw.record_id,
+                canonical_record_bytes=raw.canonical_bytes,
+                fingerprint=raw.fingerprint,
+            )
+            decode_scoped_intent_member(scoped_member)
+            _validate_scoped_v3_member(batch, raw)
+            continue
         else:
             raise ValueError("unregistered effects history schema")
         members.append(member)
@@ -369,7 +500,72 @@ def validate_selected_dispatch_sources(runtime: R16DispatchRuntime) -> None:
     rows: list[StoredEffectRow] = []
     for decision in journal.decisions:
         batch = decision.prepared.request
+        if decode_selected_scoped_authorization_batch_v3(decision) is not None:
+            from chiplog.composition.h1_scoped_authorization_historical_binder import (
+                ScopedAuthorizationHistoricalBindError,
+                bind_selected_scoped_authorization_v3,
+            )
+
+            try:
+                bind_selected_scoped_authorization_v3(decision, runtime)
+            except ScopedAuthorizationHistoricalBindError as error:
+                if "binder is unavailable" in str(error):
+                    raise ValueError(
+                        "selected scoped authorization V3 requires an installed historical binder"
+                    ) from error
+                raise ValueError(
+                    "selected scoped authorization V3 historical binding failed"
+                ) from error
         effects = tuple(record for record in batch.complete_records if record.owner == "effects")
+        h1_local = tuple(
+            record for record in effects if record.schema_id == H1_LOCAL_PREPARED_COMMENTARY_SCHEMA
+        )
+        scoped_v3 = tuple(record for record in effects if record.schema_id == SCOPED_INTENT_SCHEMA)
+        if h1_local or scoped_v3:
+            from chiplog.composition.h1_completion_issuance import (
+                H1CompletionIssuanceV2,
+                H1CompletionIssuanceV3,
+                H1CompletionIssuanceV4,
+                decode_h1_completion_issuance,
+            )
+            from chiplog.composition.h1_historical_selected_sources import (
+                bind_selected_h1_completion,
+            )
+            from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
+
+            if type(batch) is not CompleteDeliveryBatchV2:
+                raise ValueError("H1 local preparation has another publication envelope")
+            issuance = decode_h1_completion_issuance(batch)
+            if type(issuance) not in (
+                H1CompletionIssuanceV2,
+                H1CompletionIssuanceV3,
+                H1CompletionIssuanceV4,
+            ):
+                raise ValueError("H1 local preparation has unsupported issuance")
+            bound = bind_selected_h1_completion(batch, runtime)
+            if bound.decision != decision or bound.issuance != issuance:
+                raise ValueError("H1 local preparation differs from selected issuance")
+            if scoped_v3:
+                if type(issuance) in (H1CompletionIssuanceV3, H1CompletionIssuanceV4):
+                    scoped_issuance = cast(
+                        H1CompletionIssuanceV3 | H1CompletionIssuanceV4, issuance
+                    )
+                    expected_member = make_scoped_intent_member(
+                        scoped_issuance.effects_result.intent_result.intent
+                    )
+                else:
+                    raise ValueError("H1 scoped V3 selected member has unsupported issuance")
+                if len(scoped_v3) != 1:
+                    raise ValueError("H1 scoped V3 selected member has unsupported issuance")
+                actual = scoped_v3[0]
+                if (
+                    actual.record_kind != expected_member.record_kind
+                    or actual.schema_id != expected_member.schema_id
+                    or actual.record_id != expected_member.record_id
+                    or actual.canonical_bytes != expected_member.canonical_record_bytes
+                    or actual.fingerprint != expected_member.fingerprint
+                ):
+                    raise ValueError("H1 scoped V3 selected member differs from issuance")
         if batch.kind == "CALL_EFFECT_ATOMIC":
             from chiplog.composition.r14_call_issuance import validate_call_issuance
             from chiplog.composition.r16_dispatch_runtime import ExecutionDispatchRuntime

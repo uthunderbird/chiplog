@@ -14,6 +14,7 @@ from chiplog.adapters.driven.effects_hermetic import HermeticEffectsProvider
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import (
     R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
+    R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
 )
 from chiplog.capabilities.effects.contracts import CommandIdentity, ExactHead
@@ -46,7 +47,11 @@ from chiplog.platform.broker import (
     PublicPortSuccess,
 )
 from chiplog.platform.r7_leaves import ProductionClock, ProductionPlanningStore
-from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+from chiplog.platform.r7_runtime import (
+    AuthorityBrokerRuntime,
+    OwnerProcessIdentity,
+    _owner_module_closure,
+)
 from tests.support.scoped_intent_records import delivery_publication_fixture
 
 
@@ -291,3 +296,18 @@ def test_v20_process_target_and_route_set_remain_historical() -> None:
     }
 
 
+def test_v22_effects_attestation_closure_is_the_exact_v2_process_stack() -> None:
+    manifest = R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST
+    effects = next(owner for owner in manifest.owners if owner.owner_id == "effects")
+    identity = OwnerProcessIdentity(
+        "tenant", 1, "effects", "generation", "session", effects.capability_ids
+    )
+    assert _owner_module_closure(identity) == (
+        "chiplog.capabilities.effects._dispatch_process",
+        "chiplog.capabilities.effects._h1_local_process",
+        "chiplog.capabilities.effects._h1_scoped_process",
+        "chiplog.capabilities.effects._h1_scoped_v2_process",
+        "chiplog.capabilities.effects._process",
+        "chiplog.capabilities.effects._r16_process",
+        "chiplog.capabilities.effects._scoped_dispatch_process",
+    )

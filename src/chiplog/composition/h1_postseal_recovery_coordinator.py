@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
@@ -71,6 +71,11 @@ class _H1CompleteChainPreflight:
     _lease: _H1RecoveryExecutionLease
     _state: H1PostSealRecoveryState
     _context: object
+    # The selected V3 reader owns this opaque, independently authenticated
+    # nine-record suffix.  Keeping it beside (rather than inside) the V2
+    # source context prevents the local Effects reconstruction from becoming
+    # authority for a scoped chain.
+    _scoped_v3_terminal: object | None = None
     _retired: bool = False
 
 
@@ -218,9 +223,7 @@ class _H1PostSealRecoveryCoordinator:
             # The finalization authority is downstream of the producer choice.
             # Do this read-only durable check before asking it to classify or
             # resume anything: SCOPED_V3 has no local mounted implementation.
-            self._require_selected_local_producer_held(
-                lease, identity, original_fingerprint
-            )
+            self._require_selected_producer_held(lease, identity, original_fingerprint)
             # This call is the sole selected/pending/absence oracle.  In
             # particular, None means B proved authenticated absence; HOLD,
             # malformed history, and uncertainty leave through an exception.
@@ -253,6 +256,38 @@ class _H1PostSealRecoveryCoordinator:
                             preflight._state, stage
                         )
                         self._require_effects_command_id(stage, semantic_input, effects_command_id)
+                        if preflight._state.selected_producer == "SCOPED_V3" and stage == "EFFECTS":
+                            exchange = await self._replay_scoped_v3_finalization_effects_held(
+                                preflight=preflight,
+                                session=session,
+                                semantic_input=semantic_input,
+                                effects_command_id=effects_command_id,
+                            )
+                            returned = getattr(exchange, "returned", None)
+                            result_bytes = getattr(returned, "canonical_payload", None)
+                            expected = dict(preflight._state.results).get(stage)
+                            if not isinstance(result_bytes, bytes) or result_bytes != expected:
+                                raise H1PostSealRecoveryCoordinatorError(
+                                    "scoped finalization Effects replay differs "
+                                    "from the durable pin"
+                                )
+                            continue
+                        if (
+                            preflight._state.selected_producer == "SCOPED_V3"
+                            and stage == "TERMINAL_WORK"
+                        ):
+                            exchange = await self._replay_scoped_v3_finalization_terminal_held(
+                                preflight=preflight, session=session, semantic_input=semantic_input
+                            )
+                            returned = getattr(exchange, "returned", None)
+                            result_bytes = getattr(returned, "canonical_payload", None)
+                            expected = dict(preflight._state.results).get(stage)
+                            if not isinstance(result_bytes, bytes) or result_bytes != expected:
+                                raise H1PostSealRecoveryCoordinatorError(
+                                    "scoped finalization terminal replay differs "
+                                    "from the durable pin"
+                                )
+                            continue
                         session._bind_recovery_stage(
                             stage=stage,
                             semantic_input=semantic_input,
@@ -378,7 +413,31 @@ class _H1PostSealRecoveryCoordinator:
                     or state.root.as_dict() != derived_root.as_dict()
                 ):
                     raise H1PostSealRecoveryCoordinatorError("durable recovery ROOT differs")
-                self._require_local_producer(state)
+                scoped_terminal: object | None = None
+                if state.selected_producer == "LOCAL_V2":
+                    self._require_local_producer(state)
+                elif state.selected_producer == "SCOPED_V3":
+                    from chiplog.composition.h1_v3_recovery_historical_source import (
+                        H1V3RecoveryHistoricalSource,
+                    )
+
+                    scoped_terminal = H1V3RecoveryHistoricalSource(self._runtime).read_terminal(
+                        original_identity=identity,
+                        original_fingerprint=original_fingerprint,
+                        selected_seal=locator,
+                    )
+                    if (
+                        len(
+                            getattr(getattr(scoped_terminal, "effects", None), "pinned_records", ())
+                        )
+                        != 9
+                        or getattr(scoped_terminal, "terminal_result", None) is None
+                    ):
+                        raise H1PostSealRecoveryCoordinatorError(
+                            "durable scoped finalization chain is incomplete"
+                        )
+                else:
+                    raise H1PostSealRecoveryCoordinatorError("recovery producer is invalid")
                 self._require_complete_chain_shape(state)
                 context = self._source._capture_recovery(
                     original_identity=identity,
@@ -386,8 +445,13 @@ class _H1PostSealRecoveryCoordinator:
                     selected_seal=locator,
                     root=state.root,
                 )
-                self._validate_complete_chain_held(context, state)
-                return _H1CompleteChainPreflight(self, self._source, lease, state, context)
+                if scoped_terminal is None:
+                    self._validate_complete_chain_held(context, state)
+                else:
+                    self._validate_scoped_v3_complete_chain_held(context, state, scoped_terminal)
+                return _H1CompleteChainPreflight(
+                    self, self._source, lease, state, context, scoped_terminal
+                )
         except BaseException:
             if context is not None:
                 # Capture allocates issuer-owned capability state even when a
@@ -412,7 +476,10 @@ class _H1PostSealRecoveryCoordinator:
             or capture._retired
         ):
             raise H1PostSealRecoveryCoordinatorError("complete-chain preflight differs")
-        self._require_local_producer(capture._state)
+        if capture._state.selected_producer == "LOCAL_V2":
+            self._require_local_producer(capture._state)
+        elif capture._state.selected_producer != "SCOPED_V3" or capture._scoped_v3_terminal is None:
+            raise H1PostSealRecoveryCoordinatorError("complete-chain producer differs")
         self._source._require_current(capture._context)
         return capture._state
 
@@ -451,19 +518,152 @@ class _H1PostSealRecoveryCoordinator:
         for stage in _STAGES:
             self._source._require_current(context)
             semantic_input, effects_command_id = state.stage_input(stage)
-            expected = self._source._reconstruct_input(
-                context,
-                stage,
-                durable_results,
-                effects_command_id,
-                predecessor_effects_input=self._terminal_effects_input(state, stage),
-            )
+            if state.selected_producer == "SCOPED_V3" and stage == "TERMINAL_WORK":
+                expected = self._source._reconstruct_scoped_terminal_work_input(context)
+            else:
+                expected = self._source._reconstruct_input(
+                    context,
+                    stage,
+                    durable_results,
+                    effects_command_id,
+                    predecessor_effects_input=self._terminal_effects_input(state, stage),
+                )
             if semantic_input != expected:
                 raise H1PostSealRecoveryCoordinatorError("durable stage input differs")
             self._require_effects_command_id(stage, semantic_input, effects_command_id)
             result = dict(state.results)[stage]
-            self._source._validate_result(context, stage, semantic_input, result)
+            self._validate_stage_result(context, state, stage, semantic_input, result)
             durable_results[stage] = result
+
+    def _validate_scoped_v3_complete_chain_held(
+        self, context: object, state: H1PostSealRecoveryState, scoped_terminal: object
+    ) -> None:
+        """Join the local B prefix to the independently authenticated scoped suffix.
+
+        V3 must never ask the normal recovery source to reconstruct local
+        Effects.  The historical reader has already checked the ordered nine
+        journal envelopes and predecessor links; these comparisons bind its
+        exact authenticated bytes to the state consumed by the new B session.
+        """
+        self._source._require_current(context)
+        for stage in ("COMPLETION", "CONVERSATION"):
+            semantic_input, command_id = state.stage_input(stage)
+            predecessors: dict[_H1RecoveryStage, bytes] = {}
+            if stage == "CONVERSATION":
+                predecessors["COMPLETION"] = dict(state.results)["COMPLETION"]
+            expected = self._source._reconstruct_input(
+                context, stage, predecessors, command_id, predecessor_effects_input=None
+            )
+            if semantic_input != expected or command_id is not None:
+                raise H1PostSealRecoveryCoordinatorError("scoped V3 B prefix differs")
+            self._validate_stage_result(
+                context, state, stage, semantic_input, dict(state.results)[stage]
+            )
+        effects = getattr(scoped_terminal, "effects", None)
+        effects_request = getattr(effects, "effects_request", None)
+        effects_result = getattr(effects, "effects_result", None)
+        terminal_request = getattr(scoped_terminal, "terminal_request", None)
+        terminal_result = getattr(scoped_terminal, "terminal_result", None)
+        if (
+            effects is None
+            or effects_request is None
+            or effects_result is None
+            or terminal_request is None
+            or terminal_result is None
+            or effects_request.canonical_bytes() != state.stage_input("EFFECTS")[0]
+            or effects_result.canonical_bytes() != dict(state.results)["EFFECTS"]
+            or terminal_request.canonical_bytes() != state.stage_input("TERMINAL_WORK")[0]
+            or terminal_result.canonical_bytes() != dict(state.results)["TERMINAL_WORK"]
+        ):
+            raise H1PostSealRecoveryCoordinatorError("scoped V3 durable chain differs")
+
+    async def _replay_scoped_v3_finalization_effects_held(
+        self,
+        *,
+        preflight: _H1CompleteChainPreflight,
+        session: Any,
+        semantic_input: bytes,
+        effects_command_id: str | None,
+    ) -> Any:
+        """Make the third real B exchange from the authenticated scoped pin."""
+        if not isinstance(effects_command_id, str) or not effects_command_id:
+            raise H1PostSealRecoveryCoordinatorError("scoped Effects command ID is absent")
+        from chiplog.composition.h1_completion_exchange_registry import H1CompletionExchangeRegistry
+
+        locator = CallSubjectHead(
+            subject_id=preflight._state.root.selected_seal_subject_id,
+            revision=Present(
+                head=preflight._state.root.selected_seal_head,
+                fingerprint=preflight._state.root.selected_seal_fingerprint,
+            ),
+        )
+        registry = getattr(self._runtime, "_h1_completion_exchange_registry", None)
+        if type(registry) is not H1CompletionExchangeRegistry:
+            raise H1PostSealRecoveryCoordinatorError("scoped finalization registry is unavailable")
+        source = cast(Any, preflight._source)
+        native = source._context_state(preflight._context).native
+        historical = registry.capture_recovered_prepared_delivery_historical(
+            original_identity=native.original_identity,
+            original_fingerprint=native.original_fingerprint,
+            selected_seal=locator,
+        )
+        return await session._replay_scoped_finalization_effects(
+            historical_capture=historical,
+            semantic_input=semantic_input,
+            effects_command_id=effects_command_id,
+        )
+
+    async def _replay_scoped_v3_finalization_terminal_held(
+        self, *, preflight: _H1CompleteChainPreflight, session: Any, semantic_input: bytes
+    ) -> Any:
+        """Make the fourth real B exchange through the scoped finalization binder."""
+        from chiplog.composition.h1_completion_exchange_registry import H1CompletionExchangeRegistry
+        from chiplog.composition.h1_scoped_delivery_authority import H1ScopedDeliveryAuthorityReader
+
+        locator = CallSubjectHead(
+            subject_id=preflight._state.root.selected_seal_subject_id,
+            revision=Present(
+                head=preflight._state.root.selected_seal_head,
+                fingerprint=preflight._state.root.selected_seal_fingerprint,
+            ),
+        )
+        registry = getattr(self._runtime, "_h1_completion_exchange_registry", None)
+        authority_reader = getattr(self._runtime, "_h1_scoped_delivery_authority_reader", None)
+        if (
+            type(registry) is not H1CompletionExchangeRegistry
+            or type(authority_reader) is not H1ScopedDeliveryAuthorityReader
+        ):
+            raise H1PostSealRecoveryCoordinatorError("scoped finalization authority is unavailable")
+        source = cast(Any, preflight._source)
+        native = source._context_state(preflight._context).native
+        historical = registry.capture_recovered_prepared_delivery_historical(
+            original_identity=native.original_identity,
+            original_fingerprint=native.original_fingerprint,
+            selected_seal=locator,
+        )
+        authority_capture = await authority_reader.read_reconstructed(
+            historical_b_capture=historical
+        )
+        session._bind_scoped_finalization_terminal_work(
+            semantic_input=semantic_input, authority_capture=authority_capture
+        )
+        return await session.prepare_terminal_work()
+
+    def _validate_stage_result(
+        self,
+        context: object,
+        state: H1PostSealRecoveryState,
+        stage: _H1RecoveryStage,
+        semantic_input: bytes,
+        result_bytes: bytes,
+    ) -> None:
+        """Choose the terminal validator from durable producer selection."""
+        if state.selected_producer == "SCOPED_V3" and stage == "TERMINAL_WORK":
+            self._source._validate_scoped_terminal_work_result(
+                context, semantic_input, result_bytes
+            )
+            return
+        self._source._validate_result(context, stage, semantic_input, result_bytes)
 
     async def _resume_stages_held(
         self,
@@ -547,7 +747,28 @@ class _H1PostSealRecoveryCoordinator:
                         raise H1PostSealRecoveryCoordinatorError(
                             "durable scoped Effects result differs"
                         )
-                    return state
+                    terminal = H1V3RecoveryHistoricalSource(self._runtime).read_terminal(
+                        original_identity=identity,
+                        original_fingerprint=original_fingerprint,
+                        selected_seal=locator,
+                    )
+                    if terminal.terminal_result is not None:
+                        return state
+                    session = self._open_recovery_session(
+                        source=source, context=context, lease=lease
+                    )
+                    try:
+                        session._bind_recovery(source=source, context=context, lease=lease)
+                        return await self._resume_scoped_v3_terminal_work_held(
+                            lease=lease,
+                            state=state,
+                            identity=identity,
+                            original_fingerprint=original_fingerprint,
+                            selected_seal=locator,
+                            session=session,
+                        )
+                    finally:
+                        await self._drain_session_held(lease, session)
                 first_incomplete = stage
                 break
             source._require_current(context)
@@ -570,7 +791,7 @@ class _H1PostSealRecoveryCoordinator:
             if result is None:
                 first_incomplete = stage
                 break
-            source._validate_result(context, stage, expected, result)
+            self._validate_stage_result(context, state, stage, expected, result)
             durable_results[stage] = result
         if first_incomplete is None:
             return state
@@ -588,7 +809,15 @@ class _H1PostSealRecoveryCoordinator:
                 pinned = self._existing_input(state, stage)
                 predecessor_effects_input = self._terminal_effects_input(state, stage)
                 if state.selected_producer == "SCOPED_V3" and stage == "EFFECTS":
-                    return await self._resume_scoped_v3_effects_held(
+                    state = await self._resume_scoped_v3_effects_held(
+                        lease=lease,
+                        state=state,
+                        identity=identity,
+                        original_fingerprint=original_fingerprint,
+                        selected_seal=locator,
+                        session=session,
+                    )
+                    return await self._resume_scoped_v3_terminal_work_held(
                         lease=lease,
                         state=state,
                         identity=identity,
@@ -634,7 +863,7 @@ class _H1PostSealRecoveryCoordinator:
                 result_bytes = getattr(returned, "canonical_payload", None)
                 if not isinstance(result_bytes, bytes):
                     raise H1PostSealRecoveryCoordinatorError("owner result bytes are unavailable")
-                source._validate_result(context, stage, semantic_input, result_bytes)
+                self._validate_stage_result(context, state, stage, semantic_input, result_bytes)
                 durable = self._existing_result(state, stage)
                 if durable is not None:
                     if durable != result_bytes:
@@ -753,6 +982,97 @@ class _H1PostSealRecoveryCoordinator:
         )
         if self._existing_result(state, "EFFECTS") != result_bytes:
             raise H1PostSealRecoveryCoordinatorError("scoped Effects result readback differs")
+        return state
+
+    async def _resume_scoped_v3_terminal_work_held(
+        self,
+        *,
+        lease: Any,
+        state: H1PostSealRecoveryState,
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+        session: Any,
+    ) -> H1PostSealRecoveryState:
+        """Resume V3 terminal work from the selected scoped Effects result."""
+        from chiplog.composition.h1_completion_exchange_registry import H1CompletionExchangeRegistry
+        from chiplog.composition.h1_scoped_delivery_authority import H1ScopedDeliveryAuthorityReader
+        from chiplog.composition.h1_v3_recovery_historical_source import (
+            H1V3RecoveryHistoricalSource,
+        )
+
+        lease.require_owned()
+        historical = H1V3RecoveryHistoricalSource(self._runtime).read_terminal(
+            original_identity=identity,
+            original_fingerprint=original_fingerprint,
+            selected_seal=selected_seal,
+        )
+        semantic_input = historical.terminal_request.canonical_bytes()
+        pinned = self._existing_input(state, "TERMINAL_WORK")
+        if pinned is not None and pinned != (semantic_input, None):
+            raise H1PostSealRecoveryCoordinatorError("durable scoped terminal input differs")
+        durable = self._existing_result(state, "TERMINAL_WORK")
+        if durable is not None:
+            if (
+                historical.terminal_result is None
+                or historical.terminal_result.canonical_bytes() != durable
+            ):
+                raise H1PostSealRecoveryCoordinatorError("durable scoped terminal result differs")
+            session._raise_scoped_effects_cancellation_after_commit()
+            return state
+        registry = getattr(self._runtime, "_h1_completion_exchange_registry", None)
+        authority_reader = getattr(self._runtime, "_h1_scoped_delivery_authority_reader", None)
+        if (
+            type(registry) is not H1CompletionExchangeRegistry
+            or type(authority_reader) is not H1ScopedDeliveryAuthorityReader
+        ):
+            raise H1PostSealRecoveryCoordinatorError("scoped recovery authority is unavailable")
+        historical_capture = registry.capture_recovered_prepared_delivery_historical(
+            original_identity=identity,
+            original_fingerprint=original_fingerprint,
+            selected_seal=selected_seal,
+        )
+        # The reader releases the authority gate for its owner IPC.  Its opaque
+        # capture is then rechecked in the same gate interval as the eighth
+        # durable pin, so a revoked R16 source cannot grow the seven-record cut.
+        authority_capture = await authority_reader.read_reconstructed(
+            historical_b_capture=historical_capture
+        )
+        lease.require_owned()
+        with self._runtime._authority_gate().hold():
+            authority_reader.recheck(authority_capture)
+            if pinned is None:
+                state = self._append_stage_held(
+                    lease,
+                    state,
+                    H1PostSealRecoveryTransition.pin_input(
+                        state, stage="TERMINAL_WORK", semantic_input=semantic_input
+                    ),
+                )
+                pinned = self._existing_input(state, "TERMINAL_WORK")
+                if pinned != (semantic_input, None):
+                    raise H1PostSealRecoveryCoordinatorError(
+                        "scoped terminal input readback differs"
+                    )
+        session._bind_scoped_recovery_terminal_work(
+            semantic_input=semantic_input, authority_capture=authority_capture
+        )
+        exchange = await session.prepare_terminal_work()
+        result_bytes = getattr(getattr(exchange, "returned", None), "canonical_payload", None)
+        if not isinstance(result_bytes, bytes):
+            raise H1PostSealRecoveryCoordinatorError("scoped terminal result bytes are unavailable")
+        self._source._validate_scoped_terminal_work_result(
+            session._recovery.context, semantic_input, result_bytes
+        )
+        state = self._append_stage_held(
+            lease,
+            state,
+            H1PostSealRecoveryTransition.commit_result(
+                state, stage="TERMINAL_WORK", result_bytes=result_bytes
+            ),
+        )
+        if self._existing_result(state, "TERMINAL_WORK") != result_bytes:
+            raise H1PostSealRecoveryCoordinatorError("scoped terminal result readback differs")
         session._raise_scoped_effects_cancellation_after_commit()
         return state
 
@@ -1012,17 +1332,13 @@ class _H1PostSealRecoveryCoordinator:
                 "selected recovery producer is unavailable to the local coordinator"
             )
 
-    def _require_selected_local_producer_held(
+    def _require_selected_producer_held(
         self,
         lease: _H1RecoveryExecutionLease,
         identity: DriverCommandIdentityV1,
         original_fingerprint: str,
     ) -> None:
-        """Fail closed on a selected scoped ROOT before finalization authority work.
-
-        Absence remains the finalization authority's concern, so this helper
-        only rejects a matching durable ROOT whose producer is unavailable.
-        """
+        """Authenticate ROOT producer classification before authority recovery."""
         if type(lease) is not _H1RecoveryExecutionLease:
             raise TypeError("producer check requires the exact recovery lease")
         lease.require_owned()
@@ -1052,7 +1368,8 @@ class _H1PostSealRecoveryCoordinator:
                 or state.root.as_dict() != derived_root.as_dict()
             ):
                 raise H1PostSealRecoveryCoordinatorError("durable recovery ROOT differs")
-            self._require_local_producer(state)
+            if state.selected_producer not in ("LOCAL_V2", "SCOPED_V3"):
+                raise H1PostSealRecoveryCoordinatorError("selected recovery producer is invalid")
 
     def close(self) -> None:
         if self._closed:

@@ -211,6 +211,8 @@ class H1LivePublicationAuthority:
         """
         from chiplog.composition.h1_completion_issuance import (
             H1CompletionIssuanceV2,
+            H1CompletionIssuanceV3,
+            H1CompletionIssuanceV4,
             decode_h1_completion_issuance,
         )
         from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
@@ -229,22 +231,27 @@ class H1LivePublicationAuthority:
                     continue
                 try:
                     from chiplog.composition.h1_historical_selected_sources import (
-                        _verify_selected_v2_delivery_closure,
+                        _selected_h1_issuance_principal,
+                        _verify_selected_h1_delivery_closure,
                     )
 
-                    retained_principal = _verify_selected_v2_delivery_closure(decision, runtime)
-                    value = decode_h1_completion_issuance(batch)
-                    from chiplog.composition.h1_historical_selected_sources import (
-                        _selected_v2_issuance_principal,
+                    retained_principal = _verify_selected_h1_delivery_closure(
+                        decision, runtime, None
                     )
+                    value = decode_h1_completion_issuance(batch)
 
                     if retained_principal is not None:
-                        if type(value) is not H1CompletionIssuanceV2:
+                        if (
+                            type(value) is H1CompletionIssuanceV2
+                            or type(value) is H1CompletionIssuanceV3
+                            or type(value) is H1CompletionIssuanceV4
+                        ):
+                            issuance_principal = _selected_h1_issuance_principal(value)
+                        else:
                             raise ValueError("H1 finalization selected closure issuance differs")
-                        issuance_principal = _selected_v2_issuance_principal(value)
                         if retained_principal != issuance_principal:
                             raise ValueError("H1 finalization selected closure principal differs")
-                    retained = self._retained_h0(value.assembly)
+                    retained = self._retained_h0(value)
                 except (TypeError, ValueError) as error:
                     raise RuntimeError("H1 finalization selected evidence is malformed") from error
                 from chiplog.composition.common_execution_driver_contracts import (
@@ -284,6 +291,9 @@ class H1LivePublicationAuthority:
         self, *, source: _H1LiveCompletionIssuance
     ) -> BrokerPublicationResult:
         """Consume one B marker before writer reentry once the payload exists."""
+        from chiplog.composition.h1_completion_issuance import (
+            decode_h1_completion_issuance,
+        )
         from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
         from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 
@@ -293,6 +303,27 @@ class H1LivePublicationAuthority:
         )
         if self._revoked or runtime is None or type(enrollment) is not _H1LiveCompletionEnrollment:
             raise RuntimeError("H1 finalization issuance authority is not mounted")
+        candidate = enrollment._issuances.get(id(source))
+        if candidate is None or candidate.source is not source:
+            raise RuntimeError("H1 finalization issuance candidate differs")
+        expected_type, expected_schema = enrollment._expected_recovery_issuance(
+            candidate.enrollment
+        )
+        batch = candidate.batch
+        if type(batch) is not CompleteDeliveryBatchV2:
+            raise RuntimeError("H1 finalization issuance batch differs")
+        issued_bytes = cast(Any, candidate.issuance).canonical_bytes()
+        value = decode_h1_completion_issuance(batch)
+        if (
+            type(candidate.issuance) is not expected_type
+            or type(value) is not expected_type
+            or batch.authentication.applicability_schema != expected_schema
+            or value.canonical_bytes() != issued_bytes
+            or batch.authentication.applicability_bytes != issued_bytes
+            or batch.authentication.applicability_fingerprint
+            != hashlib.sha256(issued_bytes).hexdigest()
+        ):
+            raise RuntimeError("H1 finalization issuance producer or batch differs")
         record = enrollment._consume_authority_issuance(authority=self, source=source)
         if type(record.batch) is not CompleteDeliveryBatchV2:
             raise RuntimeError("H1 finalization issuance batch differs")
@@ -323,7 +354,6 @@ class H1LivePublicationAuthority:
             make_prepared_delivery_acceptance_member,
             make_terminal_manifest_member,
         )
-        from chiplog.composition.h1_completion_issuance import _h1_identity
         from chiplog.composition.h1_historical_selected_sources import bind_selected_h1_completion
         from chiplog.composition.r14_loop_history import (
             _selected_h1_completion,
@@ -371,17 +401,18 @@ class H1LivePublicationAuthority:
             if not lineage or lineage[-1] != terminal:
                 raise ValueError("H1 finalization terminal Run lineage differs")
 
+            batch = decision.prepared.request
             assembly = bound.issuance.assembly
-            command_id, fingerprint = _h1_identity(assembly)
             if (
-                command_id != publication.command_id
-                or fingerprint != publication.command_id.removeprefix("h1-completion:")
+                batch.identity.command_id != publication.command_id
+                or batch.identity.command_fingerprint
+                != publication.command_id.removeprefix("h1-completion:")
             ):
                 # ``command_id`` is itself derived from the retained H0
                 # fingerprint.  Keep this explicit comparison separate from
                 # the caller's original driver fingerprint below.
                 raise ValueError("H1 finalization selected identity differs")
-            retained = self._retained_h0(assembly)
+            retained = self._retained_h0(bound.issuance)
             from chiplog.composition.common_execution_driver_contracts import DriveInputRequestV1
 
             driver = DriveInputRequestV1.model_validate_json(retained.driver_request_bytes)
@@ -445,17 +476,27 @@ class H1LivePublicationAuthority:
             )
 
     @staticmethod
-    def _retained_h0(assembly: object) -> RetainedInboxExecutionInitialization:
+    def _retained_h0(issuance: object) -> RetainedInboxExecutionInitialization:
         """Decode the H0 evidence through the retained effects origin only."""
+        from chiplog.composition.h1_completion_issuance import (
+            H1CompletionIssuanceV3,
+            H1CompletionIssuanceV4,
+        )
         from chiplog.composition.r14_execution_inbox_records import (
             RetainedInboxExecutionInitialization,
         )
 
         try:
-            effects = assembly.ordered_effects  # type: ignore[attr-defined]
-            if type(effects) is not tuple or len(effects) != 1:
-                raise ValueError("H1 finalization effects origin differs")
-            raw = effects[0].owner_call.request.retained_origin.initialization_envelope_bytes
+            if type(issuance) in (H1CompletionIssuanceV3, H1CompletionIssuanceV4):
+                raw = (
+                    cast(Any, issuance)
+                    .effects_call.request.retained_origin.initialization_envelope_bytes
+                )
+            else:
+                effects = issuance.assembly.ordered_effects  # type: ignore[attr-defined]
+                if type(effects) is not tuple or len(effects) != 1:
+                    raise ValueError("H1 finalization effects origin differs")
+                raw = effects[0].owner_call.request.retained_origin.initialization_envelope_bytes
             envelope = json.loads(raw)
             encoded = envelope["inbox_initialization"]
             if type(encoded) is not str:
@@ -532,7 +573,6 @@ class H1LivePublicationAuthority:
         self, request: RegisteredPublication
     ) -> PreparedOwnerPublication | PublicationRejected:
         from chiplog.composition.h1_completion_issuance import (
-            H1CompletionIssuanceV2,
             decode_h1_completion_issuance,
         )
         from chiplog.composition.h1_delivery_evidence_contracts import (
@@ -575,16 +615,20 @@ class H1LivePublicationAuthority:
                     or enrollment._authority is not self
                     or enrollment._gate is not gate
                     or enrollment._issuances.get(id(record.source)) is not record
-                    or type(record.issuance) is not H1CompletionIssuanceV2
                 ):
                     raise ValueError("private issued candidate differs")
+                expected_type, expected_schema = enrollment._expected_recovery_issuance(
+                    record.enrollment
+                )
                 enrollment._require_recovery_record_current(record.enrollment)
                 if record.enrollment.preflight is None:
                     raise ValueError("finalization enrollment differs")
                 value = decode_h1_completion_issuance(request)
-                issued_bytes = record.issuance.canonical_bytes()
+                issued_bytes = cast(Any, record.issuance).canonical_bytes()
                 if (
-                    type(value) is not H1CompletionIssuanceV2
+                    type(record.issuance) is not expected_type
+                    or type(value) is not expected_type
+                    or request.authentication.applicability_schema != expected_schema
                     or value.canonical_bytes() != issued_bytes
                     or request.authentication.applicability_bytes != issued_bytes
                     or request.authentication.applicability_fingerprint
@@ -611,9 +655,12 @@ class H1LivePublicationAuthority:
                 launch.assert_current()
                 slot = launch._slot
                 genesis_digest = launch.custody._binding._genesis
-                principal_id = (
-                    value.assembly.original_completion_request.source.selected_admitted_input.principal_id
+                first_request = cast(
+                    Any, value.assembly.original_completion_request
                 )
+                principal_id = first_request.source.selected_admitted_input.principal_id
+                if not isinstance(principal_id, str) or not principal_id:
+                    raise ValueError("issued H1 completion principal differs")
                 predecessor_commitment = request.expected.expected_materialization_commitment
                 request_bytes = canonical_owner_publication_bytes(request)
                 closure_fields = {

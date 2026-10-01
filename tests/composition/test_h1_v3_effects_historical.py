@@ -113,11 +113,11 @@ def test_effects_history_accepts_only_the_exact_six_or_seven_record_prefix(resul
     assert len(decoded) == len(records)
 
 
-def test_effects_history_rejects_a_terminal_record_after_the_effects_prefix() -> None:
-    with pytest.raises(H1V3RecoveryHistoricalSourceError, match="extra records"):
-        H1V3RecoveryHistoricalSource._required_effects_records(
-            _effects_prefix(result=True, terminal=True)
-        )
+def test_effects_history_retains_the_exact_terminal_suffix_after_effects() -> None:
+    """The V2 terminal reader consumes the same complete selected nine-record cut."""
+    records = _effects_prefix(result=True, terminal=True)
+
+    assert H1V3RecoveryHistoricalSource._required_effects_records(records) == records
 
 
 def test_historical_scope_comparison_ignores_fresh_current_scope_observations() -> None:

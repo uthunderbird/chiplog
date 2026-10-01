@@ -40,6 +40,14 @@ from chiplog.capabilities.effects.h1_local_preparation_record_contracts import (
     H1LocalPreparedCommentaryCanonicalMemberV1,
     decode_h1_local_prepared_commentary_member,
 )
+from chiplog.capabilities.effects.scoped_intent_record_contracts import (
+    SCHEMA_ID as H1_SCOPED_INTENT_SCHEMA,
+)
+from chiplog.capabilities.effects.scoped_intent_record_contracts import (
+    ScopedIntentCanonicalMemberV3,
+    ScopedIntentRecordIntegrityError,
+    decode_scoped_intent_member,
+)
 from chiplog.capabilities.projections.conversation_preparation_contracts import (
     ACCEPTED_ENTRY_SCHEMA,
     ConversationCanonicalMemberV2,
@@ -82,6 +90,9 @@ REGISTRATIONS: tuple[H1LeafRegistration, ...] = (
         "PHYSICAL", CONVERSATION_OWNER, ACCEPTED_ENTRY_SCHEMA, None, "conversation-v2"
     ),
     H1LeafRegistration("PHYSICAL", "effects", H1_LOCAL_INTENT_SCHEMA, None, "h1-local-effects-v1"),
+    H1LeafRegistration(
+        "PHYSICAL", "effects", H1_SCOPED_INTENT_SCHEMA, None, "h1-scoped-effects-v3"
+    ),
 )
 
 
@@ -191,6 +202,19 @@ def _effects(item: H1RawInventoryItem) -> None:
         raise _failure(item, "CORRUPT") from error
 
 
+def _scoped_effects(item: H1RawInventoryItem) -> None:
+    try:
+        decode_scoped_intent_member(
+            ScopedIntentCanonicalMemberV3(
+                record_id=item.record_id or "",
+                canonical_record_bytes=item.raw,
+                fingerprint=item.fingerprint or "",
+            )
+        )
+    except (ScopedIntentRecordIntegrityError, ValueError) as error:
+        raise _failure(item, "CORRUPT") from error
+
+
 def decode_h1_completion_scope(
     item: H1RawInventoryItem, cohort: H1CompletionInventoryCohort | None
 ) -> H1DecodedInventoryItem:
@@ -212,6 +236,8 @@ def decode_h1_completion_scope(
         _conversation(item)
     elif item.schema == H1_LOCAL_INTENT_SCHEMA:
         _effects(item)
+    elif item.schema == H1_SCOPED_INTENT_SCHEMA:
+        _scoped_effects(item)
     else:  # pragma: no cover - closed registrations above
         raise _failure(item, "UNSUPPORTED")
     record = H1ScopeKey(item.tenant, "record", item.record_id or "", item.fingerprint)

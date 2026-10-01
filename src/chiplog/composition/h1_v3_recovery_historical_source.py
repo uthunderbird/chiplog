@@ -21,12 +21,24 @@ from chiplog.capabilities.agent_loop.execution_completion_preparation import (
 from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
     PrepareExecutionCompletionFirstPathV2,
 )
+from chiplog.capabilities.agent_loop.post_terminal_contracts import (
+    PreparedPostTerminalWork,
+    PrepareTerminalWork,
+)
+from chiplog.capabilities.agent_loop.post_terminal_record_contracts import (
+    validate_prepared_post_terminal_work,
+)
+from chiplog.capabilities.agent_loop.terminal_work_preparation import prepare_h1_terminal_work
 from chiplog.capabilities.effects.fences import (
     NonSchedulerFence as EffectsNonSchedulerFence,
 )
 from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
     PreparedH1ScopedDeliveryV1,
     PrepareH1ScopedDeliveryV1,
+)
+from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
+    PreparedH1ScopedDeliveryV2,
+    PrepareH1ScopedDeliveryV2,
 )
 from chiplog.capabilities.projections.conversation_completion_owner import (
     ConversationCompletionOwner,
@@ -49,6 +61,11 @@ from chiplog.composition.h1_postseal_recovery_source import H1PostSealRecoveryRo
 from chiplog.composition.h1_recovery_historical_pe_source import (
     H1RecoveryHistoricalPESource,
     H1RecoveryHistoricalPESourceError,
+)
+from chiplog.composition.h1_scoped_terminal_work import (
+    H1ScopedTerminalWorkError,
+    build_h1_scoped_terminal_work_request,
+    build_h1_scoped_v2_terminal_work_request,
 )
 
 if TYPE_CHECKING:
@@ -97,8 +114,20 @@ class H1V3RecoveredEffectsEvidence:
     pinned_records: tuple[H1PostSealRecoverySelectedRecord, ...]
     original_completion_request: PrepareExecutionCompletionFirstPathV2
     prepared_completion: PreparedExecutionCompletion
-    effects_request: PrepareH1ScopedDeliveryV1
-    effects_result: PreparedH1ScopedDeliveryV1 | None
+    # ``SCOPED_V3`` names the retained producer family.  The exact owner-call
+    # schema below selects V1 or dispatch-V2 replay and is never inferred from
+    # the runtime that happens to reopen this journal.
+    effects_request: PrepareH1ScopedDeliveryV1 | PrepareH1ScopedDeliveryV2
+    effects_result: PreparedH1ScopedDeliveryV1 | PreparedH1ScopedDeliveryV2 | None
+
+
+@dataclass(frozen=True, slots=True)
+class H1V3RecoveredTerminalWorkEvidence:
+    """Exact selected V3 terminal suffix, rooted in the scoped Effects result."""
+
+    effects: H1V3RecoveredEffectsEvidence
+    terminal_request: PrepareTerminalWork
+    terminal_result: PreparedPostTerminalWork | None
 
 
 class H1V3RecoveryHistoricalSource:
@@ -174,6 +203,82 @@ class H1V3RecoveryHistoricalSource:
         if replayed != captured:
             raise H1V3RecoveryHistoricalSourceError("V3 historical Effects replay differs")
         return replayed
+
+    def read_terminal(
+        self,
+        *,
+        original_identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+    ) -> H1V3RecoveredTerminalWorkEvidence:
+        """Read the optional terminal suffix without weakening the Effects prefix."""
+        effects = self.read_effects(
+            original_identity=original_identity,
+            original_fingerprint=original_fingerprint,
+            selected_seal=selected_seal,
+        )
+        if effects.effects_result is None:
+            raise H1V3RecoveryHistoricalSourceError("V3 terminal source requires Effects result")
+        try:
+            if type(effects.effects_request) is PrepareH1ScopedDeliveryV1 and type(
+                effects.effects_result
+            ) is PreparedH1ScopedDeliveryV1:
+                request = build_h1_scoped_terminal_work_request(
+                    completion_request=effects.original_completion_request,
+                    completion_result=effects.prepared_completion,
+                    effects_request=effects.effects_request,
+                    effects_result=effects.effects_result,
+                )
+            elif type(effects.effects_request) is PrepareH1ScopedDeliveryV2 and type(
+                effects.effects_result
+            ) is PreparedH1ScopedDeliveryV2:
+                request = build_h1_scoped_v2_terminal_work_request(
+                    completion_request=effects.original_completion_request,
+                    completion_result=effects.prepared_completion,
+                    effects_request=effects.effects_request,
+                    effects_result=effects.effects_result,
+                )
+            else:
+                raise ValueError("durable scoped Effects wire versions differ")
+            result: PreparedPostTerminalWork | None = None
+            if len(effects.pinned_records) >= 8:
+                input_raw = self._stage_payload(
+                    cast(
+                        H1PostSealRecoveryRecordV1,
+                        _decode_record(effects.pinned_records[7].canonical_bytes),
+                    ),
+                    kind="STAGE_INPUT",
+                    stage="TERMINAL_WORK",
+                )
+                if (
+                    PrepareTerminalWork.model_validate_json(input_raw).canonical_bytes()
+                    != input_raw
+                    or input_raw != request.canonical_bytes()
+                ):
+                    raise ValueError("durable scoped terminal input differs")
+            if len(effects.pinned_records) == 9:
+                raw = self._stage_payload(
+                    cast(
+                        H1PostSealRecoveryRecordV1,
+                        _decode_record(effects.pinned_records[8].canonical_bytes),
+                    ),
+                    kind="STAGE_RESULT",
+                    stage="TERMINAL_WORK",
+                )
+                result = PreparedPostTerminalWork.model_validate_json(raw)
+                expected = prepare_h1_terminal_work(request)
+                if (
+                    result.canonical_bytes() != raw
+                    or not isinstance(expected, PreparedPostTerminalWork)
+                    or expected != result
+                ):
+                    raise ValueError("durable scoped terminal result differs")
+                validate_prepared_post_terminal_work(request, result)
+            return H1V3RecoveredTerminalWorkEvidence(effects, request, result)
+        except (H1ScopedTerminalWorkError, TypeError, ValueError) as error:
+            raise H1V3RecoveryHistoricalSourceError(
+                "V3 terminal work evidence is invalid"
+            ) from error
 
     def _read(
         self,
@@ -322,13 +427,13 @@ class H1V3RecoveryHistoricalSource:
                 if pinned is not None and records != pinned:
                     raise ValueError("pinned recovery records differ")
                 decoded = self._decode_effects_records(records, root=root)
+                input_record = cast(H1PostSealRecoveryRecordV1, decoded[5])
                 request_bytes = self._stage_payload(
-                    decoded[5], kind="STAGE_INPUT", stage="EFFECTS"
+                    input_record, kind="STAGE_INPUT", stage="EFFECTS"
                 )
-                request = PrepareH1ScopedDeliveryV1.model_validate_json(request_bytes)
+                request = self._decode_effects_request(request_bytes)
                 if request.canonical_bytes() != request_bytes:
                     raise ValueError("durable scoped Effects input differs")
-                input_record = decoded[5]
                 if input_record.effects_command_id != request.identity.command_id:
                     raise ValueError("durable scoped Effects command ID differs")
                 preimages, projection = self._historical_completion_preimages(
@@ -349,12 +454,14 @@ class H1V3RecoveryHistoricalSource:
                     or request.prepared_completion != base.completion_result
                 ):
                     raise ValueError("durable scoped Effects B preimages differ")
-                result: PreparedH1ScopedDeliveryV1 | None = None
-                if len(decoded) == 7:
+                result: PreparedH1ScopedDeliveryV1 | PreparedH1ScopedDeliveryV2 | None = None
+                if len(decoded) >= 7:
                     result_bytes = self._stage_payload(
-                        decoded[6], kind="STAGE_RESULT", stage="EFFECTS"
+                        cast(H1PostSealRecoveryRecordV1, decoded[6]),
+                        kind="STAGE_RESULT",
+                        stage="EFFECTS",
                     )
-                    result = PreparedH1ScopedDeliveryV1.model_validate_json(result_bytes)
+                    result = self._decode_effects_result(request, result_bytes)
                     self._require_effects_result(request, result, result_bytes)
                 return H1V3RecoveredEffectsEvidence(
                     original_identity,
@@ -421,12 +528,21 @@ class H1V3RecoveryHistoricalSource:
 
     @staticmethod
     def _require_effects_result(
-        request: PrepareH1ScopedDeliveryV1,
-        result: PreparedH1ScopedDeliveryV1,
+        request: PrepareH1ScopedDeliveryV1 | PrepareH1ScopedDeliveryV2,
+        result: PreparedH1ScopedDeliveryV1 | PreparedH1ScopedDeliveryV2,
         result_bytes: bytes,
     ) -> None:
         if (
-            result.canonical_bytes() != result_bytes
+            (
+                type(request) is PrepareH1ScopedDeliveryV1
+                and type(result) is not PreparedH1ScopedDeliveryV1
+            )
+            or (
+                type(request) is PrepareH1ScopedDeliveryV2
+                and type(result) is not PreparedH1ScopedDeliveryV2
+            )
+            or type(request) not in (PrepareH1ScopedDeliveryV1, PrepareH1ScopedDeliveryV2)
+            or result.canonical_bytes() != result_bytes
             or result.disposition != "PREPARED"
             or result.source_request_fingerprint
             != hashlib.sha256(request.canonical_bytes()).hexdigest()
@@ -440,6 +556,42 @@ class H1V3RecoveryHistoricalSource:
             or result.intent_request.intent.intent_id != request.intent_id
         ):
             raise H1V3RecoveryHistoricalSourceError("durable scoped Effects result differs")
+
+    @staticmethod
+    def _decode_effects_request(
+        raw: bytes,
+    ) -> PrepareH1ScopedDeliveryV1 | PrepareH1ScopedDeliveryV2:
+        for decoder in (PrepareH1ScopedDeliveryV2, PrepareH1ScopedDeliveryV1):
+            try:
+                value = decoder.model_validate_json(raw)
+            except ValueError:
+                continue
+            if type(value) is decoder and value.canonical_bytes() == raw:
+                return value
+        raise H1V3RecoveryHistoricalSourceError("durable scoped Effects request schema differs")
+
+    @staticmethod
+    def _decode_effects_result(
+        request: PrepareH1ScopedDeliveryV1 | PrepareH1ScopedDeliveryV2, raw: bytes
+    ) -> PreparedH1ScopedDeliveryV1 | PreparedH1ScopedDeliveryV2:
+        decoder = (
+            PreparedH1ScopedDeliveryV1
+            if type(request) is PrepareH1ScopedDeliveryV1
+            else PreparedH1ScopedDeliveryV2
+            if type(request) is PrepareH1ScopedDeliveryV2
+            else None
+        )
+        if decoder is None:
+            raise H1V3RecoveryHistoricalSourceError("durable scoped Effects request is foreign")
+        try:
+            value = decoder.model_validate_json(raw)
+        except ValueError as error:
+            raise H1V3RecoveryHistoricalSourceError(
+                "durable scoped Effects result schema differs"
+            ) from error
+        if type(value) is not decoder or value.canonical_bytes() != raw:
+            raise H1V3RecoveryHistoricalSourceError("durable scoped Effects result is noncanonical")
+        return value
 
     @staticmethod
     def _required_records(
@@ -479,6 +631,19 @@ class H1V3RecoveryHistoricalSource:
         allowed = (
             (*prefix, ("STAGE_INPUT", "EFFECTS")),
             (*prefix, ("STAGE_INPUT", "EFFECTS"), ("STAGE_RESULT", "EFFECTS")),
+            (
+                *prefix,
+                ("STAGE_INPUT", "EFFECTS"),
+                ("STAGE_RESULT", "EFFECTS"),
+                ("STAGE_INPUT", "TERMINAL_WORK"),
+            ),
+            (
+                *prefix,
+                ("STAGE_INPUT", "EFFECTS"),
+                ("STAGE_RESULT", "EFFECTS"),
+                ("STAGE_INPUT", "TERMINAL_WORK"),
+                ("STAGE_RESULT", "TERMINAL_WORK"),
+            ),
         )
         if sequence not in allowed:
             raise H1V3RecoveryHistoricalSourceError(
@@ -545,22 +710,7 @@ class H1V3RecoveryHistoricalSource:
         records: tuple[H1PostSealRecoverySelectedRecord, ...],
         *,
         root: H1PostSealRecoveryRootV1,
-    ) -> tuple[
-        H1PostSealRecoveryRecordV2,
-        H1PostSealRecoveryRecordV1,
-        H1PostSealRecoveryRecordV1,
-        H1PostSealRecoveryRecordV1,
-        H1PostSealRecoveryRecordV1,
-        H1PostSealRecoveryRecordV1,
-    ] | tuple[
-        H1PostSealRecoveryRecordV2,
-        H1PostSealRecoveryRecordV1,
-        H1PostSealRecoveryRecordV1,
-        H1PostSealRecoveryRecordV1,
-        H1PostSealRecoveryRecordV1,
-        H1PostSealRecoveryRecordV1,
-        H1PostSealRecoveryRecordV1,
-    ]:
+    ) -> tuple[H1PostSealRecoveryRecordV1 | H1PostSealRecoveryRecordV2, ...]:
         cls._required_effects_records(records)
         first_five = cls._decode_required_records(records[:5], root=root)
         decoded_suffix = tuple(
@@ -599,6 +749,14 @@ class H1V3RecoveryHistoricalSource:
         effects_result = decoded_suffix[1]
         if effects_result.kind != "STAGE_RESULT" or effects_result.stage != "EFFECTS":
             raise H1V3RecoveryHistoricalSourceError("V3 recovery Effects result differs")
+        if len(decoded_suffix) >= 3 and (
+            decoded_suffix[2].kind != "STAGE_INPUT" or decoded_suffix[2].stage != "TERMINAL_WORK"
+        ):
+            raise H1V3RecoveryHistoricalSourceError("V3 recovery terminal input differs")
+        if len(decoded_suffix) == 4 and (
+            decoded_suffix[3].kind != "STAGE_RESULT" or decoded_suffix[3].stage != "TERMINAL_WORK"
+        ):
+            raise H1V3RecoveryHistoricalSourceError("V3 recovery terminal result differs")
         prefix = cast(
             tuple[
                 H1PostSealRecoveryRecordV2,
@@ -609,7 +767,7 @@ class H1V3RecoveryHistoricalSource:
             ],
             first_five,
         )
-        return (*prefix, effects_input, effects_result)
+        return (*prefix, *decoded_suffix)
 
     @staticmethod
     def _stage_payload(record: H1PostSealRecoveryRecordV1, *, kind: str, stage: str) -> bytes:
@@ -620,9 +778,11 @@ class H1V3RecoveryHistoricalSource:
             raise H1V3RecoveryHistoricalSourceError("V3 recovery stage payload is absent")
         return payload
 
+
 __all__ = [
     "H1V3RecoveredEffectsEvidence",
     "H1V3RecoveredPreparedDelivery",
+    "H1V3RecoveredTerminalWorkEvidence",
     "H1V3RecoveryHistoricalSource",
     "H1V3RecoveryHistoricalSourceError",
 ]

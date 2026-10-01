@@ -165,6 +165,9 @@ class _H1RecoveryBinding:
     pending_semantic_input: bytes | None = None
     dispatched_stages: tuple[_H1RecoveryStage, ...] = ()
     result_bytes: dict[_H1RecoveryStage, bytes] = field(default_factory=dict)
+    scoped_terminal_work: bool = False
+    scoped_finalization_terminal: bool = False
+    scoped_terminal_authority: object | None = None
     scoped_effects_cancelled: bool = False
     scoped_inventory: Any | None = None
     poisoned: bool = False
@@ -287,9 +290,7 @@ class H1CompletionPreparationSession:
             or stage not in ("COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK")
             or not isinstance(semantic_input, bytes)
             or not semantic_input
-            or (
-                stage != "TERMINAL_WORK" and predecessor_effects_input is not None
-            )
+            or (stage != "TERMINAL_WORK" and predecessor_effects_input is not None)
         ):
             raise H1CompletionPreparationUnavailable("H1 recovery stage binding is unavailable")
         next_index = len(recovery.dispatched_stages)
@@ -333,6 +334,117 @@ class H1CompletionPreparationSession:
             ) from error
         recovery.pending_stage = stage
         recovery.pending_semantic_input = semantic_input
+
+    def _bind_scoped_recovery_terminal_work(
+        self, *, semantic_input: bytes, authority_capture: object
+    ) -> None:
+        """Bind V3 terminal work without interpreting scoped Effects as local DTOs."""
+        recovery = self._recovery
+        reconstruct = (
+            getattr(recovery.source, "_reconstruct_scoped_terminal_work_input", None)
+            if recovery
+            else None
+        )
+        require_owned = getattr(recovery.lease, "require_owned", None) if recovery else None
+        require_current = getattr(recovery.source, "_require_current", None) if recovery else None
+        scoped_effects = (
+            getattr(recovery.source, "_scoped_effects_result_bytes", None) if recovery else None
+        )
+        if (
+            recovery is None
+            or recovery.pending_stage is not None
+            or recovery.poisoned
+            or recovery.dispatched_stages
+            not in ((), _H1_RECOVERY_STAGE_ORDER[:2], _H1_RECOVERY_STAGE_ORDER[:3])
+            or not callable(reconstruct)
+            or not callable(require_owned)
+            or not callable(require_current)
+            or not callable(scoped_effects)
+            or authority_capture is None
+        ):
+            raise H1CompletionPreparationUnavailable(
+                "H1 scoped terminal recovery binding is unavailable"
+            )
+        try:
+            require_owned()
+            require_current(recovery.context)
+            self._validate_recovery_semantic_input("TERMINAL_WORK", semantic_input)
+            if reconstruct(recovery.context) != semantic_input:
+                raise ValueError("scoped terminal recovery pin differs")
+            effects_result = scoped_effects(recovery.context)
+            if not isinstance(effects_result, bytes) or not effects_result:
+                raise ValueError("scoped terminal recovery Effects result is absent")
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise H1CompletionPreparationUnavailable(
+                "H1 scoped terminal recovery input is invalid"
+            ) from error
+        # Completion/conversation/Effects are authenticated durable evidence,
+        # rather than fresh session exchanges in this recovery slice.
+        if recovery.dispatched_stages != _H1_RECOVERY_STAGE_ORDER[:3]:
+            recovery.result_bytes["EFFECTS"] = effects_result
+            recovery.dispatched_stages = _H1_RECOVERY_STAGE_ORDER[:3]
+        recovery.scoped_terminal_work = True
+        recovery.scoped_terminal_authority = authority_capture
+        recovery.pending_stage = "TERMINAL_WORK"
+        recovery.pending_semantic_input = semantic_input
+
+    def _bind_scoped_finalization_terminal_work(
+        self, *, semantic_input: bytes, authority_capture: object
+    ) -> None:
+        """Bind V3's fourth *finalization* exchange after a real scoped Effects call.
+
+        This has a stricter predecessor than the recovery suffix binder: all
+        three earlier B exchanges must already be real enrolled exchanges.
+        Keeping the markers separate prevents a seven-record recovery shortcut
+        from entering the publication final-fence path.
+        """
+        recovery = self._recovery
+        if (
+            recovery is None
+            or recovery.dispatched_stages != _H1_RECOVERY_STAGE_ORDER[:3]
+            or recovery.scoped_finalization_terminal
+        ):
+            raise H1CompletionPreparationUnavailable(
+                "H1 scoped finalization terminal predecessor differs"
+            )
+        self._bind_scoped_recovery_terminal_work(
+            semantic_input=semantic_input, authority_capture=authority_capture
+        )
+        recovery.scoped_finalization_terminal = True
+
+    async def _replay_scoped_finalization_effects(
+        self,
+        *,
+        historical_capture: object,
+        semantic_input: bytes,
+        effects_command_id: str,
+    ) -> H1CompletionOwnerExchangeV1:
+        """Make V3's third real, enrolled exchange from a durable scoped pin."""
+        recovery = self._recovery
+        if (
+            recovery is None
+            or recovery.pending_stage is not None
+            or recovery.dispatched_stages != _H1_RECOVERY_STAGE_ORDER[:2]
+            or recovery.poisoned
+        ):
+            raise H1CompletionPreparationUnavailable("H1 scoped finalization Effects order differs")
+        rebuilt, rebuilt_command_id = await self._pin_scoped_recovery_effects(
+            historical_capture=historical_capture, semantic_input=semantic_input
+        )
+        if rebuilt != semantic_input or rebuilt_command_id != effects_command_id:
+            raise H1CompletionPreparationUnavailable(
+                "H1 scoped finalization Effects pin differs from durable bytes"
+            )
+        exchange = await self._dispatch_scoped_recovery_effects(
+            historical_capture=historical_capture,
+            semantic_input=semantic_input,
+            effects_command_id=effects_command_id,
+        )
+        if not isinstance(exchange.returned, PublicPortSuccess):
+            raise H1CompletionPreparationUnavailable(
+                "H1 scoped finalization Effects exchange differs from durable bytes"
+            )
+        return exchange
 
     @staticmethod
     def _validate_recovery_semantic_input(stage: _H1RecoveryStage, semantic_input: bytes) -> None:
@@ -390,6 +502,89 @@ class H1CompletionPreparationSession:
                 inventory_reader.release(recovery.scoped_inventory)
                 recovery.scoped_inventory = None
 
+    @staticmethod
+    def _decode_scoped_recovery_request(semantic_input: bytes) -> Any:
+        """Decode a retained scoped request without collapsing its wire version."""
+        from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
+            PrepareH1ScopedDeliveryV1,
+        )
+        from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
+            PrepareH1ScopedDeliveryV2,
+        )
+
+        for decoder in (PrepareH1ScopedDeliveryV2, PrepareH1ScopedDeliveryV1):
+            try:
+                request = decoder.model_validate_json(semantic_input)
+            except ValueError:
+                continue
+            if type(request) is decoder and request.canonical_bytes() == semantic_input:
+                return request
+        raise H1CompletionPreparationUnavailable("H1 scoped recovery pin schema is malformed")
+
+    @staticmethod
+    def _scoped_recovery_producer(runtime: Any, *, semantic_input: bytes | None) -> Any:
+        """Select V2 only for a new V22 request; retained wire chooses replay."""
+        from chiplog.architecture.r7_runtime import (
+            R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
+        )
+        from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
+            PrepareH1ScopedDeliveryV2,
+        )
+        from chiplog.composition.h1_scoped_delivery_producer import H1ScopedDeliveryProducer
+        from chiplog.composition.h1_scoped_delivery_producer_v2 import H1ScopedDeliveryProducerV2
+
+        reader = getattr(runtime, "_h1_producer_inventory_reader", None)
+        if reader is None:
+            raise H1CompletionPreparationUnavailable("H1 scoped recovery inventory is unavailable")
+        if semantic_input is not None:
+            request = H1CompletionPreparationSession._decode_scoped_recovery_request(semantic_input)
+            return (
+                H1ScopedDeliveryProducerV2(runtime, reader)
+                if type(request) is PrepareH1ScopedDeliveryV2
+                else H1ScopedDeliveryProducer(runtime, reader)
+            )
+        manifest = getattr(getattr(runtime, "_supervisor", None), "_manifest", None)
+        return (
+            H1ScopedDeliveryProducerV2(runtime, reader)
+            if manifest is R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST
+            else H1ScopedDeliveryProducer(runtime, reader)
+        )
+
+    @staticmethod
+    def _require_scoped_recovery_request(
+        producer: Any, capture: Any, semantic_input: bytes, effects_command_id: str
+    ) -> Any:
+        """Authenticate a V1/V2 durable input against its exact producer class."""
+        from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
+            PrepareH1ScopedDeliveryV2,
+        )
+        from chiplog.composition.h1_scoped_delivery_producer_v2 import H1ScopedDeliveryProducerV2
+
+        request = H1CompletionPreparationSession._decode_scoped_recovery_request(semantic_input)
+        if type(producer) is H1ScopedDeliveryProducerV2:
+            if type(request) is not PrepareH1ScopedDeliveryV2:
+                raise H1CompletionPreparationUnavailable("H1 V2 producer received V1 recovery pin")
+            reader = getattr(producer, "_inventory_reader", None)
+            if (
+                request.identity.command_id != effects_command_id
+                or effects_command_id != capture.command_id
+                or request.identity.fingerprint != capture.command_fingerprint
+                or reader is None
+            ):
+                raise H1CompletionPreparationUnavailable("H1 V2 scoped recovery identity differs")
+            reader.recheck_held(capture)
+            current: Any = producer._build_request_held(capture)  # type: ignore[no-untyped-call]
+            normalized = producer._request_at_pinned_time(current, request, capture)
+            if normalized.canonical_bytes() != semantic_input:
+                raise H1CompletionPreparationUnavailable("H1 V2 scoped recovery pin differs")
+            return request
+        require = getattr(producer, "_require_pinned_request_held", None)
+        if not callable(require):
+            raise H1CompletionPreparationUnavailable("H1 scoped recovery producer is unavailable")
+        return require(
+            capture, semantic_input=semantic_input, effects_command_id=effects_command_id
+        )
+
     async def _pin_scoped_recovery_effects(
         self, *, historical_capture: object, semantic_input: bytes | None = None
     ) -> tuple[bytes, str]:
@@ -398,11 +593,6 @@ class H1CompletionPreparationSession:
         This only produces durable semantic bytes.  It deliberately does not
         create a broker route or admit an owner call.
         """
-        from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
-            PrepareH1ScopedDeliveryV1,
-        )
-        from chiplog.composition.h1_scoped_delivery_producer import H1ScopedDeliveryProducer
-
         recovery = self._recovery
         runtime = self._sources._runtime
         authority_reader = getattr(runtime, "_h1_scoped_delivery_authority_reader", None)
@@ -425,15 +615,13 @@ class H1CompletionPreparationSession:
         pinned_observed_time: int | None = None
         if semantic_input is not None:
             try:
-                pinned = PrepareH1ScopedDeliveryV1.model_validate_json(semantic_input)
+                pinned = self._decode_scoped_recovery_request(semantic_input)
             except ValueError as error:
                 raise H1CompletionPreparationUnavailable(
                     "H1 scoped recovery pin is malformed"
                 ) from error
             if pinned.canonical_bytes() != semantic_input:
-                raise H1CompletionPreparationUnavailable(
-                    "H1 scoped recovery pin is not canonical"
-                )
+                raise H1CompletionPreparationUnavailable("H1 scoped recovery pin is not canonical")
             pinned_deadline = pinned.current.lease_expires_at_ns
             pinned_observed_time = pinned.current.observed_time_ns
         capture = await inventory_reader.read(
@@ -442,7 +630,7 @@ class H1CompletionPreparationSession:
             pinned_observed_time_ns=pinned_observed_time,
         )
         try:
-            producer = H1ScopedDeliveryProducer(runtime, inventory_reader)
+            producer = self._scoped_recovery_producer(runtime, semantic_input=semantic_input)
             with runtime._authority_gate().hold():
                 request = producer._build_request_held(capture)
                 inventory_reader.recheck_held(capture)
@@ -462,7 +650,6 @@ class H1CompletionPreparationSession:
     ) -> H1CompletionOwnerExchangeV1:
         """Send one pinned V3 Effects request through enrolled guarded admission."""
         from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
-        from chiplog.composition.h1_scoped_delivery_producer import H1ScopedDeliveryProducer
         from chiplog.platform.broker import PublicPortRejected
 
         recovery = self._recovery
@@ -487,10 +674,10 @@ class H1CompletionPreparationSession:
             raise H1CompletionPreparationUnavailable("H1 scoped recovery pin has no inventory")
         clearance: Any = None
         try:
-            producer = H1ScopedDeliveryProducer(runtime, inventory_reader)
+            producer = self._scoped_recovery_producer(runtime, semantic_input=semantic_input)
             with runtime._authority_gate().hold():
-                request = producer._require_pinned_request_held(
-                    capture, semantic_input=semantic_input, effects_command_id=effects_command_id
+                request = self._require_scoped_recovery_request(
+                    producer, capture, semantic_input, effects_command_id
                 )
                 call, sent = producer._build_route_held(capture, request)
                 clearance = enrollment._reserve_recovery_clearance(
@@ -503,14 +690,13 @@ class H1CompletionPreparationSession:
                     # change after route construction, so authenticate the
                     # exact pinned request again before burning admission.
                     with runtime._authority_gate().hold():
-                        producer._require_pinned_request_held(
-                            capture,
-                            semantic_input=semantic_input,
-                            effects_command_id=effects_command_id,
+                        self._require_scoped_recovery_request(
+                            producer, capture, semantic_input, effects_command_id
                         )
                         # Enrollment consumes the one-use clearance under the
                         # same authority interval as the final inventory read.
                         enrolled_guard(admitted_sent, owner_frame_bytes)
+
             guarded_call = getattr(
                 runtime._supervisor.runtime(), "_call_with_admission_guard", None
             )
@@ -543,8 +729,8 @@ class H1CompletionPreparationSession:
                 )
             with runtime._authority_gate().hold():
                 enrollment._require_admitted_recovery(clearance, session=self, sent=sent)
-                producer._require_pinned_request_held(
-                    capture, semantic_input=semantic_input, effects_command_id=effects_command_id
+                self._require_scoped_recovery_request(
+                    producer, capture, semantic_input, effects_command_id
                 )
                 producer._require_result_held(
                     call=call,
@@ -554,16 +740,32 @@ class H1CompletionPreparationSession:
                     returned_at_ns=returned_at_ns,
                 )
                 exchange = H1CompletionOwnerExchangeV1(
-                    role="effects", sent=sent, returned=returned,
-                    sent_at_ns=sent_at_ns, returned_at_ns=returned_at_ns,
+                    role="effects",
+                    sent=sent,
+                    returned=returned,
+                    sent_at_ns=sent_at_ns,
+                    returned_at_ns=returned_at_ns,
                 )
                 enrollment._record_recovery_result(clearance, session=self, exchange=exchange)
+                self._retain_recovery_exchange("EFFECTS", exchange)
+                # The ordinary scoped recovery suffix has no complete-chain
+                # preflight and never reaches finalization CURRENT.  Bind the
+                # retained capture only for the finalization session; its P
+                # path then fails closed if this exact binding is absent.
+                if enrollment._require_recovery_record(self).preflight is not None:
+                    enrollment._bind_scoped_finalization_effects(
+                        session=self,
+                        inventory=capture,
+                        clearance=clearance,
+                        exchange=exchange,
+                    )
                 enrollment._burn_recovery_clearance(clearance)
                 clearance = None
+            recovery.result_bytes["EFFECTS"] = returned.canonical_payload
+            recovery.dispatched_stages += ("EFFECTS",)
             if cancelled is not None:
                 # The committed exchange is durable only after the coordinator
                 # appends it; it owns that append before releasing the lease.
-                self._retain_recovery_exchange("EFFECTS", exchange)
                 recovery.scoped_effects_cancelled = True
             return exchange
         except BaseException:
@@ -586,7 +788,7 @@ class H1CompletionPreparationSession:
             raise asyncio.CancelledError
 
     async def _issue_finalization(self) -> _H1LiveCompletionIssuance:
-        """Build one V2 only from this enrolled, fully settled recovery session."""
+        """Build the selected local, scoped-V1, or scoped-V2 issuance."""
         from chiplog.capabilities.agent_loop.completion_terminal_work_sources import (
             AcceptedCompletionWorkSourceV1,
             decode_completion_terminal_work_source,
@@ -595,21 +797,37 @@ class H1CompletionPreparationSession:
             H1LocalCommentaryOwnerCallV1,
             PreparedH1LocalCommentaryV1,
         )
+        from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
+            H1ScopedDeliveryOwnerCallV1,
+            PreparedH1ScopedDeliveryV1,
+        )
+        from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
+            H1ScopedDeliveryOwnerCallV2,
+            PreparedH1ScopedDeliveryV2,
+        )
         from chiplog.composition.completion_publication_contracts import (
+            DeliveryEffectsExchangeV1,
             H1LocalDeliveryEffectsExchangeV1,
+            PrepareCompleteAcceptanceAssemblyV1,
             PrepareH1CompleteAcceptanceAssemblyV1,
+            build_h1_scoped_v3_complete_acceptance_batch,
             completion_batch_fingerprint,
             expected_h1_complete_acceptance_records,
             h1_complete_acceptance_commands,
         )
         from chiplog.composition.h1_completion_issuance import (
             V2_SCHEMA,
+            V3_SCHEMA,
+            V4_SCHEMA,
             H1CompletionIssuanceV2,
+            H1CompletionIssuanceV3,
+            H1CompletionIssuanceV4,
             H1CompletionOwnerExchangeV1,
             H1CompletionReadPlanEvidenceV1,
             H1CompletionRecoveryRefV1,
             H1CompletionTerminalAdmissionWitnessV1,
             _h1_identity,
+            _h1_identity_from_retained_origin,
         )
         from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
         from chiplog.composition.h1_live_invocation_source import H1LiveInvocationSource
@@ -663,9 +881,7 @@ class H1CompletionPreparationSession:
             if preflight is None or recovery.dispatched_stages != _H1_RECOVERY_STAGE_ORDER:
                 raise H1CompletionPreparationUnavailable("H1 finalization stages are incomplete")
             if type(preflight) is not _H1CompleteChainPreflight:
-                raise H1CompletionPreparationUnavailable(
-                    "H1 finalization preflight is unavailable"
-                )
+                raise H1CompletionPreparationUnavailable("H1 finalization preflight is unavailable")
             if type(record.lease) is not _H1RecoveryExecutionLease:
                 raise H1CompletionPreparationUnavailable("H1 finalization lease is unavailable")
             completed_preflight = preflight
@@ -686,6 +902,7 @@ class H1CompletionPreparationSession:
                 if completed_chain.head is None or completed_chain.root != state.root:
                     raise ValueError("H1 finalization completed chain differs")
                 completed_chain_head = completed_chain.head
+                producer = completed_chain.selected_producer
             except (AttributeError, RuntimeError, TypeError, ValueError) as error:
                 raise H1CompletionPreparationUnavailable(
                     "H1 finalization completed chain is unavailable"
@@ -697,6 +914,8 @@ class H1CompletionPreparationSession:
             manifest = readplan.issue_manifest(capture=capture)
             original_identity = state.native.original_identity
             root = state.root
+        effects_call: Any
+        effects_result: Any
         try:
             if (
                 not isinstance(completion.returned, PublicPortSuccess)
@@ -717,12 +936,30 @@ class H1CompletionPreparationSession:
             conversation_result = PreparedConversationCompletionV1.model_validate_json(
                 conversation.returned.canonical_payload
             )
-            effects_call = H1LocalCommentaryOwnerCallV1.model_validate_json(
-                effects.sent.canonical_payload
-            )
-            effects_result = PreparedH1LocalCommentaryV1.model_validate_json(
-                effects.returned.canonical_payload
-            )
+            if producer == "SCOPED_V3":
+                try:
+                    effects_call = H1ScopedDeliveryOwnerCallV2.model_validate_json(
+                        effects.sent.canonical_payload
+                    )
+                except ValueError:
+                    effects_call = H1ScopedDeliveryOwnerCallV1.model_validate_json(
+                        effects.sent.canonical_payload
+                    )
+                if type(effects_call) is H1ScopedDeliveryOwnerCallV2:
+                    effects_result = PreparedH1ScopedDeliveryV2.model_validate_json(
+                        effects.returned.canonical_payload
+                    )
+                else:
+                    effects_result = PreparedH1ScopedDeliveryV1.model_validate_json(
+                        effects.returned.canonical_payload
+                    )
+            else:
+                effects_call = H1LocalCommentaryOwnerCallV1.model_validate_json(
+                    effects.sent.canonical_payload
+                )
+                effects_result = PreparedH1LocalCommentaryV1.model_validate_json(
+                    effects.returned.canonical_payload
+                )
             terminal_request = PrepareTerminalWork.model_validate_json(
                 terminal.sent.canonical_payload
             )
@@ -745,8 +982,7 @@ class H1CompletionPreparationSession:
                 if value.canonical_bytes() != raw:
                     raise ValueError("H1 recovery exchange is noncanonical")
             if (
-                conversation_request.canonical_json_bytes()
-                != conversation.sent.canonical_payload
+                conversation_request.canonical_json_bytes() != conversation.sent.canonical_payload
                 or conversation_result.canonical_json_bytes()
                 != conversation.returned.canonical_payload
             ):
@@ -755,23 +991,62 @@ class H1CompletionPreparationSession:
             raise H1CompletionPreparationUnavailable(
                 "H1 finalization exchange decoding differs"
             ) from error
-        assembly = PrepareH1CompleteAcceptanceAssemblyV1(
-            original_completion_request=completion_request,
-            prepared_completion=completion_result,
-            conversation_request=conversation_request,
-            conversation_result=conversation_result,
-            ordered_effects=(
-                H1LocalDeliveryEffectsExchangeV1(
-                    owner_call=effects_call,
-                    owner_result=effects_result,
-                    local_member=make_h1_local_prepared_commentary_member(effects_result.intent),
+        assembly: Any
+        if producer == "SCOPED_V3":
+            if (
+                type(effects_call)
+                not in (H1ScopedDeliveryOwnerCallV1, H1ScopedDeliveryOwnerCallV2)
+                or type(effects_result)
+                not in (PreparedH1ScopedDeliveryV1, PreparedH1ScopedDeliveryV2)
+            ):
+                raise H1CompletionPreparationUnavailable("H1 scoped finalization wire differs")
+            assembly = PrepareCompleteAcceptanceAssemblyV1(
+                original_completion_request=completion_request,
+                prepared_completion=completion_result,
+                conversation_request=conversation_request,
+                conversation_result=conversation_result,
+                ordered_effects=(
+                    DeliveryEffectsExchangeV1(
+                        delivery_id=effects_result.delivery_id,
+                        basis=effects_result.basis,
+                        precursor_request=effects_result.precursor_request,
+                        precursor_result=effects_result.precursor_result,
+                        intent_request=effects_result.intent_request,
+                        intent_result=effects_result.intent_result,
+                        acquisition_bytes=effects_result.acquisition_bytes,
+                        mandate_bytes=effects_result.mandate_bytes,
+                        retained_sources=effects_result.retained_sources,
+                    ),
                 ),
-            ),
-            work_source=work_source,
-            terminal_work_request=terminal_request,
-            terminal_work_result=terminal_result,
-        )
-        command_id, command_fingerprint = _h1_identity(assembly)
+                work_source=work_source,
+                terminal_work_request=terminal_request,
+                terminal_work_result=terminal_result,
+            )
+            command_id, command_fingerprint = _h1_identity_from_retained_origin(
+                assembly, effects_call.request.retained_origin
+            )
+        else:
+            assert type(effects_call) is H1LocalCommentaryOwnerCallV1
+            assert type(effects_result) is PreparedH1LocalCommentaryV1
+            assembly = PrepareH1CompleteAcceptanceAssemblyV1(
+                original_completion_request=completion_request,
+                prepared_completion=completion_result,
+                conversation_request=conversation_request,
+                conversation_result=conversation_result,
+                ordered_effects=(
+                    H1LocalDeliveryEffectsExchangeV1(
+                        owner_call=effects_call,
+                        owner_result=effects_result,
+                        local_member=make_h1_local_prepared_commentary_member(
+                            effects_result.intent
+                        ),
+                    ),
+                ),
+                work_source=work_source,
+                terminal_work_request=terminal_request,
+                terminal_work_result=terminal_result,
+            )
+            command_id, command_fingerprint = _h1_identity(assembly)
         identity = PublicationIdentity(
             tenant_id=completion_request.source.tenant_id,
             command_id=command_id,
@@ -786,8 +1061,9 @@ class H1CompletionPreparationSession:
             session=self,
             identity=identity,
             expected=manifest,
-            replay_exchanges=(completion, conversation, effects, terminal)
+            replay_exchanges=(completion, conversation, effects, terminal),
         )
+
         def scope_exchange(
             role: Literal["scope_issue", "scope_current"], wire: Any
         ) -> H1CompletionOwnerExchangeV1:
@@ -798,22 +1074,26 @@ class H1CompletionPreparationSession:
                 sent_at_ns=wire.sent_at_ns,
                 returned_at_ns=wire.returned_at_ns,
             )
+
         historical_current = scope_exchange("scope_current", current_wire)
         preterminal_current = scope_exchange("scope_current", preterminal_wire)
         final_current = scope_exchange("scope_current", final_wire)
-        if len(
-            {
-                historical_current.sent.request_id,
-                preterminal_current.sent.request_id,
-                final_current.sent.request_id,
-            }
-        ) != 3:
+        if (
+            len(
+                {
+                    historical_current.sent.request_id,
+                    preterminal_current.sent.request_id,
+                    final_current.sent.request_id,
+                }
+            )
+            != 3
+        ):
             raise H1CompletionPreparationUnavailable(
                 "H1 finalization CURRENT calls are not distinct"
             )
         from chiplog.composition.h1_terminal_call_identity import _terminal_call_identity
 
-        issuance = H1CompletionIssuanceV2(
+        issuance_fields = dict(
             assembly=assembly,
             capture=capture_value,
             owner_exchanges=(completion, conversation, effects, terminal),
@@ -835,27 +1115,101 @@ class H1CompletionPreparationSession:
                 registry_bytes=capture.registry_bytes,
             ),
         )
+        issuance: Any
+        if producer == "SCOPED_V3":
+            if type(effects_call) is H1ScopedDeliveryOwnerCallV2 and type(
+                effects_result
+            ) is PreparedH1ScopedDeliveryV2:
+                issuance = H1CompletionIssuanceV4.model_validate(
+                    {
+                        **issuance_fields,
+                        "effects_call": effects_call,
+                        "effects_result": effects_result,
+                    }
+                )
+                applicability_schema = V4_SCHEMA
+            elif type(effects_call) is H1ScopedDeliveryOwnerCallV1 and type(
+                effects_result
+            ) is PreparedH1ScopedDeliveryV1:
+                issuance = H1CompletionIssuanceV3.model_validate(
+                    {
+                        **issuance_fields,
+                        "effects_call": effects_call,
+                        "effects_result": effects_result,
+                    }
+                )
+                applicability_schema = V3_SCHEMA
+            else:
+                raise H1CompletionPreparationUnavailable(
+                    "H1 scoped finalization wire versions differ"
+                )
+        else:
+            issuance = H1CompletionIssuanceV2.model_validate(issuance_fields)
+            applicability_schema = V2_SCHEMA
         issuance_bytes = issuance.canonical_bytes()
-        commands = h1_complete_acceptance_commands(assembly)
-        batch = CompleteDeliveryBatchV2(
-            identity=identity,
-            authentication=WorkerAuthentication(
-                invocation=capture_value.invocation,
-                applicability_schema=V2_SCHEMA,
-                applicability_bytes=issuance_bytes,
-                applicability_fingerprint=hashlib.sha256(issuance_bytes).hexdigest(),
-            ),
-            expected=manifest,
-            loop_command=commands[0],
-            conversation_command=commands[1],
-            prepared_effects_commands=(commands[2],),
-            terminal_work_command=commands[3],
-            complete_records=expected_h1_complete_acceptance_records(assembly),
-            complete_batch_fingerprint="0" * 64,
+        authentication = WorkerAuthentication(
+            invocation=capture_value.invocation,
+            applicability_schema=applicability_schema,
+            applicability_bytes=issuance_bytes,
+            applicability_fingerprint=hashlib.sha256(issuance_bytes).hexdigest(),
         )
-        batch = batch.model_copy(
-            update={"complete_batch_fingerprint": completion_batch_fingerprint(batch)}
-        )
+        if producer == "SCOPED_V3":
+            if type(effects_call) is H1ScopedDeliveryOwnerCallV2:
+                from chiplog.composition import completion_publication_contracts as publication
+
+                build_v4 = getattr(
+                    publication, "build_h1_scoped_v4_complete_acceptance_batch", None
+                )
+                if not callable(build_v4):
+                    raise H1CompletionPreparationUnavailable(
+                        "H1 V4 publication batch builder is not mounted"
+                    )
+                batch = build_v4(
+                    assembly,
+                    effects_call,
+                    effects_result,
+                    identity=identity,
+                    authentication=authentication,
+                    expected=manifest,
+                )
+            else:
+                batch = build_h1_scoped_v3_complete_acceptance_batch(
+                    assembly,
+                    effects_call,
+                    effects_result,
+                    identity=identity,
+                    authentication=authentication,
+                    expected=manifest,
+                )
+        else:
+            commands = h1_complete_acceptance_commands(assembly)
+            batch = CompleteDeliveryBatchV2(
+                identity=identity,
+                authentication=authentication,
+                expected=manifest,
+                loop_command=commands[0],
+                conversation_command=commands[1],
+                prepared_effects_commands=(commands[2],),
+                terminal_work_command=commands[3],
+                complete_records=expected_h1_complete_acceptance_records(assembly),
+                complete_batch_fingerprint="0" * 64,
+            ).model_copy(
+                update={
+                    "complete_batch_fingerprint": completion_batch_fingerprint(
+                        CompleteDeliveryBatchV2(
+                            identity=identity,
+                            authentication=authentication,
+                            expected=manifest,
+                            loop_command=commands[0],
+                            conversation_command=commands[1],
+                            prepared_effects_commands=(commands[2],),
+                            terminal_work_command=commands[3],
+                            complete_records=expected_h1_complete_acceptance_records(assembly),
+                            complete_batch_fingerprint="0" * 64,
+                        )
+                    )
+                }
+            )
         with runtime._authority_gate().hold():
             enrollment._require_recovery_record_current(record)
             return enrollment._issue_recovery_issuance(
@@ -932,7 +1286,12 @@ class H1CompletionPreparationSession:
                     )
                 # This fresh P read happens before the terminal frame is built
                 # so its owner budget cannot expire during the read.
-                terminal_proof = await terminal_port._prepare_terminal_scope_proof(self)
+                if recovery.scoped_finalization_terminal:
+                    terminal_proof = (
+                        await terminal_port._prepare_scoped_finalization_terminal_scope_proof(self)
+                    )
+                else:
+                    terminal_proof = await terminal_port._prepare_terminal_scope_proof(self)
             sent, result_schema = self._build_recovery_call(
                 engine=engine,
                 stage=expected_stage,
@@ -940,14 +1299,25 @@ class H1CompletionPreparationSession:
             )
             if expected_stage == "TERMINAL_WORK" and finalization:
                 assert terminal_port is not None and terminal_proof is not None
-                clearance = terminal_port._bind_terminal_clearance(self, terminal_proof, sent)
+                if recovery.scoped_finalization_terminal:
+                    clearance = terminal_port._bind_scoped_finalization_terminal_clearance(
+                        self, terminal_proof, sent
+                    )
+                else:
+                    clearance = terminal_port._bind_terminal_clearance(self, terminal_proof, sent)
                 self._recovery_terminal_clearance = clearance
             else:
+                scoped_authority = (
+                    recovery.scoped_terminal_authority
+                    if expected_stage == "TERMINAL_WORK" and recovery.scoped_terminal_work
+                    else None
+                )
                 clearance = enrollment._reserve_recovery_clearance(
                     session=self,
                     stage=expected_stage,
                     semantic_input=semantic_input,
                     sent=sent,
+                    scoped_authority_capture=scoped_authority,
                 )
             guard = enrollment._recovery_admission_guard(clearance)
             guarded_call = getattr(engine, "_call_with_admission_guard", None)
@@ -966,8 +1336,7 @@ class H1CompletionPreparationSession:
             returned = await asyncio.shield(task)
             if isinstance(returned, PublicPortRejected):
                 raise H1CompletionPreparationUnavailable(
-                    "H1 recovery owner rejected broker call: "
-                    f"{returned.failure.kind}"
+                    f"H1 recovery owner rejected broker call: {returned.failure.kind}"
                 )
             enrollment._require_admitted_recovery(clearance, session=self, sent=sent)
             returned_at_ns = time.monotonic_ns()
@@ -984,9 +1353,19 @@ class H1CompletionPreparationSession:
                     "H1 recovery owner did not return its exact success"
                 )
             result_bytes = returned.canonical_payload
-            recovery.source._validate_result(
-                recovery.context, expected_stage, semantic_input, result_bytes
-            )
+            if expected_stage == "TERMINAL_WORK" and recovery.scoped_terminal_work:
+                validate_scoped = getattr(
+                    recovery.source, "_validate_scoped_terminal_work_result", None
+                )
+                if not callable(validate_scoped):
+                    raise H1CompletionPreparationUnavailable(
+                        "H1 scoped terminal recovery validator is unavailable"
+                    )
+                validate_scoped(recovery.context, semantic_input, result_bytes)
+            else:
+                recovery.source._validate_result(
+                    recovery.context, expected_stage, semantic_input, result_bytes
+                )
             exchange = H1CompletionOwnerExchangeV1(
                 role=self._recovery_exchange_role(expected_stage),
                 sent=sent,
@@ -1000,9 +1379,14 @@ class H1CompletionPreparationSession:
                 # postterminal CURRENT before coordinator-level draining.
                 self._terminal_work_exchange = exchange
                 assert terminal_port is not None
-                self._recovery_final_fence = await terminal_port._capture_final_completion_fence(
-                    self
-                )
+                if recovery.scoped_finalization_terminal:
+                    self._recovery_final_fence = (
+                        await terminal_port._capture_scoped_finalization_completion_fence(self)
+                    )
+                else:
+                    self._recovery_final_fence = (
+                        await terminal_port._capture_final_completion_fence(self)
+                    )
             enrollment._record_recovery_result(clearance, session=self, exchange=exchange)
             # Enrollment retains the identity-held exchange record, while the
             # one-shot admission clearance itself must be unavailable before
@@ -1942,15 +2326,17 @@ class H1CompletionPreparationSession:
             conversation_bytes = conversation_request.canonical_json_bytes()
             conversation_result_bytes = conversation_result.canonical_json_bytes()
             if (
-                PrepareExecutionCompletionFirstPathV2.model_validate_json(completion_bytes)
-                .canonical_bytes()
+                PrepareExecutionCompletionFirstPathV2.model_validate_json(
+                    completion_bytes
+                ).canonical_bytes()
                 != completion_bytes
                 or PreparedExecutionCompletion.model_validate_json(
                     completion_result_bytes
                 ).canonical_bytes()
                 != completion_result_bytes
-                or PrepareConversationCompletionV1.model_validate_json(conversation_bytes)
-                .canonical_json_bytes()
+                or PrepareConversationCompletionV1.model_validate_json(
+                    conversation_bytes
+                ).canonical_json_bytes()
                 != conversation_bytes
                 or PreparedConversationCompletionV1.model_validate_json(
                     conversation_result_bytes
@@ -1992,20 +2378,16 @@ class H1CompletionPreparationSession:
                 worker_session_id=fence.worker_session_id,
                 runtime_generation=fence.runtime_generation,
             )
-            if (
-                effects_fence.kind != "NON_SCHEDULER_NOT_APPLICABLE"
-                or (
-                    effects_fence.run_id,
-                    effects_fence.run_head,
-                    effects_fence.worker_session_id,
-                    effects_fence.runtime_generation,
-                )
-                != (
-                    fence.run_id,
-                    fence.run_head,
-                    fence.worker_session_id,
-                    fence.runtime_generation,
-                )
+            if effects_fence.kind != "NON_SCHEDULER_NOT_APPLICABLE" or (
+                effects_fence.run_id,
+                effects_fence.run_head,
+                effects_fence.worker_session_id,
+                effects_fence.runtime_generation,
+            ) != (
+                fence.run_id,
+                fence.run_head,
+                fence.worker_session_id,
+                fence.runtime_generation,
             ):
                 raise ValueError("historical effects fence translation differs")
             provisional = PrepareH1LocalCommentaryV1(
@@ -2024,11 +2406,14 @@ class H1CompletionPreparationSession:
                 provisional.identity.model_dump(mode="json"),
                 delivery_id,
             ]
-            intent_id = "h1-local-commentary:" + hashlib.sha256(
-                json.dumps(
-                    intent_preimage, sort_keys=True, ensure_ascii=False, separators=(",", ":")
-                ).encode()
-            ).hexdigest()
+            intent_id = (
+                "h1-local-commentary:"
+                + hashlib.sha256(
+                    json.dumps(
+                        intent_preimage, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+                    ).encode()
+                ).hexdigest()
+            )
             request = provisional.model_copy(update={"intent_id": intent_id})
             raw = request.canonical_bytes()
             if PrepareH1LocalCommentaryV1.model_validate_json(raw).canonical_bytes() != raw:
@@ -2058,17 +2443,16 @@ class H1CompletionPreparationSession:
             or type(effects_request) is not PrepareH1LocalCommentaryV1
             or type(effects_result) is not PreparedH1LocalCommentaryV1
         ):
-            raise H1CompletionPreparationUnavailable(
-                "H1 historical terminal work inputs differ"
-            )
+            raise H1CompletionPreparationUnavailable("H1 historical terminal work inputs differ")
         try:
             completion_bytes = completion_request.canonical_bytes()
             result_bytes = completion_result.canonical_bytes()
             effects_bytes = effects_request.canonical_bytes()
             effects_result_bytes = effects_result.canonical_bytes()
             if (
-                PrepareExecutionCompletionFirstPathV2.model_validate_json(completion_bytes)
-                .canonical_bytes()
+                PrepareExecutionCompletionFirstPathV2.model_validate_json(
+                    completion_bytes
+                ).canonical_bytes()
                 != completion_bytes
                 or PreparedExecutionCompletion.model_validate_json(result_bytes).canonical_bytes()
                 != result_bytes

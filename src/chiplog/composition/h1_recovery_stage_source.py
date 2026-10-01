@@ -45,6 +45,14 @@ from chiplog.capabilities.effects.h1_local_preparation_contracts import (
     PreparedH1LocalCommentaryV1,
     PrepareH1LocalCommentaryV1,
 )
+from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
+    PreparedH1ScopedDeliveryV1,
+    PrepareH1ScopedDeliveryV1,
+)
+from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
+    PreparedH1ScopedDeliveryV2,
+    PrepareH1ScopedDeliveryV2,
+)
 from chiplog.capabilities.projections.conversation_completion_owner import (
     ConversationCompletionOwner,
 )
@@ -664,6 +672,74 @@ class H1RecoveryStageSource:
             return raw
         except (RuntimeError, TypeError, ValueError) as error:
             raise H1RecoveryStageSourceError("historical terminal-work source differs") from error
+
+    def _reconstruct_scoped_terminal_work_input(self, context: object) -> bytes:
+        """Return terminal bytes from selected scoped Effects without local decoding."""
+        state = self._context_state(context)
+        self._require_current(context)
+        from chiplog.composition.h1_v3_recovery_historical_source import (
+            H1V3RecoveryHistoricalSource,
+        )
+
+        evidence = H1V3RecoveryHistoricalSource(self._runtime).read_terminal(
+            original_identity=state.native.original_identity,
+            original_fingerprint=state.native.original_fingerprint,
+            selected_seal=state.native.selected_seal,
+        )
+        raw = evidence.terminal_request.canonical_bytes()
+        if PrepareTerminalWork.model_validate_json(raw).canonical_bytes() != raw:
+            raise H1RecoveryStageSourceError("scoped terminal-work input is noncanonical")
+        return raw
+
+    def _scoped_effects_result_bytes(self, context: object) -> bytes:
+        """Release the authenticated selected scoped Effects result to its terminal binding."""
+        state = self._context_state(context)
+        self._require_current(context)
+        from chiplog.composition.h1_v3_recovery_historical_source import (
+            H1V3RecoveryHistoricalSource,
+        )
+
+        evidence = H1V3RecoveryHistoricalSource(self._runtime).read_terminal(
+            original_identity=state.native.original_identity,
+            original_fingerprint=state.native.original_fingerprint,
+            selected_seal=state.native.selected_seal,
+        )
+        result = evidence.effects.effects_result
+        if result is None:
+            raise H1RecoveryStageSourceError("scoped terminal work requires Effects result")
+        raw = result.canonical_bytes()
+        decoder = (
+            PreparedH1ScopedDeliveryV1
+            if type(evidence.effects.effects_request) is PrepareH1ScopedDeliveryV1
+            else PreparedH1ScopedDeliveryV2
+            if type(evidence.effects.effects_request) is PrepareH1ScopedDeliveryV2
+            else None
+        )
+        if decoder is None or decoder.model_validate_json(raw).canonical_bytes() != raw:
+            raise H1RecoveryStageSourceError("scoped Effects result is noncanonical")
+        return raw
+
+    def _validate_scoped_terminal_work_result(
+        self, context: object, semantic_input: bytes, result_bytes: bytes
+    ) -> None:
+        """Validate scoped terminal output through its typed selected predecessor."""
+        expected = self._reconstruct_scoped_terminal_work_input(context)
+        if semantic_input != expected:
+            raise H1RecoveryStageSourceError("scoped terminal-work input differs")
+        try:
+            request = PrepareTerminalWork.model_validate_json(semantic_input)
+            result = PreparedPostTerminalWork.model_validate_json(result_bytes)
+            prepared = prepare_h1_terminal_work(request)
+            validate_prepared_post_terminal_work(request, result)
+        except ValueError as error:
+            raise H1RecoveryStageSourceError("scoped terminal-work result is invalid") from error
+        if (
+            request.canonical_bytes() != semantic_input
+            or result.canonical_bytes() != result_bytes
+            or not isinstance(prepared, PreparedPostTerminalWork)
+            or prepared != result
+        ):
+            raise H1RecoveryStageSourceError("scoped terminal-work result differs")
 
     def _validate_conversation_result(
         self,

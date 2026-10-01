@@ -20,6 +20,8 @@ from chiplog.architecture.r7_runtime import (
     R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
+    R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
+    R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
     RuntimeAssemblyManifest,
 )
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
@@ -96,6 +98,9 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_own
 )
 from chiplog.capabilities.effects.h1_local_preparation_record_contracts import (
     SCHEMA_ID as H1_LOCAL_INTENT_SCHEMA,
+)
+from chiplog.capabilities.effects.scoped_intent_record_contracts import (
+    SCHEMA_ID as H1_SCOPED_INTENT_SCHEMA,
 )
 from chiplog.capabilities.projections.conversation_preparation_contracts import (
     ACCEPTED_ENTRY_SCHEMA,
@@ -180,6 +185,7 @@ class _H1ScopeWire:
     returned: PublicPortResult
     sent_at_ns: int
     returned_at_ns: int
+
 
 class _H1LiveCompletionMount:
     """Private installation owner for the one live H1 root issuer."""
@@ -280,6 +286,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 (AGENT_LOOP_OWNER, EDGE_SCHEMA),
                 (CONVERSATION_OWNER, ACCEPTED_ENTRY_SCHEMA),
                 ("effects", H1_LOCAL_INTENT_SCHEMA),
+                ("effects", H1_SCOPED_INTENT_SCHEMA),
             )
         )
     )
@@ -302,6 +309,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_scoped_delivery_authority_reader: Any | None
     _h1_producer_source_reader: Any | None
     _h1_producer_inventory_reader: Any | None
+    _h1_scoped_authorization_historical_binder: Any | None
+    _h1_scoped_authorization_effects_history_reader_v3: Any | None
+    _h1_scoped_authorization_resource_reader_v3: Any | None
     _h1_conversation_source_port: Any | None
     _h1_live_invocation_source: Any | None
     _h1_live_readplan_source: Any | None
@@ -401,17 +411,14 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             not isinstance(response, PublicPortSuccess)
             or response.request_id != broker_call.request_id
             or response.responder != callee
-            or response.schema_id
-            != "chiplog.deployment-trust.self-delivery-policy-result.v1"
+            or response.schema_id != "chiplog.deployment-trust.self-delivery-policy-result.v1"
             or time.monotonic_ns() >= broker_call.budget.absolute_deadline_ns
         ):
             raise PermissionError("J7 owner response is not authenticated and current")
         try:
             result: PreparedSelfDeliveryPolicyResultV1 = TypeAdapter(
                 PreparedSelfDeliveryPolicyResultV1
-            ).validate_json(
-                response.canonical_payload
-            )
+            ).validate_json(response.canonical_payload)
             if result.canonical_bytes() != response.canonical_payload:
                 raise ValueError("owner result is not canonical")
             if result.call_sha256 != hashlib.sha256(call.canonical_bytes()).hexdigest():
@@ -633,9 +640,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         fresh_result, fresh_wire = await self._read_current_hermetic_output_scope_with_wire(
             fresh_scope_request
         )
-        if (
-            not isinstance(fresh_result, CurrentHermeticExecutionScopeV1)
-            or not isinstance(fresh_wire.returned, PublicPortSuccess)
+        if not isinstance(fresh_result, CurrentHermeticExecutionScopeV1) or not isinstance(
+            fresh_wire.returned, PublicPortSuccess
         ):
             raise PermissionError("J7 fresh H1 scope read is not current")
         try:
@@ -684,9 +690,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             except H1PreissuanceSourceViolation as error:
                 raise PermissionError("J7 fresh H1 scope wire differs") from error
             scope = selected_scope.scope
-            selected = H1SelectedOutputSources(self).capture_scope_selected_current(
-                scope
-            )
+            selected = H1SelectedOutputSources(self).capture_scope_selected_current(scope)
             if selected is None:
                 raise PermissionError("J7 selected H1 sources are not current")
             if (
@@ -700,8 +704,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 != projection.retained_origin.authentication_result_bytes
                 or selected.selected_source.selected_initialization
                 != scope.selected_resource_observation_ref.selected_initialization
-                or selected.selected_source.admitted_authentication
-                != scope.admitted_authentication
+                or selected.selected_source.admitted_authentication != scope.admitted_authentication
                 or selected.verified.recipient != projection.delivery.selection.recipient
             ):
                 raise PermissionError("J7 selected H1 source replay differs")
@@ -832,9 +835,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         try:
             result: PreparedExternalDeliveryGrantResultV2 = TypeAdapter(
                 PreparedExternalDeliveryGrantResultV2
-            ).validate_json(
-                response.canonical_payload
-            )
+            ).validate_json(response.canonical_payload)
             if (
                 result.canonical_bytes() != response.canonical_payload
                 or result.call_sha256 != hashlib.sha256(call.canonical_bytes()).hexdigest()
@@ -850,9 +851,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         fresh_result, fresh_wire = await self._read_current_hermetic_output_scope_with_wire(
             fresh_scope_request
         )
-        if (
-            not isinstance(fresh_result, CurrentHermeticExecutionScopeV1)
-            or not isinstance(fresh_wire.returned, PublicPortSuccess)
+        if not isinstance(fresh_result, CurrentHermeticExecutionScopeV1) or not isinstance(
+            fresh_wire.returned, PublicPortSuccess
         ):
             raise PermissionError("J7 post-owner H1 scope read is not current")
         try:
@@ -885,11 +885,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 or replay_latest != latest
                 or replay_callee != callee
                 or self._supervisor.runtime().session("deployment_trust") != callee
-                or not (
-                    terms.not_before_ns
-                    <= replay_call.evidence.now_ns
-                    < terms.expires_at_ns
-                )
+                or not (terms.not_before_ns <= replay_call.evidence.now_ns < terms.expires_at_ns)
             ):
                 raise PermissionError("J7 grant authorization inputs became stale")
             try:
@@ -996,9 +992,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     ) -> _H1ScopeWire:
         """Consume one exact private H1 scope exchange without cross-call reuse."""
         key = _H1ScopeWireKey(role, request_id, caller, callee)
-        wires: dict[_H1ScopeWireKey, _H1ScopeWire | None] = getattr(
-            self, "_h1_scope_wires", {}
-        )
+        wires: dict[_H1ScopeWireKey, _H1ScopeWire | None] = getattr(self, "_h1_scope_wires", {})
         self._purge_expired_h1_scope_wires(wires)
         captured = wires.pop(key, None)
         if captured is None:
@@ -1014,9 +1008,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         self, role: _H1ScopeRole, *, request_id: str
     ) -> _H1ScopeWire:
         """Consume a uniquely reserved private scope wire without caller-provided sessions."""
-        wires: dict[_H1ScopeWireKey, _H1ScopeWire | None] = getattr(
-            self, "_h1_scope_wires", {}
-        )
+        wires: dict[_H1ScopeWireKey, _H1ScopeWire | None] = getattr(self, "_h1_scope_wires", {})
         self._purge_expired_h1_scope_wires(wires)
         matches = [key for key in wires if key.role == role and key.request_id == request_id]
         if len(matches) != 1:
@@ -1428,7 +1420,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             raise LoopRejected("H1 current replay requires the installed runtime shared gate")
         result: CurrentHermeticExecutionScopeResultV1 = (
             self._validate_current_hermetic_output_scope_held(
-            request, owner_candidate, callee=callee
+                request, owner_candidate, callee=callee
             )
         )
         return result
@@ -1499,8 +1491,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             or scope.scope_id != request.scope_id
             or scope.worker_session_id != request.expected_worker_session_id
             or scope.admitted_authentication != request.admitted_authentication_ref
-            or scope.selected_resource_observation_ref
-            != request.selected_resource_observation_ref
+            or scope.selected_resource_observation_ref != request.selected_resource_observation_ref
             or scope.authenticated_cli_state.trust_binding_digest
             != request.authenticated_cli_ref.trust_head
             or scope.authenticated_cli_state.credential_head
@@ -2453,6 +2444,15 @@ async def _open_installed_h1_runtime(
         nonlocal root_bound, runtime
         runtime = cast(CommonCliExecutionRuntime, opened)
         runtime._bind_h1_historical_custody_path(resources._custody_path)
+        # The V3 authorization reader is inert and installed before startup
+        # recovery. It has only raw historical readers under this same gate.
+        from chiplog.composition.h1_scoped_authorization_historical_binder import (
+            H1ScopedAuthorizationHistoricalBinder,
+        )
+
+        runtime._h1_scoped_authorization_historical_binder = H1ScopedAuthorizationHistoricalBinder(
+            runtime
+        )
         if hasattr(runtime, "_j7_operator_policy_key_pin"):
             raise RuntimeError("installed J7 operator policy pin is already mounted")
         # The supervisor derives the trusted tenant/database scope from its
@@ -2508,6 +2508,30 @@ async def _open_installed_h1_runtime(
         from chiplog.composition.h1_conversation_sources import H1ConversationSources
 
         runtime._h1_conversation_source_port = H1ConversationSources(runtime)
+        from chiplog.composition.h1_completion_exchange_registry import (
+            H1CompletionExchangeRegistry,
+        )
+        from chiplog.composition.h1_first_path_sources import H1FirstPathSources
+        from chiplog.composition.h1_native_member_sources import H1NativeMemberSources
+
+        if any(
+            getattr(runtime, name, None) is not None
+            for name in (
+                "_h1_first_path_sources",
+                "_h1_native_member_sources",
+                "_h1_completion_exchange_registry",
+            )
+        ):
+            raise RuntimeError("installed H1 completion sources are already mounted")
+        runtime._h1_first_path_sources = H1FirstPathSources(runtime)
+        runtime._h1_native_member_sources = H1NativeMemberSources(
+            runtime, runtime._h1_first_path_sources
+        )
+        runtime._h1_completion_exchange_registry = H1CompletionExchangeRegistry(
+            runtime=runtime,
+            native_sources=runtime._h1_native_member_sources,
+            scope_port=runtime._h1_preissuance_registration_source_port,
+        )
 
     with _configured(resources):
         try:
@@ -2543,7 +2567,7 @@ async def _open_installed_h1_runtime(
                 member_evidence: Any | None = None
                 worker_evidence: Any | None = None
                 decision_owner: Any | None = None
-                completion_exchange_registry: Any | None = None
+                completion_exchange_registry: Any | None = runtime._h1_completion_exchange_registry
                 conversation_sources: Any | None = runtime._h1_conversation_source_port
                 live_enrollment: Any | None = None
                 live_invocation_source: Any | None = None
@@ -2551,10 +2575,9 @@ async def _open_installed_h1_runtime(
                 scoped_delivery_authority_reader: Any | None = None
                 producer_source_reader: Any | None = None
                 producer_inventory_reader: Any | None = None
+                scoped_authorization_history_reader: Any | None = None
+                scoped_authorization_resource_reader: Any | None = None
                 try:
-                    from chiplog.composition.h1_completion_exchange_registry import (
-                        H1CompletionExchangeRegistry,
-                    )
                     from chiplog.composition.h1_delivery_evidence_journal import (
                         H1DeliveryEvidenceJournal,
                     )
@@ -2584,48 +2607,39 @@ async def _open_installed_h1_runtime(
                     ):
                         raise RuntimeError("installed enrolled evidence mount is absent")
                     mount = enrolled_mount[0]
-                    first_path = H1FirstPathSources(runtime)
-                    native_sources = H1NativeMemberSources(runtime, first_path)
+                    first_path = cast(H1FirstPathSources, runtime._h1_first_path_sources)
+                    native_sources = cast(H1NativeMemberSources, runtime._h1_native_member_sources)
                     worker_owner = _H1InstalledWorkerEvidenceOwner(
                         runtime, runtime._supervisor, launch, mount, native_sources
                     )
                     if any(
                         getattr(runtime, name, None) is not None
                         for name in (
-                            "_h1_first_path_sources",
-                            "_h1_native_member_sources",
                             "_h1_installed_worker_evidence_owner",
                             "_h1_pre_request_member_evidence",
                             "_h1_pre_request_worker_evidence",
-                            "_h1_completion_exchange_registry",
                             "_h1_live_completion_enrollment",
                             "_h1_live_invocation_source",
                             "_h1_live_readplan_source",
                             "_h1_scoped_delivery_authority_reader",
                             "_h1_producer_source_reader",
                             "_h1_producer_inventory_reader",
+                            "_h1_scoped_authorization_effects_history_reader_v3",
+                            "_h1_scoped_authorization_resource_reader_v3",
                         )
                     ):
                         raise RuntimeError("installed H1 worker sources are already mounted")
-                    runtime._h1_first_path_sources = first_path
-                    runtime._h1_native_member_sources = native_sources
-                    completion_exchange_registry = H1CompletionExchangeRegistry(
-                        runtime=runtime,
-                        native_sources=runtime._h1_native_member_sources,
-                        scope_port=runtime._h1_preissuance_registration_source_port,
-                    )
-                    runtime._h1_completion_exchange_registry = completion_exchange_registry
                     journal = cast(H1DeliveryEvidenceJournal, runtime._h1_delivery_evidence_journal)
                     member_evidence = H1PreRequestMemberEvidence(
                         journal,
-                        runtime._h1_native_member_sources,
+                        native_sources,
                         port,
                     )
                     runtime._h1_pre_request_member_evidence = member_evidence
                     runtime._h1_installed_worker_evidence_owner = worker_owner
                     worker_evidence = H1PreRequestWorkerEvidence(
                         journal,
-                        runtime._h1_native_member_sources,
+                        native_sources,
                         runtime._h1_installed_worker_evidence_owner,
                     )
                     runtime._h1_pre_request_worker_evidence = worker_evidence
@@ -2645,8 +2659,8 @@ async def _open_installed_h1_runtime(
                     runtime._h1_preseal_pe_decision_owner = decision_owner  # type: ignore[attr-defined]
                     live_enrollment = _H1LiveCompletionEnrollment(
                         runtime=runtime,
-                        first_path_sources=runtime._h1_first_path_sources,
-                        native_sources=runtime._h1_native_member_sources,
+                        first_path_sources=first_path,
+                        native_sources=native_sources,
                         scope_port=runtime._h1_preissuance_registration_source_port,
                         conversation_sources=runtime._h1_conversation_source_port,
                         completion_registry=runtime._h1_completion_exchange_registry,
@@ -2659,7 +2673,11 @@ async def _open_installed_h1_runtime(
                     runtime._h1_live_invocation_source = live_invocation_source
                     live_readplan_source = H1LiveReadPlanSource(runtime)
                     runtime._h1_live_readplan_source = live_readplan_source
-                    if manifest is R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST:
+                    if (
+                        manifest is R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST
+                        or manifest is R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST
+                        or manifest is R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST
+                    ):
                         from chiplog.composition.h1_producer_inventory import (
                             H1ProducerInventoryReader,
                         )
@@ -2688,9 +2706,39 @@ async def _open_installed_h1_runtime(
                         )
                         runtime._h1_producer_source_reader = producer_source_reader
                         runtime._h1_producer_inventory_reader = producer_inventory_reader
+                        if manifest is R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST:
+                            from chiplog.composition.h1_scoped_authorization_sources_v3 import (
+                                H1ScopedAuthorizationEffectsHistoryReaderV1,
+                                H1ScopedAuthorizationResourceReaderV1,
+                            )
+
+                            scoped_authorization_history_reader = (
+                                H1ScopedAuthorizationEffectsHistoryReaderV1(runtime)
+                            )
+                            runtime._h1_scoped_authorization_effects_history_reader_v3 = (
+                                scoped_authorization_history_reader
+                            )
+                            scoped_authorization_resource_reader = (
+                                H1ScopedAuthorizationResourceReaderV1(
+                                    runtime,
+                                    scoped_authorization_history_reader,
+                                    scoped_delivery_authority_reader,
+                                )
+                            )
+                            runtime._h1_scoped_authorization_resource_reader_v3 = (
+                                scoped_authorization_resource_reader
+                            )
                     authority._bind_installed_runtime(runtime)
                     yield runtime
                 finally:
+                    if scoped_authorization_resource_reader is not None:
+                        scoped_authorization_resource_reader.close()
+                    if hasattr(runtime, "_h1_scoped_authorization_resource_reader_v3"):
+                        del runtime._h1_scoped_authorization_resource_reader_v3
+                    if scoped_authorization_history_reader is not None:
+                        scoped_authorization_history_reader.close()
+                    if hasattr(runtime, "_h1_scoped_authorization_effects_history_reader_v3"):
+                        del runtime._h1_scoped_authorization_effects_history_reader_v3
                     if producer_inventory_reader is not None:
                         producer_inventory_reader.close()
                     if hasattr(runtime, "_h1_producer_inventory_reader"):
@@ -2765,9 +2813,14 @@ async def _open_installed_h1_runtime(
             # the ordinary path the inner finally already released this while
             # the appender remained open.
             if runtime is not None:
-                retained_inventory_reader = getattr(
-                    runtime, "_h1_producer_inventory_reader", None
+                retained_resource_reader = getattr(
+                    runtime, "_h1_scoped_authorization_resource_reader_v3", None
                 )
+                if retained_resource_reader is not None:
+                    retained_resource_reader.close()
+                if hasattr(runtime, "_h1_scoped_authorization_resource_reader_v3"):
+                    del runtime._h1_scoped_authorization_resource_reader_v3
+                retained_inventory_reader = getattr(runtime, "_h1_producer_inventory_reader", None)
                 if retained_inventory_reader is not None:
                     retained_inventory_reader.close()
                 if hasattr(runtime, "_h1_producer_inventory_reader"):
@@ -2811,6 +2864,9 @@ async def _open_installed_h1_runtime(
                 if retained_completion_exchange_registry is not None:
                     retained_completion_exchange_registry._revoke_all()
                     del runtime._h1_completion_exchange_registry
+                for name in ("_h1_native_member_sources", "_h1_first_path_sources"):
+                    if hasattr(runtime, name):
+                        delattr(runtime, name)
                 if hasattr(runtime, "_h1_postseal_recovery_journal"):
                     del runtime._h1_postseal_recovery_journal
                 if hasattr(runtime, "_h1_recovery_mount"):
@@ -2865,5 +2921,39 @@ async def open_installed_h1_scoped_runtime(
         resources=resources,
         responses=responses,
         manifest=R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
+    ) as runtime:
+        yield runtime
+
+
+@asynccontextmanager
+async def open_installed_h1_scoped_v21_runtime(
+    launch: object,
+    *,
+    resources: HermeticDispatchResources,
+    responses: tuple[bytes, ...] = (),
+) -> AsyncIterator[CommonCliExecutionRuntime]:
+    """Open the v21 scoped-dispatch graph while retaining v20 replay support."""
+    async with _open_installed_h1_runtime(
+        launch,
+        resources=resources,
+        responses=responses,
+        manifest=R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
+    ) as runtime:
+        yield runtime
+
+
+@asynccontextmanager
+async def open_installed_h1_scoped_v22_runtime(
+    launch: object,
+    *,
+    resources: HermeticDispatchResources,
+    responses: tuple[bytes, ...] = (),
+) -> AsyncIterator[CommonCliExecutionRuntime]:
+    """Open the installed V2 producer profile; callers cannot select V2 by DTO."""
+    async with _open_installed_h1_runtime(
+        launch,
+        resources=resources,
+        responses=responses,
+        manifest=R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
     ) as runtime:
         yield runtime

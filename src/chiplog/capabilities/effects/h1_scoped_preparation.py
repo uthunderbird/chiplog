@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from chiplog.capabilities.agent_loop.delivery_contracts import AcceptedDelivery
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts import (
@@ -24,7 +24,13 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_con
     PreparedExternalSelfDeliveryPolicyV1,
 )
 
-from .contracts import DeliverySendBinding, ExactHead, OriginSelection, ProviderRecipient
+from .contracts import (
+    DeliverySendBinding,
+    DispatchSemanticBinding,
+    ExactHead,
+    OriginSelection,
+    ProviderRecipient,
+)
 from .dispatch_authority_contracts import CapturedSource, Identity
 from .dispatch_v2_contracts import MandateHorizon
 from .fences import NonSchedulerFence
@@ -36,11 +42,21 @@ from .h1_producer_source_contracts import (
     require_h1_prepared_delivery_candidate,
     require_h1_prepared_delivery_sources,
 )
+from .h1_scoped_dispatch_semantics import (
+    H1_SCOPED_DISPATCH_V2_SEMANTICS,
+    PREPARE_H1_SCOPED_DELIVERY_V2,
+    require_h1_scoped_dispatch_operation,
+)
 from .h1_scoped_preparation_contracts import (
     H1ScopedDeliveryAuthorityEvidenceV1,
     H1ScopedDeliveryOwnerCallV1,
     H1ScopedDeliveryRejectedV1,
     PreparedH1ScopedDeliveryV1,
+)
+from .h1_scoped_preparation_v2_contracts import (
+    H1ScopedDeliveryOwnerCallV2,
+    H1ScopedDeliveryRejectedV2,
+    PreparedH1ScopedDeliveryV2,
 )
 from .scoped_intent_contracts import (
     DispatchMandateV3,
@@ -195,6 +211,7 @@ def derive_h1_scoped_delivery(
     clock_contract: Identity,
     clock_epoch: Identity,
     valid_until_ns: int,
+    semantics: DispatchSemanticBinding = H1_PRODUCER_SEMANTICS,
 ) -> H1ScopedDeliveryDerivationV1:
     """Derive the exact H1 candidate projection from closed owner DTOs.
 
@@ -265,7 +282,7 @@ def derive_h1_scoped_delivery(
             expires_at_ns=terms.expires_at_ns,
             continuity_policy=policy_head,
         ),
-        semantics=H1_PRODUCER_SEMANTICS,
+        semantics=semantics,
     )
     mandate_bytes = derived.canonical_bytes()
     candidate = H1PreparedDeliveryMandateCandidateV1(
@@ -298,8 +315,73 @@ def prepare_h1_scoped_delivery(
     not attest that no later revision exists; only the mounted broker reader can
     make that currentness decision.
     """
+    return cast(
+        PreparedH1ScopedDeliveryV1 | H1ScopedDeliveryRejectedV1,
+        _prepare_h1_scoped_delivery(
+            call,
+            call_type=H1ScopedDeliveryOwnerCallV1,
+            expected_semantics=H1_PRODUCER_SEMANTICS,
+            require_semantics=require_h1_producer_semantics,
+            result_type=PreparedH1ScopedDeliveryV1,
+            rejected_type=H1ScopedDeliveryRejectedV1,
+        ),
+    )
+
+
+def prepare_h1_scoped_delivery_v2(
+    call: H1ScopedDeliveryOwnerCallV2,
+) -> PreparedH1ScopedDeliveryV2 | H1ScopedDeliveryRejectedV2:
+    """Prepare V2 with a dispatch-specific semantic manifest before all derivation."""
+    return cast(
+        PreparedH1ScopedDeliveryV2 | H1ScopedDeliveryRejectedV2,
+        _prepare_h1_scoped_delivery(
+            call,
+            call_type=H1ScopedDeliveryOwnerCallV2,
+            expected_semantics=H1_SCOPED_DISPATCH_V2_SEMANTICS,
+            require_semantics=_require_h1_scoped_delivery_v2_semantics,
+            result_type=PreparedH1ScopedDeliveryV2,
+            rejected_type=H1ScopedDeliveryRejectedV2,
+        ),
+    )
+
+
+def _require_h1_scoped_delivery_v2_semantics(
+    *,
+    supported_semantics: DispatchSemanticBinding | None,
+    original: CapturedSource,
+    current: CapturedSource,
+    clock_contract: str,
+    clock_epoch: str,
+    valid_until_ns: int,
+) -> None:
+    if supported_semantics != H1_SCOPED_DISPATCH_V2_SEMANTICS:
+        raise ValueError("H1 V2 scoped delivery needs registered dispatch semantics")
+    require_h1_scoped_dispatch_operation(
+        semantics=H1_SCOPED_DISPATCH_V2_SEMANTICS,
+        operation=PREPARE_H1_SCOPED_DELIVERY_V2,
+        original=original,
+        current=current,
+        clock_contract=clock_contract,
+        clock_epoch=clock_epoch,
+        valid_until_ns=valid_until_ns,
+        allow_producer=True,
+    )
+
+
+def _prepare_h1_scoped_delivery(
+    call: Any,
+    *,
+    call_type: Any,
+    expected_semantics: DispatchSemanticBinding,
+    require_semantics: Any,
+    result_type: Any,
+    rejected_type: Any,
+) -> Any:
+    def reject(reason: str) -> Any:
+        return rejected_type(disposition="DENIED", reason=reason)
+
     try:
-        call = H1ScopedDeliveryOwnerCallV1.model_validate_json(call.canonical_bytes())
+        call = call_type.model_validate_json(call.canonical_bytes())
         request = call.request
         evidence = request.authority_evidence
         grant = PreparedExternalDeliveryGrantV2.model_validate_json(evidence.canonical_grant_bytes)
@@ -321,7 +403,7 @@ def prepare_h1_scoped_delivery(
         attempt = _loop_head(first.selected_attempt)
         loop_basis_head = prepared_delivery_basis_head_v3(basis)
 
-        if request.current.supported_semantics != H1_PRODUCER_SEMANTICS:
+        if request.current.supported_semantics != expected_semantics:
             return _reject("H1 scoped delivery needs registered producer semantics")
         if not isinstance(request.fence, NonSchedulerFence):
             return _reject("H1 scoped delivery requires a non-scheduler fence")
@@ -400,7 +482,7 @@ def prepare_h1_scoped_delivery(
             or request.complete_current_origin_sources != (policy_record,)
         ):
             return _reject("H1 scoped delivery authority records differ from policy projection")
-        require_h1_producer_semantics(
+        require_semantics(
             supported_semantics=request.current.supported_semantics,
             original=request.original_sources.semantic_registry,
             current=request.current.sources.semantic_registry,
@@ -425,6 +507,7 @@ def prepare_h1_scoped_delivery(
             clock_contract=terms.clock_contract,
             clock_epoch=terms.clock_epoch,
             valid_until_ns=request.current.lease_expires_at_ns,
+            semantics=expected_semantics,
         )
         candidate = derivation.candidate
         derived = derivation.mandate
@@ -506,7 +589,7 @@ def prepare_h1_scoped_delivery(
             ),
         )
         validate_scoped_intent_publication(intent_request, intent_result, retained)
-        return PreparedH1ScopedDeliveryV1(
+        return result_type(
             source_request_fingerprint=_sha(request.canonical_bytes()),
             authority_evidence=evidence,
             delivery_id=delivery.delivery_id,
@@ -520,11 +603,12 @@ def prepare_h1_scoped_delivery(
             retained_sources=retained.original_sources,
         )
     except (TypeError, ValueError, IndexError, AttributeError) as error:
-        return _reject(str(error))
+        return reject(str(error))
 
 
 __all__ = [
     "H1ScopedDeliveryDerivationV1",
     "derive_h1_scoped_delivery",
     "prepare_h1_scoped_delivery",
+    "prepare_h1_scoped_delivery_v2",
 ]

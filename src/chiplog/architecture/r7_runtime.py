@@ -1027,6 +1027,45 @@ R14_R17_H1_SCOPED_EFFECTS_V3_J7_EVALUATION_MANIFEST = replace(
     R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST, environment="evaluation"
 )
 
+# V22 installs the dispatch-aware H1 producer.  The v20 and v21 manifests are
+# retained as exact historical generations.
+_V22_H1_SCOPED_DELIVERY_ROUTE = RoutedCallDecl(
+    "effects.prepare_h1_scoped_delivery_v2",
+    "broker",
+    "effects",
+    "chiplog.effects.h1-scoped-delivery-owner-call.v2",
+    "chiplog.effects.prepared-h1-scoped-delivery.v2",
+)
+_V22_EFFECTS_OPERATIONS = tuple(
+    sorted((*_V21_SCOPED_DISPATCH_OPERATIONS, _V22_H1_SCOPED_DELIVERY_ROUTE.operation_id))
+)
+R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST = replace(
+    R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
+    manifest_version=22,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_V22_EFFECTS_OPERATIONS,
+            public_operations=_V22_EFFECTS_OPERATIONS,
+            target_ids=("chiplog.capabilities.effects._h1_scoped_v2_process:dispatch",),
+        )
+        if owner.owner_id == "effects"
+        else owner
+        for owner in R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST.routes,
+                _V22_H1_SCOPED_DELIVERY_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_R17_H1_SCOPED_EFFECTS_V2_J7_EVALUATION_MANIFEST = replace(
+    R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST, environment="evaluation"
+)
 
 
 class RuntimeManifestViolation(ValueError):
@@ -1061,6 +1100,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         19,
         20,
         21,
+        22,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1083,6 +1123,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         19: R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
         20: R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
         21: R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
+        22: R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")

@@ -13,6 +13,7 @@ from chiplog.composition.h1_completion_issuance import (
     V3_SCHEMA,
     H1CompletionIssuanceV2,
     H1CompletionIssuanceV3,
+    H1CompletionOwnerExchangeV1,
 )
 from chiplog.composition.h1_live_completion_enrollment import (
     H1LiveCompletionEnrollmentUnavailable,
@@ -21,6 +22,10 @@ from chiplog.composition.h1_live_completion_enrollment import (
 from chiplog.composition.h1_postseal_recovery_coordinator import (
     _H1CompleteChainPreflight,
     _H1PostSealRecoveryCoordinator,
+)
+from chiplog.composition.h1_producer_inventory import (
+    H1ProducerInventoryCapture,
+    H1ProducerInventoryReader,
 )
 from chiplog.composition.h1_recovery_execution_fence import _H1RecoveryExecutionLease
 from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
@@ -76,6 +81,15 @@ def test_recovery_enrollment_binds_root_producer_to_exact_issuance_schema(
     monkeypatch.setattr(enrollment, "_require_recovery_record", lambda _: record)
     monkeypatch.setattr(enrollment, "_require_recovery_record_current", lambda _: None)
     monkeypatch.setattr(enrollment, "_selected_recovery_producer", lambda _: producer)
+    monkeypatch.setattr(
+        enrollment,
+        "_expected_recovery_issuance",
+        lambda _: (
+            (H1CompletionIssuanceV2, V2_SCHEMA)
+            if producer == "LOCAL_V2"
+            else (H1CompletionIssuanceV3, V3_SCHEMA)
+        ),
+    )
 
     if accepted:
         source = enrollment._issue_recovery_issuance(
@@ -109,6 +123,11 @@ def test_recovery_enrollment_rejects_a_changed_applicability_fingerprint(
     monkeypatch.setattr(enrollment, "_require_recovery_record", lambda _: record)
     monkeypatch.setattr(enrollment, "_require_recovery_record_current", lambda _: None)
     monkeypatch.setattr(enrollment, "_selected_recovery_producer", lambda _: "SCOPED_V3")
+    monkeypatch.setattr(
+        enrollment,
+        "_expected_recovery_issuance",
+        lambda _: (H1CompletionIssuanceV3, V3_SCHEMA),
+    )
 
     with pytest.raises(H1LiveCompletionEnrollmentUnavailable, match="producer, schema, or payload"):
         enrollment._issue_recovery_issuance(
@@ -168,3 +187,54 @@ def test_selected_recovery_producer_requires_the_exact_held_root_context_and_lea
     state.root = object()
     with pytest.raises(H1LiveCompletionEnrollmentUnavailable, match="producer ROOT is not current"):
         enrollment._selected_recovery_producer(record)
+
+
+def test_scoped_finalization_binding_rejects_a_crossed_effects_exchange(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid inventory cannot be reused with another admitted Effects exchange."""
+    enrollment = object.__new__(_H1LiveCompletionEnrollment)
+    enrollment._gate = AuthorityGate.for_database(tmp_path / "authority.sqlite3")
+    inventory = object.__new__(H1ProducerInventoryCapture)
+    reader = object.__new__(H1ProducerInventoryReader)
+    exchange = H1CompletionOwnerExchangeV1.model_construct(
+        role="effects", sent=object()
+    )
+    crossed = H1CompletionOwnerExchangeV1.model_construct(role="effects", sent=object())
+    session = SimpleNamespace(_effects_exchange=exchange)
+    record = SimpleNamespace(
+        scoped_inventory=None,
+        scoped_effects_exchange=None,
+        scoped_effects_clearance=None,
+    )
+    clearance = object()
+    clearance_record = SimpleNamespace(
+        enrollment=record,
+        stage="EFFECTS",
+        state="RECORDED",
+        admitted_result=True,
+        exchange=exchange,
+        sent=exchange.sent,
+    )
+    enrollment._runtime = SimpleNamespace(_h1_producer_inventory_reader=reader)
+    enrollment._recovery_clearances = {id(clearance): clearance_record}
+    monkeypatch.setattr(enrollment, "_require_recovery_record", lambda value: record)
+    monkeypatch.setattr(enrollment, "_selected_recovery_producer", lambda value: "SCOPED_V3")
+    monkeypatch.setattr(enrollment, "_require_complete_chain_preflight", lambda value: None)
+    monkeypatch.setattr(
+        H1ProducerInventoryReader, "replay_post_effects_scope_held", lambda self, value: object()
+    )
+
+    enrollment._bind_scoped_finalization_effects(
+        session=session, inventory=inventory, clearance=clearance, exchange=exchange
+    )
+    clearance_record.state = "BURNED"
+    with enrollment._gate.hold():
+        assert enrollment._require_scoped_finalization_inventory(session) is inventory
+
+    session._effects_exchange = crossed
+    with (
+        enrollment._gate.hold(),
+        pytest.raises(H1LiveCompletionEnrollmentUnavailable, match="inventory/exchange binding"),
+    ):
+        enrollment._require_scoped_finalization_inventory(session)

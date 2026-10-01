@@ -97,21 +97,36 @@ def test_private_ingress_denies_unissued_foreign_stale_and_revoked_sources(
     session._cut = cut
     enrolled = _EnrollmentRecord(session, object.__new__(_H1LiveCompletionHandle), cut)
     enrollment._records[id(session)] = enrolled
-    stale = _IssuanceRecord(enrolled, forged, authority, state="ISSUED")
+    stale = _IssuanceRecord(
+        enrolled,
+        forged,
+        authority,
+        issuance=object(),
+        batch=object(),
+        readplan_capture=object(),
+        state="ISSUED",
+    )
     enrollment._issuances[id(forged)] = stale
 
-    def reject_stale(session_arg: object, cut_arg: object) -> None:
-        assert session_arg is session
-        assert cut_arg is cut
+    def reject_stale(record_arg: object) -> None:
+        assert record_arg is enrolled
         raise H1LiveCompletionEnrollmentUnavailable("H1 session source cut is stale")
 
-    monkeypatch.setattr(enrollment, "_require_live", reject_stale)
+    monkeypatch.setattr(enrollment, "_require_recovery_record_current", reject_stale)
     with pytest.raises(H1LiveCompletionEnrollmentUnavailable, match="source cut is stale"):
         enrollment._consume_authority_issuance(authority=authority, source=forged)
     assert stale.state == "BURNED"
 
     revoked_source = object.__new__(_H1LiveCompletionIssuance)
-    revoked = _IssuanceRecord(enrolled, revoked_source, authority, state="ISSUED")
+    revoked = _IssuanceRecord(
+        enrolled,
+        revoked_source,
+        authority,
+        issuance=object(),
+        batch=object(),
+        readplan_capture=object(),
+        state="ISSUED",
+    )
     enrollment._issuances[id(revoked_source)] = revoked
     enrollment._revoke_all()
     assert revoked.state == "BURNED"

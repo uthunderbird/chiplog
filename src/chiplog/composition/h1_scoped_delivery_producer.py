@@ -16,16 +16,21 @@ from chiplog.capabilities.effects.contracts import CommandIdentity
 from chiplog.capabilities.effects.fences import Absent
 from chiplog.capabilities.effects.h1_scoped_preparation import _effect_head
 from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
+    H1ScopedDeliveryAuthorityEvidenceV1,
     H1ScopedDeliveryOwnerCallV1,
     H1ScopedDeliveryRouteV1,
     PreparedH1ScopedDeliveryV1,
     PrepareH1ScopedDeliveryV1,
 )
 from chiplog.capabilities.effects.scoped_intent_contracts import (
+    DispatchMandateV3,
     ExternalActionIntentV3,
     PreparedDeliveryAuthority,
+    PreparedDeliveryBasisV3,
     PrepareScopedIntentPublication,
+    ScopedAuthorityRecord,
     ScopedDispatchAcquisition,
+    ScopedPrecursorRequest,
     ScopedPrecursorResult,
 )
 from chiplog.capabilities.effects.scoped_intent_record_contracts import (
@@ -116,9 +121,7 @@ class H1ScopedDeliveryProducer:
         request = self._build_request_held(capture)
         return self._build_route_held(capture, request)
 
-    def _build_request_held(
-        self, capture: H1ProducerInventoryCapture
-    ) -> PrepareH1ScopedDeliveryV1:
+    def _build_request_held(self, capture: H1ProducerInventoryCapture) -> PrepareH1ScopedDeliveryV1:
         """Build the complete, issuer-held semantic Effects request."""
         self._runtime._authority_gate().require_held()
         engine = self._runtime._supervisor.runtime()
@@ -187,9 +190,10 @@ class H1ScopedDeliveryProducer:
         self._runtime._authority_gate().require_held()
         self._inventory_reader.recheck_held(capture)
         current_request = self._build_request_held(capture)
-        if request.canonical_bytes() != self._request_at_pinned_time(
-            current_request, request, capture
-        ).canonical_bytes():
+        if (
+            request.canonical_bytes()
+            != self._request_at_pinned_time(current_request, request, capture).canonical_bytes()
+        ):
             raise H1ScopedDeliveryProducerViolation(
                 "H1 scoped producer request differs from current inventory"
             )
@@ -278,9 +282,10 @@ class H1ScopedDeliveryProducer:
             )
         self._inventory_reader.recheck_held(capture)
         current_request = self._build_request_held(capture)
-        if self._request_at_pinned_time(
-            current_request, request, capture
-        ).canonical_bytes() != semantic_input:
+        if (
+            self._request_at_pinned_time(current_request, request, capture).canonical_bytes()
+            != semantic_input
+        ):
             raise H1ScopedDeliveryProducerViolation(
                 "H1 scoped producer pinned request differs from current inventory"
             )
@@ -356,13 +361,29 @@ def _retained_sources(
 ) -> tuple[object, ...]:
     """Reproduce the owner-required retained-source projection exactly."""
     derivation = capture.derivation
-    evidence = capture.evidence
-    policy_record = derivation.policy_record
-    mandate = derivation.mandate
-    precursor = derivation.precursor_request
+    return _retained_sources_from_closed(
+        request,
+        mandate=derivation.mandate,
+        policy_record=derivation.policy_record,
+        precursor=derivation.precursor_request,
+        evidence=capture.evidence,
+        basis=capture.projection.basis,
+    )
+
+
+def _retained_sources_from_closed(
+    request: PrepareH1ScopedDeliveryV1,
+    *,
+    mandate: DispatchMandateV3,
+    policy_record: ScopedAuthorityRecord,
+    precursor: ScopedPrecursorRequest,
+    evidence: H1ScopedDeliveryAuthorityEvidenceV1,
+    basis: PreparedDeliveryBasisV3,
+) -> tuple[object, ...]:
+    """Derive retained sources from the exact closed inputs used by the owner."""
     acquisition = ScopedDispatchAcquisition(
         authority=PreparedDeliveryAuthority(
-            basis=capture.projection.basis,
+            basis=basis,
             preexisting_communication_authority=policy_record,
             current_disclosure_authority=policy_record,
             exact_mandate_bytes=mandate.canonical_bytes(),

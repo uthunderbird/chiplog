@@ -23,6 +23,9 @@ from chiplog.capabilities.agent_loop.execution_completion_contracts import (
 from chiplog.capabilities.agent_loop.execution_completion_preparation import (
     prepare_first_path_execution_completion,
 )
+from chiplog.capabilities.agent_loop.execution_first_path_completion_contracts import (
+    PrepareExecutionCompletionFirstPathV2,
+)
 from chiplog.capabilities.agent_loop.post_terminal_contracts import (
     PreparedPostTerminalWork,
 )
@@ -50,6 +53,7 @@ from chiplog.capabilities.projections.conversation_completion_owner import (
     ConversationCompletionOwner,
 )
 from chiplog.capabilities.projections.conversation_preparation_contracts import (
+    PrepareConversationCompletionV1,
     PreparedConversationCompletionV1,
 )
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
@@ -68,6 +72,7 @@ from chiplog.composition.h1_preseal_p_scope_wires import decode_h1_preseal_p_sco
 from chiplog.composition.h1_preseal_pe_anchor_records import decode_h1_preseal_pe_anchor_record
 from chiplog.composition.h1_v2_recovery_native_source import H1V2RecoveryNativeSource
 from chiplog.composition.h1_verified_snapshot_rows import H1VerifiedSnapshotRows
+from chiplog.composition.r14_execution_inbox_records import RetainedInboxExecutionInitialization
 from chiplog.composition.r16_dispatch_registry import (
     ResourceObservation,
     historical_recipient,
@@ -83,6 +88,8 @@ if TYPE_CHECKING:
     from chiplog.composition.h1_completion_issuance import (
         H1CompletionIssuanceV1,
         H1CompletionIssuanceV2,
+        H1CompletionIssuanceV3,
+        H1CompletionIssuanceV4,
     )
 
 
@@ -91,7 +98,12 @@ class H1HistoricalSelection:
     """The exact selected owner decision, paired with its verified issuance."""
 
     decision: SelectedOwnerDecision
-    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2
+    issuance: (
+        H1CompletionIssuanceV1
+        | H1CompletionIssuanceV2
+        | H1CompletionIssuanceV3
+        | H1CompletionIssuanceV4
+    )
 
 
 class H1V2SelectedPresealFullFrameUnavailable(ValueError):
@@ -160,26 +172,44 @@ def _require_typed_inputs(batch: object, issuance: object) -> None:
     from chiplog.composition.h1_completion_issuance import (
         H1CompletionIssuanceV1,
         H1CompletionIssuanceV2,
+        H1CompletionIssuanceV3,
+        H1CompletionIssuanceV4,
     )
 
-    if type(issuance) not in (H1CompletionIssuanceV1, H1CompletionIssuanceV2):
+    if type(issuance) not in (
+        H1CompletionIssuanceV1,
+        H1CompletionIssuanceV2,
+        H1CompletionIssuanceV3,
+        H1CompletionIssuanceV4,
+    ):
         raise TypeError(
-            "H1 historical sources require H1CompletionIssuanceV1 or H1CompletionIssuanceV2"
+            "H1 historical sources require H1CompletionIssuanceV1, "
+            "H1CompletionIssuanceV2, H1CompletionIssuanceV3, or H1CompletionIssuanceV4"
         )
 
 
 def _retained_origin(
-    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
+    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2 | H1CompletionIssuanceV4,
 ) -> H1RetainedSelectedWrapperV1:
-    """Return the one H0/R17 wrapper embedded by the local effects exchange."""
-    effects = issuance.assembly.ordered_effects
+    """Return the one H0/R17 wrapper from the retained Effects owner request."""
+    return cast(H1RetainedSelectedWrapperV1, _scoped_effect_request(issuance).retained_origin)
+
+
+def _scoped_effect_request(
+    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2 | H1CompletionIssuanceV4,
+) -> Any:
+    from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV4
+
+    if type(issuance) is H1CompletionIssuanceV4:
+        return issuance.effects_call.request
+    effects = cast(tuple[Any, ...], issuance.assembly.ordered_effects)
     if len(effects) != 1:
         raise ValueError("H1 historical issuance has no unique local effects source")
-    return effects[0].owner_call.request.retained_origin
+    return effects[0].owner_call.request
 
 
 def _verify_historical_r16(
-    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
+    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2 | H1CompletionIssuanceV4,
     *,
     h0_selection: HistoricalH0R17Selection,
     custody: object,
@@ -199,7 +229,7 @@ def _verify_historical_r16(
         initialization.dispatch_clock_epoch,
         initialization.dispatch_signature,
     )
-    effect_request = issuance.assembly.ordered_effects[0].owner_call.request
+    effect_request = _scoped_effect_request(issuance)
     scope = effect_request.selected_scope.scope
     resource_ref = scope.selected_resource_observation_ref
     selected_initialization = resource_ref.selected_initialization
@@ -327,12 +357,14 @@ def _selected_owner_decision(
     return cast(SelectedOwnerDecision, decision)
 
 
-def _verify_selected_v2_delivery_closure(
+def _verify_selected_h1_delivery_closure(
     decision: SelectedOwnerDecision,
     runtime: object,
-    issuance: H1CompletionIssuanceV2 | None = None,
+    issuance: (
+        H1CompletionIssuanceV2 | H1CompletionIssuanceV3 | H1CompletionIssuanceV4 | None
+    ) = None,
 ) -> str | None:
-    """Reopen the selected V2 closure before consuming its issuance evidence.
+    """Reopen the selected V2/V3 closure before consuming issuance evidence.
 
     The caller holds the installed authority gate.  This deliberately dispatches
     from the public applicability schema, rather than decoding the issuance:
@@ -342,7 +374,11 @@ def _verify_selected_v2_delivery_closure(
     from chiplog.composition.h1_completion_issuance import (
         SCHEMA,
         V2_SCHEMA,
+        V3_SCHEMA,
+        V4_SCHEMA,
         H1CompletionIssuanceV2,
+        H1CompletionIssuanceV3,
+        H1CompletionIssuanceV4,
     )
     from chiplog.composition.h1_delivery_evidence_contracts import (
         ROOT_V2_SCHEMA,
@@ -358,7 +394,7 @@ def _verify_selected_v2_delivery_closure(
     applicability_schema = batch.authentication.applicability_schema
     if applicability_schema == SCHEMA:
         return None
-    if applicability_schema != V2_SCHEMA:
+    if applicability_schema not in (V2_SCHEMA, V3_SCHEMA, V4_SCHEMA):
         raise ValueError("H1 selected delivery closure has unknown applicability")
     gate_factory = getattr(runtime, "_authority_gate", None)
     if not callable(gate_factory):
@@ -412,22 +448,39 @@ def _verify_selected_v2_delivery_closure(
     if not isinstance(retained_principal, str):
         raise ValueError("H1 selected V2 delivery closure principal differs")
     if issuance is not None:
-        if type(issuance) is not H1CompletionIssuanceV2:
-            raise ValueError("H1 selected V2 delivery closure issuance differs")
-        if retained_principal != _selected_v2_issuance_principal(issuance):
+        if type(issuance) not in (
+            H1CompletionIssuanceV2,
+            H1CompletionIssuanceV3,
+            H1CompletionIssuanceV4,
+        ):
+            raise ValueError("H1 selected delivery closure issuance differs")
+        if retained_principal != _selected_h1_issuance_principal(issuance):
             raise ValueError("H1 selected V2 delivery closure principal differs")
     return retained_principal
 
 
-def _selected_v2_issuance_principal(issuance: H1CompletionIssuanceV2) -> str:
-    """Read the principal only from a decoded, exact V2 issuance."""
-    from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
+def _selected_h1_issuance_principal(
+    issuance: H1CompletionIssuanceV2 | H1CompletionIssuanceV3 | H1CompletionIssuanceV4,
+) -> str:
+    """Read the principal only from a decoded, exact V2/V3 issuance."""
+    from chiplog.composition.h1_completion_issuance import (
+        H1CompletionIssuanceV2,
+        H1CompletionIssuanceV3,
+        H1CompletionIssuanceV4,
+    )
 
-    if type(issuance) is not H1CompletionIssuanceV2:
-        raise ValueError("H1 selected V2 delivery closure issuance differs")
+    if type(issuance) not in (
+        H1CompletionIssuanceV2,
+        H1CompletionIssuanceV3,
+        H1CompletionIssuanceV4,
+    ):
+        raise ValueError("H1 selected delivery closure issuance differs")
     try:
         principal_id = (
-            issuance.assembly.original_completion_request.source.selected_admitted_input.principal_id
+            cast(
+                PrepareExecutionCompletionFirstPathV2,
+                issuance.assembly.original_completion_request,
+            ).source.selected_admitted_input.principal_id
         )
     except AttributeError as error:
         raise ValueError("H1 selected V2 delivery closure principal differs") from error
@@ -436,9 +489,23 @@ def _selected_v2_issuance_principal(issuance: H1CompletionIssuanceV2) -> str:
     return principal_id
 
 
+def _verify_selected_v2_delivery_closure(
+    decision: SelectedOwnerDecision,
+    runtime: object,
+    issuance: H1CompletionIssuanceV2 | H1CompletionIssuanceV4 | None = None,
+) -> str | None:
+    """Compatibility wrapper for callers that explicitly require V2."""
+    return _verify_selected_h1_delivery_closure(decision, runtime, issuance)
+
+
+def _selected_v2_issuance_principal(issuance: H1CompletionIssuanceV2) -> str:
+    """Compatibility wrapper for callers that explicitly require V2."""
+    return _selected_h1_issuance_principal(issuance)
+
+
 def _require_v2_read_plan_prechecks(
     batch: CompleteDeliveryBatchV2,
-    issuance: H1CompletionIssuanceV2,
+    issuance: H1CompletionIssuanceV2 | H1CompletionIssuanceV4,
     *,
     runtime: CommonCliExecutionRuntime,
     owner_journal: object,
@@ -517,7 +584,7 @@ def _require_v2_read_plan_prechecks(
 
 
 def _verify_historical_scope(
-    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
+    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2 | H1CompletionIssuanceV4,
     *,
     trust_reader: object,
     gate: object,
@@ -594,7 +661,7 @@ def _verify_historical_scope(
     ):
         raise ValueError("H1 historical trust prefix differs from retained scope exchange")
 
-    selected = issuance.assembly.ordered_effects[0].owner_call.request.selected_scope
+    selected = _scoped_effect_request(issuance).selected_scope
     scope = selected.scope
     anchor = current_request.source_anchor
     # The selected-scope DTO already joins candidate/current wires structurally.
@@ -661,7 +728,7 @@ def _verify_historical_scope(
         issue_prefix=issue_prefix,
         current_prefix=current_prefix,
     )
-    return scope
+    return cast(HermeticOutputScopeV1, scope)
 
 
 def _verify_historical_scope_lineage(
@@ -723,17 +790,20 @@ def _verify_historical_scope_lineage(
 
 
 def _verify_v2_current_as_of(
-    issuance: H1CompletionIssuanceV2,
+    issuance: H1CompletionIssuanceV2 | H1CompletionIssuanceV4,
     exchange: object,
     *,
     trust_reader: object,
     gate: object,
+    fresh_v4: bool = False,
 ) -> None:
     """Prove a V2 CURRENT against the prefix named by that exact wire.
 
     This is intentionally separate from the capture-time check in the codec:
     the selected reader must also prove the immutable, as-of trust material.
     """
+    from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV4
+
     reader = cast(Any, trust_reader)
     if reader.authority_gate is not gate:
         raise ValueError("H1 V2 historical trust reader has a different authority gate")
@@ -747,7 +817,26 @@ def _verify_v2_current_as_of(
         prefix = reader.historical_prefix(request.expected_trust_observation)
     except (AttributeError, TypeError, ValueError) as error:
         raise ValueError("H1 V2 historical current wire is malformed") from error
-    selected = issuance.assembly.ordered_effects[0].owner_call.request.selected_scope
+    selected = (
+        issuance.effects_call.request.selected_scope
+        if type(issuance) is H1CompletionIssuanceV4
+        else cast(Any, issuance.assembly.ordered_effects[0]).owner_call.request.selected_scope
+    )
+    expected_request = selected.current_request
+    if type(issuance) is H1CompletionIssuanceV4:
+        expected_request = selected.current_request.model_copy(
+            update={"expected_trust_observation": request.expected_trust_observation}
+        )
+    if fresh_v4:
+        if type(issuance) is not H1CompletionIssuanceV4:
+            raise ValueError("H1 V2 historical current cannot use the V4 fresh route")
+        physical = request.expected_trust_observation.physical_journal_head
+        if (
+            physical.identity != "deployment-trust/journal"
+            or physical.head != issuance.capture.observed.observation.journal_head
+            or prefix.snapshot_bytes != issuance.capture.observed.observation.snapshot_bytes
+        ):
+            raise ValueError("H1 V4 fresh current trust prefix differs from invocation")
     if (
         wire.canonical_bytes() != sent.canonical_payload
         or wire.mode != "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1"
@@ -761,7 +850,7 @@ def _verify_v2_current_as_of(
         or returned.responder != sent.callee
         or sent.caller.owner_id != "broker"
         or sent.callee.owner_id != "deployment_trust"
-        or request != selected.current_request
+        or request.canonical_bytes() != expected_request.canonical_bytes()
         or candidate.current != selected.current_result
     ):
         raise ValueError("H1 V2 historical current differs from its own trust prefix")
@@ -818,10 +907,10 @@ def _full_frame_json(value: object, *, name: str) -> bytes:
         raise ValueError(f"H1 V2 selected preseal {name} is malformed") from error
 
 
-def _require_v2_selected_preseal_scope_frames(
-    issuance: H1CompletionIssuanceV2, native: object
+def _require_selected_preseal_scope_frames(
+    issuance: H1CompletionIssuanceV2 | H1CompletionIssuanceV4, native: object
 ) -> None:
-    """Join V2 issuance frames to their selected, authenticated P siblings.
+    """Join V2/V4 issuance frames to selected, authenticated P siblings.
 
     The V1 sibling binds the accepted payload pairs.  This check additionally
     requires the complete broker DTO JSON and both timestamps to be identical
@@ -881,6 +970,13 @@ def _require_v2_selected_preseal_scope_frames(
             or selected.returned_at_ns != retained.returned_at_ns
         ):
             raise ValueError(f"H1 V2 selected preseal full-frame {role} differs")
+
+
+def _require_v2_selected_preseal_scope_frames(
+    issuance: H1CompletionIssuanceV2, native: object
+) -> None:
+    """Compatibility wrapper for the legacy V2 selected-frame check."""
+    _require_selected_preseal_scope_frames(issuance, native)
 
 
 def _verify_v2_selected_recovery(
@@ -1026,9 +1122,131 @@ def _verify_v2_selected_recovery(
         raise ValueError("H1 V2 selected recovery is malformed") from error
 
 
+def _verify_v3_selected_recovery(
+    issuance: H1CompletionIssuanceV3 | H1CompletionIssuanceV4,
+    runtime: CommonCliExecutionRuntime,
+) -> None:
+    """Rebuild the selected V3 suffix from durable B evidence only.
+
+    This deliberately uses the V3 recovery reader rather than a fresh
+    CURRENT-as-of read: the selected wire is bound to its authenticated
+    completion, conversation, scoped-effects, and terminal records.
+    """
+    from chiplog.composition.h1_v3_recovery_historical_source import H1V3RecoveryHistoricalSource
+
+    try:
+        retained = issuance.effects_call.request.retained_origin
+        initialization = RetainedInboxExecutionInitialization.model_validate_json(
+            json.loads(retained.initialization_envelope_bytes)["inbox_initialization"]
+        )
+        original = DriveInputRequestV1.model_validate_json(initialization.driver_request_bytes)
+        if (
+            initialization.canonical_bytes()
+            != json.loads(retained.initialization_envelope_bytes)["inbox_initialization"].encode()
+            or original.canonical_bytes() != initialization.driver_request_bytes
+            or original.original_driver_command_fingerprint()
+            != initialization.driver_request_fingerprint
+        ):
+            raise ValueError("selected V3 retained origin differs")
+        locator = H1V2RecoveryNativeSource(runtime).locate_selected_seal(
+            original_identity=original.identity,
+            original_fingerprint=initialization.driver_request_fingerprint,
+        )
+        root = H1PostSealRecoveryRootSource(runtime).derive_on_restart(
+            original.identity, initialization.driver_request_fingerprint, locator
+        )
+        recovered = H1V3RecoveryHistoricalSource(runtime).read_terminal(
+            original_identity=original.identity,
+            original_fingerprint=initialization.driver_request_fingerprint,
+            selected_seal=locator,
+        )
+        conversation_request, conversation_result = _v3_selected_conversation(
+            recovered.effects.pinned_records
+        )
+        if (
+            issuance.recovery.root_id != root.root_id()
+            or issuance.recovery.journal_instance_id != root.journal_instance_id
+            or issuance.recovery.completed_chain_head
+            != recovered.effects.pinned_records[-1].entry_id
+            or issuance.assembly.original_completion_request
+            != recovered.effects.original_completion_request
+            or issuance.assembly.prepared_completion != recovered.effects.prepared_completion
+            or issuance.assembly.conversation_request != conversation_request
+            or issuance.assembly.conversation_result != conversation_result
+            or issuance.effects_call.request != recovered.effects.effects_request
+            or issuance.effects_result != recovered.effects.effects_result
+            or issuance.assembly.terminal_work_request != recovered.terminal_request
+            or issuance.assembly.terminal_work_result != recovered.terminal_result
+        ):
+            raise ValueError("H1 V3 selected recovery differs")
+    except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("H1 V3 selected recovery is malformed") from error
+
+
+def _verify_v4_historical_effects_origin(issuance: H1CompletionIssuanceV4) -> None:
+    """Join V4's V2 owner input to the H0/R16/scope source used below.
+
+    The generic completion assembly retains the original source selection,
+    whereas V4 retains a distinct dispatch-V2 owner call.  Both must name the
+    same origin and scope before either can be treated as historical evidence.
+    """
+    assembly_effect = issuance.assembly.ordered_effects[0]
+    request = issuance.effects_call.request
+    if (
+        issuance.effects_call.schema_id != "chiplog.effects.h1-scoped-delivery-owner-call.v2"
+        or issuance.effects_result.schema_id != "chiplog.effects.prepared-h1-scoped-delivery.v2"
+        or request.original_completion_request != issuance.assembly.original_completion_request
+        or request.prepared_completion != issuance.assembly.prepared_completion
+        or issuance.effects_result.retained_sources != assembly_effect.retained_sources
+    ):
+        raise ValueError("H1 V4 selected Effects origin differs from historical scope")
+
+
+def _v3_selected_conversation(
+    records: tuple[object, ...],
+) -> tuple[PrepareConversationCompletionV1, PreparedConversationCompletionV1]:
+    """Read the exact durable conversation pair from the selected V3 chain."""
+    from chiplog.composition.h1_postseal_recovery import (
+        H1PostSealRecoveryRecordV1,
+        _decode_record,
+    )
+
+    try:
+        request_record, result_record = (
+            _decode_record(cast(Any, records[3]).canonical_bytes),
+            _decode_record(cast(Any, records[4]).canonical_bytes),
+        )
+        if (
+            type(request_record) is not H1PostSealRecoveryRecordV1
+            or type(result_record) is not H1PostSealRecoveryRecordV1
+            or request_record.kind != "STAGE_INPUT"
+            or request_record.stage != "CONVERSATION"
+            or result_record.kind != "STAGE_RESULT"
+            or result_record.stage != "CONVERSATION"
+            or request_record.semantic_input is None
+            or result_record.result_bytes is None
+        ):
+            raise ValueError("selected V3 conversation records differ")
+        request = PrepareConversationCompletionV1.model_validate_json(request_record.semantic_input)
+        result = PreparedConversationCompletionV1.model_validate_json(result_record.result_bytes)
+        if (
+            request.canonical_json_bytes() != request_record.semantic_input
+            or result.canonical_json_bytes() != result_record.result_bytes
+        ):
+            raise ValueError("selected V3 conversation records are noncanonical")
+        return request, result
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise ValueError("selected V3 conversation records are malformed") from error
+
+
 def _verify_historical_selection(
     batch: CompleteDeliveryBatchV2,
-    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
+    issuance: (
+        H1CompletionIssuanceV1
+        | H1CompletionIssuanceV2
+        | H1CompletionIssuanceV3
+        | H1CompletionIssuanceV4
+    ),
     runtime: object,
 ) -> SelectedOwnerDecision:
     """Read the native sources and selected owner decision from one outer cut."""
@@ -1041,53 +1259,91 @@ def _verify_historical_selection(
     with cast(Any, ports.gate).hold():
         custody, _, owner_journal, trust_reader = _open_historical_ports(ports)
         decision = _selected_owner_decision(batch, owner_journal)
-        from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
+        from chiplog.composition.h1_completion_issuance import (
+            H1CompletionIssuanceV1,
+            H1CompletionIssuanceV2,
+            H1CompletionIssuanceV3,
+            H1CompletionIssuanceV4,
+        )
 
-        if type(issuance) is H1CompletionIssuanceV2:
-            _verify_selected_v2_delivery_closure(decision, common_runtime, issuance)
-        retained = _retained_origin(issuance)
-        h0_r17 = read_historical_h0_r17(common_runtime, retained)
-        _verify_historical_r16(issuance, h0_selection=h0_r17, custody=custody)
-        _verify_historical_scope(issuance, trust_reader=trust_reader, gate=ports.gate)
-        # V1 deliberately remains on its original two-wire route.  V2 adds
-        # three independently prefix-bound CURRENT observations.
-        if type(issuance) is H1CompletionIssuanceV2:
-            _verify_v2_current_as_of(
-                issuance,
-                issuance.scope_current_exchange,
-                trust_reader=trust_reader,
-                gate=ports.gate,
+        if type(issuance) in (H1CompletionIssuanceV2, H1CompletionIssuanceV4):
+            _verify_selected_v2_delivery_closure(
+                decision,
+                common_runtime,
+                cast(H1CompletionIssuanceV2 | H1CompletionIssuanceV4, issuance),
             )
-            _verify_v2_current_as_of(
+        elif type(issuance) is H1CompletionIssuanceV3:
+            _verify_selected_h1_delivery_closure(
+                decision,
+                common_runtime,
                 issuance,
-                issuance.terminal_admission.preterminal_current_exchange,
-                trust_reader=trust_reader,
-                gate=ports.gate,
             )
-            _verify_v2_current_as_of(
-                issuance,
-                issuance.final_current_exchange,
-                trust_reader=trust_reader,
-                gate=ports.gate,
-            )
-        first_path = H1FirstPathSources(common_runtime)
+        if type(issuance) is H1CompletionIssuanceV3:
+            _verify_v3_selected_recovery(issuance, common_runtime)
+            return decision
+        legacy = cast(
+            H1CompletionIssuanceV1 | H1CompletionIssuanceV2 | H1CompletionIssuanceV4,
+            issuance,
+        )
+        if type(issuance) is H1CompletionIssuanceV4:
+            _verify_v4_historical_effects_origin(issuance)
+        retained = _retained_origin(legacy)
+        # V4's distinct dispatch-V2 scope frames must first be tied to the
+        # selected preseal full DTOs.  Do this before any historical trust
+        # scope read so a self-consistent retained frame cannot select its own
+        # source cut.  Keep V2's established ordering unchanged below.
         native = None
-        if type(issuance) is H1CompletionIssuanceV2:
+        if type(issuance) is H1CompletionIssuanceV4:
+            first_path = H1FirstPathSources(common_runtime)
             native = first_path.replay_selected_native_cut(
-                issuance.assembly.original_completion_request.source,
+                cast(Any, issuance.assembly.original_completion_request).source,
                 initialization_envelope_bytes=retained.initialization_envelope_bytes,
             )
-            _require_v2_selected_preseal_scope_frames(issuance, native)
+            _require_selected_preseal_scope_frames(issuance, native)
+        h0_r17 = read_historical_h0_r17(common_runtime, retained)
+        _verify_historical_r16(legacy, h0_selection=h0_r17, custody=custody)
+        _verify_historical_scope(legacy, trust_reader=trust_reader, gate=ports.gate)
+        # V1 deliberately remains on its original two-wire route.  V2 adds
+        # three independently prefix-bound CURRENT observations.
+        if type(issuance) in (H1CompletionIssuanceV2, H1CompletionIssuanceV4):
+            scoped = cast(H1CompletionIssuanceV2 | H1CompletionIssuanceV4, issuance)
+            _verify_v2_current_as_of(
+                scoped,
+                scoped.scope_current_exchange,
+                trust_reader=trust_reader,
+                gate=ports.gate,
+            )
+            _verify_v2_current_as_of(
+                scoped,
+                scoped.terminal_admission.preterminal_current_exchange,
+                trust_reader=trust_reader,
+                gate=ports.gate,
+                fresh_v4=type(issuance) is H1CompletionIssuanceV4,
+            )
+            _verify_v2_current_as_of(
+                scoped,
+                scoped.final_current_exchange,
+                trust_reader=trust_reader,
+                gate=ports.gate,
+                fresh_v4=type(issuance) is H1CompletionIssuanceV4,
+            )
+        first_path = H1FirstPathSources(common_runtime)
+        if type(issuance) is H1CompletionIssuanceV2:
+            native = first_path.replay_selected_native_cut(
+                cast(Any, issuance.assembly.original_completion_request).source,
+                initialization_envelope_bytes=retained.initialization_envelope_bytes,
+            )
+            _require_selected_preseal_scope_frames(issuance, native)
             _verify_v2_selected_recovery(issuance, common_runtime, h0_r17)
-        else:
+        elif type(issuance) is H1CompletionIssuanceV1:
             first_path.validate_historical(
                 issuance.assembly.original_completion_request.source,
                 initialization_envelope_bytes=retained.initialization_envelope_bytes,
             )
-        if type(issuance) is H1CompletionIssuanceV2:
+        if type(issuance) in (H1CompletionIssuanceV2, H1CompletionIssuanceV4):
             rows, predecessor_owner = _require_v2_read_plan_prechecks(
                 batch,
-                issuance,
+                cast(H1CompletionIssuanceV2 | H1CompletionIssuanceV4, issuance),
                 runtime=common_runtime,
                 owner_journal=owner_journal,
                 decision=decision,
@@ -1099,12 +1355,19 @@ def _verify_historical_selection(
                 predecessor_rows=rows,
                 predecessor_owner=predecessor_owner,
             )
+        if type(issuance) is H1CompletionIssuanceV4:
+            _verify_v3_selected_recovery(issuance, common_runtime)
         return decision
 
 
 def verify_h1_historical_sources(
     batch: CompleteDeliveryBatchV2,
-    issuance: H1CompletionIssuanceV1 | H1CompletionIssuanceV2,
+    issuance: (
+        H1CompletionIssuanceV1
+        | H1CompletionIssuanceV2
+        | H1CompletionIssuanceV3
+        | H1CompletionIssuanceV4
+    ),
     runtime: object,
 ) -> None:
     """Verify H1 source selection from retained native historical evidence."""

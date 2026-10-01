@@ -141,6 +141,9 @@ class _RecoveryEnrollmentRecord:
     # inventing a first-path cut.  Ordinary stage recovery deliberately has
     # no such continuation.
     preflight: object | None = None
+    scoped_inventory: object | None = None
+    scoped_effects_exchange: object | None = None
+    scoped_effects_clearance: object | None = None
     state: Literal["ACTIVE", "REVOKED"] = "ACTIVE"
 
 
@@ -153,8 +156,11 @@ class _RecoveryClearanceRecord:
     sent: PublicPortCall
     call_fingerprint: str
     owner_frame_bytes: bytes
+    scoped_authority_capture: object | None = None
+    scoped_authority_root: object | None = None
     state: Literal["RESERVED", "ADMITTED", "RECORDED", "BURNED"] = "RESERVED"
     exchange: object | None = None
+    admitted_result: bool = False
 
 
 @dataclass
@@ -378,6 +384,7 @@ class _H1LiveCompletionEnrollment:
         stage: Literal["COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK"],
         semantic_input: bytes,
         sent: PublicPortCall,
+        scoped_authority_capture: object | None = None,
     ) -> _H1RecoveryClearance:
         """Pin one canonical recovery request to its exact fresh broker frame."""
         with self._gate.hold():
@@ -397,6 +404,30 @@ class _H1LiveCompletionEnrollment:
                 raise H1LiveCompletionEnrollmentUnavailable(
                     "H1 recovery session already has a clearance"
                 )
+            scoped_authority_root: object | None = None
+            if scoped_authority_capture is not None:
+                from chiplog.composition.h1_scoped_delivery_authority import (
+                    H1ScopedDeliveryAuthorityCapture,
+                    H1ScopedDeliveryAuthorityReader,
+                )
+
+                authority_reader = getattr(
+                    self._runtime, "_h1_scoped_delivery_authority_reader", None
+                )
+                session_recovery = enrollment.session._recovery
+                if (
+                    stage != "TERMINAL_WORK"
+                    or type(scoped_authority_capture) is not H1ScopedDeliveryAuthorityCapture
+                    or type(authority_reader) is not H1ScopedDeliveryAuthorityReader
+                    or session_recovery is None
+                    or not session_recovery.scoped_terminal_work
+                    or session_recovery.scoped_terminal_authority is not scoped_authority_capture
+                ):
+                    raise H1LiveCompletionEnrollmentUnavailable(
+                        "H1 scoped recovery authority differs"
+                    )
+                context_state = enrollment.source._context_state(enrollment.context)
+                scoped_authority_root = context_state.root
             call_fingerprint, owner_frame_bytes = self._recovery_call_identity(sent)
             clearance = object.__new__(_H1RecoveryClearance)
             self._recovery_clearances[id(clearance)] = _RecoveryClearanceRecord(
@@ -407,6 +438,8 @@ class _H1LiveCompletionEnrollment:
                 sent,
                 call_fingerprint,
                 owner_frame_bytes,
+                scoped_authority_capture,
+                scoped_authority_root,
             )
             return clearance
 
@@ -463,7 +496,181 @@ class _H1LiveCompletionEnrollment:
             ):
                 raise H1LiveCompletionEnrollmentUnavailable("H1 recovery clearance was revoked")
             record.exchange = exchange
+            record.admitted_result = True
             record.state = "RECORDED"
+
+    def _bind_scoped_finalization_effects(
+        self, *, session: object, inventory: object, clearance: object, exchange: object
+    ) -> None:
+        """Retain V3's admitted Effects exchange and exact live inventory together."""
+        from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
+        from chiplog.composition.h1_producer_inventory import (
+            H1ProducerInventoryCapture,
+            H1ProducerInventoryReader,
+        )
+
+        with self._gate.hold():
+            record = self._require_recovery_record(session)
+            if self._selected_recovery_producer(record) != "SCOPED_V3":
+                raise H1LiveCompletionEnrollmentUnavailable("H1 scoped Effects producer differs")
+            self._require_complete_chain_preflight(record)
+            reader = getattr(self._runtime, "_h1_producer_inventory_reader", None)
+            clearance_record = self._recovery_clearances.get(id(clearance))
+            if (
+                type(inventory) is not H1ProducerInventoryCapture
+                or type(reader) is not H1ProducerInventoryReader
+                or type(exchange) is not H1CompletionOwnerExchangeV1
+                or exchange.role != "effects"
+                or getattr(session, "_effects_exchange", None) is not exchange
+                or clearance_record is None
+                or clearance_record.enrollment is not record
+                or clearance_record.stage != "EFFECTS"
+                or clearance_record.state != "RECORDED"
+                or not clearance_record.admitted_result
+                or clearance_record.exchange is not exchange
+                or cast(H1CompletionOwnerExchangeV1, exchange).sent is not clearance_record.sent
+                or record.scoped_inventory is not None
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable(
+                    "H1 scoped Effects inventory/exchange binding differs"
+                )
+            reader.replay_post_effects_scope_held(inventory)
+            record.scoped_inventory = inventory
+            record.scoped_effects_exchange = exchange
+            record.scoped_effects_clearance = clearance
+
+    def _require_scoped_finalization_inventory(self, session: object) -> object:
+        """Recheck the V3 inventory bound to the admitted Effects exchange."""
+        from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
+        from chiplog.composition.h1_producer_inventory import (
+            H1ProducerInventoryCapture,
+            H1ProducerInventoryReader,
+        )
+
+        self._gate.require_held()
+        record = self._require_recovery_record(session)
+        if self._selected_recovery_producer(record) != "SCOPED_V3":
+            raise H1LiveCompletionEnrollmentUnavailable("H1 scoped finalization producer differs")
+        self._require_complete_chain_preflight(record)
+        reader = getattr(self._runtime, "_h1_producer_inventory_reader", None)
+        inventory = record.scoped_inventory
+        exchange = record.scoped_effects_exchange
+        clearance = record.scoped_effects_clearance
+        clearance_record = self._recovery_clearances.get(id(clearance))
+        if (
+            type(reader) is not H1ProducerInventoryReader
+            or type(inventory) is not H1ProducerInventoryCapture
+            or type(exchange) is not H1CompletionOwnerExchangeV1
+            or exchange.role != "effects"
+            or getattr(session, "_effects_exchange", None) is not exchange
+            or clearance_record is None
+            or clearance_record.enrollment is not record
+            or clearance_record.stage != "EFFECTS"
+            or clearance_record.state != "BURNED"
+            or not clearance_record.admitted_result
+            or clearance_record.exchange is not exchange
+            or cast(H1CompletionOwnerExchangeV1, exchange).sent is not clearance_record.sent
+        ):
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 scoped finalization inventory/exchange binding is unavailable"
+            )
+        reader.replay_post_effects_scope_held(inventory)
+        return inventory
+
+    def _require_scoped_finalization_admission_inventory(
+        self, clearance: object, sent: PublicPortCall
+    ) -> object:
+        """Worker-safe V3 binding replay for the exact terminal admission call.
+
+        Broker admission has no asyncio task, so it proves only nominal
+        continuation liveness through the lease's admission API.  The normal
+        task-side getter above retains the stronger complete-chain replay.
+        """
+        from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
+        from chiplog.composition.h1_completion_preparation_session import (
+            H1CompletionPreparationSession,
+        )
+        from chiplog.composition.h1_postseal_recovery_coordinator import (
+            _H1CompleteChainPreflight,
+            _H1PostSealRecoveryCoordinator,
+        )
+        from chiplog.composition.h1_producer_inventory import (
+            H1ProducerInventoryCapture,
+            H1ProducerInventoryReader,
+        )
+
+        self._gate.require_held()
+        clearance_record = self._recovery_clearances.get(id(clearance))
+        if (
+            type(clearance) is not _H1RecoveryClearance
+            or clearance_record is None
+            or clearance_record.stage != "TERMINAL_WORK"
+            or clearance_record.state != "RESERVED"
+            or clearance_record.sent is not sent
+        ):
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 scoped finalization terminal admission differs"
+            )
+        record = clearance_record.enrollment
+        session = record.session
+        preflight = record.preflight
+        coordinator = getattr(self._runtime, "_h1_postseal_recovery_coordinator", None)
+        reader = getattr(self._runtime, "_h1_producer_inventory_reader", None)
+        inventory = record.scoped_inventory
+        exchange = record.scoped_effects_exchange
+        effects_clearance = record.scoped_effects_clearance
+        effects_record = self._recovery_clearances.get(id(effects_clearance))
+        try:
+            context_state = record.source._context_state(record.context)
+            record.lease._require_admission_current()
+            record.source._require_current(record.context)
+        except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 scoped finalization admission is no longer current"
+            ) from error
+        if (
+            type(session) is not H1CompletionPreparationSession
+            or getattr(session, "_recovery_terminal_clearance", None) is not clearance
+            or type(preflight) is not _H1CompleteChainPreflight
+            or type(coordinator) is not _H1PostSealRecoveryCoordinator
+            or coordinator is not getattr(self._runtime, "_h1_postseal_recovery_coordinator", None)
+            or preflight._coordinator is not coordinator
+            or preflight._source is not record.source
+            or preflight._context is not record.context
+            or preflight._lease is not record.lease
+            or preflight._retired
+            or preflight._state.root is not context_state.root
+            or preflight._state.selected_producer != "SCOPED_V3"
+            or type(reader) is not H1ProducerInventoryReader
+            or type(inventory) is not H1ProducerInventoryCapture
+            or type(exchange) is not H1CompletionOwnerExchangeV1
+            or exchange.role != "effects"
+            or session._effects_exchange is not exchange
+            or effects_record is None
+            or effects_record.enrollment is not record
+            or effects_record.stage != "EFFECTS"
+            or effects_record.state != "BURNED"
+            or not effects_record.admitted_result
+            or effects_record.exchange is not exchange
+            or exchange.sent is not effects_record.sent
+        ):
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 scoped finalization admission binding is unavailable"
+            )
+        reader.replay_post_effects_scope_held(inventory)
+        return inventory
+
+    def _require_complete_chain_preflight(self, record: _RecoveryEnrollmentRecord) -> None:
+        """Recheck the exact held complete chain before consuming its V3 binding."""
+        try:
+            coordinator = getattr(self._runtime, "_h1_postseal_recovery_coordinator", None)
+            if record.preflight is None or coordinator is None:
+                raise ValueError("preflight absent")
+            coordinator._require_complete_chain_preflight_held(record.lease, record.preflight)
+        except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 scoped finalization complete chain is unavailable"
+            ) from error
 
     def _burn_recovery_clearance(self, clearance: _H1RecoveryClearance) -> None:
         with self._gate.hold():
@@ -508,7 +715,33 @@ class _H1LiveCompletionEnrollment:
                     if not callable(recheck):
                         raise ValueError("H1 recovery terminal P clearance is unavailable")
                     recheck(clearance, sent)
-            except (RuntimeError, TypeError, ValueError) as error:
+                if record.scoped_authority_capture is not None:
+                    from chiplog.composition.h1_scoped_delivery_authority import (
+                        H1ScopedDeliveryAuthorityCapture,
+                        H1ScopedDeliveryAuthorityReader,
+                    )
+
+                    authority_reader = getattr(
+                        self._runtime, "_h1_scoped_delivery_authority_reader", None
+                    )
+                    context_state = record.enrollment.source._context_state(
+                        record.enrollment.context
+                    )
+                    session_recovery = record.enrollment.session._recovery
+                    if (
+                        record.stage != "TERMINAL_WORK"
+                        or type(authority_reader) is not H1ScopedDeliveryAuthorityReader
+                        or context_state.root is not record.scoped_authority_root
+                        or session_recovery is None
+                        or not session_recovery.scoped_terminal_work
+                        or session_recovery.scoped_terminal_authority
+                        is not record.scoped_authority_capture
+                    ):
+                        raise ValueError("H1 scoped recovery authority binding differs")
+                    authority_reader.recheck(
+                        cast(H1ScopedDeliveryAuthorityCapture, record.scoped_authority_capture)
+                    )
+            except (PermissionError, RuntimeError, TypeError, ValueError) as error:
                 record.state = "BURNED"
                 raise H1LiveCompletionEnrollmentUnavailable(
                     "H1 recovery source or lease is no longer current"
@@ -686,32 +919,18 @@ class _H1LiveCompletionEnrollment:
         self, *, session: object, issuance: object, batch: object, readplan_capture: object
     ) -> _H1LiveCompletionIssuance:
         """Register the selected producer's exact recovery issuance evidence."""
-        from chiplog.composition.h1_completion_issuance import (
-            V2_SCHEMA,
-            V3_SCHEMA,
-            H1CompletionIssuanceV2,
-            H1CompletionIssuanceV3,
-        )
         from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 
         with self._gate.hold():
             record = self._require_recovery_record(session)
             self._require_recovery_record_current(record)
-            producer = self._selected_recovery_producer(record)
-            expected_type: type[H1CompletionIssuanceV2] | type[H1CompletionIssuanceV3]
-            expected_schema: str
-            if producer == "LOCAL_V2":
-                expected_type = H1CompletionIssuanceV2
-                expected_schema = V2_SCHEMA
-            else:
-                expected_type = H1CompletionIssuanceV3
-                expected_schema = V3_SCHEMA
+            expected_type, expected_schema = self._expected_recovery_issuance(record)
             if (
                 record.preflight is None
                 or type(issuance) is not expected_type
                 or type(batch) is not CompleteDeliveryBatchV2
                 or batch.authentication.applicability_schema != expected_schema
-                or batch.authentication.applicability_bytes != issuance.canonical_bytes()
+                or batch.authentication.applicability_bytes != cast(Any, issuance).canonical_bytes()
                 or hashlib.sha256(batch.authentication.applicability_bytes).hexdigest()
                 != batch.authentication.applicability_fingerprint
                 or readplan_capture is None
@@ -735,6 +954,86 @@ class _H1LiveCompletionEnrollment:
                 state="ISSUED",
             )
             return source
+
+    def _expected_recovery_issuance(
+        self, record: _RecoveryEnrollmentRecord
+    ) -> tuple[type[Any], str]:
+        """Select issuance only from retained authenticated Effects wire evidence.
+
+        ``SCOPED_V3`` is a durable producer family label.  It is deliberately
+        insufficient to choose a V3 or V4 issuance: old V1 Effects evidence
+        must remain V3 when reopened under a V22 runtime.
+        """
+        from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
+            H1ScopedDeliveryOwnerCallV1,
+            PreparedH1ScopedDeliveryV1,
+        )
+        from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
+            H1ScopedDeliveryOwnerCallV2,
+            PreparedH1ScopedDeliveryV2,
+        )
+        from chiplog.composition.h1_completion_issuance import (
+            V2_SCHEMA,
+            V3_SCHEMA,
+            V4_SCHEMA,
+            H1CompletionIssuanceV2,
+            H1CompletionIssuanceV3,
+            H1CompletionIssuanceV4,
+            H1CompletionOwnerExchangeV1,
+        )
+        from chiplog.platform.broker import PublicPortSuccess
+
+        producer = self._selected_recovery_producer(record)
+        if producer == "LOCAL_V2":
+            return H1CompletionIssuanceV2, V2_SCHEMA
+        exchange_raw = cast(Any, record.scoped_effects_exchange)
+        if type(exchange_raw) is not H1CompletionOwnerExchangeV1:
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 scoped issuance Effects evidence is unavailable"
+            )
+        exchange = exchange_raw
+        returned = cast(Any, exchange.returned)
+        if (
+            exchange.role != "effects"
+            or getattr(record.session, "_effects_exchange", None) is not exchange
+            or type(returned) is not PublicPortSuccess
+            or returned.request_id != exchange.sent.request_id
+            or returned.responder != exchange.sent.callee
+        ):
+            raise H1LiveCompletionEnrollmentUnavailable(
+                "H1 scoped issuance Effects evidence is unavailable"
+            )
+        if exchange.sent.schema_id == "chiplog.effects.h1-scoped-delivery-owner-call.v1":
+            call = H1ScopedDeliveryOwnerCallV1.model_validate_json(
+                exchange.sent.canonical_payload
+            )
+            result = PreparedH1ScopedDeliveryV1.model_validate_json(
+                returned.canonical_payload
+            )
+            if (
+                call.canonical_bytes() != exchange.sent.canonical_payload
+                or returned.schema_id != result.schema_id
+                or result.canonical_bytes() != returned.canonical_payload
+                or result.source_request_fingerprint != call.request_digest
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable("H1 V3 Effects evidence differs")
+            return H1CompletionIssuanceV3, V3_SCHEMA
+        if exchange.sent.schema_id == "chiplog.effects.h1-scoped-delivery-owner-call.v2":
+            call = H1ScopedDeliveryOwnerCallV2.model_validate_json(
+                exchange.sent.canonical_payload
+            )
+            result = PreparedH1ScopedDeliveryV2.model_validate_json(
+                returned.canonical_payload
+            )
+            if (
+                call.canonical_bytes() != exchange.sent.canonical_payload
+                or returned.schema_id != result.schema_id
+                or result.canonical_bytes() != returned.canonical_payload
+                or result.source_request_fingerprint != call.request_digest
+            ):
+                raise H1LiveCompletionEnrollmentUnavailable("H1 V4 Effects evidence differs")
+            return H1CompletionIssuanceV4, V4_SCHEMA
+        raise H1LiveCompletionEnrollmentUnavailable("H1 scoped issuance Effects schema differs")
 
     def _selected_recovery_producer(
         self, record: _RecoveryEnrollmentRecord

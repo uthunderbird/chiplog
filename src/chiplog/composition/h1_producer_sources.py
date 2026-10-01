@@ -199,16 +199,24 @@ class H1ProducerSourceReader:
             self._issued.clear()
 
     def _require_mounted_held(self) -> None:
-        from chiplog.architecture.r7_runtime import R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST
+        from chiplog.architecture.r7_runtime import (
+            R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
+            R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
+            R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
+        )
 
         self._runtime._authority_gate().require_held()
         if self._closed:
             raise H1ProducerSourceViolation("H1 producer source reader is closed")
+        manifest = getattr(getattr(self._runtime, "_supervisor", None), "_manifest", None)
         # These are installed only by the scoped H1 runtime opener and removed
         # before it yields a closed runtime back to its caller.
         if (
-            getattr(getattr(self._runtime, "_supervisor", None), "_manifest", None)
-            is not R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST
+            (
+                manifest is not R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST
+                and manifest is not R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST
+                and manifest is not R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST
+            )
             or getattr(self._runtime, "_h1_preissuance_registration_source_port", None) is None
             or getattr(self._runtime, "_h1_completion_exchange_registry", None) is None
             or getattr(self._runtime, "_h1_live_completion_enrollment", None) is None
@@ -251,7 +259,9 @@ class H1ProducerSourceReader:
             original_run=original_run,
             worker_session_id=projection.worker_session_id,
         )
-        interpreted = interpret_h1_producer_effects_history(cut, journal)
+        interpreted = interpret_h1_producer_effects_history(
+            cut, journal, runtime=self._runtime
+        )
         interpreted.require_intent_absent(intent_id)
         history = _effects_history(interpreted)
         if history.digest != interpreted.digest:

@@ -64,6 +64,10 @@ from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
     H1ScopedDeliveryOwnerCallV1,
     PreparedH1ScopedDeliveryV1,
 )
+from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
+    H1ScopedDeliveryOwnerCallV2,
+    PreparedH1ScopedDeliveryV2,
+)
 from chiplog.capabilities.effects.scoped_intent_contracts import (
     PreparedDeliveryAuthority,
     PreparedDeliveryBasisV3,
@@ -907,6 +911,140 @@ def validate_h1_scoped_v3_complete_acceptance_batch(
         return _failure("RECORDS", "H1 scoped V3 records differ from typed owner exchanges")
     if batch.complete_batch_fingerprint != completion_batch_fingerprint(batch):
         return _failure("RECORDS", "H1 scoped V3 batch fingerprint differs")
+    return None
+
+
+def _validate_h1_scoped_v4_exchange(
+    assembly: PrepareCompleteAcceptanceAssemblyV1,
+    owner_call: H1ScopedDeliveryOwnerCallV2,
+    owner_result: PreparedH1ScopedDeliveryV2,
+) -> DeliveryEffectsExchangeV1:
+    """Close the dispatch-V2 exchange without reinterpreting V1 evidence."""
+    call = H1ScopedDeliveryOwnerCallV2.model_validate_json(owner_call.canonical_bytes())
+    result = PreparedH1ScopedDeliveryV2.model_validate_json(owner_result.canonical_bytes())
+    if call != owner_call or result != owner_result:
+        raise _CompletionExchangeError(
+            "H1 V4 scoped owner exchange differs after canonical re-decode"
+        )
+    if (
+        call.schema_id != "chiplog.effects.h1-scoped-delivery-owner-call.v2"
+        or call.route.operation != "effects.prepare_h1_scoped_delivery_v2"
+        or result.schema_id != "chiplog.effects.prepared-h1-scoped-delivery.v2"
+    ):
+        raise _CompletionExchangeError("H1 V4 requires the exact V2 Effects owner exchange")
+    if (
+        type(assembly.original_completion_request) is not PrepareExecutionCompletionFirstPathV2
+        or len(assembly.ordered_effects) != 1
+        or len(assembly.prepared_completion.delivery.manifest.ordered_deliveries) != 1
+    ):
+        raise _CompletionExchangeError("H1 V4 requires one first-path scoped delivery exchange")
+    exchange = assembly.ordered_effects[0]
+    if (
+        call.request.original_completion_request != assembly.original_completion_request
+        or call.request.prepared_completion != assembly.prepared_completion
+        or result.source_request_fingerprint != call.request_digest
+        or result.authority_evidence != call.request.authority_evidence
+        or result.delivery_id != exchange.delivery_id
+        or result.intent_request != exchange.intent_request
+        or result.intent_result != exchange.intent_result
+        or result.basis != exchange.basis
+        or result.precursor_request != exchange.precursor_request
+        or result.precursor_result != exchange.precursor_result
+        or result.acquisition_bytes != exchange.acquisition_bytes
+        or result.mandate_bytes != exchange.mandate_bytes
+        or result.retained_sources != exchange.retained_sources
+    ):
+        raise _CompletionExchangeError("H1 V4 scoped owner exchange differs from assembly")
+    return exchange
+
+
+def h1_scoped_v4_acceptance_commands(
+    assembly: PrepareCompleteAcceptanceAssemblyV1,
+    owner_call: H1ScopedDeliveryOwnerCallV2,
+    owner_result: PreparedH1ScopedDeliveryV2,
+) -> tuple[OwnerCommandBytes, ...]:
+    """Derive the batch commands from the retained dispatch-V2 owner call."""
+    _validate_h1_scoped_v4_exchange(assembly, owner_call, owner_result)
+    generic = acceptance_commands(assembly)
+    return (
+        generic[0],
+        generic[1],
+        _command("effects", owner_call.schema_id, owner_call.canonical_bytes()),
+        generic[-1],
+    )
+
+
+def expected_h1_scoped_v4_acceptance_records(
+    assembly: PrepareCompleteAcceptanceAssemblyV1,
+    owner_call: H1ScopedDeliveryOwnerCallV2,
+    owner_result: PreparedH1ScopedDeliveryV2,
+) -> tuple[OwnerRecordBytes, ...]:
+    """Derive records only after the exact dispatch-V2 owner response joins."""
+    _validate_h1_scoped_v4_exchange(assembly, owner_call, owner_result)
+    return expected_completion_records(assembly)
+
+
+def build_h1_scoped_v4_complete_acceptance_batch(
+    assembly: PrepareCompleteAcceptanceAssemblyV1,
+    owner_call: H1ScopedDeliveryOwnerCallV2,
+    owner_result: PreparedH1ScopedDeliveryV2,
+    *,
+    identity: PublicationIdentity,
+    authentication: WorkerAuthentication,
+    expected: AuthoritativeReadManifest,
+) -> CompleteDeliveryBatchV2:
+    """Build the V4 batch while retaining the exact V2 Effects call bytes."""
+    commands = h1_scoped_v4_acceptance_commands(assembly, owner_call, owner_result)
+    batch = CompleteDeliveryBatchV2(
+        identity=identity,
+        authentication=authentication,
+        expected=expected,
+        loop_command=commands[0],
+        conversation_command=commands[1],
+        prepared_effects_commands=(commands[2],),
+        terminal_work_command=commands[3],
+        complete_records=expected_h1_scoped_v4_acceptance_records(
+            assembly, owner_call, owner_result
+        ),
+        complete_batch_fingerprint="0" * 64,
+    )
+    return batch.model_copy(
+        update={"complete_batch_fingerprint": completion_batch_fingerprint(batch)}
+    )
+
+
+def validate_h1_scoped_v4_complete_acceptance_batch(
+    assembly: PrepareCompleteAcceptanceAssemblyV1,
+    owner_call: H1ScopedDeliveryOwnerCallV2,
+    owner_result: PreparedH1ScopedDeliveryV2,
+    batch: CompleteDeliveryBatchV2,
+) -> CompletionPublicationAssemblyFailureV1 | None:
+    """Require V4 batch bytes reproduced from the exact V2 Effects exchange."""
+    try:
+        expected_commands = h1_scoped_v4_acceptance_commands(assembly, owner_call, owner_result)
+        expected_records = expected_h1_scoped_v4_acceptance_records(
+            assembly, owner_call, owner_result
+        )
+        source_bytes = completion_terminal_work_source_bytes(assembly.work_source)
+        if assembly.terminal_work_request.original_terminalization_request != source_bytes:
+            return _failure("SOURCE", "H1 scoped V4 terminal work does not use its accepted source")
+        _validate_terminal_work_source_join(assembly.work_source, assembly.terminal_work_request)
+    except _CompletionExchangeError as error:
+        return _failure("EXCHANGE", str(error))
+    except ValueError:
+        return _failure("SOURCE", "H1 scoped V4 terminal work source is not registered")
+    actual = (
+        batch.loop_command,
+        batch.conversation_command,
+        *batch.prepared_effects_commands,
+        batch.terminal_work_command,
+    )
+    if actual != expected_commands:
+        return _failure("ROLE", "H1 scoped V4 commands differ from typed owner exchanges")
+    if batch.complete_records != expected_records:
+        return _failure("RECORDS", "H1 scoped V4 records differ from typed owner exchanges")
+    if batch.complete_batch_fingerprint != completion_batch_fingerprint(batch):
+        return _failure("RECORDS", "H1 scoped V4 batch fingerprint differs")
     return None
 
 

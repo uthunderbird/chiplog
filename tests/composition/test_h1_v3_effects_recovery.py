@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,35 +11,10 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
 from chiplog.capabilities.agent_loop.delivery_preparation import (
     Commentary,
     DeliveryCompletion,
     ProposedDelivery,
-)
-from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
-    HermeticTrustObservationV1,
-)
-from chiplog.capabilities.deployment_trust.operator_grant_authorization_contracts import (
-    OperatorGrantAuthorizationPayloadV2,
-    SignedOperatorGrantAuthorizationV2,
-)
-from chiplog.capabilities.deployment_trust.operator_policy_authorization_contracts import (
-    OperatorPolicyAuthorizationPayloadV1,
-    SignedOperatorPolicyAuthorizationV1,
-)
-from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts import (
-    BoundedExternalSelfSendMandateV1,
-    ExternalDeliveryResourcesV1,
-    IssuePreparedExternalDeliveryGrantRequestV2,
-    PreparedExternalDeliveryGrantScopeV2,
-)
-from chiplog.capabilities.deployment_trust.prepared_external_delivery_grant_owner_contracts import (
-    prepared_delivery_basis_head_v3,
-)
-from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_contracts import (
-    IssuePreparedExternalSelfDeliveryPolicyRequestV1,
-    PreparedExternalSelfDeliveryPolicyTermsV1,
 )
 from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
     PrepareH1ScopedDeliveryV1,
@@ -55,11 +31,11 @@ from chiplog.composition.h1_postseal_recovery import (
 )
 from chiplog.composition.h1_postseal_recovery_coordinator import H1PostSealRecoveryCoordinatorError
 from chiplog.composition.h1_postseal_recovery_source import H1PostSealRecoveryRootSource
-from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSources
 from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_candidate
 from chiplog.composition.h1_v2_recovery_native_source import H1V2RecoveryNativeSource
 from chiplog.composition.h1_v3_recovery_historical_source import H1V3RecoveryHistoricalSource
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.platform import r7_runtime as broker_runtime
 from chiplog.platform.operator_grant_key_pin import OperatorGrantKeyPinFileV2
 from chiplog.platform.operator_policy_key_pin import OperatorPolicyKeyPinFileV1
 from tests.support.h1_cli_execution import _admit
@@ -69,6 +45,7 @@ from tests.support.h1_installed_launch import (
     installed_slot,
     prepare_installed_slot,
 )
+from tests.support.h1_v3_recovery import _issue_reconstructed_grant, _recover_b_prefix
 
 _KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(1, 33)))
 
@@ -107,58 +84,6 @@ def _write_pins(database: Path) -> None:
     ):
         path.write_bytes(pin.canonical_bytes())
         path.chmod(0o600)
-
-
-def _trust(runtime: Any) -> HermeticTrustObservationV1:
-    runtime._trust.capture_verified_observation()
-    decision_id, _, raw = runtime._trust._journal.entries()[-1]
-    return HermeticTrustObservationV1(
-        physical_journal_head=ExactHead(
-            identity="deployment-trust/journal",
-            head=decision_id,
-            fingerprint=hashlib.sha256(raw).hexdigest(),
-        ),
-        logical_snapshot_head=runtime._trust.owner_snapshot_entries()[-1][0],
-    )
-
-
-def _signed_policy(request: IssuePreparedExternalSelfDeliveryPolicyRequestV1) -> bytes:
-    raw = request.canonical_bytes()
-    payload = OperatorPolicyAuthorizationPayloadV1(
-        algorithm="Ed25519",
-        source_id="policy-source:" + request.command_id,
-        operator_key_id="operator-key",
-        tenant_id=request.tenant_id,
-        database_id=request.database_id,
-        policy_id=request.policy_id,
-        command_id=request.command_id,
-        operation=request.operation,
-        request_sha256=hashlib.sha256(raw).hexdigest(),
-        canonical_request_bytes=raw,
-    )
-    return SignedOperatorPolicyAuthorizationV1(
-        payload=payload, signature=_KEY.sign(payload.canonical_bytes())
-    ).canonical_bytes()
-
-
-def _signed_grant(request: IssuePreparedExternalDeliveryGrantRequestV2) -> bytes:
-    raw = request.canonical_bytes()
-    payload = OperatorGrantAuthorizationPayloadV2(
-        algorithm="Ed25519",
-        source_id="grant-source:" + request.command_id,
-        operator_key_id="operator-key",
-        tenant_id=request.tenant_id,
-        database_id=request.database_id,
-        grant_id=request.grant_id,
-        policy_id=request.policy_id,
-        command_id=request.command_id,
-        operation=request.operation,
-        request_sha256=hashlib.sha256(raw).hexdigest(),
-        canonical_request_bytes=raw,
-    )
-    return SignedOperatorGrantAuthorizationV2(
-        payload=payload, signature=_KEY.sign(payload.canonical_bytes())
-    ).canonical_bytes()
 
 
 async def _selected_root(runtime: CommonCliExecutionRuntime) -> tuple[Any, Any, Any]:
@@ -203,171 +128,6 @@ async def _selected_root(runtime: CommonCliExecutionRuntime) -> tuple[Any, Any, 
         expected_global_tip=journal.scan().tip,
     )
     return request, locator, receipt.scan.state_for_root(root.root_id())
-
-
-async def _recover_b_prefix(
-    runtime: CommonCliExecutionRuntime, request: Any, locator: Any, state: Any
-) -> Any:
-    coordinator = runtime._h1_postseal_recovery_coordinator
-    assert coordinator is not None
-    source = coordinator._source
-    results: dict[str, bytes] = {}
-    context: object | None = None
-    session: object | None = None
-    async with await coordinator._fence.acquire() as lease:
-        try:
-            context = source._capture_recovery(
-                original_identity=request.identity,
-                original_fingerprint=request.original_driver_command_fingerprint(),
-                selected_seal=locator,
-                root=state.root,
-            )
-            session = coordinator._open_recovery_session(
-                source=source, context=context, lease=lease
-            )
-            session._bind_recovery(source=source, context=context, lease=lease)
-            for stage, method in (
-                ("COMPLETION", "prepare_first_path_completion"),
-                ("CONVERSATION", "prepare_conversation_completion"),
-            ):
-                semantic = source._reconstruct_input(
-                    context, stage, results, None, predecessor_effects_input=None
-                )
-                state = coordinator._append_stage_held(
-                    lease,
-                    state,
-                    H1PostSealRecoveryTransition.pin_input(
-                        state, stage=stage, semantic_input=semantic
-                    ),
-                )
-                session._bind_recovery_stage(
-                    stage=stage, semantic_input=semantic, predecessor_effects_input=None
-                )
-                result = (await getattr(session, method)()).returned.canonical_payload
-                source._validate_result(context, stage, semantic, result)
-                state = coordinator._append_stage_held(
-                    lease,
-                    state,
-                    H1PostSealRecoveryTransition.commit_result(
-                        state, stage=stage, result_bytes=result
-                    ),
-                )
-                results[stage] = result
-            return state
-        finally:
-            if session is not None:
-                await coordinator._drain_session_held(lease, session)
-            if context is not None:
-                source._retire_recovery_context(context)
-
-
-async def _issue_reconstructed_grant(
-    runtime: CommonCliExecutionRuntime, request: Any, locator: Any
-) -> None:
-    registry = runtime._h1_completion_exchange_registry
-    assert type(registry) is H1CompletionExchangeRegistry
-    historical = registry.capture_recovered_prepared_delivery_historical(
-        original_identity=request.identity,
-        original_fingerprint=request.original_driver_command_fingerprint(),
-        selected_seal=locator,
-    )
-    projection = registry.replay_prepared_delivery_historical(historical)
-    selected = H1SelectedOutputSources(runtime).capture_scope_selected_current(
-        projection.selected_scope.scope
-    )
-    assert selected is not None
-    epoch, now_ns = runtime._require_dispatch_resources().clock()
-    terms = PreparedExternalSelfDeliveryPolicyTermsV1(
-        principal_id=projection.principal_id,
-        channel_id="hermetic-local",
-        recipient=projection.delivery.selection.recipient,
-        communication_permission="PREPARED_EXTERNAL_SEND",
-        disclosure_permission="EXACT_RENDERED_PAYLOAD",
-        self_recipient_semantics="OPERATOR_ATTESTED_SELF",
-        payload_class="NonAuthoritativeText",
-        payload_digest=projection.delivery.render_digest,
-        payload_byte_length=len(projection.delivery.rendered_bytes),
-        source_classes=("CLI",),
-        selection_modes=("ORIGIN_EXACT",),
-        external_delivery=True,
-        max_calls=1,
-        clock_contract="chiplog.dispatch.monotonic.v2",
-        clock_epoch=epoch,
-        not_before_ns=now_ns - 1,
-        expires_at_ns=now_ns + 1_200_000_000_000,
-    )
-    policy = await runtime.authorize_prepared_self_delivery_policy(
-        _signed_policy(
-            IssuePreparedExternalSelfDeliveryPolicyRequestV1(
-                operation="ISSUE_PREPARED_EXTERNAL_SELF_DELIVERY_POLICY",
-                command_id="recovered-policy",
-                tenant_id=TENANT,
-                database_id=DATABASE,
-                policy_id="policy",
-                expected_trust_observation=_trust(runtime),
-                expected_policy=None,
-                terms=terms,
-            )
-        ),
-        request_id="recovered-policy",
-    )
-    scope = PreparedExternalDeliveryGrantScopeV2(
-        principal_id=projection.principal_id,
-        worker_session_id=projection.worker_session_id,
-        contour_head=projection.selected_scope.scope.contour_head,
-        authenticated_credential_head=projection.selected_scope.scope.authenticated_cli_state.credential_head,
-        authenticated_session_head=projection.selected_scope.scope.authenticated_cli_state.session_head,
-        selected_source=selected.selected_source,
-        resources=ExternalDeliveryResourcesV1(
-            signature_domain="dispatch-resources.v1",
-            signed_observation_fingerprint=projection.selected_scope.scope.selected_resource_observation_ref.signed_observation_fingerprint,
-            resource_grant=selected.resource_grant,
-            recipient=projection.delivery.selection.recipient,
-            clock_epoch=epoch,
-        ),
-        mandate=BoundedExternalSelfSendMandateV1(
-            purpose="PREPARED_EXTERNAL_SELF_SEND",
-            external_delivery=True,
-            selection="ORIGIN_EXACT",
-            payload_class="NonAuthoritativeText",
-            communication_authority=policy.anchor.policy,
-            disclosure_authority=policy.anchor.policy,
-            self_recipient_binding=policy.anchor.policy,
-            original_run=projection.original_run,
-            captured_attempt=projection.captured_attempt,
-            preparation_basis=prepared_delivery_basis_head_v3(projection.basis),
-            delivery_id=projection.delivery.delivery_id,
-            payload_digest=projection.delivery.render_digest,
-            payload_byte_length=len(projection.delivery.rendered_bytes),
-            max_calls=1,
-            clock_contract="chiplog.dispatch.monotonic.v2",
-            clock_epoch=epoch,
-            not_before_ns=terms.not_before_ns,
-            expires_at_ns=terms.expires_at_ns,
-        ),
-    )
-    issued = await runtime.authorize_prepared_external_delivery_grant(
-        _signed_grant(
-            IssuePreparedExternalDeliveryGrantRequestV2(
-                operation="ISSUE_PREPARED_EXTERNAL_DELIVERY_GRANT",
-                command_id="recovered-grant",
-                tenant_id=TENANT,
-                database_id=DATABASE,
-                grant_id="recovered-grant",
-                policy_id="policy",
-                expected_trust_observation=_trust(runtime),
-                expected_grant=None,
-                selected_policy_anchor=policy.anchor,
-                canonical_selected_policy_bytes=policy.policy.canonical_bytes(),
-                proposed_scope=scope,
-            )
-        ),
-        request_id="recovered-grant",
-        original_identity=request.identity,
-        original_fingerprint=request.original_driver_command_fingerprint(),
-        selected_seal=locator,
-    )
-    assert issued.grant.status == "ACTIVE"
 
 
 async def _prepared_recovery(runtime: CommonCliExecutionRuntime) -> tuple[Any, Any, Any]:
@@ -433,8 +193,60 @@ def _records(runtime: CommonCliExecutionRuntime, root_id: str) -> tuple[Any, ...
         ).records
 
 
+async def _pin_scoped_terminal_input(
+    runtime: CommonCliExecutionRuntime, request: Any, locator: Any, state: Any
+) -> tuple[Any, bytes]:
+    """Persist the authenticated V3 terminal request without admitting its owner."""
+    evidence = H1V3RecoveryHistoricalSource(runtime).read_terminal(
+        original_identity=request.identity,
+        original_fingerprint=request.original_driver_command_fingerprint(),
+        selected_seal=locator,
+    )
+    assert evidence.terminal_result is None
+    semantic_input = evidence.terminal_request.canonical_bytes()
+    coordinator = runtime._h1_postseal_recovery_coordinator
+    assert coordinator is not None
+    async with await coordinator._fence.acquire() as lease:
+        state = coordinator._append_stage_held(
+            lease,
+            state,
+            H1PostSealRecoveryTransition.pin_input(
+                state, stage="TERMINAL_WORK", semantic_input=semantic_input
+            ),
+        )
+    return state, semantic_input
+
+
+async def _resume_to_scoped_effects(
+    runtime: CommonCliExecutionRuntime,
+    request: Any,
+    locator: Any,
+    state: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Any:
+    """Run the real V3 prefix and stop before terminal admission."""
+    coordinator = runtime._h1_postseal_recovery_coordinator
+    assert coordinator is not None
+
+    async def stop_terminal(**_kwargs: Any) -> Any:
+        raise H1PostSealRecoveryCoordinatorError("test stop before terminal work")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(coordinator, "_resume_scoped_v3_terminal_work_held", stop_terminal)
+        with pytest.raises(H1PostSealRecoveryCoordinatorError, match="test stop"):
+            await coordinator.resume_selected(
+                request.identity, request.original_driver_command_fingerprint(), locator
+            )
+    with runtime._authority_gate().hold():
+        effects_complete = runtime._h1_postseal_recovery_journal.scan().state_for_root(
+            state.root.root_id()
+        )
+    assert len(_records(runtime, effects_complete.root.root_id())) == 7
+    return effects_complete
+
+
 @pytest.mark.asyncio
-async def test_selected_scoped_v3_resume_reaches_mounted_effects_and_commits_canonical_history(
+async def test_selected_scoped_v3_resume_reaches_terminal_owner_and_replays_nine_record_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     slot, expected = installed_slot(tmp_path)
@@ -445,17 +257,26 @@ async def test_selected_scoped_v3_resume_reaches_mounted_effects_and_commits_can
             launch, resources=_resources(tmp_path)
         ) as runtime:
             request, locator, _state = await _prepared_recovery(runtime)
-            calls = 0
+            effects_calls = 0
+            terminal_calls = 0
             all_owner_calls = 0
+            terminal_request_payloads: list[bytes] = []
+            terminal_result_payloads: list[bytes] = []
             broker = runtime._supervisor.runtime()
             original = broker._call_with_admission_guard
 
             async def counted(sent: Any, **kwargs: Any) -> Any:
-                nonlocal all_owner_calls, calls
+                nonlocal all_owner_calls, effects_calls, terminal_calls
                 all_owner_calls += 1
                 if sent.operation_id == "effects.prepare_h1_scoped_delivery":
-                    calls += 1
-                return await original(sent, **kwargs)
+                    effects_calls += 1
+                if sent.operation_id == "agent_loop.prepare_terminal_work":
+                    terminal_calls += 1
+                    terminal_request_payloads.append(sent.canonical_payload)
+                returned = await original(sent, **kwargs)
+                if sent.operation_id == "agent_loop.prepare_terminal_work":
+                    terminal_result_payloads.append(returned.canonical_payload)
+                return returned
 
             monkeypatch.setattr(broker, "_call_with_admission_guard", counted)
             coordinator = runtime._h1_postseal_recovery_coordinator
@@ -463,7 +284,8 @@ async def test_selected_scoped_v3_resume_reaches_mounted_effects_and_commits_can
             completed = await coordinator.resume_selected(
                 request.identity, request.original_driver_command_fingerprint(), locator
             )
-            assert calls == 1
+            assert effects_calls == 1
+            assert terminal_calls == 1
             records = _records(runtime, completed.root.root_id())
             assert tuple((record.kind, record.stage) for record in records) == (
                 ("ROOT", None),
@@ -473,6 +295,8 @@ async def test_selected_scoped_v3_resume_reaches_mounted_effects_and_commits_can
                 ("STAGE_RESULT", "CONVERSATION"),
                 ("STAGE_INPUT", "EFFECTS"),
                 ("STAGE_RESULT", "EFFECTS"),
+                ("STAGE_INPUT", "TERMINAL_WORK"),
+                ("STAGE_RESULT", "TERMINAL_WORK"),
             )
             evidence = H1V3RecoveryHistoricalSource(runtime).read_effects(
                 original_identity=request.identity,
@@ -482,13 +306,228 @@ async def test_selected_scoped_v3_resume_reaches_mounted_effects_and_commits_can
             assert evidence.effects_result is not None
             assert evidence.effects_result.disposition == "PREPARED"
             assert evidence.effects_result.canonical_bytes() == dict(completed.results)["EFFECTS"]
+            terminal = H1V3RecoveryHistoricalSource(runtime).read_terminal(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=locator,
+            )
+            assert terminal.terminal_result is not None
+            assert terminal_request_payloads == [terminal.terminal_request.canonical_bytes()]
+            assert terminal_result_payloads == [terminal.terminal_result.canonical_bytes()]
+            assert completed.stage_input("TERMINAL_WORK")[0] == (
+                terminal.terminal_request.canonical_bytes()
+            )
+            assert terminal.terminal_result.canonical_bytes() == dict(completed.results)[
+                "TERMINAL_WORK"
+            ]
             owner_calls_before_replay = all_owner_calls
             replayed = await coordinator.resume_selected(
                 request.identity, request.original_driver_command_fingerprint(), locator
             )
             assert replayed == completed
-            assert calls == 1
+            assert effects_calls == 1
+            assert terminal_calls == 1
             assert all_owner_calls == owner_calls_before_replay
+
+
+@pytest.mark.asyncio
+async def test_selected_scoped_v3_eight_record_restart_dispatches_only_the_pinned_terminal_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    _write_pins(slot.database_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_scoped_runtime(
+            launch, resources=_resources(tmp_path)
+        ) as runtime:
+            request, locator, _state = await _prepared_recovery(runtime)
+            coordinator = runtime._h1_postseal_recovery_coordinator
+            assert coordinator is not None
+            effects_complete = await _resume_to_scoped_effects(
+                runtime, request, locator, _state, monkeypatch
+            )
+            pinned, terminal_input = await _pin_scoped_terminal_input(
+                runtime, request, locator, effects_complete
+            )
+            assert len(_records(runtime, pinned.root.root_id())) == 8
+            effects_calls = 0
+            terminal_calls = 0
+            all_owner_calls = 0
+            terminal_request_payloads: list[bytes] = []
+            terminal_result_payloads: list[bytes] = []
+            broker = runtime._supervisor.runtime()
+            original = broker._call_with_admission_guard
+
+            async def counted(sent: Any, **kwargs: Any) -> Any:
+                nonlocal all_owner_calls, effects_calls, terminal_calls
+                all_owner_calls += 1
+                if sent.operation_id == "effects.prepare_h1_scoped_delivery":
+                    effects_calls += 1
+                if sent.operation_id == "agent_loop.prepare_terminal_work":
+                    terminal_calls += 1
+                    terminal_request_payloads.append(sent.canonical_payload)
+                returned = await original(sent, **kwargs)
+                if sent.operation_id == "agent_loop.prepare_terminal_work":
+                    terminal_result_payloads.append(returned.canonical_payload)
+                return returned
+
+            monkeypatch.setattr(broker, "_call_with_admission_guard", counted)
+            completed = await coordinator.resume_selected(
+                request.identity, request.original_driver_command_fingerprint(), locator
+            )
+            assert effects_calls == 0
+            assert terminal_calls == 1
+            assert all_owner_calls == 1
+            assert terminal_request_payloads == [terminal_input]
+            assert terminal_result_payloads == [dict(completed.results)["TERMINAL_WORK"]]
+            assert len(_records(runtime, completed.root.root_id())) == 9
+            assert completed.stage_input("TERMINAL_WORK")[0] == terminal_input
+
+
+@pytest.mark.asyncio
+async def test_selected_scoped_v3_cancellation_after_terminal_result_drains_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    _write_pins(slot.database_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_scoped_runtime(
+            launch, resources=_resources(tmp_path)
+        ) as runtime:
+            request, locator, state = await _prepared_recovery(runtime)
+            coordinator = runtime._h1_postseal_recovery_coordinator
+            assert coordinator is not None
+            terminal_calls = 0
+            terminal_result_committed = asyncio.Event()
+            drain_entered = asyncio.Event()
+            release_drain = asyncio.Event()
+            contender_acquired = asyncio.Event()
+            broker = runtime._supervisor.runtime()
+            original_call = broker._call_with_admission_guard
+            original_append = coordinator._append_stage_held
+            original_drain = coordinator._drain_session_held
+            recovery_task: asyncio.Task[Any] | None = None
+
+            async def counted(sent: Any, **kwargs: Any) -> Any:
+                nonlocal terminal_calls
+                if sent.operation_id == "agent_loop.prepare_terminal_work":
+                    terminal_calls += 1
+                return await original_call(sent, **kwargs)
+
+            def cancel_after_terminal_result(lease: Any, state: Any, record: Any) -> Any:
+                appended = original_append(lease, state, record)
+                if record.kind == "STAGE_RESULT" and record.stage == "TERMINAL_WORK":
+                    assert recovery_task is asyncio.current_task()
+                    terminal_result_committed.set()
+                    recovery_task.cancel()
+                return appended
+
+            async def hold_drain(lease: Any, session: Any) -> None:
+                drain_entered.set()
+                cancelled: asyncio.CancelledError | None = None
+                while not release_drain.is_set():
+                    try:
+                        await asyncio.shield(release_drain.wait())
+                    except asyncio.CancelledError as error:
+                        cancelled = error
+                await original_drain(lease, session)
+                if cancelled is not None:
+                    raise cancelled
+
+            monkeypatch.setattr(broker, "_call_with_admission_guard", counted)
+            monkeypatch.setattr(coordinator, "_append_stage_held", cancel_after_terminal_result)
+            monkeypatch.setattr(coordinator, "_drain_session_held", hold_drain)
+            recovery_task = asyncio.create_task(
+                coordinator.resume_selected(
+                    request.identity, request.original_driver_command_fingerprint(), locator
+                )
+            )
+            await terminal_result_committed.wait()
+            await drain_entered.wait()
+
+            async def contend() -> None:
+                async with await coordinator._fence.acquire() as lease:
+                    lease.require_owned()
+                    contender_acquired.set()
+
+            contender = asyncio.create_task(contend())
+            await asyncio.sleep(0)
+            assert not contender_acquired.is_set()
+            release_drain.set()
+            with pytest.raises(asyncio.CancelledError):
+                await recovery_task
+            await asyncio.wait_for(contender, timeout=1)
+            assert contender_acquired.is_set()
+            assert terminal_calls == 1
+            records = _records(runtime, state.root.root_id())
+            terminal = H1V3RecoveryHistoricalSource(runtime).read_terminal(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=locator,
+            )
+            assert terminal.terminal_result is not None
+            assert len(records) == 9
+            replayed = await coordinator.resume_selected(
+                request.identity, request.original_driver_command_fingerprint(), locator
+            )
+            assert replayed.stage_input("TERMINAL_WORK")[0] == (
+                terminal.terminal_request.canonical_bytes()
+            )
+            assert terminal_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_selected_scoped_v3_tampered_terminal_pin_rejects_before_terminal_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    _write_pins(slot.database_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_scoped_runtime(
+            launch, resources=_resources(tmp_path)
+        ) as runtime:
+            request, locator, _state = await _prepared_recovery(runtime)
+            coordinator = runtime._h1_postseal_recovery_coordinator
+            assert coordinator is not None
+            effects_complete = await _resume_to_scoped_effects(
+                runtime, request, locator, _state, monkeypatch
+            )
+            terminal = H1V3RecoveryHistoricalSource(runtime).read_terminal(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=locator,
+            )
+            async with await coordinator._fence.acquire() as lease:
+                tampered = coordinator._append_stage_held(
+                    lease,
+                    effects_complete,
+                    H1PostSealRecoveryTransition.pin_input(
+                        effects_complete,
+                        stage="TERMINAL_WORK",
+                        semantic_input=terminal.terminal_request.canonical_bytes() + b" ",
+                    ),
+                )
+            assert len(_records(runtime, tampered.root.root_id())) == 8
+            terminal_calls = 0
+            broker = runtime._supervisor.runtime()
+            original = broker._call_with_admission_guard
+
+            async def counted(sent: Any, **kwargs: Any) -> Any:
+                nonlocal terminal_calls
+                if sent.operation_id == "agent_loop.prepare_terminal_work":
+                    terminal_calls += 1
+                return await original(sent, **kwargs)
+
+            monkeypatch.setattr(broker, "_call_with_admission_guard", counted)
+            with pytest.raises(H1PostSealRecoveryCoordinatorError):
+                await coordinator.resume_selected(
+                    request.identity, request.original_driver_command_fingerprint(), locator
+                )
+            assert terminal_calls == 0
+            assert len(_records(runtime, tampered.root.root_id())) == 8
 
 
 @pytest.mark.asyncio
@@ -523,8 +562,8 @@ async def test_selected_scoped_v3_six_record_restart_reuses_the_pinned_effects_i
             monkeypatch.setattr(broker, "_call_with_admission_guard", counted)
             coordinator = runtime._h1_postseal_recovery_coordinator
             assert coordinator is not None
-            completed = await coordinator.resume_selected(
-                request.identity, request.original_driver_command_fingerprint(), locator
+            completed = await _resume_to_scoped_effects(
+                runtime, request, locator, state, monkeypatch
             )
             assert calls == 1
             records = _records(runtime, completed.root.root_id())
@@ -539,7 +578,7 @@ async def test_selected_scoped_v3_six_record_restart_reuses_the_pinned_effects_i
 
 
 @pytest.mark.asyncio
-async def test_selected_scoped_v3_changed_r16_resource_rejects_before_effects_owner(
+async def test_selected_scoped_v3_revoked_resource_rejects_before_terminal_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     slot, expected = installed_slot(tmp_path)
@@ -548,32 +587,117 @@ async def test_selected_scoped_v3_changed_r16_resource_rejects_before_effects_ow
     resources = _resources(tmp_path)
     with _open_installed_h1_launch(slot) as launch:
         async with open_installed_h1_scoped_runtime(launch, resources=resources) as runtime:
-            request, locator, state = await _prepared_recovery(runtime)
-            assert len(_records(runtime, state.root.root_id())) == 5
-            calls = 0
+            request, locator, _state = await _prepared_recovery(runtime)
+            coordinator = runtime._h1_postseal_recovery_coordinator
+            assert coordinator is not None
+            effects_complete = await _resume_to_scoped_effects(
+                runtime, request, locator, _state, monkeypatch
+            )
+            terminal_calls = 0
             broker = runtime._supervisor.runtime()
             original = broker._call_with_admission_guard
 
             async def counted(sent: Any, **kwargs: Any) -> Any:
-                nonlocal calls
-                if sent.operation_id == "effects.prepare_h1_scoped_delivery":
-                    calls += 1
+                nonlocal terminal_calls
+                if sent.operation_id == "agent_loop.prepare_terminal_work":
+                    terminal_calls += 1
                 return await original(sent, **kwargs)
 
             monkeypatch.setattr(broker, "_call_with_admission_guard", counted)
+            original_records = tuple(
+                record.canonical_bytes
+                for record in _records(runtime, effects_complete.root.root_id())
+            )
+            assert len(original_records) == 7
             resources.revoke()
-            coordinator = runtime._h1_postseal_recovery_coordinator
-            assert coordinator is not None
             with pytest.raises(H1PostSealRecoveryCoordinatorError):
                 await coordinator.resume_selected(
                     request.identity, request.original_driver_command_fingerprint(), locator
                 )
-            assert calls == 0
-            records = _records(runtime, state.root.root_id())
-            assert tuple((record.kind, record.stage) for record in records) == (
-                ("ROOT", None),
-                ("STAGE_INPUT", "COMPLETION"),
-                ("STAGE_RESULT", "COMPLETION"),
-                ("STAGE_INPUT", "CONVERSATION"),
-                ("STAGE_RESULT", "CONVERSATION"),
+            assert terminal_calls == 0
+            records = _records(runtime, effects_complete.root.root_id())
+            assert len(records) == 7
+            assert tuple(record.canonical_bytes for record in records) == original_records
+
+
+@pytest.mark.asyncio
+async def test_selected_scoped_v3_revocation_at_terminal_admission_keeps_only_pinned_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The terminal guard rechecks the real recovered authority before owner IPC."""
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
+    _write_pins(slot.database_path)
+    resources = _resources(tmp_path)
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_scoped_runtime(launch, resources=resources) as runtime:
+            request, locator, state = await _prepared_recovery(runtime)
+            coordinator = runtime._h1_postseal_recovery_coordinator
+            assert coordinator is not None
+            effects_complete = await _resume_to_scoped_effects(
+                runtime, request, locator, state, monkeypatch
+            )
+            original_seven = tuple(
+                record.canonical_bytes
+                for record in _records(runtime, effects_complete.root.root_id())
+            )
+            assert len(original_seven) == 7
+            terminal = H1V3RecoveryHistoricalSource(runtime).read_terminal(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=locator,
+            )
+            authority_reader = runtime._h1_scoped_delivery_authority_reader
+            original_recheck = authority_reader.recheck
+            rechecks = 0
+            terminal_attempts = 0
+            terminal_frames = 0
+            broker = runtime._supervisor.runtime()
+            original_call = broker._call_with_admission_guard
+            original_send_frame = broker_runtime._send_frame
+
+            def revoke_before_terminal_admission(reader: Any, capture: Any) -> Any:
+                nonlocal rechecks
+                rechecks += 1
+                if rechecks == 2:
+                    resources.revoke()
+                assert reader is authority_reader
+                return original_recheck(capture)
+
+            async def counted(sent: Any, **kwargs: Any) -> Any:
+                nonlocal terminal_attempts
+                if sent.operation_id == "agent_loop.prepare_terminal_work":
+                    terminal_attempts += 1
+                return await original_call(sent, **kwargs)
+
+            def count_terminal_frames(connection: Any, secret: bytes, payload: bytes) -> None:
+                nonlocal terminal_frames
+                if json.loads(payload).get("operation") == "agent_loop.prepare_terminal_work":
+                    terminal_frames += 1
+                original_send_frame(connection, secret, payload)
+
+            monkeypatch.setattr(
+                type(authority_reader), "recheck", revoke_before_terminal_admission
+            )
+            monkeypatch.setattr(broker, "_call_with_admission_guard", counted)
+            monkeypatch.setattr(broker_runtime, "_send_frame", count_terminal_frames)
+            with pytest.raises(H1PostSealRecoveryCoordinatorError):
+                await coordinator.resume_selected(
+                    request.identity, request.original_driver_command_fingerprint(), locator
+                )
+            assert rechecks == 2
+            assert terminal_attempts == 1
+            assert terminal_frames == 0
+            records = _records(runtime, effects_complete.root.root_id())
+            assert len(records) == 8
+            assert tuple(record.canonical_bytes for record in records[:7]) == original_seven
+            pinned = records[7]
+            assert pinned.kind == "STAGE_INPUT"
+            assert pinned.stage == "TERMINAL_WORK"
+            with runtime._authority_gate().hold():
+                pinned_state = runtime._h1_postseal_recovery_journal.scan().state_for_root(
+                    effects_complete.root.root_id()
+                )
+            assert pinned_state.stage_input("TERMINAL_WORK")[0] == (
+                terminal.terminal_request.canonical_bytes()
             )

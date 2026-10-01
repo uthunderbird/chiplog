@@ -256,6 +256,42 @@ class H1ProducerInventoryReader:
             del self._issued[id(capture)]
             self._physical_reader.release(record.physical_capture)
 
+    def replay_selected_scope_held(self, capture: H1ProducerInventoryCapture) -> object:
+        """Return the authenticated selected scope after a fresh capture replay."""
+        self._runtime._authority_gate().require_held()
+        record = self._issued_record_held(capture)
+        self.recheck_held(capture)
+        if self._issued_record_held(capture) is not record:
+            raise H1ProducerInventoryViolation(
+                "H1 producer inventory capture changed during replay"
+            )
+        return record.selected_scope
+
+    def replay_post_effects_scope_held(self, capture: H1ProducerInventoryCapture) -> object:
+        """Replay scope after an admitted Effects call without rereading its history.
+
+        The exact issued capture remains retained, while authority verification
+        is fresh.  Physical Effects history is intentionally not reread here:
+        its short observation lease authenticated the admitted Effects call and
+        can expire while later terminal/current work is still in flight.
+        """
+        self._runtime._authority_gate().require_held()
+        self._require_open_held()
+        record = self._issued_record_held(capture)
+        try:
+            self._authority_reader._verify_record_held(
+                self._authority_reader._issued_record_held(record.authority_capture)
+            )
+        except (H1ScopedDeliveryAuthorityViolation, TypeError, ValueError) as error:
+            raise H1ProducerInventoryViolation(
+                "H1 producer post-Effects authority capture is not current"
+            ) from error
+        if self._issued_record_held(capture) is not record:
+            raise H1ProducerInventoryViolation(
+                "H1 producer post-Effects inventory capture changed during replay"
+            )
+        return record.selected_scope
+
     def close(self) -> None:
         with self._runtime._authority_gate().hold():
             for _, record in tuple(self._issued.values()):
