@@ -30,6 +30,10 @@ from chiplog.capabilities.effects.contracts import (
 )
 from chiplog.capabilities.effects.dispatch_v2 import reference
 from chiplog.capabilities.effects.fences import Absent
+from chiplog.capabilities.effects.h1_scoped_dispatch_semantics import (
+    H1_SCOPED_DISPATCH_SEMANTICS,
+    h1_scoped_dispatch_semantic_registry_capture,
+)
 from chiplog.capabilities.effects.scoped_intent_contracts import (
     DispatchMandateV3,
     ExternalActionIntentV3,
@@ -166,7 +170,8 @@ async def delivery_publication_fixture(
         binding=binding,
         preparation_basis=head("basis"),
     )
-    baseline = prepared_acceptance().effects_proposal.snapshot.intent.mandate.model_dump()
+    acceptance = prepared_acceptance()
+    baseline = acceptance.effects_proposal.snapshot.intent.mandate.model_dump()
     baseline.update(
         {
             "schema_id": "chiplog.effects.dispatch-mandate.v3",
@@ -175,6 +180,7 @@ async def delivery_publication_fixture(
             "recipient": _effect_recipient(delivery.selection.recipient),
             "payload": delivery.rendered_bytes,
             "effect_fingerprint": hashlib.sha256(delivery.rendered_bytes).hexdigest(),
+            "semantics": H1_SCOPED_DISPATCH_SEMANTICS.model_dump(mode="json"),
         }
     )
     mandate = DispatchMandateV3.model_validate(baseline)
@@ -199,7 +205,19 @@ async def delivery_publication_fixture(
         ),
         precursor_request=precursor_request,
         precursor_result=precursor_result,
-        original_sources=prepared_acceptance().effects_proposal.snapshot.intent.acquisition.original_sources,
+        original_sources=acceptance.effects_proposal.snapshot.intent.acquisition.original_sources,
+    )
+    registry = h1_scoped_dispatch_semantic_registry_capture(
+        clock_contract=acceptance.effects_request.current.clock_contract,
+        clock_epoch=acceptance.effects_request.current.clock_epoch,
+        valid_until_ns=acceptance.effects_request.current.lease_expires_at_ns,
+    )
+    acquisition = acquisition.model_copy(
+        update={
+            "original_sources": acquisition.original_sources.model_copy(
+                update={"semantic_registry": registry}
+            )
+        }
     )
     unsigned = ExternalActionIntentV3(
         intent_id=delivery.delivery_id + "/intent",
@@ -214,9 +232,22 @@ async def delivery_publication_fixture(
         ),
         intent=intent,
         expected_intent=Absent(),
-        current=prepared_acceptance().effects_request.current,
+        current=acceptance.effects_request.current.model_copy(
+            update={
+                "supported_semantics": H1_SCOPED_DISPATCH_SEMANTICS,
+                "observation": acceptance.effects_request.current.observation.model_copy(
+                    update={
+                        "sources": (
+                            acceptance.effects_request.current.observation.sources.model_copy(
+                                update={"semantic_registry": registry}
+                            )
+                        )
+                    }
+                ),
+            }
+        ),
         complete_current_origin_sources=(source("current-origin"),),
-        fence=prepared_acceptance().effects_request.command.fence,
+        fence=acceptance.effects_request.command.fence,
     )
     retained = make_scoped_intent_retained_exchange(request)
     member = make_scoped_intent_member(intent)

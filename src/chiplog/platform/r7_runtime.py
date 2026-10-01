@@ -162,6 +162,16 @@ class _OwnerProvider(Provider):
 
 
 def _owner_module(identity: OwnerProcessIdentity) -> str:
+    from chiplog.architecture.r7_runtime import (
+        R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
+    )
+
+    if identity.owner_id == "effects" and identity.capability_ids == next(
+        owner.capability_ids
+        for owner in R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST.owners
+        if owner.owner_id == "effects"
+    ):
+        return "chiplog.capabilities.effects._scoped_dispatch_process"
     if (
         identity.owner_id == "effects"
         and "effects.prepare_h1_scoped_delivery" in identity.capability_ids
@@ -464,6 +474,15 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
             "chiplog.capabilities.effects._process",
             "chiplog.capabilities.effects._r16_process",
         )
+    if module == "chiplog.capabilities.effects._scoped_dispatch_process":
+        return (
+            "chiplog.capabilities.effects._dispatch_process",
+            "chiplog.capabilities.effects._h1_local_process",
+            "chiplog.capabilities.effects._h1_scoped_process",
+            "chiplog.capabilities.effects._process",
+            "chiplog.capabilities.effects._r16_process",
+            "chiplog.capabilities.effects._scoped_dispatch_process",
+        )
     if module == "chiplog.capabilities.effects._r16_process":
         return (
             "chiplog.capabilities.effects._process",
@@ -714,7 +733,7 @@ class AuthorityBrokerRuntime:
 
     def _install_j7_operator_policy_key_pin(self, pin: PinnedOperatorPolicyKey) -> None:
         """Install one broker-private pin before a J7 generation is started."""
-        if self._manifest.manifest_version not in (19, 20):
+        if self._manifest.manifest_version not in (19, 20, 21):
             raise OwnerProcessFailure("operator policy key pin is only valid for the J7 manifest")
         if self._temporary is not None:
             raise OwnerProcessFailure("operator policy key pin must precede owner startup")
@@ -722,7 +741,7 @@ class AuthorityBrokerRuntime:
         self._j7_operator_policy_key_pin = pin
 
     def _install_j7_operator_grant_key_pin(self, pin: PinnedOperatorGrantKey) -> None:
-        if self._manifest.manifest_version not in (19, 20):
+        if self._manifest.manifest_version not in (19, 20, 21):
             raise OwnerProcessFailure("operator grant key pin is only valid for the J7 manifest")
         if self._temporary is not None:
             raise OwnerProcessFailure("operator grant key pin must precede owner startup")
@@ -731,7 +750,7 @@ class AuthorityBrokerRuntime:
 
     def _j7_binding_bytes_for_owner(self, identity: OwnerProcessIdentity) -> bytes | None:
         if (
-            self._manifest.manifest_version not in (19, 20)
+            self._manifest.manifest_version not in (19, 20, 21)
             or identity.owner_id != "deployment_trust"
         ):
             return None
@@ -743,7 +762,7 @@ class AuthorityBrokerRuntime:
 
     def _j7_grant_binding_bytes_for_owner(self, identity: OwnerProcessIdentity) -> bytes | None:
         if (
-            self._manifest.manifest_version not in (19, 20)
+            self._manifest.manifest_version not in (19, 20, 21)
             or identity.owner_id != "deployment_trust"
         ):
             return None

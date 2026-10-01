@@ -987,6 +987,47 @@ R14_R17_H1_SCOPED_EFFECTS_J7_EVALUATION_MANIFEST = replace(
     R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST, environment="evaluation"
 )
 
+# V21 adds the generic scoped-dispatch owner route without reinterpreting the
+# v20 scoped-delivery process or its historical canonical manifest bytes.
+_V21_SCOPED_DISPATCH_ROUTE = RoutedCallDecl(
+    "effects.prepare_scoped_dispatch_v3",
+    "broker",
+    "effects",
+    "chiplog.effects.scoped-dispatch-request.v3",
+    "chiplog.effects.scoped-dispatch-result.v3",
+)
+_V21_SCOPED_DISPATCH_OPERATIONS = tuple(
+    sorted((*_J7_H1_SCOPED_EFFECTS_OPERATIONS, _V21_SCOPED_DISPATCH_ROUTE.operation_id))
+)
+R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST = replace(
+    R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
+    manifest_version=21,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_V21_SCOPED_DISPATCH_OPERATIONS,
+            public_operations=_V21_SCOPED_DISPATCH_OPERATIONS,
+            target_ids=("chiplog.capabilities.effects._scoped_dispatch_process:dispatch",),
+        )
+        if owner.owner_id == "effects"
+        else owner
+        for owner in R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST.routes,
+                _V21_SCOPED_DISPATCH_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_R17_H1_SCOPED_EFFECTS_V3_J7_EVALUATION_MANIFEST = replace(
+    R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST, environment="evaluation"
+)
+
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -1019,6 +1060,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         18,
         19,
         20,
+        21,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1040,6 +1082,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         18: R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
         19: R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
         20: R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
+        21: R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
@@ -1129,6 +1172,8 @@ __all__ = [
     "R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST",
     "R14_R17_H1_SCOPED_EFFECTS_J7_EVALUATION_MANIFEST",
     "R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST",
+    "R14_R17_H1_SCOPED_EFFECTS_V3_J7_EVALUATION_MANIFEST",
+    "R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST",
     "LeafBinding",
     "OwnerProcessDecl",
     "RoutedCallDecl",
