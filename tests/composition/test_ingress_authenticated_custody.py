@@ -17,6 +17,12 @@ from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     CliCustodyOffer,
     CliCustodyResponse,
 )
+from chiplog.composition.r17_admission_records import (
+    SCHEMA_CAPACITY,
+    SCHEMA_EPOCH,
+    SCHEMA_READY,
+    selected_aggregate,
+)
 from chiplog.composition.r17_ingress_history import wire_record
 from chiplog.composition.r17_ingress_runtime import R17IngressRuntime, open_r17_runtime
 from chiplog.platform._owner_publication_contracts import (
@@ -107,6 +113,19 @@ async def test_actual_peer_admits_one_embedded_inbox_and_replays_after_restart(
                 (observed.physical_record.head,),
             ).fetchone()
         assert actual == (result.complete_records[0].canonical_bytes,)
+        assert tuple(row.schema_id for row in result.complete_records) == (
+            "chiplog.ingress.authenticated-record.v2",
+            SCHEMA_EPOCH,
+            SCHEMA_CAPACITY,
+            SCHEMA_READY,
+        )
+        with sqlite3.connect(database) as connection:
+            aggregate_rows = connection.execute(
+                "SELECT schema_id FROM records WHERE tenant_id=? AND commit_sequence=? "
+                "ORDER BY rowid",
+                ("hermetic-tenant", result.tenant_commit_sequence),
+            ).fetchall()
+        assert aggregate_rows == [(row.schema_id,) for row in result.complete_records]
         before = runtime.ingress_history().records
     async with open_r17_runtime(database) as reopened:
         assert reopened.read_admitted_inbox(token) == observed
@@ -250,6 +269,35 @@ async def test_selected_retry_cannot_be_promoted_by_authenticated_peer(tmp_path:
         assert result.kind == "CONFLICT"
         assert runtime.ingress_history().records == before
         assert runtime.read_admitted_inbox(token) is None
+
+
+async def test_cli_capacity_claim_rejects_n_plus_one_without_selected_partial_batch(
+    tmp_path: Path,
+) -> None:
+    async with open_r17_runtime(tmp_path / "capacity.sqlite") as runtime:
+        for slot in ("capacity-1", "capacity-2"):
+            runtime.provision_retained(slot, b"x" * 2048)
+            assert (await runtime.allocate_receipt(slot)).kind == "COMMITTED"
+            assert (await runtime.stage_receipt(slot)).kind == "COMMITTED"
+            async with runtime.cli_custody(slot) as admission:
+                client = asyncio.create_task(_client(admission.socket.path))
+                assert (await admission.admit()).kind == "COMMITTED"
+                await client
+        aggregate = selected_aggregate(runtime._owner_decisions().snapshot().decisions)
+        bounds = tuple(item.bound for item in aggregate.ready if item.source_class == "CLI")
+        assert len(bounds) == 2
+        assert bounds[0].absolute_selection_deadline_slot - bounds[0].origin_scheduler_slot == 16
+        assert bounds[1].absolute_selection_deadline_slot - bounds[1].origin_scheduler_slot == 32
+        runtime.provision_retained("capacity-3", b"over-capacity")
+        assert (await runtime.allocate_receipt("capacity-3")).kind == "COMMITTED"
+        assert (await runtime.stage_receipt("capacity-3")).kind == "COMMITTED"
+        selected = runtime._owner_decisions().snapshot()
+        async with runtime.cli_custody("capacity-3") as admission:
+            client = asyncio.create_task(_client(admission.socket.path))
+            with pytest.raises(ValueError, match="reserve exhausted"):
+                await admission.admit()
+            await client
+        assert runtime._owner_decisions().snapshot() == selected
 
 
 @pytest.mark.parametrize("mutation", ["inbox_bytes", "authentication_reference"])

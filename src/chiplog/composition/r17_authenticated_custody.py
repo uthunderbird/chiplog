@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import secrets
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from chiplog.adapters.driven.cli_custody_socket import CliCustodySocket
 from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
@@ -14,6 +14,15 @@ from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     CliCustodyScope,
 )
 from chiplog.capabilities.deployment_trust.cli_custody_validation import CliCustodyOwnerCall
+from chiplog.composition.r17_admission_records import (
+    CapacityClaimed,
+    EpochOpened,
+    cli_batch_events,
+    selected_aggregate,
+)
+from chiplog.composition.r17_admission_records import (
+    wire as admission_wire,
+)
 from chiplog.composition.r17_authenticated_records import (
     COMMAND_SCHEMA,
     OPERATION,
@@ -135,6 +144,66 @@ class AuthenticatedIngressAuthority(IngressAuthority):
         self._authorized = True
         self._current_session()
 
+    def check_prepared(
+        self, prepared: PreparedOwnerPublication
+    ) -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
+        """Rebuild the pending aggregate from the last durable cut before SQLite inserts it.
+
+        The SQLite decision callback sees a post-insert commitment, so it must
+        only select bytes already revalidated from the pre-insert authority cut.
+        """
+        disposition = super().check_prepared(prepared)
+        if disposition is not None:
+            return disposition
+        try:
+            entry = self._issued.get(prepared.issuance_id)
+            if entry is None or entry.prepared is not prepared:
+                return "DENIED"
+            batch = prepared.request
+            if not isinstance(batch, SingleOwnerBatch) or batch.command.schema_id != COMMAND_SCHEMA:
+                return "DENIED"
+            command = AuthenticatedCustodyCommand.model_validate_json(batch.command.canonical_bytes)
+            captured = self.capture()
+            prior = record_head(captured.history.records[-1]) if captured.history.records else None
+            record, _ = prepare_authenticated_custody(command, prior, captured.history.custody)
+            aggregate = selected_aggregate(self.runtime._owner_decisions().snapshot().decisions)
+            events = cli_batch_events(
+                tenant_id=self.runtime._tenant_id,
+                database_id=command.profile.database_id,
+                epoch=command.profile.epoch(),
+                fence=batch.authentication.admission_fence,
+                manifest=command.profile.head(),
+                command_id=command.command_id,
+                token_id=command.token.token_id,
+                custody_record=record_head(record),
+                inbox=record.custody.inbox,
+                raw_bytes=command.raw_bytes,
+                commit_sequence=captured.history.tenant_frontier + 1,
+                aggregate=aggregate,
+            )
+            expected = (
+                wire_record(record),
+                *tuple(
+                    admission_wire(
+                        "ingress.admission.epoch:" + command.profile.epoch().identity
+                        if isinstance(event, EpochOpened)
+                        else event.claim_id
+                        if isinstance(event, CapacityClaimed)
+                        else "ingress.admission.ready:" + command.token.token_id,
+                        event,
+                    )
+                    for event in events
+                ),
+            )
+            if (
+                batch.complete_records != expected
+                or command.tenant_frontier != captured.history.tenant_frontier
+            ):
+                return "STALE"
+        except OSError, RuntimeError, ValueError, TypeError:
+            return "STALE"
+        return None
+
     def authenticate_replay(self, query: ExactReplayQuery) -> PublicationRejected | None:
         with self.runtime._authority_gate().hold():
             entry = self._invocations.get(query.current_invocation.issuance_id)
@@ -195,6 +264,33 @@ class AuthenticatedIngressAuthority(IngressAuthority):
                 command, record_head(records[-1]), captured.history.custody
             )
             wire = wire_record(record)
+            aggregate = selected_aggregate(self.runtime._owner_decisions().snapshot().decisions)
+            admission_events = cli_batch_events(
+                tenant_id=self.runtime._tenant_id,
+                database_id=command.profile.database_id,
+                epoch=command.profile.epoch(),
+                fence=0,
+                manifest=command.profile.head(),
+                command_id=command.command_id,
+                token_id=command.token.token_id,
+                custody_record=record_head(record),
+                inbox=record.custody.inbox,
+                raw_bytes=command.raw_bytes,
+                commit_sequence=captured.history.tenant_frontier + 1,
+                aggregate=aggregate,
+            )
+            admission_wires = tuple(
+                admission_wire(
+                    "ingress.admission.epoch:" + command.profile.epoch().identity
+                    if isinstance(event, EpochOpened)
+                    else event.claim_id
+                    if isinstance(event, CapacityClaimed)
+                    else "ingress.admission.ready:" + command.token.token_id,
+                    event,
+                )
+                for event in admission_events
+            )
+            complete_records = (wire, *admission_wires)
             owner_command = OwnerCommandBytes(
                 owner="broker_ingress",
                 schema_id=COMMAND_SCHEMA,
@@ -220,10 +316,10 @@ class AuthenticatedIngressAuthority(IngressAuthority):
                 ),
                 expected=read_manifest(command, records),
                 command=owner_command,
-                complete_records=(wire,),
+                complete_records=complete_records,
                 complete_batch_fingerprint=digest(
                     json.dumps(
-                        [wire.model_dump(mode="json")],
+                        [item.model_dump(mode="json") for item in complete_records],
                         sort_keys=True,
                         separators=(",", ":"),
                         ensure_ascii=False,

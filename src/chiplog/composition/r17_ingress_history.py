@@ -7,6 +7,15 @@ import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from chiplog.composition.r17_admission_records import (
+    CapacityClaimed,
+    EpochOpened,
+    cli_batch_events,
+    selected_aggregate,
+)
+from chiplog.composition.r17_admission_records import (
+    wire as admission_wire,
+)
 from chiplog.composition.r17_authenticated_records import COMMAND_SCHEMA as AUTH_COMMAND_SCHEMA
 from chiplog.composition.r17_authenticated_records import RECORD_SCHEMA as AUTH_RECORD_SCHEMA
 from chiplog.composition.r17_authenticated_records import prepare_authenticated_custody
@@ -147,6 +156,7 @@ def validate_selected_ingress(
     from chiplog.adapters.driven.ingress_retained_source import decode_retained_observation
 
     records: list[HistoryRecord] = []
+    admission_decisions: list[SelectedOwnerDecision] = []
     snapshot = retained_cli_profile(history.tenant_id, "hermetic-database").empty()
     identity = "complete-ingress-history"
     try:
@@ -237,7 +247,6 @@ def validate_selected_ingress(
                 or authentication.ingress_row != command.profile.source_identity
                 or authentication.source_contract_head != command.profile.head().head
                 or authentication.admission_epoch_head != command.profile.epoch().head
-                or authentication.admission_fence != 0
                 or batch.expected != read_manifest(command, tuple(records))
                 or decision.tenant_commit_sequence != command.tenant_frontier + 1
                 or decision.prepared.predecessor_commitment != state.materialization_commitment
@@ -255,16 +264,55 @@ def validate_selected_ingress(
             else:
                 record, snapshot = prepare_authenticated_custody(command, previous, snapshot)
             wire = wire_record(record)
-            if batch.complete_records != (wire,) or batch.complete_batch_fingerprint != digest(
-                json.dumps(
-                    [wire.model_dump(mode="json")],
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode()
+            if isinstance(command, CustodyCommand):
+                if authentication.admission_fence != 0:
+                    raise ValueError("legacy custody has a nonzero admission fence")
+                expected_records = (wire,)
+            else:
+                aggregate = selected_aggregate(tuple(admission_decisions))
+                events = cli_batch_events(
+                    tenant_id=command.profile.tenant_id,
+                    database_id=command.profile.database_id,
+                    epoch=command.profile.epoch(),
+                    fence=authentication.admission_fence,
+                    manifest=command.profile.head(),
+                    command_id=command.command_id,
+                    token_id=command.token.token_id,
+                    custody_record=record_head(record),
+                    inbox=record.custody.inbox,
+                    raw_bytes=command.raw_bytes,
+                    commit_sequence=decision.tenant_commit_sequence,
+                    aggregate=aggregate,
+                )
+                expected_records = (
+                    wire,
+                    *tuple(
+                        admission_wire(
+                            "ingress.admission.epoch:" + command.profile.epoch().identity
+                            if isinstance(event, EpochOpened)
+                            else event.claim_id
+                            if isinstance(event, CapacityClaimed)
+                            else "ingress.admission.ready:" + command.token.token_id,
+                            event,
+                        )
+                        for event in events
+                    ),
+                )
+            if (
+                batch.complete_records != expected_records
+                or batch.complete_batch_fingerprint
+                != digest(
+                    json.dumps(
+                        [item.model_dump(mode="json") for item in expected_records],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ).encode()
+                )
             ):
                 raise ValueError("selected custody output differs from exact reducer result")
             records.append(record)
+            admission_decisions.append(decision)
         return tuple(records), snapshot
     except (ValueError, TypeError, KeyError, IndexError) as error:
         raise OwnerJournalIntegrityError("ingress_history", history.tenant_id, identity) from error
@@ -342,7 +390,7 @@ def read_ingress_history(
                     rows = connection.execute(
                         "SELECT record_id,owner,schema_id,canonical_bytes,commit_sequence "
                         "FROM records "
-                        "WHERE tenant_id=? AND commit_sequence=?",
+                        "WHERE tenant_id=? AND commit_sequence=? ORDER BY rowid",
                         (runtime._tenant_id, decision.tenant_commit_sequence),
                     ).fetchall()
                     publications = connection.execute(
