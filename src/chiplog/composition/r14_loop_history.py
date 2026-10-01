@@ -1056,6 +1056,44 @@ def read_execution_call_history(
     )
 
 
+def read_execution_recovery_history(
+    runtime: R14PlanningRuntime,
+) -> tuple[
+    ExecutionHistorySnapshot,
+    CallInventorySnapshot,
+    tuple[RetainedFanOutPreparation, ...],
+    tuple[RetainedExecutionFanOutPreparation, ...],
+    tuple[RetainedExecutionCancellationPreparation, ...],
+    tuple[RetainedAcceptancePreparationV2, ...],
+]:
+    """Return the complete authenticated native execution history for a reader.
+
+    This is deliberately a read-only projection.  It exposes the retained
+    cancellation and acceptance selections that a recovery-source collector must
+    inspect alongside every retained response seal; it does not construct a
+    recovery cut or confer writer authority.
+    """
+    _, legacy, cancellations, snapshot, executions, execution_cancellations, acceptances = (
+        _read_call_history(runtime)
+    )
+    return (
+        snapshot,
+        execution_inventory(
+            runtime._tenant_id,
+            snapshot,
+            legacy,
+            cancellations,
+            executions,
+            execution_cancellations,
+            acceptances,
+        ),
+        legacy,
+        executions,
+        execution_cancellations,
+        acceptances,
+    )
+
+
 def read_call_inventory(runtime: R14PlanningRuntime) -> CallInventorySnapshot:
     return read_execution_call_history(runtime)[1]
 
