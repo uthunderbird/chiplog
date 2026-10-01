@@ -13,6 +13,7 @@ from chiplog.composition.common_cli_execution_runtime import (
 from chiplog.composition.h1_completion_issuance import V4_SCHEMA, H1CompletionIssuanceV4
 from chiplog.composition.h1_historical_selected_sources import bind_selected_h1_completion
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
+from chiplog.composition.h1_scoped_delivery_authority import H1ScopedDeliveryAuthorityReader
 from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
 from tests.support.h1_scoped_first_b import scoped_resources, write_scoped_pins
@@ -101,6 +102,60 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
             )
             assert retained[0].batch == batch and retained[0].state == "CONSUMED"
             assert bind_selected_h1_completion(batch, runtime).decision == decision
+
+            # The selected V4 envelope preserves a V2 scoped Effects exchange,
+            # but its mutable authority must be reread from the independently
+            # authenticated recovery prefix.  This is the only admissible
+            # source for a later delivery-work claim; the retained V4 evidence
+            # itself is historical and cannot stand in for current authority.
+            registry = runtime._h1_completion_exchange_registry
+            authority_reader = runtime._h1_scoped_delivery_authority_reader
+            assert registry is not None
+            assert type(authority_reader) is H1ScopedDeliveryAuthorityReader
+            historical = registry.capture_recovered_prepared_delivery_historical(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=locator,
+            )
+            authority = await authority_reader.read_reconstructed(
+                historical_b_capture=historical
+            )
+            assert authority.clock[1] > 0
+            assert (
+                authority.historical_projection.delivery.delivery_id
+                == issuance.effects_result.delivery_id
+            )
+            selected_recipient = authority.historical_projection.delivery.selection.recipient
+            effect_recipient = issuance.effects_result.intent_result.intent.mandate.recipient
+            assert (
+                selected_recipient.provider_id,
+                selected_recipient.account_id,
+                selected_recipient.recipient_id,
+                selected_recipient.canonical_address,
+            ) == (
+                effect_recipient.provider,
+                effect_recipient.account,
+                effect_recipient.recipient,
+                effect_recipient.canonical_address,
+            )
+            assert (
+                selected_recipient.endpoint.identity,
+                selected_recipient.endpoint.head,
+                selected_recipient.endpoint.fingerprint,
+            ) == (
+                effect_recipient.endpoint.subject_id,
+                effect_recipient.endpoint.head,
+                effect_recipient.endpoint.fingerprint,
+            )
+            assert (
+                selected_recipient.credential_binding.identity,
+                selected_recipient.credential_binding.head,
+                selected_recipient.credential_binding.fingerprint,
+            ) == (
+                effect_recipient.credential_binding.subject_id,
+                effect_recipient.credential_binding.head,
+                effect_recipient.credential_binding.fingerprint,
+            )
 
             replay = await runtime.finalize_execution(
                 request.identity, request.original_driver_command_fingerprint()
