@@ -314,7 +314,10 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_producer_inventory_reader: Any | None
     _h1_scoped_authorization_historical_binder: Any | None
     _h1_scoped_authorization_effects_history_reader_v3: Any | None
+    _h1_scoped_authorization_delivery_work_reader_v1: Any | None
     _h1_scoped_authorization_resource_reader_v3: Any | None
+    _h1_scoped_authorization_resource_reader_v4: Any | None
+    _h1_scoped_authorization_clock_reader_v1: Any | None
     _h1_conversation_source_port: Any | None
     _h1_live_invocation_source: Any | None
     _h1_live_readplan_source: Any | None
@@ -2613,7 +2616,10 @@ async def _open_installed_h1_runtime(
                 producer_source_reader: Any | None = None
                 producer_inventory_reader: Any | None = None
                 scoped_authorization_history_reader: Any | None = None
+                scoped_authorization_delivery_work_reader: Any | None = None
                 scoped_authorization_resource_reader: Any | None = None
+                scoped_authorization_resource_reader_v4: Any | None = None
+                scoped_authorization_clock_reader: Any | None = None
                 try:
                     from chiplog.composition.h1_delivery_evidence_journal import (
                         H1DeliveryEvidenceJournal,
@@ -2662,7 +2668,10 @@ async def _open_installed_h1_runtime(
                             "_h1_producer_source_reader",
                             "_h1_producer_inventory_reader",
                             "_h1_scoped_authorization_effects_history_reader_v3",
+                            "_h1_scoped_authorization_delivery_work_reader_v1",
                             "_h1_scoped_authorization_resource_reader_v3",
+                            "_h1_scoped_authorization_resource_reader_v4",
+                            "_h1_scoped_authorization_clock_reader_v1",
                         )
                     ):
                         raise RuntimeError("installed H1 worker sources are already mounted")
@@ -2743,7 +2752,10 @@ async def _open_installed_h1_runtime(
                         )
                         runtime._h1_producer_source_reader = producer_source_reader
                         runtime._h1_producer_inventory_reader = producer_inventory_reader
-                        if manifest is R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST:
+                        if manifest in (
+                            R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
+                            R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
+                        ):
                             from chiplog.composition.h1_scoped_authorization_sources_v3 import (
                                 H1ScopedAuthorizationEffectsHistoryReaderV1,
                                 H1ScopedAuthorizationResourceReaderV1,
@@ -2755,19 +2767,65 @@ async def _open_installed_h1_runtime(
                             runtime._h1_scoped_authorization_effects_history_reader_v3 = (
                                 scoped_authorization_history_reader
                             )
-                            scoped_authorization_resource_reader = (
-                                H1ScopedAuthorizationResourceReaderV1(
+                            if manifest is R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST:
+                                from .h1_scoped_authorization_delivery_work_reader import (
+                                    H1ScopedAuthorizationDeliveryWorkReaderV1,
+                                )
+                                from .h1_scoped_authorization_resource_sources_v4 import (
+                                    H1ScopedAuthorizationResourceReaderV4,
+                                )
+
+                                scoped_authorization_delivery_work_reader = (
+                                    H1ScopedAuthorizationDeliveryWorkReaderV1(runtime)
+                                )
+                                runtime._h1_scoped_authorization_delivery_work_reader_v1 = (
+                                    scoped_authorization_delivery_work_reader
+                                )
+                                scoped_authorization_resource_reader_v4 = (
+                                    H1ScopedAuthorizationResourceReaderV4(runtime)
+                                )
+                                runtime._h1_scoped_authorization_resource_reader_v4 = (
+                                    scoped_authorization_resource_reader_v4
+                                )
+                                from .h1_scoped_authorization_clock_reader import (
+                                    H1ScopedAuthorizationClockReaderV1,
+                                )
+
+                                scoped_authorization_clock_reader = (
+                                    H1ScopedAuthorizationClockReaderV1(runtime)
+                                )
+                                runtime._h1_scoped_authorization_clock_reader_v1 = (
+                                    scoped_authorization_clock_reader
+                                )
+                            # V4 has the Effects/current-work join above.  The
+                            # R16 resource reader remains V3-only until its
+                            # selected-history contract has dedicated coverage.
+                            if manifest is R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST:
+                                scoped_authorization_resource_reader = (
+                                    H1ScopedAuthorizationResourceReaderV1(
                                     runtime,
                                     scoped_authorization_history_reader,
                                     scoped_delivery_authority_reader,
+                                    )
                                 )
-                            )
-                            runtime._h1_scoped_authorization_resource_reader_v3 = (
-                                scoped_authorization_resource_reader
-                            )
+                                runtime._h1_scoped_authorization_resource_reader_v3 = (
+                                    scoped_authorization_resource_reader
+                                )
                     authority._bind_installed_runtime(runtime)
                     yield runtime
                 finally:
+                    if scoped_authorization_clock_reader is not None:
+                        scoped_authorization_clock_reader.close()
+                    if hasattr(runtime, "_h1_scoped_authorization_clock_reader_v1"):
+                        del runtime._h1_scoped_authorization_clock_reader_v1
+                    if scoped_authorization_resource_reader_v4 is not None:
+                        scoped_authorization_resource_reader_v4.close()
+                    if hasattr(runtime, "_h1_scoped_authorization_resource_reader_v4"):
+                        del runtime._h1_scoped_authorization_resource_reader_v4
+                    if scoped_authorization_delivery_work_reader is not None:
+                        scoped_authorization_delivery_work_reader.close()
+                    if hasattr(runtime, "_h1_scoped_authorization_delivery_work_reader_v1"):
+                        del runtime._h1_scoped_authorization_delivery_work_reader_v1
                     if scoped_authorization_resource_reader is not None:
                         scoped_authorization_resource_reader.close()
                     if hasattr(runtime, "_h1_scoped_authorization_resource_reader_v3"):
@@ -2864,6 +2922,27 @@ async def _open_installed_h1_runtime(
             # the ordinary path the inner finally already released this while
             # the appender remained open.
             if runtime is not None:
+                retained_clock_reader = getattr(
+                    runtime, "_h1_scoped_authorization_clock_reader_v1", None
+                )
+                if retained_clock_reader is not None:
+                    retained_clock_reader.close()
+                if hasattr(runtime, "_h1_scoped_authorization_clock_reader_v1"):
+                    del runtime._h1_scoped_authorization_clock_reader_v1
+                retained_resource_reader_v4 = getattr(
+                    runtime, "_h1_scoped_authorization_resource_reader_v4", None
+                )
+                if retained_resource_reader_v4 is not None:
+                    retained_resource_reader_v4.close()
+                if hasattr(runtime, "_h1_scoped_authorization_resource_reader_v4"):
+                    del runtime._h1_scoped_authorization_resource_reader_v4
+                retained_delivery_work_reader = getattr(
+                    runtime, "_h1_scoped_authorization_delivery_work_reader_v1", None
+                )
+                if retained_delivery_work_reader is not None:
+                    retained_delivery_work_reader.close()
+                if hasattr(runtime, "_h1_scoped_authorization_delivery_work_reader_v1"):
+                    del runtime._h1_scoped_authorization_delivery_work_reader_v1
                 retained_resource_reader = getattr(
                     runtime, "_h1_scoped_authorization_resource_reader_v3", None
                 )

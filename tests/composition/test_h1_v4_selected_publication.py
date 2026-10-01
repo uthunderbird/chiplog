@@ -24,6 +24,7 @@ from chiplog.composition.common_cli_execution_runtime import (
 )
 from chiplog.composition.h1_completion_issuance import V4_SCHEMA, H1CompletionIssuanceV4
 from chiplog.composition.h1_delivery_work_current_claim_reader import (
+    H1DeliveryWorkCurrentClaimHold,
     H1DeliveryWorkCurrentClaimReader,
 )
 from chiplog.composition.h1_delivery_work_sources import (
@@ -32,6 +33,18 @@ from chiplog.composition.h1_delivery_work_sources import (
 )
 from chiplog.composition.h1_historical_selected_sources import bind_selected_h1_completion
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
+from chiplog.composition.h1_scoped_authorization_clock_reader import (
+    H1ScopedAuthorizationClockReaderV1,
+)
+from chiplog.composition.h1_scoped_authorization_delivery_work_reader import (
+    H1ScopedAuthorizationDeliveryWorkReaderV1,
+)
+from chiplog.composition.h1_scoped_authorization_resource_sources_v4 import (
+    H1ScopedAuthorizationResourceReaderV4,
+)
+from chiplog.composition.h1_scoped_authorization_sources_v3 import (
+    H1ScopedAuthorizationLocatorV1,
+)
 from chiplog.composition.h1_scoped_delivery_authority import H1ScopedDeliveryAuthorityReader
 from chiplog.platform._owner_publication_contracts import (
     CompleteDeliveryBatchV2,
@@ -244,6 +257,10 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
             committed_genesis = await genesis_coordinator.commit(genesis)
             assert committed_genesis.kind == "COMMITTED"
             assert (await genesis_coordinator.commit(genesis)).kind == "EXACT_REPLAY"
+            resources = runtime._require_dispatch_resources()
+            clock_epoch, clock_start = resources.clock()
+            test_clock_ns = [clock_start]
+            monkeypatch.setattr(resources, "clock", lambda: (clock_epoch, test_clock_ns[0]))
             capture = runtime._h1_delivery_work_claim_sources.capture(source.intent_id)
             claim_state = prepare_delivery_work_claim(
                 source,
@@ -318,6 +335,44 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
             assert current_claim.g0 == genesis_state
             assert current_claim.g1 == claim_state
             assert current_claim.binding.claim_projection.predecessor == genesis_state
+            effects_reader = runtime._h1_scoped_authorization_effects_history_reader_v3
+            effects_capture = effects_reader.capture(
+                H1ScopedAuthorizationLocatorV1(source.intent_id)
+            )
+            delivery_work_reader = runtime._h1_scoped_authorization_delivery_work_reader_v1
+            assert type(delivery_work_reader) is H1ScopedAuthorizationDeliveryWorkReaderV1
+            delivery_work_capture = delivery_work_reader.read(effects_capture)
+            with runtime._authority_gate().hold():
+                joined = delivery_work_reader.evidence_held(delivery_work_capture)
+            assert joined.source == source
+            assert joined.current_claim == current_claim
+            resource_reader = runtime._h1_scoped_authorization_resource_reader_v4
+            assert type(resource_reader) is H1ScopedAuthorizationResourceReaderV4
+            clock_reader = runtime._h1_scoped_authorization_clock_reader_v1
+            assert type(clock_reader) is H1ScopedAuthorizationClockReaderV1
+            resource_capture = resource_reader.read(delivery_work_capture)
+            with runtime._authority_gate().hold():
+                roles = resource_reader.roles_held(resource_capture)
+            observation = runtime._require_dispatch_resources().observe()
+            assert roles.endpoint.canonical_value == observation.endpoint_bytes
+            assert roles.credential_lifecycle.canonical_value == observation.credential_bytes
+            assert roles.deployment_entitlement.canonical_value == observation.grant_bytes
+            assert roles.clock_epoch == observation.clock_epoch
+            clock_capture = clock_reader.read(delivery_work_capture)
+            with runtime._authority_gate().hold():
+                clock_role = clock_reader.role_held(clock_capture)
+            assert clock_role.clock_epoch == observation.clock_epoch
+            assert clock_role.valid_until_ns == min(
+                issuance.effects_result.intent_result.intent.mandate.horizon.expires_at_ns,
+                current_claim.binding.claimant_clock.lease_expires_at_ns,
+            )
+            test_clock_ns[0] = capture.expires_at_ns
+            with pytest.raises(H1DeliveryWorkCurrentClaimHold, match="session or clock"):
+                current_reader.read(source.intent_id)
+            clock_reader.release(clock_capture)
+            resource_reader.release(resource_capture)
+            delivery_work_reader.release(delivery_work_capture)
+            effects_reader.release(effects_capture)
             assert capture_authority_storage_state(slot.database_path)[0]
     with _open_installed_h1_launch(slot) as reopened_launch:
         async with open_installed_h1_scoped_v22_runtime(

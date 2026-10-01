@@ -51,6 +51,9 @@ async def test_v21_scoped_runtime_mount_preserves_v20_and_mounts_producer_reader
             )
             assert v21._supervisor._j7_operator_policy_key_pin is not None
             assert v21._supervisor._j7_operator_grant_key_pin is not None
+            assert getattr(v21, "_h1_scoped_authorization_delivery_work_reader_v1", None) is None
+            assert getattr(v21, "_h1_scoped_authorization_resource_reader_v4", None) is None
+            assert getattr(v21, "_h1_scoped_authorization_clock_reader_v1", None) is None
             reader = v21._h1_producer_source_reader
             assert reader is not None
             _authority_reader, authority_capture = await issue_real_h1_scoped_authority(v21)
