@@ -474,7 +474,8 @@ class _H1PostSealRecoveryCoordinator:
     ) -> H1PostSealRecoveryState:
         """Run one source context and retire it before the lease can be released."""
         lease.require_owned()
-        self._require_local_producer(state)
+        if state.selected_producer not in ("LOCAL_V2", "SCOPED_V3"):
+            raise H1PostSealRecoveryCoordinatorError("recovery producer is invalid")
         contexts: list[object] = []
         try:
             return await self._resume_stages_inner_held(
@@ -501,7 +502,8 @@ class _H1PostSealRecoveryCoordinator:
         cross-process owner.
         """
         lease.require_owned()
-        self._require_local_producer(state)
+        if state.selected_producer not in ("LOCAL_V2", "SCOPED_V3"):
+            raise H1PostSealRecoveryCoordinatorError("recovery producer is invalid")
         source = self._source
         locator = CallSubjectHead(
             subject_id=state.root.selected_seal_subject_id,
@@ -523,6 +525,31 @@ class _H1PostSealRecoveryCoordinator:
         durable_results: dict[_H1RecoveryStage, bytes] = {}
         first_incomplete: _H1RecoveryStage | None = None
         for stage in _STAGES:
+            # V3 shares the authenticated completion/conversation prefix with
+            # V2.  Its Effects request is instead constructed by the mounted
+            # scoped producer from recovered B plus fresh current sources.
+            if state.selected_producer == "SCOPED_V3" and stage == "EFFECTS":
+                durable = self._existing_result(state, "EFFECTS")
+                if durable is not None:
+                    from chiplog.composition.h1_v3_recovery_historical_source import (
+                        H1V3RecoveryHistoricalSource,
+                    )
+
+                    evidence = H1V3RecoveryHistoricalSource(self._runtime).read_effects(
+                        original_identity=identity,
+                        original_fingerprint=original_fingerprint,
+                        selected_seal=locator,
+                    )
+                    if (
+                        evidence.effects_result is None
+                        or evidence.effects_result.canonical_bytes() != durable
+                    ):
+                        raise H1PostSealRecoveryCoordinatorError(
+                            "durable scoped Effects result differs"
+                        )
+                    return state
+                first_incomplete = stage
+                break
             source._require_current(context)
             pinned = self._existing_input(state, stage)
             predecessor_effects_input = self._terminal_effects_input(state, stage)
@@ -551,11 +578,24 @@ class _H1PostSealRecoveryCoordinator:
         session = self._open_recovery_session(source=source, context=context, lease=lease)
         try:
             session._bind_recovery(source=source, context=context, lease=lease)
+            # The fresh B session replays durable stages from the beginning.
+            # Rebuild predecessors from its own accepted exchanges, rather
+            # than carrying the completed preflight chain into stage one.
+            durable_results = {}
             for stage in _STAGES:
                 lease.require_owned()
                 source._require_current(context)
                 pinned = self._existing_input(state, stage)
                 predecessor_effects_input = self._terminal_effects_input(state, stage)
+                if state.selected_producer == "SCOPED_V3" and stage == "EFFECTS":
+                    return await self._resume_scoped_v3_effects_held(
+                        lease=lease,
+                        state=state,
+                        identity=identity,
+                        original_fingerprint=original_fingerprint,
+                        selected_seal=locator,
+                        session=session,
+                    )
                 semantic_input = source._reconstruct_input(
                     context,
                     stage,
@@ -614,6 +654,107 @@ class _H1PostSealRecoveryCoordinator:
             # execution lease until it settles even if this coordinator is
             # cancelled; releasing first would admit a competing B issuer.
             await self._drain_session_held(lease, session)
+
+    async def _resume_scoped_v3_effects_held(
+        self,
+        *,
+        lease: Any,
+        state: H1PostSealRecoveryState,
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        selected_seal: CallSubjectHead,
+        session: Any,
+    ) -> H1PostSealRecoveryState:
+        """Pin and dispatch the original-generation scoped Effects request.
+
+        The journal selects this branch.  Historical B is reconstructed by the
+        registry, while the complete request comes only from the mounted
+        current authority/inventory readers.
+        """
+        from chiplog.composition.h1_completion_exchange_registry import H1CompletionExchangeRegistry
+
+        lease.require_owned()
+        registry = getattr(self._runtime, "_h1_completion_exchange_registry", None)
+        if type(registry) is not H1CompletionExchangeRegistry:
+            raise H1PostSealRecoveryCoordinatorError("scoped recovery registry is unavailable")
+        historical = registry.capture_recovered_prepared_delivery_historical(
+            original_identity=identity,
+            original_fingerprint=original_fingerprint,
+            selected_seal=selected_seal,
+        )
+        pinned = self._existing_input(state, "EFFECTS")
+        created_pin = pinned is None
+        if pinned is None:
+            semantic_input, command_id = await session._pin_scoped_recovery_effects(
+                historical_capture=historical
+            )
+            state = self._append_stage_held(
+                lease,
+                state,
+                H1PostSealRecoveryTransition.pin_input(
+                    state,
+                    stage="EFFECTS",
+                    semantic_input=semantic_input,
+                    effects_command_id=command_id,
+                ),
+            )
+            pinned = self._existing_input(state, "EFFECTS")
+            if pinned != (semantic_input, command_id):
+                raise H1PostSealRecoveryCoordinatorError("scoped Effects input readback differs")
+        semantic_input, command_id = pinned
+        if command_id is None:
+            raise H1PostSealRecoveryCoordinatorError("scoped Effects command ID is absent")
+        durable = self._existing_result(state, "EFFECTS")
+        if durable is not None:
+            # A committed result is selected historical evidence.  Do not
+            # construct a fresh current request or call its owner merely to
+            # replay it: the 7-record selected prefix authenticates both ends.
+            from chiplog.composition.h1_v3_recovery_historical_source import (
+                H1V3RecoveryHistoricalSource,
+            )
+
+            evidence = H1V3RecoveryHistoricalSource(self._runtime).read_effects(
+                original_identity=identity,
+                original_fingerprint=original_fingerprint,
+                selected_seal=selected_seal,
+            )
+            if (
+                evidence.effects_result is None
+                or evidence.effects_result.canonical_bytes() != durable
+            ):
+                raise H1PostSealRecoveryCoordinatorError("durable scoped Effects result differs")
+            return state
+        if not created_pin:
+            # A six-record restart gets fresh issuer-held inputs, but preserves
+            # the original observation time in its durable semantic request.
+            # The producer compares every other field under current authority
+            # immediately before owner admission.
+            _, rebuilt_command_id = await session._pin_scoped_recovery_effects(
+                historical_capture=historical, semantic_input=semantic_input
+            )
+            if rebuilt_command_id != command_id:
+                raise H1PostSealRecoveryCoordinatorError(
+                    "scoped Effects command differs from current recovery inventory"
+                )
+        exchange = await session._dispatch_scoped_recovery_effects(
+            historical_capture=historical,
+            semantic_input=semantic_input,
+            effects_command_id=command_id,
+        )
+        result_bytes = getattr(getattr(exchange, "returned", None), "canonical_payload", None)
+        if not isinstance(result_bytes, bytes):
+            raise H1PostSealRecoveryCoordinatorError("scoped Effects result bytes are unavailable")
+        state = self._append_stage_held(
+            lease,
+            state,
+            H1PostSealRecoveryTransition.commit_result(
+                state, stage="EFFECTS", result_bytes=result_bytes
+            ),
+        )
+        if self._existing_result(state, "EFFECTS") != result_bytes:
+            raise H1PostSealRecoveryCoordinatorError("scoped Effects result readback differs")
+        session._raise_scoped_effects_cancellation_after_commit()
+        return state
 
     def _append_stage_held(
         self,

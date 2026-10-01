@@ -177,7 +177,11 @@ class H1ProducerInventoryReader:
         self._closed = False
 
     async def read(
-        self, *, authority_capture: H1ScopedDeliveryAuthorityCapture
+        self,
+        *,
+        authority_capture: H1ScopedDeliveryAuthorityCapture,
+        pinned_lease_expires_at_ns: int | None = None,
+        pinned_observed_time_ns: int | None = None,
     ) -> H1ProducerInventoryCapture:
         """Derive identity before the physical read, then authenticate the final join."""
         with self._runtime._authority_gate().hold():
@@ -186,14 +190,20 @@ class H1ProducerInventoryReader:
             intent_id, command_id = self._identity_held(authority)
         # No await is performed while this reader holds AuthorityGate.
         physical_capture = await self._physical_reader.read(
-            authority_capture=authority_capture, intent_id=intent_id
+            authority_capture=authority_capture,
+            intent_id=intent_id,
+            pinned_valid_until_ns=pinned_lease_expires_at_ns,
         )
         with self._runtime._authority_gate().hold():
             try:
                 self._require_open_held()
                 self._physical_reader.recheck_held(physical_capture)
                 record = self._build_record_held(
-                    authority_capture, physical_capture, intent_id, command_id
+                    authority_capture,
+                    physical_capture,
+                    intent_id,
+                    command_id,
+                    observed_time_ns=pinned_observed_time_ns,
                 )
                 capture = object.__new__(H1ProducerInventoryCapture)
                 capture._record = record
@@ -350,6 +360,15 @@ class H1ProducerInventoryReader:
                 "H1 producer inventory clock or mandate lease is invalid"
             )
         now_ns = actual_now_ns if observed_time_ns is None else observed_time_ns
+        if observed_time_ns is not None and (
+            type(observed_time_ns) is not int
+            or observed_time_ns > actual_now_ns
+            or observed_time_ns < policy.terms.not_before_ns
+            or observed_time_ns < grant.scope.mandate.not_before_ns
+        ):
+            raise H1ProducerInventoryViolation(
+                "H1 producer pinned observation time is invalid"
+            )
         sessions = self._sessions_held()
         if (
             physical.worker.owner_session != sessions[1]

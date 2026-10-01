@@ -109,8 +109,9 @@ async def test_installed_effects_recovery_reuses_pinned_inner_request_across_fre
                 crash_after_real_effects_reply,
             )
             async with open_installed_h1_runtime(launch, resources=resources) as runtime:
-                with pytest.raises(_CrashAfterEffectsReply):
-                    await runtime.advance_execution(advance(initial, request))
+                held = await runtime.advance_execution(advance(initial, request))
+                assert held.code == "HOLD"
+                assert "cannot be safely resumed" in held.reason
 
                 assert len(first_effects) == 1
                 first_call = _effects_owner_call(first_effects[0])

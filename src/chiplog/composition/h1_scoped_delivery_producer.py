@@ -111,6 +111,15 @@ class H1ScopedDeliveryProducer:
     def _build_sent_held(
         self, capture: H1ProducerInventoryCapture
     ) -> tuple[H1ScopedDeliveryOwnerCallV1, PublicPortCall]:
+        """Build the current request and its per-attempt transport wire."""
+        self._runtime._authority_gate().require_held()
+        request = self._build_request_held(capture)
+        return self._build_route_held(capture, request)
+
+    def _build_request_held(
+        self, capture: H1ProducerInventoryCapture
+    ) -> PrepareH1ScopedDeliveryV1:
+        """Build the complete, issuer-held semantic Effects request."""
         self._runtime._authority_gate().require_held()
         engine = self._runtime._supervisor.runtime()
         first = capture.original_completion_request
@@ -145,23 +154,6 @@ class H1ScopedDeliveryProducer:
             raise H1ScopedDeliveryProducerViolation(
                 "H1 scoped producer command fingerprint differs"
             )
-        caller = BrokerSession(
-            tenant_id=effects.tenant_id,
-            broker_epoch=effects.broker_epoch,
-            generation_id=effects.generation_id,
-            owner_id="broker",
-            session_id="broker:" + effects.generation_id,
-        )
-        route = H1ScopedDeliveryRouteV1(
-            tenant_id=first.run.tenant,
-            database_id=first.source.database_id,
-            worker_session_id=first.run.worker_session,
-            broker_epoch=caller.broker_epoch,
-            runtime_generation=caller.generation_id,
-            broker_session_id=caller.session_id,
-            owner_session_id=effects.session_id,
-            request_id=capture.command_id,
-        )
         identity = CommandIdentity(
             command_id=capture.command_id,
             fingerprint=capture.command_fingerprint,
@@ -186,7 +178,42 @@ class H1ScopedDeliveryProducer:
             retained_sources=(),
         )
         retained_sources = _retained_sources(provisional, capture)
-        request = provisional.model_copy(update={"retained_sources": retained_sources})
+        return provisional.model_copy(update={"retained_sources": retained_sources})
+
+    def _build_route_held(
+        self, capture: H1ProducerInventoryCapture, request: PrepareH1ScopedDeliveryV1
+    ) -> tuple[H1ScopedDeliveryOwnerCallV1, PublicPortCall]:
+        """Frame a current semantic request in a fresh broker-to-owner route."""
+        self._runtime._authority_gate().require_held()
+        self._inventory_reader.recheck_held(capture)
+        current_request = self._build_request_held(capture)
+        if request.canonical_bytes() != self._request_at_pinned_time(
+            current_request, request, capture
+        ).canonical_bytes():
+            raise H1ScopedDeliveryProducerViolation(
+                "H1 scoped producer request differs from current inventory"
+            )
+
+        first = capture.original_completion_request
+        effects, _, _ = capture.runtime_sessions
+        _, _, deadline_ns = capture.clock
+        caller = BrokerSession(
+            tenant_id=effects.tenant_id,
+            broker_epoch=effects.broker_epoch,
+            generation_id=effects.generation_id,
+            owner_id="broker",
+            session_id="broker:" + effects.generation_id,
+        )
+        route = H1ScopedDeliveryRouteV1(
+            tenant_id=first.run.tenant,
+            database_id=first.source.database_id,
+            worker_session_id=first.run.worker_session,
+            broker_epoch=caller.broker_epoch,
+            runtime_generation=caller.generation_id,
+            broker_session_id=caller.session_id,
+            owner_session_id=effects.session_id,
+            request_id=capture.command_id,
+        )
         call = H1ScopedDeliveryOwnerCallV1(
             route=route,
             request=request,
@@ -221,6 +248,65 @@ class H1ScopedDeliveryProducer:
                 "H1 scoped producer route differs from owner wire"
             )
         return call, sent
+
+    def _require_pinned_request_held(
+        self,
+        capture: H1ProducerInventoryCapture,
+        *,
+        semantic_input: bytes,
+        effects_command_id: str,
+    ) -> PrepareH1ScopedDeliveryV1:
+        """Authenticate a durable semantic pin against the unchanged live capture."""
+        self._runtime._authority_gate().require_held()
+        try:
+            request = PrepareH1ScopedDeliveryV1.model_validate_json(semantic_input)
+        except ValueError as error:
+            raise H1ScopedDeliveryProducerViolation(
+                "H1 scoped producer pinned request is malformed"
+            ) from error
+        if request.canonical_bytes() != semantic_input:
+            raise H1ScopedDeliveryProducerViolation(
+                "H1 scoped producer pinned request is not canonical"
+            )
+        if (
+            request.identity.command_id != effects_command_id
+            or effects_command_id != capture.command_id
+            or request.identity.fingerprint != capture.command_fingerprint
+        ):
+            raise H1ScopedDeliveryProducerViolation(
+                "H1 scoped producer pinned request identity differs"
+            )
+        self._inventory_reader.recheck_held(capture)
+        current_request = self._build_request_held(capture)
+        if self._request_at_pinned_time(
+            current_request, request, capture
+        ).canonical_bytes() != semantic_input:
+            raise H1ScopedDeliveryProducerViolation(
+                "H1 scoped producer pinned request differs from current inventory"
+            )
+        return request
+
+    @staticmethod
+    def _request_at_pinned_time(
+        current_request: PrepareH1ScopedDeliveryV1,
+        pinned_request: PrepareH1ScopedDeliveryV1,
+        capture: H1ProducerInventoryCapture,
+    ) -> PrepareH1ScopedDeliveryV1:
+        """Compare stable live inputs while retaining the original observation time."""
+        if (
+            pinned_request.current.clock_epoch != current_request.current.clock_epoch
+            or pinned_request.current.lease_expires_at_ns
+            != current_request.current.lease_expires_at_ns
+            or capture.clock[1] >= pinned_request.current.lease_expires_at_ns
+        ):
+            raise H1ScopedDeliveryProducerViolation("H1 scoped producer pinned lease differs")
+        current = current_request.current.model_copy(
+            update={"observed_time_ns": pinned_request.current.observed_time_ns}
+        )
+        normalized = current_request.model_copy(update={"current": current})
+        return normalized.model_copy(
+            update={"retained_sources": _retained_sources(normalized, capture)}
+        )
 
     def _require_result_held(
         self,

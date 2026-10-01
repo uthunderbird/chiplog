@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 
 _CLOCK_CONTRACT = "chiplog.dispatch.monotonic.v2"
-_OBSERVATION_HORIZON_NS = 60_000_000_000
+_OBSERVATION_HORIZON_NS = 600_000_000_000
 
 
 class H1ProducerSourceViolation(PermissionError):
@@ -153,14 +153,20 @@ class H1ProducerSourceReader:
         self._closed = False
 
     async def read(
-        self, *, authority_capture: H1ScopedDeliveryAuthorityCapture, intent_id: str
+        self,
+        *,
+        authority_capture: H1ScopedDeliveryAuthorityCapture,
+        intent_id: str,
+        pinned_valid_until_ns: int | None = None,
     ) -> H1ProducerSourceCapture:
         """Read, interpret, and retain the one current physical effects cut."""
         if type(intent_id) is not str or not intent_id:
             raise TypeError("H1 producer intent identity must be a nonempty string")
         with self._runtime._authority_gate().hold():
             self._require_mounted_held()
-            record = self._read_record_held(authority_capture, intent_id)
+            record = self._read_record_held(
+                authority_capture, intent_id, pinned_valid_until_ns=pinned_valid_until_ns
+            )
             capture = object.__new__(H1ProducerSourceCapture)
             capture._record = record
             self._issued[id(capture)] = (capture, record)
@@ -222,7 +228,11 @@ class H1ProducerSourceReader:
         return record
 
     def _read_record_held(
-        self, authority_capture: H1ScopedDeliveryAuthorityCapture, intent_id: str
+        self,
+        authority_capture: H1ScopedDeliveryAuthorityCapture,
+        intent_id: str,
+        *,
+        pinned_valid_until_ns: int | None = None,
     ) -> _SourceRecord:
         self._runtime._authority_gate().require_held()
         authority_record = self._authority_record_held(authority_capture)
@@ -249,6 +259,13 @@ class H1ProducerSourceReader:
         generation = h1_normative_conflict_generation(history)
         epoch, now_ns = self._runtime._require_dispatch_resources().clock()
         valid_until_ns = now_ns + _OBSERVATION_HORIZON_NS
+        if pinned_valid_until_ns is not None:
+            if (
+                type(pinned_valid_until_ns) is not int
+                or not now_ns < pinned_valid_until_ns <= valid_until_ns
+            ):
+                raise H1ProducerSourceViolation("H1 producer pinned source lease is invalid")
+            valid_until_ns = pinned_valid_until_ns
         effects_history = h1_effects_history_capture(
             history,
             clock_contract=_CLOCK_CONTRACT,

@@ -165,6 +165,8 @@ class _H1RecoveryBinding:
     pending_semantic_input: bytes | None = None
     dispatched_stages: tuple[_H1RecoveryStage, ...] = ()
     result_bytes: dict[_H1RecoveryStage, bytes] = field(default_factory=dict)
+    scoped_effects_cancelled: bool = False
+    scoped_inventory: Any | None = None
     poisoned: bool = False
 
 
@@ -376,6 +378,212 @@ class H1CompletionPreparationSession:
                 worker.result()
         finally:
             self._recovery_dispatches.clear()
+            recovery = self._recovery
+            if recovery is not None and recovery.scoped_inventory is not None:
+                inventory_reader = getattr(
+                    self._sources._runtime, "_h1_producer_inventory_reader", None
+                )
+                if inventory_reader is None:
+                    raise H1CompletionPreparationUnavailable(
+                        "H1 scoped recovery inventory reader is unavailable"
+                    )
+                inventory_reader.release(recovery.scoped_inventory)
+                recovery.scoped_inventory = None
+
+    async def _pin_scoped_recovery_effects(
+        self, *, historical_capture: object, semantic_input: bytes | None = None
+    ) -> tuple[bytes, str]:
+        """Build one V3 inner request from recovered B and live mounted inputs.
+
+        This only produces durable semantic bytes.  It deliberately does not
+        create a broker route or admit an owner call.
+        """
+        from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
+            PrepareH1ScopedDeliveryV1,
+        )
+        from chiplog.composition.h1_scoped_delivery_producer import H1ScopedDeliveryProducer
+
+        recovery = self._recovery
+        runtime = self._sources._runtime
+        authority_reader = getattr(runtime, "_h1_scoped_delivery_authority_reader", None)
+        inventory_reader = getattr(runtime, "_h1_producer_inventory_reader", None)
+        if (
+            recovery is None
+            or authority_reader is None
+            or inventory_reader is None
+            or recovery.scoped_inventory is not None
+        ):
+            raise H1CompletionPreparationUnavailable("H1 scoped recovery inputs are unavailable")
+        require_owned = getattr(recovery.lease, "require_owned", None)
+        if not callable(require_owned):
+            raise H1CompletionPreparationUnavailable("H1 scoped recovery lease is unavailable")
+        require_owned()
+        authority = await authority_reader.read_reconstructed(
+            historical_b_capture=historical_capture
+        )
+        pinned_deadline: int | None = None
+        pinned_observed_time: int | None = None
+        if semantic_input is not None:
+            try:
+                pinned = PrepareH1ScopedDeliveryV1.model_validate_json(semantic_input)
+            except ValueError as error:
+                raise H1CompletionPreparationUnavailable(
+                    "H1 scoped recovery pin is malformed"
+                ) from error
+            if pinned.canonical_bytes() != semantic_input:
+                raise H1CompletionPreparationUnavailable(
+                    "H1 scoped recovery pin is not canonical"
+                )
+            pinned_deadline = pinned.current.lease_expires_at_ns
+            pinned_observed_time = pinned.current.observed_time_ns
+        capture = await inventory_reader.read(
+            authority_capture=authority,
+            pinned_lease_expires_at_ns=pinned_deadline,
+            pinned_observed_time_ns=pinned_observed_time,
+        )
+        try:
+            producer = H1ScopedDeliveryProducer(runtime, inventory_reader)
+            with runtime._authority_gate().hold():
+                request = producer._build_request_held(capture)
+                inventory_reader.recheck_held(capture)
+                raw = request.canonical_bytes()
+                recovery.scoped_inventory = capture
+                return raw, request.identity.command_id
+        except BaseException:
+            inventory_reader.release(capture)
+            raise
+
+    async def _dispatch_scoped_recovery_effects(
+        self,
+        *,
+        historical_capture: object,
+        semantic_input: bytes,
+        effects_command_id: str,
+    ) -> H1CompletionOwnerExchangeV1:
+        """Send one pinned V3 Effects request through enrolled guarded admission."""
+        from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+        from chiplog.composition.h1_scoped_delivery_producer import H1ScopedDeliveryProducer
+        from chiplog.platform.broker import PublicPortRejected
+
+        recovery = self._recovery
+        runtime = self._sources._runtime
+        authority_reader = getattr(runtime, "_h1_scoped_delivery_authority_reader", None)
+        inventory_reader = getattr(runtime, "_h1_producer_inventory_reader", None)
+        enrollment = getattr(runtime, "_h1_live_completion_enrollment", None)
+        if (
+            recovery is None
+            or authority_reader is None
+            or inventory_reader is None
+            or type(enrollment) is not _H1LiveCompletionEnrollment
+            or recovery.poisoned
+        ):
+            raise H1CompletionPreparationUnavailable("H1 scoped recovery transport is unavailable")
+        recovery.lease.require_owned()
+        enrollment._require_recovery_session(
+            session=self, source=recovery.source, context=recovery.context, lease=recovery.lease
+        )
+        capture = recovery.scoped_inventory
+        if capture is None:
+            raise H1CompletionPreparationUnavailable("H1 scoped recovery pin has no inventory")
+        clearance: Any = None
+        try:
+            producer = H1ScopedDeliveryProducer(runtime, inventory_reader)
+            with runtime._authority_gate().hold():
+                request = producer._require_pinned_request_held(
+                    capture, semantic_input=semantic_input, effects_command_id=effects_command_id
+                )
+                call, sent = producer._build_route_held(capture, request)
+                clearance = enrollment._reserve_recovery_clearance(
+                    session=self, stage="EFFECTS", semantic_input=semantic_input, sent=sent
+                )
+                enrolled_guard = enrollment._recovery_admission_guard(clearance)
+
+                def guard(admitted_sent: PublicPortCall, owner_frame_bytes: bytes) -> None:
+                    # This is the actual send boundary.  A current source can
+                    # change after route construction, so authenticate the
+                    # exact pinned request again before burning admission.
+                    with runtime._authority_gate().hold():
+                        producer._require_pinned_request_held(
+                            capture,
+                            semantic_input=semantic_input,
+                            effects_command_id=effects_command_id,
+                        )
+                        # Enrollment consumes the one-use clearance under the
+                        # same authority interval as the final inventory read.
+                        enrolled_guard(admitted_sent, owner_frame_bytes)
+            guarded_call = getattr(
+                runtime._supervisor.runtime(), "_call_with_admission_guard", None
+            )
+            if not callable(guarded_call):
+                raise H1CompletionPreparationUnavailable(
+                    "H1 scoped guarded broker transport is unavailable"
+                )
+            sent_at_ns = time.monotonic_ns()
+            task: asyncio.Task[object] = asyncio.create_task(
+                guarded_call(sent, admission_guard=guard, authority_gate=runtime._authority_gate())
+            )
+            self._recovery_dispatches.append(task)
+            # A cancellation after admission does not abandon the owner task:
+            # settle and authenticate it while the coordinator still owns its lease.
+            cancelled: asyncio.CancelledError | None = None
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError as error:
+                    cancelled = error
+            returned = task.result()
+            returned_at_ns = time.monotonic_ns()
+            if isinstance(returned, PublicPortRejected):
+                raise H1CompletionPreparationUnavailable(
+                    "H1 scoped recovery owner rejected broker call"
+                )
+            if not isinstance(returned, PublicPortSuccess):
+                raise H1CompletionPreparationUnavailable(
+                    "H1 scoped recovery owner result is not a public success"
+                )
+            with runtime._authority_gate().hold():
+                enrollment._require_admitted_recovery(clearance, session=self, sent=sent)
+                producer._require_pinned_request_held(
+                    capture, semantic_input=semantic_input, effects_command_id=effects_command_id
+                )
+                producer._require_result_held(
+                    call=call,
+                    sent=sent,
+                    returned=returned,
+                    sent_at_ns=sent_at_ns,
+                    returned_at_ns=returned_at_ns,
+                )
+                exchange = H1CompletionOwnerExchangeV1(
+                    role="effects", sent=sent, returned=returned,
+                    sent_at_ns=sent_at_ns, returned_at_ns=returned_at_ns,
+                )
+                enrollment._record_recovery_result(clearance, session=self, exchange=exchange)
+                enrollment._burn_recovery_clearance(clearance)
+                clearance = None
+            if cancelled is not None:
+                # The committed exchange is durable only after the coordinator
+                # appends it; it owns that append before releasing the lease.
+                self._retain_recovery_exchange("EFFECTS", exchange)
+                recovery.scoped_effects_cancelled = True
+            return exchange
+        except BaseException:
+            recovery.poisoned = True
+            if clearance is not None:
+                with suppress(RuntimeError, TypeError, ValueError):
+                    enrollment._burn_recovery_clearance(clearance)
+            raise
+        finally:
+            # The pin's issuer-held capture intentionally outlives IPC and
+            # journal readback.  _drain_recovery releases it under the same
+            # lease, after the coordinator has committed the exact result.
+            pass
+
+    def _raise_scoped_effects_cancellation_after_commit(self) -> None:
+        """Restore caller cancellation only after the coordinator readback."""
+        recovery = self._recovery
+        if recovery is not None and recovery.scoped_effects_cancelled:
+            recovery.scoped_effects_cancelled = False
+            raise asyncio.CancelledError
 
     async def _issue_finalization(self) -> _H1LiveCompletionIssuance:
         """Build one V2 only from this enrolled, fully settled recovery session."""
