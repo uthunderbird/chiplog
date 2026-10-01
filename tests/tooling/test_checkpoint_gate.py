@@ -91,9 +91,19 @@ def test_invalid_or_empty_code_selection_rejects(tmp_path: Path, selectors: obje
     assert "→ сделай:" in result.stderr
 
 
-@pytest.mark.parametrize("state", ["main", "master", "detached", "merge", "dirty"])
-def test_non_checkpoint_states_reject(tmp_path: Path, state: str) -> None:
+@pytest.mark.parametrize(
+    "state,action",
+    [
+        ("main", "используй CHIPLOG_COMMIT_MODE=full"),
+        ("master", "используй CHIPLOG_COMMIT_MODE=full"),
+        ("detached", "создай или переключись на именованную рабочую ветку"),
+        ("merge", "заверши merge и запусти полный гейт"),
+        ("dirty", "добавь изменения в index или верни worktree к index"),
+    ],
+)
+def test_non_checkpoint_states_reject(tmp_path: Path, state: str, action: str) -> None:
     env = fixture(tmp_path)
+    staged_before = subprocess.check_output(["git", "write-tree"], cwd=tmp_path, env=env)
     if state in {"main", "master"}:
         git(tmp_path, env, "branch", "-m", state)
     elif state == "detached":
@@ -102,7 +112,11 @@ def test_non_checkpoint_states_reject(tmp_path: Path, state: str) -> None:
         (tmp_path / ".git/MERGE_HEAD").write_text("pending\n")
     else:
         (tmp_path / "implementation.py").write_text("value = 2\n")
-    assert run(tmp_path, env, ["tests/tooling/test_selection.py::test_new"]).returncode == 1
+    result = run(tmp_path, env, ["tests/tooling/test_selection.py::test_new"])
+    assert result.returncode == 1
+    assert f"→ сделай: {action}" in result.stderr
+    assert "checkpoint: только выбранные тесты" not in result.stdout
+    assert subprocess.check_output(["git", "write-tree"], cwd=tmp_path, env=env) == staged_before
 
 
 def test_only_staged_markdown_allows_no_tests(tmp_path: Path) -> None:
