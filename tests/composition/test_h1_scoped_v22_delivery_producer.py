@@ -9,11 +9,13 @@ from pathlib import Path
 import pytest
 
 from chiplog.capabilities.effects.h1_scoped_dispatch_semantics import (
+    H1_SCOPED_DISPATCH_SEMANTICS,
     H1_SCOPED_DISPATCH_V2_SEMANTICS,
     h1_scoped_dispatch_v2_semantic_registry_capture,
 )
 from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
     H1ScopedDeliveryOwnerCallV2,
+    H1ScopedDeliveryRejectedV2,
     PreparedH1ScopedDeliveryV2,
 )
 from chiplog.composition.common_cli_execution_runtime import open_installed_h1_scoped_v22_runtime
@@ -74,6 +76,19 @@ async def test_mounted_v22_owner_derives_v2_mandate_and_rejects_v1_wire(tmp_path
                     update={"canonical_payload": forged_call.canonical_bytes()}
                 )
 
+            wrong_semantics = call.request.current.model_copy(
+                update={"supported_semantics": H1_SCOPED_DISPATCH_SEMANTICS}
+            )
+            semantics_reply = await runtime._supervisor.runtime().call(
+                forged(call.request.model_copy(update={"current": wrong_semantics}))
+            )
+            assert isinstance(semantics_reply, PublicPortSuccess)
+            semantics_rejection = H1ScopedDeliveryRejectedV2.model_validate_json(
+                semantics_reply.canonical_payload
+            )
+            assert semantics_rejection.disposition == "DENIED"
+            assert "registered producer semantics" in semantics_rejection.reason
+
             forged_candidate = call.request.current.immutable_mandate_candidate.model_copy(
                 update={
                     "canonical_mandate_bytes": b"forged",
@@ -118,7 +133,11 @@ async def test_mounted_v22_owner_derives_v2_mandate_and_rejects_v1_wire(tmp_path
             )
             retained_reply = await runtime._supervisor.runtime().call(forged(retained_request))
             assert isinstance(retained_reply, PublicPortSuccess)
-            assert json.loads(retained_reply.canonical_payload)["disposition"] == "DENIED"
+            retained_rejection = H1ScopedDeliveryRejectedV2.model_validate_json(
+                retained_reply.canonical_payload
+            )
+            assert retained_rejection.disposition == "DENIED"
+            assert "retained sources" in retained_rejection.reason
 
             v1_wire = call.model_copy(
                 update={"schema_id": "chiplog.effects.h1-scoped-delivery-owner-call.v1"}

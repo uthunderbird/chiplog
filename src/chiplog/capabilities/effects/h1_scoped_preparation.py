@@ -181,10 +181,6 @@ def _derived_mandate_id(grant: PreparedExternalDeliveryGrantV2, delivery: Accept
     return "h1-scoped-mandate:" + _sha((grant.grant_id + "\x00" + delivery.delivery_id).encode())
 
 
-def _reject(reason: str) -> H1ScopedDeliveryRejectedV1:
-    return H1ScopedDeliveryRejectedV1(disposition="DENIED", reason=reason)
-
-
 def _same_head(left: Any, right: ExactHead) -> bool:
     return bool(
         left.identity == right.subject_id
@@ -392,7 +388,7 @@ def _prepare_h1_scoped_delivery(
         basis = derive_h1_prepared_delivery_basis(first, request.prepared_completion)
         delivery = request.prepared_completion.delivery.manifest.ordered_deliveries[0]
         if delivery.selection.kind != "ORIGIN_EXACT":
-            return _reject("H1 external delivery requires ORIGIN_EXACT selection")
+            return reject("H1 external delivery requires ORIGIN_EXACT selection")
         grant_scope = grant.scope
         terms = policy.terms
         mandate = grant_scope.mandate
@@ -404,9 +400,9 @@ def _prepare_h1_scoped_delivery(
         loop_basis_head = prepared_delivery_basis_head_v3(basis)
 
         if request.current.supported_semantics != expected_semantics:
-            return _reject("H1 scoped delivery needs registered producer semantics")
+            return reject("H1 scoped delivery needs registered producer semantics")
         if not isinstance(request.fence, NonSchedulerFence):
-            return _reject("H1 scoped delivery requires a non-scheduler fence")
+            return reject("H1 scoped delivery requires a non-scheduler fence")
         if (
             grant.status != "ACTIVE"
             or policy.status != "ACTIVE"
@@ -426,7 +422,7 @@ def _prepare_h1_scoped_delivery(
             or request.selected_scope.current_request.expected_trust_observation
             != evidence.trust_observation
         ):
-            return _reject("H1 scoped delivery route, scope, or fence differs from basis")
+            return reject("H1 scoped delivery route, scope, or fence differs from basis")
         selected_resource = request.selected_scope.scope.selected_resource_observation_ref
         if (
             grant_scope.selected_source.selected_initialization
@@ -447,7 +443,7 @@ def _prepare_h1_scoped_delivery(
             or _sha(request.retained_origin.initialization_envelope_bytes)
             != grant_scope.selected_source.selected_initialization.fingerprint
         ):
-            return _reject("H1 scoped delivery resource, clock, source, or horizon differs")
+            return reject("H1 scoped delivery resource, clock, source, or horizon differs")
         if (
             terms.communication_permission != "PREPARED_EXTERNAL_SEND"
             or terms.disclosure_permission != "EXACT_RENDERED_PAYLOAD"
@@ -458,7 +454,7 @@ def _prepare_h1_scoped_delivery(
             or terms.payload_digest != _sha(delivery.rendered_bytes)
             or terms.payload_byte_length != len(delivery.rendered_bytes)
         ):
-            return _reject("H1 scoped delivery policy permissions differ")
+            return reject("H1 scoped delivery policy permissions differ")
         if (
             not _same_head(mandate.original_run, original_run)
             or not _same_head(mandate.captured_attempt, attempt)
@@ -466,7 +462,7 @@ def _prepare_h1_scoped_delivery(
             or mandate.payload_digest != _sha(delivery.rendered_bytes)
             or mandate.payload_byte_length != len(delivery.rendered_bytes)
         ):
-            return _reject("H1 scoped delivery grant mandate differs from accepted delivery")
+            return reject("H1 scoped delivery grant mandate differs from accepted delivery")
         if (
             mandate.preparation_basis != loop_basis_head
             or mandate.selection != delivery.selection.kind
@@ -475,13 +471,13 @@ def _prepare_h1_scoped_delivery(
             or (mandate.not_before_ns, mandate.expires_at_ns)
             != (terms.not_before_ns, terms.expires_at_ns)
         ):
-            return _reject("H1 scoped delivery grant mandate basis or horizon differs")
+            return reject("H1 scoped delivery grant mandate basis or horizon differs")
         if (
             request.preexisting_communication_authority != policy_record
             or request.current_disclosure_authority != policy_record
             or request.complete_current_origin_sources != (policy_record,)
         ):
-            return _reject("H1 scoped delivery authority records differ from policy projection")
+            return reject("H1 scoped delivery authority records differ from policy projection")
         require_semantics(
             supported_semantics=request.current.supported_semantics,
             original=request.original_sources.semantic_registry,
@@ -537,7 +533,7 @@ def _prepare_h1_scoped_delivery(
             mandate_bytes=mandate_bytes,
         )
         if request.precursor_request != precursor:
-            return _reject("H1 scoped delivery precursor request differs from authority projection")
+            return reject("H1 scoped delivery precursor request differs from authority projection")
         precursor_result = ScopedPrecursorResult(
             source_request_fingerprint=_sha(precursor.canonical_bytes()),
             mandate_fingerprint=_sha(derived.canonical_bytes()),
@@ -576,7 +572,7 @@ def _prepare_h1_scoped_delivery(
         )
         retained = make_scoped_intent_retained_exchange(intent_request)
         if request.retained_sources != retained.original_sources:
-            return _reject(
+            return reject(
                 "H1 scoped delivery retained sources differ from exact intent projection"
             )
         member = make_scoped_intent_member(intent)
