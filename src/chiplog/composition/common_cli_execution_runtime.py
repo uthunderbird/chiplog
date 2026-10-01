@@ -2507,6 +2507,13 @@ async def _open_installed_h1_runtime(
         from chiplog.composition.h1_delivery_work_claim_sources import H1DeliveryWorkClaimSources
 
         runtime._h1_delivery_work_claim_sources = H1DeliveryWorkClaimSources(runtime)  # type: ignore[attr-defined]
+        from chiplog.composition.h1_delivery_work_current_claim_reader import (
+            H1DeliveryWorkCurrentClaimReader,
+        )
+
+        runtime._h1_delivery_work_current_claim_reader = H1DeliveryWorkCurrentClaimReader(  # type: ignore[attr-defined]
+            runtime
+        )
         genesis_authority._bind_installed_runtime(runtime)
         claim_authority._bind_installed_runtime(runtime)
         runtime._h1_delivery_work_genesis_authority = genesis_authority  # type: ignore[attr-defined]
@@ -2834,7 +2841,11 @@ async def _open_installed_h1_runtime(
                     claim_source = getattr(runtime, "_h1_delivery_work_claim_sources", None)
                     if claim_source is not None:
                         claim_source.close()
+                    claim_reader = getattr(runtime, "_h1_delivery_work_current_claim_reader", None)
+                    if claim_reader is not None:
+                        claim_reader.close()
                     for name in (
+                        "_h1_delivery_work_current_claim_reader",
                         "_h1_delivery_work_claim_publication_coordinator",
                         "_h1_delivery_work_claim_authority",
                         "_h1_delivery_work_claim_sources",

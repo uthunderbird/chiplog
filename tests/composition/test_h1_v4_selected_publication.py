@@ -23,6 +23,9 @@ from chiplog.composition.common_cli_execution_runtime import (
     open_installed_h1_scoped_v22_runtime,
 )
 from chiplog.composition.h1_completion_issuance import V4_SCHEMA, H1CompletionIssuanceV4
+from chiplog.composition.h1_delivery_work_current_claim_reader import (
+    H1DeliveryWorkCurrentClaimReader,
+)
 from chiplog.composition.h1_delivery_work_sources import (
     DeliveryWorkLocatorV1,
     H1DeliveryWorkSources,
@@ -308,6 +311,13 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
             committed_claim = await claim_coordinator.commit(claim_batch)
             assert committed_claim.kind == "COMMITTED", committed_claim
             assert (await claim_coordinator.commit(claim_batch)).kind == "EXACT_REPLAY"
+            current_reader = runtime._h1_delivery_work_current_claim_reader
+            assert type(current_reader) is H1DeliveryWorkCurrentClaimReader
+            current_claim = current_reader.read(source.intent_id)
+            assert current_claim.source == source
+            assert current_claim.g0 == genesis_state
+            assert current_claim.g1 == claim_state
+            assert current_claim.binding.claim_projection.predecessor == genesis_state
             assert capture_authority_storage_state(slot.database_path)[0]
     with _open_installed_h1_launch(slot) as reopened_launch:
         async with open_installed_h1_scoped_v22_runtime(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from dataclasses import dataclass
 from typing import Literal
 
@@ -142,6 +143,48 @@ class H1DeliveryWorkClaimSources:
         if self._closed:
             raise H1DeliveryWorkClaimSourceHold("delivery-work claim source is closed")
         self._runtime._authority_gate().require_held()
+        source, candidate = self._selected_source_held(intent_id)
+        g0 = self._read_exact_g0(candidate, source)
+        g1 = delivery_work_record_id(source.subject_id, 1)
+        with read_connection(self._runtime._database) as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM records WHERE tenant_id=? AND record_id=?",
+                    (source.tenant_id, g1),
+                ).fetchone()
+                is not None
+            ):
+                raise H1DeliveryWorkClaimSourceHold("delivery-work g1 is already present")
+        session = self._runtime._supervisor.runtime().session("agent_loop")
+        epoch, now_ns = self._runtime._require_dispatch_resources().clock()
+        if (
+            session.tenant_id != source.tenant_id
+            or type(epoch) is not str
+            or not epoch
+            or type(now_ns) is not int
+            or now_ns < 0
+            or now_ns > (2**63 - 1) - _LEASE_DURATION_NS
+        ):
+            raise H1DeliveryWorkClaimSourceHold("current broker session or clock differs")
+        return _H1DeliveryWorkClaimCapture(
+            source,
+            candidate.decision_id,
+            candidate.decision_fingerprint,
+            g0,
+            g0.head,
+            session,
+            epoch,
+            now_ns,
+            now_ns + _LEASE_DURATION_NS,
+        )
+
+    def _selected_source_held(
+        self, intent_id: str
+    ) -> tuple[DeliveryWorkSourceV1, SelectedOwnerDecision]:
+        """Read the durable V4-to-g0 source chain without requiring g1 absence."""
+        if self._closed:
+            raise H1DeliveryWorkClaimSourceHold("delivery-work claim source is closed")
+        self._runtime._authority_gate().require_held()
         selected = self._selected._read_held(intent_id=intent_id)
         completion, issuance = selected.selected_h1.decision, selected.selected_h1.issuance
         if (
@@ -190,39 +233,7 @@ class H1DeliveryWorkClaimSources:
             for member in wanted
         ):
             raise H1DeliveryWorkClaimSourceHold("selected V4 source differs")
-        g0 = self._read_exact_g0(candidate, source)
-        g1 = delivery_work_record_id(source.subject_id, 1)
-        with read_connection(self._runtime._database) as connection:
-            if (
-                connection.execute(
-                    "SELECT 1 FROM records WHERE tenant_id=? AND record_id=?",
-                    (source.tenant_id, g1),
-                ).fetchone()
-                is not None
-            ):
-                raise H1DeliveryWorkClaimSourceHold("delivery-work g1 is already present")
-        session = self._runtime._supervisor.runtime().session("agent_loop")
-        epoch, now_ns = self._runtime._require_dispatch_resources().clock()
-        if (
-            session.tenant_id != source.tenant_id
-            or type(epoch) is not str
-            or not epoch
-            or type(now_ns) is not int
-            or now_ns < 0
-            or now_ns > (2**63 - 1) - _LEASE_DURATION_NS
-        ):
-            raise H1DeliveryWorkClaimSourceHold("current broker session or clock differs")
-        return _H1DeliveryWorkClaimCapture(
-            source,
-            candidate.decision_id,
-            candidate.decision_fingerprint,
-            g0,
-            g0.head,
-            session,
-            epoch,
-            now_ns,
-            now_ns + _LEASE_DURATION_NS,
-        )
+        return source, candidate
 
     @staticmethod
     def _record(
@@ -266,7 +277,10 @@ class H1DeliveryWorkClaimSources:
         return decision
 
     def _read_exact_g0(
-        self, decision: SelectedOwnerDecision, source: DeliveryWorkSourceV1
+        self,
+        decision: SelectedOwnerDecision,
+        source: DeliveryWorkSourceV1,
+        connection: sqlite3.Connection | None = None,
     ) -> DeliveryWorkStateV1:
         request = decision.prepared.request
         assert type(request) is DeliveryWorkGenesisBatchV1
@@ -290,7 +304,7 @@ class H1DeliveryWorkClaimSources:
                 ),
             ),
         )
-        with read_connection(self._runtime._database) as connection:
+        def read_on(connection: sqlite3.Connection) -> tuple[object, ...] | None:
             if (
                 inspect_publication(connection, expectation, decision.tenant_commit_sequence)
                 != "COMPLETE"
@@ -303,6 +317,15 @@ class H1DeliveryWorkClaimSources:
                 "WHERE tenant_id=? AND record_id=?",
                 (source.tenant_id, expected.record_id),
             ).fetchone()
+            return None if row is None else tuple(row)
+
+        if connection is None:
+            with read_connection(self._runtime._database) as owned_connection:
+                row = read_on(owned_connection)
+        else:
+            if not connection.in_transaction:
+                raise H1DeliveryWorkClaimSourceHold("delivery-work g0 read lacks transaction")
+            row = read_on(connection)
         if row is None or tuple(row) != (
             DELIVERY_WORK_OWNER,
             DELIVERY_WORK_SCHEMA,
