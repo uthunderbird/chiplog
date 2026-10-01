@@ -20,6 +20,9 @@ from chiplog.platform._sqlite import (
 V2_OPERATION = "agent_loop.complete_acceptance.v2"
 LOCAL_INTENT_SCHEMA = "chiplog.effects.h1-local-prepared-commentary-intent.v1"
 SCOPED_INTENT_SCHEMA = "chiplog.effects.external-action-intent.v3"
+DELIVERY_WORK_SCHEMA = "chiplog.delivery-work.subject.v1"
+DELIVERY_WORK_GENESIS = "agent_loop.delivery_work.genesis.v1"
+DELIVERY_WORK_CLAIM = "agent_loop.delivery_work.claim.v1"
 
 
 def _record(record_id: str = "complete") -> PhysicalRecord:
@@ -52,7 +55,10 @@ async def _appender(path: Path) -> tuple[SQLiteMaterializer, EventAppender]:
             "agent_loop": "chiplog.agent-loop.record.v1",
             "effects": LOCAL_INTENT_SCHEMA,
         },
-        record_schema_variants=(("effects", SCOPED_INTENT_SCHEMA),),
+        record_schema_variants=(
+            ("effects", SCOPED_INTENT_SCHEMA),
+            ("agent_loop", DELIVERY_WORK_SCHEMA),
+        ),
     )
     appender = EventAppender(store, capacity=2)
     await appender.advance_fence(FenceAdvanceCommand("tenant", "fence", 0))
@@ -118,6 +124,150 @@ async def test_h1_intent_under_an_alternate_operation_is_refused(
 
     with pytest.raises(StoreAdmissionError, match="H1-only record"):
         await appender.submit(_command(operation="ordinary", records=(local_intent,)))
+
+    assert store.durable_records() == ()
+    await appender.close()
+
+
+@pytest.mark.parametrize(
+    "record,operation,reason",
+    (
+        (
+            lambda: PhysicalRecord(
+                "delivery-work:subject:g0",
+                "agent_loop",
+                DELIVERY_WORK_SCHEMA,
+                b"delivery-work",
+                sha256(b"delivery-work").hexdigest(),
+            ),
+            "ordinary",
+            "alternate operation",
+        ),
+        (
+            lambda: PhysicalRecord(
+                "delivery-work:subject:g0",
+                "effects",
+                "ordinary.v1",
+                b"reserved-id",
+                sha256(b"reserved-id").hexdigest(),
+            ),
+            "ordinary",
+            "alternate operation",
+        ),
+        (
+            lambda: PhysicalRecord(
+                "delivery-work:subject:g0",
+                "effects",
+                DELIVERY_WORK_SCHEMA,
+                b"alternate-owner",
+                sha256(b"alternate-owner").hexdigest(),
+            ),
+            DELIVERY_WORK_GENESIS,
+            "owner, schema, or reserved ID differs",
+        ),
+        (
+            lambda: PhysicalRecord(
+                "delivery-work:subject:g0",
+                "agent_loop",
+                "ordinary.v1",
+                b"alternate-schema",
+                sha256(b"alternate-schema").hexdigest(),
+            ),
+            DELIVERY_WORK_GENESIS,
+            "owner, schema, or reserved ID differs",
+        ),
+    ),
+)
+async def test_delivery_work_schema_and_reserved_ids_are_refused_outside_closed_operations(
+    tmp_path: Path, record, operation: str, reason: str
+) -> None:
+    store, appender = await _appender(tmp_path / "store.sqlite")
+
+    with pytest.raises(StoreAdmissionError, match=reason):
+        await appender.submit(_command(operation=operation, records=(record(),)))
+
+    assert store.durable_records() == ()
+    await appender.close()
+
+
+@pytest.mark.parametrize("operation", (DELIVERY_WORK_GENESIS, DELIVERY_WORK_CLAIM))
+async def test_delivery_work_closed_operation_refuses_without_mounted_resolver(
+    tmp_path: Path, operation: str
+) -> None:
+    store, appender = await _appender(tmp_path / "store.sqlite")
+    observer_calls: list[str] = []
+
+    class Observer:
+        def decide_publication(self, _: PhysicalPublicationCommand, __: str) -> None:
+            observer_calls.append("decide")
+
+        def publication_committed(self, _: PhysicalPublicationCommand) -> None:
+            observer_calls.append("committed")
+
+    appender.bind_publication_observer(Observer())
+    body = b"delivery-work"
+    record = PhysicalRecord(
+        "delivery-work:subject:g0",
+        "agent_loop",
+        DELIVERY_WORK_SCHEMA,
+        body,
+        sha256(body).hexdigest(),
+    )
+
+    assert (
+        await appender.submit(_command(operation=operation, records=(record,)))
+    ).disposition == "DENIED"
+    caller_guard_called = False
+
+    def caller_guard(_: str) -> None:
+        nonlocal caller_guard_called
+        caller_guard_called = True
+
+    assert (
+        await appender.submit(
+            replace(
+                _command(operation=operation, records=(record,)),
+                idempotency_key="caller-guard",
+                decision_guard=caller_guard,
+            )
+        )
+    ).disposition == "DENIED"
+
+    assert store.durable_records() == ()
+    assert observer_calls == [] and not caller_guard_called
+    await appender.close()
+
+
+@pytest.mark.parametrize("operation", (DELIVERY_WORK_GENESIS, DELIVERY_WORK_CLAIM))
+async def test_delivery_work_operations_refuse_unrelated_records(
+    tmp_path: Path, operation: str
+) -> None:
+    store, appender = await _appender(tmp_path / "store.sqlite")
+
+    with pytest.raises(StoreAdmissionError, match="has no reserved record"):
+        await appender.submit(_command(operation=operation))
+
+    assert store.durable_records() == ()
+    await appender.close()
+
+
+async def test_delivery_work_operation_refuses_mixed_bundle_before_resolver_routing(
+    tmp_path: Path,
+) -> None:
+    store, appender = await _appender(tmp_path / "store.sqlite")
+    body = b"delivery-work"
+    delivery_work = PhysicalRecord(
+        "delivery-work:subject:g0",
+        "agent_loop",
+        DELIVERY_WORK_SCHEMA,
+        body,
+        sha256(body).hexdigest(),
+    )
+
+    with pytest.raises(StoreAdmissionError, match="has unrelated record"):
+        await appender.submit(
+            _command(operation=DELIVERY_WORK_GENESIS, records=(delivery_work, _record("ordinary")))
+        )
 
     assert store.durable_records() == ()
     await appender.close()

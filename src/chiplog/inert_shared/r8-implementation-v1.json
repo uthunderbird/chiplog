@@ -401,7 +401,7 @@
   "platform/_ingress_contracts.py": "a0da2f82955262a06f4c5d01708e94a5b7d21e5810819f98dba83fbd2f4416dc",
   "platform/_ingress_domain.py": "b1cb606a112a50e9e1024e33282eaf35523226fbd2f28d4b7ed43d25ec601d2d",
   "platform/_owner_publication_contracts.py": "1f6bffe2ae7d180dcc76ace45e05d3ff2f8a13a38ceeaf44a6bad6530d807835",
-  "platform/_sqlite.py": "2f67af5f4e6f3bc45d66f8b8acb333423ae1d21de8c3d6f93a0a9c671c1e0262",
+  "platform/_sqlite.py": "4f89211384c118de418c57ac3bbb3010501b6858e143cc7f9a119aefa60d8842",
   "platform/authority_checkpoint.py": "22f77d585e0889bbcd4f92665cfef45827cc888f0e423b8d18fa91c6b7a70c74",
   "platform/authority_gate.py": "06ace1f523a38e6d88e97726f0e6145eb905989ec2482867857d2319393186e6",
   "platform/authority_ledger.py": "5d63d36e8034d6d23e856b29a071fb073a0b163babc1bf8fbb481f49d8e46927",

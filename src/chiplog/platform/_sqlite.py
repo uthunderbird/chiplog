@@ -156,6 +156,15 @@ class PhysicalPublicationCommand:
 PublicationVerificationMode = Literal["ABSENT", "REPLAY", "PRESELECT", "PRECOMMIT"]
 OwnerPublicationApplicability = Literal["h1", "non_h1"]
 _COMPLETE_ACCEPTANCE_V2 = "agent_loop.complete_acceptance.v2"
+_DELIVERY_WORK_SCHEMA = "chiplog.delivery-work.subject.v1"
+_DELIVERY_WORK_OWNER = "agent_loop"
+_DELIVERY_WORK_RECORD_PREFIX = "delivery-work:"
+_DELIVERY_WORK_OPERATIONS = frozenset(
+    {
+        "agent_loop.delivery_work.genesis.v1",
+        "agent_loop.delivery_work.claim.v1",
+    }
+)
 _H1_LOCAL_INTENT_PAIR = (
     "effects",
     "chiplog.effects.h1-local-prepared-commentary-intent.v1",
@@ -164,6 +173,40 @@ _H1_SCOPED_INTENT_PAIR = (
     "effects",
     "chiplog.effects.external-action-intent.v3",
 )
+
+
+def _requires_owner_publication_resolver(operation_kind: str) -> bool:
+    return operation_kind == _COMPLETE_ACCEPTANCE_V2 or operation_kind in _DELIVERY_WORK_OPERATIONS
+
+
+def _require_closed_delivery_work_publication(command: PhysicalPublicationCommand) -> None:
+    """Reserve delivery-work's physical namespace before generic admission.
+
+    Both the closed schema and reserved record-ID family are recognized: an
+    alternate owner or schema cannot turn a delivery subject into an ordinary
+    record.  This gate does not grant a positive publication path.
+    """
+    relevant = tuple(
+        record
+        for record in command.records
+        if record.schema_id == _DELIVERY_WORK_SCHEMA
+        or record.record_id.startswith(_DELIVERY_WORK_RECORD_PREFIX)
+    )
+    if not relevant and command.operation_kind not in _DELIVERY_WORK_OPERATIONS:
+        return
+    if not relevant:
+        raise StoreAdmissionError("delivery-work operation has no reserved record")
+    if len(relevant) != len(command.records):
+        raise StoreAdmissionError("delivery-work operation has unrelated record")
+    if command.operation_kind not in _DELIVERY_WORK_OPERATIONS:
+        raise StoreAdmissionError("delivery-work record submitted under alternate operation")
+    if any(
+        record.owner != _DELIVERY_WORK_OWNER
+        or record.schema_id != _DELIVERY_WORK_SCHEMA
+        or not record.record_id.startswith(_DELIVERY_WORK_RECORD_PREFIX)
+        for record in relevant
+    ):
+        raise StoreAdmissionError("delivery-work record owner, schema, or reserved ID differs")
 
 
 @dataclass(frozen=True)
@@ -522,14 +565,18 @@ class SQLiteMaterializer:
     ) -> PublicationResult:
         with self._authority_scope():
             self._require_writer(token)
-            if any(
-                (record.owner, record.schema_id)
-                in (_H1_LOCAL_INTENT_PAIR, _H1_SCOPED_INTENT_PAIR)
-                for record in command.records
-            ) and command.operation_kind != _COMPLETE_ACCEPTANCE_V2:
+            _require_closed_delivery_work_publication(command)
+            if (
+                any(
+                    (record.owner, record.schema_id)
+                    in (_H1_LOCAL_INTENT_PAIR, _H1_SCOPED_INTENT_PAIR)
+                    for record in command.records
+                )
+                and command.operation_kind != _COMPLETE_ACCEPTANCE_V2
+            ):
                 raise StoreAdmissionError("H1-only record submitted under alternate operation")
-            is_v2 = command.operation_kind == _COMPLETE_ACCEPTANCE_V2
-            if is_v2 and self._owner_publication_resolver is None:
+            requires_owner_resolver = _requires_owner_publication_resolver(command.operation_kind)
+            if requires_owner_resolver and self._owner_publication_resolver is None:
                 return PublicationResult("DENIED", None, ())
             record_ids = tuple(record.record_id for record in command.records)
             if not record_ids or len(record_ids) != len(set(record_ids)):
@@ -556,7 +603,7 @@ class SQLiteMaterializer:
                     (command.tenant_id, command.operation_kind, command.idempotency_key),
                 ).fetchone()
                 if existing is not None:
-                    if is_v2:
+                    if requires_owner_resolver:
                         verified = self._verify_owner_publication(command, "REPLAY")
                         self._verify_replay_membership(
                             command, verified, int(existing[1]), tuple(str(existing[2]).split("\n"))
@@ -565,7 +612,7 @@ class SQLiteMaterializer:
                     if existing[0] != command.request_fingerprint:
                         return PublicationResult("CONFLICT", existing[1], ())
                     return PublicationResult("REPLAY", existing[1], tuple(existing[2].split("\n")))
-                if is_v2:
+                if requires_owner_resolver:
                     self._verify_owner_publication(command, "ABSENT")
                 self._require_ready_bundle(
                     pending_admission=True, kind="publication", context=recovery_context
@@ -618,12 +665,12 @@ class SQLiteMaterializer:
                     (command.tenant_id, commit_sequence),
                 )
                 preselected: VerifiedOwnerPublication | None = None
-                if is_v2:
+                if requires_owner_resolver:
                     preselected = self._verify_owner_publication(command, "PRESELECT")
                 if (
                     command.authority_checkpoint_guard is not None
                     or command.decision_guard is not None
-                    or is_v2
+                    or requires_owner_resolver
                 ):
                     from .authority_reads import capture_authority_snapshot_bytes
 
@@ -631,7 +678,7 @@ class SQLiteMaterializer:
                     resulting = hashlib.sha256(snapshot).hexdigest()
                     if command.authority_checkpoint_guard is not None:
                         command.authority_checkpoint_guard(resulting, snapshot)
-                if is_v2 and command.decision_guard is None:
+                if requires_owner_resolver and command.decision_guard is None:
                     self._connection.rollback()
                     return PublicationResult("DENIED", None, ())
                 if command.decision_guard is not None:
@@ -639,7 +686,7 @@ class SQLiteMaterializer:
                     if disposition is not None:
                         self._connection.rollback()
                         return PublicationResult(disposition, None, ())
-                if is_v2:
+                if requires_owner_resolver:
                     precommitted = self._verify_owner_publication(command, "PRECOMMIT")
                     self._verify_precommit(preselected, precommitted, resulting, commit_sequence)
                 if command.fault == "before_commit":
@@ -706,8 +753,7 @@ class SQLiteMaterializer:
             (command.tenant_id, sequence),
         ).fetchall()
         observed = tuple(
-            (str(row[0]), str(row[1]), str(row[2]), bytes(row[3]), int(row[4]))
-            for row in rows
+            (str(row[0]), str(row[1]), str(row[2]), bytes(row[3]), int(row[4])) for row in rows
         )
         wanted = tuple(
             (record.record_id, record.owner, record.schema_id, record.canonical_bytes, sequence)
@@ -1213,7 +1259,8 @@ class EventAppender:
     ) -> PublicationResult:
         observer = (
             self._publication_observer
-            if command.decision_guard is None and command.operation_kind != _COMPLETE_ACCEPTANCE_V2
+            if command.decision_guard is None
+            and not _requires_owner_publication_resolver(command.operation_kind)
             else None
         )
         if observer is not None:
