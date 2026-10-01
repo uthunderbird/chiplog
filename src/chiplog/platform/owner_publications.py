@@ -18,6 +18,7 @@ from chiplog.platform._owner_publication_contracts import (
     RegisteredPublication,
 )
 from chiplog.platform._sqlite import EventAppender, PhysicalPublicationCommand, PhysicalRecord
+from chiplog.platform.delivery_work_genesis_binding_contracts import DeliveryWorkGenesisBindingV1
 from chiplog.platform.h1_delivery_binding_contracts import H1DeliveryBinding
 
 
@@ -45,6 +46,7 @@ class PreparedOwnerPublication:
     fence_frontier: int
     predecessor_commitment: str
     h1_delivery_binding: H1DeliveryBinding | None = None
+    delivery_work_genesis_binding: DeliveryWorkGenesisBindingV1 | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,8 @@ def source_commands(request: RegisteredPublication) -> tuple[OwnerCommandBytes, 
             request.conversation_no_change_command,
             request.terminal_work_command,
         )
+    if request.kind == "DELIVERY_WORK_GENESIS_V1":
+        return (request.genesis_command,)
     return (request.loop_command, *request.prepared_effects_commands)
 
 
@@ -141,6 +145,8 @@ def selected_records(decision: SelectedOwnerDecision) -> tuple[OwnerRecordBytes,
     if request.kind == "COMPLETE_DELIVERY_ATOMIC_V2":
         return request.complete_records
     if request.kind == "REJECTED_COMPLETION_ATOMIC_V1":
+        return request.complete_records
+    if request.kind == "DELIVERY_WORK_GENESIS_V1":
         return request.complete_records
     raise ValueError(f"unsupported selected publication kind: {request.kind!r}")
 

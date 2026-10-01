@@ -16,6 +16,7 @@ from .recovery_contracts import Digest, Identity, RecoveryDTO
 
 DELIVERY_WORK_SCHEMA = "chiplog.delivery-work.subject.v1"
 DELIVERY_WORK_OWNER = "agent_loop"
+DELIVERY_WORK_GENESIS_COMMAND_SCHEMA = "chiplog.agent-loop.prepare-delivery-work-genesis.v1"
 
 
 def _digest(value: bytes) -> str:
@@ -143,6 +144,27 @@ class DeliveryWorkStateV1(RecoveryDTO):
     @property
     def head(self) -> str:
         return DELIVERY_WORK_SCHEMA + ":" + _digest(self.canonical_bytes())
+
+
+class PrepareDeliveryWorkGenesisV1(RecoveryDTO):
+    """The sole owner command that derives an unleased delivery-work genesis."""
+
+    schema_id: Literal["chiplog.agent-loop.prepare-delivery-work-genesis.v1"] = (
+        DELIVERY_WORK_GENESIS_COMMAND_SCHEMA
+    )
+    selected_decision_id: Identity
+    selected_decision_fingerprint: Digest
+    selected_source: DeliveryWorkSourceV1
+
+    @model_validator(mode="after")
+    def selected_source_is_exact(self) -> PrepareDeliveryWorkGenesisV1:
+        if (
+            self.selected_decision_id != self.selected_source.selected_decision_id
+            or self.selected_decision_fingerprint
+            != self.selected_source.selected_decision_fingerprint
+        ):
+            raise ValueError("delivery work genesis command selected decision differs")
+        return self
 
 
 def prepare_delivery_work_genesis(source: DeliveryWorkSourceV1) -> DeliveryWorkStateV1:

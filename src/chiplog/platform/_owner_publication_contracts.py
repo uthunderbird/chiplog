@@ -9,9 +9,19 @@ require fresh preparation. Only this path obtains a journal decision; DTO constr
 proves none of it.
 """
 
+import hashlib
 from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+    DELIVERY_WORK_GENESIS_COMMAND_SCHEMA,
+    DELIVERY_WORK_OWNER,
+    DELIVERY_WORK_SCHEMA,
+    DeliveryWorkSourceV1,
+    PrepareDeliveryWorkGenesisV1,
+    prepare_delivery_work_genesis,
+)
 
 from .recovery_diagnostic_refs import BrokerDiagnosticSourceRefV1
 
@@ -417,6 +427,73 @@ class RejectedCompletionBatchV1(BrokerDTO):
         return self
 
 
+class DeliveryWorkGenesisBatchV1(BrokerDTO):
+    """Closed one-record genesis derived from an already selected V4 completion."""
+
+    kind: Literal["DELIVERY_WORK_GENESIS_V1"] = "DELIVERY_WORK_GENESIS_V1"
+    schema_id: Literal["chiplog.owner-publication.delivery-work-genesis.v1"] = (
+        "chiplog.owner-publication.delivery-work-genesis.v1"
+    )
+    operation: Literal["agent_loop.delivery_work.genesis.v1"] = (
+        "agent_loop.delivery_work.genesis.v1"
+    )
+    identity: PublicationIdentity
+    authentication: WorkerAuthentication
+    expected: AuthoritativeReadManifest
+    selected_decision_id: Identity
+    selected_decision_fingerprint: Digest
+    selected_source: DeliveryWorkSourceV1
+    genesis_command: OwnerCommandBytes
+    complete_records: tuple[OwnerRecordBytes, ...] = Field(min_length=1, max_length=1)
+    complete_batch_fingerprint: Digest
+
+    @model_validator(mode="after")
+    def exact_genesis(self) -> DeliveryWorkGenesisBatchV1:
+        if (
+            len(
+                {
+                    self.identity.tenant_id,
+                    self.expected.tenant_id,
+                    self.selected_source.tenant_id,
+                }
+            )
+            != 1
+            or self.selected_decision_id != self.selected_source.selected_decision_id
+            or self.selected_decision_fingerprint
+            != self.selected_source.selected_decision_fingerprint
+            or self.genesis_command.owner != DELIVERY_WORK_OWNER
+            or self.genesis_command.schema_id != DELIVERY_WORK_GENESIS_COMMAND_SCHEMA
+        ):
+            raise ValueError("delivery work genesis selected source or command differs")
+        command = PrepareDeliveryWorkGenesisV1.model_validate_json(
+            self.genesis_command.canonical_bytes
+        )
+        if (
+            command.canonical_bytes() != self.genesis_command.canonical_bytes
+            or self.genesis_command.fingerprint
+            != hashlib.sha256(self.genesis_command.canonical_bytes).hexdigest()
+            or command
+            != PrepareDeliveryWorkGenesisV1(
+                selected_decision_id=self.selected_decision_id,
+                selected_decision_fingerprint=self.selected_decision_fingerprint,
+                selected_source=self.selected_source,
+            )
+        ):
+            raise ValueError("delivery work genesis command bytes differ")
+        expected = prepare_delivery_work_genesis(self.selected_source)
+        record = self.complete_records[0]
+        if (
+            record.owner != DELIVERY_WORK_OWNER
+            or record.record_kind != "DELIVERY_WORK_STATE"
+            or record.record_id != expected.record_id
+            or record.schema_id != DELIVERY_WORK_SCHEMA
+            or record.canonical_bytes != expected.canonical_bytes()
+            or record.fingerprint != hashlib.sha256(record.canonical_bytes).hexdigest()
+        ):
+            raise ValueError("delivery work genesis record differs")
+        return self
+
+
 RegisteredPublication = Annotated[
     SingleOwnerBatch
     | PlanEffectBatch
@@ -424,7 +501,8 @@ RegisteredPublication = Annotated[
     | CallEffectBatch
     | CompleteDeliveryBatch
     | CompleteDeliveryBatchV2
-    | RejectedCompletionBatchV1,
+    | RejectedCompletionBatchV1
+    | DeliveryWorkGenesisBatchV1,
     Field(discriminator="kind"),
 ]
 

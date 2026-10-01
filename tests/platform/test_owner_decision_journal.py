@@ -9,10 +9,20 @@ from typing import Literal
 import pytest
 
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
+from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+    DELIVERY_WORK_GENESIS_COMMAND_SCHEMA,
+    DELIVERY_WORK_OWNER,
+    DELIVERY_WORK_SCHEMA,
+    DeliveryWorkSourceMemberV1,
+    DeliveryWorkSourceV1,
+    PrepareDeliveryWorkGenesisV1,
+    prepare_delivery_work_genesis,
+)
 from chiplog.composition.h1_historical_selected_sources import _selected_owner_decision
 from chiplog.platform._owner_publication_contracts import (
     AuthoritativeReadManifest,
     CompleteDeliveryBatchV2,
+    DeliveryWorkGenesisBatchV1,
     InvocationProofRef,
     OwnerCommandBytes,
     OwnerRecordBytes,
@@ -21,6 +31,7 @@ from chiplog.platform._owner_publication_contracts import (
 )
 from chiplog.platform._sqlite import EventAppender, FenceAdvanceCommand, SQLiteMaterializer
 from chiplog.platform.authority_reads import capture_authority_storage_state
+from chiplog.platform.delivery_work_genesis_binding_contracts import DeliveryWorkGenesisBindingV1
 from chiplog.platform.h1_delivery_binding_contracts import H1DeliveryBinding
 from chiplog.platform.owner_decision_journal import (
     IndependentOwnerDecisionJournal,
@@ -125,6 +136,291 @@ def _prepared(batch: CompleteDeliveryBatchV2) -> PreparedOwnerPublication:
     )
 
 
+def _genesis(prior) -> tuple[DeliveryWorkGenesisBatchV1, DeliveryWorkGenesisBindingV1]:
+    prior_batch = prior.prepared.request
+    assert type(prior_batch) is CompleteDeliveryBatchV2
+    run, manifest, intent = prior_batch.complete_records
+
+    def source_member(record: OwnerRecordBytes) -> DeliveryWorkSourceMemberV1:
+        return DeliveryWorkSourceMemberV1(
+            owner=record.owner,
+            record_kind=record.record_kind,
+            record_id=record.record_id,
+            schema_id=record.schema_id,
+            canonical_record_bytes=record.canonical_bytes,
+            fingerprint=record.fingerprint,
+        )
+
+    source = DeliveryWorkSourceV1(
+        tenant_id="tenant",
+        intent_id=intent.record_id,
+        selected_decision_id=prior.decision_id,
+        selected_decision_fingerprint=prior.decision_fingerprint,
+        terminal_run=source_member(run),
+        terminal_manifest=source_member(manifest),
+        intent=source_member(intent),
+    )
+    command = PrepareDeliveryWorkGenesisV1(
+        selected_decision_id=prior.decision_id,
+        selected_decision_fingerprint=prior.decision_fingerprint,
+        selected_source=source,
+    )
+    state = prepare_delivery_work_genesis(source)
+    record = OwnerRecordBytes(
+        owner=DELIVERY_WORK_OWNER,
+        record_kind="DELIVERY_WORK_STATE",
+        record_id=state.record_id,
+        schema_id=DELIVERY_WORK_SCHEMA,
+        canonical_bytes=state.canonical_bytes(),
+        fingerprint=digest(state.canonical_bytes()),
+    )
+    batch = DeliveryWorkGenesisBatchV1(
+        identity=PublicationIdentity(
+            tenant_id="tenant",
+            command_id="delivery-work-genesis",
+            command_fingerprint=digest(b"delivery-work-genesis"),
+            canonicalization_version="chiplog.owner-publication.v1",
+        ),
+        authentication=prior_batch.authentication,
+        expected=AuthoritativeReadManifest(
+            tenant_id="tenant",
+            tenant_frontier=1,
+            expected_materialization_commitment=prior.resulting_commitment,
+            registry_head="registry",
+            registry_fingerprint=digest(b"registry"),
+            ordered_heads=(),
+            complete_manifest_fingerprint=digest(b"manifest"),
+        ),
+        selected_decision_id=prior.decision_id,
+        selected_decision_fingerprint=prior.decision_fingerprint,
+        selected_source=source,
+        genesis_command=OwnerCommandBytes(
+            owner=DELIVERY_WORK_OWNER,
+            schema_id=DELIVERY_WORK_GENESIS_COMMAND_SCHEMA,
+            canonical_bytes=command.canonical_bytes(),
+            fingerprint=digest(command.canonical_bytes()),
+        ),
+        complete_records=(record,),
+        complete_batch_fingerprint=digest(b"delivery-work-complete"),
+    )
+    binding = DeliveryWorkGenesisBindingV1(
+        selected_decision_id=prior.decision_id,
+        selected_decision_fingerprint=prior.decision_fingerprint,
+        selected_source=source,
+        request_digest=hashlib.sha256(canonical_owner_publication_bytes(batch)).hexdigest(),
+    )
+    return batch, binding
+
+
+def _h1_batch_with_selected_members(*, applicability_schema: str) -> CompleteDeliveryBatchV2:
+    h1_batch = _h1_batch()
+    return h1_batch.model_copy(
+        update={
+            "authentication": h1_batch.authentication.model_copy(
+                update={"applicability_schema": applicability_schema}
+            ),
+            "complete_records": (
+                h1_batch.complete_records[0].model_copy(update={"record_kind": "Run"}),
+                OwnerRecordBytes(
+                    owner="agent_loop",
+                    record_kind="TERMINAL_MANIFEST",
+                    record_id="manifest",
+                    schema_id="test.manifest.v1",
+                    canonical_bytes=b"manifest",
+                    fingerprint=digest(b"manifest"),
+                ),
+                OwnerRecordBytes(
+                    owner="effects",
+                    record_kind="ExternalActionIntent",
+                    record_id="intent",
+                    schema_id="test.intent.v1",
+                    canonical_bytes=b"intent",
+                    fingerprint=digest(b"intent"),
+                ),
+            ),
+        }
+    )
+
+
+def _v3_genesis_fixture(tmp_path: Path):
+    journal = _journal(tmp_path)
+    prior_batch = _h1_batch_with_selected_members(
+        applicability_schema="chiplog.composition.h1-completion-issuance.v4"
+    )
+    prior = journal.select(_prepared(prior_batch), digest(b"after"))
+    journal.materialized(prior)
+    batch, binding = _genesis(prior)
+    return journal, batch, binding
+
+
+def test_v3_delivery_work_genesis_selected_roundtrips_exact_prior_v4_binding(
+    tmp_path: Path,
+) -> None:
+    journal, batch, binding = _v3_genesis_fixture(tmp_path)
+    prepared = PreparedOwnerPublication(
+        batch,
+        "genesis-issuance",
+        "fence",
+        0,
+        batch.expected.expected_materialization_commitment,
+        delivery_work_genesis_binding=binding,
+    )
+    selected = journal.select(prepared, digest(b"after-genesis"))
+
+    assert b'"schema_id":"chiplog.owner-decision.v3"' in journal._raw.entries()[-1][2]
+    reopened = _journal(tmp_path).lookup("tenant", batch.identity.command_id)
+    assert reopened == selected
+    assert reopened is not None
+    assert reopened.prepared.delivery_work_genesis_binding == binding
+
+
+def test_v3_delivery_work_genesis_rejects_selected_non_v4_predecessor(tmp_path: Path) -> None:
+    journal = _journal(tmp_path)
+    prior = journal.select(
+        _prepared(
+            _h1_batch_with_selected_members(
+                applicability_schema="chiplog.composition.h1-completion-issuance.v1"
+            )
+        ),
+        digest(b"after"),
+    )
+    journal.materialized(prior)
+    batch, binding = _genesis(prior)
+    prepared = PreparedOwnerPublication(
+        batch,
+        "genesis-issuance",
+        "fence",
+        0,
+        batch.expected.expected_materialization_commitment,
+        delivery_work_genesis_binding=binding,
+    )
+
+    with pytest.raises(OwnerJournalIntegrityError):
+        journal.select(prepared, digest(b"after-genesis"))
+    assert len(journal._raw.entries()) == 2
+
+
+def test_v3_delivery_work_genesis_rejects_swapped_terminal_source_roles(tmp_path: Path) -> None:
+    journal, batch, binding = _v3_genesis_fixture(tmp_path)
+    source = DeliveryWorkSourceV1.model_validate(
+        batch.selected_source.model_dump(mode="python")
+        | {
+            "terminal_run": batch.selected_source.terminal_manifest,
+            "terminal_manifest": batch.selected_source.terminal_run,
+        }
+    )
+    command = PrepareDeliveryWorkGenesisV1(
+        selected_decision_id=batch.selected_decision_id,
+        selected_decision_fingerprint=batch.selected_decision_fingerprint,
+        selected_source=source,
+    )
+    state = prepare_delivery_work_genesis(source)
+    record = batch.complete_records[0].model_copy(
+        update={
+            "record_id": state.record_id,
+            "canonical_bytes": state.canonical_bytes(),
+            "fingerprint": digest(state.canonical_bytes()),
+        }
+    )
+    batch = DeliveryWorkGenesisBatchV1.model_validate(
+        batch.model_dump(mode="python")
+        | {
+            "selected_source": source,
+            "genesis_command": OwnerCommandBytes(
+                owner=DELIVERY_WORK_OWNER,
+                schema_id=DELIVERY_WORK_GENESIS_COMMAND_SCHEMA,
+                canonical_bytes=command.canonical_bytes(),
+                fingerprint=digest(command.canonical_bytes()),
+            ),
+            "complete_records": (record,),
+        }
+    )
+    binding = binding.model_copy(
+        update={
+            "selected_source": source,
+            "request_digest": hashlib.sha256(canonical_owner_publication_bytes(batch)).hexdigest(),
+        }
+    )
+    prepared = PreparedOwnerPublication(
+        batch,
+        "genesis-issuance",
+        "fence",
+        0,
+        batch.expected.expected_materialization_commitment,
+        delivery_work_genesis_binding=binding,
+    )
+
+    with pytest.raises(OwnerJournalIntegrityError):
+        journal.select(prepared, digest(b"after-genesis"))
+    assert len(journal._raw.entries()) == 2
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_source",
+        "expected_tenant",
+        "source_tenant",
+        "source",
+        "record",
+        "decision",
+        "unknown_kind",
+    ),
+)
+def test_v3_delivery_work_genesis_mutations_reject_before_or_on_reopen(
+    tmp_path: Path, mutation: str
+) -> None:
+    journal, batch, binding = _v3_genesis_fixture(tmp_path)
+    if mutation == "missing_source":
+        raw = batch.model_dump(mode="json")
+        del raw["selected_source"]
+        with pytest.raises(ValueError):
+            DeliveryWorkGenesisBatchV1.model_validate(raw)
+        return
+    if mutation == "expected_tenant":
+        raw = batch.model_dump(mode="json")
+        raw["expected"]["tenant_id"] = "other-tenant"
+        with pytest.raises(ValueError):
+            DeliveryWorkGenesisBatchV1.model_validate(raw)
+        return
+    if mutation == "source_tenant":
+        raw = batch.model_dump(mode="json")
+        raw["selected_source"]["tenant_id"] = "other-tenant"
+        with pytest.raises(ValueError):
+            DeliveryWorkGenesisBatchV1.model_validate(raw)
+        return
+    if mutation == "source":
+        binding = binding.model_copy(
+            update={
+                "selected_source": binding.selected_source.model_copy(update={"intent_id": "rival"})
+            }
+        )
+    elif mutation == "record":
+        raw = batch.model_dump(mode="json")
+        raw["complete_records"][0]["record_id"] = "delivery-work:bad:g0"
+        with pytest.raises(ValueError):
+            DeliveryWorkGenesisBatchV1.model_validate(raw)
+        return
+    elif mutation == "decision":
+        binding = binding.model_copy(update={"selected_decision_id": "rival"})
+    else:
+        raw = batch.model_dump(mode="json")
+        raw["kind"] = "UNKNOWN"
+        with pytest.raises(ValueError):
+            type(batch).model_validate(raw)
+        return
+    prepared = PreparedOwnerPublication(
+        batch,
+        "genesis-issuance",
+        "fence",
+        0,
+        batch.expected.expected_materialization_commitment,
+        delivery_work_genesis_binding=binding,
+    )
+    with pytest.raises(OwnerJournalIntegrityError):
+        journal.select(prepared, digest(b"after-genesis"))
+
+
 def test_v1_selected_golden_bytes_are_unchanged(tmp_path: Path) -> None:
     journal = _journal(tmp_path)
     before = digest(b"before")
@@ -201,7 +497,8 @@ def test_v1_selected_h1_request_without_binding_is_rejected_on_reopen(
 
 @pytest.mark.parametrize("version", ("v2", "v4"))
 def test_v2_selected_accepts_registered_h1_applicability_with_exact_binding(
-    tmp_path: Path, version: str,
+    tmp_path: Path,
+    version: str,
 ) -> None:
     batch = _h1_batch()
     batch = batch.model_copy(
