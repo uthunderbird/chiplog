@@ -56,6 +56,7 @@ BrokerOperation = Literal[
     "scheduler.rollover",
     "effects.publish_recovery_intent",
     "effects.authorize",
+    "effects.authorize_scoped_delivery_v3",
     "effects.before_send",
     "effects.commit_send",
     "effects.record_evidence",

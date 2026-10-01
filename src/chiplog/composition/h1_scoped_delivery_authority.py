@@ -28,10 +28,12 @@ from chiplog.composition.h1_completion_exchange_registry import (
     H1HistoricalPreparedDeliveryCapture,
     H1PreparedDeliveryProjection,
 )
+from chiplog.composition.h1_j7_current_scope_exchange import H1J7CurrentScopeExchangeV1
 from chiplog.composition.h1_selected_output_sources import (
     H1SelectedOutputCapture,
     H1SelectedOutputSources,
 )
+from chiplog.platform.broker import PublicPortSuccess
 
 if TYPE_CHECKING:
     from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
@@ -183,6 +185,33 @@ class H1ScopedDeliveryAuthorityReader:
             record = self._issued_record_held(capture)
             self._verify_record_held(record)
             return capture
+
+    def export_current_scope_exchange(
+        self, capture: H1ScopedDeliveryAuthorityCapture
+    ) -> H1J7CurrentScopeExchangeV1:
+        """Copy the exact, currently revalidated J7 owner exchange as inert evidence."""
+        with self._runtime._authority_gate().hold():
+            record = self._issued_record_held(capture)
+            self._verify_record_held(record)
+            wire = record.fresh_scope_wire
+            if type(getattr(wire, "returned", None)) is not PublicPortSuccess:
+                raise H1ScopedDeliveryAuthorityViolation(
+                    "fresh H1 scope response is not successful"
+                )
+            try:
+                exchange = H1J7CurrentScopeExchangeV1(
+                    request=record.fresh_scope_request,
+                    result=record.fresh_scope_result,
+                    sent=wire.sent,
+                    returned=wire.returned,
+                    sent_at_ns=wire.sent_at_ns,
+                    returned_at_ns=wire.returned_at_ns,
+                )
+                return H1J7CurrentScopeExchangeV1.model_validate_json(exchange.canonical_bytes())
+            except Exception as error:
+                raise H1ScopedDeliveryAuthorityViolation(
+                    "fresh H1 scope exchange cannot be retained"
+                ) from error
 
     async def refresh(
         self, capture: H1ScopedDeliveryAuthorityCapture
