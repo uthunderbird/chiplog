@@ -10,6 +10,13 @@ from chiplog.capabilities.agent_loop.completion_owner_record_contracts import (
     make_terminal_manifest_member,
     make_terminal_run_member,
 )
+from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+    DELIVERY_WORK_SCHEMA,
+    DeliveryWorkSourceMemberV1,
+    DeliveryWorkSourceV1,
+    delivery_work_record_id,
+    delivery_work_subject_id,
+)
 from chiplog.capabilities.effects.scoped_intent_record_contracts import (
     ScopedIntentCanonicalMemberV3,
     make_scoped_intent_member,
@@ -29,10 +36,18 @@ class H1DeliveryWorkSourceHold(ValueError):
     pass
 
 
-def require_delivery_work_absent(rows: tuple[OwnerJournalSqlRecord, ...]) -> None:
-    """Unknown versions and owners in this record family also prevent genesis."""
-    if any(row.schema.startswith(WORK_SCHEMA_PREFIX) for row in rows):
-        raise H1DeliveryWorkSourceHold("delivery-work state is present or unknown")
+def require_delivery_work_absent(
+    rows: tuple[OwnerJournalSqlRecord, ...], reserved_record_ids: tuple[str, str]
+) -> None:
+    """Only this subject is reserved; any occupant of its IDs fails closed."""
+    if len(set(reserved_record_ids)) != 2 or any(not value for value in reserved_record_ids):
+        raise TypeError("delivery work reservation is invalid")
+    if any(
+        row.record_id in reserved_record_ids
+        or (row.schema.startswith(WORK_SCHEMA_PREFIX) and row.schema != DELIVERY_WORK_SCHEMA)
+        for row in rows
+    ):
+        raise H1DeliveryWorkSourceHold("delivery-work subject record is present or unknown")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +63,31 @@ class SelectedDeliveryWorkSourceV1:
     terminal_run: OwnerRecordBytes
     terminal_manifest: OwnerRecordBytes
     intent: OwnerRecordBytes
+    subject_id: str
+    reserved_record_ids: tuple[str, str]
+
+    def owner_source(self) -> DeliveryWorkSourceV1:
+        """Project only the authenticated immutable inputs into the owner DTO."""
+
+        def member(value: OwnerRecordBytes) -> DeliveryWorkSourceMemberV1:
+            return DeliveryWorkSourceMemberV1(
+                owner=value.owner,
+                record_kind=value.record_kind,
+                record_id=value.record_id,
+                schema_id=value.schema_id,
+                canonical_record_bytes=value.canonical_bytes,
+                fingerprint=value.fingerprint,
+            )
+
+        return DeliveryWorkSourceV1(
+            tenant_id=self.tenant_id,
+            intent_id=self.intent.record_id,
+            selected_decision_id=self.decision_id,
+            selected_decision_fingerprint=self.decision_fingerprint,
+            terminal_run=member(self.terminal_run),
+            terminal_manifest=member(self.terminal_manifest),
+            intent=member(self.intent),
+        )
 
 
 class H1DeliveryWorkSources:
@@ -115,10 +155,17 @@ class H1DeliveryWorkSources:
                         (batch.identity.tenant_id,),
                     )
                 )
-            require_delivery_work_absent(rows)
+            subject_id = delivery_work_subject_id(batch.identity.tenant_id, wanted[2].record_id)
+            reserved_record_ids = (
+                delivery_work_record_id(subject_id, 0),
+                delivery_work_record_id(subject_id, 1),
+            )
+            require_delivery_work_absent(rows, reserved_record_ids)
             return SelectedDeliveryWorkSourceV1(
                 batch.identity.tenant_id,
                 decision.decision_id,
                 decision.decision_fingerprint,
                 *wanted,
+                subject_id,
+                reserved_record_ids,
             )
