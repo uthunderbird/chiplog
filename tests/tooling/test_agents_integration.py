@@ -336,6 +336,10 @@ def test_new_retro_supports_explicit_collision_safe_ids(tmp_path: Path) -> None:
     assert base_match is not None
     base_path = Path(base_match.group(1))
     base_bytes = base_path.read_bytes()
+    frontmatter = base_path.read_text().split("---", 2)[1]
+    assert re.search(r"^trigger: cadence$", frontmatter, re.M)
+    for field in ("outcome", "rule", "reason"):
+        assert re.search(rf"^{field}:$", frontmatter, re.M)
 
     collision = subprocess.run(
         ["sh", str(scripts / "new-retro.sh")], capture_output=True, text=True, check=False

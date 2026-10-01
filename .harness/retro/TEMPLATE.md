@@ -1,9 +1,13 @@
 ---
 date: YYYY-MM-DD
-trigger: cadence          # cadence | incident
-outcome:                  # change | skip
-rule:                     # id правила, если outcome: change
-reason:                   # почему нет, если outcome: skip
+# trigger: cadence | incident
+trigger: cadence
+# outcome: change | skip
+outcome:
+# id правила, если outcome: change
+rule:
+# почему нет, если outcome: skip
+reason:
 ---
 
 ## Что перечитано
