@@ -3,12 +3,16 @@
 import pytest
 
 from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+    DELIVERY_WORK_CLAIM_COMMAND_SCHEMA,
     DELIVERY_WORK_OWNER,
+    DeliveryWorkClaimProjectionV1,
     DeliveryWorkSourceMemberV1,
     DeliveryWorkSourceV1,
+    PrepareDeliveryWorkClaimV1,
     delivery_work_record_id,
     delivery_work_subject_id,
     prepare_delivery_work_claim,
+    prepare_delivery_work_claim_projection,
     prepare_delivery_work_genesis,
 )
 
@@ -112,3 +116,37 @@ def test_intent_identity_must_match_the_exact_retained_effects_member() -> None:
         DeliveryWorkSourceV1.model_validate(
             _source().model_dump(mode="python") | {"intent_id": "rival-intent"}
         )
+
+
+def test_first_claim_command_carries_only_exact_authority_free_projection() -> None:
+    source = _source()
+    predecessor = prepare_delivery_work_genesis(source)
+    projection = prepare_delivery_work_claim_projection(source, predecessor)
+    command = PrepareDeliveryWorkClaimV1(projection=projection)
+
+    assert command.schema_id == DELIVERY_WORK_CLAIM_COMMAND_SCHEMA
+    assert projection.predecessor_head == predecessor.head
+    assert projection.record_id == delivery_work_record_id(source.subject_id, 1)
+    assert set(command.model_dump()) == {"schema_id", "projection"}
+    assert command.projection.predecessor.holder_id is None
+    assert command.projection.predecessor.trusted_clock_ns is None
+
+
+def test_first_claim_projection_rejects_a_substituted_or_non_genesis_predecessor() -> None:
+    source = _source()
+    predecessor = prepare_delivery_work_genesis(source)
+    projection = prepare_delivery_work_claim_projection(source, predecessor)
+    with pytest.raises(ValueError, match="exact unleased genesis"):
+        DeliveryWorkClaimProjectionV1.model_validate(
+            projection.model_dump(mode="python") | {"predecessor_head": "foreign-head"}
+        )
+    claimed = prepare_delivery_work_claim(
+        source,
+        predecessor,
+        holder_id="h",
+        session_id="s",
+        trusted_clock_ns=1,
+        lease_expires_at_ns=2,
+    )
+    with pytest.raises(ValueError, match="exact unleased genesis"):
+        prepare_delivery_work_claim_projection(source, claimed)

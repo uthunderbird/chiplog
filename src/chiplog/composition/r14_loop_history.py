@@ -95,6 +95,7 @@ from chiplog.composition.r14_fanout_records import (
 from chiplog.composition.r14_h1_workspace_issuance import verify_h1_original_workspace
 from chiplog.platform._owner_publication_contracts import (
     CompleteDeliveryBatchV2,
+    DeliveryWorkClaimBatchV1,
     DeliveryWorkGenesisBatchV1,
 )
 from chiplog.platform._sqlite import PhysicalPublicationCommand
@@ -448,14 +449,16 @@ def _read_call_history(
                 expected_publications: set[tuple[str, str]] = set()
                 for owner_decision in runtime._owner_decisions().snapshot().decisions:
                     owner_request = owner_decision.prepared.request
-                    if not isinstance(owner_request, DeliveryWorkGenesisBatchV1):
+                    if not isinstance(
+                        owner_request, (DeliveryWorkGenesisBatchV1, DeliveryWorkClaimBatchV1)
+                    ):
                         continue
                     owner_command = runtime._owner_command(owner_decision)
                     state = inspect_publication(
                         connection, owner_command, owner_decision.tenant_commit_sequence
                     )
                     if state == "CONFLICT" or (state == "ABSENT" and not selected_only):
-                        raise ValueError("selected delivery-work genesis physical state differs")
+                        raise ValueError("selected delivery-work physical state differs")
                     if state == "COMPLETE":
                         expected_ids.update(
                             row.record_id for row in owner_command.records if row.owner == OWNER
@@ -1128,8 +1131,27 @@ def validate_selected_h1_completions(runtime: R14PlanningRuntime) -> None:
 
 
 def validate_selected_delivery_work_genesis(runtime: R14PlanningRuntime) -> None:
-    """Reject partial or foreign GENESIS before startup owner recovery writes SQL."""
-    for decision in runtime._owner_decisions().snapshot().decisions:
+    """Reject partial, orphan, or foreign g0/g1 before startup recovery writes SQL."""
+    selected = runtime._owner_decisions().snapshot().decisions
+    complete_claim_ids: set[str] = set()
+    for decision in selected:
+        batch = decision.prepared.request
+        if not isinstance(batch, DeliveryWorkClaimBatchV1):
+            continue
+        try:
+            command = runtime._owner_command(decision)
+            with read_connection(runtime._database) as connection:
+                state = inspect_publication(connection, command, decision.tenant_commit_sequence)
+            if state == "CONFLICT":
+                raise ValueError("selected delivery-work claim has corrupt physical members")
+            if state == "COMPLETE":
+                complete_claim_ids.add(batch.complete_records[0].record_id)
+        except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
+            raise LoopIntegrityError(
+                f"operation=startup_delivery_work_claim tenant={runtime._tenant_id} "
+                f"record_id={batch.identity.command_id}"
+            ) from error
+    for decision in selected:
         batch = decision.prepared.request
         if not isinstance(batch, DeliveryWorkGenesisBatchV1):
             continue
@@ -1144,13 +1166,31 @@ def validate_selected_delivery_work_genesis(runtime: R14PlanningRuntime) -> None
                     "SELECT 1 FROM records WHERE tenant_id=? AND record_id=?",
                     (batch.identity.tenant_id, subject_id + "g1"),
                 ).fetchone()
-            if state == "CONFLICT" or occupied is not None:
+            if state == "CONFLICT" or (
+                occupied is not None and subject_id + "g1" not in complete_claim_ids
+            ):
                 raise ValueError("selected delivery-work genesis has corrupt physical members")
         except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
             raise LoopIntegrityError(
                 f"operation=startup_delivery_work_genesis tenant={runtime._tenant_id} "
                 f"record_id={batch.identity.command_id}"
             ) from error
+    try:
+        with read_connection(runtime._database) as connection:
+            physical_claim_ids = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT record_id FROM records WHERE tenant_id=? "
+                    "AND record_id LIKE 'delivery-work:%:g1'",
+                    (runtime._tenant_id,),
+                )
+            }
+        if physical_claim_ids != complete_claim_ids:
+            raise ValueError("delivery-work claim physical membership differs")
+    except (ValueError, TypeError, sqlite3.Error) as error:
+        raise LoopIntegrityError(
+            f"operation=startup_delivery_work_claim tenant={runtime._tenant_id} record_id=all"
+        ) from error
 
 
 def read_loop_history(

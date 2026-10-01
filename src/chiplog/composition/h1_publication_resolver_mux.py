@@ -14,6 +14,7 @@ from chiplog.platform._sqlite import (
 
 _COMPLETION_OPERATION = "agent_loop.complete_acceptance.v2"
 _GENESIS_OPERATION = "agent_loop.delivery_work.genesis.v1"
+_CLAIM_OPERATION = "agent_loop.delivery_work.claim.v1"
 
 
 class _Resolver(Protocol):
@@ -26,11 +27,12 @@ class _Resolver(Protocol):
 
 
 class H1PublicationResolverMux:
-    """Dispatch only the two closed H1 writer operations before SQL mutation."""
+    """Dispatch the closed H1 writer operations before SQL mutation."""
 
-    def __init__(self, completion: _Resolver, genesis: _Resolver) -> None:
+    def __init__(self, completion: _Resolver, genesis: _Resolver, claim: _Resolver) -> None:
         self._completion = completion
         self._genesis = genesis
+        self._claim = claim
 
     def verify(
         self,
@@ -42,4 +44,6 @@ class H1PublicationResolverMux:
             return self._completion.verify(command, mode, connection)
         if command.operation_kind == _GENESIS_OPERATION:
             return self._genesis.verify(command, mode, connection)
+        if command.operation_kind == _CLAIM_OPERATION:
+            return self._claim.verify(command, mode, connection)
         raise StoreAdmissionError("H1 publication resolver operation is not registered")

@@ -17,6 +17,7 @@ from .recovery_contracts import Digest, Identity, RecoveryDTO
 DELIVERY_WORK_SCHEMA = "chiplog.delivery-work.subject.v1"
 DELIVERY_WORK_OWNER = "agent_loop"
 DELIVERY_WORK_GENESIS_COMMAND_SCHEMA = "chiplog.agent-loop.prepare-delivery-work-genesis.v1"
+DELIVERY_WORK_CLAIM_COMMAND_SCHEMA = "chiplog.agent-loop.prepare-delivery-work-claim.v1"
 
 
 def _digest(value: bytes) -> str:
@@ -167,6 +168,39 @@ class PrepareDeliveryWorkGenesisV1(RecoveryDTO):
         return self
 
 
+class DeliveryWorkClaimProjectionV1(RecoveryDTO):
+    """Authority-free g0-to-g1 shape; lease facts arrive through broker binding."""
+
+    selected_source: DeliveryWorkSourceV1
+    predecessor: DeliveryWorkStateV1
+    predecessor_head: Identity
+    subject_id: Identity
+    record_id: Identity
+
+    @model_validator(mode="after")
+    def exact_first_claim_shape(self) -> DeliveryWorkClaimProjectionV1:
+        if (
+            self.predecessor.selected_source != self.selected_source
+            or self.predecessor_head != self.predecessor.head
+            or self.subject_id != self.selected_source.subject_id
+            or self.record_id != delivery_work_record_id(self.subject_id, 1)
+            or self.predecessor.subject_id != self.subject_id
+            or self.predecessor.generation != 0
+            or self.predecessor.state != "UNLEASED"
+        ):
+            raise ValueError("delivery work claim projection differs from exact unleased genesis")
+        return self
+
+
+class PrepareDeliveryWorkClaimV1(RecoveryDTO):
+    """Versioned owner command with no claimant, session, clock, or lease authority."""
+
+    schema_id: Literal["chiplog.agent-loop.prepare-delivery-work-claim.v1"] = (
+        DELIVERY_WORK_CLAIM_COMMAND_SCHEMA
+    )
+    projection: DeliveryWorkClaimProjectionV1
+
+
 def prepare_delivery_work_genesis(source: DeliveryWorkSourceV1) -> DeliveryWorkStateV1:
     """Prepare the only generation-zero state from exact selected V4 source bytes."""
     source = DeliveryWorkSourceV1.model_validate_json(source.canonical_bytes())
@@ -177,6 +211,21 @@ def prepare_delivery_work_genesis(source: DeliveryWorkSourceV1) -> DeliveryWorkS
         generation=0,
         state="UNLEASED",
         selected_source=source,
+    )
+
+
+def prepare_delivery_work_claim_projection(
+    source: DeliveryWorkSourceV1, predecessor: DeliveryWorkStateV1
+) -> DeliveryWorkClaimProjectionV1:
+    """Project the immutable first-claim inputs without inventing lease authority."""
+    source = DeliveryWorkSourceV1.model_validate_json(source.canonical_bytes())
+    predecessor = DeliveryWorkStateV1.model_validate_json(predecessor.canonical_bytes())
+    return DeliveryWorkClaimProjectionV1(
+        selected_source=source,
+        predecessor=predecessor,
+        predecessor_head=predecessor.head,
+        subject_id=source.subject_id,
+        record_id=delivery_work_record_id(source.subject_id, 1),
     )
 
 

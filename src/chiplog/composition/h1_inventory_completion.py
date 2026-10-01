@@ -92,7 +92,7 @@ REGISTRATIONS: tuple[H1LeafRegistration, ...] = (
         _AGENT_LOOP,
         DELIVERY_WORK_SCHEMA,
         "DELIVERY_WORK_STATE",
-        "delivery-work-genesis-v1",
+        "delivery-work-state-v1",
     ),
     *(
         H1LeafRegistration("PHYSICAL", _AGENT_LOOP, schema, None, "post-terminal-v1")
@@ -227,10 +227,14 @@ def _scoped_effects(item: H1RawInventoryItem) -> None:
         raise _failure(item, "CORRUPT") from error
 
 
-def _delivery_work_genesis(item: H1RawInventoryItem) -> None:
+def _delivery_work_state(item: H1RawInventoryItem) -> None:
     try:
         record = DeliveryWorkStateV1.model_validate_json(item.raw)
-        expected = prepare_delivery_work_genesis(record.selected_source)
+        expected = (
+            prepare_delivery_work_genesis(record.selected_source)
+            if record.generation == 0
+            else record
+        )
     except ValueError as error:
         raise _failure(item, "CORRUPT") from error
     if (
@@ -266,7 +270,7 @@ def decode_h1_completion_scope(
     elif item.schema == H1_SCOPED_INTENT_SCHEMA:
         _scoped_effects(item)
     elif item.schema == DELIVERY_WORK_SCHEMA:
-        _delivery_work_genesis(item)
+        _delivery_work_state(item)
     else:  # pragma: no cover - closed registrations above
         raise _failure(item, "UNSUPPORTED")
     record = H1ScopeKey(item.tenant, "record", item.record_id or "", item.fingerprint)

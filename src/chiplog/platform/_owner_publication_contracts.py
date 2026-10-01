@@ -12,13 +12,16 @@ proves none of it.
 import hashlib
 from typing import Annotated, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+    DELIVERY_WORK_CLAIM_COMMAND_SCHEMA,
     DELIVERY_WORK_GENESIS_COMMAND_SCHEMA,
     DELIVERY_WORK_OWNER,
     DELIVERY_WORK_SCHEMA,
     DeliveryWorkSourceV1,
+    DeliveryWorkStateV1,
+    PrepareDeliveryWorkClaimV1,
     PrepareDeliveryWorkGenesisV1,
     prepare_delivery_work_genesis,
 )
@@ -494,6 +497,78 @@ class DeliveryWorkGenesisBatchV1(BrokerDTO):
         return self
 
 
+DELIVERY_WORK_CLAIM_OPERATION = "agent_loop.delivery_work.claim.v1"
+
+
+def decode_delivery_work_claim_command(
+    operation: str, command: OwnerCommandBytes
+) -> PrepareDeliveryWorkClaimV1:
+    """Accept only the canonical agent-loop command on its fixed operation route."""
+    if (
+        operation != DELIVERY_WORK_CLAIM_OPERATION
+        or command.owner != DELIVERY_WORK_OWNER
+        or command.schema_id != DELIVERY_WORK_CLAIM_COMMAND_SCHEMA
+        or command.fingerprint != hashlib.sha256(command.canonical_bytes).hexdigest()
+    ):
+        raise ValueError("delivery work claim command route, role, schema, or digest differs")
+    try:
+        decoded = PrepareDeliveryWorkClaimV1.model_validate_json(command.canonical_bytes)
+    except ValidationError as error:
+        raise ValueError("delivery work claim command bytes are invalid") from error
+    if decoded.canonical_bytes() != command.canonical_bytes:
+        raise ValueError("delivery work claim command bytes are not canonical")
+    return decoded
+
+
+class DeliveryWorkClaimBatchV1(BrokerDTO):
+    """One descriptive g1 record; the broker binding authenticates its lease facts."""
+
+    kind: Literal["DELIVERY_WORK_CLAIM_V1"] = "DELIVERY_WORK_CLAIM_V1"
+    schema_id: Literal["chiplog.owner-publication.delivery-work-claim.v1"] = (
+        "chiplog.owner-publication.delivery-work-claim.v1"
+    )
+    operation: Literal["agent_loop.delivery_work.claim.v1"] = DELIVERY_WORK_CLAIM_OPERATION
+    identity: PublicationIdentity
+    authentication: WorkerAuthentication
+    expected: AuthoritativeReadManifest
+    claim_command: OwnerCommandBytes
+    complete_records: tuple[OwnerRecordBytes, ...] = Field(min_length=1, max_length=1)
+    complete_batch_fingerprint: Digest
+
+    @model_validator(mode="after")
+    def descriptive_record_has_exact_authority_free_projection(self) -> DeliveryWorkClaimBatchV1:
+        projection = decode_delivery_work_claim_command(
+            self.operation, self.claim_command
+        ).projection
+        record = self.complete_records[0]
+        if (
+            self.identity.tenant_id != projection.selected_source.tenant_id
+            or self.expected.tenant_id != self.identity.tenant_id
+            or self.identity.command_fingerprint != self.claim_command.fingerprint
+            or record.owner != DELIVERY_WORK_OWNER
+            or record.record_kind != "DELIVERY_WORK_STATE"
+            or record.record_id != projection.record_id
+            or record.schema_id != DELIVERY_WORK_SCHEMA
+            or record.fingerprint != hashlib.sha256(record.canonical_bytes).hexdigest()
+        ):
+            raise ValueError("delivery work claim batch projection differs")
+        try:
+            state = DeliveryWorkStateV1.model_validate_json(record.canonical_bytes)
+        except ValidationError as error:
+            raise ValueError("delivery work claim state bytes are invalid") from error
+        if (
+            state.canonical_bytes() != record.canonical_bytes
+            or state.selected_source != projection.selected_source
+            or state.predecessor_head != projection.predecessor_head
+            or state.subject_id != projection.subject_id
+            or state.record_id != projection.record_id
+            or state.generation != 1
+            or state.state != "CLAIMED"
+        ):
+            raise ValueError("delivery work claim state differs from command projection")
+        return self
+
+
 RegisteredPublication = Annotated[
     SingleOwnerBatch
     | PlanEffectBatch
@@ -502,7 +577,8 @@ RegisteredPublication = Annotated[
     | CompleteDeliveryBatch
     | CompleteDeliveryBatchV2
     | RejectedCompletionBatchV1
-    | DeliveryWorkGenesisBatchV1,
+    | DeliveryWorkGenesisBatchV1
+    | DeliveryWorkClaimBatchV1,
     Field(discriminator="kind"),
 ]
 
@@ -549,6 +625,7 @@ class ExactReplayQuery(BrokerDTO):
             "agent_loop.complete_acceptance.v2",
             "agent_loop.reject_completion.v1",
             "agent_loop.delivery_work.genesis.v1",
+            "agent_loop.delivery_work.claim.v1",
         ]
     )
     current_invocation: InvocationProofRef

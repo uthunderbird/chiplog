@@ -307,7 +307,11 @@ def _reconcile_current_owner_cut(
     from chiplog.composition.h1_inventory_completion import H1CompletionInventoryCohort
     from chiplog.platform._owner_publication_contracts import (
         CompleteDeliveryBatchV2,
+        DeliveryWorkClaimBatchV1,
         DeliveryWorkGenesisBatchV1,
+    )
+    from chiplog.platform.delivery_work_claim_binding_contracts import (
+        validate_delivery_work_claim_binding,
     )
     from chiplog.platform.owner_publications import source_commands
 
@@ -416,6 +420,84 @@ def _reconcile_current_owner_cut(
                 if record_id in cohorts:
                     raise ValueError("completion cohorts share a record ID")
                 cohorts[record_id] = cohort
+        for selected in owner_snapshot.decisions:
+            batch = selected.prepared.request
+            if type(batch) is not DeliveryWorkClaimBatchV1:
+                continue
+            evidence = cut_by_command.get(batch.identity.command_id)
+            if evidence is None or not evidence.materialized:
+                continue
+            binding = selected.prepared.delivery_work_claim_binding
+            if binding is None:
+                raise ValueError("claim cohort lacks selected binding")
+            validate_delivery_work_claim_binding(batch, binding)
+            if (
+                evidence.decision_id != selected.decision_id
+                or evidence.decision_fingerprint != selected.decision_fingerprint
+                or evidence.batch_kind != batch.kind
+                or evidence.tenant_commit_sequence != selected.tenant_commit_sequence
+                or evidence.source_command_bytes
+                != tuple(command.canonical_bytes for command in source_commands(batch))
+                or evidence.member_bytes
+                != tuple(record.canonical_bytes for record in batch.complete_records)
+            ):
+                raise ValueError("claim cohort differs from reconciled owner cut")
+            genesis = tuple(
+                item
+                for item in owner_snapshot.decisions
+                if item.decision_id == binding.genesis_decision_id
+                and item.decision_fingerprint == binding.genesis_decision_fingerprint
+            )
+            if (
+                len(genesis) != 1
+                or type(genesis[0].prepared.request) is not DeliveryWorkGenesisBatchV1
+            ):
+                raise ValueError("claim cohort selected genesis is absent")
+            genesis_batch = genesis[0].prepared.request
+            genesis_evidence = cut_by_command.get(genesis_batch.identity.command_id)
+            if (
+                genesis_evidence is None
+                or not genesis_evidence.materialized
+                or binding.selected_source != genesis_batch.selected_source
+                or genesis_batch.complete_records[0].canonical_bytes
+                != binding.claim_projection.predecessor.canonical_bytes()
+            ):
+                raise ValueError("claim cohort genesis differs")
+            completions = tuple(
+                item
+                for item in owner_snapshot.decisions
+                if item.decision_id == genesis_batch.selected_decision_id
+                and item.decision_fingerprint == genesis_batch.selected_decision_fingerprint
+            )
+            if (
+                len(completions) != 1
+                or type(completions[0].prepared.request) is not CompleteDeliveryBatchV2
+            ):
+                raise ValueError("claim cohort selected V4 predecessor is absent")
+            completion_batch = completions[0].prepared.request
+            completion_evidence = cut_by_command.get(completion_batch.identity.command_id)
+            if completion_evidence is None or not completion_evidence.materialized:
+                raise ValueError("claim cohort selected V4 predecessor is unmaterialized")
+            issuance = decode_h1_completion_issuance(completion_batch)
+            cohort = H1CompletionInventoryCohort(
+                issuance.assembly.original_completion_request.run.run_id,
+                {
+                    record.record_id: (
+                        record.owner,
+                        record.schema_id,
+                        record.canonical_bytes,
+                        record.fingerprint,
+                    )
+                    for record in batch.complete_records
+                },
+            )
+            if len(cohort.members) != 1:
+                raise ValueError("claim cohort has wrong member count")
+            completion_commands.add(evidence.command_id)
+            record_id = batch.complete_records[0].record_id
+            if record_id in cohorts:
+                raise ValueError("completion cohorts share a record ID")
+            cohorts[record_id] = cohort
     except (AttributeError, TypeError, ValueError) as error:
         raise H1OwnerInventoryFailure.corrupt(
             family="COMPLETION", owner="owner-journal", schema="cohort", locator="decisions"

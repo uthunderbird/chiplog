@@ -48,6 +48,7 @@ OWNER_BATCH_KINDS = frozenset(
         "COMPLETE_DELIVERY_ATOMIC_V2",
         "REJECTED_COMPLETION_ATOMIC_V1",
         "DELIVERY_WORK_GENESIS_V1",
+        "DELIVERY_WORK_CLAIM_V1",
     }
 )
 OWNER_PUBLICATION_OPERATIONS = frozenset(
@@ -55,6 +56,7 @@ OWNER_PUBLICATION_OPERATIONS = frozenset(
         *get_args(BrokerOperation),
         "effects.publish_plan_effect.v2",
         "agent_loop.delivery_work.genesis.v1",
+        "agent_loop.delivery_work.claim.v1",
     )
 )
 _REGISTERED_PUBLICATION: TypeAdapter[RegisteredPublication] = TypeAdapter(RegisteredPublication)

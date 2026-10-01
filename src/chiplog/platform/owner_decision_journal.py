@@ -12,6 +12,7 @@ from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJo
 from chiplog.platform._owner_publication_contracts import (
     BrokerDTO,
     CompleteDeliveryBatchV2,
+    DeliveryWorkGenesisBatchV1,
     Digest,
     Identity,
     OwnerCommandBytes,
@@ -20,6 +21,11 @@ from chiplog.platform._owner_publication_contracts import (
     UInt64,
 )
 from chiplog.platform.authority_gate import AuthorityGate
+from chiplog.platform.delivery_work_claim_binding_contracts import (
+    DeliveryWorkClaimBatchV1,
+    DeliveryWorkClaimBindingV1,
+    validate_delivery_work_claim_binding,
+)
 from chiplog.platform.delivery_work_genesis_binding_contracts import DeliveryWorkGenesisBindingV1
 from chiplog.platform.h1_delivery_binding_contracts import H1DeliveryBinding
 from chiplog.platform.owner_publications import (
@@ -82,12 +88,25 @@ class _SelectedV3(BrokerDTO):
     delivery_work_genesis_binding: DeliveryWorkGenesisBindingV1
 
 
-type _Entry = _Selected | _Materialized | _SelectedV2 | _SelectedV3
+class _SelectedV4(BrokerDTO):
+    kind: Literal["SELECTED"] = "SELECTED"
+    schema_id: Literal["chiplog.owner-decision.v4"] = "chiplog.owner-decision.v4"
+    request: RegisteredPublication
+    issuance_id: Identity
+    fence_generation: Identity
+    fence_frontier: UInt64
+    predecessor_commitment: Digest
+    resulting_commitment: Digest
+    delivery_work_claim_binding: DeliveryWorkClaimBindingV1
+
+
+type _Entry = _Selected | _Materialized | _SelectedV2 | _SelectedV3 | _SelectedV4
 _CODECS: dict[tuple[str, str], TypeAdapter[_Entry]] = {
     ("chiplog.owner-decision.v1", "SELECTED"): TypeAdapter(_Selected),
     ("chiplog.owner-decision.v1", "MATERIALIZED"): TypeAdapter(_Materialized),
     ("chiplog.owner-decision.v2", "SELECTED"): TypeAdapter(_SelectedV2),
     ("chiplog.owner-decision.v3", "SELECTED"): TypeAdapter(_SelectedV3),
+    ("chiplog.owner-decision.v4", "SELECTED"): TypeAdapter(_SelectedV4),
 }
 
 _H1_COMPLETION_ISSUANCE_SCHEMAS = frozenset(
@@ -161,9 +180,15 @@ def _is_delivery_work_genesis(request: RegisteredPublication) -> bool:
     return request.kind == "DELIVERY_WORK_GENESIS_V1"
 
 
+def _is_delivery_work_claim(request: RegisteredPublication) -> bool:
+    return request.kind == "DELIVERY_WORK_CLAIM_V1"
+
+
 def _validate_v3_binding(entry: _SelectedV3) -> None:
     request = entry.request
     binding = entry.delivery_work_genesis_binding
+    if not isinstance(request, DeliveryWorkGenesisBatchV1):
+        raise ValueError("V3 selected delivery-work genesis request differs")
     if (
         not _is_delivery_work_genesis(request)
         or binding.selected_decision_id != request.selected_decision_id
@@ -223,17 +248,80 @@ def _validate_v3_selected_predecessor(
             raise ValueError("genesis binding selected source role differs")
 
 
-def _validate_selected_envelope(entry: _Selected | _SelectedV2 | _SelectedV3) -> None:
+def _validate_v4_binding(entry: _SelectedV4) -> None:
+    if not isinstance(entry.request, DeliveryWorkClaimBatchV1):
+        raise ValueError("V4 selected delivery-work claim request differs")
+    validate_delivery_work_claim_binding(entry.request, entry.delivery_work_claim_binding)
+
+
+def _validate_v4_selected_predecessor(
+    claim: DeliveryWorkClaimBatchV1,
+    binding: DeliveryWorkClaimBindingV1,
+    selected: dict[str, SelectedOwnerDecision],
+    materialized: set[str] | frozenset[str],
+) -> None:
+    matches = tuple(
+        decision
+        for decision in selected.values()
+        if decision.decision_id == binding.genesis_decision_id
+        and decision.decision_fingerprint == binding.genesis_decision_fingerprint
+    )
+    if len(matches) != 1:
+        raise ValueError("claim binding selected genesis decision is absent or ambiguous")
+    genesis = matches[0]
+    genesis_request = genesis.prepared.request
+    genesis_binding = genesis.prepared.delivery_work_genesis_binding
+    if (
+        not _is_delivery_work_genesis(genesis_request)
+        or genesis_binding is None
+        or genesis_request.identity.command_id not in materialized
+        or genesis_binding.selected_source != binding.selected_source
+        or len(genesis_request.complete_records) != 1
+    ):
+        raise ValueError("claim binding selected materialized genesis differs")
+    predecessor = binding.claim_projection.predecessor
+    record = genesis_request.complete_records[0]
+    if (
+        predecessor.selected_source != binding.selected_source
+        or record.canonical_bytes != predecessor.canonical_bytes()
+        or record.fingerprint != hashlib.sha256(record.canonical_bytes).hexdigest()
+    ):
+        raise ValueError("claim binding exact genesis state differs")
+    expected_heads = tuple(
+        observed
+        for observed in claim.expected.ordered_heads
+        if observed.kind == "PRESENT"
+        and observed.head.owner == record.owner
+        and observed.head.record_kind == record.record_kind
+        and observed.head.subject_id == predecessor.subject_id
+        and observed.head.record_id == record.record_id
+        and observed.head.fingerprint == record.fingerprint
+    )
+    if len(expected_heads) != 1:
+        raise ValueError("claim binding lacks exact current genesis head CAS")
+
+
+def _validate_selected_envelope(
+    entry: _Selected | _SelectedV2 | _SelectedV3 | _SelectedV4,
+) -> None:
     h1_request = _is_h1_delivery_request(entry.request)
     genesis_request = _is_delivery_work_genesis(entry.request)
+    claim_request = _is_delivery_work_claim(entry.request)
     has_h1_binding = isinstance(entry, _SelectedV2)
     has_genesis_binding = isinstance(entry, _SelectedV3)
-    if h1_request != has_h1_binding or genesis_request != has_genesis_binding:
+    has_claim_binding = isinstance(entry, _SelectedV4)
+    if (
+        h1_request != has_h1_binding
+        or genesis_request != has_genesis_binding
+        or claim_request != has_claim_binding
+    ):
         raise ValueError("H1 selected decision requires its closed delivery binding")
     if isinstance(entry, _SelectedV2):
         _validate_v2_binding(entry)
     if isinstance(entry, _SelectedV3):
         _validate_v3_binding(entry)
+    if isinstance(entry, _SelectedV4):
+        _validate_v4_binding(entry)
 
 
 def _validate_bytes(request: RegisteredPublication) -> None:
@@ -299,11 +387,20 @@ def _scan_entries(
             entry = _decode(payload)
             if _canonical(entry) != payload:
                 raise ValueError("noncanonical journal entry")
-            if isinstance(entry, (_Selected, _SelectedV2, _SelectedV3)):
+            if isinstance(entry, (_Selected, _SelectedV2, _SelectedV3, _SelectedV4)):
                 _validate_selected_envelope(entry)
                 request = entry.request
                 if isinstance(entry, _SelectedV3):
                     _validate_v3_selected_predecessor(entry.delivery_work_genesis_binding, selected)
+                if isinstance(entry, _SelectedV4):
+                    if not isinstance(entry.request, DeliveryWorkClaimBatchV1):
+                        raise ValueError("V4 selected delivery-work claim request differs")
+                    _validate_v4_selected_predecessor(
+                        entry.request,
+                        entry.delivery_work_claim_binding,
+                        selected,
+                        materialized,
+                    )
                 _validate_bytes(request)
                 _validate_successor(request, selected, materialized)
                 command = request.identity.command_id
@@ -326,6 +423,9 @@ def _scan_entries(
                         entry.h1_delivery_binding if isinstance(entry, _SelectedV2) else None,
                         entry.delivery_work_genesis_binding
                         if isinstance(entry, _SelectedV3)
+                        else None,
+                        entry.delivery_work_claim_binding
+                        if isinstance(entry, _SelectedV4)
                         else None,
                     ),
                     entry_id,
@@ -461,16 +561,27 @@ class IndependentOwnerDecisionJournal:
         command = request.identity.command_id
         try:
             with self._authority_scope():
-                entry: _Selected | _SelectedV2 | _SelectedV3
+                entry: _Selected | _SelectedV2 | _SelectedV3 | _SelectedV4
                 h1_request = _is_h1_delivery_request(request)
                 genesis_request = _is_delivery_work_genesis(request)
+                claim_request = _is_delivery_work_claim(request)
                 if (
                     h1_request != (prepared.h1_delivery_binding is not None)
                     or genesis_request != (prepared.delivery_work_genesis_binding is not None)
-                    or (prepared.h1_delivery_binding is not None and genesis_request)
+                    or claim_request != (prepared.delivery_work_claim_binding is not None)
                 ):
                     raise ValueError("H1 V2 selected decision requires its closed delivery binding")
-                if prepared.delivery_work_genesis_binding is not None:
+                if prepared.delivery_work_claim_binding is not None:
+                    entry = _SelectedV4(
+                        request=request,
+                        issuance_id=prepared.issuance_id,
+                        fence_generation=prepared.fence_generation,
+                        fence_frontier=prepared.fence_frontier,
+                        predecessor_commitment=prepared.predecessor_commitment,
+                        resulting_commitment=resulting_commitment,
+                        delivery_work_claim_binding=prepared.delivery_work_claim_binding,
+                    )
+                elif prepared.delivery_work_genesis_binding is not None:
                     entry = _SelectedV3(
                         request=request,
                         issuance_id=prepared.issuance_id,
@@ -503,7 +614,7 @@ class IndependentOwnerDecisionJournal:
                 # Validate reconstructed bytes before any durable append, including
                 # nested DTOs built using Pydantic's intentionally unchecked copy API.
                 decoded = _decode(payload)
-                if not isinstance(decoded, (_Selected, _SelectedV2, _SelectedV3)):
+                if not isinstance(decoded, (_Selected, _SelectedV2, _SelectedV3, _SelectedV4)):
                     raise ValueError("selected journal entry decoded as a materialization marker")
                 _validate_selected_envelope(decoded)
                 _validate_bytes(request)
@@ -528,6 +639,15 @@ class IndependentOwnerDecisionJournal:
                 if isinstance(entry, _SelectedV3):
                     _validate_v3_selected_predecessor(
                         entry.delivery_work_genesis_binding, scan.selected
+                    )
+                if isinstance(entry, _SelectedV4):
+                    if not isinstance(entry.request, DeliveryWorkClaimBatchV1):
+                        raise ValueError("V4 selected delivery-work claim request differs")
+                    _validate_v4_selected_predecessor(
+                        entry.request,
+                        entry.delivery_work_claim_binding,
+                        scan.selected,
+                        scan.materialized,
                     )
                 self._raw.append(payload, scan.head)
                 result = self._scan("select", command).selected.get(command)

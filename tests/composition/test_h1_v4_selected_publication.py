@@ -9,10 +9,14 @@ from typing import Any
 import pytest
 
 from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+    DELIVERY_WORK_CLAIM_COMMAND_SCHEMA,
     DELIVERY_WORK_GENESIS_COMMAND_SCHEMA,
     DELIVERY_WORK_OWNER,
     DELIVERY_WORK_SCHEMA,
+    PrepareDeliveryWorkClaimV1,
     PrepareDeliveryWorkGenesisV1,
+    prepare_delivery_work_claim,
+    prepare_delivery_work_claim_projection,
     prepare_delivery_work_genesis,
 )
 from chiplog.composition.common_cli_execution_runtime import (
@@ -28,7 +32,10 @@ from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_scoped_delivery_authority import H1ScopedDeliveryAuthorityReader
 from chiplog.platform._owner_publication_contracts import (
     CompleteDeliveryBatchV2,
+    DeliveryWorkClaimBatchV1,
     DeliveryWorkGenesisBatchV1,
+    ExactRecordHead,
+    ObservedPresence,
     OwnerCommandBytes,
     OwnerRecordBytes,
     PublicationIdentity,
@@ -234,6 +241,73 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
             committed_genesis = await genesis_coordinator.commit(genesis)
             assert committed_genesis.kind == "COMMITTED"
             assert (await genesis_coordinator.commit(genesis)).kind == "EXACT_REPLAY"
+            capture = runtime._h1_delivery_work_claim_sources.capture(source.intent_id)
+            claim_state = prepare_delivery_work_claim(
+                source,
+                genesis_state,
+                holder_id=capture.session.owner_id,
+                session_id=capture.session.session_id,
+                lease_expires_at_ns=capture.expires_at_ns,
+                trusted_clock_ns=capture.issued_at_ns,
+            )
+            claim_command = PrepareDeliveryWorkClaimV1(
+                projection=prepare_delivery_work_claim_projection(source, genesis_state)
+            )
+            claim_command_bytes = claim_command.canonical_bytes()
+            claim_record_bytes = claim_state.canonical_bytes()
+            claim_batch = DeliveryWorkClaimBatchV1(
+                identity=PublicationIdentity(
+                    tenant_id=batch.identity.tenant_id,
+                    command_id="delivery-work-claim:" + source.intent_id,
+                    command_fingerprint=hashlib.sha256(claim_command_bytes).hexdigest(),
+                    canonicalization_version="chiplog.owner-publication.v1",
+                ),
+                authentication=batch.authentication,
+                expected=batch.expected.model_copy(
+                    update={
+                        "tenant_frontier": committed_genesis.tenant_commit_sequence,
+                        "expected_materialization_commitment": (
+                            committed_genesis.resulting_commitment
+                        ),
+                        "ordered_heads": (
+                            ObservedPresence(
+                                head=ExactRecordHead(
+                                    owner=DELIVERY_WORK_OWNER,
+                                    record_kind="DELIVERY_WORK_STATE",
+                                    subject_id=genesis_state.subject_id,
+                                    record_id=genesis_state.record_id,
+                                    fingerprint=hashlib.sha256(
+                                        genesis_state.canonical_bytes()
+                                    ).hexdigest(),
+                                )
+                            ),
+                        ),
+                    }
+                ),
+                claim_command=OwnerCommandBytes(
+                    owner=DELIVERY_WORK_OWNER,
+                    schema_id=DELIVERY_WORK_CLAIM_COMMAND_SCHEMA,
+                    canonical_bytes=claim_command_bytes,
+                    fingerprint=hashlib.sha256(claim_command_bytes).hexdigest(),
+                ),
+                complete_records=(
+                    OwnerRecordBytes(
+                        owner=DELIVERY_WORK_OWNER,
+                        record_kind="DELIVERY_WORK_STATE",
+                        record_id=claim_state.record_id,
+                        schema_id=DELIVERY_WORK_SCHEMA,
+                        canonical_bytes=claim_record_bytes,
+                        fingerprint=hashlib.sha256(claim_record_bytes).hexdigest(),
+                    ),
+                ),
+                complete_batch_fingerprint=hashlib.sha256(b"delivery-work-claim").hexdigest(),
+            )
+            claim_authority = runtime._h1_delivery_work_claim_authority
+            claim_authority.register(claim_batch, capture)
+            claim_coordinator = runtime._h1_delivery_work_claim_publication_coordinator
+            committed_claim = await claim_coordinator.commit(claim_batch)
+            assert committed_claim.kind == "COMMITTED", committed_claim
+            assert (await claim_coordinator.commit(claim_batch)).kind == "EXACT_REPLAY"
             assert capture_authority_storage_state(slot.database_path)[0]
     with _open_installed_h1_launch(slot) as reopened_launch:
         async with open_installed_h1_scoped_v22_runtime(

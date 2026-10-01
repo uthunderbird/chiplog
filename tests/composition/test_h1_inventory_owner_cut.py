@@ -229,6 +229,7 @@ def test_registry_covers_every_registered_owner_envelope_variant() -> None:
             "COMPLETE_DELIVERY_ATOMIC_V2",
             "REJECTED_COMPLETION_ATOMIC_V1",
             "DELIVERY_WORK_GENESIS_V1",
+            "DELIVERY_WORK_CLAIM_V1",
         }
     )
 

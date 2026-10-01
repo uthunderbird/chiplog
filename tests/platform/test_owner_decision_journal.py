@@ -10,12 +10,17 @@ import pytest
 
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.capabilities.agent_loop.delivery_work_contracts import (
+    DELIVERY_WORK_CLAIM_COMMAND_SCHEMA,
     DELIVERY_WORK_GENESIS_COMMAND_SCHEMA,
     DELIVERY_WORK_OWNER,
     DELIVERY_WORK_SCHEMA,
+    DeliveryWorkClaimProjectionV1,
     DeliveryWorkSourceMemberV1,
     DeliveryWorkSourceV1,
+    PrepareDeliveryWorkClaimV1,
     PrepareDeliveryWorkGenesisV1,
+    prepare_delivery_work_claim,
+    prepare_delivery_work_claim_projection,
     prepare_delivery_work_genesis,
 )
 from chiplog.composition.h1_historical_selected_sources import _selected_owner_decision
@@ -23,7 +28,9 @@ from chiplog.platform._owner_publication_contracts import (
     AuthoritativeReadManifest,
     CompleteDeliveryBatchV2,
     DeliveryWorkGenesisBatchV1,
+    ExactRecordHead,
     InvocationProofRef,
+    ObservedPresence,
     OwnerCommandBytes,
     OwnerRecordBytes,
     PublicationIdentity,
@@ -31,6 +38,11 @@ from chiplog.platform._owner_publication_contracts import (
 )
 from chiplog.platform._sqlite import EventAppender, FenceAdvanceCommand, SQLiteMaterializer
 from chiplog.platform.authority_reads import capture_authority_storage_state
+from chiplog.platform.delivery_work_claim_binding_contracts import (
+    DeliveryWorkClaimantClockBindingV1,
+    DeliveryWorkClaimBatchV1,
+    DeliveryWorkClaimBindingV1,
+)
 from chiplog.platform.delivery_work_genesis_binding_contracts import DeliveryWorkGenesisBindingV1
 from chiplog.platform.h1_delivery_binding_contracts import H1DeliveryBinding
 from chiplog.platform.owner_decision_journal import (
@@ -40,7 +52,10 @@ from chiplog.platform.owner_decision_journal import (
 )
 from chiplog.platform.owner_publications import (
     BrokerPublicationCoordinator,
+    OwnerPublicationPending,
     PreparedOwnerPublication,
+    SelectedOwnerDecision,
+    source_commands,
 )
 from tests.platform.test_h1_publication_guard import _Resolver
 from tests.platform.test_owner_publications import FixtureAuthority, digest, request
@@ -251,6 +266,208 @@ def _v3_genesis_fixture(tmp_path: Path):
     journal.materialized(prior)
     batch, binding = _genesis(prior)
     return journal, batch, binding
+
+
+def _claim(
+    genesis: SelectedOwnerDecision,
+) -> tuple[DeliveryWorkClaimBatchV1, DeliveryWorkClaimBindingV1]:
+    """Build the one exact g1 DTO for an already selected g0 decision."""
+    decision = genesis
+    assert isinstance(decision.prepared.delivery_work_genesis_binding, DeliveryWorkGenesisBindingV1)
+    source = decision.prepared.delivery_work_genesis_binding.selected_source
+    predecessor = prepare_delivery_work_genesis(source)
+    projection: DeliveryWorkClaimProjectionV1 = prepare_delivery_work_claim_projection(
+        source, predecessor
+    )
+    command = PrepareDeliveryWorkClaimV1(projection=projection)
+    claimant_clock = DeliveryWorkClaimantClockBindingV1(
+        holder_id="holder",
+        session_id="session",
+        broker_epoch="broker-epoch",
+        runtime_generation="runtime-generation",
+        clock_epoch="clock-epoch",
+        trusted_clock_ns=10,
+        lease_expires_at_ns=20,
+    )
+    state = prepare_delivery_work_claim(
+        source,
+        predecessor,
+        holder_id=claimant_clock.holder_id,
+        session_id=claimant_clock.session_id,
+        trusted_clock_ns=claimant_clock.trusted_clock_ns,
+        lease_expires_at_ns=claimant_clock.lease_expires_at_ns,
+    )
+    raw_command = command.canonical_bytes()
+    raw_state = state.canonical_bytes()
+    batch = DeliveryWorkClaimBatchV1(
+        identity=PublicationIdentity(
+            tenant_id="tenant",
+            command_id="delivery-work-claim",
+            command_fingerprint=digest(raw_command),
+            canonicalization_version="chiplog.owner-publication.v1",
+        ),
+        authentication=decision.prepared.request.authentication,
+        expected=AuthoritativeReadManifest(
+            tenant_id="tenant",
+            tenant_frontier=decision.tenant_commit_sequence,
+            expected_materialization_commitment=decision.resulting_commitment,
+            registry_head="registry",
+            registry_fingerprint=digest(b"registry"),
+            ordered_heads=(
+                ObservedPresence(
+                    head=ExactRecordHead(
+                        owner=DELIVERY_WORK_OWNER,
+                        record_kind="DELIVERY_WORK_STATE",
+                        subject_id=predecessor.subject_id,
+                        record_id=predecessor.record_id,
+                        fingerprint=digest(predecessor.canonical_bytes()),
+                    )
+                ),
+            ),
+            complete_manifest_fingerprint=digest(b"manifest"),
+        ),
+        claim_command=OwnerCommandBytes(
+            owner=DELIVERY_WORK_OWNER,
+            schema_id=DELIVERY_WORK_CLAIM_COMMAND_SCHEMA,
+            canonical_bytes=raw_command,
+            fingerprint=digest(raw_command),
+        ),
+        complete_records=(
+            OwnerRecordBytes(
+                owner=DELIVERY_WORK_OWNER,
+                record_kind="DELIVERY_WORK_STATE",
+                record_id=state.record_id,
+                schema_id=DELIVERY_WORK_SCHEMA,
+                canonical_bytes=raw_state,
+                fingerprint=digest(raw_state),
+            ),
+        ),
+        complete_batch_fingerprint=digest(b"delivery-work-claim-complete"),
+    )
+    binding = DeliveryWorkClaimBindingV1(
+        genesis_decision_id=decision.decision_id,
+        genesis_decision_fingerprint=decision.decision_fingerprint,
+        selected_source=source,
+        claim_projection=projection,
+        claimant_clock=claimant_clock,
+        request_digest=hashlib.sha256(
+            json.dumps(
+                batch.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest(),
+    )
+    return batch, binding
+
+
+def _v4_claim_fixture(tmp_path: Path):
+    journal, genesis_batch, genesis_binding = _v3_genesis_fixture(tmp_path)
+    genesis = journal.select(
+        PreparedOwnerPublication(
+            genesis_batch,
+            "genesis-issuance",
+            "fence",
+            0,
+            genesis_batch.expected.expected_materialization_commitment,
+            delivery_work_genesis_binding=genesis_binding,
+        ),
+        digest(b"after-genesis"),
+    )
+    journal.materialized(genesis)
+    batch, binding = _claim(genesis)
+    return journal, genesis, batch, binding
+
+
+def test_v4_delivery_work_claim_selected_roundtrips_exact_materialized_v3_genesis(
+    tmp_path: Path,
+) -> None:
+    journal, genesis, batch, binding = _v4_claim_fixture(tmp_path)
+    prepared = PreparedOwnerPublication(
+        batch,
+        "claim-issuance",
+        "fence",
+        0,
+        batch.expected.expected_materialization_commitment,
+        delivery_work_claim_binding=binding,
+    )
+
+    selected = journal.select(prepared, digest(b"after-claim"))
+
+    assert b'"schema_id":"chiplog.owner-decision.v4"' in journal._raw.entries()[-1][2]
+    reopened = _journal(tmp_path).lookup("tenant", batch.identity.command_id)
+    assert reopened == selected
+    assert reopened is not None
+    assert reopened.prepared.delivery_work_claim_binding == binding
+    assert reopened.prepared.delivery_work_genesis_binding is None
+    assert genesis.prepared.delivery_work_genesis_binding is not None
+    assert source_commands(batch) == (batch.claim_command,)
+
+
+def test_v4_claim_rejects_unmaterialized_or_foreign_g0_binding(tmp_path: Path) -> None:
+    journal, genesis_batch, genesis_binding = _v3_genesis_fixture(tmp_path)
+    genesis = journal.select(
+        PreparedOwnerPublication(
+            genesis_batch,
+            "genesis-issuance",
+            "fence",
+            0,
+            genesis_batch.expected.expected_materialization_commitment,
+            delivery_work_genesis_binding=genesis_binding,
+        ),
+        digest(b"after-genesis"),
+    )
+    batch, binding = _claim(genesis)
+    prepared = PreparedOwnerPublication(
+        batch,
+        "claim-issuance",
+        "fence",
+        0,
+        batch.expected.expected_materialization_commitment,
+        delivery_work_claim_binding=binding,
+    )
+
+    with pytest.raises(OwnerPublicationPending):
+        journal.select(prepared, digest(b"after-claim"))
+    assert len(journal._raw.entries()) == 3
+
+    journal.materialized(genesis)
+    foreign = binding.model_copy(update={"genesis_decision_id": "foreign"})
+    with pytest.raises(OwnerJournalIntegrityError):
+        journal.select(
+            PreparedOwnerPublication(
+                batch,
+                "claim-issuance",
+                "fence",
+                0,
+                batch.expected.expected_materialization_commitment,
+                delivery_work_claim_binding=foreign,
+            ),
+            digest(b"after-claim"),
+        )
+
+
+def test_v4_claim_rejects_raw_binding_digest_mutation_on_reopen(tmp_path: Path) -> None:
+    journal, _, batch, binding = _v4_claim_fixture(tmp_path)
+    journal.select(
+        PreparedOwnerPublication(
+            batch,
+            "claim-issuance",
+            "fence",
+            0,
+            batch.expected.expected_materialization_commitment,
+            delivery_work_claim_binding=binding,
+        ),
+        digest(b"after-claim"),
+    )
+    raw = [entry[2] for entry in journal._raw.entries()]
+    entry = json.loads(raw[-1])
+    entry["delivery_work_claim_binding"]["request_digest"] = digest(b"mutated")
+    corrupted = IndependentTenantDecisionJournal(tmp_path / "corrupted")
+    predecessor = None
+    for payload in (*raw[:-1], _canonical_raw(entry)):
+        predecessor = corrupted.append(payload, predecessor)
+
+    with pytest.raises(OwnerJournalIntegrityError):
+        IndependentOwnerDecisionJournal(corrupted, "tenant")
 
 
 def test_v3_delivery_work_genesis_selected_roundtrips_exact_prior_v4_binding(

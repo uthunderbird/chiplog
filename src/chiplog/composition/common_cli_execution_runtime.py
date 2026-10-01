@@ -2356,6 +2356,7 @@ async def _open_installed_h1_runtime(
     """Open the one enrolled H1 slot without bootstrap or caller-selected storage."""
     # These imports must remain local: the private port imports this module's
     # canonical runtime class and a module-level reciprocal import is cyclic.
+    from chiplog.composition.delivery_work_claim_authority import DeliveryWorkClaimAuthority
     from chiplog.composition.delivery_work_genesis_authority import DeliveryWorkGenesisAuthority
     from chiplog.composition.h1_launch_enrollment import InstalledH1Launch
     from chiplog.composition.h1_live_publication_authority import H1LivePublicationAuthority
@@ -2377,7 +2378,8 @@ async def _open_installed_h1_runtime(
     recovery_mount: list[Any] = []
     authority = H1LivePublicationAuthority()
     genesis_authority = DeliveryWorkGenesisAuthority()
-    resolver_mux = H1PublicationResolverMux(authority, genesis_authority)
+    claim_authority = DeliveryWorkClaimAuthority()
+    resolver_mux = H1PublicationResolverMux(authority, genesis_authority, claim_authority)
     authority_gate: Any | None = None
     root_bound = False
 
@@ -2502,11 +2504,21 @@ async def _open_installed_h1_runtime(
         from chiplog.composition.h1_delivery_work_sources import H1DeliveryWorkSources
 
         runtime._h1_delivery_work_sources = H1DeliveryWorkSources(runtime)  # type: ignore[attr-defined]
+        from chiplog.composition.h1_delivery_work_claim_sources import H1DeliveryWorkClaimSources
+
+        runtime._h1_delivery_work_claim_sources = H1DeliveryWorkClaimSources(runtime)  # type: ignore[attr-defined]
         genesis_authority._bind_installed_runtime(runtime)
+        claim_authority._bind_installed_runtime(runtime)
         runtime._h1_delivery_work_genesis_authority = genesis_authority  # type: ignore[attr-defined]
+        runtime._h1_delivery_work_claim_authority = claim_authority  # type: ignore[attr-defined]
         runtime._h1_delivery_work_publication_coordinator = (  # type: ignore[attr-defined]
             BrokerPublicationCoordinator(
                 runtime._appender, genesis_authority, runtime._owner_decisions()
+            )
+        )
+        runtime._h1_delivery_work_claim_publication_coordinator = (  # type: ignore[attr-defined]
+            BrokerPublicationCoordinator(
+                runtime._appender, claim_authority, runtime._owner_decisions()
             )
         )
         if authority_gate is None:
@@ -2819,7 +2831,13 @@ async def _open_installed_h1_runtime(
                     preseal_native_source.revoke()
                     delattr(runtime, "_h1_preseal_native_source")
                     revoke_and_unbind_live_authority()
+                    claim_source = getattr(runtime, "_h1_delivery_work_claim_sources", None)
+                    if claim_source is not None:
+                        claim_source.close()
                     for name in (
+                        "_h1_delivery_work_claim_publication_coordinator",
+                        "_h1_delivery_work_claim_authority",
+                        "_h1_delivery_work_claim_sources",
                         "_h1_delivery_work_publication_coordinator",
                         "_h1_delivery_work_genesis_authority",
                         "_h1_delivery_work_sources",

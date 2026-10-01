@@ -16,6 +16,7 @@ from chiplog.capabilities.agent_loop.completion_owner_record_contracts import (
 from chiplog.capabilities.agent_loop.delivery_work_contracts import (
     DeliveryWorkSourceMemberV1,
     DeliveryWorkSourceV1,
+    prepare_delivery_work_claim,
     prepare_delivery_work_genesis,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_observations import (
@@ -263,6 +264,39 @@ async def test_delivery_work_genesis_decodes_only_in_its_parent_v4_run_cohort() 
 
     with pytest.raises(H1OwnerInventoryFailure, match="CORRUPT"):
         decode_h1_completion_scope(replace(item, raw=b"{}"), cohort)
+
+    claim = prepare_delivery_work_claim(
+        source,
+        genesis,
+        holder_id="agent_loop",
+        session_id="1:generation:session",
+        lease_expires_at_ns=2,
+        trusted_clock_ns=1,
+    )
+    claim_cohort = H1CompletionInventoryCohort(
+        cohort.run_id,
+        {
+            claim.record_id: (
+                "agent_loop",
+                claim.schema_id,
+                claim.canonical_bytes(),
+                hashlib.sha256(claim.canonical_bytes()).hexdigest(),
+            )
+        },
+    )
+    claim_item = replace(
+        item,
+        locator="records/" + claim.record_id,
+        record_id=claim.record_id,
+        fingerprint=hashlib.sha256(claim.canonical_bytes()).hexdigest(),
+        raw=claim.canonical_bytes(),
+    )
+    assert (
+        decode_h1_completion_scope(claim_item, claim_cohort).identities[1]
+        == decoded.identities[1]
+    )
+    with pytest.raises(H1OwnerInventoryFailure, match="CORRUPT"):
+        decode_h1_completion_scope(replace(claim_item, raw=genesis.canonical_bytes()), claim_cohort)
 
 
 @pytest.mark.asyncio
