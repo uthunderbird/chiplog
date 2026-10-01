@@ -79,6 +79,8 @@ _H1_COMPLETION_ISSUANCE_SCHEMAS = frozenset(
     {
         "chiplog.composition.h1-completion-issuance.v1",
         "chiplog.composition.h1-completion-issuance.v2",
+        "chiplog.composition.h1-completion-issuance.v3",
+        "chiplog.composition.h1-completion-issuance.v4",
     }
 )
 

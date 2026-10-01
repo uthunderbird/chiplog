@@ -160,6 +160,10 @@ _H1_LOCAL_INTENT_PAIR = (
     "effects",
     "chiplog.effects.h1-local-prepared-commentary-intent.v1",
 )
+_H1_SCOPED_INTENT_PAIR = (
+    "effects",
+    "chiplog.effects.external-action-intent.v3",
+)
 
 
 @dataclass(frozen=True)
@@ -519,7 +523,8 @@ class SQLiteMaterializer:
         with self._authority_scope():
             self._require_writer(token)
             if any(
-                (record.owner, record.schema_id) == _H1_LOCAL_INTENT_PAIR
+                (record.owner, record.schema_id)
+                in (_H1_LOCAL_INTENT_PAIR, _H1_SCOPED_INTENT_PAIR)
                 for record in command.records
             ) and command.operation_kind != _COMPLETE_ACCEPTANCE_V2:
                 raise StoreAdmissionError("H1-only record submitted under alternate operation")

@@ -19,6 +19,7 @@ from chiplog.platform._sqlite import (
 
 V2_OPERATION = "agent_loop.complete_acceptance.v2"
 LOCAL_INTENT_SCHEMA = "chiplog.effects.h1-local-prepared-commentary-intent.v1"
+SCOPED_INTENT_SCHEMA = "chiplog.effects.external-action-intent.v3"
 
 
 def _record(record_id: str = "complete") -> PhysicalRecord:
@@ -51,6 +52,7 @@ async def _appender(path: Path) -> tuple[SQLiteMaterializer, EventAppender]:
             "agent_loop": "chiplog.agent-loop.record.v1",
             "effects": LOCAL_INTENT_SCHEMA,
         },
+        record_schema_variants=(("effects", SCOPED_INTENT_SCHEMA),),
     )
     appender = EventAppender(store, capacity=2)
     await appender.advance_fence(FenceAdvanceCommand("tenant", "fence", 0))
@@ -106,12 +108,13 @@ async def test_v2_replay_refuses_without_mounted_resolver_even_without_command_g
     await appender.close()
 
 
-async def test_h1_local_intent_under_an_alternate_operation_is_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize("schema", (LOCAL_INTENT_SCHEMA, SCOPED_INTENT_SCHEMA))
+async def test_h1_intent_under_an_alternate_operation_is_refused(
+    tmp_path: Path, schema: str
+) -> None:
     store, appender = await _appender(tmp_path / "store.sqlite")
     body = b"intent"
-    local_intent = PhysicalRecord(
-        "intent", "effects", LOCAL_INTENT_SCHEMA, body, sha256(body).hexdigest()
-    )
+    local_intent = PhysicalRecord("intent", "effects", schema, body, sha256(body).hexdigest())
 
     with pytest.raises(StoreAdmissionError, match="H1-only record"):
         await appender.submit(_command(operation="ordinary", records=(local_intent,)))

@@ -19,14 +19,20 @@ from chiplog.platform._owner_publication_contracts import (
     PublicationIdentity,
     WorkerAuthentication,
 )
+from chiplog.platform._sqlite import EventAppender, FenceAdvanceCommand, SQLiteMaterializer
+from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.h1_delivery_binding_contracts import H1DeliveryBinding
 from chiplog.platform.owner_decision_journal import (
     IndependentOwnerDecisionJournal,
     OwnerJournalIntegrityError,
     canonical_owner_publication_bytes,
 )
-from chiplog.platform.owner_publications import PreparedOwnerPublication
-from tests.platform.test_owner_publications import digest, request
+from chiplog.platform.owner_publications import (
+    BrokerPublicationCoordinator,
+    PreparedOwnerPublication,
+)
+from tests.platform.test_h1_publication_guard import _Resolver
+from tests.platform.test_owner_publications import FixtureAuthority, digest, request
 
 
 def _binding(batch: CompleteDeliveryBatchV2) -> H1DeliveryBinding:
@@ -193,14 +199,17 @@ def test_v1_selected_h1_request_without_binding_is_rejected_on_reopen(
     assert selected.prepared.h1_delivery_binding is not None
 
 
-def test_v2_selected_accepts_registered_v2_h1_applicability_with_exact_binding(
-    tmp_path: Path,
+@pytest.mark.parametrize("version", ("v2", "v4"))
+def test_v2_selected_accepts_registered_h1_applicability_with_exact_binding(
+    tmp_path: Path, version: str,
 ) -> None:
     batch = _h1_batch()
     batch = batch.model_copy(
         update={
             "authentication": batch.authentication.model_copy(
-                update={"applicability_schema": "chiplog.composition.h1-completion-issuance.v2"}
+                update={
+                    "applicability_schema": f"chiplog.composition.h1-completion-issuance.{version}"
+                }
             )
         }
     )
@@ -211,11 +220,16 @@ def test_v2_selected_accepts_registered_v2_h1_applicability_with_exact_binding(
     assert selected.prepared.h1_delivery_binding == prepared.h1_delivery_binding
 
 
-def test_v2_selected_rejects_missing_closed_delivery_binding_before_append(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", ("v2", "v4"))
+def test_v2_selected_rejects_missing_closed_delivery_binding_before_append(
+    tmp_path: Path, version: str
+) -> None:
     batch = _h1_batch().model_copy(
         update={
             "authentication": _h1_batch().authentication.model_copy(
-                update={"applicability_schema": "chiplog.composition.h1-completion-issuance.v2"}
+                update={
+                    "applicability_schema": f"chiplog.composition.h1-completion-issuance.{version}"
+                }
             )
         }
     )
@@ -234,6 +248,47 @@ def test_v2_selected_rejects_missing_closed_delivery_binding_before_append(tmp_p
         "H1 V2 selected decision requires its closed delivery binding"
     )
     assert journal._raw.entries() == ()
+
+
+@pytest.mark.asyncio
+async def test_v4_broker_commit_rejects_missing_binding_before_publication(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "store.sqlite"
+    with SQLiteMaterializer(path, record_contracts={"agent_loop": "test.terminal.v1"}) as store:
+        store._mount_owner_publication_resolver(_Resolver(None))
+        async with EventAppender(store, capacity=4) as appender:
+            await appender.advance_fence(FenceAdvanceCommand("tenant", "fence", 0))
+            batch = _h1_batch()
+            batch = batch.model_copy(
+                update={
+                    "authentication": batch.authentication.model_copy(
+                        update={
+                            "applicability_schema": "chiplog.composition.h1-completion-issuance.v4"
+                        }
+                    ),
+                    "expected": batch.expected.model_copy(
+                        update={
+                            "expected_materialization_commitment": (
+                                capture_authority_storage_state(path)[0]
+                            )
+                        }
+                    ),
+                }
+            )
+            authority = FixtureAuthority(path)
+            authority.authenticate_replay = lambda query: None  # type: ignore[method-assign]
+            journal = _journal(tmp_path)
+            broker = BrokerPublicationCoordinator(appender, authority, journal)
+
+            with pytest.raises(OwnerJournalIntegrityError, match="select") as rejected:
+                await broker.commit(batch)
+
+            assert str(rejected.value.__cause__) == (
+                "H1 V2 selected decision requires its closed delivery binding"
+            )
+            assert journal._raw.entries() == ()
+            assert store.durable_records() == ()
 
 
 @pytest.mark.parametrize(
