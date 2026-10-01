@@ -9,6 +9,7 @@ import struct
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
 
 import pytest
@@ -38,6 +39,7 @@ from chiplog.platform.owner_publications import (
     OwnerPublicationUncertain,
     PreparedOwnerPublication,
     SelectedOwnerDecision,
+    selected_records,
 )
 
 
@@ -298,6 +300,27 @@ async def test_cli_capacity_claim_rejects_n_plus_one_without_selected_partial_ba
                 await admission.admit()
             await client
         assert runtime._owner_decisions().snapshot() == selected
+
+
+async def test_selected_records_preserve_cli_batch_bytes_and_reject_unknown_request(
+    tmp_path: Path,
+) -> None:
+    async with open_r17_runtime(tmp_path / "selected-records.sqlite") as runtime:
+        await _stage(runtime)
+        async with runtime.cli_custody("slot") as admission:
+            client = asyncio.create_task(_client(admission.socket.path))
+            result = await admission.admit()
+            await client
+        assert isinstance(result, JournalSelectedPublication)
+        decision = runtime._owner_decisions().snapshot().decisions[-1]
+        assert selected_records(decision) == result.complete_records
+        assert tuple(item.canonical_bytes for item in selected_records(decision)) == tuple(
+            item.canonical_bytes for item in result.complete_records
+        )
+
+    unknown = SimpleNamespace(prepared=SimpleNamespace(request=SimpleNamespace(kind="UNKNOWN")))
+    with pytest.raises(ValueError, match="unsupported selected publication kind"):
+        selected_aggregate((unknown,))  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("mutation", ["inbox_bytes", "authentication_reference"])

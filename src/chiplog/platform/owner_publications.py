@@ -13,6 +13,7 @@ from chiplog.platform._owner_publication_contracts import (
     JournalSelectedPublication,
     NoSelectedDecision,
     OwnerCommandBytes,
+    OwnerRecordBytes,
     PublicationRejected,
     RegisteredPublication,
 )
@@ -124,6 +125,24 @@ def source_commands(request: RegisteredPublication) -> tuple[OwnerCommandBytes, 
             request.terminal_work_command,
         )
     return (request.loop_command, *request.prepared_effects_commands)
+
+
+def selected_records(decision: SelectedOwnerDecision) -> tuple[OwnerRecordBytes, ...]:
+    """Return the exact selected records for a supported journal request shape."""
+    request = decision.prepared.request
+    if request.kind == "SINGLE_OWNER":
+        return request.complete_records
+    if request.kind == "PLAN_EFFECT_ATOMIC":
+        return request.complete_records
+    if request.kind == "CALL_EFFECT_ATOMIC":
+        return request.complete_records
+    if request.kind == "COMPLETE_DELIVERY_ATOMIC":
+        return request.complete_records
+    if request.kind == "COMPLETE_DELIVERY_ATOMIC_V2":
+        return request.complete_records
+    if request.kind == "REJECTED_COMPLETION_ATOMIC_V1":
+        return request.complete_records
+    raise ValueError(f"unsupported selected publication kind: {request.kind!r}")
 
 
 def _replay_query(request: RegisteredPublication) -> ExactReplayQuery:

@@ -20,6 +20,7 @@ from chiplog.platform._ingress_contracts import (
 )
 from chiplog.platform._ingress_domain import selection_deadline
 from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
+from chiplog.platform.owner_publications import SelectedOwnerDecision, selected_records
 
 SCHEMA_EPOCH = "chiplog.ingress.admission-epoch.v1"
 SCHEMA_CAPACITY = "chiplog.ingress.admission-capacity.v1"
@@ -139,15 +140,14 @@ class AdmissionAggregate(IngressDTO):
     ready: tuple[ReadyAdmitted, ...]
 
 
-def selected_aggregate(decisions: tuple[object, ...]) -> AdmissionAggregate:
+def selected_aggregate(decisions: tuple[SelectedOwnerDecision, ...]) -> AdmissionAggregate:
     """Decode selected aggregate rows and reject missing, reordered or rival joins."""
     epoch: EpochOpened | None = None
     claims: list[CapacityClaimed] = []
     ready: list[ReadyAdmitted] = []
     claim_heads: dict[str, Head] = {}
     for decision in decisions:
-        request = decision.prepared.request
-        for wire in getattr(request, "complete_records", ()):
+        for wire in selected_records(decision):
             if wire.schema_id == SCHEMA_EPOCH:
                 candidate = EpochOpened.model_validate_json(wire.canonical_bytes)
                 if canonical(candidate) != wire.canonical_bytes or epoch is not None:
