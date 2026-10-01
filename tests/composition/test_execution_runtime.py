@@ -5,6 +5,7 @@ import json
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -156,11 +157,14 @@ async def test_model_requires_durable_emission_and_restart_never_reissues(
             request: ExecutionTransitionRequest,
             *,
             expected_snapshot: ExecutionHistorySnapshot | None = None,
+            **kwargs: Any,
         ) -> ExecutionRunRecord:
             with monkeypatch.context() as fault:
                 if failure == "before_commit" and isinstance(request, EmitExecutionAttempt):
                     fault.setattr(runtime._appender, "submit", crash)
-                return await publish(peer, request, expected_snapshot=expected_snapshot)
+                return await publish(
+                    peer, request, expected_snapshot=expected_snapshot, **kwargs
+                )
 
         monkeypatch.setattr(runtime, "_publish_initial_transition", intercept)
         if failure == "none":
