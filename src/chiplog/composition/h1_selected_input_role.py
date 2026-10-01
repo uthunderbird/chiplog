@@ -121,8 +121,19 @@ def _physical(
         "WHERE tenant_id=? AND operation_kind=? AND idempotency_key=? AND commit_sequence=?",
         (command.tenant_id, command.operation_kind, command.idempotency_key, sequence),
     ).fetchone()
-    if publication != (command.request_fingerprint, member.record_id):
+    if publication != (
+        command.request_fingerprint,
+        "\n".join(record.record_id for record in command.records),
+    ):
         raise ValueError("selected input SQL publication differs from command")
+    for record in command.records:
+        physical = connection.execute(
+            "SELECT owner,schema_id,canonical_bytes,commit_sequence FROM records "
+            "WHERE tenant_id=? AND record_id=?",
+            (command.tenant_id, record.record_id),
+        ).fetchone()
+        if physical != (record.owner, record.schema_id, record.canonical_bytes, sequence):
+            raise ValueError("selected input batch physical member differs from publication")
     return InputOccurrenceKey(
         command.tenant_id,
         member.owner,
@@ -161,10 +172,19 @@ def _bounded_physical(
         command.idempotency_key,
         command.request_fingerprint,
         sequence,
-        member.record_id,
+        "\n".join(record.record_id for record in command.records),
     )
     if sum(tuple(item) == expected for item in publications) != 1:
         raise ValueError("selected input SQL publication differs from bounded command")
+    for record in command.records:
+        matching = tuple(row for row in rows if getattr(row, "record_id", None) == record.record_id)
+        if len(matching) != 1 or (
+            getattr(matching[0], "owner", None),
+            getattr(matching[0], "schema", None),
+            getattr(matching[0], "raw", None),
+            getattr(matching[0], "sequence", None),
+        ) != (record.owner, record.schema_id, record.canonical_bytes, sequence):
+            raise ValueError("selected input bounded batch member differs from publication")
     return InputOccurrenceKey(
         command.tenant_id,
         member.owner,
@@ -472,8 +492,8 @@ def _r17(
             raise ValueError("selected R17 command is noncanonical")
         # validate_selected_ingress above authenticated the reducer for the whole selected stream;
         # obtain this exact selected physical member from its batch without reopening a live reader.
-        if len(batch.complete_records) != 1:
-            raise ValueError("selected R17 batch has non-singleton physical membership")
+        if not batch.complete_records:
+            raise ValueError("selected R17 batch has no physical membership")
         member = batch.complete_records[0]
         record = AuthenticatedCustodyRecord.model_validate_json(member.canonical_bytes)
         if (
@@ -512,14 +532,15 @@ def _r17(
             "r6",
             0,
             0,
-            (
+            tuple(
                 PhysicalRecord(
-                    member.record_id,
-                    member.owner,
-                    member.schema_id,
-                    member.canonical_bytes,
-                    member.fingerprint,
-                ),
+                    item.record_id,
+                    item.owner,
+                    item.schema_id,
+                    item.canonical_bytes,
+                    item.fingerprint,
+                )
+                for item in batch.complete_records
             ),
         )
         candidates: list[tuple[int, SelectedOwnerDecision, CustodyRecord]] = []
@@ -567,11 +588,12 @@ def _r17(
             replayed: CustodyRecord | AuthenticatedCustodyRecord,
         ) -> PhysicalPublicationCommand:
             selected_batch = selected_decision.prepared.request
-            if not isinstance(
-                selected_batch, SingleOwnerBatch
-            ) or selected_batch.complete_records != (wire_record(replayed),):
+            if (
+                not isinstance(selected_batch, SingleOwnerBatch)
+                or not selected_batch.complete_records
+                or selected_batch.complete_records[0] != wire_record(replayed)
+            ):
                 raise ValueError("selected custody predecessor has non-exact physical member")
-            member = selected_batch.complete_records[0]
             return PhysicalPublicationCommand(
                 selected_batch.identity.tenant_id,
                 selected_batch.operation,
@@ -581,14 +603,15 @@ def _r17(
                 "r6",
                 0,
                 0,
-                (
+                tuple(
                     PhysicalRecord(
-                        member.record_id,
-                        member.owner,
-                        member.schema_id,
-                        member.canonical_bytes,
-                        member.fingerprint,
-                    ),
+                        item.record_id,
+                        item.owner,
+                        item.schema_id,
+                        item.canonical_bytes,
+                        item.fingerprint,
+                    )
+                    for item in selected_batch.complete_records
                 ),
             )
 

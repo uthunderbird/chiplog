@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import sqlite3
 import struct
 from pathlib import Path
 from typing import cast
@@ -152,6 +153,17 @@ async def test_mounted_selected_h0_r17_witness_uses_retained_not_current_input(
     )
     assert witness.occurrences[0].record_id == witness.initialization.proposal.run.head
     allocation, staging, admission = witness.inbound_owner_decisions
+    assert tuple(
+        len(decision.prepared.request.complete_records)
+        for decision in (allocation, staging, admission)
+    ) == (1, 1, 4)
+    assert tuple(
+        member.schema_id for member in admission.prepared.request.complete_records[1:]
+    ) == (
+        "chiplog.ingress.admission-epoch.v2",
+        "chiplog.ingress.admission-capacity.v1",
+        "chiplog.ingress.admission-ready.v1",
+    )
     assert (
         witness.occurrences[1].canonical_bytes
         == allocation.prepared.request.complete_records[0].canonical_bytes
@@ -165,6 +177,49 @@ async def test_mounted_selected_h0_r17_witness_uses_retained_not_current_input(
         == admission.prepared.request.complete_records[0].canonical_bytes
     )
     assert witness.occurrences[3].canonical_bytes == canonical(witness.admitted_record)
+
+
+@pytest.mark.asyncio
+async def test_selected_input_role_rejects_truncated_admission_publication_ids(
+    tmp_path: Path,
+) -> None:
+    database, custody = tmp_path / "state.sqlite", tmp_path / "custody"
+    request, complete = await _mounted_candidate(database, custody)
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
+    async with open_common_cli_execution_runtime(
+        database, resources=resources, responses=(complete,)
+    ) as runtime:
+        initial = cast(SelectedExecutionReceiptV1, await runtime.drive_input(request))
+        started = await runtime.begin_execution(
+            "hermetic-ingress", initial.stable_run_lineage_id, initial.selected_run_head.head
+        )
+        captured = await runtime.capture_execution(
+            "hermetic-ingress", initial.stable_run_lineage_id, started.head
+        )
+        selected = select_h1_v3_prepare_for_candidate(
+            runtime, captured, expected_head=captured.head
+        )
+        witness = read_h1_selected_input_role(runtime, selected, captured)
+        admission = witness.inbound_owner_decisions[-1]
+        batch = admission.prepared.request
+        assert len(batch.complete_records) == 4
+        with sqlite3.connect(database) as connection:
+            cursor = connection.execute(
+                "UPDATE publications SET record_ids=? WHERE tenant_id=? "
+                "AND operation_kind=? AND idempotency_key=? AND commit_sequence=?",
+                (
+                    batch.complete_records[0].record_id,
+                    batch.identity.tenant_id,
+                    batch.operation,
+                    batch.identity.command_id,
+                    admission.tenant_commit_sequence,
+                ),
+            )
+            assert cursor.rowcount == 1
+        with pytest.raises(
+            ValueError, match="selected input publication is not exactly materialized"
+        ):
+            read_h1_selected_input_role(runtime, selected, captured)
 
 
 @pytest.mark.asyncio

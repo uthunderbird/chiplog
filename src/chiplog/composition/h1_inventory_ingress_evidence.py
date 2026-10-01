@@ -13,6 +13,22 @@ import json
 from chiplog.adapters.driven.journal_sqlite import OWNER as EVIDENCE_JOURNAL_OWNER
 from chiplog.adapters.driven.journal_sqlite import SCHEMA as EVIDENCE_JOURNAL_SCHEMA
 from chiplog.capabilities.evidence_journal.commands import JournalRecord
+from chiplog.composition.r17_admission_records import (
+    SCHEMA_CAPACITY,
+    SCHEMA_EPOCH,
+    SCHEMA_EPOCH_V2,
+    SCHEMA_READY,
+    CapacityClaimed,
+    EpochOpened,
+    EpochOpenedV2,
+    ReadyAdmitted,
+)
+from chiplog.composition.r17_admission_records import (
+    canonical as admission_canonical,
+)
+from chiplog.composition.r17_admission_records import (
+    record_head as admission_record_head,
+)
 from chiplog.platform.ingress_authenticated_contracts import (
     AuthenticatedCustodyCommand,
     AuthenticatedCustodyRecord,
@@ -79,6 +95,15 @@ REGISTRATIONS: tuple[H1LeafRegistration, ...] = (
     H1LeafRegistration("OWNER_COMMAND", _CUSTODY_OWNER, AUTHENTICATED_COMMAND_SCHEMA, None, "v2"),
     H1LeafRegistration("EVIDENCE_INBOX", _INBOX_OWNER, _INBOX_SCHEMA, _INBOX_KIND, "v1"),
     H1LeafRegistration("PHYSICAL", EVIDENCE_JOURNAL_OWNER, EVIDENCE_JOURNAL_SCHEMA, None, "v1"),
+    *(
+        H1LeafRegistration("PHYSICAL", _CUSTODY_OWNER, schema, None, "v1")
+        for schema in (
+            SCHEMA_EPOCH,
+            SCHEMA_EPOCH_V2,
+            SCHEMA_CAPACITY,
+            SCHEMA_READY,
+        )
+    ),
 )
 
 _REGISTRATION_KEYS = {
@@ -252,6 +277,39 @@ def _decode_evidence_journal(item: H1RawInventoryItem) -> H1DecodedInventoryItem
     )
 
 
+def _decode_admission(item: H1RawInventoryItem) -> H1DecodedInventoryItem:
+    try:
+        record: EpochOpened | EpochOpenedV2 | CapacityClaimed | ReadyAdmitted
+        if item.schema == SCHEMA_EPOCH:
+            record = EpochOpened.model_validate_json(item.raw)
+        elif item.schema == SCHEMA_EPOCH_V2:
+            record = EpochOpenedV2.model_validate_json(item.raw)
+        elif item.schema == SCHEMA_CAPACITY:
+            record = CapacityClaimed.model_validate_json(item.raw)
+        elif item.schema == SCHEMA_READY:
+            record = ReadyAdmitted.model_validate_json(item.raw)
+        else:
+            raise ValueError("unregistered admission schema")
+        _require_exact_bytes(item, admission_canonical(record))
+        if isinstance(record, (EpochOpened, EpochOpenedV2)):
+            identity = "ingress.admission.epoch:" + record.epoch.identity
+            if record.tenant_id != item.tenant:
+                raise ValueError("admission epoch tenant differs")
+        elif isinstance(record, CapacityClaimed):
+            identity = record.claim_id
+        else:
+            identity = "ingress.admission.ready:" + record.stable_tie_identity
+        head = admission_record_head(identity, record)
+        if item.record_id != head.head or item.fingerprint != head.fingerprint:
+            raise ValueError("admission physical identity differs")
+    except H1OwnerInventoryFailure:
+        raise
+    except (KeyError, TypeError, ValueError) as error:
+        raise _failure(item, "CORRUPT") from error
+    key = _key(item, "record", head.identity, head.head)
+    return H1DecodedInventoryItem(item.locator, (key,), (), (), ("RECORD",))
+
+
 def decode_h1_ingress_evidence_scope(item: H1RawInventoryItem) -> H1DecodedInventoryItem:
     """Decode one registered ingress/evidence occurrence without filtering it."""
     _require_registered(item)
@@ -259,6 +317,8 @@ def decode_h1_ingress_evidence_scope(item: H1RawInventoryItem) -> H1DecodedInven
         return _decode_inbox(item)
     if item.owner == EVIDENCE_JOURNAL_OWNER:
         return _decode_evidence_journal(item)
+    if item.schema in (SCHEMA_EPOCH, SCHEMA_EPOCH_V2, SCHEMA_CAPACITY, SCHEMA_READY):
+        return _decode_admission(item)
     if item.schema in (CUSTODY_RECORD_SCHEMA, AUTHENTICATED_RECORD_SCHEMA):
         return _decode_custody_record(item)
     return _decode_custody_command(item)

@@ -939,14 +939,24 @@ def _selected_input_roles(
             family="SELECTED_INPUT", owner="", schema="h0-r17", locator="witness"
         ) from error
     ids: set[str] = set()
-    for occurrence in witness.occurrences:
+    for index, occurrence in enumerate(witness.occurrences):
         matching_rows = tuple(row for row in rows if row.record_id == occurrence.record_id)
+        batch_members = (
+            witness.inbound_owner_decisions[index - 1].prepared.request.complete_records
+            if index
+            else ()
+        )
+        publication_ids = (
+            "\n".join(member.record_id for member in batch_members)
+            if index
+            else occurrence.record_id
+        )
         expected_publication = (
             occurrence.operation,
             occurrence.command_id,
             occurrence.command_fingerprint,
             occurrence.commit_sequence,
-            occurrence.record_id,
+            publication_ids,
         )
         if (
             len(matching_rows) != 1
@@ -970,6 +980,25 @@ def _selected_input_roles(
                 schema=occurrence.schema,
                 locator=occurrence.record_id,
             )
+        for member in batch_members:
+            physical = tuple(row for row in rows if row.record_id == member.record_id)
+            if len(physical) != 1 or (
+                physical[0].owner,
+                physical[0].schema,
+                physical[0].raw,
+                physical[0].sequence,
+            ) != (
+                member.owner,
+                member.schema_id,
+                member.canonical_bytes,
+                occurrence.commit_sequence,
+            ):
+                raise H1OwnerInventoryFailure.corrupt(
+                    family="SELECTED_INPUT",
+                    owner=member.owner,
+                    schema=member.schema_id,
+                    locator=member.record_id,
+                )
         ids.add(occurrence.record_id)
     receipt_bytes = _canonical_json(
         {
@@ -1378,9 +1407,7 @@ def read_h1_scoped_owner_inventory(
         # Historical completeness belongs to the authenticated selected cut;
         # a later (or selected) publication may still be pending in live state.
         if phase != "HISTORICAL" and (
-            runtime._pending_owners()
-            or runtime._pending()
-            or runtime._pending_gate_publications()
+            runtime._pending_owners() or runtime._pending() or runtime._pending_gate_publications()
         ):
             raise H1OwnerInventoryFailure.incomplete(family="PENDING", locator="runtime")
 

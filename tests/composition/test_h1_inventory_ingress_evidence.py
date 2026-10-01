@@ -17,9 +17,20 @@ from chiplog.composition.h1_inventory_leaf_contracts import (
 )
 from chiplog.composition.h1_owner_inventory import _physical_item, _PhysicalRow
 from chiplog.composition.r10 import r10_component
+from chiplog.composition.r17_admission_records import (
+    CANONICAL_CLASSES,
+    EpochOpened,
+    EpochOpenedV2,
+    hermetic_reserves,
+    hermetic_reserves_v2,
+)
+from chiplog.composition.r17_admission_records import (
+    wire as admission_wire,
+)
 from chiplog.composition.r17_ingress_registry import retained_cli_profile
 from chiplog.platform._ingress_contracts import (
     CliAuthentication,
+    Head,
     ReceiptToken,
     SourceBinding,
     UnknownEndpoint,
@@ -41,6 +52,31 @@ from chiplog.platform.ingress_custody_records import (
     subject_id,
 )
 from tests.support.evidence_journal import fixture
+
+
+@pytest.mark.parametrize("version", ("v1", "v2"))
+def test_admission_epoch_leaf_requires_exact_identity_and_canonical_bytes(version: str) -> None:
+    epoch = Head(identity="epoch", head="epoch/head", fingerprint="0" * 64)
+    cls = EpochOpened if version == "v1" else EpochOpenedV2
+    record = cls(
+        tenant_id="hermetic-tenant",
+        database_id="hermetic-database",
+        epoch=epoch,
+        fence=1,
+        manifest=epoch,
+        canonical_class_order=CANONICAL_CLASSES,
+        reserves=hermetic_reserves() if version == "v1" else hermetic_reserves_v2(),
+    )
+    member = admission_wire("ingress.admission.epoch:" + epoch.identity, record)
+    item = _physical_item(
+        _PhysicalRow(member.record_id, member.owner, member.schema_id, member.canonical_bytes, 1),
+        "hermetic-tenant",
+    )
+    assert decode_h1_ingress_evidence_scope(item).families == ("RECORD",)
+    with pytest.raises(H1OwnerInventoryFailure):
+        decode_h1_ingress_evidence_scope(replace(item, record_id="wrong"))
+    with pytest.raises(H1OwnerInventoryFailure):
+        decode_h1_ingress_evidence_scope(replace(item, raw=member.canonical_bytes + b" "))
 
 
 def _metadata(*, raw: bytes, state: str = "LOCAL_ACK_AUTHORIZED") -> bytes:

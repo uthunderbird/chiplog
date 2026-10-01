@@ -24,7 +24,12 @@ from chiplog.composition.r17_authenticated_records import (
     COMMAND_SCHEMA,
     decode_authentication,
 )
-from chiplog.composition.r17_ingress_history import record_head, wire_record
+from chiplog.composition.r17_ingress_history import (
+    is_ingress,
+    record_head,
+    validate_selected_ingress,
+    wire_record,
+)
 from chiplog.platform._owner_publication_contracts import SingleOwnerBatch
 from chiplog.platform.ingress_authenticated_contracts import (
     AuthenticatedCustodyCommand,
@@ -95,8 +100,13 @@ def _raw_r17(
     record = AuthenticatedCustodyRecord.model_validate_json(retained.admitted_record_bytes)
     if canonical(record) != retained.admitted_record_bytes:
         raise ValueError("retained R17 record is noncanonical")
+    history = runtime._owner_decisions().snapshot()
+    replayed, _custody = validate_selected_ingress(history)
+    ingress = tuple(decision for decision in history.decisions if is_ingress(decision))
+    if len(replayed) != len(ingress):
+        raise ValueError("selected R17 history has unpaired custody decisions")
     matches: list[tuple[AuthenticatedCustodyRecord, SelectedOwnerDecision]] = []
-    for decision in runtime._owner_decisions().snapshot().decisions:
+    for decision in history.decisions:
         batch = decision.prepared.request
         if not isinstance(batch, SingleOwnerBatch) or batch.command.schema_id != COMMAND_SCHEMA:
             continue
@@ -131,7 +141,12 @@ def _raw_r17(
             or owner_call.request.offer.scope.replay_identity != command.command_id
         ):
             continue
-        if batch.complete_records != (row,):
+        if (
+            not batch.complete_records
+            or batch.complete_records[0] != row
+            or decision not in ingress
+            or replayed[ingress.index(decision)] != record
+        ):
             raise ValueError("selected R17 physical record membership differs")
         matches.append((record, decision))
     if len(matches) != 1:
