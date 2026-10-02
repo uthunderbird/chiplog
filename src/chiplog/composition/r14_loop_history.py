@@ -280,13 +280,10 @@ def _completion_v2_schema_dispatch(batch: CompleteDeliveryBatchV2) -> Literal["H
     """Route selected H1 V1/V2/V3/V4 applicability without granting authority."""
     from chiplog.composition.h1_completion_issuance import dispatch_h1_completion_issuance_schema
 
-    if (
-        dispatch_h1_completion_issuance_schema(
-            batch.authentication.applicability_schema,
-            batch.authentication.applicability_bytes,
-        )
-        in ("V1", "V2", "V3", "V4")
-    ):
+    if dispatch_h1_completion_issuance_schema(
+        batch.authentication.applicability_schema,
+        batch.authentication.applicability_bytes,
+    ) in ("V1", "V2", "V3", "V4"):
         return "H1"
     raise AssertionError("H1 completion issuance schema dispatcher returned an unknown route")
 
@@ -474,6 +471,7 @@ def _read_call_history(
                 execution_cancellations: list[RetainedExecutionCancellationPreparation] = []
                 cancellations: list[RetainedCancellationPreparation] = []
                 acceptances: list[RetainedAcceptancePreparationV2] = []
+                native_accounting_count = 0
                 captured_heads: set[str] = set()
                 for command, entry in selected:
                     identity = command.idempotency_key
@@ -482,6 +480,7 @@ def _read_call_history(
                         FANOUT_OPERATION,
                         CANCELLATION_OPERATION,
                         EXECUTION_CANCELLATION_OPERATION,
+                        "agent_loop.native-one-call-cancelled-accounting.v1",
                         EXECUTION_TRANSITION_OPERATION,
                         EXECUTION_INBOX_INITIALIZATION_OPERATION,
                         EXECUTION_FANOUT_OPERATION,
@@ -492,9 +491,7 @@ def _read_call_history(
                         raise ValueError("unregistered loop publication envelope")
                     if (
                         not selected_only
-                        and inspect_publication(
-                            connection, command, command.expected_head + 1
-                        )
+                        and inspect_publication(connection, command, command.expected_head + 1)
                         != "COMPLETE"
                     ):
                         raise ValueError("selected loop publication is not exactly materialized")
@@ -526,6 +523,33 @@ def _read_call_history(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
                         expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if (
+                        command.operation_kind
+                        == "agent_loop.native-one-call-cancelled-accounting.v1"
+                        or "native_one_call_accounting_evidence" in entry
+                        or "native_one_call_accounting_envelope" in entry
+                    ):
+                        if native_accounting_count:
+                            raise ValueError("duplicate bounded native accounting selection")
+                        from chiplog.composition.r14_native_accounting_history import (
+                            decode_selected_native_accounting,
+                        )
+
+                        decode_selected_native_accounting(
+                            runtime,
+                            connection,
+                            command,
+                            entry,
+                            execution_preparations,
+                            execution_cancellations,
+                            mixed_records,
+                        )
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        native_accounting_count += 1
                         continue
                     if command.operation_kind == COMPLETE_ACCEPTANCE_OPERATION:
                         terminal = entry.get("h1_completion_terminal")
@@ -1094,6 +1118,50 @@ def read_execution_recovery_history(
     )
 
 
+def read_selected_native_accounting(runtime: R14PlanningRuntime):
+    """Canonical read-only observation of the selected bounded accounting record."""
+    from chiplog.composition.r14_native_accounting_history import (
+        retained_selected_native_accounting,
+    )
+
+    with runtime._authority_gate().hold():
+        _read_call_history(runtime)
+        found = [
+            retained_selected_native_accounting(entry)
+            for _, _, raw in runtime._loop_decisions().entries()
+            if (entry := _strict_json(raw)).get("kind") == "DECIDED"
+            and (
+                entry.get("operation_kind") == "agent_loop.native-one-call-cancelled-accounting.v1"
+                or "native_one_call_accounting_evidence" in entry
+                or "native_one_call_accounting_envelope" in entry
+            )
+        ]
+        return found[0].record if len(found) == 1 else None
+
+
+def validate_selected_native_accounting(runtime: R14PlanningRuntime) -> None:
+    """Validate selected semantics before startup materializes pending SQL."""
+    runtime._pending()
+    found = False
+    for _, _, raw in runtime._loop_decisions().entries():
+        entry = _strict_json(raw)
+        if entry.get("kind") != "DECIDED":
+            continue
+        command = runtime._publication(entry)
+        if (
+            command.operation_kind == "agent_loop.native-one-call-cancelled-accounting.v1"
+            or "native_one_call_accounting_evidence" in entry
+            or "native_one_call_accounting_envelope" in entry
+            or any(
+                record.schema_id == "chiplog.agent-loop.native-one-call-cancelled-accounting.v1"
+                for record in command.records
+            )
+        ):
+            found = True
+    if found:
+        _read_call_history(runtime, selected_only=True)
+
+
 def read_call_inventory(runtime: R14PlanningRuntime) -> CallInventorySnapshot:
     return read_execution_call_history(runtime)[1]
 
@@ -1248,8 +1316,7 @@ def validate_selected_cancellations(runtime: R14PlanningRuntime) -> None:
             continue
         command = runtime._publication(entry)
         claims_legacy_cancellation = (
-            command.operation_kind == CANCELLATION_OPERATION
-            or "cancellation_preparation" in entry
+            command.operation_kind == CANCELLATION_OPERATION or "cancellation_preparation" in entry
         )
         claims_execution_cancellation = (
             command.operation_kind == EXECUTION_CANCELLATION_OPERATION

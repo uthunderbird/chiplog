@@ -920,6 +920,20 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await cancel_execution_call(self, peer, submission)
 
+    async def publish_native_one_call_cancelled_accounting(self, peer: str = "hermetic-ingress"):
+        """Publish the supported selected accounting through the installed writer."""
+        from chiplog.composition.r14_native_accounting_publication import (
+            publish_native_one_call_cancelled_accounting,
+        )
+
+        return await publish_native_one_call_cancelled_accounting(self, peer)
+
+    def read_native_one_call_cancelled_accounting(self):
+        """Canonical read-only accounting observation after selected-history validation."""
+        from chiplog.composition.r14_loop_history import read_selected_native_accounting
+
+        return read_selected_native_accounting(self)
+
     def _take_h1_scope_append_receipt(
         self, request_id: str, issued: IssuedHermeticOutputScopeV1
     ) -> _H1ScopeAppendReceipt:

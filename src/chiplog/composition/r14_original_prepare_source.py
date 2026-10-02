@@ -17,6 +17,7 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjec
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
 from chiplog.capabilities.agent_loop.execution_contracts import (
     ExecutionPromptArtifact,
+    ExecutionRunRecord,
     ExecutionVisibilityManifest,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
@@ -188,7 +189,8 @@ class R14OriginalNativePrepareSource:
         descriptive_scope = self._descriptive_scope_held(
             issuance=issuance,
             issuance_bytes=issuance_bytes,
-            selected=selected,
+            run=proposal.run,
+            started_worker_session=prepare.started_run.worker_session,
             manifest=manifest,
             gate=self._runtime._authority_gate(),
         )
@@ -225,7 +227,8 @@ class R14OriginalNativePrepareSource:
         *,
         issuance: object,
         issuance_bytes: bytes,
-        selected: H1SelectedPostSealPrepare,
+        run: ExecutionRunRecord,
+        started_worker_session: str,
         manifest: ExecutionVisibilityManifest,
         gate: object,
     ) -> R14OriginalH1OutputScopeProjection | None:
@@ -289,7 +292,6 @@ class R14OriginalNativePrepareSource:
             head=scope.scope_id + "/" + scope_digest,
             fingerprint=scope_digest,
         )
-        run = selected.prepare.retained.proposal.run
         try:
             accepted_policy_bytes = base64.b64decode(
                 registration.accepted_policy_bytes_base64.encode("ascii"), validate=True
@@ -309,7 +311,7 @@ class R14OriginalNativePrepareSource:
             or scope.selected_resource_observation_ref
             != registration.selected_resource_observation_ref
             or scope.worker_session_id != issuance.worker_session
-            or scope.worker_session_id != selected.prepare.started_run.worker_session
+            or scope.worker_session_id != started_worker_session
             or scope.worker_session_id != manifest.worker_session
             or scope.tenant_id != policy.tenant
             or scope.tenant_id != run.tenant

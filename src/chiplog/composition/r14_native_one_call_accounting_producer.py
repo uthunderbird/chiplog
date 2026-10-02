@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import secrets
 import time
+from dataclasses import dataclass
 from hashlib import sha256
 
 from pydantic import ValidationError
@@ -28,14 +29,18 @@ from chiplog.capabilities.agent_loop.native_one_call_accounting_contracts import
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import InitializedCall
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+from chiplog.composition.r14_cancellation_contracts import CANCELLATION_SCHEMA, NOT_EXECUTED_SCHEMA
+from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCHEMA
 from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_execution_recovery_source import (
     R14NativeCancelledCallSource,
     R14NativeCancelledCallSourceFacts,
 )
+from chiplog.composition.r14_fanout_contracts import INITIALIZED_SCHEMA, SEAL_SCHEMA
 from chiplog.composition.r14_loop_history import read_execution_recovery_history
 from chiplog.composition.r14_native_execution_record_source import (
     R14NativeExecutionRecordSourceManifest,
+    _fingerprint,
     _R14NativeExecutionRecordSource,
 )
 from chiplog.composition.r14_native_preparation_bindings import bind_native_execution_preparation_v2
@@ -164,7 +169,7 @@ class R14NativeOneCallCancelledAccountingProducer:
                 result = PreparedNativeOneCallCancelledAccounting.model_validate_json(
                     reply.canonical_payload
                 )
-            except (UnicodeDecodeError, ValidationError, ValueError):
+            except UnicodeDecodeError, ValidationError, ValueError:
                 return None
             if (
                 result.canonical_bytes() != reply.canonical_payload
@@ -175,7 +180,7 @@ class R14NativeOneCallCancelledAccountingProducer:
             with gate.hold():
                 self._runtime._check_database_identity()
             return result
-        except (OSError, RuntimeError, TypeError):
+        except OSError, RuntimeError, TypeError:
             raise
 
 
@@ -190,6 +195,13 @@ class R14NativeOneCallCancelledAccountingV24Producer:
     async def prepare(
         self, facts: R14NativeCancelledCallSourceFacts
     ) -> PreparedNativeOneCallCancelledAccounting | None:
+        exchange = await self.prepare_exchange(facts)
+        return None if exchange is None else exchange.result.result
+
+    async def prepare_exchange(
+        self, facts: R14NativeCancelledCallSourceFacts
+    ) -> NativeOneCallAccountingV24Exchange | None:
+        """Retain the exact owner wire and physical source for sole-writer publication."""
         gate = self._runtime._authority_gate()
         try:
             with gate.hold():
@@ -324,7 +336,9 @@ class R14NativeOneCallCancelledAccountingV24Producer:
                 self._runtime._check_database_identity()
                 if self._acquire_held(facts) != acquired:
                     return None
-            return result.result
+            return NativeOneCallAccountingV24Exchange(
+                request, result, sent, reply, selected, provenance
+            )
         except OSError, RuntimeError, TypeError:
             raise
 
@@ -339,11 +353,7 @@ class R14NativeOneCallCancelledAccountingV24Producer:
                 "SELECT head FROM tenant_heads WHERE tenant_id=?", (self._runtime._tenant_id,)
             ).fetchone()
             journal = self._runtime._commitment_journal.load(self._runtime._tenant_id)
-        if (
-            row is None
-            or journal != commitment
-            or identity != self._runtime._database_identity
-        ):
+        if row is None or journal != commitment or identity != self._runtime._database_identity:
             return None
         return NativeOneCallAccountingSourceStampV2(
             tenant_id=self._runtime._tenant_id,
@@ -354,24 +364,30 @@ class R14NativeOneCallCancelledAccountingV24Producer:
 
     def _acquire_held(
         self, supplied: R14NativeCancelledCallSourceFacts
-    ) -> tuple[
-        R14NativeCancelledCallSourceFacts,
-        R14NativeOneCallCancelledFacts,
-        NativeOneCallAccountingSourceStampV2,
-        R14NativeExecutionRecordSourceManifest,
-    ] | None:
+    ) -> (
+        tuple[
+            R14NativeCancelledCallSourceFacts,
+            R14NativeOneCallCancelledFacts,
+            NativeOneCallAccountingSourceStampV2,
+            R14NativeExecutionRecordSourceManifest,
+        ]
+        | None
+    ):
         """Acquire all SQLite-derived source reads in one mounted read snapshot."""
         with workspace_snapshot(self._runtime._database):
             return self._acquire_held_snapshot(supplied)
 
     def _acquire_held_snapshot(
         self, supplied: R14NativeCancelledCallSourceFacts
-    ) -> tuple[
-        R14NativeCancelledCallSourceFacts,
-        R14NativeOneCallCancelledFacts,
-        NativeOneCallAccountingSourceStampV2,
-        R14NativeExecutionRecordSourceManifest,
-    ] | None:
+    ) -> (
+        tuple[
+            R14NativeCancelledCallSourceFacts,
+            R14NativeOneCallCancelledFacts,
+            NativeOneCallAccountingSourceStampV2,
+            R14NativeExecutionRecordSourceManifest,
+        ]
+        | None
+    ):
         """Bracket selected journals and the shared physical read snapshot by stamp."""
         before = self._stamp_held()
         current = R14NativeCancelledCallSource(self._runtime).collect()
@@ -400,6 +416,38 @@ class R14NativeOneCallCancelledAccountingV24Producer:
             or selected is None
             or provenance is None
             or provenance.source_stamp != source
+            or provenance.fingerprint
+            != _fingerprint(
+                provenance.tenant_id,
+                provenance.source_stamp,
+                provenance.original_prepared_run,
+                provenance.selected_response_seal,
+                provenance.initialized,
+                provenance.terminal,
+                provenance.result,
+                provenance.complete_ordered_run_lineage,
+                provenance.ordered_members,
+            )
+            or tuple((member.schema_id, member.record_id) for member in provenance.ordered_members)
+            != (
+                *(
+                    (EXECUTION_RUN_SCHEMA, ref.revision.head)
+                    for ref in selected.source.target_run_lineage
+                ),
+                (
+                    SEAL_SCHEMA,
+                    "record:" + current.selected_response_seal.revision.fingerprint,
+                ),
+                (
+                    INITIALIZED_SCHEMA,
+                    "record:" + selected.selected_seal.initialized_records[0].digest(),
+                ),
+                (
+                    CANCELLATION_SCHEMA,
+                    current.cancellation_terminal.terminal_id,
+                ),
+                (NOT_EXECUTED_SCHEMA, current.not_executed_result.result_id),
+            )
             or selected.source.tenant_id != current.tenant_id
             or selected.source.database_identity != before.database_identity
             or selected.source.preparation_bindings != bindings
@@ -413,3 +461,13 @@ class R14NativeOneCallCancelledAccountingV24Producer:
         ):
             return None
         return current, selected, source, provenance
+
+
+@dataclass(frozen=True, slots=True)
+class NativeOneCallAccountingV24Exchange:
+    request: PrepareNativeOneCallCancelledAccountingV2
+    result: PreparedNativeOneCallCancelledAccountingV2
+    owner_request: PublicPortCall
+    owner_response: PublicPortSuccess
+    selected_source: R14NativeOneCallCancelledFacts
+    physical_source: R14NativeExecutionRecordSourceManifest
