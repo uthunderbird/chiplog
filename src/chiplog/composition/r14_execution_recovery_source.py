@@ -17,7 +17,7 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     NotExecutedCallResultRecord,
 )
 from chiplog.capabilities.agent_loop.execution_contracts import ConsequentialToolCall
-from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.agent_loop.recovery_contracts import NotApplicable, Present
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import InitializedCall
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
     RECOVERY_FRONTIER_REGISTRY_SCHEMA,
@@ -121,6 +121,8 @@ class R14NativeCancelledCallSource:
             tool.canonical_bytes()
             != b64decode(initialized_record.call.canonical_call_base64, validate=True)
             or tool.tool != "request_self_effect"
+            or initialized_record.call.classification != "CONSEQUENTIAL"
+            or not isinstance(initialized_record.call.retry_lineage, NotApplicable)
         ):
             return None
         row = inventory.ordered_calls[0]

@@ -12,6 +12,8 @@ from chiplog.architecture.r7_runtime import (
     R13_PRODUCTION_MANIFEST,
     R14_EVALUATION_MANIFEST,
     R14_PRODUCTION_MANIFEST,
+    R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_EVALUATION_MANIFEST,
+    R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
     R16_EVALUATION_MANIFEST,
     R16_PRODUCTION_MANIFEST,
     LeafBinding,
@@ -21,6 +23,16 @@ from chiplog.architecture.r7_runtime import (
     verify_runtime_manifest,
 )
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+
+
+def test_v23_adds_only_bounded_native_accounting_route() -> None:
+    production = R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST
+    evaluation = R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_EVALUATION_MANIFEST
+    assert verify_runtime_manifest(production)
+    verify_production_evaluation_equivalence(production, evaluation)
+    agent_loop = next(owner for owner in production.owners if owner.owner_id == "agent_loop")
+    assert "agent_loop.prepare_native_one_call_cancelled_accounting" in agent_loop.capability_ids
+    assert production.manifest_version == 23
 
 
 def test_cli_and_preparation_profiles_reject_cross_profile_substitution() -> None:

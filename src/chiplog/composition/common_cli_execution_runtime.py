@@ -19,6 +19,7 @@ from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import (
     R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
+    R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
@@ -2321,7 +2322,11 @@ def observation_to_head(observation: ResourceObservation) -> Head:
 
 @asynccontextmanager
 async def open_common_cli_execution_runtime(
-    database: Path, *, resources: HermeticDispatchResources, responses: tuple[bytes, ...] = ()
+    database: Path,
+    *,
+    resources: HermeticDispatchResources,
+    responses: tuple[bytes, ...] = (),
+    manifest: RuntimeAssemblyManifest = R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
 ) -> AsyncIterator[CommonCliExecutionRuntime]:
     model = HermeticModel(responses)
     with _configured(resources):
@@ -2330,7 +2335,7 @@ async def open_common_cli_execution_runtime(
             tenant_id="hermetic-tenant",
             operator_secret=b"r13-hermetic-only",
             runtime_type=CommonCliExecutionRuntime,
-            manifest=R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
+            manifest=manifest,
             extra_leaves={
                 "model": model,
                 "effects_transport": resources.require_original_provider(),
@@ -2851,7 +2856,9 @@ async def _open_installed_h1_runtime(
                                 )
 
                                 scoped_authorization_normative_conflict_generation_reader = (
-                                    H1ScopedAuthorizationNormativeConflictGenerationReaderV1(runtime)
+                                    H1ScopedAuthorizationNormativeConflictGenerationReaderV1(
+                                        runtime
+                                    )
                                 )
                                 runtime._h1_scoped_authorization_normative_conflict_generation_reader_v1 = (  # noqa: E501
                                     scoped_authorization_normative_conflict_generation_reader
@@ -2862,9 +2869,9 @@ async def _open_installed_h1_runtime(
                             if manifest is R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST:
                                 scoped_authorization_resource_reader = (
                                     H1ScopedAuthorizationResourceReaderV1(
-                                    runtime,
-                                    scoped_authorization_history_reader,
-                                    scoped_delivery_authority_reader,
+                                        runtime,
+                                        scoped_authorization_history_reader,
+                                        scoped_delivery_authority_reader,
                                     )
                                 )
                                 runtime._h1_scoped_authorization_resource_reader_v3 = (
@@ -3207,5 +3214,22 @@ async def open_installed_h1_scoped_v22_runtime(
         resources=resources,
         responses=responses,
         manifest=R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
+    ) as runtime:
+        yield runtime
+
+
+@asynccontextmanager
+async def open_installed_h1_native_one_call_accounting_v23_runtime(
+    launch: object,
+    *,
+    resources: HermeticDispatchResources,
+    responses: tuple[bytes, ...] = (),
+) -> AsyncIterator[CommonCliExecutionRuntime]:
+    """Open V23 with only the bounded native cancellation accounting route added."""
+    async with _open_installed_h1_runtime(
+        launch,
+        resources=resources,
+        responses=responses,
+        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
     ) as runtime:
         yield runtime
