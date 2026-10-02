@@ -343,6 +343,7 @@
   "composition/r14_execution_inbox_records.py": "9ca30d2de42b0003b60ac5aacd4c84953c9fdc69e68b03d5ecc194ae196d9dd3",
   "composition/r14_execution_inventory.py": "b79334122d0457e061c5d4ce5e9ac451f0b794470e653669f5f4001f696615f6",
   "composition/r14_native_preparation_bindings.py": "6a04b0a3f70f866f70b013735e267e31aa62126973635717ec3754678861c278",
+  "composition/r14_native_selected_accounting_source.py": "72560fe50123ccc8a8fc75a99eef58f904c84862cfe95494ff5d009f17ccd6e8",
   "composition/r14_original_prepare_source.py": "feeb5423fe18b43b549f176f120c9a300e2591efe76d278cc89bb04d40dbc2d4",
   "composition/r14_execution_recovery_source.py": "bed5ac4ddda65d996ada90ba384780bb804da5b0e4a4e796fef30f67c85b9bdd",
   "composition/r14_execution_runtime.py": "23962ff80eff61ee1e12d25698b9cfd96c44d78f8e5e30b714c5eb4d8a1eed14",

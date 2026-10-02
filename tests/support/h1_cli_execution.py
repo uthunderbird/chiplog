@@ -51,7 +51,57 @@ async def _client(path: Path) -> None:
         await writer.wait_closed()
 
 
+async def admit_runtime_slot(
+    runtime: CommonCliExecutionRuntime, slot: str
+) -> DriveInputRequestV1:
+    """Admit one retained input under the caller's isolated test slot."""
+    runtime.provision_retained(slot, b"make a native run")
+    await runtime.allocate_receipt(slot)
+    await runtime.stage_receipt(slot)
+    entries = tuple(
+        entry
+        for entry in runtime.ingress_history().custody.entries
+        if entry.token.receive_slot == slot
+    )
+    assert len(entries) == 1
+    token = entries[0].token.token_id
+    async with runtime.cli_custody(slot) as custody:
+        peer = asyncio.create_task(_client(custody.socket.path))
+        assert (await custody.admit()).kind == "COMMITTED"
+        await peer
+    admitted = runtime.read_admitted_inbox(token)
+    assert admitted is not None
+    record = admitted.record
+    identity = IngressCommandIdentity(
+        tenant_id="hermetic-tenant", database_id="hermetic-database", command_id=token
+    )
+    retained = RetainedIngressSource(
+        source=record.command.retention.proof,
+        reader_id=R17_RETAINED_READER_ID,
+        schema_id="chiplog.ingress.retained-source-observation.v1",
+        canonical_source_bytes=record.command.retention.observation_bytes,
+    )
+    return DriveInputRequestV1(
+        identity=DriverCommandIdentityV1(
+            tenant_id="hermetic-tenant",
+            database_id="hermetic-database",
+            driver_command_id="driver:" + token,
+            original_ingress_identity=identity,
+            original_ingress_request_fingerprint=record.inbox.authentication_request_fingerprint,
+        ),
+        selected_source=CliRetainedSelectedSourceV1(
+            original_ingress_identity=identity,
+            source_binding=record.command.token.source,
+            selected_ingress_decision=admitted.selected_decision,
+            source_head=retained.source,
+            retained_source=retained,
+            expected_reader_id=R17_RETAINED_READER_ID,
+        ),
+    )
+
+
 async def _admit(runtime: CommonCliExecutionRuntime) -> DriveInputRequestV1:
+    """Preserve the original shared one-slot fixture behavior exactly."""
     runtime.provision_retained("slot", b"make a native run")
     await runtime.allocate_receipt("slot")
     await runtime.stage_receipt("slot")
