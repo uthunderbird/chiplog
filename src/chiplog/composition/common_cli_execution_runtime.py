@@ -318,6 +318,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_scoped_authorization_resource_reader_v3: Any | None
     _h1_scoped_authorization_resource_reader_v4: Any | None
     _h1_scoped_authorization_clock_reader_v1: Any | None
+    _h1_scoped_authorization_current_effects_history_reader_v1: Any | None
     _h1_scoped_authorization_semantic_registry_reader_v1: Any | None
     _h1_scoped_authorization_runtime_reader_v1: Any | None
     _h1_scoped_authorization_normative_conflict_generation_reader_v1: Any | None
@@ -2623,6 +2624,7 @@ async def _open_installed_h1_runtime(
                 scoped_authorization_resource_reader: Any | None = None
                 scoped_authorization_resource_reader_v4: Any | None = None
                 scoped_authorization_clock_reader: Any | None = None
+                scoped_authorization_current_effects_history_reader: Any | None = None
                 scoped_authorization_semantic_registry_reader: Any | None = None
                 scoped_authorization_runtime_reader: Any | None = None
                 scoped_authorization_normative_conflict_generation_reader: Any | None = None
@@ -2678,6 +2680,7 @@ async def _open_installed_h1_runtime(
                             "_h1_scoped_authorization_resource_reader_v3",
                             "_h1_scoped_authorization_resource_reader_v4",
                             "_h1_scoped_authorization_clock_reader_v1",
+                            "_h1_scoped_authorization_current_effects_history_reader_v1",
                             "_h1_scoped_authorization_semantic_registry_reader_v1",
                             "_h1_scoped_authorization_runtime_reader_v1",
                             "_h1_scoped_authorization_normative_conflict_generation_reader_v1",
@@ -2806,6 +2809,16 @@ async def _open_installed_h1_runtime(
                                 runtime._h1_scoped_authorization_clock_reader_v1 = (
                                     scoped_authorization_clock_reader
                                 )
+                                from .h1_scoped_authorization_current_effects_history import (
+                                    H1ScopedAuthorizationCurrentEffectsHistoryReaderV1,
+                                )
+
+                                scoped_authorization_current_effects_history_reader = (
+                                    H1ScopedAuthorizationCurrentEffectsHistoryReaderV1(runtime)
+                                )
+                                runtime._h1_scoped_authorization_current_effects_history_reader_v1 = (  # noqa: E501
+                                    scoped_authorization_current_effects_history_reader
+                                )
                                 from .h1_scoped_authorization_semantic_registry_reader import (
                                     H1ScopedAuthorizationSemanticRegistryReaderV1,
                                 )
@@ -2867,6 +2880,12 @@ async def _open_installed_h1_runtime(
                         scoped_authorization_semantic_registry_reader.close()
                     if hasattr(runtime, "_h1_scoped_authorization_semantic_registry_reader_v1"):
                         del runtime._h1_scoped_authorization_semantic_registry_reader_v1
+                    if scoped_authorization_current_effects_history_reader is not None:
+                        scoped_authorization_current_effects_history_reader.close()
+                    if hasattr(
+                        runtime, "_h1_scoped_authorization_current_effects_history_reader_v1"
+                    ):
+                        del runtime._h1_scoped_authorization_current_effects_history_reader_v1
                     if scoped_authorization_clock_reader is not None:
                         scoped_authorization_clock_reader.close()
                     if hasattr(runtime, "_h1_scoped_authorization_clock_reader_v1"):
@@ -3003,6 +3022,13 @@ async def _open_installed_h1_runtime(
                     retained_semantic_registry_reader.close()
                 if hasattr(runtime, "_h1_scoped_authorization_semantic_registry_reader_v1"):
                     del runtime._h1_scoped_authorization_semantic_registry_reader_v1
+                retained_current_effects_history_reader = getattr(
+                    runtime, "_h1_scoped_authorization_current_effects_history_reader_v1", None
+                )
+                if retained_current_effects_history_reader is not None:
+                    retained_current_effects_history_reader.close()
+                if hasattr(runtime, "_h1_scoped_authorization_current_effects_history_reader_v1"):
+                    del runtime._h1_scoped_authorization_current_effects_history_reader_v1
                 if retained_clock_reader is not None:
                     retained_clock_reader.close()
                 if hasattr(runtime, "_h1_scoped_authorization_clock_reader_v1"):

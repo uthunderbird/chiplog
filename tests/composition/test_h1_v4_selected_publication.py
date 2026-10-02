@@ -36,6 +36,9 @@ from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_scoped_authorization_clock_reader import (
     H1ScopedAuthorizationClockReaderV1,
 )
+from chiplog.composition.h1_scoped_authorization_current_effects_history import (
+    H1ScopedAuthorizationCurrentEffectsHistoryReaderV1,
+)
 from chiplog.composition.h1_scoped_authorization_delivery_work_reader import (
     H1ScopedAuthorizationDeliveryWorkReaderV1,
 )
@@ -394,6 +397,20 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
                 normative_source.invalidation_manifest
                 == mandate.normative_conflict_generation
             )
+            current_effects_reader = (
+                runtime._h1_scoped_authorization_current_effects_history_reader_v1
+            )
+            assert (
+                type(current_effects_reader)
+                is H1ScopedAuthorizationCurrentEffectsHistoryReaderV1
+            )
+            current_effects_capture = current_effects_reader.read(delivery_work_capture)
+            with runtime._authority_gate().hold():
+                current_effects_source = current_effects_reader.role_held(current_effects_capture)
+            assert current_effects_source.clock_epoch == clock_role.clock_epoch
+            assert current_effects_source.valid_until_ns == clock_role.valid_until_ns
+            assert current_effects_source != normative_source
+            current_effects_reader.release(current_effects_capture)
             normative_reader.release(normative_capture)
             test_clock_ns[0] = capture.expires_at_ns
             with pytest.raises(H1DeliveryWorkCurrentClaimHold, match="session or clock"):
