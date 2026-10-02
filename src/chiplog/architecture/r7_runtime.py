@@ -1223,6 +1223,39 @@ R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST = replace(
 )
 
 
+_V27_NEXT_TURN_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_next_execution_turn.v1",
+    "broker",
+    "agent_loop",
+    "chiplog.execution.recovery-request.v1",
+    "chiplog.execution.recovery-result.v1",
+)
+_V27_EXECUTION_OPERATIONS = tuple(
+    sorted((*_V26_EXECUTION_OPERATIONS, _V27_NEXT_TURN_ROUTE.operation_id))
+)
+R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST = replace(
+    R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST,
+    manifest_version=27,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_V27_EXECUTION_OPERATIONS,
+            public_operations=_V27_EXECUTION_OPERATIONS,
+            target_ids=("chiplog.capabilities.agent_loop._execution_next_turn_process:dispatch",),
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (*R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST.routes, _V27_NEXT_TURN_ROUTE),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+
+
 class RuntimeManifestViolation(ValueError):
     pass
 
@@ -1260,6 +1293,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         24,
         25,
         26,
+        27,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1287,6 +1321,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         24: R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
         25: R15_MANDATE_PRODUCTION_MANIFEST,
         26: R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST,
+        27: R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")

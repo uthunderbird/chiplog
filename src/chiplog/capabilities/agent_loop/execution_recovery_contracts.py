@@ -66,6 +66,30 @@ class PrepareExecutionSuccessor(ExecutionRecoveryDTO):
     fence: RunExecutionFence
 
 
+class SelectedContinuationResultStamp(ExecutionRecoveryDTO):
+    """Inert claimed result of one selected accounting/readiness publication."""
+
+    selected_decision: CallSubjectHead
+    predecessor_tenant_commit_sequence: UInt64
+    predecessor_materialization_commitment: Digest
+    resulting_tenant_commit_sequence: UInt64
+    resulting_materialization_commitment: Digest
+    complete_batch_fingerprint: Digest
+
+
+class SelectedContinuationPublication(ExecutionRecoveryDTO):
+    """Exact historical C and selected pair; the broker authenticates this bridge."""
+
+    schema_id: Literal["chiplog.execution.selected-continuation-publication.v1"] = (
+        "chiplog.execution.selected-continuation-publication.v1"
+    )
+    source_cut: ExecutionRecoveryCut | None = None
+    accounting_source: RecoverySourceRecord
+    readiness_source: RecoverySourceRecord
+    selected_decision: CallSubjectHead
+    result_stamp: SelectedContinuationResultStamp
+
+
 class PrepareNextExecutionTurn(ExecutionRecoveryDTO):
     """The writer directly recomputes readiness in the TurnStarted transaction."""
 
@@ -77,6 +101,7 @@ class PrepareNextExecutionTurn(ExecutionRecoveryDTO):
     expected_current_turn: CallSubjectHead
     next_ordinal: int = Field(strict=True, gt=0, le=2**64 - 1)
     continuation: ContinuationReadyRecord
+    selected_publication: SelectedContinuationPublication | None = None
     fence: RunExecutionFence
 
 

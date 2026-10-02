@@ -44,6 +44,8 @@ def authenticate_native_recovery_selected(
     runtime: CommonCliExecutionRuntime,
     evidence: RetainedRecoveryPublication,
     entry: dict[str, object],
+    *,
+    through_sequence: int | None = None,
 ) -> bool:
     """Authenticate retained original C without reopening recursive current history."""
     from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
@@ -300,9 +302,44 @@ def authenticate_native_recovery_selected(
             captured_owner = snapshot_from_captured_entries(owner_entries, cut.tenant_id)
             if captured_owner != owner_journal.snapshot():
                 return False
+            owner_replay_entries = owner_entries
+            if through_sequence is not None:
+                # Reconcile the historical SQL prefix against an independently
+                # scanned journal prefix, including each MATERIALIZED marker.
+                # The full journal is authenticated first; future decisions may
+                # not be silently dropped from the selected C' proof.
+                boundary = len(owner_entries)
+                for index in range(1, len(owner_entries) + 1):
+                    candidate = snapshot_from_captured_entries(
+                        owner_entries[:index], cut.tenant_id
+                    )
+                    if any(
+                        decision.tenant_commit_sequence > through_sequence
+                        for decision in candidate.decisions
+                    ):
+                        boundary = index - 1
+                        break
+                owner_replay_entries = owner_entries[:boundary]
+                selected_prefix = snapshot_from_captured_entries(
+                    owner_replay_entries, cut.tenant_id
+                )
+                expected_prefix = tuple(
+                    decision
+                    for decision in captured_owner.decisions
+                    if decision.tenant_commit_sequence <= through_sequence
+                )
+                if (
+                    selected_prefix.decisions != expected_prefix
+                    or any(
+                        decision.prepared.request.identity.command_id
+                        not in selected_prefix.materialized_command_ids
+                        for decision in expected_prefix
+                    )
+                ):
+                    return False
             owner_cut = reconcile_h1_owner_cut(
                 tenant=cut.tenant_id,
-                raw_entries=owner_entries,
+                raw_entries=owner_replay_entries,
                 publications=tuple(
                     OwnerJournalSqlPublication(
                         operation, identity, fingerprint, sequence, tuple(ids.split("\n"))
@@ -310,16 +347,18 @@ def authenticate_native_recovery_selected(
                     for operation, identity, fingerprint, sequence, ids in connection.execute(
                         "SELECT operation_kind,idempotency_key,request_fingerprint,"
                         "commit_sequence,record_ids FROM publications WHERE tenant_id=? "
+                        "AND commit_sequence<=? "
                         "ORDER BY commit_sequence,operation_kind,idempotency_key",
-                        (cut.tenant_id,),
+                        (cut.tenant_id, through_sequence or 2**63 - 1),
                     )
                 ),
                 records=tuple(
                     OwnerJournalSqlRecord(*row)
                     for row in connection.execute(
                         "SELECT record_id,owner,schema_id,canonical_bytes,commit_sequence "
-                        "FROM records WHERE tenant_id=? ORDER BY commit_sequence,record_id",
-                        (cut.tenant_id,),
+                        "FROM records WHERE tenant_id=? AND commit_sequence<=? "
+                        "ORDER BY commit_sequence,record_id",
+                        (cut.tenant_id, through_sequence or 2**63 - 1),
                     )
                 ),
                 phase="PRE_SEAL",

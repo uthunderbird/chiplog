@@ -486,6 +486,7 @@ def _read_call_history(
                         EXECUTION_CANCELLATION_OPERATION,
                         "agent_loop.native-one-call-cancelled-accounting.v1",
                         "agent_loop.execution-accounting-readiness.v1",
+                        "agent_loop.execution-next-turn.v1",
                         "agent_loop.native-one-call-recovery-profile.v1",
                         EXECUTION_TRANSITION_OPERATION,
                         EXECUTION_INBOX_INITIALIZATION_OPERATION,
@@ -526,6 +527,35 @@ def _read_call_history(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
                         expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if (
+                        command.operation_kind == "agent_loop.execution-next-turn.v1"
+                        or "execution_next_turn_evidence" in entry
+                    ):
+                        from chiplog.composition.r14_next_turn_records import (
+                            NEXT_TURN_PUBLICATION,
+                            validate_selected_next_turn,
+                        )
+
+                        if command.operation_kind != NEXT_TURN_PUBLICATION:
+                            raise ValueError("next Turn retained under substituted operation")
+                        evidence = validate_selected_next_turn(runtime, entry, command)
+                        before, after = evidence.request.run, evidence.result.run
+                        if (
+                            not isinstance(before, ExecutionRunRecord)
+                            or not isinstance(after, ExecutionRunRecord)
+                            or latest.get(before.run_id) != before
+                            or after.predecessor != before.head
+                            or evidence.request.cut.tenant_commit_sequence != command.expected_head
+                            or after.event != "TurnStarted"
+                        ):
+                            raise ValueError("selected next Turn differs from exact Run history")
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        latest[after.run_id] = after
+                        mixed_records.append(after)
                         continue
                     if command.operation_kind == "effects.accept_call":
                         value = call_values[identity]
@@ -1248,10 +1278,12 @@ def validate_selected_executions(runtime: R14PlanningRuntime) -> None:
                 EXECUTION_FANOUT_OPERATION,
                 EXECUTION_COMPLETE_SEAL_OPERATION,
                 EXECUTION_INBOX_INITIALIZATION_OPERATION,
+                "agent_loop.execution-next-turn.v1",
             )
             or "execution_transition" in entry
             or "execution_fanout" in entry
             or "execution_complete_seal" in entry
+            or "execution_next_turn_evidence" in entry
             or "inbox_initialization" in entry
             or any(record.schema_id == EXECUTION_RUN_SCHEMA for record in command.records)
         )
@@ -1261,6 +1293,7 @@ def validate_selected_executions(runtime: R14PlanningRuntime) -> None:
                 EXECUTION_FANOUT_OPERATION,
                 EXECUTION_COMPLETE_SEAL_OPERATION,
                 EXECUTION_INBOX_INITIALIZATION_OPERATION,
+                "agent_loop.execution-next-turn.v1",
             ):
                 raise LoopIntegrityError(
                     f"operation=startup_execution tenant={runtime._tenant_id} "

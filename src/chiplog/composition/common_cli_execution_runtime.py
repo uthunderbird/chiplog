@@ -942,6 +942,13 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await publish_execution_accounting_readiness(self, peer)
 
+    async def start_next_execution_turn(
+        self, run_id: str, expected_head: str, peer: str = "hermetic-ingress"
+    ):
+        from chiplog.composition.r14_next_turn_publication import start_next_execution_turn
+
+        return await start_next_execution_turn(self, peer, run_id, expected_head)
+
     def read_native_one_call_cancelled_accounting(self):
         """Canonical read-only accounting observation after selected-history validation."""
         from chiplog.composition.r14_loop_history import read_selected_native_accounting

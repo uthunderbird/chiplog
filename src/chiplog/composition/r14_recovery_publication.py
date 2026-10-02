@@ -293,7 +293,7 @@ def retained(entry):
     return evidence
 
 
-def validate_selected(runtime, entry, physical_command):
+def validate_selected(runtime, entry, physical_command, *, through_sequence=None):
     evidence = retained(entry)
     if evidence.actor_budget_v1 is not None:
         from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
@@ -324,9 +324,15 @@ def validate_selected(runtime, entry, physical_command):
         )
         if prefix.snapshot_bytes != receipt.trust_snapshot_bytes:
             raise ValueError("selected recovery actor original trust prefix differs")
-    if command(evidence) != physical_command or not source(runtime).authenticate_selected_held(
-        runtime, evidence, entry
-    ):
+    if through_sequence is None:
+        authenticated = source(runtime).authenticate_selected_held(runtime, evidence, entry)
+    else:
+        from .r14_native_recovery_historical import authenticate_native_recovery_selected
+
+        authenticated = authenticate_native_recovery_selected(
+            source(runtime), runtime, evidence, entry, through_sequence=through_sequence
+        )
+    if command(evidence) != physical_command or not authenticated:
         raise ValueError("recovery selected cut or exact atomic publication unauthenticated")
     return evidence
 
@@ -535,6 +541,13 @@ def authenticate_selected_recovery_prefix_held(runtime, actual, anchored) -> boo
     try:
         runtime._check_database_identity()
         pending = runtime._pending()
+        if (
+            len(pending) == 1
+            and pending[0].get("operation_kind") == "agent_loop.execution-next-turn.v1"
+        ):
+            from .r14_next_turn_pending import authenticate_selected_next_turn_prefix_held
+
+            return authenticate_selected_next_turn_prefix_held(runtime, actual, anchored)
         if len(pending) != 1 or runtime._pending_owners() or runtime._pending_gate_publications():
             return False
         entry = pending[0]

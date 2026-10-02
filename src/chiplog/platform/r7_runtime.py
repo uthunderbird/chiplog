@@ -404,10 +404,15 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             "scheduler.prepare_rollover",
         ):
             return "chiplog.capabilities.agent_loop._native_one_call_accounting_v2_process"
-        from chiplog.architecture.r7_runtime import _V26_EXECUTION_OPERATIONS
+        from chiplog.architecture.r7_runtime import (
+            _V26_EXECUTION_OPERATIONS,
+            _V27_EXECUTION_OPERATIONS,
+        )
 
         if identity.capability_ids == _V26_EXECUTION_OPERATIONS:
             return "chiplog.capabilities.agent_loop._execution_recovery_process"
+        if identity.capability_ids == _V27_EXECUTION_OPERATIONS:
+            return "chiplog.capabilities.agent_loop._execution_next_turn_process"
         raise OwnerProcessFailure("unknown agent-loop capability partition")
     if identity.owner_id == "projections" and identity.capability_ids == (
         "projections.prepare_conversation_completion",
@@ -441,6 +446,24 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
 
 def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
     module = _owner_module(identity)
+    if module == "chiplog.capabilities.agent_loop._execution_next_turn_process":
+        return tuple(
+            sorted(
+                (
+                    *_owner_module_closure(
+                        replace(
+                            identity,
+                            capability_ids=tuple(
+                                item
+                                for item in identity.capability_ids
+                                if item != "agent_loop.prepare_next_execution_turn.v1"
+                            ),
+                        )
+                    ),
+                    module,
+                )
+            )
+        )
     if module == "chiplog.capabilities.agent_loop._execution_recovery_process":
         return tuple(
             sorted(
