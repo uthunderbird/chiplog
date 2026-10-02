@@ -7,27 +7,53 @@ or broker capability.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import json
 from dataclasses import dataclass
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
 from chiplog.capabilities.agent_loop.execution_contracts import (
     ExecutionPromptArtifact,
     ExecutionVisibilityManifest,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
+    HermeticOutputScopeAnchorV1,
+    HermeticOutputScopeV1,
+)
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.h1_selected_prepare import (
     H1SelectedPostSealPrepare,
     reopen_selected_h1_workspace,
     select_h1_v3_prepare_for_seal,
 )
+from chiplog.composition.h1_workspace_policy_v2 import (
+    H1OriginalWorkspaceIssuanceV2,
+    decode_h1_workspace_policy_v2,
+)
 from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_h1_workspace_issuance_contracts import H1WorkspaceIssuanceRefV1
+from chiplog.platform.h1_scope_lineage import AuthenticatedHermeticOutputScope
 
 
 class R14OriginalPrepareSourceError(ValueError):
     """The installed history cannot prove one complete original Prepare."""
+
+
+@dataclass(frozen=True, slots=True)
+class R14OriginalH1OutputScopeProjection:
+    """Historical H1 local-commentary context; this grants no authority."""
+
+    policy_anchor: HermeticOutputScopeAnchorV1
+    policy_scope_ref: ExactHead
+    policy_bytes: bytes
+    scope_decision_bytes: bytes
+    scope_record_bytes: bytes
+    scope_bytes: bytes
+    scope: HermeticOutputScopeV1
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +78,7 @@ class R14OriginalNativePrepareProjection:
     generated_schema_bytes: bytes
     ordered_tool_spec_bytes: tuple[bytes, ...]
     policy_bytes: bytes
+    descriptive_original_h1_output_scope: R14OriginalH1OutputScopeProjection | None
 
 
 class R14OriginalNativePrepareSource:
@@ -152,6 +179,13 @@ class R14OriginalNativePrepareSource:
             or issuance.proposal_context_json.encode() != prepare.proposal_context_bytes
         ):
             raise R14OriginalPrepareSourceError("selected Prepare workspace issuance differs")
+        descriptive_scope = self._descriptive_scope_held(
+            issuance=issuance,
+            issuance_bytes=issuance_bytes,
+            selected=selected,
+            manifest=manifest,
+            gate=self._runtime._authority_gate(),
+        )
         digest = hashlib.sha256(proposal.run.canonical_bytes()).hexdigest()
         return R14OriginalNativePrepareProjection(
             tenant_id=proposal.run.tenant,
@@ -177,10 +211,127 @@ class R14OriginalNativePrepareSource:
             generated_schema_bytes=artifact.response_schema_json.encode(),
             ordered_tool_spec_bytes=tuple(tool.canonical_bytes() for tool in artifact.tools),
             policy_bytes=prepare.started_run.policy.canonical_bytes(),
+            descriptive_original_h1_output_scope=descriptive_scope,
+        )
+
+    def _descriptive_scope_held(
+        self,
+        *,
+        issuance: object,
+        issuance_bytes: bytes,
+        selected: H1SelectedPostSealPrepare,
+        manifest: ExecutionVisibilityManifest,
+        gate: object,
+    ) -> R14OriginalH1OutputScopeProjection | None:
+        if type(issuance) is not H1OriginalWorkspaceIssuanceV2:
+            return None
+        try:
+            policy_bytes = base64.b64decode(
+                issuance.sources.policy_payload_base64.encode("ascii"), validate=True
+            )
+        except (ValueError, binascii.Error) as error:
+            raise R14OriginalPrepareSourceError(
+                "selected V2 policy payload is malformed"
+            ) from error
+        policy = decode_h1_workspace_policy_v2(policy_bytes)
+        registration = policy.registration
+        reader = self._runtime._h1_historical_trust_reader()
+        if getattr(reader, "authority_gate", None) is not gate:
+            raise R14OriginalPrepareSourceError(
+                "historical trust reader has a different authority gate"
+            )
+        anchor = registration.output_scope_anchor
+        record = reader.historical_record(anchor.decision.head, anchor.record_ordinal)
+        try:
+            envelope = json.loads(record.envelope_bytes)
+            materialized = json.loads(record.record_bytes)
+            raw_scope = materialized["scope"]
+            scope_bytes = json.dumps(raw_scope, sort_keys=True, separators=(",", ":")).encode()
+            scope = HermeticOutputScopeV1.model_validate_json(scope_bytes)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise R14OriginalPrepareSourceError(
+                "historical H1 scope record is malformed"
+            ) from error
+        authenticated = AuthenticatedHermeticOutputScope(
+            decision_id=record.physical_decision_id,
+            decision_bytes=record.envelope_bytes,
+            record_ordinal=record.record_ordinal,
+            record_bytes=record.record_bytes,
+            scope=scope,
+        )
+        if (
+            issuance_bytes != issuance.canonical_bytes()
+            or not isinstance(envelope, dict)
+            or envelope.get("kind") != "HERMETIC_OUTPUT_SCOPE_V1"
+            or not isinstance(envelope.get("payload"), dict)
+            or set(envelope["payload"]) != {"scope"}
+            or envelope["payload"]["scope"] != raw_scope
+            or record.record_ordinal != 1
+            or not isinstance(materialized, dict)
+            or materialized.get("decision_id") != record.physical_decision_id
+            or materialized.get("operation_kind") != "HERMETIC_OUTPUT_SCOPE_V1"
+            or materialized.get("record_type_id")
+            != "chiplog.deployment_trust.hermetic_output_scope"
+            or materialized.get("schema_id") != "chiplog.deployment_trust.record.v1"
+            or scope.canonical_bytes() != scope_bytes
+            or authenticated.anchor != anchor
+        ):
+            raise R14OriginalPrepareSourceError("historical H1 scope differs from its full anchor")
+        scope_digest = hashlib.sha256(scope_bytes).hexdigest()
+        scope_ref = ExactHead(
+            identity=scope.scope_id,
+            head=scope.scope_id + "/" + scope_digest,
+            fingerprint=scope_digest,
+        )
+        run = selected.prepare.retained.proposal.run
+        try:
+            accepted_policy_bytes = base64.b64decode(
+                registration.accepted_policy_bytes_base64.encode("ascii"), validate=True
+            )
+        except (ValueError, binascii.Error) as error:
+            raise R14OriginalPrepareSourceError(
+                "selected V2 accepted policy payload is malformed"
+            ) from error
+        cli_state = scope.authenticated_cli_state
+        if cli_state is None:
+            raise R14OriginalPrepareSourceError("historical H1 scope lacks CLI state")
+        if (
+            registration.output_scope_ref != scope_ref
+            or scope.disclosure_policy.ref != registration.accepted_policy
+            or scope.disclosure_policy.canonical_source_bytes != accepted_policy_bytes
+            or scope.admitted_authentication != registration.admitted_authentication_ref
+            or scope.selected_resource_observation_ref
+            != registration.selected_resource_observation_ref
+            or scope.worker_session_id != issuance.worker_session
+            or scope.worker_session_id != selected.prepare.started_run.worker_session
+            or scope.worker_session_id != manifest.worker_session
+            or scope.tenant_id != policy.tenant
+            or scope.tenant_id != run.tenant
+            or scope.principal_id != policy.principal
+            or scope.principal_id != run.principal
+            or scope.recipient.recipient_id != registration.origin_recipient_id
+            or scope.database_id != policy.database
+            or scope.database_id != registration.database_id
+            or scope.contour_head != policy.heads.contour
+            or cli_state.credential_head != policy.heads.credential
+            or cli_state.session_head != policy.heads.session
+        ):
+            raise R14OriginalPrepareSourceError(
+                "historical H1 scope differs from V2 policy context"
+            )
+        return R14OriginalH1OutputScopeProjection(
+            policy_anchor=anchor,
+            policy_scope_ref=registration.output_scope_ref,
+            policy_bytes=policy_bytes,
+            scope_decision_bytes=record.envelope_bytes,
+            scope_record_bytes=record.record_bytes,
+            scope_bytes=scope_bytes,
+            scope=scope,
         )
 
 
 __all__ = [
+    "R14OriginalH1OutputScopeProjection",
     "R14OriginalNativePrepareProjection",
     "R14OriginalNativePrepareSource",
     "R14OriginalPrepareSourceError",
