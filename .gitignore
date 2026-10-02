@@ -27,6 +27,7 @@ build/
 credentials.json
 token.json
 .harness/.healthcheck-state
+.harness/runs/
 .harness/handoff.md
 /runtime/
 /state/
