@@ -32,7 +32,13 @@ Identity = Annotated[str, Field(min_length=1)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 UInt64 = Annotated[int, Field(ge=0, le=2**64 - 1)]
 Owner = Literal[
-    "agent_loop", "effects", "planning", "broker_ingress", "broker_dispatch", "conversation"
+    "agent_loop",
+    "effects",
+    "planning",
+    "broker_ingress",
+    "broker_dispatch",
+    "conversation",
+    "broker_scheduler",
 ]
 
 BrokerOperation = Literal[
@@ -59,6 +65,7 @@ BrokerOperation = Literal[
     "recovery.replace_model_attempt",
     "scheduler.genesis",
     "scheduler.issue_mandate",
+    "r15.adopt_lease_execution_policy",
     "scheduler.amend_schedule",
     "scheduler.amend_policy",
     "scheduler.replace_bound",

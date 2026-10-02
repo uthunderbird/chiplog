@@ -16,6 +16,15 @@ from chiplog.capabilities.agent_loop.contracts import LoopRejected, LoopSnapshot
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_runtime import R14PlanningRuntime
+from chiplog.composition.r15_lease_policy import LeasePolicyAdoptionRequest
+from chiplog.composition.r15_lease_publication import (
+    LeaseExecutionSession,
+    acquire,
+    adopt_lease_policy,
+    open_execution_session,
+    validate_selected_lease_decision,
+)
+from chiplog.composition.r15_lease_service_auth import LeaseExecutionAuthority
 from chiplog.composition.r15_mandate_contracts import MandateClockPreview, MandateIssuanceAdoption
 from chiplog.composition.r15_mandate_publication import preview_mandate_clock, publish_mandate
 from chiplog.composition.r15_scheduler_history import read_loop_snapshot
@@ -53,8 +62,15 @@ from chiplog.platform.owner_publications import OwnerPublicationPending
 class R15SchedulerRuntime(R14PlanningRuntime):
     _tick_clock: TickClockPort
     _mandate_clock_issuances: dict[str, object]
+    _lease_execution_sessions: list[LeaseExecutionSession]
+    _record_contracts: ClassVar[dict[str, str]] = {
+        **R14PlanningRuntime._record_contracts,
+        "broker_scheduler": "chiplog.r15.lease-policy-adoption.v1",
+    }
     _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = (
         *R14PlanningRuntime._record_schema_variants,
+        ("agent_loop", "chiplog.scheduler.lease-transition.v1"),
+        ("broker_scheduler", "chiplog.r15.lease-execution-authority.v2"),
         ("agent_loop", "chiplog.scheduler.schedule-definition.v1"),
         ("agent_loop", "chiplog.scheduler.missed-policy.v1"),
         ("agent_loop", "chiplog.scheduler.interval-bound.v1"),
@@ -92,12 +108,36 @@ class R15SchedulerRuntime(R14PlanningRuntime):
 
     async def _prepare_startup(self) -> None:
         with self._authority_gate().hold():
-            for decision in self._owner_decisions().snapshot().decisions:
+            decisions = self._owner_decisions().snapshot().decisions
+            for decision in decisions:
                 validate_selected_tick(decision)
+                validate_selected_lease_decision(decision, decisions)
         await super()._prepare_startup()
         # Inherited recovery replays independently selected bytes before any live
         # owner starts. Complete readback rejects marker-only or partial history.
         self._loop_snapshot()
+
+    async def adopt_scheduler_lease_policy(
+        self,
+        peer: str,
+        request: LeasePolicyAdoptionRequest,
+        execution_authority: LeaseExecutionAuthority,
+    ) -> BrokerPublicationResult:
+        return await adopt_lease_policy(self, peer, request, execution_authority)
+
+    async def open_scheduler_execution_session(self, peer: str) -> LeaseExecutionSession:
+        return await open_execution_session(self, peer)
+
+    async def acquire_scheduler_lease(
+        self,
+        session: LeaseExecutionSession,
+        root_id: str,
+        command_id: str,
+        duration_ns: int = 60_000_000_000,
+        *,
+        signature: bytes = b"",
+    ) -> BrokerPublicationResult:
+        return await acquire(self, session, root_id, command_id, duration_ns, signature)
 
     async def preview_scheduler_tick_policy(
         self, peer: str, draft: TickPolicyDraft
@@ -214,6 +254,7 @@ async def open_r15_runtime(
         runtime = cast(R15SchedulerRuntime, opened)
         runtime._tick_clock = clock if clock is not None else SchedulerClock()
         runtime._mandate_clock_issuances = {}
+        runtime._lease_execution_sessions = []
         registered_clock_source(runtime._tick_clock)
         if runtime._trust.verify() is None:
             await runtime.bootstrap(

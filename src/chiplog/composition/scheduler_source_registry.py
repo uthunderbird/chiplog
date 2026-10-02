@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from importlib.metadata import version
 from pathlib import Path
 from types import ModuleType
-from typing import Literal
+from typing import Literal, cast
 
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.scheduler_materialization import SchedulerCanonicalMember
@@ -53,7 +53,20 @@ _MANIFEST = Path(__file__).with_name("scheduler_source_manifest.json")
 _MANIFEST_SHA = "8d8c28b7619703ff0e39d40e314de2427f361a6bc84050411b4dec1c11e3f7e7"
 _MANIFEST_V2 = Path(__file__).with_name("scheduler_source_manifest_v2.json")
 _MANIFEST_V2_SHA = "459d2ecb4477d751502ba80ac5742bb9fac719ba46e4a859c62c66a61897935e"
+_MANIFEST_V2B = Path(__file__).with_name("scheduler_source_manifest_v2b.json")
+_MANIFEST_V2B_SHA = "2b65fc6af4bbbe149e738295d725386e498b7977709bf85735bc15a6a2107717"
+_MANIFEST_V2C = Path(__file__).with_name("scheduler_source_manifest_v2c.json")
+_MANIFEST_V2C_SHA = "3fa9a22edbd83b5d77c84c42a2b5a8e8d4d7d304bed8a803896ac503861a7299"
+_V2B_CLOSURE_SHA = "6c195cb5628dbf8d3cbed66e2038c89bb43294fd0da08ecc33a4b6d3b2842837"
 _MODULES = (
+    "chiplog.composition.r15_lease_service_auth",
+    "chiplog.composition.r15_lease_publication_v2b",
+    "chiplog.composition.r15_lease_v2b_canonical",
+    "chiplog.capabilities.deployment_trust.operator_policy_command_verifier",
+    "chiplog.capabilities.deployment_trust._r7_process",
+    "chiplog.composition.r15_lease_acquire",
+    "chiplog.composition.r15_lease_policy",
+    "chiplog.composition.r15_lease_publication",
     "chiplog.capabilities.agent_loop.scheduler_startup",
     "chiplog.capabilities.agent_loop.scheduler_rollover",
     "chiplog.capabilities.agent_loop.scheduler_materialization",
@@ -124,6 +137,9 @@ def _loaded_module(name: str) -> ModuleType:
 def _observe() -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
     """Observed artifacts only. Their existence never creates a trusted pin."""
     sources: dict[str, bytes] = {}
+    from chiplog.composition import r15_lease_publication_v2b
+
+    _ = r15_lease_publication_v2b
     registered_scope_sources()
     for name in _MODULES:
         module = _loaded_module(name)
@@ -150,7 +166,14 @@ def _observe() -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
         raise ValueError("unsupported interpreter linkage")
     library = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")
     profile: dict[str, object] = {
-        "format": "chiplog.scheduler.source-profile.v2",
+        "format": "chiplog.scheduler.source-profile.v2c",
+        "historical_v2b_closure_sha256": _V2B_CLOSURE_SHA,
+        "execution_crypto": {
+            "version": version("cryptography"),
+            "tree_sha256": _sha(
+                _canonical(_tree(Path(cast(str, _loaded_module("cryptography").__file__)).parent))
+            ),
+        },
         "canonicalization": "sorted-compact-utf8-json-no-ascii-escaping-v1",
         "sources": {name: _sha(raw) for name, raw in sorted(sources.items())},
         "lock_sha256": _sha((_ROOT / "uv.lock").read_bytes()),
@@ -227,6 +250,9 @@ def _require_historical_equality(
         elif isinstance(request, IntervalPreparationRequest):
             records = prepare_interval_request(request).records
         elif isinstance(request, LeasePreparationRequest):
+            from chiplog.composition.r15_lease_publication import validate_selected_lease
+
+            validate_selected_lease(original.selection.prepared.request)
             lease = prepare_lease(request)
             records = (
                 SchedulerCanonicalMember(
@@ -252,8 +278,9 @@ def _require_historical_equality(
 def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegistrationUnresolved:
     """Match reviewed V2 current bytes; retain V1 only for exact selected history."""
     try:
-        raw_manifest = _MANIFEST_V2.read_bytes()
-        if _sha(raw_manifest) != _MANIFEST_V2_SHA:
+        _require_v2b_closure()
+        raw_manifest = _MANIFEST_V2C.read_bytes()
+        if _sha(raw_manifest) != _MANIFEST_V2C_SHA:
             return SourceRegistrationUnresolved("reviewed V2 manifest bytes differ")
         expected = json.loads(raw_manifest)
         observed, sources, _ = _observe()
@@ -270,15 +297,77 @@ def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegi
         )
         digest = _sha(canonical)
         return SchedulerSourceRegistration(
-            Present(head="scheduler-source-registry-v2:" + digest, fingerprint=digest), canonical
+            Present(head="scheduler-source-registry-v2c:" + digest, fingerprint=digest), canonical
         )
     except (OSError, ValueError, TypeError, ImportError, KeyError) as error:
         return SourceRegistrationUnresolved(str(error))
 
 
+def _require_v2b_closure() -> None:
+    raw = Path(__file__).with_name("scheduler_v2b_sources").joinpath("closure.json").read_bytes()
+    if _sha(raw) != _V2B_CLOSURE_SHA:
+        raise ValueError("historical V2b evaluator closure manifest changed")
+    for name, fingerprint in json.loads(raw).items():
+        path = _ROOT / "src" / Path(*name.split(".")).with_suffix(".py")
+        if _sha(path.read_bytes()) != fingerprint:
+            raise ValueError("historical V2b evaluator dependency changed: " + name)
+
+
+def _historical_v2b_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
+    _require_v2b_closure()
+    raw = _MANIFEST_V2B.read_bytes()
+    if _sha(raw) != _MANIFEST_V2B_SHA:
+        raise ValueError("historical V2b reviewed manifest changed")
+    old = json.loads(raw)
+    for name, fingerprint in old["sources"].items():
+        path = _ROOT / "src" / Path(*name.split(".")).with_suffix(".py")
+        if name == "chiplog.composition.r15_lease_publication":
+            path = (
+                Path(__file__)
+                .with_name("scheduler_v2b_sources")
+                .joinpath("r15_lease_publication.py.source")
+            )
+        if _sha(path.read_bytes()) != fingerprint:
+            raise ValueError("historical V2b evaluator artifact changed: " + name)
+    for key in ("runtime", "packages", "lock_sha256", "historical_v1"):
+        if old[key] != current_profile[key]:
+            raise ValueError("historical V2b source closure changed: " + key)
+    graph = derive_schema_manifest(
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_materialization.py").read_bytes(),
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_rollover.py").read_bytes(),
+    )
+    canonical = _canonical({"profile": old, "generated_dependency_manifest": asdict(graph)})
+    digest = _sha(canonical)
+    return SchedulerSourceRegistration(
+        Present(head="scheduler-source-registry-v2b:" + digest, fingerprint=digest), canonical
+    )
+
+
+def _historical_v2a_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
+    raw = _MANIFEST_V2.read_bytes()
+    if _sha(raw) != _MANIFEST_V2_SHA:
+        raise ValueError("historical V2a reviewed manifest changed")
+    old = json.loads(raw)
+    for name, fingerprint in old["sources"].items():
+        if cast(dict[str, str], current_profile["sources"]).get(name) != fingerprint:
+            raise ValueError("historical V2a evaluator artifact changed: " + name)
+    for key in ("runtime", "packages", "lock_sha256", "historical_v1"):
+        if old[key] != current_profile[key]:
+            raise ValueError("historical V2a source closure changed: " + key)
+    graph = derive_schema_manifest(
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_materialization.py").read_bytes(),
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_rollover.py").read_bytes(),
+    )
+    canonical = _canonical({"profile": old, "generated_dependency_manifest": asdict(graph)})
+    digest = _sha(canonical)
+    return SchedulerSourceRegistration(
+        Present(head="scheduler-source-registry-v2:" + digest, fingerprint=digest), canonical
+    )
+
+
 def _historical_v1_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
     old = require_v1_compatible(current_profile)
-    sources = old["sources"]
+    sources = cast(dict[str, str], old["sources"])
     prefix = "chiplog.capabilities.agent_loop."
     graph = derive_schema_manifest(
         (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_materialization.py").read_bytes(),
@@ -315,21 +404,40 @@ def read_admitted_scheduler_startup(
     cut = read_materialized_scheduler(database, tenant_id, journal, commitments)
     observed, _, _ = _observe()
     legacy = _historical_v1_registration(observed)
-    seen_v2 = False
+    v2a = _historical_v2a_registration(observed)
+    v2b = _historical_v2b_registration(observed)
+    rank = 0
     for historical, selected in zip(cut.historical_requests, cut.selected, strict=True):
         expected = historical.selection.prepared.request.expected
-        if historical.registry == registration.reference:
-            seen_v2 = True
-        elif historical.registry == legacy.reference and not seen_v2:
-            if historical.selection.prepared.request.operation == "scheduler.issue_mandate":
-                return SourceRegistrationUnresolved("V1 registry cannot issue V2 mandates")
-        else:
+        admitted = {
+            legacy.reference.head: (0, legacy.reference),
+            v2a.reference.head: (1, v2a.reference),
+            v2b.reference.head: (2, v2b.reference),
+            registration.reference.head: (3, registration.reference),
+        }
+        candidate = admitted.get(historical.registry.head)
+        if candidate is None or historical.registry != candidate[1] or candidate[0] < rank:
             return SourceRegistrationUnresolved("unknown selected or regressed source registry")
+        rank = candidate[0]
+        if (
+            rank == 0
+            and historical.selection.prepared.request.operation == "scheduler.issue_mandate"
+        ):
+            return SourceRegistrationUnresolved("V1 registry cannot issue V2 mandates")
+        if historical.selection.prepared.request.operation == "scheduler.acquire" and rank not in (
+            2,
+            3,
+        ):
+            return SourceRegistrationUnresolved("lease acquire requires V2b selected source")
         if (
             expected.registry_head != historical.registry.head
             or expected.registry_fingerprint != historical.registry.fingerprint
         ):
             return SourceRegistrationUnresolved("unknown selected historical source registry")
+        if historical.selection.prepared.request.operation == "scheduler.acquire":
+            from chiplog.composition.r15_lease_publication import validate_selected_lease_decision
+
+            validate_selected_lease_decision(historical.selection, cut.protected_decisions)
         _require_historical_equality(historical, selected)
     physical_id = f"{cut.physical_database_path}:{cut.physical_device}:{cut.physical_inode}"
     index = validate_selected_scheduler_records(

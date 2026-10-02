@@ -242,6 +242,11 @@ def read_loop_snapshot(runtime: R14PlanningRuntime) -> LoopSnapshot:
                     elif batch.operation == "scheduler.issue_mandate":
                         if tuple(member.schema_id for member in batch.records) != _MANDATE_SCHEMAS:
                             raise ValueError("mandate issuance companion schema differs")
+                    elif batch.operation == "scheduler.acquire":
+                        if tuple(member.schema_id for member in batch.records) != (
+                            "chiplog.scheduler.lease-transition.v1",
+                        ):
+                            raise ValueError("lease transition schema differs")
                     elif batch.operation == "scheduler.decide_interval":
                         for member in batch.records:
                             if member.record_kind == "agent_loop.run":
