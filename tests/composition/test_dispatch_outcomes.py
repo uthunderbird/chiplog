@@ -221,6 +221,61 @@ if __name__ == "__main__":
     }
 
 
+async def test_receipt_publication_crash_reopens_original_obligation_without_reemission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chiplog.composition import r16_dispatch_outcomes
+    from chiplog.composition.r16_dispatch_runtime import open_dispatch_runtime
+
+    database, custody = tmp_path / "dispatch.db", tmp_path / "custody.json"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=custody
+    )
+    async with open_dispatch_loop(database, resources=resources, responses=(_response(),)) as loop:
+        created = await loop.create("r", "Prepare my action", BudgetPolicy())
+        active = await loop.activate("r", created.head)
+        await loop.step("r", active.head)
+        runtime = loop._planning
+        assert isinstance(runtime, R16DispatchRuntime)
+        intent_id = await prepare(runtime)
+        original_observe = r16_dispatch_outcomes.observe_outcome
+
+        async def crash_after_provider(
+            selected_runtime: R16DispatchRuntime,
+            selected_intent: str,
+            raw: bytes | None = None,
+            *,
+            boundary: bool = False,
+        ) -> object:
+            if raw is not None:
+                assert len(resources.require_original_provider().transfers) == 1
+                raise OSError("injected before receipt publication")
+            return await original_observe(
+                selected_runtime, selected_intent, raw, boundary=boundary
+            )
+
+        with monkeypatch.context() as fault:
+            fault.setattr(r16_dispatch_outcomes, "observe_outcome", crash_after_provider)
+            with pytest.raises(OSError, match="before receipt publication"):
+                await runtime.emit_committed("hermetic-ingress", intent_id)
+        assert len(resources.require_original_provider().transfers) == 1
+        assert await runtime.emit_committed("hermetic-ingress", intent_id) is None
+
+    reopened_resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=custody
+    )
+    async with open_dispatch_runtime(database, resources=reopened_resources) as reopened:
+        assert await reopened.emit_committed("hermetic-ingress", intent_id) is None
+        evidence = outcome(await reopened.observe_dispatch_outcome(intent_id))
+        assert evidence.snapshot.state == "CONFIRMED"
+        assert evidence.snapshot.obligation.state == "OPEN"
+        closed = outcome(
+            await reopened.resolve_dispatch_outcome("hermetic-ingress", intent_id, "resolve")
+        )
+        assert closed.snapshot.obligation.state == "CLOSED"
+        assert len(reopened_resources.require_original_provider().transfers) == 1
+
+
 @pytest.mark.parametrize(
     "scenario,expected",
     (("PERMANENT_NO_EFFECT", "FAILED_NO_EFFECT"), ("MIXED", "PARTIAL_CONFIRMED")),

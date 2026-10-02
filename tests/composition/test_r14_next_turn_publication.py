@@ -1,6 +1,7 @@
 """Mounted selected native next Turn and replay."""
 
 import json
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -113,3 +114,72 @@ async def test_foreign_evidence_holds_next_turn_without_publication(tmp_path: Pa
             json.loads(raw).get("operation_kind") == NEXT_TURN_PUBLICATION
             for _, _, raw in runtime._loop_decisions().entries()
         )
+
+
+@pytest.mark.asyncio
+async def test_selected_next_turn_physical_record_tamper_blocks_restart(tmp_path: Path):
+    database = tmp_path / "next-turn-physical-tamper.sqlite"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody-tamper"
+    )
+    source = NativeRecoveryCutSource()
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        responses=(native_response(),),
+        manifest=R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
+        recovery_cut_source=source,
+    ) as runtime:
+        await selected_native_cancelled(runtime, bound=True)
+        await runtime.publish_native_one_call_cancelled_accounting()
+        await runtime.publish_native_recovery_profile()
+        await runtime.publish_execution_accounting_readiness()
+        cut = source.collect(runtime)
+        assert cut is not None
+        run = cut.complete_ordered_run_lineage[-1]
+        next_run = await runtime.start_next_execution_turn(run.run_id, run.head)
+        assert read_execution_history(runtime).records[-1] == next_run
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        manifest=R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
+        recovery_cut_source=source,
+    ) as runtime:
+        assert read_execution_history(runtime).records[-1] == next_run
+    with sqlite3.connect(database) as connection:
+        selected = connection.execute(
+            "SELECT p.record_ids, r.canonical_bytes FROM publications AS p "
+            "JOIN records AS r ON r.tenant_id=p.tenant_id AND r.record_id=p.record_ids "
+            "WHERE p.operation_kind=?",
+            (NEXT_TURN_PUBLICATION,),
+        ).fetchall()
+        assert len(selected) == 1
+        record_id, original = selected[0]
+        assert record_id == next_run.head
+        assert original == next_run.canonical_bytes()
+        damaged = original[:-1] + (b" " if original[-1:] != b" " else b"\n")
+        assert connection.execute(
+            "UPDATE records SET canonical_bytes=? WHERE record_id=?",
+            (damaged, record_id),
+        ).rowcount == 1
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT canonical_bytes FROM records WHERE record_id=?", (record_id,)
+        ).fetchone() == (damaged,)
+        assert connection.execute(
+            "SELECT count(*) FROM publications WHERE operation_kind=?",
+            (NEXT_TURN_PUBLICATION,),
+        ).fetchone() == (1,)
+    with pytest.raises((ValueError, RuntimeError)):
+        async with open_common_cli_execution_runtime(
+            database,
+            resources=resources,
+            manifest=R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
+            recovery_cut_source=source,
+        ):
+            pytest.fail("tampered selected next Turn reopened")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM publications WHERE operation_kind=?",
+            (NEXT_TURN_PUBLICATION,),
+        ).fetchone() == (1,)
