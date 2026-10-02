@@ -63,6 +63,7 @@ elif [ -n "$RECORDS" ]; then
 else
     RANGE=""; SINCE="ретро ещё не было — период за всю историю$NOTE"
 fi
+MEASURE_RANGE=${RANGE:-HEAD}
 
 echo "входы ретро — $SINCE"
 echo
@@ -96,6 +97,8 @@ else
     num "объём: " "git diff --shortstat \$(git rev-list --max-parents=0 HEAD)..HEAD | sed 's/^ *//' | grep . || echo 'нет изменений'"
 fi
 num "незакоммиченного сейчас (в период НЕ входит): " "git status --porcelain | wc -l | tr -d ' '"
+num "коммитов периода: " "git rev-list --count $MEASURE_RANGE"
+num "коммитов с R8 catalog: " "git rev-list --count $MEASURE_RANGE -- src/chiplog/inert_shared/r8-implementation-v1.json"
 echo
 
 # --- 3. журнал хвостов -------------------------------------------------------
