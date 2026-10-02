@@ -15,6 +15,10 @@ from chiplog.capabilities.agent_loop.execution_contracts import (
     SelfEffectArguments,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
+    execution_native_one_call_cancellation_frontier_registry_v1,
+    frontier_registry_reference,
+)
 from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     CliCustodyOffer,
     CliCustodyResponse,
@@ -51,7 +55,9 @@ async def _custody_client(path: Path) -> None:
                 "!I",
                 len(
                     CliCustodyResponse(
-                        challenge_fingerprint=hashlib.sha256(offer.challenge.canonical_bytes()).hexdigest()
+                        challenge_fingerprint=hashlib.sha256(
+                            offer.challenge.canonical_bytes()
+                        ).hexdigest()
                     ).canonical_bytes()
                 ),
             )
@@ -157,6 +163,12 @@ async def test_collects_real_selected_native_cancellation_and_reopens(tmp_path: 
         collected = R14NativeCancelledCallSource(runtime).collect()
         assert collected is not None
         assert len(collected.complete_ordered_native_response_seals) == 1
+        registry = execution_native_one_call_cancellation_frontier_registry_v1()
+        assert collected.frontier_registry_bytes == registry.canonical_bytes()
+        assert collected.frontier_registry_reference == frontier_registry_reference(registry)
+        assert collected.selected_response_seal == collected.physical_response_seal
+        assert collected.selected_initialized == collected.physical_initialized
+        assert collected.selected_sealed_run == collected.physical_sealed_run
         assert collected.cancellation_terminal.original_call_id == collected.original_call_id
         assert collected.not_executed_result.outcome == "NOT_EXECUTED"
     async with open_common_cli_execution_runtime(database, resources=resources) as reopened:
@@ -186,6 +198,25 @@ async def test_holds_for_accepted_or_any_extra_selected_seal(tmp_path: Path) -> 
         with patch(
             "chiplog.composition.r14_execution_recovery_source.read_execution_recovery_history",
             return_value=(snapshot, inventory, (object(),), seals, cancellations, ()),
+        ):
+            assert source.collect() is None
+        # A selected fanout cannot stand in for its separately enumerated
+        # physical Run: the latter must carry the same seal and initialization.
+        physical = next(
+            run for run in snapshot.records if run.head == seals[0].proposal.sealed_run.head
+        )
+        turn = physical.turns[-1].model_copy(update={"response_seal": None})
+        damaged = physical.model_copy(update={"turns": (*physical.turns[:-1], turn)})
+        damaged_snapshot = snapshot.model_copy(
+            update={
+                "records": tuple(
+                    damaged if run.head == physical.head else run for run in snapshot.records
+                )
+            }
+        )
+        with patch(
+            "chiplog.composition.r14_execution_recovery_source.read_execution_recovery_history",
+            return_value=(damaged_snapshot, inventory, legacy_seals, seals, cancellations, ()),
         ):
             assert source.collect() is None
         # A later real selected seal is enough to hold: collection cannot pick

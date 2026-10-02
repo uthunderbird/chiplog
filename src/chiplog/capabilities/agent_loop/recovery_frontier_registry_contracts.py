@@ -21,7 +21,9 @@ __all__ = [
     "RECOVERY_FRONTIER_REGISTRY_SCHEMA",
     "RecoveryFrontierRegistryIntegrityError",
     "decode_frontier_registry",
+    "decode_native_one_call_cancellation_frontier_registry_v1",
     "execution_h1_zero_call_frontier_registry_v2",
+    "execution_native_one_call_cancellation_frontier_registry_v1",
     "execution_zero_call_frontier_registry",
     "frontier_registry_content_fingerprint",
     "frontier_registry_reference",
@@ -31,11 +33,38 @@ _EXECUTION_ZERO_CALL_REGISTRY_ID = "chiplog.execution.zero-call-recovery-frontie
 _EXECUTION_ZERO_CALL_REGISTRY_VERSION = "1"
 _EXECUTION_H1_ZERO_CALL_REGISTRY_ID = "chiplog.execution.h1-zero-call-recovery-frontier"
 _EXECUTION_H1_ZERO_CALL_REGISTRY_VERSION = "2"
+_EXECUTION_NATIVE_ONE_CALL_CANCELLATION_REGISTRY_ID = (
+    "chiplog.execution.native-one-call-cancellation-recovery-frontier"
+)
+_EXECUTION_NATIVE_ONE_CALL_CANCELLATION_REGISTRY_VERSION = "1"
 _CANONICALIZATION_VERSION = "chiplog.recovery.frontier.v1"
 
 # This is deliberately a literal tuple rather than the RecoveryRegistryRow
 # annotation: adding a future family must not silently change retained V2 bytes.
 _H1_V2_FAMILIES = (
+    "RUN",
+    "TURN",
+    "SEALED_RESPONSE",
+    "CALL",
+    "EFFECT",
+    "EVIDENCE",
+    "DELIVERY",
+    "AUTHORITY",
+    "MANDATE",
+    "POLICY",
+    "PROMPT",
+    "TOOL_SCHEMA",
+    "RECIPIENT",
+    "SEMANTIC_BINDING",
+    "EXECUTION_LINEAGE",
+    "OBLIGATION",
+    "SEMANTIC_REDUCTION",
+)
+
+# This prospective profile is intentionally independent of the zero-call
+# factories.  Its rows describe a Continue seal with one consequential call;
+# neither historical zero-call bytes nor their selection can be widened to it.
+_NATIVE_ONE_CALL_CANCELLATION_V1_FAMILIES = (
     "RUN",
     "TURN",
     "SEALED_RESPONSE",
@@ -242,6 +271,89 @@ def execution_h1_zero_call_frontier_registry_v2() -> RecoveryFrontierRegistry:
             rows,
         ),
     )
+
+
+def execution_native_one_call_cancellation_frontier_registry_v1() -> RecoveryFrontierRegistry:
+    """Return the fixed profile for one selected native cancelled effect call.
+
+    This value describes the complete 17-family universe only.  It does not
+    assert that a caller has authenticated every family subject, and it grants
+    no recovery-cut or publication authority.
+    """
+
+    rows = tuple(
+        RecoveryRegistryRow(
+            family=cast(
+                Literal[
+                    "RUN",
+                    "TURN",
+                    "SEALED_RESPONSE",
+                    "CALL",
+                    "EFFECT",
+                    "EVIDENCE",
+                    "DELIVERY",
+                    "AUTHORITY",
+                    "MANDATE",
+                    "POLICY",
+                    "PROMPT",
+                    "TOOL_SCHEMA",
+                    "RECIPIENT",
+                    "SEMANTIC_BINDING",
+                    "EXECUTION_LINEAGE",
+                    "OBLIGATION",
+                    "SEMANTIC_REDUCTION",
+                ],
+                family,
+            ),
+            ordinal=ordinal,
+            subject_extractor_id=(
+                f"execution-native-one-call-cancellation-v1:{family}:subjects"
+            ),
+            cardinality_rule=(
+                f"execution-native-one-call-cancellation-v1:{family}:cardinality"
+            ),
+            terminal_conflict_rule=(
+                f"execution-native-one-call-cancellation-v1:{family}:conflicts"
+            ),
+            serialization_rule=(
+                f"execution-native-one-call-cancellation-v1:{family}:serialization"
+            ),
+            canonicalization_version=_CANONICALIZATION_VERSION,
+        )
+        for ordinal, family in enumerate(_NATIVE_ONE_CALL_CANCELLATION_V1_FAMILIES)
+    )
+    return RecoveryFrontierRegistry(
+        registry_id=_EXECUTION_NATIVE_ONE_CALL_CANCELLATION_REGISTRY_ID,
+        version=_EXECUTION_NATIVE_ONE_CALL_CANCELLATION_REGISTRY_VERSION,
+        ordered_rows=rows,
+        fingerprint=frontier_registry_content_fingerprint(
+            _EXECUTION_NATIVE_ONE_CALL_CANCELLATION_REGISTRY_ID,
+            _EXECUTION_NATIVE_ONE_CALL_CANCELLATION_REGISTRY_VERSION,
+            rows,
+        ),
+    )
+
+
+def decode_native_one_call_cancellation_frontier_registry_v1(
+    schema_id: str,
+    canonical_registry_bytes: bytes,
+    *,
+    expected_reference: CallSubjectHead,
+) -> RecoveryFrontierRegistry:
+    """Decode only the immutable one-call V1 registry, never an arbitrary V1."""
+
+    registry = decode_frontier_registry(
+        schema_id, canonical_registry_bytes, expected_reference=expected_reference
+    )
+    fixed = execution_native_one_call_cancellation_frontier_registry_v1()
+    if registry != fixed or expected_reference != frontier_registry_reference(fixed):
+        raise RecoveryFrontierRegistryIntegrityError(
+            "decode_native_one_call_cancellation_frontier_registry_v1",
+            schema_id,
+            expected_reference,
+            "registry differs from fixed native one-call cancellation V1 profile",
+        )
+    return registry
 
 
 def decode_frontier_registry(

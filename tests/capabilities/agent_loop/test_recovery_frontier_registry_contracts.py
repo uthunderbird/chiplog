@@ -17,6 +17,8 @@ from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import
     RECOVERY_FRONTIER_REGISTRY_SCHEMA,
     RecoveryFrontierRegistryIntegrityError,
     decode_frontier_registry,
+    decode_native_one_call_cancellation_frontier_registry_v1,
+    execution_native_one_call_cancellation_frontier_registry_v1,
     frontier_registry_content_fingerprint,
     frontier_registry_reference,
 )
@@ -254,3 +256,98 @@ def test_h1_v2_registry_has_immutable_profile_identity_and_all_family_ordinals()
         assert row.serialization_rule == f"execution-h1-zero-call-v2:{row.family}:serialization"
         assert row.canonicalization_version == "chiplog.recovery.frontier.v1"
     assert frontier_registry_reference(registry).subject_id == registry.registry_id
+
+
+def test_native_one_call_cancellation_profile_is_exactly_the_closed_17_family_v1() -> None:
+    registry = execution_native_one_call_cancellation_frontier_registry_v1()
+
+    assert registry.registry_id == (
+        "chiplog.execution.native-one-call-cancellation-recovery-frontier"
+    )
+    assert registry.version == "1"
+    assert tuple(row.ordinal for row in registry.ordered_rows) == tuple(range(17))
+    assert tuple(row.family for row in registry.ordered_rows) == (
+        "RUN",
+        "TURN",
+        "SEALED_RESPONSE",
+        "CALL",
+        "EFFECT",
+        "EVIDENCE",
+        "DELIVERY",
+        "AUTHORITY",
+        "MANDATE",
+        "POLICY",
+        "PROMPT",
+        "TOOL_SCHEMA",
+        "RECIPIENT",
+        "SEMANTIC_BINDING",
+        "EXECUTION_LINEAGE",
+        "OBLIGATION",
+        "SEMANTIC_REDUCTION",
+    )
+    raw = registry.canonical_bytes()
+    assert (
+        decode_native_one_call_cancellation_frontier_registry_v1(
+            RECOVERY_FRONTIER_REGISTRY_SCHEMA,
+            raw,
+            expected_reference=frontier_registry_reference(registry),
+        )
+        == registry
+    )
+
+
+def test_historical_zero_call_registry_bytes_remain_golden() -> None:
+    from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
+        execution_h1_zero_call_frontier_registry_v2,
+        execution_zero_call_frontier_registry,
+    )
+
+    assert hashlib.sha256(
+        execution_zero_call_frontier_registry().canonical_bytes()
+    ).hexdigest() == ("c692796bc617aea2287d5a621984b835cf39a64b98f0e71150dbddcb70e19dd0")
+    assert (
+        hashlib.sha256(execution_h1_zero_call_frontier_registry_v2().canonical_bytes()).hexdigest()
+        == "36d7b18b57d650c5c20c83d4b9dc1c359fa696665393e74c06006649b67f5ff2"
+    )
+
+
+@pytest.mark.parametrize("mutation", ("omit", "duplicate", "reorder", "change_rule"))
+def test_native_one_call_profile_rejects_a_self_consistent_forgery(mutation: str) -> None:
+    fixed = execution_native_one_call_cancellation_frontier_registry_v1()
+    rows = list(fixed.ordered_rows)
+    if mutation == "omit":
+        rows.pop()
+    elif mutation == "duplicate":
+        rows[-1] = rows[-1].model_copy(
+            update={
+                "family": "RUN",
+                "subject_extractor_id": "forged:duplicate-family:subjects",
+            }
+        )
+    elif mutation == "reorder":
+        rows.reverse()
+    else:
+        rows[0] = rows[0].model_copy(update={"cardinality_rule": "forged:cardinality"})
+    rows = [row.model_copy(update={"ordinal": ordinal}) for ordinal, row in enumerate(rows)]
+    forged = RecoveryFrontierRegistry(
+        registry_id=fixed.registry_id,
+        version=fixed.version,
+        ordered_rows=tuple(rows),
+        fingerprint=frontier_registry_content_fingerprint(
+            fixed.registry_id, fixed.version, tuple(rows)
+        ),
+    )
+    raw = forged.canonical_bytes()
+    reference = frontier_registry_reference(forged)
+
+    # Generic decoding only proves byte and reference self-consistency.
+    assert (
+        decode_frontier_registry(
+            RECOVERY_FRONTIER_REGISTRY_SCHEMA, raw, expected_reference=reference
+        )
+        == forged
+    )
+    with pytest.raises(RecoveryFrontierRegistryIntegrityError, match="fixed native one-call"):
+        decode_native_one_call_cancellation_frontier_registry_v1(
+            RECOVERY_FRONTIER_REGISTRY_SCHEMA, raw, expected_reference=reference
+        )

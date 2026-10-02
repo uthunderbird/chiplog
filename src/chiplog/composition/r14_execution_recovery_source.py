@@ -19,6 +19,12 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
 from chiplog.capabilities.agent_loop.execution_contracts import ConsequentialToolCall
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import InitializedCall
+from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
+    RECOVERY_FRONTIER_REGISTRY_SCHEMA,
+    decode_native_one_call_cancellation_frontier_registry_v1,
+    execution_native_one_call_cancellation_frontier_registry_v1,
+    frontier_registry_reference,
+)
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_loop_history import read_execution_recovery_history
@@ -30,7 +36,15 @@ class R14NativeCancelledCallSourceFacts:
 
     tenant_id: str
     database_id: str
+    frontier_registry_bytes: bytes
+    frontier_registry_reference: CallSubjectHead
     complete_ordered_native_response_seals: tuple[CallSubjectHead, ...]
+    selected_response_seal: CallSubjectHead
+    physical_response_seal: CallSubjectHead
+    selected_initialized: CallSubjectHead
+    physical_initialized: CallSubjectHead
+    selected_sealed_run: CallSubjectHead
+    physical_sealed_run: CallSubjectHead
     original_call_id: str
     initialized: CallSubjectHead
     cancellation_terminal: CancelledBeforeAcceptRecord
@@ -78,6 +92,24 @@ class R14NativeCancelledCallSource:
         initialized_records = seal.proposal.fan_out.initialized_records
         if len(initialized_records) != 1 or len(inventory.ordered_calls) != 1:
             return None
+        # The registry is a fixed profile, rather than a registry shaped by this
+        # selected history.  Decode it anyway so this seam never turns a local
+        # factory call into an unverified profile assertion.
+        registry = execution_native_one_call_cancellation_frontier_registry_v1()
+        registry_raw = registry.canonical_bytes()
+        registry_ref = frontier_registry_reference(registry)
+        try:
+            if (
+                decode_native_one_call_cancellation_frontier_registry_v1(
+                    RECOVERY_FRONTIER_REGISTRY_SCHEMA,
+                    registry_raw,
+                    expected_reference=registry_ref,
+                )
+                != registry
+            ):
+                return None
+        except ValueError:
+            return None
         initialized_record = initialized_records[0]
         try:
             tool = ConsequentialToolCall.model_validate_json(
@@ -93,6 +125,24 @@ class R14NativeCancelledCallSource:
             return None
         row = inventory.ordered_calls[0]
         initialized = reference(initialized_record.original_call_id, initialized_record)
+        selected_response_seal = ordered_seals[0]
+        selected_sealed_run = reference(seal.proposal.sealed_run.run_id, seal.proposal.sealed_run)
+        physical_run = next(
+            (
+                run
+                for run in snapshot.records
+                if run.head == seal.proposal.sealed_run.head
+            ),
+            None,
+        )
+        if physical_run is None:
+            return None
+        physical_sealed_run = reference(physical_run.run_id, physical_run)
+        physical_turn = physical_run.turns[-1] if physical_run.turns else None
+        physical_response_seal = physical_turn.response_seal if physical_turn is not None else None
+        physical_initialized_calls = (
+            physical_turn.initialized_calls if physical_turn is not None else None
+        )
         if (
             row.original_call_id != initialized_record.original_call_id
             or row.initialized != initialized
@@ -102,6 +152,9 @@ class R14NativeCancelledCallSource:
             or len(acceptances) != 0
             or len(cancellations) != 1
             or not isinstance(row.terminal, Present)
+            or selected_sealed_run != physical_sealed_run
+            or physical_response_seal != selected_response_seal
+            or physical_initialized_calls != (initialized,)
         ):
             return None
         cancellation = cancellations[0]
@@ -126,7 +179,15 @@ class R14NativeCancelledCallSource:
         return R14NativeCancelledCallSourceFacts(
             tenant_id=self._runtime._tenant_id,
             database_id=self._runtime._database_identity[0],
+            frontier_registry_bytes=registry_raw,
+            frontier_registry_reference=registry_ref,
             complete_ordered_native_response_seals=ordered_seals,
+            selected_response_seal=selected_response_seal,
+            physical_response_seal=physical_response_seal,
+            selected_initialized=initialized,
+            physical_initialized=physical_initialized_calls[0],
+            selected_sealed_run=selected_sealed_run,
+            physical_sealed_run=physical_sealed_run,
             original_call_id=initialized_record.original_call_id,
             initialized=initialized,
             cancellation_terminal=terminal,
