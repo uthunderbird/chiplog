@@ -718,6 +718,42 @@ def test_h1_v4_selected_predecessor_accepts_the_real_v2_h1_envelope(
     assert predecessor.decisions == ()
 
 
+def test_h1_v4_selected_predecessor_rejects_corrupt_tail_on_second_physical_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chiplog.composition import h1_completion_issuance as issuance_subject
+
+    journal = _journal(tmp_path)
+    batch = _h1_batch().model_copy(
+        update={
+            "authentication": _h1_batch().authentication.model_copy(
+                update={"applicability_schema": "chiplog.composition.h1-completion-issuance.v4"}
+            )
+        }
+    )
+    selected = journal.select(_prepared(batch), digest(b"after"))
+    monkeypatch.setattr(
+        issuance_subject,
+        "decode_h1_completion_issuance",
+        lambda _: issuance_subject.H1CompletionIssuanceV4.model_construct(),
+    )
+    initial = journal._raw.entries()
+    reads = 0
+
+    def corrupt_second_read() -> tuple[tuple[str, str | None, bytes], ...]:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return initial
+        return (*initial, (initial[0][0], initial[-1][0], b"{}"))
+
+    monkeypatch.setattr(journal._raw, "entries", corrupt_second_read)
+
+    with pytest.raises(OwnerJournalIntegrityError, match=r"snapshot_at.*tenant"):
+        journal.predecessor_snapshot_for_selected(selected)
+    assert reads == 2
+
+
 def _canonical_raw(entry: dict[str, object]) -> bytes:
     return json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()
 

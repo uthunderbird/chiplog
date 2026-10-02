@@ -366,12 +366,21 @@ def _scan_entries(
     tenant: str,
     operation: str,
     record: str,
+    capture_head: str | None = None,
 ) -> _Scan:
-    """Strictly decode one already captured tenant journal image."""
+    """Strictly decode one already captured tenant journal image.
+
+    When ``capture_head`` is supplied, retain an immutable cut after that
+    entry while continuing to validate the complete image.  This preserves the
+    current-tail check performed by :meth:`snapshot_at` without decoding its
+    valid prefix for a second time.
+    """
     try:
         selected: dict[str, SelectedOwnerDecision] = {}
         materialized: set[str] = set()
         predecessor: str | None = None
+        captured: _Scan | None = None
+        matches = 0
         for entry_id, entry_predecessor, payload in entries:
             if (
                 not isinstance(entry_id, str)
@@ -447,6 +456,13 @@ def _scan_entries(
                     raise ValueError("orphan, rival or duplicate materialization marker")
                 materialized.add(entry.command_id)
             predecessor = entry_id
+            if capture_head == entry_id:
+                matches += 1
+                captured = _Scan(entry_id, selected.copy(), frozenset(materialized))
+        if capture_head is not None:
+            if matches != 1 or captured is None:
+                raise ValueError("requested owner journal head is absent or ambiguous")
+            return captured
         return _Scan(entries[-1][0] if entries else None, selected, frozenset(materialized))
     except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
         raise OwnerJournalIntegrityError(operation, tenant, record) from error
@@ -510,8 +526,9 @@ class IndependentOwnerDecisionJournal:
         entries: tuple[tuple[str, str | None, bytes], ...],
         operation: str,
         record: str,
+        capture_head: str | None = None,
     ) -> _Scan:
-        return _scan_entries(entries, self._tenant, operation, record)
+        return _scan_entries(entries, self._tenant, operation, record, capture_head)
 
     def lookup(self, tenant_id: str, command_id: str) -> SelectedOwnerDecision | None:
         if tenant_id != self._tenant:
@@ -536,16 +553,11 @@ class IndependentOwnerDecisionJournal:
         record = head if head is not None else "empty"
         try:
             entries = self._raw.entries()
-            self._scan_entries(entries, "snapshot_at", record)
-            prefix: tuple[tuple[str, str | None, bytes], ...]
             if head is None:
-                prefix = ()
+                self._scan_entries(entries, "snapshot_at", record)
+                scan = _Scan(None, {}, frozenset())
             else:
-                matches = [index for index, entry in enumerate(entries) if entry[0] == head]
-                if len(matches) != 1:
-                    raise ValueError("requested owner journal head is absent or ambiguous")
-                prefix = entries[: matches[0] + 1]
-            scan = self._scan_entries(prefix, "snapshot_at", record)
+                scan = self._scan_entries(entries, "snapshot_at", record, capture_head=head)
             return OwnerJournalSnapshot(
                 self._tenant, scan.head, tuple(scan.selected.values()), scan.materialized
             )

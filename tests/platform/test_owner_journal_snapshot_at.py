@@ -1,7 +1,9 @@
 """Historical cuts of the independently authenticated owner journal."""
 
 import hashlib
+import time
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -153,3 +155,98 @@ def test_snapshot_at_rejects_semantically_corrupt_current_tail(tmp_path: Path) -
 
     with pytest.raises(OwnerJournalIntegrityError, match=r"snapshot_at.*tenant"):
         journal.snapshot_at(head)
+
+
+def test_snapshot_at_rejects_stale_current_image_without_requested_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = _journal(tmp_path)
+    _select(journal, "first", 0, _digest(b"before"), _digest(b"after"))
+    head = journal.snapshot().head
+    assert head is not None
+
+    monkeypatch.setattr(journal._raw, "entries", lambda: ())
+
+    with pytest.raises(OwnerJournalIntegrityError, match=r"snapshot_at.*tenant"):
+        journal.snapshot_at(head)
+
+
+def test_snapshot_at_short_v22_cut_measures_redundant_prefix_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep the V22 historical-cut profile observable without a long mounted run."""
+    journal = _journal(tmp_path)
+    before = _digest(b"before")
+    after = _digest(b"after")
+    final = _digest(b"final")
+    _select(journal, "first", 0, before, after)
+    first = journal.snapshot().decisions[0]
+    journal.materialized(first)
+    cut_head = journal.snapshot().head
+    assert cut_head is not None
+    _select(journal, "second", 1, after, final)
+
+    physical_entries_calls = 0
+    scans = 0
+    scanned_entries = 0
+    scanned_bytes = 0
+    scan_seconds = 0.0
+    decode_seconds = 0.0
+    canonical_seconds = 0.0
+    entries = journal._raw.entries
+    scan = journal._scan_entries
+    from chiplog.platform import owner_decision_journal as subject
+
+    decode = subject._decode
+    canonical = subject._canonical
+
+    def counted_entries() -> tuple[tuple[str, str | None, bytes], ...]:
+        nonlocal physical_entries_calls
+        physical_entries_calls += 1
+        return cast(tuple[tuple[str, str | None, bytes], ...], entries())
+
+    def counted_scan(
+        captured: tuple[tuple[str, str | None, bytes], ...],
+        operation: str,
+        record: str,
+        capture_head: str | None = None,
+    ) -> Any:
+        nonlocal scan_seconds, scanned_bytes, scanned_entries, scans
+        started = time.perf_counter()
+        try:
+            return scan(captured, operation, record, capture_head)
+        finally:
+            scan_seconds += time.perf_counter() - started
+            scans += 1
+            scanned_entries += len(captured)
+            scanned_bytes += sum(len(payload) for _, _, payload in captured)
+
+    def counted_decode(payload: bytes) -> Any:
+        nonlocal decode_seconds
+        started = time.perf_counter()
+        try:
+            return decode(payload)
+        finally:
+            decode_seconds += time.perf_counter() - started
+
+    def counted_canonical(entry: Any) -> bytes:
+        nonlocal canonical_seconds
+        started = time.perf_counter()
+        try:
+            return cast(bytes, canonical(entry))
+        finally:
+            canonical_seconds += time.perf_counter() - started
+
+    monkeypatch.setattr(journal._raw, "entries", counted_entries)
+    monkeypatch.setattr(journal, "_scan_entries", counted_scan)
+    monkeypatch.setattr(subject, "_decode", counted_decode)
+    monkeypatch.setattr(subject, "_canonical", counted_canonical)
+
+    cut = journal.snapshot_at(cut_head)
+
+    assert cut.decisions == (first,)
+    assert physical_entries_calls == 1
+    assert scans == 1
+    assert scanned_entries == 3
+    assert scanned_bytes > 0
+    assert scan_seconds >= decode_seconds + canonical_seconds >= 0.0
