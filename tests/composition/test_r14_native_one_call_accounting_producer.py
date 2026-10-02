@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from base64 import b64encode
 from dataclasses import replace
 from pathlib import Path
@@ -424,6 +425,14 @@ async def test_prepares_real_cancelled_native_accounting_and_reopens(tmp_path: P
             assert await producer.prepare(facts) is None
 
         original_acquire = producer._acquire_held
+        with runtime._authority_gate().hold():
+            acquired = original_acquire(facts)
+        assert acquired is not None
+        provenance = acquired[3]
+        assert provenance.complete_ordered_run_lineage == acquired[1].source.target_run_lineage
+        assert len(provenance.ordered_members) == len(provenance.complete_ordered_run_lineage) + 4
+        assert all(member.selected_decision_bytes for member in provenance.ordered_members)
+        assert all(member.physical_commit_sequence > 0 for member in provenance.ordered_members)
         acquired_calls = 0
 
         def state_changes_during_ipc(
@@ -436,6 +445,35 @@ async def test_prepares_real_cancelled_native_accounting_and_reopens(tmp_path: P
         with patch.object(producer, "_acquire_held", side_effect=state_changes_during_ipc):
             assert await producer.prepare(facts) is None
         assert acquired_calls == 2
+
+        for field, changed in (
+            ("selected_decision_id", "decision:rival"),
+            ("selected_decision_bytes", b"rival"),
+            ("selected_decision_fingerprint", "0" * 64),
+            (
+                "physical_commit_sequence",
+                provenance.ordered_members[0].physical_commit_sequence + 1,
+            ),
+        ):
+            changed_member = replace(provenance.ordered_members[0], **{field: changed})
+            changed_provenance = replace(
+                provenance,
+                ordered_members=(changed_member, *provenance.ordered_members[1:]),
+            )
+            manifest_calls = 0
+
+            def source_member_changes_after_ipc(
+                supplied: object, changed_provenance: object = changed_provenance
+            ) -> object:
+                nonlocal manifest_calls
+                manifest_calls += 1
+                return acquired if manifest_calls == 1 else (*acquired[:3], changed_provenance)
+
+            with patch.object(
+                producer, "_acquire_held", side_effect=source_member_changes_after_ipc
+            ):
+                assert await producer.prepare(facts) is None
+            assert manifest_calls == 2
 
         original_stamp = producer._stamp_held
         stamp_calls = 0
@@ -459,6 +497,23 @@ async def test_prepares_real_cancelled_native_accounting_and_reopens(tmp_path: P
                 R14NativeSelectedAccountingSource,
                 "collect_one_cancelled",
                 side_effect=lambda target: None,
+            ),
+            patch.object(engine, "call", new_callable=AsyncMock) as owner_call,
+        ):
+            assert await producer.prepare(facts) is None
+            owner_call.assert_not_awaited()
+
+        entries = runtime._loop_decisions().entries()
+        target_raw = next(
+            raw
+            for decision_id, _previous, raw in entries
+            if decision_id == provenance.ordered_members[0].selected_decision_id
+        )
+        with (
+            patch.object(
+                runtime._loop_decisions(),
+                "entries",
+                return_value=(*entries, ("decision:rival", None, target_raw)),
             ),
             patch.object(engine, "call", new_callable=AsyncMock) as owner_call,
         ):
@@ -491,6 +546,23 @@ async def test_prepares_real_cancelled_native_accounting_and_reopens(tmp_path: P
         assert facts is not None
         replayed = await R14NativeOneCallCancelledAccountingV24Producer(reopened).prepare(facts)
         assert replayed == prepared
+        producer = R14NativeOneCallCancelledAccountingV24Producer(reopened)
+        with reopened._authority_gate().hold():
+            acquired = producer._acquire_held(facts)
+        assert acquired is not None
+        source_member = acquired[3].ordered_members[0]
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                "UPDATE records SET commit_sequence=? WHERE tenant_id=? AND record_id=?",
+                (
+                    source_member.physical_commit_sequence + 1,
+                    facts.tenant_id,
+                    source_member.record_id,
+                ),
+            )
+        with patch.object(reopened._supervisor.runtime(), "call", new_callable=AsyncMock) as call:
+            assert await producer.prepare(facts) is None
+            call.assert_not_awaited()
 
 
 async def test_v23_producer_preserves_the_v1_route_and_wire(tmp_path: Path) -> None:

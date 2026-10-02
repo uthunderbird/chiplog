@@ -489,6 +489,7 @@
   "capabilities/agent_loop/_native_one_call_accounting_process.py": "e5eaabf2cd2f218e5424630c62ddfdb0af79f589e357d9ad75ec196e38d13dd1",
   "capabilities/agent_loop/native_one_call_accounting_contracts.py": "9b8cbc599f3f4d2cd7a0f432a1766f4c873a2c64f9acbbc092cd7e584fcc1e74",
   "capabilities/agent_loop/native_one_call_accounting_preparation.py": "f1a8a681b77269d734fa4f12b787e56b31111cf3284c849430fd6a1207cafa31",
-  "composition/r14_native_one_call_accounting_producer.py": "dab2001f2110d218c8bd53db5ff0b7dc5708405150e4b508d2645bde87a4d4d9",
+  "composition/r14_native_execution_record_source.py": "d2c0c88989bed0f74e27c919418fe5ba5261f07c93da0e4cfe54fca8f98e021f",
+  "composition/r14_native_one_call_accounting_producer.py": "81f336069054eeffddac9e7653c5bc35cc4b12b1a2d508518e4a1d943539dc37",
   "capabilities/agent_loop/_native_one_call_accounting_v2_process.py": "8deaac1df3c6cf1c3e53b35b4879a80d6297d947c5a45e0dd2e0e73bb4a84941"
 }

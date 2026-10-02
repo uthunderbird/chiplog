@@ -34,6 +34,10 @@ from chiplog.composition.r14_execution_recovery_source import (
     R14NativeCancelledCallSourceFacts,
 )
 from chiplog.composition.r14_loop_history import read_execution_recovery_history
+from chiplog.composition.r14_native_execution_record_source import (
+    R14NativeExecutionRecordSourceManifest,
+    _R14NativeExecutionRecordSource,
+)
 from chiplog.composition.r14_native_preparation_bindings import bind_native_execution_preparation_v2
 from chiplog.composition.r14_native_selected_accounting_source import (
     R14NativeOneCallCancelledFacts,
@@ -42,7 +46,7 @@ from chiplog.composition.r14_native_selected_accounting_source import (
 from chiplog.composition.r14_original_prepare_source import R14OriginalNativePrepareSource
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
-from chiplog.platform.workspace_snapshot import read_connection
+from chiplog.platform.workspace_snapshot import read_connection, workspace_snapshot
 
 
 def _v1_request(
@@ -193,7 +197,7 @@ class R14NativeOneCallCancelledAccountingV24Producer:
                 acquired = self._acquire_held(facts)
                 if acquired is None:
                     return None
-                current, selected, stamp = acquired
+                current, selected, stamp, provenance = acquired
                 snapshot, _, legacy_seals, seals, _, _ = read_execution_recovery_history(
                     self._runtime
                 )
@@ -271,6 +275,10 @@ class R14NativeOneCallCancelledAccountingV24Producer:
                     preparation_bindings=selected.source.preparation_bindings,
                     source_stamp=stamp,
                 )
+                # The sidecar deliberately stays out of the retained V24 wire;
+                # equality of ``acquired`` below is its owner-IPC CAS.
+                if provenance.source_stamp != stamp:
+                    return None
                 sent = PublicPortCall(
                     operation_id="agent_loop.prepare_native_one_call_cancelled_accounting.v2",
                     request_id="native-one-call-accounting:" + secrets.token_hex(16),
@@ -350,8 +358,21 @@ class R14NativeOneCallCancelledAccountingV24Producer:
         R14NativeCancelledCallSourceFacts,
         R14NativeOneCallCancelledFacts,
         NativeOneCallAccountingSourceStampV2,
+        R14NativeExecutionRecordSourceManifest,
     ] | None:
-        """Bracket both independent history readers with physical source stamps."""
+        """Acquire all SQLite-derived source reads in one mounted read snapshot."""
+        with workspace_snapshot(self._runtime._database):
+            return self._acquire_held_snapshot(supplied)
+
+    def _acquire_held_snapshot(
+        self, supplied: R14NativeCancelledCallSourceFacts
+    ) -> tuple[
+        R14NativeCancelledCallSourceFacts,
+        R14NativeOneCallCancelledFacts,
+        NativeOneCallAccountingSourceStampV2,
+        R14NativeExecutionRecordSourceManifest,
+    ] | None:
+        """Bracket selected journals and the shared physical read snapshot by stamp."""
         before = self._stamp_held()
         current = R14NativeCancelledCallSource(self._runtime).collect()
         if current != supplied:
@@ -366,12 +387,19 @@ class R14NativeOneCallCancelledAccountingV24Producer:
         selected = R14NativeSelectedAccountingSource(
             self._runtime, projection, bindings
         ).collect_one_cancelled(projection.prepared_run)
+        provenance = (
+            _R14NativeExecutionRecordSource(self._runtime).collect_held(selected, source)
+            if selected is not None and source is not None
+            else None
+        )
         after = self._stamp_held()
         if (
             before is None
             or before != source
             or source != after
             or selected is None
+            or provenance is None
+            or provenance.source_stamp != source
             or selected.source.tenant_id != current.tenant_id
             or selected.source.database_identity != before.database_identity
             or selected.source.preparation_bindings != bindings
@@ -384,4 +412,4 @@ class R14NativeOneCallCancelledAccountingV24Producer:
             != current.selected_sealed_run.revision.fingerprint
         ):
             return None
-        return current, selected, source
+        return current, selected, source, provenance
