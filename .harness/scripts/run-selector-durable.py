@@ -117,9 +117,23 @@ def main(argv: list[str]) -> int:
     common_dir = Path(
         git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").decode().strip()
     )
-    locks = common_dir / "selector-locks"
+    # Codex may read the shared Git directory while its sandbox forbids writes
+    # there.  Key a writable, user-local lock by that directory instead.
+    repository_key = hashlib.sha256(str(common_dir).encode("utf-8")).hexdigest()
+    # The lock namespace must not vary with TMPDIR/TEMP across sibling worktrees.
+    lock_namespace = Path("/tmp") / f"chiplog-selector-locks-{os.getuid()}"
+    lock_namespace.mkdir(mode=0o700, exist_ok=True)
+    namespace_stat = lock_namespace.stat()
+    if (
+        lock_namespace.is_symlink()
+        or namespace_stat.st_uid != os.getuid()
+        or namespace_stat.st_mode & 0o077
+    ):
+        print(f"selector launcher unsafe lock namespace: {lock_namespace}", file=sys.stderr)
+        return 1
+    locks = lock_namespace / repository_key
     runs.mkdir(parents=True, exist_ok=True)
-    locks.mkdir(parents=True, exist_ok=True)
+    locks.mkdir(mode=0o700, exist_ok=True)
     lock = locks / key
     try:
         lock.mkdir()

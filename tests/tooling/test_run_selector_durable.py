@@ -127,7 +127,9 @@ def test_durable_selector_rejects_duplicate_lock_before_fake_uv(tmp_path: Path) 
     assert Path(env["FAKE_UV_LOG"]).exists()
     sibling = tmp_path.parent / (tmp_path.name + "-sibling")
     _git(tmp_path, "worktree", "add", "--detach", str(sibling), "HEAD")
-    second = _run(sibling, env)
+    different_temp = tmp_path / "other-temp"
+    different_temp.mkdir()
+    second = _run(sibling, {**env, "TMPDIR": str(different_temp)})
     assert second.returncode == 1
     assert "lock exists" in second.stderr
     first.send_signal(signal.SIGTERM)
@@ -158,11 +160,13 @@ def test_sigkill_leaves_partial_evidence_without_exit_marker(tmp_path: Path) -> 
         time.sleep(0.02)
     assert run is not None
     child = json.loads((run / "child.pid").read_text())
+    lock = Path(json.loads((run / "start.json").read_text())["lock"])
+    assert not lock.is_relative_to(tmp_path / ".git")
     launcher.kill()
     launcher.wait(timeout=5)
     os.killpg(child["pgid"], signal.SIGKILL)
     assert not (run / "exit.json").exists()
-    assert list((tmp_path / ".git/selector-locks").iterdir())
+    assert lock.is_dir()
 
 
 def test_durable_selector_marks_new_untracked_source_as_drift(tmp_path: Path) -> None:
