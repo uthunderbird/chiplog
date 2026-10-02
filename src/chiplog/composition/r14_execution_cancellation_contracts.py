@@ -1,5 +1,7 @@
 """Execution-call cancellation wire; constructed values supply no authority."""
 
+import hashlib
+import json
 from typing import Literal, Protocol
 
 from pydantic import Field
@@ -62,6 +64,54 @@ class RetainedExecutionCancellationPreparation(RecoveryDTO):
     expected_snapshot_fingerprint: Digest
     owner_request: PublicPortCall
     owner_response: PublicPortSuccess
+
+
+class RetainedExecutionCancellationPreparationV2(RetainedExecutionCancellationPreparation):
+    """V4 Prepare cancellation, retaining full trust outside the physical cut.
+
+    The ACTOR source carries an exact commitment to that original full exchange.
+    Historical traversal must match original_prepare_fingerprint to its verified
+    selected V4 Prepare. V1 source bytes and its physical bound remain unchanged.
+    """
+
+    kind: Literal["R14_SELECTED_EXECUTION_CANCELLATION_V2"] = (
+        "R14_SELECTED_EXECUTION_CANCELLATION_V2"  # type: ignore[assignment]
+    )
+    original_prepare_fingerprint: Digest
+
+
+class ExecutionCancellationTrustCommitmentV2(RecoveryDTO):
+    """Compact source preimage; never authenticates trust by construction."""
+
+    kind: Literal["R14_EXECUTION_CANCELLATION_TRUST_COMMITMENT_V2"] = (
+        "R14_EXECUTION_CANCELLATION_TRUST_COMMITMENT_V2"
+    )
+    retained_trust_fingerprint: Digest
+    authenticated_reference_fingerprint: Digest
+    journal_head: Identity
+
+
+def cancellation_trust_commitment(
+    trust: RetainedCancellationTrust,
+) -> ExecutionCancellationTrustCommitmentV2:
+    return ExecutionCancellationTrustCommitmentV2(
+        retained_trust_fingerprint=trust.digest(),
+        authenticated_reference_fingerprint=hashlib.sha256(
+            trust.authenticated_reference_bytes
+        ).hexdigest(),
+        journal_head=trust.journal_head,
+    )
+
+
+def decode_execution_cancellation_preparation(
+    raw: str | bytes,
+) -> RetainedExecutionCancellationPreparation:
+    kind = json.loads(raw).get("kind")
+    if kind == "R14_SELECTED_EXECUTION_CANCELLATION_V1":
+        return RetainedExecutionCancellationPreparation.model_validate_json(raw)
+    if kind == "R14_SELECTED_EXECUTION_CANCELLATION_V2":
+        return RetainedExecutionCancellationPreparationV2.model_validate_json(raw)
+    raise ValueError("unregistered retained execution cancellation")
 
 
 class ExecutionCancellationPhysicalEnvelope(RecoveryDTO):

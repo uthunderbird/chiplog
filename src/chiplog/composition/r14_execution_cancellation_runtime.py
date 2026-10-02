@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import secrets
 import time
@@ -33,6 +34,9 @@ from chiplog.composition.r14_execution_cancellation_contracts import (
     EXECUTION_CANCELLATION_OPERATION,
     ExecutionCancelledCallReceipt,
     RetainedExecutionCancellationPreparation,
+    RetainedExecutionCancellationPreparationV2,
+    cancellation_trust_commitment,
+    decode_execution_cancellation_preparation,
 )
 from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_loop_history import read_execution_call_history
@@ -65,7 +69,7 @@ def _retained(entry: dict[str, object]) -> RetainedExecutionCancellationPreparat
     if not isinstance(raw, str):
         raise LoopRejected("selected execution cancellation lacks retained evidence")
     try:
-        evidence = RetainedExecutionCancellationPreparation.model_validate_json(raw)
+        evidence = decode_execution_cancellation_preparation(raw)
     except ValueError as error:
         raise LoopRejected("selected execution cancellation evidence is malformed") from error
     if evidence.canonical_bytes().decode() != raw:
@@ -168,6 +172,19 @@ async def cancel_execution_call(
             or initialized.call.original.original_turn_id != run.turns[-1].turn_id
         ):
             raise LoopRejected("execution cancellation call differs from original Run/Turn")
+        # This source reopens selected Prepare and custody; an inert DTO alone
+        # cannot select the compact V2 interpretation.
+        from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+        from chiplog.composition.r14_original_prepare_source import R14OriginalNativePrepareSource
+
+        native_prepare = None
+        if type(runtime) is CommonCliExecutionRuntime and run.turns[-1].response_seal is not None:
+            native_prepare = R14OriginalNativePrepareSource(runtime).collect(
+                run.turns[-1].response_seal
+            )
+        compact_trust = (
+            native_prepare is not None and native_prepare.original_native_scope_binding is not None
+        )
         if (
             not isinstance(observed.response, PublicPortSuccess)
             or observed.result.reference_bytes is None
@@ -206,9 +223,13 @@ async def cancel_execution_call(
         if predecessor is None:
             raise LoopRejected("execution cancellation independent predecessor absent")
         policy_ref = reference("cancellation-policy:v1", policy)
+        trust_source = cancellation_trust_commitment(trust) if compact_trust else trust
+        trust_source_id = (
+            "cancellation-trust-commitment:v2:" if compact_trust else "cancellation-trust:"
+        ) + submission.act_id
         sources = (
             (policy_ref, "POLICY", policy),
-            (reference("cancellation-trust:" + submission.act_id, trust), "ACTOR", trust),
+            (reference(trust_source_id, trust_source), "ACTOR", trust_source),
             (act_reference(act), "MANDATE", act),
         )
         cut = call.CallPreparationCut(
@@ -281,6 +302,15 @@ async def cancel_execution_call(
         owner_request=sent,
         owner_response=returned,
     )
+    if compact_trust:
+        assert native_prepare is not None
+        body = evidence.model_dump(exclude={"kind"})
+        evidence = RetainedExecutionCancellationPreparationV2(
+            **body,
+            original_prepare_fingerprint=hashlib.sha256(
+                native_prepare.retained_prepare_bytes
+            ).hexdigest(),
+        )
     envelope = build_execution_cancellation_envelope(evidence)
     command = execution_cancellation_command(evidence)
 

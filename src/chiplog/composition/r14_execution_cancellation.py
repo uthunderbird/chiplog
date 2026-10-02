@@ -13,16 +13,20 @@ import json
 
 from chiplog.adapters.driven.loop_sqlite import OWNER
 from chiplog.capabilities.agent_loop import call_acceptance_contracts as call
-from chiplog.capabilities.agent_loop.recovery_contracts import RecoveryDTO
+from chiplog.capabilities.agent_loop.recovery_contracts import NonSchedulerFence, RecoveryDTO
 from chiplog.composition.r14_cancellation_contracts import (
     CANCELLATION_SCHEMA,
     NOT_EXECUTED_SCHEMA,
 )
+from chiplog.composition.r14_cancellation_records import act_reference
 from chiplog.composition.r14_execution_cancellation_contracts import (
     EXECUTION_CANCELLATION_OPERATION,
     MAX_EXECUTION_CANCELLATION_BYTES,
     ExecutionCancellationPhysicalEnvelope,
     RetainedExecutionCancellationPreparation,
+    RetainedExecutionCancellationPreparationV2,
+    cancellation_trust_commitment,
+    decode_execution_cancellation_preparation,
 )
 from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_fanout_contracts import FanOutPhysicalMember
@@ -76,6 +80,37 @@ def _verify(evidence: RetainedExecutionCancellationPreparation) -> None:
         and bool(request.cut.sources),
         "request source, initialized call or Run binding differs",
     )
+    if isinstance(evidence, RetainedExecutionCancellationPreparationV2):
+        commitment = cancellation_trust_commitment(trust)
+        policy_ref = reference("cancellation-policy:v1", act.policy)
+        sources = (
+            (policy_ref, "POLICY", act.policy),
+            (
+                reference("cancellation-trust-commitment:v2:" + act.submission.act_id, commitment),
+                "ACTOR",
+                commitment,
+            ),
+            (act_reference(act), "MANDATE", act),
+        )
+        _require(
+            request.cut.authority_registry == policy_ref
+            and request.cancellation_act == act_reference(act)
+            and len(request.cut.sources) == len(sources),
+            "V2 cancellation authority source set differs",
+        )
+        for observed, (ref, family, value) in zip(request.cut.sources, sources, strict=True):
+            _require(
+                observed.source_id == ref.subject_id
+                and observed.source == ref
+                and observed.family == family
+                and observed.canonical_value_base64
+                == base64.b64encode(value.canonical_bytes()).decode()
+                and isinstance(request.cut.fence, NonSchedulerFence)
+                and observed.generation == request.cut.fence.runtime_generation
+                and observed.frontier == str(request.cut.tenant_commit_sequence)
+                and observed.observed_at_ns < observed.valid_until_ns,
+                "V2 retained source bytes or cut differ",
+            )
     digest = request.digest()
     terminal = call.CancelledBeforeAcceptRecord(
         terminal_id="cancelled:" + digest,
@@ -125,9 +160,7 @@ def build_execution_cancellation_envelope(
     evidence: RetainedExecutionCancellationPreparation,
 ) -> ExecutionCancellationPhysicalEnvelope:
     """Derive terminal then NOT_EXECUTED records from one retained owner exchange."""
-    evidence = RetainedExecutionCancellationPreparation.model_validate_json(
-        evidence.canonical_bytes()
-    )
+    evidence = decode_execution_cancellation_preparation(evidence.canonical_bytes())
     _verify(evidence)
     proposal = evidence.proposal
     records = (

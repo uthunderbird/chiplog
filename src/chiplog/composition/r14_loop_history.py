@@ -48,6 +48,8 @@ from chiplog.composition.r14_execution_cancellation import (
 from chiplog.composition.r14_execution_cancellation_contracts import (
     EXECUTION_CANCELLATION_OPERATION,
     RetainedExecutionCancellationPreparation,
+    RetainedExecutionCancellationPreparationV2,
+    decode_execution_cancellation_preparation,
 )
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
@@ -474,6 +476,7 @@ def _read_call_history(
                 acceptances: list[RetainedAcceptancePreparationV2] = []
                 native_accounting_count = 0
                 captured_heads: set[str] = set()
+                native_prepares: dict[tuple[str, str], str] = {}
                 for command, entry in selected:
                     identity = command.idempotency_key
                     if command.operation_kind not in (
@@ -831,12 +834,20 @@ def _read_call_history(
                         if isinstance(retained_transition, RetainedExecutionTransitionV4):
                             from .r14_native_scope_binding import verify_native_prepare_scope
 
+                            if not isinstance(retained_transition.request, PrepareExecutionRequest):
+                                raise ValueError("V4 retained transition is not Prepare")
                             verify_native_prepare_scope(
                                 runtime,
                                 retained_transition.request,
                                 retained_transition.native_scope_binding,
                                 historical=True,
                             )
+                            native_prepares[
+                                (
+                                    retained_transition.request.run.run_id,
+                                    retained_transition.request.manifest.turn_id,
+                                )
+                            ] = retained_transition.digest()
                         execution = retained_transition.proposal.run
                         if not isinstance(execution, ExecutionRunRecord):
                             raise ValueError("execution transition is not a native v2 Run")
@@ -878,11 +889,22 @@ def _read_call_history(
                         raw_cancellation = entry["execution_cancellation_preparation"]
                         if not isinstance(raw_cancellation, str):
                             raise ValueError("execution cancellation retained bytes are absent")
-                        execution_cancellation = (
-                            RetainedExecutionCancellationPreparation.model_validate_json(
-                                raw_cancellation
-                            )
+                        execution_cancellation = decode_execution_cancellation_preparation(
+                            raw_cancellation
                         )
+                        if (
+                            isinstance(
+                                execution_cancellation, RetainedExecutionCancellationPreparationV2
+                            )
+                            and native_prepares.get(
+                                (
+                                    execution_cancellation.request.original.original_run_id,
+                                    execution_cancellation.request.original.original_turn_id,
+                                )
+                            )
+                            != execution_cancellation.original_prepare_fingerprint
+                        ):
+                            raise ValueError("V2 cancellation lacks exact selected V4 Prepare")
                         execution_cancellation_envelope = build_execution_cancellation_envelope(
                             execution_cancellation
                         )

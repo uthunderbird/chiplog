@@ -31,6 +31,7 @@ from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionR
 from chiplog.composition.r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
 from chiplog.composition.r14_execution_cancellation_contracts import (
     RetainedExecutionCancellationPreparation,
+    RetainedExecutionCancellationPreparationV2,
 )
 from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_fanout_contracts import RetainedFanOutPreparation
@@ -68,7 +69,9 @@ class R14NativeSelectedAccountingSourceFacts:
     selected_native_seals: tuple[R14NativeSelectedResponseSealFacts, ...]
     target_inventory_rows: tuple[CallLifecycleObservation, ...]
     target_legacy_seals: tuple[RetainedFanOutPreparation, ...]
-    target_cancellations: tuple[RetainedExecutionCancellationPreparation, ...]
+    target_cancellations: tuple[
+        RetainedExecutionCancellationPreparation | RetainedExecutionCancellationPreparationV2, ...
+    ]
     target_acceptances: tuple[RetainedAcceptancePreparationV2, ...]
 
 
@@ -117,7 +120,7 @@ class R14NativeSelectedAccountingSource:
                 if self._runtime._database_identity != database_identity:
                     return None
                 return facts
-        except (OSError, RuntimeError, TypeError, ValueError, binascii.Error):
+        except OSError, RuntimeError, TypeError, ValueError, binascii.Error:
             return None
 
     def collect_one_cancelled(
@@ -141,7 +144,7 @@ class R14NativeSelectedAccountingSource:
         try:
             raw = base64.b64decode(record.call.canonical_call_base64, validate=True)
             tool = ConsequentialToolCall.model_validate_json(raw)
-        except (ValueError, binascii.Error):
+        except ValueError, binascii.Error:
             return None
         if (
             tool.canonical_bytes() != raw
