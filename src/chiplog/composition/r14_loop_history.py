@@ -85,6 +85,7 @@ from chiplog.composition.r14_execution_transition_records import (
     RetainedExecutionTransition,
     RetainedExecutionTransitionEvidence,
     RetainedExecutionTransitionV3,
+    RetainedExecutionTransitionV4,
     transition_command,
 )
 from chiplog.composition.r14_fanout_contracts import FANOUT_OPERATION, RetainedFanOutPreparation
@@ -772,10 +773,16 @@ def _read_call_history(
                             retained_transition: RetainedExecutionTransitionEvidence = (
                                 RetainedExecutionTransition.model_validate_json(retained_raw)
                             )
-                        elif retained_kind == "R14_SELECTED_EXECUTION_TRANSITION_V3":
-                            retained_transition = RetainedExecutionTransitionV3.model_validate_json(
-                                retained_raw
+                        elif retained_kind in (
+                            "R14_SELECTED_EXECUTION_TRANSITION_V3",
+                            "R14_SELECTED_EXECUTION_TRANSITION_V4",
+                        ):
+                            retained_type = (
+                                RetainedExecutionTransitionV4
+                                if retained_kind.endswith("V4")
+                                else RetainedExecutionTransitionV3
                             )
+                            retained_transition = retained_type.model_validate_json(retained_raw)
                             if not isinstance(retained_transition.request, PrepareExecutionRequest):
                                 raise ValueError("H1 retained transition is not Prepare")
                             workspace_members = tuple(
@@ -821,6 +828,15 @@ def _read_call_history(
                                 raise ValueError("H1 retained transition source cut differs")
                         else:
                             raise ValueError("unregistered retained execution transition")
+                        if isinstance(retained_transition, RetainedExecutionTransitionV4):
+                            from .r14_native_scope_binding import verify_native_prepare_scope
+
+                            verify_native_prepare_scope(
+                                runtime,
+                                retained_transition.request,
+                                retained_transition.native_scope_binding,
+                                historical=True,
+                            )
                         execution = retained_transition.proposal.run
                         if not isinstance(execution, ExecutionRunRecord):
                             raise ValueError("execution transition is not a native v2 Run")

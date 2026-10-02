@@ -76,6 +76,7 @@ def _verify_original_prepare_projection(
     from chiplog.composition.r13_workspace import R13Workspace
     from chiplog.composition.r14_execution_transition_records import (
         RetainedExecutionTransitionV3,
+        RetainedExecutionTransitionV4,
     )
     from chiplog.composition.r14_h1_workspace_issuance import verify_h1_original_workspace
     from chiplog.composition.r14_native_preparation_bindings import (
@@ -88,16 +89,31 @@ def _verify_original_prepare_projection(
 
     if not isinstance(prepare, R14OriginalNativePrepareProjection):
         raise ValueError("native accounting original Prepare projection has wrong type")
-    retained = RetainedExecutionTransitionV3.model_validate_json(retained_bytes)
+    retained_type = (
+        RetainedExecutionTransitionV4
+        if json.loads(retained_bytes).get("kind") == "R14_SELECTED_EXECUTION_TRANSITION_V4"
+        else RetainedExecutionTransitionV3
+    )
+    retained = retained_type.model_validate_json(retained_bytes)
     if not isinstance(retained.request, PrepareExecutionRequest):
         raise ValueError("native accounting original Prepare has another transition role")
+    if isinstance(retained, RetainedExecutionTransitionV4):
+        from .r14_native_scope_binding import verify_native_prepare_scope
+
+        verify_native_prepare_scope(
+            runtime, retained.request, retained.native_scope_binding, historical=True
+        )
+        if prepare.original_native_scope_binding != retained.native_scope_binding:
+            raise ValueError("native accounting original scope differs")
+    elif prepare.original_native_scope_binding is not None:
+        raise ValueError("native scope retroactively attached to old Prepare")
     run = retained.proposal.run
     captured = fanout.request.captured_run
     started = next(
         (
-            row for row in run_records
-            if isinstance(row, ExecutionRunRecord)
-            and row.head == retained.request.run.predecessor
+            row
+            for row in run_records
+            if isinstance(row, ExecutionRunRecord) and row.head == retained.request.run.predecessor
         ),
         None,
     )
@@ -169,6 +185,11 @@ def _verify_original_prepare_projection(
         ordered_tool_spec_bytes=tuple(tool.canonical_bytes() for tool in artifact.tools),
         policy_bytes=started.policy.canonical_bytes(),
         descriptive_original_h1_output_scope=scope,
+        original_native_scope_binding=(
+            retained.native_scope_binding
+            if isinstance(retained, RetainedExecutionTransitionV4)
+            else None
+        ),
     )
     if prepare != expected or bind_native_execution_preparation_v2(expected) != request_bindings:
         raise ValueError("native accounting original Prepare projection differs")

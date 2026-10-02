@@ -63,6 +63,7 @@ from chiplog.composition.r14_execution_fanout_records import (
 )
 from chiplog.composition.r14_execution_transition_records import (
     RetainedExecutionTransitionV3,
+    RetainedExecutionTransitionV4,
     transition_command,
 )
 from chiplog.composition.r14_fanout_contracts import SEAL_SCHEMA
@@ -230,10 +231,18 @@ def _decode_v3_prepare(raw: bytes) -> RetainedExecutionTransitionV3 | None:
         envelope = json.loads(encoded)
     except (TypeError, json.JSONDecodeError) as error:
         raise ValueError("H1 selected execution transition is malformed") from error
-    if envelope.get("kind") != "R14_SELECTED_EXECUTION_TRANSITION_V3":
+    if envelope.get("kind") not in (
+        "R14_SELECTED_EXECUTION_TRANSITION_V3",
+        "R14_SELECTED_EXECUTION_TRANSITION_V4",
+    ):
         return None
     try:
-        retained = RetainedExecutionTransitionV3.model_validate_json(encoded)
+        retained_type = (
+            RetainedExecutionTransitionV4
+            if envelope["kind"].endswith("V4")
+            else RetainedExecutionTransitionV3
+        )
+        retained = retained_type.model_validate_json(encoded)
     except ValueError as error:
         raise ValueError("H1 selected V3 Prepare is malformed") from error
     if retained.canonical_bytes() != encoded.encode():
@@ -258,6 +267,12 @@ def _select_prepare_from_runs(
             raise ValueError("H1 selected V3 transition is not Prepare")
         if retained.proposal.run != run or transition_command(retained) != command:
             raise ValueError("H1 selected V3 Prepare differs from physical Run")
+        if isinstance(retained, RetainedExecutionTransitionV4):
+            from .r14_native_scope_binding import verify_native_prepare_scope
+
+            verify_native_prepare_scope(
+                runtime, retained.request, retained.native_scope_binding, historical=True
+            )
         workspace = tuple(
             member
             for member in retained.request.manifest.members
@@ -606,9 +621,7 @@ def _resolve_h1_selected_cut(
     try:
         store = cast(AuthorityCheckpointStore, runtime._h1_checkpoint_store())
         if isinstance(retained, RetainedExecutionCompleteSealV3):
-            snapshot = resolve_h1_checkpoint(
-                entry, store, runtime._database_identity, command
-            )
+            snapshot = resolve_h1_checkpoint(entry, store, runtime._database_identity, command)
         else:
             if H1_V2_AUTHORITY_CUT_FIELD not in entry:
                 raise ValueError("H1 selected V2 seal lacks an authority cut")

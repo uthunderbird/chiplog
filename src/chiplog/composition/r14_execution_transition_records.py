@@ -19,6 +19,7 @@ from chiplog.platform.broker import BrokerSession
 from .r14_execution_fanout_contracts import EXECUTION_RUN_SCHEMA
 from .r14_execution_transition_verification import verify_execution_transition
 from .r14_h1_workspace_issuance_contracts import H1WorkspaceIssuanceRefV1
+from .r14_native_scope_binding import NativePrepareScopeBindingV1
 
 EXECUTION_TRANSITION_OPERATION = "agent_loop.execution-transition.v2"
 
@@ -70,7 +71,16 @@ class RetainedExecutionTransitionV3(RecoveryDTO):
     workspace_issuance: H1WorkspaceIssuanceRefV1
 
 
-RetainedExecutionTransitionEvidence = RetainedExecutionTransition | RetainedExecutionTransitionV3
+class RetainedExecutionTransitionV4(RetainedExecutionTransitionV3):
+    """Original Prepare retaining an authenticated native one-call context."""
+
+    kind: Literal["R14_SELECTED_EXECUTION_TRANSITION_V4"] = "R14_SELECTED_EXECUTION_TRANSITION_V4"
+    native_scope_binding: NativePrepareScopeBindingV1
+
+
+RetainedExecutionTransitionEvidence = (
+    RetainedExecutionTransition | RetainedExecutionTransitionV3 | RetainedExecutionTransitionV4
+)
 
 
 def transition_command(evidence: RetainedExecutionTransitionEvidence) -> PhysicalPublicationCommand:
@@ -82,6 +92,11 @@ def transition_command(evidence: RetainedExecutionTransitionEvidence) -> Physica
         evidence = RetainedExecutionTransitionV3.model_validate_json(raw)
         if not isinstance(evidence.request, PrepareExecutionRequest):
             raise ValueError("V3 retained execution transition must prepare")
+    elif kind == "R14_SELECTED_EXECUTION_TRANSITION_V4":
+        evidence = RetainedExecutionTransitionV4.model_validate_json(raw)
+        if not isinstance(evidence.request, PrepareExecutionRequest):
+            raise ValueError("V4 retained execution transition must prepare")
+        evidence.native_scope_binding.verify_request(evidence.request)
     else:
         raise ValueError("unregistered retained execution transition")
     verify_execution_transition(evidence.request, evidence.proposal)

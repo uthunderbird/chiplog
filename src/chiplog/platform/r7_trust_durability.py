@@ -64,6 +64,7 @@ from chiplog.platform.h1_scope_lineage import (
     AuthenticatedHermeticOutputScope,
     authenticated_h1_scope_lineage,
 )
+from chiplog.platform.native_one_call_scope_lineage import AuthenticatedNativeOneCallContextScope
 from chiplog.platform.operator_grant_key_pin import load_operator_grant_key_pin
 from chiplog.platform.operator_policy_key_pin import load_operator_policy_key_pin
 from chiplog.platform.prepared_external_delivery_grant_lineage import (
@@ -91,6 +92,7 @@ _TYPES = {
         "chiplog.deployment_trust.tenant_principal_contour",
     ),
     "HERMETIC_OUTPUT_SCOPE_V1": ("chiplog.deployment_trust.hermetic_output_scope",),
+    "NATIVE_ONE_CALL_CONTEXT_SCOPE_V1": ("chiplog.deployment_trust.native_one_call_context_scope",),
     "PREPARED_SELF_DELIVERY_POLICY_V1": ("chiplog.deployment_trust.prepared_self_delivery_policy",),
     "PREPARED_EXTERNAL_DELIVERY_GRANT_V2": (
         "chiplog.deployment_trust.prepared_external_delivery_grant",
@@ -403,6 +405,18 @@ class BrokerTrustDurability:
                 raise RuntimeError("historical H1 scope payload is invalid") from error
             if scope.model_dump(mode="json") != scope_value:
                 raise RuntimeError("historical H1 scope payload is not canonical")
+        elif kind == "NATIVE_ONE_CALL_CONTEXT_SCOPE_V1":
+            from chiplog.capabilities.deployment_trust.native_one_call_scope_contracts import (
+                NativeOneCallContextScopeV1,
+            )
+
+            if set(payload) != {"scope"} or not isinstance(payload.get("scope"), dict):
+                raise RuntimeError("historical native one-call payload is invalid")
+            native_scope = NativeOneCallContextScopeV1.model_validate_json(
+                _canonical(payload["scope"])
+            )
+            if native_scope.model_dump(mode="json") != payload["scope"]:
+                raise RuntimeError("historical native one-call payload is noncanonical")
         elif kind == "PREPARED_SELF_DELIVERY_POLICY_V1":
             source_value, policy_value = payload.get("operator_source"), payload.get("policy")
             if (
@@ -518,6 +532,48 @@ class BrokerTrustDurability:
     def _append(self, kind: str, payload: dict[str, object]) -> str:
         with self._authority_scope():
             return self._locked_append(kind, payload)
+
+    def append_native_one_call_context_scope(
+        self, scope_bytes: bytes
+    ) -> AuthenticatedNativeOneCallContextScope:
+        """Append a composition-fenced context proposal; never execution authority."""
+        from chiplog.capabilities.deployment_trust.native_one_call_scope_contracts import (
+            NativeOneCallContextScopeV1,
+        )
+        from chiplog.platform.native_one_call_scope_lineage import (
+            authenticated_native_one_call_scope_lineage,
+        )
+
+        scope = NativeOneCallContextScopeV1.model_validate_json(scope_bytes)
+        if scope.canonical_bytes() != scope_bytes:
+            raise RuntimeError("native one-call scope is noncanonical")
+        with self._authority_scope():
+            self.capture_verified_observation()
+            scopes = authenticated_native_one_call_scope_lineage(
+                self._journal.entries(), self._materializer.record
+            )
+            matching = [
+                item
+                for item in scopes
+                if (item.scope.database_id, item.scope.scope_id)
+                == (scope.database_id, scope.scope_id)
+            ]
+            prior = matching[-1] if matching else None
+            if scope.revision != (
+                0 if prior is None else prior.scope.revision + 1
+            ) or scope.predecessor != (None if prior is None else prior.decision):
+                raise RuntimeError("native one-call scope predecessor differs")
+            decision_id = self._locked_append(
+                "NATIVE_ONE_CALL_CONTEXT_SCOPE_V1", {"scope": scope.model_dump(mode="json")}
+            )
+            self.capture_verified_observation()
+            return next(
+                item
+                for item in authenticated_native_one_call_scope_lineage(
+                    self._journal.entries(), self._materializer.record
+                )
+                if item.decision_id == decision_id
+            )
 
     def append_hermetic_output_scope(self, scope_bytes: bytes) -> tuple[str, int, bytes]:
         """Append one broker-fenced owner proposal to the existing trust lineage."""

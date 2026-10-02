@@ -74,11 +74,17 @@ from .r14_execution_transition_records import (
     RetainedExecutionTransition,
     RetainedExecutionTransitionEvidence,
     RetainedExecutionTransitionV3,
+    RetainedExecutionTransitionV4,
     transition_command,
 )
 from .r14_h1_workspace_issuance import verify_h1_original_workspace
 from .r14_h1_workspace_issuance_contracts import H1WorkspaceIssuanceRefV1
 from .r14_loop_history import read_execution_history
+from .r14_native_scope_binding import (
+    NativePrepareScopeBindingV1,
+    bind_native_prepare_scope,
+    verify_native_prepare_scope,
+)
 from .r14_runtime import R14PlanningRuntime
 
 
@@ -133,7 +139,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
         try:
             before = json.loads(old.result.reference_bytes)
             after = json.loads(new.result.reference_bytes)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return False
         return all(
             before.get(field) == after.get(field)
@@ -264,6 +270,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
         h1_started_run: ExecutionRunRecord | None = None,
         h1_source_tenant_sequence: int | None = None,
         h1_workspace_port: R13Workspace | None = None,
+        native_scope_binding: NativePrepareScopeBindingV1 | None = None,
     ) -> ExecutionRunRecord:
         observed = await self._execution_actor(peer)
         with self._authority_gate().hold():
@@ -291,6 +298,10 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                     snapshot.tenant_head,
                     h1_workspace_port,
                 )
+            if native_scope_binding is not None:
+                if not isinstance(request, PrepareExecutionRequest) or workspace_issuance is None:
+                    raise LoopRejected("native scope requires an original issued Prepare")
+                verify_native_prepare_scope(self, request, native_scope_binding, historical=False)
             run_id = (
                 request.run_id if isinstance(request, CreateExecutionRun) else request.run.run_id
             )
@@ -370,7 +381,17 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 deadline_ns=deadline,
             )
         else:
-            evidence = RetainedExecutionTransitionV3(
+            envelope_type = (
+                RetainedExecutionTransitionV4
+                if native_scope_binding is not None
+                else RetainedExecutionTransitionV3
+            )
+            native_fields = (
+                {"native_scope_binding": native_scope_binding}
+                if native_scope_binding is not None
+                else {}
+            )
+            evidence = envelope_type(
                 request=request,
                 proposal=proposal,
                 expected_head=snapshot.tenant_head,
@@ -381,6 +402,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 request_id=sent.request_id,
                 deadline_ns=deadline,
                 workspace_issuance=workspace_issuance,
+                **native_fields,
             )
         command = transition_command(evidence)
 
@@ -405,6 +427,10 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                             snapshot.tenant_head,
                             h1_workspace_port,
                         )
+                    if native_scope_binding is not None:
+                        verify_native_prepare_scope(
+                            self, request, native_scope_binding, historical=False
+                        )
                     if (
                         read_execution_history(self) != snapshot
                         or self.current_worker() != worker
@@ -419,7 +445,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                         and self._execution_origin(request.run_id, request.prompt) != request.origin
                     ):
                         return "STALE"
-                except LoopRejected:
+                except LoopRejected, ValueError, ImportError:
                     return "STALE"
                 return None
 
@@ -441,6 +467,10 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                         h1_source_tenant_sequence,
                         snapshot.tenant_head,
                         h1_workspace_port,
+                    )
+                if native_scope_binding is not None:
+                    verify_native_prepare_scope(
+                        self, request, native_scope_binding, historical=False
                     )
                 self._require_no_pending()
                 self._append_decision(
@@ -628,7 +658,12 @@ class R14ExecutionRuntime(R14PlanningRuntime):
         return result.run
 
     async def capture_execution(
-        self, peer: str, run_id: str, expected_head: str
+        self,
+        peer: str,
+        run_id: str,
+        expected_head: str,
+        *,
+        native_one_call_context: bool = False,
     ) -> ExecutionRunRecord:
         """Run the first prepared Turn once; an emitted unknown never retries here."""
         async with self._execution_lane:
@@ -755,6 +790,22 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 joined_label=join_labels(tuple(member.label for member in members)),
                 artifact=artifact,
             )
+            native_scope_binding = None
+            if native_one_call_context:
+                from .r17_native_one_call_scope import NativeOneCallScopeService
+
+                with self._authority_gate().hold():
+                    native_scope_binding = bind_native_prepare_scope(
+                        NativeOneCallScopeService(self).issue_for_run(
+                            accumulated, "prepare:" + accumulated.head
+                        )
+                    )
+                refreshed = await self._execution_actor(peer)
+                with self._authority_gate().hold():
+                    if not self._same_execution_actor_identity(observed, refreshed):
+                        raise LoopRejected("native scope changed the authenticated execution actor")
+                    self._check_execution_actor(refreshed)
+                observed = refreshed
             prepared = await self._publish_initial_transition(
                 peer,
                 PrepareExecutionRequest(
@@ -766,6 +817,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 h1_started_run=started,
                 h1_source_tenant_sequence=source_tenant_sequence,
                 h1_workspace_port=workspace_port,
+                native_scope_binding=native_scope_binding,
             )
             with self._authority_gate().hold():
                 self._verify_h1_prepare_issuance(

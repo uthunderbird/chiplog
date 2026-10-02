@@ -41,6 +41,9 @@ from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_h1_workspace_issuance_contracts import H1WorkspaceIssuanceRefV1
 from chiplog.platform.h1_scope_lineage import AuthenticatedHermeticOutputScope
 
+from .r14_execution_transition_records import RetainedExecutionTransitionV4
+from .r14_native_scope_binding import NativePrepareScopeBindingV1, verify_native_prepare_scope
+
 
 class R14OriginalPrepareSourceError(ValueError):
     """The installed history cannot prove one complete original Prepare."""
@@ -82,6 +85,7 @@ class R14OriginalNativePrepareProjection:
     ordered_tool_spec_bytes: tuple[bytes, ...]
     policy_bytes: bytes
     descriptive_original_h1_output_scope: R14OriginalH1OutputScopeProjection | None
+    original_native_scope_binding: NativePrepareScopeBindingV1 | None = None
 
 
 class R14OriginalNativePrepareSource:
@@ -194,6 +198,26 @@ class R14OriginalNativePrepareSource:
             manifest=manifest,
             gate=self._runtime._authority_gate(),
         )
+        native_binding = None
+        if isinstance(retained, RetainedExecutionTransitionV4):
+            native_binding = retained.native_scope_binding
+            verify_native_prepare_scope(self._runtime, request, native_binding, historical=True)
+            calls = selected.sealed_run.turns[0].initialized_calls
+            attempt = selected.captured_run.turns[0].attempts[0]
+            if attempt.response_base64 is None or calls is None or len(calls) != 1:
+                raise R14OriginalPrepareSourceError(
+                    "native scope requires its sole initialized call"
+                )
+            raw = base64.b64decode(attempt.response_base64, validate=True)
+            response = json.loads(raw)
+            tool_calls = response.get("tool_calls")
+            if (
+                response.get("kind") != "Continue"
+                or not isinstance(tool_calls, list)
+                or len(tool_calls) != 1
+                or tool_calls[0].get("tool") != "request_self_effect"
+            ):
+                raise R14OriginalPrepareSourceError("native scope has a rival or non-native call")
         digest = hashlib.sha256(proposal.run.canonical_bytes()).hexdigest()
         return R14OriginalNativePrepareProjection(
             tenant_id=proposal.run.tenant,
@@ -220,6 +244,7 @@ class R14OriginalNativePrepareSource:
             ordered_tool_spec_bytes=tuple(tool.canonical_bytes() for tool in artifact.tools),
             policy_bytes=prepare.started_run.policy.canonical_bytes(),
             descriptive_original_h1_output_scope=descriptive_scope,
+            original_native_scope_binding=native_binding,
         )
 
     def _descriptive_scope_held(
