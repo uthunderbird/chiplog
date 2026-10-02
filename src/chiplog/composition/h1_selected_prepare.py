@@ -49,7 +49,18 @@ from chiplog.composition.r14_execution_complete_seal_records import (
     build_complete_seal_envelope,
     complete_seal_physical_command,
 )
-from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCHEMA
+from chiplog.composition.r14_execution_fanout_contracts import (
+    EXECUTION_FANOUT_OPERATION,
+    EXECUTION_RUN_SCHEMA,
+    ExecutionFanOutPhysicalEnvelope,
+    RetainedExecutionFanOutPreparation,
+)
+from chiplog.composition.r14_execution_fanout_records import (
+    build_envelope as build_execution_fanout_envelope,
+)
+from chiplog.composition.r14_execution_fanout_records import (
+    physical_command as execution_fanout_physical_command,
+)
 from chiplog.composition.r14_execution_transition_records import (
     RetainedExecutionTransitionV3,
     transition_command,
@@ -57,7 +68,11 @@ from chiplog.composition.r14_execution_transition_records import (
 from chiplog.composition.r14_fanout_contracts import SEAL_SCHEMA
 from chiplog.composition.r14_h1_workspace_issuance_contracts import H1VerifiedWorkspaceClosure
 from chiplog.composition.r14_h1_workspace_sources import reopen_h1_original_workspace
-from chiplog.composition.r14_loop_history import _strict_json, resolve_h1_checkpoint
+from chiplog.composition.r14_loop_history import (
+    _strict_json,
+    read_execution_recovery_history,
+    resolve_h1_checkpoint,
+)
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.authority_checkpoint import AuthorityCheckpointStore
 from chiplog.platform.publication_readback import inspect_publication
@@ -71,6 +86,15 @@ class H1SelectedPostSealPrepare:
     sealed_run: ExecutionRunRecord
     prepare: H1SelectedPrepare
     seal: H1SelectedSeal
+
+
+@dataclass(frozen=True, slots=True)
+class H1SelectedNativeFanoutPrepare:
+    """Exact V3 Prepare closed by one selected native fanout."""
+
+    captured_run: ExecutionRunRecord
+    sealed_run: ExecutionRunRecord
+    prepare: H1SelectedPrepare
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +307,140 @@ def _select_prepare_from_runs(
     if len(matches) != 1:
         raise ValueError("H1 selected Run lineage has no unique V3 Prepare")
     return matches[0]
+
+
+def select_h1_v3_prepare_for_native_fanout(
+    runtime: CommonCliExecutionRuntime,
+    *,
+    selected_seal: CallSubjectHead,
+) -> H1SelectedNativeFanoutPrepare | None:
+    """Reopen the V3 Prepare preceding one exact native response fanout.
+
+    The locator identifies a physical response seal, never a caller-provided
+    Run.  The retained fanout and its command are reselected and checked before
+    the bounded predecessor prefix is passed to the shared V3 Prepare reader.
+    """
+    if type(runtime) is not CommonCliExecutionRuntime:
+        raise TypeError("native fanout Prepare requires the canonical common CLI runtime")
+    if type(selected_seal) is not CallSubjectHead or type(selected_seal.revision) is not Present:
+        raise TypeError("native fanout Prepare requires an exact response-seal locator")
+
+    with runtime._authority_gate().hold():
+        runtime._check_database_identity()
+        _snapshot, _inventory, _legacy, authenticated_fanouts, _cancellations, _acceptances = (
+            read_execution_recovery_history(runtime)
+        )
+        database = Path(runtime._database).resolve(strict=True)
+        before = database.stat()
+        commands = _selected_commands(runtime)
+        selected: (
+            tuple[
+                PhysicalPublicationCommand,
+                RetainedExecutionFanOutPreparation,
+            ]
+            | None
+        ) = None
+        with closing(
+            sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, isolation_level=None)
+        ) as connection:
+            connection.execute("BEGIN")
+            for _decision_id, decision_bytes, command in commands:
+                if command.operation_kind != EXECUTION_FANOUT_OPERATION:
+                    continue
+                try:
+                    entry = _strict_json(decision_bytes)
+                    retained_raw = entry["execution_fanout"]
+                    envelope_raw = entry["execution_fanout_envelope"]
+                    if not isinstance(retained_raw, str) or not isinstance(envelope_raw, str):
+                        raise ValueError("native fanout evidence is not retained bytes")
+                    retained = RetainedExecutionFanOutPreparation.model_validate_json(retained_raw)
+                    envelope = ExecutionFanOutPhysicalEnvelope.model_validate_json(envelope_raw)
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ValueError("native fanout decision is invalid") from error
+                if (
+                    retained.canonical_bytes().decode() != retained_raw
+                    or envelope.canonical_bytes().decode() != envelope_raw
+                    or build_execution_fanout_envelope(retained) != envelope
+                    or execution_fanout_physical_command(envelope) != command
+                ):
+                    raise ValueError("native fanout differs from physical command")
+                seal_members = tuple(
+                    member for member in command.records if member.schema_id == SEAL_SCHEMA
+                )
+                if len(seal_members) != 1:
+                    raise ValueError("native fanout lacks one physical response seal")
+                physical_seal = _physical_run(connection, command, seal_members[0])
+                try:
+                    seal = SealedResponseRecord.model_validate_json(physical_seal.canonical_bytes)
+                except ValueError as error:
+                    raise ValueError("native fanout response seal is malformed") from error
+                digest = _digest(physical_seal.canonical_bytes)
+                locator = CallSubjectHead(
+                    subject_id=seal.response_seal_id,
+                    revision=Present(head="record:" + digest, fingerprint=digest),
+                )
+                if (
+                    seal.canonical_bytes() != physical_seal.canonical_bytes
+                    or physical_seal.record_id != locator.revision.head
+                    or seal != retained.proposal.fan_out.response_seal
+                ):
+                    raise ValueError(
+                        "native fanout response seal differs from physical publication"
+                    )
+                if locator != selected_seal:
+                    continue
+                if selected is not None:
+                    raise ValueError("native fanout has no unique selected response seal")
+                selected = (command, retained)
+            if selected is None:
+                return None
+
+            fanout_command, retained = selected
+            if authenticated_fanouts.count(retained) != 1:
+                raise ValueError("native fanout is not uniquely authenticated in complete history")
+            captured = retained.request.captured_run
+            sealed = retained.proposal.sealed_run
+            if sealed.predecessor != captured.head:
+                raise ValueError("native fanout lacks its exact captured predecessor")
+            runs: list[_SelectedRun] = []
+            for decision_id, decision_bytes, command in commands:
+                if command.expected_head > fanout_command.expected_head:
+                    continue
+                for member in command.records:
+                    if member.owner != OWNER or member.schema_id != EXECUTION_RUN_SCHEMA:
+                        continue
+                    physical = _physical_run(connection, command, member)
+                    decoded = decode_execution_run_member(
+                        ExecutionRunCanonicalMember(
+                            record_id=physical.record_id,
+                            schema_id=physical.schema_id,  # type: ignore[arg-type]
+                            canonical_record_bytes=physical.canonical_bytes,
+                            fingerprint=_digest(physical.canonical_bytes),
+                        )
+                    ).run
+                    if isinstance(decoded, ExecutionRunRecord) and decoded.run_id == sealed.run_id:
+                        runs.append((decision_id, decision_bytes, command, decoded, physical))
+        runs.sort(key=lambda item: item[2].expected_head)
+        if not runs or runs[-1][3] != sealed:
+            raise ValueError("native fanout does not close the selected Run lineage")
+        if len(runs) < 2 or runs[-2][3] != captured:
+            raise ValueError("native fanout lacks its exact physical captured predecessor")
+        if len({run.head for *_prefix, run, _physical in runs}) != len(runs):
+            raise ValueError("native fanout Run lineage has duplicate heads")
+        for index, (_id, _raw, _command, run, _physical) in enumerate(runs):
+            if index == 0:
+                if run.predecessor is not None:
+                    raise ValueError("native fanout Run root has a predecessor")
+            elif run.predecessor != runs[index - 1][3].head:
+                raise ValueError("native fanout Run lineage has a gap or competing descendant")
+        if retained.request.captured_run != captured:
+            raise ValueError("native fanout retained exchange differs from physical predecessor")
+        prepare = _select_prepare_from_runs(runtime, tuple(runs[:-1]))
+        runtime._check_database_identity()
+        after = database.stat()
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise ValueError("native fanout Prepare database identity changed during read")
+        return H1SelectedNativeFanoutPrepare(captured, sealed, prepare)
 
 
 def select_h1_v3_prepare_for_candidate(
@@ -753,8 +911,10 @@ def reopen_selected_h1_workspace(
 
 
 __all__ = [
+    "H1SelectedNativeFanoutPrepare",
     "H1SelectedPostSealPrepare",
     "reopen_selected_h1_workspace",
     "select_h1_v3_prepare_for_candidate",
+    "select_h1_v3_prepare_for_native_fanout",
     "select_h1_v3_prepare_for_seal",
 ]

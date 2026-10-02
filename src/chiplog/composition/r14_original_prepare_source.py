@@ -26,8 +26,10 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
 )
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.h1_selected_prepare import (
+    H1SelectedNativeFanoutPrepare,
     H1SelectedPostSealPrepare,
     reopen_selected_h1_workspace,
+    select_h1_v3_prepare_for_native_fanout,
     select_h1_v3_prepare_for_seal,
 )
 from chiplog.composition.h1_workspace_policy_v2 import (
@@ -97,9 +99,13 @@ class R14OriginalNativePrepareSource:
             with gate.hold():
                 self._runtime._check_database_identity()
                 database_identity = self._runtime._database_identity
-                selected = select_h1_v3_prepare_for_seal(
-                    self._runtime, selected_seal=selected_seal, historical=True
+                selected = select_h1_v3_prepare_for_native_fanout(
+                    self._runtime, selected_seal=selected_seal
                 )
+                if selected is None:
+                    selected = select_h1_v3_prepare_for_seal(
+                        self._runtime, selected_seal=selected_seal, historical=True
+                    )
                 projection = self._project_held(
                     selected_seal, selected, database_identity=database_identity
                 )
@@ -115,7 +121,7 @@ class R14OriginalNativePrepareSource:
     def _project_held(
         self,
         selected_seal: CallSubjectHead,
-        selected: H1SelectedPostSealPrepare,
+        selected: H1SelectedPostSealPrepare | H1SelectedNativeFanoutPrepare,
         *,
         database_identity: tuple[str, int, int],
     ) -> R14OriginalNativePrepareProjection:

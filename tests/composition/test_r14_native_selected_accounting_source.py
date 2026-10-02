@@ -5,13 +5,18 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 import chiplog.composition.r14_native_selected_accounting_source as selected_source
+import chiplog.composition.r14_original_prepare_source as original_source
+from chiplog.architecture.r7_runtime import (
+    R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+)
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.execution_contracts import (
     ConsequentialToolCall,
@@ -24,9 +29,12 @@ from chiplog.composition.common_cli_execution_runtime import (
     open_common_cli_execution_runtime,
 )
 from chiplog.composition.common_execution_driver_contracts import SelectedExecutionReceiptV1
+from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_native_fanout
+from chiplog.composition.r14_cancellation_contracts import CancelCallSubmission
 from chiplog.composition.r14_execution_complete_seal_records import (
     RetainedExecutionCompleteSealV3,
 )
+from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_loop_history import read_execution_recovery_history
 from chiplog.composition.r14_native_preparation_bindings import (
     bind_native_execution_preparation_v2,
@@ -101,9 +109,70 @@ async def _seal_other_native(runtime: CommonCliExecutionRuntime) -> None:
     await runtime.seal_execution("hermetic-ingress", initial.stable_run_lineage_id, captured.head)
 
 
+@asynccontextmanager
+async def _selected_v23_native_fanout(
+    tmp_path: Path,
+) -> AsyncIterator[tuple[CommonCliExecutionRuntime, CallSubjectHead]]:
+    database = tmp_path / "native-v23-prepare.sqlite"
+    custody = tmp_path / "dispatch-custody"
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
+    response = ExecutionContinue(
+        kind="Continue",
+        tool_calls=(
+            ConsequentialToolCall(
+                call_id="effect",
+                tool="request_self_effect",
+                arguments=SelfEffectArguments(payload=b"effect", bundle_members=("one",)),
+            ),
+        ),
+    ).canonical_bytes()
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        responses=(response,),
+        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+    ) as runtime:
+        request = await admit_runtime_slot(runtime, "native-v23")
+        initial = await runtime.drive_input(request)
+        assert isinstance(initial, SelectedExecutionReceiptV1)
+        started = await runtime.begin_execution(
+            "hermetic-ingress", initial.stable_run_lineage_id, initial.selected_run_head.head
+        )
+        captured = await runtime.capture_execution(
+            "hermetic-ingress", initial.stable_run_lineage_id, started.head
+        )
+        await runtime.seal_execution(
+            "hermetic-ingress", initial.stable_run_lineage_id, captured.head
+        )
+        _snapshot, inventory, _legacy, seals, _cancellations, _acceptances = (
+            read_execution_recovery_history(runtime)
+        )
+        row = inventory.ordered_calls[0]
+        sealed = seals[0].proposal.sealed_run
+        await runtime.cancel_execution_call(
+            "hermetic-ingress",
+            CancelCallSubmission(
+                act_id="cancel-native-effect",
+                original_call_id=row.original_call_id,
+                initialized=reference(
+                    row.initialized_record.original_call_id, row.initialized_record
+                ),
+                current_run=CallSubjectHead(
+                    subject_id=sealed.run_id,
+                    revision=Present(head=sealed.head, fingerprint=sealed.digest()),
+                ),
+            ),
+        )
+        seal = seals[0].proposal.fan_out.response_seal
+        yield cast(CommonCliExecutionRuntime, runtime), CallSubjectHead(
+            subject_id=seal.response_seal_id,
+            revision=Present(head="record:" + seal.digest(), fingerprint=seal.digest()),
+        )
+
+
 @pytest.mark.asyncio
 async def test_collects_and_reopens_mounted_v3_target_facts(tmp_path: Path) -> None:
-    async with _selected_v3_prepare(tmp_path) as (runtime, seal):
+    async with _selected_v23_native_fanout(tmp_path) as (runtime, seal):
         projection = R14OriginalNativePrepareSource(runtime).collect(seal)
         assert projection is not None
         bindings = bind_native_execution_preparation_v2(projection)
@@ -115,10 +184,12 @@ async def test_collects_and_reopens_mounted_v3_target_facts(tmp_path: Path) -> N
         assert facts.preparation_bindings == bindings
         assert projection.prepared_run in facts.target_run_lineage
         assert len(facts.selected_native_seals) == 1
-        assert facts.selected_native_seals[0].initialized_records == ()
-        assert facts.target_inventory_rows == ()
+        assert len(facts.selected_native_seals[0].initialized_records) == 1
+        assert len(facts.target_inventory_rows) == 1
         assert source.collect(projection.prepared_run) == facts
-        assert source.collect_one_cancelled() is None
+        cancelled = source.collect_one_cancelled(projection.prepared_run)
+        assert cancelled is not None
+        assert cancelled.source.original_prepare.prepared_run == projection.prepared_run
         await _seal_other_native(runtime)
         assert len(read_execution_recovery_history(runtime)[3]) == 2
         assert source.collect(projection.prepared_run) == facts
@@ -127,19 +198,22 @@ async def test_collects_and_reopens_mounted_v3_target_facts(tmp_path: Path) -> N
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
     )
     async with open_common_cli_execution_runtime(
-        tmp_path / "original-prepare.sqlite", resources=resources
+        tmp_path / "native-v23-prepare.sqlite",
+        resources=resources,
+        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
     ) as reopened:
-        assert (
-            selected_source.R14NativeSelectedAccountingSource(
-                reopened, projection, bindings
-            ).collect(projection.prepared_run)
-            == facts
+        reopened_source = selected_source.R14NativeSelectedAccountingSource(
+            reopened, projection, bindings
         )
+        assert reopened_source.collect(projection.prepared_run) == facts
+        reopened_cancelled = reopened_source.collect_one_cancelled(projection.prepared_run)
+        assert reopened_cancelled is not None
+        assert reopened_cancelled.source.original_prepare.prepared_run == projection.prepared_run
 
 
 @pytest.mark.asyncio
 async def test_holds_on_one_sided_target_physical_substitution(tmp_path: Path) -> None:
-    async with _selected_v3_prepare(tmp_path) as (runtime, seal):
+    async with _selected_v23_native_fanout(tmp_path) as (runtime, seal):
         projection = R14OriginalNativePrepareSource(runtime).collect(seal)
         assert projection is not None
         source = selected_source.R14NativeSelectedAccountingSource(
@@ -148,23 +222,30 @@ async def test_holds_on_one_sided_target_physical_substitution(tmp_path: Path) -
         snapshot, inventory, legacy, seals, cancellations, acceptances = (
             read_execution_recovery_history(runtime)
         )
+        decisions = runtime._loop_decisions().entries()
+        records = snapshot.records
+        engine = runtime._supervisor.runtime()
         selected = seals[0]
         damaged = selected.proposal.sealed_run.model_copy(update={"head": "loop:damaged"})
         substituted = selected.model_copy(
             update={"proposal": selected.proposal.model_copy(update={"sealed_run": damaged})}
         )
-        with patch(
-            "chiplog.composition.r14_native_selected_accounting_source.read_execution_recovery_history",
-            return_value=(
-                snapshot,
-                inventory,
-                legacy,
-                (substituted,),
-                cancellations,
-                acceptances,
+        with (
+            patch(
+                "chiplog.composition.r14_native_selected_accounting_source.read_execution_recovery_history",
+                return_value=(
+                    snapshot,
+                    inventory,
+                    legacy,
+                    (substituted,),
+                    cancellations,
+                    acceptances,
+                ),
             ),
+            patch.object(engine, "call", new_callable=AsyncMock) as owner_call,
         ):
             assert source.collect() is None
+            owner_call.assert_not_awaited()
         foreign_captured = selected.request.captured_run.model_copy(update={"run_id": "foreign"})
         foreign_sealed = selected.proposal.sealed_run.model_copy(update={"run_id": "foreign"})
         foreign_runs = selected.model_copy(
@@ -202,6 +283,93 @@ async def test_holds_on_one_sided_target_physical_substitution(tmp_path: Path) -
             ),
         ):
             assert source.collect() is None
+        assert runtime._loop_decisions().entries() == decisions
+        assert read_execution_recovery_history(runtime)[0].records == records
+
+
+@pytest.mark.asyncio
+async def test_v23_native_prepare_reopen_holds_for_locator_physical_or_prompt_substitution(
+    tmp_path: Path,
+) -> None:
+    async with _selected_v23_native_fanout(tmp_path) as (runtime, seal):
+        source = R14OriginalNativePrepareSource(runtime)
+        decisions = runtime._loop_decisions().entries()
+        records = read_execution_recovery_history(runtime)[0].records
+        engine = runtime._supervisor.runtime()
+        selected = select_h1_v3_prepare_for_native_fanout(runtime, selected_seal=seal)
+        assert selected is not None
+        changed_locator = seal.model_copy(
+            update={"revision": Present(head=seal.revision.head, fingerprint="0" * 64)}
+        )
+        with patch.object(engine, "call", new_callable=AsyncMock) as owner_call:
+            assert source.collect(changed_locator) is None
+            owner_call.assert_not_awaited()
+        with (
+            patch(
+                "chiplog.composition.h1_selected_prepare.read_execution_recovery_history",
+                side_effect=ValueError("fanout history rejected"),
+            ),
+            patch.object(engine, "call", new_callable=AsyncMock) as owner_call,
+        ):
+            assert source.collect(seal) is None
+            owner_call.assert_not_awaited()
+        changed_physical = replace(
+            selected,
+            prepare=replace(
+                selected.prepare,
+                physical_run=replace(selected.prepare.physical_run, canonical_bytes=b"{}"),
+            ),
+        )
+        prompt = selected.captured_run.turns[0].attempts[0].manifest.members[2]
+        changed_prompt = replace(
+            selected,
+            captured_run=selected.captured_run.model_copy(
+                update={
+                    "turns": (
+                        selected.captured_run.turns[0].model_copy(
+                            update={
+                                "attempts": (
+                                    selected.captured_run.turns[0].attempts[0].model_copy(
+                                        update={
+                                            "manifest": selected.captured_run.turns[0]
+                                            .attempts[0]
+                                            .manifest.model_copy(
+                                                update={
+                                                    "members": (
+                                                        *selected.captured_run.turns[0]
+                                                        .attempts[0]
+                                                        .manifest.members[:2],
+                                                        prompt.model_copy(
+                                                            update={"content": "rival"}
+                                                        ),
+                                                        selected.captured_run.turns[0]
+                                                        .attempts[0]
+                                                        .manifest.members[3],
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    ),
+                                )
+                            }
+                        ),
+                    )
+                }
+            ),
+        )
+        for changed in (changed_physical, changed_prompt):
+            with (
+                patch.object(
+                    original_source,
+                    "select_h1_v3_prepare_for_native_fanout",
+                    return_value=changed,
+                ),
+                patch.object(engine, "call", new_callable=AsyncMock) as owner_call,
+            ):
+                assert source.collect(seal) is None
+                owner_call.assert_not_awaited()
+        assert runtime._loop_decisions().entries() == decisions
+        assert read_execution_recovery_history(runtime)[0].records == records
 
 
 @pytest.mark.asyncio
