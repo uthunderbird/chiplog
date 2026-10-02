@@ -1,4 +1,4 @@
-"""Mounted V23 owner exchange for the narrow cancelled native call slice."""
+"""Mounted V24 owner exchange for the narrow cancelled native call slice."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import pytest
 
 from chiplog.architecture.r7_runtime import (
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+    R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
 )
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallSubjectHead,
@@ -26,11 +27,14 @@ from chiplog.capabilities.agent_loop.execution_contracts import (
     SelfEffectArguments,
 )
 from chiplog.capabilities.agent_loop.native_one_call_accounting_contracts import (
-    NATIVE_ONE_CALL_ACCOUNTING_RESULT_SCHEMA,
+    NATIVE_ONE_CALL_ACCOUNTING_REQUEST_SCHEMA,
+    NATIVE_ONE_CALL_ACCOUNTING_V2_RESULT_SCHEMA,
     PrepareNativeOneCallCancelledAccounting,
+    PrepareNativeOneCallCancelledAccountingV2,
 )
 from chiplog.capabilities.agent_loop.native_one_call_accounting_preparation import (
     prepare_native_one_call_cancelled_accounting,
+    prepare_native_one_call_cancelled_accounting_v2,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.recovery_domain import RecoveryHold
@@ -49,6 +53,10 @@ from chiplog.composition.r14_execution_recovery_source import R14NativeCancelled
 from chiplog.composition.r14_loop_history import read_execution_recovery_history
 from chiplog.composition.r14_native_one_call_accounting_producer import (
     R14NativeOneCallCancelledAccountingProducer,
+    R14NativeOneCallCancelledAccountingV24Producer,
+)
+from chiplog.composition.r14_native_selected_accounting_source import (
+    R14NativeSelectedAccountingSource,
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.broker import PublicPortSuccess
@@ -236,12 +244,12 @@ async def test_prepares_real_cancelled_native_accounting_and_reopens(tmp_path: P
         database,
         resources=resources,
         responses=(_response(),),
-        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
     ) as runtime:
         await _selected_cancelled(runtime)
         facts = R14NativeCancelledCallSource(runtime).collect()
         assert facts is not None
-        producer = R14NativeOneCallCancelledAccountingProducer(runtime)
+        producer = R14NativeOneCallCancelledAccountingV24Producer(runtime)
         engine = runtime._supervisor.runtime()
         with patch.object(engine, "call", new_callable=AsyncMock) as call:
             assert await producer.prepare(replace(facts, original_call_id="call:rival")) is None
@@ -249,13 +257,15 @@ async def test_prepares_real_cancelled_native_accounting_and_reopens(tmp_path: P
         original_call = engine.call
 
         async def tamper_owner_wire(sent: object) -> object:
-            payload = PrepareNativeOneCallCancelledAccounting.model_validate_json(
+            payload = PrepareNativeOneCallCancelledAccountingV2.model_validate_json(
                 sent.canonical_payload
             )
             return await original_call(
                 sent.model_copy(
                     update={
-                        "canonical_payload": _tamper_selected_sealed_run(payload).canonical_bytes()
+                        "canonical_payload": payload.model_copy(
+                            update={"request": _tamper_selected_sealed_run(payload.request)}
+                        ).canonical_bytes()
                     }
                 )
             )
@@ -263,15 +273,22 @@ async def test_prepares_real_cancelled_native_accounting_and_reopens(tmp_path: P
         with patch.object(engine, "call", side_effect=tamper_owner_wire):
             assert await producer.prepare(facts) is None
         captured_requests: list[PrepareNativeOneCallCancelledAccounting] = []
+        captured_v2_requests: list[PrepareNativeOneCallCancelledAccountingV2] = []
 
         async def capture_owner_wire(sent: object) -> object:
-            captured_requests.append(
-                PrepareNativeOneCallCancelledAccounting.model_validate_json(sent.canonical_payload)
+            wire = PrepareNativeOneCallCancelledAccountingV2.model_validate_json(
+                sent.canonical_payload
             )
+            captured_v2_requests.append(wire)
+            captured_requests.append(wire.request)
             return await original_call(sent)
 
         with patch.object(engine, "call", side_effect=capture_owner_wire):
             prepared = await producer.prepare(facts)
+        assert len(captured_v2_requests) == 1
+        assert prepare_native_one_call_cancelled_accounting_v2(
+            captured_v2_requests[0]
+        ).result == prepare_native_one_call_cancelled_accounting(captured_requests[0])
         assert prepared is not None
         assert len(captured_requests) == 1
         direct_request = captured_requests[0]
@@ -362,11 +379,97 @@ async def test_prepares_real_cancelled_native_accounting_and_reopens(tmp_path: P
             with pytest.raises(RecoveryHold, match=r".+"):
                 prepare_native_one_call_cancelled_accounting(mutate(direct_request))
 
+        expected_outer = prepare_native_one_call_cancelled_accounting_v2(captured_v2_requests[0])
+        binding = captured_v2_requests[0].preparation_bindings
+        for changed in (
+            binding.model_copy(update={"prepared_run_bytes": b"{}"}),
+            binding.model_copy(update={"artifact_bytes": b"{}"}),
+            binding.model_copy(update={"rendered_prompt_bytes": b"rival"}),
+            binding.model_copy(update={"generated_schema_bytes": b"{}"}),
+            binding.model_copy(update={"ordered_tool_spec_bytes": ()}),
+            binding.model_copy(update={"policy_bytes": b"{}"}),
+        ):
+            with pytest.raises(RecoveryHold, match=r"native preparation binding"):
+                prepare_native_one_call_cancelled_accounting_v2(
+                    captured_v2_requests[0].model_copy(update={"preparation_bindings": changed})
+                )
+
+        async def forged_outer_fingerprint(sent: object) -> object:
+            forged = expected_outer.model_copy(
+                update={
+                    "result": expected_outer.result.model_copy(
+                        update={"sealed_manifest_fingerprint": "0" * 64}
+                    )
+                }
+            )
+            return PublicPortSuccess(
+                request_id=sent.request_id,
+                responder=sent.callee,
+                schema_id=NATIVE_ONE_CALL_ACCOUNTING_V2_RESULT_SCHEMA,
+                canonical_payload=forged.canonical_bytes(),
+            )
+
+        with patch.object(engine, "call", side_effect=forged_outer_fingerprint):
+            assert await producer.prepare(facts) is None
+
+        async def cross_schema_reply(sent: object) -> object:
+            return PublicPortSuccess(
+                request_id=sent.request_id,
+                responder=sent.callee,
+                schema_id=NATIVE_ONE_CALL_ACCOUNTING_REQUEST_SCHEMA,
+                canonical_payload=expected_outer.canonical_bytes(),
+            )
+
+        with patch.object(engine, "call", side_effect=cross_schema_reply):
+            assert await producer.prepare(facts) is None
+
+        original_acquire = producer._acquire_held
+        acquired_calls = 0
+
+        def state_changes_during_ipc(
+            supplied: object,
+        ) -> object:
+            nonlocal acquired_calls
+            acquired_calls += 1
+            return original_acquire(supplied) if acquired_calls == 1 else None
+
+        with patch.object(producer, "_acquire_held", side_effect=state_changes_during_ipc):
+            assert await producer.prepare(facts) is None
+        assert acquired_calls == 2
+
+        original_stamp = producer._stamp_held
+        stamp_calls = 0
+
+        def commitment_changes_after_ipc() -> object:
+            nonlocal stamp_calls
+            stamp_calls += 1
+            stamp = original_stamp()
+            if stamp_calls == 4 and stamp is not None:
+                return stamp.model_copy(update={"authority_materialization_commitment": "0" * 64})
+            return stamp
+
+        with patch.object(producer, "_stamp_held", side_effect=commitment_changes_after_ipc):
+            assert await producer.prepare(facts) is None
+        # Three stamps bracket each acquisition (pre/source/post); the fourth
+        # read is the post-IPC acquisition's pre-stamp and must force HOLD.
+        assert stamp_calls == 6
+
+        with (
+            patch.object(
+                R14NativeSelectedAccountingSource,
+                "collect_one_cancelled",
+                side_effect=lambda target: None,
+            ),
+            patch.object(engine, "call", new_callable=AsyncMock) as owner_call,
+        ):
+            assert await producer.prepare(facts) is None
+            owner_call.assert_not_awaited()
+
         async def malformed_owner_success(sent: object) -> object:
             return PublicPortSuccess(
                 request_id=sent.request_id,
                 responder=sent.callee,
-                schema_id=NATIVE_ONE_CALL_ACCOUNTING_RESULT_SCHEMA,
+                schema_id=NATIVE_ONE_CALL_ACCOUNTING_V2_RESULT_SCHEMA,
                 canonical_payload=b"{}",
             )
 
@@ -382,9 +485,42 @@ async def test_prepares_real_cancelled_native_accounting_and_reopens(tmp_path: P
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
-        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
     ) as reopened:
         facts = R14NativeCancelledCallSource(reopened).collect()
         assert facts is not None
-        replayed = await R14NativeOneCallCancelledAccountingProducer(reopened).prepare(facts)
+        replayed = await R14NativeOneCallCancelledAccountingV24Producer(reopened).prepare(facts)
         assert replayed == prepared
+
+
+async def test_v23_producer_preserves_the_v1_route_and_wire(tmp_path: Path) -> None:
+    database = tmp_path / "native-one-call-accounting-v23.sqlite"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
+    )
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        responses=(_response(),),
+        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+    ) as runtime:
+        await _selected_cancelled(runtime)
+        facts = R14NativeCancelledCallSource(runtime).collect()
+        assert facts is not None
+        engine = runtime._supervisor.runtime()
+        original = engine.call
+        wires: list[PrepareNativeOneCallCancelledAccounting] = []
+
+        async def capture(sent: object) -> object:
+            assert sent.operation_id == "agent_loop.prepare_native_one_call_cancelled_accounting"
+            assert sent.schema_id == NATIVE_ONE_CALL_ACCOUNTING_REQUEST_SCHEMA
+            wires.append(
+                PrepareNativeOneCallCancelledAccounting.model_validate_json(sent.canonical_payload)
+            )
+            return await original(sent)
+
+        with patch.object(engine, "call", side_effect=capture):
+            result = await R14NativeOneCallCancelledAccountingProducer(runtime).prepare(facts)
+        assert result is not None
+        assert len(wires) == 1
+        assert prepare_native_one_call_cancelled_accounting(wires[0]) == result

@@ -30,7 +30,7 @@
   "architecture/r4_r5_freeze.py": "f7cf3dab31501baba14e51e0a59f59af811cdf12a783a40db8a77f377497f1ce",
   "architecture/r7_compatibility.py": "e89fa338b4ecf7e935947958b2d6a3c8370a6c552dd7af906c46e40e9564d122",
   "architecture/r7_read_registry.py": "d023500d8918389f59013de48c4cf404b32add67fdee942c323bccb388e2350b",
-  "architecture/r7_runtime.py": "4789d0f5a0aabfe2c536936c723658b6e342a0d864f2263a7e170f453abafadc",
+  "architecture/r7_runtime.py": "42284a31dbeeae5450ec7470f93b6c410dc352a04be9563784a95a3eae307d02",
   "architecture/r7_storage_surface.py": "3c20cd6d28a22a5686aee37cef83550784e34ebbefe1b21a65616a505911681c",
   "architecture/r8_implementation.py": "7eb8fb826f0b9d203e26c9c64f842c23d29782747930524645b3e693558c62ef",
   "architecture/verifier.py": "654ff5977f8bfccaf07941cd7ca50f1062d2645004a4e3913f88d40f4544f154",
@@ -224,7 +224,7 @@
   "composition/__init__.py": "7bfa9e65269dbf64ac86df5cdb651a56ac8854c4efa6ce660a11ce202d282f17",
   "composition/_pure_bytes.py": "cf84181d436defb205e5442a19e8250eed52ba622c7a227680af77b6efca455e",
   "composition/codex_chat.py": "5408b664e5f2ef5addb2f5d83a91e53671240831ce3071f14cc1faa3d73d6d37",
-  "composition/common_cli_execution_runtime.py": "aea9866b36ddc9e52bf570dd6107623ee4701fefe28a80eb5eb0d038083cdc7d",
+  "composition/common_cli_execution_runtime.py": "2b1b2ec9957f2d0f190c1419aee6ee7facf9227f7a20bd032a90456049ea9645",
   "composition/common_execution_driver_contracts.py": "24a934209a08dfdf0440f41bc987e3044bd35dc791c0cbe77990553a2e9f8fdd",
   "composition/completion_publication_contracts.py": "a1b739550c0466834c5fb77eab2ba7019ac2b7539add941ab06594e866c165df",
   "composition/delivery_work_claim_authority.py": "dbe6b7b42baeabf2c10c839151c9af218735df29baba6ee701526d30062e9789",
@@ -451,7 +451,7 @@
   "platform/publication_readback.py": "53eb5e22f7c77deefe7156d82a93db50a3234ceb75338d6032e9b532159ba68b",
   "platform/r7_leaves.py": "934141364e8c4305b0a8e3273b69417eef0e707ef259dd024d3c998fdc3d806c",
   "platform/r7_planning_boundary.py": "f2c20310f14549d52bd4124bdbce17c5628f1d9fd35e6b1936f289decc24b231",
-  "platform/r7_runtime.py": "fabdb2cbd6a75d58f1e68fd64e875cb12cc76f2ad860cc80b47a242e06f3c1c1",
+  "platform/r7_runtime.py": "61783b1f95d2f2ac675a88d53e300768cca559cfad9718c8cdae53c1dcecd92b",
   "platform/r7_trust.py": "6a3a254a5154c6781a9565522ebe8c29c8d2c96fd96ef5377cfc8f8a02e6ec0e",
   "platform/r7_trust_durability.py": "d2cd63dd846da57ba3423fe5a80836b8910b4997161bc49a78a3237016c3d8c9",
   "platform/r8_gate.py": "af55e573e13dc457df43141318856c100c11358069d981f531f2db808564c259",
@@ -487,7 +487,8 @@
   "verification/transcripts.py": "381ffbf01bb4a704ef20661bb6cc7786b411b45869f8cffc2547551d96eab77f",
   "verification/yaml_subset.py": "b91346552102c15a1214c1e37439156f320d3723c3367ae05e3480ce7d098c73",
   "capabilities/agent_loop/_native_one_call_accounting_process.py": "e5eaabf2cd2f218e5424630c62ddfdb0af79f589e357d9ad75ec196e38d13dd1",
-  "capabilities/agent_loop/native_one_call_accounting_contracts.py": "31ecd3cfee0b4ebda8faaf2e82feba00f60db5e142d4ad74491c54d65aea2013",
-  "capabilities/agent_loop/native_one_call_accounting_preparation.py": "f75d3c1584e04f72b27c612e5b4fbcbf5032c3fc656e4b0b15537e489fb29b9f",
-  "composition/r14_native_one_call_accounting_producer.py": "ebcab4edc38e01ffb6ad1b50994af0ce29cd3b0da058750c82355ea3e1991489"
+  "capabilities/agent_loop/native_one_call_accounting_contracts.py": "9b8cbc599f3f4d2cd7a0f432a1766f4c873a2c64f9acbbc092cd7e584fcc1e74",
+  "capabilities/agent_loop/native_one_call_accounting_preparation.py": "f1a8a681b77269d734fa4f12b787e56b31111cf3284c849430fd6a1207cafa31",
+  "composition/r14_native_one_call_accounting_producer.py": "dab2001f2110d218c8bd53db5ff0b7dc5708405150e4b508d2645bde87a4d4d9",
+  "capabilities/agent_loop/_native_one_call_accounting_v2_process.py": "8deaac1df3c6cf1c3e53b35b4879a80d6297d947c5a45e0dd2e0e73bb4a84941"
 }

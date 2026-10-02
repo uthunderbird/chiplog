@@ -20,6 +20,7 @@ from chiplog.architecture.r7_runtime import (
     R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+    R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
@@ -3231,5 +3232,22 @@ async def open_installed_h1_native_one_call_accounting_v23_runtime(
         resources=resources,
         responses=responses,
         manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+    ) as runtime:
+        yield runtime
+
+
+@asynccontextmanager
+async def open_installed_h1_native_one_call_accounting_v24_runtime(
+    launch: object,
+    *,
+    resources: HermeticDispatchResources,
+    responses: tuple[bytes, ...] = (),
+) -> AsyncIterator[CommonCliExecutionRuntime]:
+    """Open V24, retaining the V23 V1 owner route byte-for-byte."""
+    async with _open_installed_h1_runtime(
+        launch,
+        resources=resources,
+        responses=responses,
+        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
     ) as runtime:
         yield runtime

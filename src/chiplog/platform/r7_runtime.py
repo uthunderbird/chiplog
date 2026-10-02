@@ -320,6 +320,26 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
         if identity.capability_ids == (
             "agent_loop.initialize_inbox.v1",
             "agent_loop.prepare_captured_fan_out",
+            "agent_loop.prepare_completion",
+            "agent_loop.prepare_consequential_acceptance",
+            "agent_loop.prepare_delivery_completion",
+            "agent_loop.prepare_execution_captured_fan_out",
+            "agent_loop.prepare_execution_transition",
+            "agent_loop.prepare_first_path_completion",
+            "agent_loop.prepare_native_one_call_cancelled_accounting",
+            "agent_loop.prepare_pre_accept_cancellation",
+            "agent_loop.prepare_terminal_work",
+            "agent_loop.validate_delivery_completion",
+            "agent_loop.validate_transition",
+            "scheduler.prepare_configuration",
+            "scheduler.prepare_interval",
+            "scheduler.prepare_lease",
+            "scheduler.prepare_rollover",
+        ):
+            return "chiplog.capabilities.agent_loop._native_one_call_accounting_process"
+        if identity.capability_ids == (
+            "agent_loop.initialize_inbox.v1",
+            "agent_loop.prepare_captured_fan_out",
             "agent_loop.prepare_consequential_acceptance",
             "agent_loop.prepare_delivery_completion",
             "agent_loop.prepare_execution_captured_fan_out",
@@ -362,6 +382,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             "agent_loop.prepare_execution_transition",
             "agent_loop.prepare_first_path_completion",
             "agent_loop.prepare_native_one_call_cancelled_accounting",
+            "agent_loop.prepare_native_one_call_cancelled_accounting.v2",
             "agent_loop.prepare_pre_accept_cancellation",
             "agent_loop.prepare_terminal_work",
             "agent_loop.validate_delivery_completion",
@@ -371,7 +392,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             "scheduler.prepare_lease",
             "scheduler.prepare_rollover",
         ):
-            return "chiplog.capabilities.agent_loop._native_one_call_accounting_process"
+            return "chiplog.capabilities.agent_loop._native_one_call_accounting_v2_process"
         raise OwnerProcessFailure("unknown agent-loop capability partition")
     if identity.owner_id == "projections" and identity.capability_ids == (
         "projections.prepare_conversation_completion",
@@ -415,6 +436,24 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
             "chiplog.capabilities.agent_loop._execution_process",
             "chiplog.capabilities.agent_loop._fan_out_process",
             "chiplog.capabilities.agent_loop._native_one_call_accounting_process",
+            "chiplog.capabilities.agent_loop._r13_process",
+            "chiplog.capabilities.agent_loop._r14_calls_process",
+            "chiplog.capabilities.agent_loop._r14_fanout_process",
+            "chiplog.capabilities.agent_loop._r14_process",
+            "chiplog.capabilities.agent_loop._scheduler_process",
+            "chiplog.capabilities.agent_loop._terminal_work_process",
+        )
+    if module == "chiplog.capabilities.agent_loop._native_one_call_accounting_v2_process":
+        return (
+            "chiplog.capabilities.agent_loop._call_process",
+            "chiplog.capabilities.agent_loop._delivery_process",
+            "chiplog.capabilities.agent_loop._execution_completion_process",
+            "chiplog.capabilities.agent_loop._execution_h0_process",
+            "chiplog.capabilities.agent_loop._execution_lifecycle_process",
+            "chiplog.capabilities.agent_loop._execution_process",
+            "chiplog.capabilities.agent_loop._fan_out_process",
+            "chiplog.capabilities.agent_loop._native_one_call_accounting_process",
+            "chiplog.capabilities.agent_loop._native_one_call_accounting_v2_process",
             "chiplog.capabilities.agent_loop._r13_process",
             "chiplog.capabilities.agent_loop._r14_calls_process",
             "chiplog.capabilities.agent_loop._r14_fanout_process",

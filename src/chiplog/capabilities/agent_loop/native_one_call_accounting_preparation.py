@@ -16,10 +16,15 @@ from .call_acceptance_contracts import (
 )
 from .execution_contracts import ConsequentialToolCall, ExecutionContinue, ExecutionRunRecord
 from .execution_parsing import parse_execution_response
+from .execution_preparation_bindings_contracts import (
+    decode_native_execution_preparation_bindings_v2,
+)
 from .execution_run_versions import ExecutionRun
 from .native_one_call_accounting_contracts import (
     PreparedNativeOneCallCancelledAccounting,
+    PreparedNativeOneCallCancelledAccountingV2,
     PrepareNativeOneCallCancelledAccounting,
+    PrepareNativeOneCallCancelledAccountingV2,
 )
 from .recovery_contracts import NotApplicable, Present, RecoveryDTO
 from .recovery_domain import RecoveryHold, sealed_call_accounting
@@ -240,4 +245,54 @@ def prepare_native_one_call_cancelled_accounting(
         sealed_manifest_fingerprint=accounted.sealed_manifest_fingerprint,
         frontier_registry=request.frontier_registry,
         complete_ordered_calls=accounted.calls,
+    )
+
+
+def prepare_native_one_call_cancelled_accounting_v2(
+    request: PrepareNativeOneCallCancelledAccountingV2,
+) -> PreparedNativeOneCallCancelledAccountingV2:
+    """Purely join V24's carried original-Prepare and cancellation evidence."""
+    try:
+        request = PrepareNativeOneCallCancelledAccountingV2.model_validate_json(
+            request.canonical_bytes()
+        )
+        bindings = decode_native_execution_preparation_bindings_v2(
+            request.preparation_bindings.canonical_bytes()
+        )
+        prepared_run = _decode_run(bindings.prepared_run_bytes, "prepared Run")
+        captured_run = _decode_run(request.request.captured_run_bytes, "captured Run")
+    except (ValidationError, ValueError, RecoveryHold) as error:
+        raise RecoveryHold("invalid native preparation binding") from error
+    if not isinstance(prepared_run, ExecutionRunRecord) or not isinstance(
+        captured_run, ExecutionRunRecord
+    ):
+        raise RecoveryHold("native preparation requires physical Runs")
+    if (
+        len(prepared_run.turns) != 1
+        or len(captured_run.turns) != 1
+        or len(prepared_run.turns[0].attempts) != 1
+        or len(captured_run.turns[0].attempts) != 1
+        or prepared_run.turns[0].selector != 0
+        or captured_run.turns[0].selector != 0
+        or prepared_run.turns[0].turn_id != captured_run.turns[0].turn_id
+        or prepared_run.turns[0].attempts[0].manifest != captured_run.turns[0].attempts[0].manifest
+    ):
+        raise RecoveryHold("native preparation manifest differs from captured Run")
+    stamp = request.source_stamp
+    if (
+        request.request.tenant_id != stamp.tenant_id
+        or bindings.tenant_id != stamp.tenant_id
+        or bindings.database_identity != stamp.database_identity
+        or bindings.prepared_run != _run_reference(prepared_run)
+        or bindings.selected_response_seal != request.request.selected_response
+        or prepared_run.run_id != captured_run.run_id
+        or prepared_run.tenant != stamp.tenant_id
+        or captured_run.tenant != stamp.tenant_id
+        or prepared_run.policy != captured_run.policy
+    ):
+        raise RecoveryHold("native preparation binding differs from cancellation wire")
+    result = prepare_native_one_call_cancelled_accounting(request.request)
+    return PreparedNativeOneCallCancelledAccountingV2(
+        source_request_fingerprint=hashlib.sha256(request.canonical_bytes()).hexdigest(),
+        result=result,
     )
