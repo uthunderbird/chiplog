@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,7 @@ def fixture(root: Path) -> dict[str, str]:
     uv.write_text(
         f"#!{sys.executable}\nimport os, sys\n"
         "assert sys.argv[1:3] == ['run', 'pytest']\n"
+        "open('pytest-started', 'w').write('started')\n"
         "os.execv(sys.executable, [sys.executable, '-m', 'pytest', *sys.argv[3:]])\n"
     )
     uv.chmod(0o755)
@@ -54,6 +56,35 @@ def fixture(root: Path) -> dict[str, str]:
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     (root / "implementation.py").write_text("value = 1\n")
     git(root, env, "add", "implementation.py")
+    return env
+
+
+def r8_fixture(root: Path) -> dict[str, str]:
+    env = fixture(root)
+    source = root / "src/chiplog"
+    architecture = source / "architecture"
+    verification = source / "verification"
+    inert_shared = source / "inert_shared"
+    for directory in (architecture, verification, inert_shared):
+        directory.mkdir(parents=True, exist_ok=True)
+    for package in (source, architecture, verification):
+        (package / "__init__.py").write_text("")
+    shutil.copyfile(
+        ROOT / "src/chiplog/architecture/r8_implementation.py",
+        architecture / "r8_implementation.py",
+    )
+    shutil.copyfile(
+        ROOT / "src/chiplog/verification/r8_surface.py", verification / "r8_surface.py"
+    )
+    implementation = source / "implementation.py"
+    implementation.write_text("value = 1\n")
+    catalog = {
+        path.relative_to(source).as_posix(): sha256(path.read_bytes()).hexdigest()
+        for path in source.rglob("*.py")
+    }
+    (inert_shared / "r8-implementation-v1.json").write_text(json.dumps(catalog, sort_keys=True))
+    git(root, env, "add", "src")
+    git(root, env, "commit", "-qm", "R8 baseline")
     return env
 
 
@@ -153,3 +184,71 @@ def test_zero_collected_tests_is_not_success(tmp_path: Path) -> None:
     result = run(tmp_path, env, ["tests/tooling/test_empty.py"])
     assert result.returncode == 1
     assert "кодом 5" in result.stderr
+
+
+def test_r8_stale_pin_rejects_before_selected_pytest(tmp_path: Path) -> None:
+    env = r8_fixture(tmp_path)
+    target = tmp_path / "src/chiplog/implementation.py"
+    target.write_text("value = 2\n")
+    git(tmp_path, env, "add", target.relative_to(tmp_path).as_posix())
+    result = run(tmp_path, env, ["tests/tooling/test_selection.py::test_new"])
+    assert result.returncode == 1
+    assert "implementation.py" in result.stderr
+    assert "→ сделай:" in result.stderr
+    assert not (tmp_path / "pytest-started").exists()
+
+
+def test_r8_repin_allows_selected_pytest(tmp_path: Path) -> None:
+    env = r8_fixture(tmp_path)
+    source = tmp_path / "src/chiplog"
+    target = source / "implementation.py"
+    target.write_text("value = 2\n")
+    catalog_path = source / "inert_shared/r8-implementation-v1.json"
+    catalog = json.loads(catalog_path.read_text())
+    catalog["implementation.py"] = sha256(target.read_bytes()).hexdigest()
+    catalog_path.write_text(json.dumps(catalog, sort_keys=True))
+    git(tmp_path, env, "add", "src")
+    result = run(tmp_path, env, ["tests/tooling/test_selection.py::test_new"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "pytest-started").exists()
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "catalog-only"])
+def test_r8_unknown_source_and_catalog_tamper_reject_before_selected_pytest(
+    tmp_path: Path, mutation: str
+) -> None:
+    env = r8_fixture(tmp_path)
+    source = tmp_path / "src/chiplog"
+    if mutation == "unknown":
+        (source / "new_source.py").write_text("value = 3\n")
+    else:
+        catalog_path = source / "inert_shared/r8-implementation-v1.json"
+        catalog = json.loads(catalog_path.read_text())
+        catalog["implementation.py"] = "0" * 64
+        catalog_path.write_text(json.dumps(catalog, sort_keys=True))
+    git(tmp_path, env, "add", "src")
+    result = run(tmp_path, env, ["tests/tooling/test_selection.py::test_new"])
+    assert result.returncode == 1
+    assert "→ сделай:" in result.stderr
+    assert not (tmp_path / "pytest-started").exists()
+
+
+@pytest.mark.parametrize("mutation", ["untracked", "malformed", "missing"])
+def test_r8_untracked_or_unreadable_catalog_rejects_before_selected_pytest(
+    tmp_path: Path, mutation: str
+) -> None:
+    env = r8_fixture(tmp_path)
+    source = tmp_path / "src/chiplog"
+    catalog_path = source / "inert_shared/r8-implementation-v1.json"
+    if mutation == "untracked":
+        (source / "untracked.py").write_text("value = 3\n")
+    elif mutation == "malformed":
+        catalog_path.write_text("{")
+        git(tmp_path, env, "add", catalog_path.relative_to(tmp_path).as_posix())
+    else:
+        catalog_path.unlink()
+        git(tmp_path, env, "add", "-u", "src")
+    result = run(tmp_path, env, ["tests/tooling/test_selection.py::test_new"])
+    assert result.returncode == 1
+    assert "→ сделай:" in result.stderr
+    assert not (tmp_path / "pytest-started").exists()

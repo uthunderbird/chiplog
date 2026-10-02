@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+R8_CATALOG = "src/chiplog/inert_shared/r8-implementation-v1.json"
 
 
 def git(*args: str) -> str:
@@ -21,6 +22,40 @@ def reject(reason: str, action: str) -> int:
     print(f"→ сделай: {action}", file=sys.stderr)
     print("✓ рабочая ветка, неизменный staged-снимок и явные pytest selectors", file=sys.stderr)
     return 1
+
+
+def r8_implementation_preflight(staged: list[str]) -> int | None:
+    untracked_names = git(
+        "ls-files", "--others", "--exclude-standard", "-z", "--", "src/chiplog"
+    ).split("\0")
+    untracked = [
+        name
+        for name in untracked_names
+        if name and Path(name).suffix == ".py"
+    ]
+    if untracked:
+        return reject(
+            f"неотслеживаемый Python вне R8 catalog: {untracked[0]}",
+            "добавь Python-файл в index, обнови проверенный R8 catalog и повтори checkpoint",
+        )
+    implementation_changed = any(
+        name == R8_CATALOG
+        or (name.startswith("src/chiplog/") and Path(name).suffix == ".py")
+        for name in staged
+    )
+    if not implementation_changed:
+        return None
+    try:
+        sys.path.insert(0, str(ROOT / "src"))
+        from chiplog.verification.r8_surface import verify_implementation_identity
+
+        verify_implementation_identity(ROOT)
+    except Exception as error:
+        return reject(
+            f"не прошла проверка identity реализации R8: {error}",
+            "исправь import или R8 catalog, сделай узкий проверенный repin и повтори checkpoint",
+        )
+    return None
 
 
 def main() -> int:
@@ -51,6 +86,9 @@ def main() -> int:
         staged = [name for name in staged if name]
         if not staged:
             return reject("пустой staged-снимок", "добавь проверяемый срез в index")
+        preflight = r8_implementation_preflight(staged)
+        if preflight is not None:
+            return preflight
         selectors = json.loads(os.environ.get("CHIPLOG_CHECKPOINT_TESTS", "[]"))
         if not isinstance(selectors, list) or any(
             not isinstance(item, str) or not item for item in selectors
