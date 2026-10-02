@@ -39,6 +39,9 @@ from chiplog.composition.h1_scoped_authorization_clock_reader import (
 from chiplog.composition.h1_scoped_authorization_delivery_work_reader import (
     H1ScopedAuthorizationDeliveryWorkReaderV1,
 )
+from chiplog.composition.h1_scoped_authorization_normative_conflict_generation import (
+    H1ScopedAuthorizationNormativeConflictGenerationReaderV1,
+)
 from chiplog.composition.h1_scoped_authorization_resource_sources_v4 import (
     H1ScopedAuthorizationResourceReaderV4,
 )
@@ -127,6 +130,9 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
 
             decision, batch = _selected_batch(runtime)
             assert batch.authentication.applicability_schema == V4_SCHEMA
+            predecessor = runtime._owner_decisions().predecessor_snapshot_for_selected(decision)
+            assert predecessor.tenant_id == batch.identity.tenant_id
+            assert predecessor.head != decision.decision_id
             enrollment = runtime._h1_live_completion_enrollment
             assert enrollment is not None
             retained = tuple(enrollment._issuances.values())
@@ -366,6 +372,24 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
                 issuance.effects_result.intent_result.intent.mandate.horizon.expires_at_ns,
                 current_claim.binding.claimant_clock.lease_expires_at_ns,
             )
+            normative_reader = (
+                runtime._h1_scoped_authorization_normative_conflict_generation_reader_v1
+            )
+            assert (
+                type(normative_reader)
+                is H1ScopedAuthorizationNormativeConflictGenerationReaderV1
+            )
+            normative_capture = normative_reader.read(delivery_work_capture)
+            with runtime._authority_gate().hold():
+                normative_source = normative_reader.source_held(normative_capture)
+            assert normative_source.clock_epoch == clock_role.clock_epoch
+            assert normative_source.valid_until_ns == clock_role.valid_until_ns
+            mandate = issuance.effects_result.intent_result.intent.mandate
+            assert (
+                normative_source.invalidation_manifest
+                == mandate.normative_conflict_generation
+            )
+            normative_reader.release(normative_capture)
             test_clock_ns[0] = capture.expires_at_ns
             with pytest.raises(H1DeliveryWorkCurrentClaimHold, match="session or clock"):
                 current_reader.read(source.intent_id)

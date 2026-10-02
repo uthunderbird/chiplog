@@ -674,6 +674,50 @@ def test_v2_selected_roundtrips_and_materialized_retains_closed_binding(tmp_path
     assert _journal(tmp_path).snapshot().materialized_command_ids == frozenset({"h1-command"})
 
 
+def test_h1_v4_selected_predecessor_rejects_outer_schema_without_exact_issuance(
+    tmp_path: Path,
+) -> None:
+    journal = _journal(tmp_path)
+    batch = _h1_batch().model_copy(
+        update={
+            "authentication": _h1_batch().authentication.model_copy(
+                update={"applicability_schema": "chiplog.composition.h1-completion-issuance.v4"}
+            )
+        }
+    )
+    selected = journal.select(_prepared(batch), digest(b"after"))
+
+    assert b'"schema_id":"chiplog.owner-decision.v2"' in journal._raw.entries()[0][2]
+    with pytest.raises(OwnerJournalIntegrityError):
+        journal.predecessor_snapshot_for_selected(selected)
+
+
+def test_h1_v4_selected_predecessor_accepts_the_real_v2_h1_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chiplog.composition import h1_completion_issuance as issuance_subject
+
+    journal = _journal(tmp_path)
+    batch = _h1_batch().model_copy(
+        update={
+            "authentication": _h1_batch().authentication.model_copy(
+                update={"applicability_schema": "chiplog.composition.h1-completion-issuance.v4"}
+            )
+        }
+    )
+    selected = journal.select(_prepared(batch), digest(b"after"))
+    monkeypatch.setattr(
+        issuance_subject,
+        "decode_h1_completion_issuance",
+        lambda _: issuance_subject.H1CompletionIssuanceV4.model_construct(),
+    )
+
+    predecessor = journal.predecessor_snapshot_for_selected(selected)
+    assert b'"schema_id":"chiplog.owner-decision.v2"' in journal._raw.entries()[0][2]
+    assert predecessor.head is None
+    assert predecessor.decisions == ()
+
+
 def _canonical_raw(entry: dict[str, object]) -> bytes:
     return json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()
 

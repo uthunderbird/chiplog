@@ -554,6 +554,62 @@ class IndependentOwnerDecisionJournal:
         except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
             raise OwnerJournalIntegrityError("snapshot_at", self._tenant, record) from error
 
+    def predecessor_snapshot_for_selected(
+        self, decision: SelectedOwnerDecision
+    ) -> OwnerJournalSnapshot:
+        """Return the exact journal prefix immediately before one selected decision.
+
+        A selected decision's materialization commitment is deliberately not a
+        journal locator.  This method therefore derives the prefix only from
+        the validated raw H1-completion entry that physically carries it.
+        """
+        if not isinstance(decision, SelectedOwnerDecision):
+            raise TypeError("selected decision is invalid")
+        with self._authority_scope():
+            try:
+                entries = self._raw.entries()
+                self._scan_entries(entries, "selected_predecessor", decision.decision_id)
+                matches = [
+                    (index, entry)
+                    for index, entry in enumerate(entries)
+                    if entry[0] == decision.decision_id
+                ]
+                if len(matches) != 1:
+                    raise ValueError("selected decision is absent or ambiguous")
+                index, (entry_id, predecessor, raw) = matches[0]
+                entry = _decode(raw)
+                if (
+                    entry_id != decision.decision_head
+                    or hashlib.sha256(raw).hexdigest() != decision.decision_fingerprint
+                    or not isinstance(entry, _SelectedV2)
+                    or type(entry.request) is not CompleteDeliveryBatchV2
+                    or entry.request.authentication.applicability_schema
+                    != "chiplog.composition.h1-completion-issuance.v4"
+                ):
+                    raise ValueError("selected decision differs from raw journal entry")
+                from chiplog.composition.h1_completion_issuance import (
+                    H1CompletionIssuanceV4,
+                    decode_h1_completion_issuance,
+                )
+
+                if type(decode_h1_completion_issuance(entry.request)) is not H1CompletionIssuanceV4:
+                    raise ValueError("selected H1 V4 issuance differs from raw journal entry")
+                scan = self._scan_entries(entries[: index + 1], "selected_predecessor", entry_id)
+                reconstructed = scan.selected.get(entry.request.identity.command_id)
+                if (
+                    reconstructed != decision
+                    or reconstructed is None
+                    or reconstructed.prepared.h1_delivery_binding is None
+                ):
+                    raise ValueError("selected H1 V4 decision differs from raw journal entry")
+                return self.snapshot_at(predecessor)
+            except OwnerJournalIntegrityError:
+                raise
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+                raise OwnerJournalIntegrityError(
+                    "selected_predecessor", self._tenant, decision.decision_id
+                ) from error
+
     def select(
         self, prepared: PreparedOwnerPublication, resulting_commitment: str
     ) -> SelectedOwnerDecision:
