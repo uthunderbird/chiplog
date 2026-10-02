@@ -9,7 +9,7 @@ import pytest
 from tests.capabilities.agent_loop.test_execution_first_path_completion_contracts import (
     request as first_path_request,
 )
-from tests.capabilities.effects.test_h1_local_preparation_record_contracts import _scope_source
+from tests.support.h1_selected_scope_source import build_h1_selected_scope_source
 
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead as LoopHead
 from chiplog.capabilities.agent_loop.execution_completion_preparation import (
@@ -190,7 +190,7 @@ async def _call(*, selected_intent_id: str | None = None) -> H1ScopedDeliveryOwn
     basis = __import__(
         "chiplog.capabilities.effects.h1_prepared_delivery_basis", fromlist=["x"]
     ).derive_h1_prepared_delivery_basis(first, prepared)
-    scope = _scope_source()
+    scope = build_h1_selected_scope_source()
     recipient = delivery.selection.recipient
     terms = PreparedExternalSelfDeliveryPolicyTermsV1(
         principal_id=first.run.principal,

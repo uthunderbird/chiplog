@@ -315,6 +315,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     _h1_scoped_authorization_historical_binder: Any | None
     _h1_scoped_authorization_effects_history_reader_v3: Any | None
     _h1_scoped_authorization_delivery_work_reader_v1: Any | None
+    _h1_current_trust_reader_v1: Any | None
     _h1_scoped_authorization_resource_reader_v3: Any | None
     _h1_scoped_authorization_resource_reader_v4: Any | None
     _h1_scoped_authorization_clock_reader_v1: Any | None
@@ -2621,6 +2622,7 @@ async def _open_installed_h1_runtime(
                 producer_inventory_reader: Any | None = None
                 scoped_authorization_history_reader: Any | None = None
                 scoped_authorization_delivery_work_reader: Any | None = None
+                current_trust_reader: Any | None = None
                 scoped_authorization_resource_reader: Any | None = None
                 scoped_authorization_resource_reader_v4: Any | None = None
                 scoped_authorization_clock_reader: Any | None = None
@@ -2677,6 +2679,7 @@ async def _open_installed_h1_runtime(
                             "_h1_producer_inventory_reader",
                             "_h1_scoped_authorization_effects_history_reader_v3",
                             "_h1_scoped_authorization_delivery_work_reader_v1",
+                            "_h1_current_trust_reader_v1",
                             "_h1_scoped_authorization_resource_reader_v3",
                             "_h1_scoped_authorization_resource_reader_v4",
                             "_h1_scoped_authorization_clock_reader_v1",
@@ -2793,6 +2796,10 @@ async def _open_installed_h1_runtime(
                                 runtime._h1_scoped_authorization_delivery_work_reader_v1 = (
                                     scoped_authorization_delivery_work_reader
                                 )
+                                from .h1_current_trust_reader import H1CurrentTrustReaderV1
+
+                                current_trust_reader = H1CurrentTrustReaderV1(runtime)
+                                runtime._h1_current_trust_reader_v1 = current_trust_reader
                                 scoped_authorization_resource_reader_v4 = (
                                     H1ScopedAuthorizationResourceReaderV4(runtime)
                                 )
@@ -2894,6 +2901,10 @@ async def _open_installed_h1_runtime(
                         scoped_authorization_resource_reader_v4.close()
                     if hasattr(runtime, "_h1_scoped_authorization_resource_reader_v4"):
                         del runtime._h1_scoped_authorization_resource_reader_v4
+                    if current_trust_reader is not None:
+                        current_trust_reader.close()
+                    if hasattr(runtime, "_h1_current_trust_reader_v1"):
+                        del runtime._h1_current_trust_reader_v1
                     if scoped_authorization_delivery_work_reader is not None:
                         scoped_authorization_delivery_work_reader.close()
                     if hasattr(runtime, "_h1_scoped_authorization_delivery_work_reader_v1"):
@@ -3040,6 +3051,13 @@ async def _open_installed_h1_runtime(
                     retained_resource_reader_v4.close()
                 if hasattr(runtime, "_h1_scoped_authorization_resource_reader_v4"):
                     del runtime._h1_scoped_authorization_resource_reader_v4
+                retained_current_trust_reader = getattr(
+                    runtime, "_h1_current_trust_reader_v1", None
+                )
+                if retained_current_trust_reader is not None:
+                    retained_current_trust_reader.close()
+                if hasattr(runtime, "_h1_current_trust_reader_v1"):
+                    del runtime._h1_current_trust_reader_v1
                 retained_delivery_work_reader = getattr(
                     runtime, "_h1_scoped_authorization_delivery_work_reader_v1", None
                 )
