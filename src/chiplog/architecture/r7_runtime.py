@@ -1181,6 +1181,48 @@ R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_EVALUATION_MANIFEST = replace(
 )
 
 
+_V26_RECOVERY_ROUTES = tuple(
+    RoutedCallDecl(
+        operation,
+        "broker",
+        "agent_loop",
+        "chiplog.execution.recovery-request.v1",
+        "chiplog.execution.recovery-result.v1",
+    )
+    for operation in (
+        "agent_loop.prepare_execution_accounting.v1",
+        "agent_loop.prepare_execution_continuation.v1",
+    )
+)
+_V26_EXECUTION_OPERATIONS = tuple(
+    sorted((*_V24_EXECUTION_OPERATIONS, *(route.operation_id for route in _V26_RECOVERY_ROUTES)))
+)
+R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST = replace(
+    R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
+    manifest_version=26,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_V26_EXECUTION_OPERATIONS,
+            public_operations=_V26_EXECUTION_OPERATIONS,
+            target_ids=("chiplog.capabilities.agent_loop._execution_recovery_process:dispatch",),
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST.routes,
+                *_V26_RECOVERY_ROUTES,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+
+
 class RuntimeManifestViolation(ValueError):
     pass
 
@@ -1217,6 +1259,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         23,
         24,
         25,
+        26,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1243,6 +1286,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         23: R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
         24: R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
         25: R15_MANDATE_PRODUCTION_MANIFEST,
+        26: R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")

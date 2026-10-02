@@ -36,6 +36,24 @@ def workspace_snapshot(path: Path) -> Iterator[ReadSnapshot]:
 
 
 @contextmanager
+def join_workspace_snapshot(path: Path) -> Iterator[ReadSnapshot]:
+    """Explicitly reuse the same authenticated physical read transaction."""
+    current = _CURRENT.get()
+    if current is None:
+        with workspace_snapshot(path) as snapshot:
+            yield snapshot
+        return
+    stat = path.stat()
+    if path.resolve(strict=True) != current.path or (stat.st_dev, stat.st_ino) != current.identity:
+        raise ValueError("workspace snapshot attempted another physical database")
+    if not current.connection.in_transaction:
+        raise ValueError("workspace read transaction ended early")
+    if current.connection.execute("PRAGMA query_only").fetchone() != (1,):
+        raise ValueError("workspace snapshot is not read only")
+    yield current
+
+
+@contextmanager
 def read_connection(path: Path) -> Iterator[sqlite3.Connection]:
     """Join the broker's active cut; historical standalone callers get a local cut."""
     current = _CURRENT.get()
@@ -52,4 +70,4 @@ def read_connection(path: Path) -> Iterator[sqlite3.Connection]:
             yield connection
 
 
-__all__ = ["ReadSnapshot", "read_connection", "workspace_snapshot"]
+__all__ = ["ReadSnapshot", "join_workspace_snapshot", "read_connection", "workspace_snapshot"]

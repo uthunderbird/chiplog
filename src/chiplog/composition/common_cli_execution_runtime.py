@@ -928,6 +928,20 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await publish_native_one_call_cancelled_accounting(self, peer)
 
+    async def publish_native_recovery_profile(self, peer: str = "hermetic-ingress"):
+        from chiplog.composition.r14_recovery_profile_publication import (
+            publish_native_recovery_profile,
+        )
+
+        return await publish_native_recovery_profile(self, peer)
+
+    async def publish_execution_accounting_readiness(self, peer: str = "hermetic-ingress"):
+        from chiplog.composition.r14_recovery_publication import (
+            publish_execution_accounting_readiness,
+        )
+
+        return await publish_execution_accounting_readiness(self, peer)
+
     def read_native_one_call_cancelled_accounting(self):
         """Canonical read-only accounting observation after selected-history validation."""
         from chiplog.composition.r14_loop_history import read_selected_native_accounting
@@ -1577,7 +1591,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         source = request.selected_source
         if source.kind != "CLI_RETAINED_SELECTED_SOURCE_V1":
             raise PermissionError("only the deployed retained CLI route is mounted")
-        admitted = self.read_admitted_inbox(source.original_ingress_identity.command_id)
+        reader = self.read_historical_admitted_inbox if historical else self.read_admitted_inbox
+        admitted = reader(source.original_ingress_identity.command_id)
         if admitted is None:
             raise PermissionError("selected admitted inbox is absent")
         record = admitted.record
@@ -2263,7 +2278,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             or _loop_head(recipient.credential_binding) != origin.recipient.credential_binding
         ):
             raise LoopRejected("historical selected recipient differs")
-        admitted = self.read_admitted_inbox(wire.identity.original_ingress_identity.command_id)
+        admitted = self.read_historical_admitted_inbox(
+            wire.identity.original_ingress_identity.command_id
+        )
         if admitted is None:
             raise LoopRejected("historical selected inbox is absent")
         decoded = self._selected_input(wire, observation, historical=True)
@@ -2342,8 +2359,23 @@ async def open_common_cli_execution_runtime(
     resources: HermeticDispatchResources,
     responses: tuple[bytes, ...] = (),
     manifest: RuntimeAssemblyManifest = R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
+    recovery_cut_source: object | None = None,
 ) -> AsyncIterator[CommonCliExecutionRuntime]:
     model = HermeticModel(responses)
+
+    def setup(opened: object) -> None:
+        runtime = cast(CommonCliExecutionRuntime, opened)
+        runtime._bind_h1_historical_custody_path(resources._custody_path)
+        if recovery_cut_source is not None:
+            if not (
+                callable(getattr(recovery_cut_source, "collect_held", None))
+                and callable(getattr(recovery_cut_source, "authenticate_selected_held", None))
+            ):
+                raise TypeError(
+                    "complete recovery source requires current and historical authentication"
+                )
+            runtime._full_recovery_cut_source = recovery_cut_source
+
     with _configured(resources):
         async with _open_runtime(
             database,
@@ -2355,9 +2387,7 @@ async def open_common_cli_execution_runtime(
                 "model": model,
                 "effects_transport": resources.require_original_provider(),
             },
-            runtime_setup=lambda opened: cast(
-                CommonCliExecutionRuntime, opened
-            )._bind_h1_historical_custody_path(resources._custody_path),
+            runtime_setup=setup,
         ) as opened:
             runtime = cast(CommonCliExecutionRuntime, opened)
             runtime._execution_model = model

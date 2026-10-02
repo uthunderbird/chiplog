@@ -192,13 +192,32 @@ class R17IngressRuntime(R14PlanningRuntime):
             yield authority
 
     def read_admitted_inbox(self, token_id: str) -> AdmittedInboxObservation | None:
+        return self._read_admitted_inbox(token_id, allow_pending=False)
+
+    def read_historical_admitted_inbox(self, token_id: str) -> AdmittedInboxObservation | None:
+        from chiplog.composition.r14_recovery_publication import (
+            authenticate_selected_recovery_prefix_held,
+        )
+        from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+        from chiplog.platform.workspace_snapshot import read_connection
+
+        with self._authority_gate().hold():
+            with read_connection(self._database) as connection:
+                actual = capture_authority_snapshot_commitment(connection, self._tenant_id)
+                anchored = self._commitment_journal.load(self._tenant_id)
+            allowed = authenticate_selected_recovery_prefix_held(self, actual, anchored)
+            return self._read_admitted_inbox(token_id, allow_pending=allowed)
+
+    def _read_admitted_inbox(
+        self, token_id: str, *, allow_pending: bool
+    ) -> AdmittedInboxObservation | None:
         from chiplog.composition.r17_ingress_history import record_head
         from chiplog.platform.ingress_authenticated_contracts import (
             AdmittedInboxObservation,
             AuthenticatedCustodyRecord,
         )
 
-        history = self.ingress_history()
+        history = read_ingress_history(self, allow_pending=allow_pending)
         matches = [
             r
             for r in history.records

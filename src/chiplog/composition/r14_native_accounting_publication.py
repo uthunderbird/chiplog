@@ -126,8 +126,12 @@ async def publish_native_one_call_cancelled_accounting(
     )
     command = accounting_command(evidence, exchange.physical_source)
     envelope = accounting_envelope(evidence, exchange.physical_source)
+    refreshed = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
-        runtime._check_execution_actor(observed)
+        if not runtime._same_execution_actor_identity(observed, refreshed):
+            raise LoopRejected("native accounting authenticated actor changed")
+        runtime._check_execution_actor(refreshed)
+        observed = refreshed
         acquired = producer._acquire_held(facts)
         if acquired is None or acquired[1:] != (
             exchange.selected_source,
@@ -140,6 +144,13 @@ async def publish_native_one_call_cancelled_accounting(
         session = runtime._supervisor.runtime().session("agent_loop")
         if predecessor != exchange.request.source_stamp.authority_materialization_commitment:
             raise LoopRejected("native accounting predecessor changed after owner IPC")
+
+    refreshed = await runtime._execution_actor(peer)
+    with runtime._authority_gate().hold():
+        if not runtime._same_execution_actor_identity(observed, refreshed):
+            raise LoopRejected("native accounting authenticated actor changed before publication")
+        runtime._check_execution_actor(refreshed)
+        observed = refreshed
 
     def guard() -> Literal["STALE"] | None:
         with runtime._authority_gate().hold():

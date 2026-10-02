@@ -53,7 +53,7 @@ from chiplog.platform.ingress_custody_records import (
 from chiplog.platform.owner_decision_journal import OwnerJournalIntegrityError, OwnerJournalSnapshot
 from chiplog.platform.owner_publications import SelectedOwnerDecision, source_commands
 from chiplog.platform.read_ledger import BrokerReadState
-from chiplog.platform.workspace_snapshot import workspace_snapshot
+from chiplog.platform.workspace_snapshot import join_workspace_snapshot
 
 if TYPE_CHECKING:
     from chiplog.composition.r14_runtime import R14PlanningRuntime
@@ -433,7 +433,7 @@ def read_ingress_history(
                 raise ValueError("more than one selected publication requires recovery")
             if windows and not allow_pending:
                 raise ValueError("selected publication requires recovery")
-            with workspace_snapshot(runtime._database) as physical:
+            with join_workspace_snapshot(runtime._database) as physical:
                 connection = physical.connection
                 actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
                 anchor = runtime._commitment_journal.load(runtime._tenant_id)
@@ -520,9 +520,9 @@ def read_ingress_history(
                 observed_publications = set(
                     connection.execute(
                         "SELECT operation_kind,idempotency_key FROM publications "
-                    "WHERE tenant_id=? AND "
-                    "(operation_kind LIKE 'ingress.%' OR "
-                    "operation_kind='effects.publish_plan_effect.v2')",
+                        "WHERE tenant_id=? AND "
+                        "(operation_kind LIKE 'ingress.%' OR "
+                        "operation_kind='effects.publish_plan_effect.v2')",
                         (runtime._tenant_id,),
                     )
                 )
@@ -547,7 +547,7 @@ def read_ingress_history(
             if runtime._owner_decisions().snapshot() != history:
                 raise ValueError("independent custody history changed during physical read")
             runtime._check_database_identity()
-            with workspace_snapshot(runtime._database) as latest:
+            with join_workspace_snapshot(runtime._database) as latest:
                 if (
                     capture_authority_snapshot_commitment(latest.connection, runtime._tenant_id)
                     != actual

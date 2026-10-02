@@ -171,6 +171,9 @@ class R14PlanningRuntime(R13PlanningRuntime):
         ("agent_loop", CANCELLATION_SCHEMA),
         ("agent_loop", NOT_EXECUTED_SCHEMA),
         ("agent_loop", "chiplog.agent-loop.native-one-call-cancelled-accounting.v1"),
+        ("agent_loop", "chiplog.execution.native-one-call-recovery-profile.v1"),
+        ("agent_loop", "chiplog.execution.sealed-accounting.v1"),
+        ("agent_loop", "chiplog.execution.continuation-ready.v1"),
         ("broker_ingress", "chiplog.ingress.admission-epoch.v2"),
         ("broker_ingress", "chiplog.ingress.admission-capacity.v1"),
         ("broker_ingress", "chiplog.ingress.authenticated-record.v2"),
@@ -617,6 +620,13 @@ class R14PlanningRuntime(R13PlanningRuntime):
             validate_selected_cancellations(self)
             validate_selected_executions(self)
             validate_selected_native_accounting(self)
+            from chiplog.composition.r14_recovery_profile_publication import (
+                validate_profile_startup,
+            )
+            from chiplog.composition.r14_recovery_publication import validate_recovery_startup
+
+            validate_profile_startup(self)
+            validate_recovery_startup(self)
             validate_selected_denials(self._owner_decisions().snapshot())
             validate_selected_ingress(self._owner_decisions().snapshot())
             owners, loops, gates = (

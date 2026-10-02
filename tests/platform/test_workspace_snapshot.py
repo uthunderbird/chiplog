@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from chiplog.platform.workspace_snapshot import read_connection, workspace_snapshot
+from chiplog.platform.workspace_snapshot import (
+    join_workspace_snapshot,
+    read_connection,
+    workspace_snapshot,
+)
 
 
 def test_readers_join_one_transaction_even_after_independent_writer_commits(tmp_path: Path) -> None:
@@ -35,4 +39,26 @@ def test_another_database_or_closed_transaction_cannot_join_snapshot(tmp_path: P
             pass
         snapshot.connection.rollback()
         with pytest.raises(ValueError, match="ended early"), read_connection(database):
+            pass
+
+
+def test_explicit_snapshot_join_preserves_identity_read_only_and_nested_guard(
+    tmp_path: Path,
+) -> None:
+    database, other = tmp_path / "db", tmp_path / "other"
+    database.touch()
+    other.touch()
+    with join_workspace_snapshot(database) as snapshot:
+        with join_workspace_snapshot(database) as joined:
+            assert joined is snapshot
+        with pytest.raises(ValueError, match="nested"), workspace_snapshot(database):
+            pass
+        with pytest.raises(ValueError, match="another physical"), join_workspace_snapshot(other):
+            pass
+        snapshot.connection.execute("PRAGMA query_only=OFF")
+        with pytest.raises(ValueError, match="not read only"), join_workspace_snapshot(database):
+            pass
+        snapshot.connection.execute("PRAGMA query_only=ON")
+        snapshot.connection.rollback()
+        with pytest.raises(ValueError, match="ended early"), join_workspace_snapshot(database):
             pass

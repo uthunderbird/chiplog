@@ -385,7 +385,14 @@ class NativeOneCallScopeService:
 
             command = inbox_initialization_command(evidence)
             state, actual, anchored = runtime._selected_physical_state(command)
-            if state != "COMPLETE" or actual != anchored:
+            from chiplog.composition.r14_recovery_publication import (
+                authenticate_selected_recovery_prefix_held,
+            )
+
+            if state != "COMPLETE" or (
+                actual != anchored
+                and not authenticate_selected_recovery_prefix_held(runtime, actual, anchored)
+            ):
                 raise LoopRejected("native context original initialization is not materialized")
             runtime._validate_historical(evidence, wire)
             entries = runtime._loop_decisions().entries()
@@ -395,7 +402,7 @@ class NativeOneCallScopeService:
                 for identity, _, raw in entries
             ):
                 raise LoopRejected("native context original initialization bytes differ")
-            admitted = runtime.read_admitted_inbox(
+            admitted = runtime.read_historical_admitted_inbox(
                 wire.identity.original_ingress_identity.command_id
             )
             if (
@@ -496,7 +503,12 @@ class NativeOneCallScopeService:
                         and run.digest() == scope.planned_run_head.fingerprint
                     ):
                         state, actual, anchored = runtime._selected_physical_state(publication)
-                        if state != "COMPLETE" or actual != anchored:
+                        if state != "COMPLETE" or (
+                            actual != anchored
+                            and not authenticate_selected_recovery_prefix_held(
+                                runtime, actual, anchored
+                            )
+                        ):
                             raise LoopRejected("native context planned Run is not materialized")
                         original.append(run)
             if len(original) != 1 or original[0].worker_session != scope.worker_session_id:

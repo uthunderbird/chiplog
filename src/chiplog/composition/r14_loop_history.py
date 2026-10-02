@@ -485,6 +485,8 @@ def _read_call_history(
                         CANCELLATION_OPERATION,
                         EXECUTION_CANCELLATION_OPERATION,
                         "agent_loop.native-one-call-cancelled-accounting.v1",
+                        "agent_loop.execution-accounting-readiness.v1",
+                        "agent_loop.native-one-call-recovery-profile.v1",
                         EXECUTION_TRANSITION_OPERATION,
                         EXECUTION_INBOX_INITIALIZATION_OPERATION,
                         EXECUTION_FANOUT_OPERATION,
@@ -499,6 +501,32 @@ def _read_call_history(
                         != "COMPLETE"
                     ):
                         raise ValueError("selected loop publication is not exactly materialized")
+                    if (
+                        command.operation_kind == "agent_loop.native-one-call-recovery-profile.v1"
+                        or "native_recovery_profile_evidence" in entry
+                    ):
+                        from chiplog.composition.r14_recovery_profile_publication import (
+                            validate_profile_selected,
+                        )
+
+                        validate_profile_selected(runtime, entry, command)
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if (
+                        command.operation_kind == "agent_loop.execution-accounting-readiness.v1"
+                        or "execution_recovery_evidence" in entry
+                    ):
+                        from chiplog.composition.r14_recovery_publication import validate_selected
+
+                        validate_selected(runtime, entry, command)
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        continue
                     if command.operation_kind == "effects.accept_call":
                         value = call_values[identity]
                         accepted_preparation = value.retained
