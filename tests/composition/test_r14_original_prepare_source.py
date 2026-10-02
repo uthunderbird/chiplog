@@ -21,6 +21,10 @@ from chiplog.capabilities.agent_loop.delivery_preparation import (
     DeliveryCompletion,
     ProposedDelivery,
 )
+from chiplog.capabilities.agent_loop.execution_preparation_bindings_contracts import (
+    NativeExecutionPreparationBindingsV2,
+    decode_native_execution_preparation_bindings_v2,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition.common_cli_execution_runtime import (
     CommonCliExecutionRuntime,
@@ -32,6 +36,9 @@ from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_seal
 from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_execution_complete_seal_records import RetainedExecutionCompleteSealV3
+from chiplog.composition.r14_native_preparation_bindings import (
+    bind_native_execution_preparation_v2,
+)
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.support.h1_cli_execution import _admit, admit_complete_script
 from tests.support.h1_installed_launch import TENANT, installed_slot, prepare_installed_slot
@@ -119,6 +126,16 @@ async def test_reopens_exact_original_prepare_after_later_publication(tmp_path: 
         projection = source.collect(seal)
         assert projection is not None
         assert projection.descriptive_original_h1_output_scope is None
+        bindings = bind_native_execution_preparation_v2(projection)
+        assert (
+            decode_native_execution_preparation_bindings_v2(bindings.canonical_bytes()) == bindings
+        )
+        assert bindings.reported_template_digest == projection.artifact.content_hash
+        assert (
+            bindings.rendered_prompt_sha256
+            == hashlib.sha256(projection.rendered_prompt_bytes).hexdigest()
+        )
+        assert bindings.reported_template_digest != bindings.rendered_prompt_sha256
         selected = select_h1_v3_prepare_for_seal(runtime, selected_seal=seal, historical=True)
         assert (
             selected.prepare.physical_run.record_id == selected.prepare.retained.proposal.run.head
@@ -133,6 +150,7 @@ async def test_reopens_exact_original_prepare_after_later_publication(tmp_path: 
         await runtime.create_execution("hermetic-ingress", "later-run", "Later", BudgetPolicy())
         replay = source.collect(seal)
         assert replay == projection
+        assert bind_native_execution_preparation_v2(replay) == bindings
         assert replay.rendered_prompt_bytes == replay.artifact.rendered.encode()
         assert replay.artifact_bytes == replay.artifact.canonical_bytes()
         assert replay.generated_schema_bytes == replay.artifact.response_schema_json.encode()
@@ -142,6 +160,77 @@ async def test_reopens_exact_original_prepare_after_later_publication(tmp_path: 
         assert replay.policy_bytes
         rendered_digest = hashlib.sha256(replay.rendered_prompt_bytes).hexdigest()
         assert rendered_digest != replay.artifact.content_hash
+
+
+@pytest.mark.asyncio
+async def test_native_bindings_v2_rejects_every_projection_byte_join(tmp_path: Path) -> None:
+    async with _selected_v3_prepare(tmp_path) as (runtime, seal):
+        projection = original_source.R14OriginalNativePrepareSource(runtime).collect(seal)
+        assert projection is not None
+        for changed in (
+            replace(projection, selected_prepare_decision_bytes=b"{}"),
+            replace(projection, selected_prepare_decision_fingerprint="0" * 64),
+            replace(projection, prepared_run_bytes=b"{}"),
+            replace(
+                projection,
+                prepared_run=projection.prepared_run.model_copy(update={"subject_id": "other-run"}),
+            ),
+            replace(projection, artifact_bytes=b"{}"),
+            replace(projection, rendered_prompt_bytes=b"other rendered"),
+            replace(projection, generated_schema_bytes=b"{}"),
+            replace(
+                projection,
+                ordered_tool_spec_bytes=tuple(reversed(projection.ordered_tool_spec_bytes)),
+            ),
+            replace(projection, policy_bytes=b"{}"),
+        ):
+            with pytest.raises(ValueError):
+                bind_native_execution_preparation_v2(changed)
+
+        other_artifact = projection.artifact.model_copy(
+            update={"content_hash": "1" * 64, "rendered": "other rendered"}
+        )
+        members = projection.manifest.members
+        substituted_members = (
+            members[0],
+            members[1],
+            members[2].model_copy(
+                update={
+                    "content": other_artifact.rendered,
+                    "revision_head": other_artifact.content_hash,
+                    "provenance_head": other_artifact.content_hash,
+                }
+            ),
+            members[3].model_copy(
+                update={
+                    "revision_head": other_artifact.digest(),
+                    "provenance_head": other_artifact.digest(),
+                }
+            ),
+        )
+        cross_prepare = replace(
+            projection,
+            manifest=projection.manifest.model_copy(
+                update={"artifact": other_artifact, "members": substituted_members}
+            ),
+            artifact=other_artifact,
+            artifact_bytes=other_artifact.canonical_bytes(),
+            rendered_prompt_bytes=other_artifact.rendered.encode(),
+            generated_schema_bytes=other_artifact.response_schema_json.encode(),
+            ordered_tool_spec_bytes=tuple(tool.canonical_bytes() for tool in other_artifact.tools),
+        )
+        with pytest.raises(ValueError):
+            bind_native_execution_preparation_v2(cross_prepare)
+
+        bindings = bind_native_execution_preparation_v2(projection)
+        for field, replacement in (
+            ("reported_template_digest", bindings.rendered_prompt_sha256),
+            ("rendered_prompt_sha256", bindings.reported_template_digest),
+        ):
+            raw = bindings.model_dump(mode="json")
+            raw[field] = replacement
+            with pytest.raises(ValueError):
+                NativeExecutionPreparationBindingsV2.model_validate(raw)
 
 
 @pytest.mark.asyncio

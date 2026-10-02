@@ -14,13 +14,15 @@ from typing import Final, Literal, Self
 
 from pydantic import model_validator
 
+from .call_acceptance_contracts import CallSubjectHead
 from .contracts import VisibilityMember
 from .delivery_contracts import ExactHead
-from .execution_contracts import ExecutionPromptArtifact
+from .execution_contracts import ExecutionPromptArtifact, ExecutionRunRecord
 from .execution_history_contracts import ExecutionPromptArtifactV3
-from .recovery_contracts import Identity, RecoveryDTO, UInt64
+from .recovery_contracts import Digest, Identity, Present, RecoveryDTO, UInt64
 
 PREPARATION_BINDINGS_SCHEMA: Final = "chiplog.execution.preparation-bindings.v1"
+NATIVE_PREPARATION_BINDINGS_V2_SCHEMA: Final = "chiplog.execution.native-preparation-bindings.v2"
 H1_SOURCE_PROFILE: Final = "chiplog.execution.h1-cli-hermetic-source-profile.v1"
 
 # These identifiers name registered projections; no generic JSON path interpreter.
@@ -332,3 +334,82 @@ def validate_preparation_manifest_sources(
         or members[3].content != artifact.response_schema_json
     ):
         raise ValueError("artifact/rendered/schema derivation differs")
+
+
+class NativeExecutionPreparationBindingsV2(RecoveryDTO):
+    """Inert native Prepare facts with separate reported and rendered digest domains.
+
+    ``reported_template_digest`` is retained reporting from the original artifact.
+    This DTO deliberately retains no template source bytes and does not claim to
+    verify that reported value by regenerating a template.
+    """
+
+    schema_id: Literal["chiplog.execution.native-preparation-bindings.v2"] = (
+        NATIVE_PREPARATION_BINDINGS_V2_SCHEMA
+    )
+    kind: Literal["NATIVE_EXECUTION_PREPARATION_BINDINGS_V2"] = (
+        "NATIVE_EXECUTION_PREPARATION_BINDINGS_V2"
+    )
+    tenant_id: Identity
+    database_identity: tuple[Identity, int, int]
+    selected_response_seal: CallSubjectHead
+    selected_prepare_decision_id: Identity
+    selected_prepare_decision_bytes: bytes
+    selected_prepare_decision_fingerprint: Digest
+    prepared_run: CallSubjectHead
+    prepared_run_bytes: bytes
+    artifact_bytes: bytes
+    artifact_digest: Digest
+    rendered_prompt_bytes: bytes
+    generated_schema_bytes: bytes
+    ordered_tool_spec_bytes: tuple[bytes, ...]
+    policy_bytes: bytes
+    reported_template_digest: Digest
+    rendered_prompt_sha256: Digest
+
+    @model_validator(mode="after")
+    def exact_retained_bytes(self) -> Self:
+        try:
+            run = ExecutionRunRecord.model_validate_json(self.prepared_run_bytes)
+            artifact = ExecutionPromptArtifact.model_validate_json(self.artifact_bytes)
+        except ValueError as error:
+            raise ValueError("native preparation retained bytes are malformed") from error
+        if (
+            len(run.turns) != 1
+            or len(run.turns[0].attempts) != 1
+            or run.turns[0].selector != 0
+            or run.turns[0].attempts[0].manifest.artifact != artifact
+            or run.turns[0].attempts[0].manifest.tenant != self.tenant_id
+            or run.tenant != self.tenant_id
+        ):
+            raise ValueError("native preparation Run manifest differs")
+        if (
+            run.canonical_bytes() != self.prepared_run_bytes
+            or artifact.canonical_bytes() != self.artifact_bytes
+            or not isinstance(self.prepared_run.revision, Present)
+            or self.prepared_run.subject_id != run.run_id
+            or self.prepared_run.revision.head != run.head
+            or self.prepared_run.revision.fingerprint
+            != hashlib.sha256(self.prepared_run_bytes).hexdigest()
+            or hashlib.sha256(self.selected_prepare_decision_bytes).hexdigest()
+            != self.selected_prepare_decision_fingerprint
+            or artifact.digest() != self.artifact_digest
+            or self.rendered_prompt_bytes != artifact.rendered.encode()
+            or self.generated_schema_bytes != artifact.response_schema_json.encode()
+            or self.ordered_tool_spec_bytes
+            != tuple(tool.canonical_bytes() for tool in artifact.tools)
+            or self.policy_bytes != run.policy.canonical_bytes()
+            or self.reported_template_digest != artifact.content_hash
+            or self.rendered_prompt_sha256 != hashlib.sha256(self.rendered_prompt_bytes).hexdigest()
+        ):
+            raise ValueError("native preparation retained-byte joins differ")
+        return self
+
+
+def decode_native_execution_preparation_bindings_v2(
+    raw: bytes,
+) -> NativeExecutionPreparationBindingsV2:
+    value = NativeExecutionPreparationBindingsV2.model_validate_json(raw)
+    if value.canonical_bytes() != raw:
+        raise ValueError("noncanonical native preparation bindings V2")
+    return value
