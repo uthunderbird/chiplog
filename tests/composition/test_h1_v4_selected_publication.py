@@ -45,6 +45,9 @@ from chiplog.composition.h1_scoped_authorization_normative_conflict_generation i
 from chiplog.composition.h1_scoped_authorization_resource_sources_v4 import (
     H1ScopedAuthorizationResourceReaderV4,
 )
+from chiplog.composition.h1_scoped_authorization_runtime_and_fence import (
+    H1ScopedAuthorizationRuntimeReaderV1,
+)
 from chiplog.composition.h1_scoped_authorization_sources_v3 import (
     H1ScopedAuthorizationLocatorV1,
 )
@@ -372,6 +375,8 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
                 issuance.effects_result.intent_result.intent.mandate.horizon.expires_at_ns,
                 current_claim.binding.claimant_clock.lease_expires_at_ns,
             )
+            runtime_reader = runtime._h1_scoped_authorization_runtime_reader_v1
+            assert type(runtime_reader) is H1ScopedAuthorizationRuntimeReaderV1
             normative_reader = (
                 runtime._h1_scoped_authorization_normative_conflict_generation_reader_v1
             )

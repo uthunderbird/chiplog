@@ -130,6 +130,19 @@ def test_clock_role_returns_fresh_final_reading_and_releases_dependent_capture(
         reader.role_held(capture)
 
 
+def test_clock_role_uses_mandate_horizon_when_it_precedes_claim_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject, runtime, _, horizon, _, joined_capture = _installed(
+        monkeypatch, [("epoch", 10), ("epoch", 10), ("epoch", 11), ("epoch", 11)]
+    )
+    horizon.expires_at_ns = 20
+    reader = subject.H1ScopedAuthorizationClockReaderV1(runtime)
+    capture = reader.read(joined_capture)
+    with runtime._authority_gate().hold():
+        assert reader.role_held(capture).valid_until_ns == 20
+
+
 @pytest.mark.parametrize(
     ("readings", "change"),
     [
