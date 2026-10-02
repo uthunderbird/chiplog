@@ -442,7 +442,7 @@
   "platform/operation_registry_contracts.py": "fa2550a1ea80d83f4b3e248c5e57c3332d1b689847b759a309e371a70ef43ae7",
   "platform/operator_grant_key_pin.py": "16da4974fa4d491f55e47b8768dee574801d3c4e7c7fe2cf4956aa05de3a3e06",
   "platform/operator_policy_key_pin.py": "b895bbd2832a1cd09090564dc7e936d949e3d08c85ea07372231f42247500ba5",
-  "platform/owner_decision_journal.py": "3d5b626cb55a7631623361e01aaf61da534650edd3789692ad3136054bfac8e5",
+  "platform/owner_decision_journal.py": "42968479fb06f944581ee646a913f99941650580210fd92141aa61c527e9ddf2",
   "platform/owner_publications.py": "e347dfb3b1555550849f09dd0d665f0a4adc35d87e59195d0d9e35189a663fe4",
   "platform/prepared_external_delivery_grant_lineage.py": "c5d1c6363e37e2fba99386956aa2fcf3e5e769864c75855a6a1486e8f6641903",
   "platform/prepared_self_delivery_policy_lineage.py": "32cb0a2d2692bd8fc8a3b041333b62634af8cb215c1366111b6e805b0c702575",
