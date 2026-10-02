@@ -27,11 +27,23 @@ from chiplog.capabilities.effects.contracts import (
     ProviderRecipient as EffectsProviderRecipient,
 )
 from chiplog.capabilities.effects.fences import Absent
+from chiplog.capabilities.effects.h1_producer_source_contracts import (
+    H1PreparedDeliveryMandateCandidateV1,
+    H1ProducerNotApplicableV1,
+    require_h1_prepared_delivery_candidate,
+    require_h1_prepared_delivery_sources,
+)
+from chiplog.capabilities.effects.h1_scoped_preparation import prepare_h1_scoped_delivery_v2
+from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
+    PreparedH1ScopedDeliveryV2,
+)
 from chiplog.capabilities.effects.scoped_delivery_source_contracts import (
     decode_selected_delivery_intent,
 )
 from chiplog.capabilities.effects.scoped_dispatch_contracts import ScopedPreSendCut
+from chiplog.capabilities.effects.scoped_intent_record_contracts import make_scoped_intent_member
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV4
 from chiplog.composition.h1_scoped_delivery_authority import (
     H1ScopedDeliveryAuthorityCapture,
     H1ScopedDeliveryAuthorityReader,
@@ -88,6 +100,19 @@ class H1ScopedAuthorizationEffectsHistoryCaptureV1:
     _record: _EffectsHistoryRecord
 
 
+@dataclass(frozen=True, slots=True)
+class H1ScopedAuthorizationHistoricalMandateRolesV1:
+    """The two historical H1 exceptions derived from one retained V4 exchange.
+
+    These are source observations only.  They neither fill a complete producer
+    inventory nor authorize an Effects transition or provider delivery.
+    """
+
+    candidate: H1PreparedDeliveryMandateCandidateV1
+    planning: H1ProducerNotApplicableV1
+    original_adoption: H1ProducerNotApplicableV1
+
+
 class H1ScopedAuthorizationEffectsHistoryReaderV1:
     """Installed source owner for the authorization ``effects_history`` role."""
 
@@ -137,6 +162,92 @@ class H1ScopedAuthorizationEffectsHistoryReaderV1:
         self._require_open_held()
         self.recheck_held(capture)
         return self._issued_record_held(capture).observed
+
+    def historical_mandate_roles_held(
+        self, capture: H1ScopedAuthorizationEffectsHistoryCaptureV1
+    ) -> H1ScopedAuthorizationHistoricalMandateRolesV1:
+        """Reconstruct the V22-only candidate and its two inert role exceptions.
+
+        The caller supplies no mandate, source inventory, or clock.  The exact
+        selected V4 request/result supplies every retained input; reopening the
+        selected physical row under the authority gate prevents stale captures
+        from being relabelled as historical role observations.
+        """
+        self._runtime._authority_gate().require_held()
+        self._require_open_held()
+        self.recheck_held(capture)
+        record = self._issued_record_held(capture)
+        try:
+            issuance = record.selected.selected_h1.issuance
+            if type(issuance) is not H1CompletionIssuanceV4:
+                raise ValueError("selected issuance is not V4")
+            call = issuance.effects_call
+            result = issuance.effects_result
+            rebuilt = prepare_h1_scoped_delivery_v2(call)
+            if type(rebuilt) is not PreparedH1ScopedDeliveryV2 or rebuilt != result:
+                raise ValueError("retained V4 result does not equal V2 reconstruction")
+            request = call.request
+            selected_intent = decode_selected_delivery_intent(record.selected.intent)
+            expected_member = make_scoped_intent_member(result.intent_request.intent)
+            source = record.selected.intent
+            if (
+                record.locator.intent_id != request.intent_id
+                or request.intent_id != result.intent_request.intent.intent_id
+                or selected_intent != result.intent_request.intent
+                or source.subject.subject_id != expected_member.record_id
+                or source.subject.head != expected_member.record_id
+                or source.subject.fingerprint != expected_member.fingerprint
+                or source.physical_record.subject_id != expected_member.record_id
+                or source.physical_record.head != expected_member.record_id
+                or source.physical_record.fingerprint != expected_member.fingerprint
+                or source.schema_id != expected_member.schema_id
+                or source.canonical_record_bytes != expected_member.canonical_record_bytes
+            ):
+                raise ValueError("selected physical intent differs from retained V4 exchange")
+            candidate = request.current.immutable_mandate_candidate
+            basis_bytes = candidate.prepared_delivery_basis_bytes
+            mandate_bytes = candidate.canonical_mandate_bytes
+            require_h1_prepared_delivery_candidate(
+                candidate,
+                basis_bytes=basis_bytes,
+                grant_anchor=candidate.grant_anchor,
+                policy_anchor=candidate.policy_anchor,
+                mandate_bytes=mandate_bytes,
+            )
+            require_h1_prepared_delivery_sources(
+                request.original_sources,
+                basis_bytes=basis_bytes,
+                grant_anchor=candidate.grant_anchor,
+                policy_anchor=candidate.policy_anchor,
+                mandate_bytes=mandate_bytes,
+            )
+            require_h1_prepared_delivery_sources(
+                request.current.sources,
+                basis_bytes=basis_bytes,
+                grant_anchor=candidate.grant_anchor,
+                policy_anchor=candidate.policy_anchor,
+                mandate_bytes=mandate_bytes,
+            )
+            planning = request.original_sources.planning
+            original_adoption = request.original_sources.original_adoption
+            if (
+                type(planning) is not H1ProducerNotApplicableV1
+                or type(original_adoption) is not H1ProducerNotApplicableV1
+                or planning.role != "planning"
+                or original_adoption.role != "original_adoption"
+                or planning.candidate != candidate
+                or original_adoption.candidate != candidate
+            ):
+                raise ValueError("retained H1 exception roles differ from candidate")
+            return H1ScopedAuthorizationHistoricalMandateRolesV1(
+                candidate=candidate,
+                planning=planning,
+                original_adoption=original_adoption,
+            )
+        except (TypeError, ValueError, AttributeError) as error:
+            raise H1ScopedAuthorizationSourceHold(
+                "selected H1 V4 mandate candidate or historical role observations differ"
+            ) from error
 
     def release(self, capture: H1ScopedAuthorizationEffectsHistoryCaptureV1) -> None:
         with self._runtime._authority_gate().hold():
@@ -507,6 +618,7 @@ def verify_historical_scoped_authorization_resource_signature_v1(
 __all__ = [
     "H1ScopedAuthorizationEffectsHistoryCaptureV1",
     "H1ScopedAuthorizationEffectsHistoryReaderV1",
+    "H1ScopedAuthorizationHistoricalMandateRolesV1",
     "H1ScopedAuthorizationLocatorV1",
     "H1ScopedAuthorizationResourceCaptureV1",
     "H1ScopedAuthorizationResourceHold",

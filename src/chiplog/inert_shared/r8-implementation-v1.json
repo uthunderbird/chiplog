@@ -289,7 +289,7 @@
   "composition/h1_scoped_authorization_delivery_work_reader.py": "92723bfecf7be4a489b3ed991aa05b4d091c42f79ab8c3196dddbbe7c7b03d54",
   "composition/h1_scoped_authorization_resource_sources_v4.py": "65d76ef1e60582cc7259cc27608d59d59aec7e06ecadf9dab0cfaff7a4332c6f",
   "composition/h1_scoped_authorization_runtime_and_fence.py": "e598aca7338248d328e18f9cc58fc77f5bf712548fc0b3f7a6b6858ddd0dfa12",
-  "composition/h1_scoped_authorization_sources_v3.py": "0c057cdac32c08881962505af0820e6545e226f8a7ce33997a27c9756900a8e0",
+  "composition/h1_scoped_authorization_sources_v3.py": "a3817fd331c284d4e9499840be929a26496224acc9943bedf5c38e77af2db3a4",
   "composition/h1_scoped_delivery_authority.py": "b7a288751e051732fd99485a3b0f1782895effea010b491e720d0f35743276d7",
   "composition/h1_scoped_delivery_producer.py": "972f674e28cf851f71a149fed163613d3bf48f46b7a8d3c4c1ef7cb26f5f6b99",
   "composition/h1_scoped_delivery_producer_v2.py": "5ff1c2337ffb5f4446eb3d957b12a1f1232418af99d09744bb71203b1d606551",

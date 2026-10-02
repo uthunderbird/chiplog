@@ -71,6 +71,223 @@ async def _selected(*, frontier: int = 1) -> ScopedDeliverySelectedSourcesResult
     )
 
 
+def _v4_role_exchange(selected: ScopedDeliverySelectedSourcesResult) -> tuple[object, object]:
+    """Small exact-shape V4 exchange for the reader boundary tests.
+
+    The V2 evaluator and producer-source helper behavior has its own contract
+    suite.  These tests prove that this installed reader neither accepts a
+    caller replacement nor skips its V4/result/member joins.
+    """
+    intent = decode_selected_delivery_intent(selected.intent)
+    candidate = SimpleNamespace(
+        prepared_delivery_basis_bytes=b"basis",
+        canonical_mandate_bytes=b"mandate",
+        grant_anchor="grant-anchor",
+        policy_anchor="policy-anchor",
+    )
+    planning = SimpleNamespace(role="planning", candidate=candidate)
+    original_adoption = SimpleNamespace(role="original_adoption", candidate=candidate)
+    original = SimpleNamespace(planning=planning, original_adoption=original_adoption)
+    current = SimpleNamespace(
+        immutable_mandate_candidate=candidate,
+        sources=SimpleNamespace(planning=planning, original_adoption=original_adoption),
+    )
+    request = SimpleNamespace(
+        intent_id=intent.intent_id, original_sources=original, current=current
+    )
+    result = SimpleNamespace(intent_request=SimpleNamespace(intent=intent))
+    call = SimpleNamespace(request=request)
+    return SimpleNamespace(effects_call=call, effects_result=result), candidate
+
+
+async def _reader_with_v4_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[object, object, object, object]:
+    import chiplog.composition.h1_scoped_authorization_sources_v3 as subject
+
+    selected = await _selected()
+    issuance, candidate = _v4_role_exchange(selected)
+    selected = selected.__class__(
+        intent=selected.intent,
+        selected_h1=SimpleNamespace(issuance=issuance),
+        initial_authorization=selected.initial_authorization,
+        first_send=selected.first_send,
+        frontier=selected.frontier,
+    )
+
+    class _SelectedReader:
+        def __init__(self, runtime: object) -> None:
+            assert runtime is runtime_object
+
+        def read(self, **_: object) -> object:
+            return selected
+
+    runtime_object = _Runtime()
+    monkeypatch.setattr(subject, "CommonCliExecutionRuntime", _Runtime)
+    monkeypatch.setattr(subject, "ScopedDeliverySelectedSources", _SelectedReader)
+    reader = subject.H1ScopedAuthorizationEffectsHistoryReaderV1(runtime_object)
+    capture = reader.capture(
+        subject.H1ScopedAuthorizationLocatorV1(
+            decode_selected_delivery_intent(selected.intent).intent_id
+        )
+    )
+    return subject, runtime_object, reader, (capture, candidate)
+
+
+@pytest.mark.asyncio
+async def test_historical_mandate_roles_are_v4_only_and_gate_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject, runtime, reader, captured = await _reader_with_v4_exchange(monkeypatch)
+    capture, candidate = captured
+
+    issuance = capture._record.selected.selected_h1.issuance
+    member = SimpleNamespace(
+        record_id=capture._record.selected.intent.subject.subject_id,
+        fingerprint=capture._record.selected.intent.subject.fingerprint,
+        schema_id=capture._record.selected.intent.schema_id,
+        canonical_record_bytes=capture._record.selected.intent.canonical_record_bytes,
+    )
+    monkeypatch.setattr(subject, "H1CompletionIssuanceV4", SimpleNamespace)
+    monkeypatch.setattr(subject, "PreparedH1ScopedDeliveryV2", SimpleNamespace)
+    monkeypatch.setattr(subject, "H1ProducerNotApplicableV1", SimpleNamespace)
+    monkeypatch.setattr(
+        subject, "prepare_h1_scoped_delivery_v2", lambda call: issuance.effects_result
+    )
+    monkeypatch.setattr(subject, "make_scoped_intent_member", lambda intent: member)
+    monkeypatch.setattr(subject, "require_h1_prepared_delivery_candidate", lambda *a, **k: None)
+    monkeypatch.setattr(subject, "require_h1_prepared_delivery_sources", lambda *a, **k: None)
+
+    with pytest.raises(RuntimeError, match="gate is not held"):
+        reader.historical_mandate_roles_held(capture)
+    with runtime._authority_gate().hold():
+        roles = reader.historical_mandate_roles_held(capture)
+    assert roles.candidate is candidate
+    assert roles.planning.role == "planning"
+    assert roles.original_adoption.role == "original_adoption"
+
+
+@pytest.mark.asyncio
+async def test_historical_mandate_roles_hold_v3_and_selected_intent_substitution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject, runtime, reader, captured = await _reader_with_v4_exchange(monkeypatch)
+    capture, _ = captured
+
+    with runtime._authority_gate().hold(), pytest.raises(
+        subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"
+    ):
+        reader.historical_mandate_roles_held(capture)
+
+    issuance = capture._record.selected.selected_h1.issuance
+    monkeypatch.setattr(subject, "H1CompletionIssuanceV4", SimpleNamespace)
+    monkeypatch.setattr(subject, "PreparedH1ScopedDeliveryV2", SimpleNamespace)
+    monkeypatch.setattr(subject, "H1ProducerNotApplicableV1", SimpleNamespace)
+    monkeypatch.setattr(
+        subject, "prepare_h1_scoped_delivery_v2", lambda call: issuance.effects_result
+    )
+    monkeypatch.setattr(
+        subject,
+        "make_scoped_intent_member",
+        lambda intent: SimpleNamespace(
+            record_id="substituted",
+            fingerprint="0" * 64,
+            schema_id="wrong",
+            canonical_record_bytes=b"x",
+        ),
+    )
+    monkeypatch.setattr(subject, "require_h1_prepared_delivery_candidate", lambda *a, **k: None)
+    monkeypatch.setattr(subject, "require_h1_prepared_delivery_sources", lambda *a, **k: None)
+    with runtime._authority_gate().hold(), pytest.raises(
+        subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"
+    ):
+        reader.historical_mandate_roles_held(capture)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inventory_name", ("original_sources", "current"))
+async def test_historical_mandate_roles_hold_one_sided_not_applicable_substitution(
+    monkeypatch: pytest.MonkeyPatch, inventory_name: str
+) -> None:
+    subject, runtime, reader, captured = await _reader_with_v4_exchange(monkeypatch)
+    capture, candidate = captured
+    issuance = capture._record.selected.selected_h1.issuance
+    request = issuance.effects_call.request
+    broken = SimpleNamespace(role="planning", candidate=object())
+    if inventory_name == "original_sources":
+        request.original_sources = SimpleNamespace(
+            planning=broken, original_adoption=request.original_sources.original_adoption
+        )
+    else:
+        request.current.sources = SimpleNamespace(
+            planning=broken, original_adoption=request.current.sources.original_adoption
+        )
+    member = SimpleNamespace(
+        record_id=capture._record.selected.intent.subject.subject_id,
+        fingerprint=capture._record.selected.intent.subject.fingerprint,
+        schema_id=capture._record.selected.intent.schema_id,
+        canonical_record_bytes=capture._record.selected.intent.canonical_record_bytes,
+    )
+
+    def require_sources(inventory: object, **_: object) -> None:
+        if inventory.planning.candidate is not candidate:
+            raise ValueError("one-sided candidate substitution")
+
+    monkeypatch.setattr(subject, "H1CompletionIssuanceV4", SimpleNamespace)
+    monkeypatch.setattr(subject, "PreparedH1ScopedDeliveryV2", SimpleNamespace)
+    monkeypatch.setattr(subject, "H1ProducerNotApplicableV1", SimpleNamespace)
+    monkeypatch.setattr(
+        subject, "prepare_h1_scoped_delivery_v2", lambda call: issuance.effects_result
+    )
+    monkeypatch.setattr(subject, "make_scoped_intent_member", lambda intent: member)
+    monkeypatch.setattr(subject, "require_h1_prepared_delivery_candidate", lambda *a, **k: None)
+    monkeypatch.setattr(subject, "require_h1_prepared_delivery_sources", require_sources)
+    with runtime._authority_gate().hold(), pytest.raises(
+        subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"
+    ):
+        reader.historical_mandate_roles_held(capture)
+
+
+@pytest.mark.asyncio
+async def test_historical_mandate_roles_hold_mismatched_v2_reconstruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject, runtime, reader, captured = await _reader_with_v4_exchange(monkeypatch)
+    capture, _ = captured
+    issuance = capture._record.selected.selected_h1.issuance
+    monkeypatch.setattr(subject, "H1CompletionIssuanceV4", SimpleNamespace)
+    monkeypatch.setattr(subject, "PreparedH1ScopedDeliveryV2", SimpleNamespace)
+    monkeypatch.setattr(
+        subject,
+        "prepare_h1_scoped_delivery_v2",
+        lambda call: SimpleNamespace(intent_request=issuance.effects_result.intent_request),
+    )
+    with runtime._authority_gate().hold(), pytest.raises(
+        subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"
+    ):
+        reader.historical_mandate_roles_held(capture)
+
+
+@pytest.mark.asyncio
+async def test_historical_mandate_roles_hold_stale_physical_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject, runtime, reader, captured = await _reader_with_v4_exchange(monkeypatch)
+    capture, _ = captured
+    selected = capture._record.selected
+    changed = selected.__class__(
+        intent=selected.intent,
+        selected_h1=selected.selected_h1,
+        initial_authorization=selected.initial_authorization,
+        first_send=selected.first_send,
+        frontier=SimpleNamespace(tenant_frontier="changed physical row"),
+    )
+    reader._selected = SimpleNamespace(read=lambda **_: changed)
+    with runtime._authority_gate().hold(), pytest.raises(
+        subject.H1ScopedAuthorizationSourceHold, match="complete Effects cut changed"
+    ):
+        reader.historical_mandate_roles_held(capture)
+
 @pytest.mark.asyncio
 async def test_locator_reader_builds_initial_cut_without_caller_authority(
     monkeypatch: pytest.MonkeyPatch,
