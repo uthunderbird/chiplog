@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
@@ -34,7 +34,9 @@ from chiplog.platform._owner_publication_contracts import (
     SingleOwnerBatch,
     WorkerAuthentication,
 )
-from chiplog.platform.owner_publications import SelectedOwnerDecision
+
+if TYPE_CHECKING:
+    from chiplog.platform.owner_publications import SelectedOwnerDecision
 
 _POLICY_OPERATION: Literal["r15.adopt_lease_execution_policy"] = "r15.adopt_lease_execution_policy"
 

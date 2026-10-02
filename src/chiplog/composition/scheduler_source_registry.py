@@ -6,6 +6,7 @@ artifact matching, not portable interpreter attestation or live authorization.
 
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import json
@@ -57,7 +58,9 @@ _MANIFEST_V2B = Path(__file__).with_name("scheduler_source_manifest_v2b.json")
 _MANIFEST_V2B_SHA = "2b65fc6af4bbbe149e738295d725386e498b7977709bf85735bc15a6a2107717"
 _MANIFEST_V2C = Path(__file__).with_name("scheduler_source_manifest_v2c.json")
 _MANIFEST_V2C_SHA = "3fa9a22edbd83b5d77c84c42a2b5a8e8d4d7d304bed8a803896ac503861a7299"
-_V2B_CLOSURE_SHA = "6c195cb5628dbf8d3cbed66e2038c89bb43294fd0da08ecc33a4b6d3b2842837"
+_MANIFEST_V2D = Path(__file__).with_name("scheduler_source_manifest_v2d.json")
+_MANIFEST_V2D_SHA = "2f0fa7506bd3edbd3f097104f4f868eb9fe907061468df326b1a2af37a2ce385"
+_V2B_CLOSURE_SHA = "928b044048cfed0e9cd62677c5e8e040e221bd7d649945959b90918d17e3d49a"
 _MODULES = (
     "chiplog.composition.r15_lease_service_auth",
     "chiplog.composition.r15_lease_publication_v2b",
@@ -166,7 +169,22 @@ def _observe() -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
         raise ValueError("unsupported interpreter linkage")
     library = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")
     profile: dict[str, object] = {
-        "format": "chiplog.scheduler.source-profile.v2c",
+        "format": "chiplog.scheduler.source-profile.v2d",
+        "historical_v2c": {
+            "manifest_sha256": _MANIFEST_V2C_SHA,
+            "evaluator_sha256": _sha(
+                Path(__file__)
+                .with_name("scheduler_v2c_sources")
+                .joinpath("r15_lease_publication_v2b.py.source")
+                .read_bytes()
+            ),
+            "closure_sha256": _sha(
+                Path(__file__)
+                .with_name("scheduler_v2c_sources")
+                .joinpath("closure.json.source")
+                .read_bytes()
+            ),
+        },
         "historical_v2b_closure_sha256": _V2B_CLOSURE_SHA,
         "execution_crypto": {
             "version": version("cryptography"),
@@ -279,8 +297,8 @@ def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegi
     """Match reviewed V2 current bytes; retain V1 only for exact selected history."""
     try:
         _require_v2b_closure()
-        raw_manifest = _MANIFEST_V2C.read_bytes()
-        if _sha(raw_manifest) != _MANIFEST_V2C_SHA:
+        raw_manifest = _MANIFEST_V2D.read_bytes()
+        if _sha(raw_manifest) != _MANIFEST_V2D_SHA:
             return SourceRegistrationUnresolved("reviewed V2 manifest bytes differ")
         expected = json.loads(raw_manifest)
         observed, sources, _ = _observe()
@@ -297,7 +315,7 @@ def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegi
         )
         digest = _sha(canonical)
         return SchedulerSourceRegistration(
-            Present(head="scheduler-source-registry-v2c:" + digest, fingerprint=digest), canonical
+            Present(head="scheduler-source-registry-v2d:" + digest, fingerprint=digest), canonical
         )
     except (OSError, ValueError, TypeError, ImportError, KeyError) as error:
         return SourceRegistrationUnresolved(str(error))
@@ -340,6 +358,93 @@ def _historical_v2b_registration(current_profile: dict[str, object]) -> Schedule
     digest = _sha(canonical)
     return SchedulerSourceRegistration(
         Present(head="scheduler-source-registry-v2b:" + digest, fingerprint=digest), canonical
+    )
+
+
+def _require_v2c_evaluator_equivalent(old: dict[str, object]) -> None:
+    """Only an annotation-only import may differ; all runtime semantics stay exact."""
+    archive = Path(__file__).with_name("scheduler_v2c_sources")
+    raw = archive.joinpath("r15_lease_publication_v2b.py.source").read_bytes()
+    old_sources = cast(dict[str, str], old["sources"])
+    if _sha(raw) != old_sources["chiplog.composition.r15_lease_publication_v2b"]:
+        raise ValueError("historical V2c evaluator archive changed")
+    prior = ast.parse(raw)
+    current = ast.parse(Path(__file__).with_name("r15_lease_publication_v2b.py").read_bytes())
+    guards = [
+        node
+        for node in current.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "TYPE_CHECKING"
+    ]
+    if len(guards) != 1:
+        raise ValueError("historical V2c annotation import relocation differs")
+    guard = guards[0]
+    expected_import = ast.parse(
+        "from chiplog.platform.owner_publications import SelectedOwnerDecision"
+    ).body[0]
+    if guard.orelse or len(guard.body) != 1 or ast.dump(guard.body[0]) != ast.dump(expected_import):
+        raise ValueError("historical V2c annotation import relocation differs")
+    current.body = [expected_import if node is guard else node for node in current.body]
+    typings = [
+        node
+        for node in current.body
+        if isinstance(node, ast.ImportFrom) and node.module == "typing"
+    ]
+    if len(typings) != 1:
+        raise ValueError("historical V2c static import marker differs")
+    markers = [alias for alias in typings[0].names if alias.name == "TYPE_CHECKING"]
+    if len(markers) != 1 or markers[0].asname is not None:
+        raise ValueError("historical V2c static import marker differs")
+    typings[0].names = [alias for alias in typings[0].names if alias.name != "TYPE_CHECKING"]
+    if ast.dump(current, include_attributes=False) != ast.dump(prior, include_attributes=False):
+        raise ValueError("historical V2c evaluator runtime AST changed")
+    raw_closure = archive.joinpath("closure.json.source").read_bytes()
+    if _sha(raw_closure) != old["historical_v2b_closure_sha256"]:
+        raise ValueError("historical V2c dependency archive changed")
+    old_closure = json.loads(raw_closure)
+    current_closure = json.loads(
+        Path(__file__).with_name("scheduler_v2b_sources").joinpath("closure.json").read_bytes()
+    )
+    for name, fingerprint in current_closure.items():
+        if (
+            name != "chiplog.composition.r15_lease_publication_v2b"
+            and old_closure.get(name) != fingerprint
+        ):
+            raise ValueError("historical V2c retained runtime dependency changed: " + name)
+
+
+def _historical_v2c_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
+    raw = _MANIFEST_V2C.read_bytes()
+    if _sha(raw) != _MANIFEST_V2C_SHA:
+        raise ValueError("historical V2c reviewed manifest changed")
+    old = json.loads(raw)
+    _require_v2b_closure()
+    _require_v2c_evaluator_equivalent(old)
+    for name, fingerprint in old["sources"].items():
+        if (
+            name != "chiplog.composition.r15_lease_publication_v2b"
+            and cast(dict[str, str], current_profile["sources"]).get(name) != fingerprint
+        ):
+            raise ValueError("historical V2c evaluator artifact changed: " + name)
+    for key in (
+        "canonicalization",
+        "runtime",
+        "packages",
+        "lock_sha256",
+        "historical_v1",
+        "execution_crypto",
+    ):
+        if old[key] != current_profile[key]:
+            raise ValueError("historical V2c source closure changed: " + key)
+    graph = derive_schema_manifest(
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_materialization.py").read_bytes(),
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_rollover.py").read_bytes(),
+    )
+    canonical = _canonical({"profile": old, "generated_dependency_manifest": asdict(graph)})
+    digest = _sha(canonical)
+    return SchedulerSourceRegistration(
+        Present(head="scheduler-source-registry-v2c:" + digest, fingerprint=digest), canonical
     )
 
 
@@ -406,6 +511,7 @@ def read_admitted_scheduler_startup(
     legacy = _historical_v1_registration(observed)
     v2a = _historical_v2a_registration(observed)
     v2b = _historical_v2b_registration(observed)
+    v2c = _historical_v2c_registration(observed)
     rank = 0
     for historical, selected in zip(cut.historical_requests, cut.selected, strict=True):
         expected = historical.selection.prepared.request.expected
@@ -413,7 +519,8 @@ def read_admitted_scheduler_startup(
             legacy.reference.head: (0, legacy.reference),
             v2a.reference.head: (1, v2a.reference),
             v2b.reference.head: (2, v2b.reference),
-            registration.reference.head: (3, registration.reference),
+            v2c.reference.head: (3, v2c.reference),
+            registration.reference.head: (4, registration.reference),
         }
         candidate = admitted.get(historical.registry.head)
         if candidate is None or historical.registry != candidate[1] or candidate[0] < rank:
@@ -427,6 +534,7 @@ def read_admitted_scheduler_startup(
         if historical.selection.prepared.request.operation == "scheduler.acquire" and rank not in (
             2,
             3,
+            4,
         ):
             return SourceRegistrationUnresolved("lease acquire requires V2b selected source")
         if (
@@ -437,6 +545,16 @@ def read_admitted_scheduler_startup(
         if historical.selection.prepared.request.operation == "scheduler.acquire":
             from chiplog.composition.r15_lease_publication import validate_selected_lease_decision
 
+            schema = (
+                "chiplog.r15.lease-publication-evidence.v1"
+                if rank == 2
+                else "chiplog.r15.lease-publication-evidence.v2"
+            )
+            authentication = historical.selection.prepared.request.authentication
+            if getattr(authentication, "applicability_schema", None) != schema:
+                return SourceRegistrationUnresolved(
+                    "lease evaluator differs from selected source version"
+                )
             validate_selected_lease_decision(historical.selection, cut.protected_decisions)
         _require_historical_equality(historical, selected)
     physical_id = f"{cut.physical_database_path}:{cut.physical_device}:{cut.physical_inode}"
