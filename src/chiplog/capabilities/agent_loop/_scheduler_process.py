@@ -8,10 +8,12 @@ from .scheduler_preparation import (
     ConfigurationPreparationRequest,
     IntervalPreparationRequest,
     LeasePreparationRequest,
+    MandateIssuancePreparationRequest,
     RolloverPreparationRequest,
     prepare_configuration,
     prepare_interval_request,
     prepare_lease,
+    prepare_mandate_issuance,
     prepare_rollover_request,
 )
 
@@ -44,12 +46,24 @@ ROUTES = (
         "chiplog.scheduler.rollover-preparation.v1",
         BATCH_SCHEMA,
     ),
+    (
+        "scheduler.prepare_mandate_issuance",
+        "broker",
+        "agent_loop",
+        "chiplog.scheduler.mandate-issuance-preparation.v1",
+        BATCH_SCHEMA,
+    ),
 )
 
 
 def dispatch(operation: str, payload: bytes) -> dict[str, object]:
     try:
-        if operation == "scheduler.prepare_lease":
+        if operation == "scheduler.prepare_mandate_issuance":
+            issuance_request = MandateIssuancePreparationRequest.model_validate_json(payload)
+            parsed = issuance_request.canonical_bytes()
+            result = prepare_mandate_issuance(issuance_request).canonical_bytes()
+            schema = BATCH_SCHEMA
+        elif operation == "scheduler.prepare_lease":
             lease_request = LeasePreparationRequest.model_validate_json(payload)
             parsed = lease_request.canonical_bytes()
             prepared = prepare_lease(lease_request)

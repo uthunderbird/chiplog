@@ -50,6 +50,10 @@ from .scheduler_contracts import (
     SchedulerOverflowHold,
 )
 from .scheduler_domain import COORDINATE_VERSION, execution_subjects, policy_branch, verify_manifest
+from .scheduler_execution_contracts import (
+    ScheduledMandateBudgetV1,
+    ScheduledSystemMandateV2,
+)
 from .scheduler_leases import lease_fence_fingerprint, lease_payload_fingerprint
 from .scheduler_materialization import (
     SCHEMA_DAG,
@@ -104,6 +108,68 @@ class SchedulerStartupIndex:
     registered_genesis: tuple[tuple[str, DueCoordinate, Present], ...]
     lineages: tuple[SchedulerLineageView, ...]
     active_holds: tuple[SchedulerOverflowHold, ...]
+    mandates: tuple[SelectedMandateGenesis, ...]
+
+
+@dataclass(frozen=True)
+class SelectedMandateGenesis:
+    """Selected physical pair; broker admission separately proves administrator provenance."""
+
+    mandate_head: Present
+    mandate: ScheduledSystemMandateV2
+    budget_head: Present
+    budget: ScheduledMandateBudgetV1
+
+
+def _mandate_issuance(
+    batch: SelectedSchedulerBatch,
+    mandates: dict[str, SelectedMandateGenesis],
+) -> None:
+    if tuple((row.record_kind, row.schema_id) for row in batch.records) != (
+        ("scheduler.system-mandate", "chiplog.scheduler.system-mandate.v2"),
+        ("scheduler.mandate-budget", "chiplog.scheduler.mandate-budget.v1"),
+    ):
+        raise _hold(
+            batch, batch.command_id, "mandate issuance requires exact mandate and budget pair"
+        )
+    mandate_row, budget_row = batch.records
+    try:
+        mandate_raw, budget_raw = _payload(batch, mandate_row), _payload(batch, budget_row)
+        mandate = ScheduledSystemMandateV2.model_validate_json(mandate_raw)
+        budget = ScheduledMandateBudgetV1.model_validate_json(budget_raw)
+        scope = mandate.scope
+        basis = budget.consumption_basis
+        if (
+            mandate.canonical_bytes() != mandate_raw
+            or budget.canonical_bytes() != budget_raw
+            or scope.tenant_id != batch.tenant_id
+            or scope.service_identity != batch.context.service_identity
+            or scope.mandate_id in mandates
+            or budget.mandate_id != scope.mandate_id
+            or budget.generation != 0
+            or not isinstance(budget.predecessor, Absent)
+            or (
+                budget.cumulative_cycles,
+                budget.cumulative_runs,
+                budget.cumulative_consequential_calls,
+            )
+            != (0, 0, 0)
+            or basis.mandate_id != scope.mandate_id
+            or not isinstance(basis.selected_predecessor, Absent)
+            or (basis.delta_cycles, basis.delta_runs, basis.delta_consequential_calls) != (0, 0, 0)
+            or basis.primitive_command.subject_id != batch.command_id
+            or basis.primitive_fingerprint != basis.primitive_command.revision.fingerprint
+            or basis.accounting_policy_version != "chiplog.scheduler.zero-genesis.v1"
+        ):
+            raise ValueError("mandate scope or zero genesis differs")
+        mandates[scope.mandate_id] = SelectedMandateGenesis(
+            mandate_head=_reference(mandate_row),
+            mandate=mandate,
+            budget_head=_reference(budget_row),
+            budget=budget,
+        )
+    except ValueError as error:
+        raise _hold(batch, batch.command_id, "invalid selected mandate issuance") from error
 
 
 def _hold(batch: SelectedSchedulerBatch, identity: str, reason: str) -> SchedulerStartupHold:
@@ -1268,6 +1334,7 @@ def validate_selected_scheduler_records(
     known_epochs: set[str] = set()
     known_lease_heads: set[str] = set()
     holds: dict[str, SchedulerOverflowHold] = {}
+    mandates: dict[str, SelectedMandateGenesis] = {}
     expected_rows: list[MaterializedSchedulerRow] = []
     identities: set[str] = set()
     decisions: set[str] = set()
@@ -1298,7 +1365,9 @@ def validate_selected_scheduler_records(
                     record=record,
                 )
             )
-        if batch.operation in {"scheduler.decide_interval", "scheduler.resolve_interval"}:
+        if batch.operation == "scheduler.issue_mandate":
+            _mandate_issuance(batch, mandates)
+        elif batch.operation in {"scheduler.decide_interval", "scheduler.resolve_interval"}:
             if (
                 batch.operation == "scheduler.decide_interval"
                 and batch.records[0].record_kind == "overflow-hold"
@@ -1372,4 +1441,5 @@ def validate_selected_scheduler_records(
         ),
         lineages=tuple(value for _, value in sorted(lineages.items())),
         active_holds=tuple(value for _, value in sorted(holds.items())),
+        mandates=tuple(value for _, value in sorted(mandates.items())),
     )

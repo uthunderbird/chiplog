@@ -58,6 +58,7 @@ BrokerOperation = Literal[
     "recovery.publish_terminal_fault",
     "recovery.replace_model_attempt",
     "scheduler.genesis",
+    "scheduler.issue_mandate",
     "scheduler.amend_schedule",
     "scheduler.amend_policy",
     "scheduler.replace_bound",

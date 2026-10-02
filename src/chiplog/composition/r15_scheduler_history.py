@@ -41,6 +41,10 @@ _CONFIGURATION_SCHEMAS = {
     "scheduler.amend_policy": (_GENESIS_SCHEMAS[1],),
     "scheduler.replace_bound": (_GENESIS_SCHEMAS[2],),
 }
+_MANDATE_SCHEMAS = (
+    "chiplog.scheduler.system-mandate.v2",
+    "chiplog.scheduler.mandate-budget.v1",
+)
 
 
 def configuration_snapshot(
@@ -235,6 +239,9 @@ def read_loop_snapshot(runtime: R14PlanningRuntime) -> LoopSnapshot:
                             != _CONFIGURATION_SCHEMAS[batch.operation]
                         ):
                             raise ValueError("configuration scheduler schema differs")
+                    elif batch.operation == "scheduler.issue_mandate":
+                        if tuple(member.schema_id for member in batch.records) != _MANDATE_SCHEMAS:
+                            raise ValueError("mandate issuance companion schema differs")
                     elif batch.operation == "scheduler.decide_interval":
                         for member in batch.records:
                             if member.record_kind == "agent_loop.run":

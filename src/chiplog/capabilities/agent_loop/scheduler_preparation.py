@@ -12,6 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, TypeAdapter
 
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.recovery_contracts import (
     Absent,
     Digest,
@@ -38,11 +39,20 @@ from chiplog.capabilities.agent_loop.scheduler_contracts import (
     SchedulerOverflowHold,
     StreamingEligibilityEvidence,
 )
+from chiplog.capabilities.agent_loop.scheduler_execution_contracts import (
+    ProposedScheduledMandateBudgetV1,
+    ScheduledMandateBudgetV1,
+    ScheduledMandateConsumptionBasisV1,
+)
 from chiplog.capabilities.agent_loop.scheduler_leases import (
     IssuedLeaseObservation,
     LeaseCandidate,
     LeaseRuleViolation,
     evaluate_lease,
+)
+from chiplog.capabilities.agent_loop.scheduler_mandate_lifecycle_contracts import (
+    IssueScheduledMandateV1,
+    PreparedMandateIssuanceV1,
 )
 
 from .scheduler_configuration import (
@@ -255,6 +265,15 @@ class ConfigurationPreparationRequest(PreparationDTO):
     command_bytes: bytes = Field(min_length=1)
 
 
+class MandateIssuancePreparationRequest(PreparationDTO):
+    """Inert owner input; the broker alone authenticates its administrative source."""
+
+    operation: Literal["scheduler.issue_mandate"] = "scheduler.issue_mandate"
+    context: SchedulerContextRef
+    cut: BatchPreparationCut
+    command_bytes: bytes = Field(min_length=1)
+
+
 class IntervalPreparationSnapshot(PreparationDTO):
     cut: BatchPreparationCut
     configuration: ConfigurationSnapshot
@@ -294,7 +313,9 @@ class PreparedSchedulerBatch(PreparationDTO):
     source_request_fingerprint: Digest
     cut: BatchPreparationCut
     records: tuple[SchedulerCanonicalMember, ...]
-    result: ConfigurationProposal | IntervalCandidate | RolloverCandidate
+    result: (
+        ConfigurationProposal | IntervalCandidate | RolloverCandidate | PreparedMandateIssuanceV1
+    )
 
 
 def _verify_cut(
@@ -312,7 +333,10 @@ def _batch(
     request: ConfigurationPreparationRequest
     | IntervalPreparationRequest
     | RolloverPreparationRequest,
-    result: ConfigurationProposal | IntervalCandidate | RolloverCandidate,
+    result: ConfigurationProposal
+    | IntervalCandidate
+    | RolloverCandidate
+    | PreparedMandateIssuanceV1,
     records: tuple[SchedulerCanonicalMember, ...],
 ) -> PreparedSchedulerBatch:
     return PreparedSchedulerBatch(
@@ -320,6 +344,79 @@ def _batch(
         cut=request.snapshot.cut,
         result=result,
         records=records,
+    )
+
+
+def prepare_mandate_issuance(request: MandateIssuancePreparationRequest) -> PreparedSchedulerBatch:
+    """Compile one exact proposed scope and its zero-counter budget companion."""
+
+    _verify_cut(request.context, request.command_bytes, request.cut)
+    command = IssueScheduledMandateV1.model_validate_json(request.command_bytes)
+    if command.canonical_bytes() != request.command_bytes:
+        raise SchedulerDomainError("noncanonical mandate issuance command")
+    if command.administrative_source.tenant_id != request.context.tenant_id:
+        raise SchedulerDomainError("mandate issuance tenant differs from authorized cut")
+    if request.context.service_identity != command.proposed_mandate.mandate.scope.service_identity:
+        raise SchedulerDomainError("mandate service differs from authorized cut")
+    raw = command.proposed_mandate.canonical_mandate_bytes
+    command_fingerprint = hashlib.sha256(request.command_bytes).hexdigest()
+    basis = ScheduledMandateConsumptionBasisV1(
+        mandate_id=command.mandate_id,
+        selected_predecessor=Absent(),
+        primitive_command=CallSubjectHead(
+            subject_id=command.command_id,
+            revision=Present(head=command.command_id, fingerprint=command_fingerprint),
+        ),
+        primitive_fingerprint=command_fingerprint,
+        delta_cycles=0,
+        delta_runs=0,
+        delta_consequential_calls=0,
+        accounting_policy_version="chiplog.scheduler.zero-genesis.v1",
+    )
+    budget = ScheduledMandateBudgetV1(
+        mandate_id=command.mandate_id,
+        generation=0,
+        predecessor=Absent(),
+        cumulative_cycles=0,
+        cumulative_runs=0,
+        cumulative_consequential_calls=0,
+        consumption_basis=basis,
+    )
+    budget_raw = budget.canonical_bytes()
+    budget_id = (
+        "scheduler-budget-genesis:"
+        + hashlib.sha256((command.mandate_id + ":" + command.command_id).encode()).hexdigest()
+    )
+    result = PreparedMandateIssuanceV1(
+        source_request_fingerprint=hashlib.sha256(request.canonical_bytes()).hexdigest(),
+        mandate=command.proposed_mandate,
+        budget_genesis=ProposedScheduledMandateBudgetV1(
+            proposed_record_id=budget_id,
+            canonical_budget_bytes=budget_raw,
+            budget=budget,
+        ),
+    )
+    members = (
+        SchedulerCanonicalMember(
+            record_kind="scheduler.system-mandate",
+            record_id=command.proposed_mandate.proposed_record_id,
+            schema_id="chiplog.scheduler.system-mandate.v2",
+            canonical_base64=base64.b64encode(raw).decode(),
+            fingerprint=hashlib.sha256(raw).hexdigest(),
+        ),
+        SchedulerCanonicalMember(
+            record_kind="scheduler.mandate-budget",
+            record_id=budget_id,
+            schema_id="chiplog.scheduler.mandate-budget.v1",
+            canonical_base64=base64.b64encode(budget_raw).decode(),
+            fingerprint=hashlib.sha256(budget_raw).hexdigest(),
+        ),
+    )
+    return PreparedSchedulerBatch(
+        source_request_fingerprint=result.source_request_fingerprint,
+        cut=request.cut,
+        result=result,
+        records=members,
     )
 
 

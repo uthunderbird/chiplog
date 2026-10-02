@@ -24,6 +24,9 @@ from chiplog.capabilities.agent_loop.scheduler_contracts import (
     PhysicalRootRolloverCommand,
     ResolveIntervalCommand,
 )
+from chiplog.capabilities.agent_loop.scheduler_mandate_lifecycle_contracts import (
+    IssueScheduledMandateV1,
+)
 from chiplog.capabilities.agent_loop.scheduler_materialization import SchedulerCanonicalMember
 from chiplog.capabilities.agent_loop.scheduler_preparation import (
     ConfigurationBoundCommand,
@@ -31,6 +34,7 @@ from chiplog.capabilities.agent_loop.scheduler_preparation import (
     ConfigurationPreparationRequest,
     IntervalPreparationRequest,
     LeasePreparationRequest,
+    MandateIssuancePreparationRequest,
     RolloverPreparationRequest,
 )
 from chiplog.capabilities.agent_loop.scheduler_startup import (
@@ -50,6 +54,7 @@ Preparation = (
     | IntervalPreparationRequest
     | LeasePreparationRequest
     | RolloverPreparationRequest
+    | MandateIssuancePreparationRequest
 )
 
 
@@ -96,7 +101,12 @@ def _historical_request(decision: SelectedOwnerDecision) -> HistoricalSchedulerR
     raw = request.command.canonical_bytes
     operation = request.operation
     parsed: Preparation
-    if operation in {
+    if operation == "scheduler.issue_mandate":
+        schema = "chiplog.scheduler.mandate-issuance-preparation.v1"
+        parsed = MandateIssuancePreparationRequest.model_validate_json(raw)
+        mandate = IssueScheduledMandateV1.model_validate_json(parsed.command_bytes)
+        identity, inner_bytes = mandate, mandate.canonical_bytes()
+    elif operation in {
         "scheduler.genesis",
         "scheduler.amend_schedule",
         "scheduler.amend_policy",
@@ -156,7 +166,11 @@ def _historical_request(decision: SelectedOwnerDecision) -> HistoricalSchedulerR
             head=parsed.snapshot.registry_head, fingerprint=parsed.snapshot.registry_fingerprint
         )
     else:
-        cut = parsed.snapshot.cut
+        cut = (
+            parsed.cut
+            if isinstance(parsed, MandateIssuancePreparationRequest)
+            else parsed.snapshot.cut
+        )
         tenant, frontier, commitment = (
             cut.tenant_id,
             cut.tenant_frontier,

@@ -10,12 +10,14 @@ from typing import ClassVar, cast
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.adapters.driven.loop_prompts import OwnedStaticPrompts
 from chiplog.adapters.driven.loop_sqlite import SQLiteLoopStore
-from chiplog.architecture.r7_runtime import R14_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import R15_MANDATE_PRODUCTION_MANIFEST
 from chiplog.capabilities.agent_loop.application import AgentLoop
 from chiplog.capabilities.agent_loop.contracts import LoopRejected, LoopSnapshot, RunRecord
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_runtime import R14PlanningRuntime
+from chiplog.composition.r15_mandate_contracts import MandateClockPreview, MandateIssuanceAdoption
+from chiplog.composition.r15_mandate_publication import preview_mandate_clock, publish_mandate
 from chiplog.composition.r15_scheduler_history import read_loop_snapshot
 from chiplog.composition.r15_scheduler_publication import (
     preview_configuration,
@@ -50,11 +52,14 @@ from chiplog.platform.owner_publications import OwnerPublicationPending
 
 class R15SchedulerRuntime(R14PlanningRuntime):
     _tick_clock: TickClockPort
+    _mandate_clock_issuances: dict[str, object]
     _record_schema_variants: ClassVar[tuple[tuple[str, str], ...]] = (
         *R14PlanningRuntime._record_schema_variants,
         ("agent_loop", "chiplog.scheduler.schedule-definition.v1"),
         ("agent_loop", "chiplog.scheduler.missed-policy.v1"),
         ("agent_loop", "chiplog.scheduler.interval-bound.v1"),
+        ("agent_loop", "chiplog.scheduler.system-mandate.v2"),
+        ("agent_loop", "chiplog.scheduler.mandate-budget.v1"),
         *(
             ("agent_loop", "chiplog.scheduler." + kind + ".v1")
             for kind in (
@@ -98,6 +103,16 @@ class R15SchedulerRuntime(R14PlanningRuntime):
         self, peer: str, draft: TickPolicyDraft
     ) -> TickPolicyPreview:
         return await preview_tick(self, peer, draft)
+
+    async def preview_scheduler_mandate_clock(
+        self, peer: str, adoption_act_id: str, scope_without_proof_bytes: bytes
+    ) -> MandateClockPreview:
+        return await preview_mandate_clock(self, peer, adoption_act_id, scope_without_proof_bytes)
+
+    async def adopt_scheduler_mandate(
+        self, peer: str, adoption: MandateIssuanceAdoption
+    ) -> BrokerPublicationResult:
+        return await publish_mandate(self, peer, adoption)
 
     async def adopt_scheduler_tick(
         self, peer: str, adoption: TickPolicyAdoption
@@ -193,11 +208,12 @@ async def open_r15_runtime(
         tenant_id="hermetic-tenant",
         operator_secret=b"r13-hermetic-only",
         runtime_type=R15SchedulerRuntime,
-        manifest=R14_PRODUCTION_MANIFEST,
+        manifest=R15_MANDATE_PRODUCTION_MANIFEST,
         extra_leaves={"model": model if model is not None else HermeticModel()},
     ) as opened:
         runtime = cast(R15SchedulerRuntime, opened)
         runtime._tick_clock = clock if clock is not None else SchedulerClock()
+        runtime._mandate_clock_issuances = {}
         registered_clock_source(runtime._tick_clock)
         if runtime._trust.verify() is None:
             await runtime.bootstrap(

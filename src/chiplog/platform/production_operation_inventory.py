@@ -120,6 +120,12 @@ SCHEDULER_ROLLOVER_KEY_V1 = OperationKeyV1(
     request_version="v1",
     request_variant="scheduler.rollover",
 )
+SCHEDULER_MANDATE_ISSUANCE_KEY_V1 = OperationKeyV1(
+    operation_id="scheduler.prepare_mandate_issuance",
+    request_schema_id="chiplog.scheduler.mandate-issuance-preparation.v1",
+    request_version="v1",
+    request_variant="scheduler.issue_mandate",
+)
 
 
 OPERATION_REQUIRED_KEYS_V1: tuple[OperationKeyV1, ...] = (
@@ -133,6 +139,7 @@ OPERATION_REQUIRED_KEYS_V1: tuple[OperationKeyV1, ...] = (
     *SCHEDULER_INTERVAL_KEYS_V1,
     *SCHEDULER_LEASE_KEYS_V1,
     SCHEDULER_ROLLOVER_KEY_V1,
+    SCHEDULER_MANDATE_ISSUANCE_KEY_V1,
 )
 
 
@@ -216,11 +223,11 @@ OPERATION_INVENTORY_ROWS_V1: tuple[OperationInventoryEntryV1, ...] = (
         _c_open_preparation_row(key, "scheduler_prepare_interval")
         for key in SCHEDULER_INTERVAL_KEYS_V1
     ),
-    *(
-        _c_open_preparation_row(key, "scheduler_prepare_lease")
-        for key in SCHEDULER_LEASE_KEYS_V1
-    ),
+    *(_c_open_preparation_row(key, "scheduler_prepare_lease") for key in SCHEDULER_LEASE_KEYS_V1),
     _c_open_preparation_row(SCHEDULER_ROLLOVER_KEY_V1, "scheduler_prepare_rollover"),
+    _c_open_preparation_row(
+        SCHEDULER_MANDATE_ISSUANCE_KEY_V1, "scheduler_prepare_mandate_issuance"
+    ),
 )
 
 
@@ -279,6 +286,7 @@ __all__ = [
     "SCHEDULER_CONFIGURATION_KEYS_V1",
     "SCHEDULER_INTERVAL_KEYS_V1",
     "SCHEDULER_LEASE_KEYS_V1",
+    "SCHEDULER_MANDATE_ISSUANCE_KEY_V1",
     "SCHEDULER_ROLLOVER_KEY_V1",
     "STAGE_RAW_BYTES_KEY_V1",
     "UNKEYED_OPERATION_DISCOVERY_LEDGER_V1",

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import chiplog.composition.scheduler_source_registry as source_registry
 import chiplog.platform.scheduler_reads as reader_module
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, EndpointSelection
@@ -560,6 +561,23 @@ async def test_registered_actual_producer_history_is_source_admitted(tmp_path: P
             fixture.database, "tenant", fixture.journal, fixture.anchor
         )
         assert joined == result
+
+
+async def test_immutable_v1_selected_history_is_admitted_by_v2_runtime(tmp_path: Path) -> None:
+    observed, _, _ = source_registry._observe()
+    legacy = source_registry._historical_v1_registration(observed)
+    current = current_scheduler_registration()
+    assert isinstance(current, SchedulerSourceRegistration)
+    assert legacy.reference != current.reference
+    fixture = await materialized(tmp_path, registry=legacy.reference)
+    result = read_admitted_scheduler_startup(
+        fixture.database, "tenant", fixture.journal, fixture.anchor
+    )
+    assert isinstance(result, AdmittedSchedulerStartup)
+    assert result.cut.historical_requests[0].registry == legacy.reference
+    assert result.index.selected_record_ids == tuple(
+        row.record_id for row in fixture.selected.prepared.request.complete_records
+    )
 
 
 async def test_unknown_selected_registry_stays_unresolved(tmp_path: Path) -> None:

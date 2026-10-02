@@ -260,6 +260,17 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             "scheduler.prepare_configuration",
             "scheduler.prepare_interval",
             "scheduler.prepare_lease",
+            "scheduler.prepare_mandate_issuance",
+            "scheduler.prepare_rollover",
+        ):
+            return "chiplog.capabilities.agent_loop._r14_process"
+        if identity.capability_ids == (
+            "agent_loop.prepare_delivery_completion",
+            "agent_loop.validate_delivery_completion",
+            "agent_loop.validate_transition",
+            "scheduler.prepare_configuration",
+            "scheduler.prepare_interval",
+            "scheduler.prepare_lease",
             "scheduler.prepare_rollover",
         ):
             return "chiplog.capabilities.agent_loop._r14_process"

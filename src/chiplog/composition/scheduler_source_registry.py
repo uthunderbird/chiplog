@@ -23,10 +23,12 @@ from chiplog.capabilities.agent_loop.scheduler_preparation import (
     ConfigurationPreparationRequest,
     IntervalPreparationRequest,
     LeasePreparationRequest,
+    MandateIssuancePreparationRequest,
     RolloverPreparationRequest,
     prepare_configuration,
     prepare_interval_request,
     prepare_lease,
+    prepare_mandate_issuance,
     prepare_rollover_request,
 )
 from chiplog.capabilities.agent_loop.scheduler_startup import (
@@ -35,6 +37,8 @@ from chiplog.capabilities.agent_loop.scheduler_startup import (
     SelectedSchedulerBatch,
     validate_selected_scheduler_records,
 )
+from chiplog.composition.r15_mandate_scope_registry import registered_scope_sources
+from chiplog.composition.scheduler_v1_compatibility import require_v1_compatible
 from chiplog.platform.authority_reads import AuthorityCommitmentJournal
 from chiplog.platform.owner_decision_journal import IndependentOwnerDecisionJournal
 from chiplog.platform.scheduler_reads import (
@@ -47,6 +51,8 @@ from chiplog.verification.scheduler_schema import derive_schema_manifest
 _ROOT = Path(__file__).resolve().parents[3]
 _MANIFEST = Path(__file__).with_name("scheduler_source_manifest.json")
 _MANIFEST_SHA = "8d8c28b7619703ff0e39d40e314de2427f361a6bc84050411b4dec1c11e3f7e7"
+_MANIFEST_V2 = Path(__file__).with_name("scheduler_source_manifest_v2.json")
+_MANIFEST_V2_SHA = "459d2ecb4477d751502ba80ac5742bb9fac719ba46e4a859c62c66a61897935e"
 _MODULES = (
     "chiplog.capabilities.agent_loop.scheduler_startup",
     "chiplog.capabilities.agent_loop.scheduler_rollover",
@@ -61,9 +67,13 @@ _MODULES = (
     "chiplog.capabilities.agent_loop.delivery_contracts",
     "chiplog.capabilities.agent_loop.response_parsing",
     "chiplog.capabilities.agent_loop.scheduler_preparation",
+    "chiplog.capabilities.agent_loop.scheduler_execution_contracts",
+    "chiplog.capabilities.agent_loop.scheduler_mandate_lifecycle_contracts",
     "chiplog.capabilities.agent_loop.scheduler_configuration",
     "chiplog.capabilities.agent_loop.scheduler_leases",
     "chiplog.verification.scheduler_schema",
+    "chiplog.composition.r15_mandate_scope_registry",
+    "chiplog.composition.scheduler_v1_compatibility",
 )
 _PACKAGES = (
     ("pydantic", "pydantic"),
@@ -114,6 +124,7 @@ def _loaded_module(name: str) -> ModuleType:
 def _observe() -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
     """Observed artifacts only. Their existence never creates a trusted pin."""
     sources: dict[str, bytes] = {}
+    registered_scope_sources()
     for name in _MODULES:
         module = _loaded_module(name)
         source = _ROOT / "src" / Path(*name.split(".")).with_suffix(".py")
@@ -139,7 +150,7 @@ def _observe() -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
         raise ValueError("unsupported interpreter linkage")
     library = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")
     profile: dict[str, object] = {
-        "format": "chiplog.scheduler.source-profile.v1",
+        "format": "chiplog.scheduler.source-profile.v2",
         "canonicalization": "sorted-compact-utf8-json-no-ascii-escaping-v1",
         "sources": {name: _sha(raw) for name, raw in sorted(sources.items())},
         "lock_sha256": _sha((_ROOT / "uv.lock").read_bytes()),
@@ -154,6 +165,29 @@ def _observe() -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
             "stdlib_tree_sha256": _sha(_canonical(stdlib)),
         },
         "packages": packages,
+        "historical_v1": {
+            "manifest_sha256": _MANIFEST_SHA,
+            "preparation_sha256": _sha(
+                (
+                    Path(__file__).with_name("scheduler_v1_sources")
+                    / "scheduler_preparation.py.source"
+                ).read_bytes()
+            ),
+            "startup_sha256": _sha(
+                (
+                    Path(__file__).with_name("scheduler_v1_sources") / "scheduler_startup.py.source"
+                ).read_bytes()
+            ),
+            "delivery_sha256": _sha(
+                (
+                    Path(__file__).with_name("scheduler_v1_sources")
+                    / "delivery_contracts.py.source"
+                ).read_bytes()
+            ),
+            "lock_sha256": _sha(
+                (Path(__file__).with_name("scheduler_v1_sources") / "uv.lock.source").read_bytes()
+            ),
+        },
     }
     return profile, sources, inventories
 
@@ -205,6 +239,8 @@ def _require_historical_equality(
             )
         elif isinstance(request, RolloverPreparationRequest):
             records = prepare_rollover_request(request).records
+        elif isinstance(request, MandateIssuancePreparationRequest):
+            records = prepare_mandate_issuance(request).records
         else:
             raise ValueError("unknown historical compiler family")
         if records != selected.records:
@@ -214,15 +250,16 @@ def _require_historical_equality(
 
 
 def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegistrationUnresolved:
-    """Match one independent reviewed profile; never accept newly observed hashes."""
+    """Match reviewed V2 current bytes; retain V1 only for exact selected history."""
     try:
-        raw_manifest = _MANIFEST.read_bytes()
-        if _sha(raw_manifest) != _MANIFEST_SHA:
-            return SourceRegistrationUnresolved("reviewed manifest bytes differ")
+        raw_manifest = _MANIFEST_V2.read_bytes()
+        if _sha(raw_manifest) != _MANIFEST_V2_SHA:
+            return SourceRegistrationUnresolved("reviewed V2 manifest bytes differ")
         expected = json.loads(raw_manifest)
         observed, sources, _ = _observe()
         if observed != expected:
             return SourceRegistrationUnresolved("reviewed source/runtime artifacts differ")
+        require_v1_compatible(observed)
         prefix = "chiplog.capabilities.agent_loop."
         graph = derive_schema_manifest(
             sources[prefix + "scheduler_materialization"],
@@ -233,10 +270,36 @@ def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegi
         )
         digest = _sha(canonical)
         return SchedulerSourceRegistration(
-            Present(head="scheduler-source-registry-v1:" + digest, fingerprint=digest), canonical
+            Present(head="scheduler-source-registry-v2:" + digest, fingerprint=digest), canonical
         )
     except (OSError, ValueError, TypeError, ImportError, KeyError) as error:
         return SourceRegistrationUnresolved(str(error))
+
+
+def _historical_v1_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
+    old = require_v1_compatible(current_profile)
+    sources = old["sources"]
+    prefix = "chiplog.capabilities.agent_loop."
+    graph = derive_schema_manifest(
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_materialization.py").read_bytes(),
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_rollover.py").read_bytes(),
+    )
+    if (
+        _sha(
+            (
+                _ROOT / "src/chiplog/capabilities/agent_loop/scheduler_materialization.py"
+            ).read_bytes()
+        )
+        != sources[prefix + "scheduler_materialization"]
+        or _sha((_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_rollover.py").read_bytes())
+        != sources[prefix + "scheduler_rollover"]
+    ):
+        raise ValueError("V1 schema compiler sources differ")
+    canonical = _canonical({"profile": old, "generated_dependency_manifest": asdict(graph)})
+    digest = _sha(canonical)
+    return SchedulerSourceRegistration(
+        Present(head="scheduler-source-registry-v1:" + digest, fingerprint=digest), canonical
+    )
 
 
 def read_admitted_scheduler_startup(
@@ -250,12 +313,21 @@ def read_admitted_scheduler_startup(
     if isinstance(registration, SourceRegistrationUnresolved):
         return registration
     cut = read_materialized_scheduler(database, tenant_id, journal, commitments)
+    observed, _, _ = _observe()
+    legacy = _historical_v1_registration(observed)
+    seen_v2 = False
     for historical, selected in zip(cut.historical_requests, cut.selected, strict=True):
         expected = historical.selection.prepared.request.expected
+        if historical.registry == registration.reference:
+            seen_v2 = True
+        elif historical.registry == legacy.reference and not seen_v2:
+            if historical.selection.prepared.request.operation == "scheduler.issue_mandate":
+                return SourceRegistrationUnresolved("V1 registry cannot issue V2 mandates")
+        else:
+            return SourceRegistrationUnresolved("unknown selected or regressed source registry")
         if (
-            historical.registry != registration.reference
-            or expected.registry_head != registration.reference.head
-            or expected.registry_fingerprint != registration.reference.fingerprint
+            expected.registry_head != historical.registry.head
+            or expected.registry_fingerprint != historical.registry.fingerprint
         ):
             return SourceRegistrationUnresolved("unknown selected historical source registry")
         _require_historical_equality(historical, selected)

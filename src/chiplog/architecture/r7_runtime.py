@@ -368,6 +368,37 @@ R14_PRODUCTION_MANIFEST = replace(
 )
 R14_EVALUATION_MANIFEST = replace(R14_PRODUCTION_MANIFEST, environment="evaluation")
 
+_R15_MANDATE_ROUTE = RoutedCallDecl(
+    "scheduler.prepare_mandate_issuance",
+    "broker",
+    "agent_loop",
+    "chiplog.scheduler.mandate-issuance-preparation.v1",
+    "chiplog.scheduler.prepared-batch.v1",
+)
+R15_MANDATE_PRODUCTION_MANIFEST = replace(
+    R14_PRODUCTION_MANIFEST,
+    manifest_version=25,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=tuple(sorted((*owner.capability_ids, _R15_MANDATE_ROUTE.operation_id))),
+            public_operations=tuple(
+                sorted((*owner.public_operations, _R15_MANDATE_ROUTE.operation_id))
+            ),
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (*R14_PRODUCTION_MANIFEST.routes, _R15_MANDATE_ROUTE),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R15_MANDATE_EVALUATION_MANIFEST = replace(R15_MANDATE_PRODUCTION_MANIFEST, environment="evaluation")
+
 # Versions 5 and 6 belong to the independently developed R14 calls/fanout profiles.
 # Preserve the v4 partition; preparation is not permission to publish a disposition.
 R16_PRODUCTION_MANIFEST = replace(
@@ -1185,6 +1216,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         22,
         23,
         24,
+        25,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1210,6 +1242,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         22: R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
         23: R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
         24: R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
+        25: R15_MANDATE_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
@@ -1305,6 +1338,8 @@ __all__ = [
     "R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST",
     "R14_R17_H1_SCOPED_EFFECTS_V3_J7_EVALUATION_MANIFEST",
     "R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST",
+    "R15_MANDATE_EVALUATION_MANIFEST",
+    "R15_MANDATE_PRODUCTION_MANIFEST",
     "LeafBinding",
     "OwnerProcessDecl",
     "RoutedCallDecl",
