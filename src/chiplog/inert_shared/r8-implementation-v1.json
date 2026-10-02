@@ -179,6 +179,7 @@
   "capabilities/effects/h1_prepared_delivery_basis.py": "c48adb2e1a1917d0646a97cb08994f3b4033a930ffe687c67b970a5aeb796855",
   "capabilities/effects/h1_producer_semantics.py": "e08c6e0a593dd23b357ac30a29692c8a7ebb61cb27ca97cc12f9d18433008dc2",
   "capabilities/effects/h1_producer_source_contracts.py": "17ba10e20319ef1b6b5cd2246564fd458f8882e8fae20dec9424d098dc056fa4",
+  "capabilities/effects/h1_scoped_authorization_command_projection.py": "09cd296d4ff3e599b5b53ef9ca078b7fe18a6d95abfc177368c816fb94c4fff6",
   "capabilities/effects/h1_scoped_authorization_contracts.py": "ecf79e3c28cae0895f81f4e70bcac9e281fba917a4196a37489e6c9668386e30",
   "capabilities/effects/h1_scoped_dispatch_semantics.py": "2058d37d0f6473465e9a79c2e2990e22a52ca1003f26b54729995d3d7611406b",
   "capabilities/effects/h1_scoped_preparation.py": "2772616124c9d85a2679b9c7eea0b13ab55e380472cae306648d1792c55cad4d",
