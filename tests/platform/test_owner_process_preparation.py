@@ -1,5 +1,6 @@
 """Shared scheduler test builders; simulated issuer values are not authority."""
 
+import base64
 import hashlib
 import json
 import socket
@@ -13,15 +14,20 @@ from chiplog.architecture.r7_runtime import R14_PRODUCTION_MANIFEST
 from chiplog.capabilities.agent_loop.recovery_contracts import (
     Absent,
     ExecutionLineageBinding,
+    ExhaustionBinding,
     IndividualSubject,
     LeaseBinding,
     PhysicalRootBinding,
+    PhysicalRootRolloverFence,
+    Present,
+    RolloverAuthorityRef,
     TrustedClockProofRef,
 )
 from chiplog.capabilities.agent_loop.scheduler_contracts import (
     GenesisLease,
     HeldLease,
     LeaseTransitionCommand,
+    PhysicalRootRolloverCommand,
     SchedulerCommandIdentity,
     SchedulerContextRef,
     SchedulerLineageView,
@@ -32,10 +38,20 @@ from chiplog.capabilities.agent_loop.scheduler_leases import (
     lease_payload_fingerprint,
 )
 from chiplog.capabilities.agent_loop.scheduler_preparation import (
+    BatchPreparationCut,
     LeasePreparationRequest,
     LeasePreparationSnapshot,
+    PreparedSchedulerBatch,
     PreparedSchedulerRecord,
+    RolloverPreparationRequest,
+    RolloverPreparationSnapshot,
     SchedulerLeaseTransitionRecord,
+)
+from chiplog.capabilities.agent_loop.scheduler_rollover import (
+    IssuedRolloverObservation,
+    RolloverCandidate,
+    rollover_payload_fingerprint,
+    rollover_snapshot_fingerprint,
 )
 from chiplog.capabilities.effects.contracts import (
     AuthorityBinding,
@@ -277,9 +293,313 @@ def issue(
         holder_id=holder,
         holder_session_id=session,
         authority_epoch="authority",
-        used_lease_ids=() if current.lease.kind == "UNLEASED" else ("lease",),
+        used_lease_ids=(
+            () if current.lease.kind == "UNLEASED" else (current.lease.binding.lease_id,)
+        ),
     )
     return command, observation
+
+
+def _scheduler_call(
+    runtime: AuthorityBrokerRuntime,
+    *,
+    operation: str,
+    schema: str,
+    request: LeasePreparationRequest | RolloverPreparationRequest,
+    request_id: str,
+) -> PublicPortSuccess | PublicPortRejected:
+    return runtime.call_sync(
+        PublicPortCall(
+            operation_id=operation,
+            request_id=request_id,
+            caller=BrokerSession(
+                tenant_id="tenant",
+                broker_epoch=1,
+                generation_id="generation",
+                owner_id="broker",
+                session_id="broker",
+            ),
+            callee=runtime.session("agent_loop"),
+            schema_id=schema,
+            canonical_payload=request.canonical_bytes(),
+            budget=CallBudget(
+                remaining_calls=4,
+                remaining_depth=2,
+                absolute_deadline_ns=time.monotonic_ns() + 10_000_000_000,
+                policy_version=1,
+            ),
+        )
+    )
+
+
+def _lease_request(
+    current: SchedulerLineageView,
+    command: LeaseTransitionCommand,
+    issued: IssuedLeaseObservation,
+    *,
+    submission_id: str,
+) -> LeasePreparationRequest:
+    context = SchedulerContextRef(
+        tenant_id="tenant",
+        service_identity=command.proposed_holder_id,
+        session_id=command.proposed_holder_session_id,
+        mandate_head="mandate",
+        issuance_id="issuer",
+        issuance_fingerprint=DIGEST,
+    )
+    return LeasePreparationRequest(
+        operation="scheduler.takeover",
+        context=context,
+        snapshot=LeasePreparationSnapshot(
+            tenant_id="tenant",
+            tenant_frontier=7,
+            materialization_commitment=DIGEST,
+            registry_head="registry",
+            registry_fingerprint=DIGEST,
+            current=current,
+            issued=issued,
+            submission_id=submission_id,
+        ),
+        command_bytes=command.canonical_bytes(),
+    )
+
+
+def test_scheduler_rollover_crosses_owner_ipc_at_uint64_boundary() -> None:
+    """The frozen MAX-1 input is a stipulated compiler precondition, not history authority."""
+    maximum = 2**64 - 1
+    predecessor = view(maximum - 1)
+    predecessor_digest = hashlib.sha256(predecessor.canonical_bytes()).hexdigest()
+    assert predecessor_digest == "b89dc539ac689218692c41ae53bad2f28c43053ab9a3554cfb9ad16bfe71ea75"
+
+    first, first_issued = issue(
+        predecessor,
+        "TAKEOVER",
+        generation=maximum,
+        now=100,
+        expiry=180,
+        lease_id="lease-at-maximum",
+        holder="next-worker",
+        session="next-session",
+        command_id="takeover-to-maximum",
+    )
+    first_request = _lease_request(
+        predecessor, first, first_issued, submission_id="submission"
+    )
+    with AuthorityBrokerRuntime(
+        "tenant", 1, "generation", R14_PRODUCTION_MANIFEST, b"secret"
+    ) as runtime:
+        first_result = _scheduler_call(
+            runtime,
+            operation="scheduler.prepare_lease",
+            schema="chiplog.scheduler.lease-preparation.v1",
+            request=first_request,
+            request_id="takeover-to-maximum",
+        )
+        assert isinstance(first_result, PublicPortSuccess)
+        assert first_result.request_id == "takeover-to-maximum"
+        assert first_result.responder == runtime.session("agent_loop")
+        assert first_result.schema_id == "chiplog.scheduler.prepared-lease.v1"
+        first_prepared = PreparedSchedulerRecord.model_validate_json(
+            first_result.canonical_payload
+        )
+        assert first_prepared.canonical_bytes() == first_result.canonical_payload
+        assert (
+            hashlib.sha256(first_prepared.canonical_record_bytes).hexdigest()
+            == first_prepared.fingerprint
+        )
+        first_record = SchedulerLeaseTransitionRecord.model_validate_json(
+            first_prepared.canonical_record_bytes
+        )
+        assert first_record.previous == predecessor
+        assert first_record.candidate.state.kind == "HELD"
+        assert first_record.candidate.state.binding.generation == maximum
+        assert first_record.candidate.state.binding.lease_id == "lease-at-maximum"
+        current_max = predecessor.model_copy(update={"lease": first_record.candidate.state})
+        assert current_max.lineage == predecessor.lineage
+        assert current_max.physical_root == predecessor.physical_root
+
+        second, second_issued = issue(
+            current_max,
+            "TAKEOVER",
+            generation=maximum,
+            now=180,
+            expiry=260,
+            lease_id="lease-exhausted",
+            holder="third-worker",
+            session="third-session",
+            command_id="takeover-to-exhaustion",
+        )
+        second_request = _lease_request(
+            current_max, second, second_issued, submission_id="submission"
+        )
+        second_result = _scheduler_call(
+            runtime,
+            operation="scheduler.prepare_lease",
+            schema="chiplog.scheduler.lease-preparation.v1",
+            request=second_request,
+            request_id="takeover-to-exhaustion",
+        )
+        assert isinstance(second_result, PublicPortSuccess)
+        assert second_result.request_id == "takeover-to-exhaustion"
+        assert second_result.responder == runtime.session("agent_loop")
+        assert second_result.schema_id == "chiplog.scheduler.prepared-lease.v1"
+        second_prepared = PreparedSchedulerRecord.model_validate_json(
+            second_result.canonical_payload
+        )
+        assert second_prepared.canonical_bytes() == second_result.canonical_payload
+        assert (
+            hashlib.sha256(second_prepared.canonical_record_bytes).hexdigest()
+            == second_prepared.fingerprint
+        )
+        second_record = SchedulerLeaseTransitionRecord.model_validate_json(
+            second_prepared.canonical_record_bytes
+        )
+        assert second_record.previous == current_max
+        assert second_record.candidate.state.kind == "GENERATION_EXHAUSTED_HOLD"
+        assert second_record.candidate.state.generation == maximum
+        assert second_record.candidate.state.preceding_held_lease == current_max.lease.binding
+        assert second_record.candidate.state.exhausted_command_id == second.identity.command_id
+        exhausted = current_max.model_copy(update={"lease": second_record.candidate.state})
+
+        authority = RolloverAuthorityRef(
+            proof_id="rollover-proof",
+            proof_fingerprint=DIGEST,
+            authority_head="operator",
+            command_id="physical-rollover",
+            command_payload_fingerprint=DIGEST,
+            predecessor_rollover=Absent(),
+        )
+        rollover = PhysicalRootRolloverCommand(
+            identity=SchedulerCommandIdentity(
+                command_id="physical-rollover", schema_version="1", canonicalization_version="1"
+            ),
+            fence=PhysicalRootRolloverFence(
+                lineage=exhausted.lineage,
+                physical_root=exhausted.physical_root,
+                exhaustion=ExhaustionBinding(
+                    hold_head=exhausted.lease.lease_head,
+                    exhausted_command_id=exhausted.lease.exhausted_command_id,
+                    lease=exhausted.lease.preceding_held_lease,
+                    authority_epoch=exhausted.lease.authority_epoch,
+                ),
+                authority=authority,
+            ),
+        )
+        authority = authority.model_copy(
+            update={"command_payload_fingerprint": rollover_payload_fingerprint(rollover)}
+        )
+        rollover = rollover.model_copy(
+            update={"fence": rollover.fence.model_copy(update={"authority": authority})}
+        )
+        context = first_request.context
+        cut = BatchPreparationCut(
+            tenant_id="tenant",
+            tenant_frontier=7,
+            materialization_commitment=DIGEST,
+            registry_head="registry",
+            registry_fingerprint=DIGEST,
+            submission_id="submission",
+            authorized_context=context,
+            authorized_command_fingerprint=hashlib.sha256(rollover.canonical_bytes()).hexdigest(),
+            authority_proof=Present(head="authorized", fingerprint=DIGEST),
+        )
+        rollover_request = RolloverPreparationRequest(
+            operation="scheduler.rollover",
+            context=context,
+            command_bytes=rollover.canonical_bytes(),
+            snapshot=RolloverPreparationSnapshot(
+                cut=cut,
+                current=exhausted,
+                issued=IssuedRolloverObservation(
+                    authority=authority,
+                    snapshot_fingerprint=rollover_snapshot_fingerprint(exhausted),
+                    submission_id="submission",
+                    authority_epoch=exhausted.lease.authority_epoch,
+                    used_epoch_ids=(exhausted.physical_root.current_epoch_id,),
+                    used_lease_heads=(
+                        predecessor.lease.binding.lease_head,
+                        current_max.lease.binding.lease_head,
+                        exhausted.lease.lease_head,
+                    ),
+                ),
+            ),
+        )
+        rollover_result = _scheduler_call(
+            runtime,
+            operation="scheduler.prepare_rollover",
+            schema="chiplog.scheduler.rollover-preparation.v1",
+            request=rollover_request,
+            request_id="physical-rollover",
+        )
+        assert isinstance(rollover_result, PublicPortSuccess)
+        assert rollover_result.request_id == "physical-rollover"
+        assert rollover_result.responder == runtime.session("agent_loop")
+        assert rollover_result.schema_id == "chiplog.scheduler.prepared-batch.v1"
+        prepared = PreparedSchedulerBatch.model_validate_json(rollover_result.canonical_payload)
+        assert prepared.canonical_bytes() == rollover_result.canonical_payload
+        assert prepared.source_request_fingerprint == hashlib.sha256(
+            rollover_request.canonical_bytes()
+        ).hexdigest()
+        assert isinstance(prepared.result, RolloverCandidate)
+        assert tuple(record.record_kind for record in prepared.records) == (
+            "scheduler.rollover-decision",
+            "scheduler.physical-epoch-terminal",
+            "scheduler.rollover-physical-root",
+            "scheduler.rollover-root-lease-genesis",
+            "scheduler.rollover-edge",
+            "scheduler.rollover-physical-selector",
+        )
+        for record in prepared.records:
+            assert (
+                hashlib.sha256(base64.b64decode(record.canonical_base64)).hexdigest()
+                == record.fingerprint
+            )
+        candidate = prepared.result
+        assert candidate.records == prepared.records
+        assert candidate.view.lineage == exhausted.lineage
+        assert candidate.view.lineage.current_run_id == exhausted.lineage.current_run_id
+        assert (
+            candidate.view.physical_root.selector_version
+            == exhausted.physical_root.selector_version + 1
+        )
+        assert (
+            candidate.view.physical_root.current_epoch_id
+            != exhausted.physical_root.current_epoch_id
+        )
+        assert candidate.view.lease.kind == "UNLEASED"
+        assert candidate.view.lease.generation == 0
+        assert candidate.view.predecessor_rollover.decision == candidate.decision
+        assert candidate.view.predecessor_rollover.edge == candidate.edge
+        assert all("run" not in record.record_kind for record in prepared.records)
+        commitment = hashlib.sha256(
+            json.dumps(
+                [record.model_dump(mode="json") for record in prepared.records],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
+        assert candidate.complete_commitment == commitment
+
+        stale = rollover_request.model_copy(
+            update={
+                "snapshot": rollover_request.snapshot.model_copy(
+                    update={
+                        "issued": rollover_request.snapshot.issued.model_copy(
+                            update={"snapshot_fingerprint": DIGEST}
+                        )
+                    }
+                )
+            }
+        )
+        stale_result = _scheduler_call(
+            runtime,
+            operation="scheduler.prepare_rollover",
+            schema="chiplog.scheduler.rollover-preparation.v1",
+            request=stale,
+            request_id="physical-rollover-stale",
+        )
+        assert isinstance(stale_result, PublicPortRejected)
 
 
 def test_scheduler_preparation_crosses_real_isolated_process_and_keeps_exact_closure() -> None:
