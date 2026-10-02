@@ -344,24 +344,23 @@ def validate_selected_tick(decision: SelectedOwnerDecision) -> None:
     relevant = (
         batch.operation == "scheduler.decide_interval"
         or getattr(batch.authentication, "applicability_schema", None) == ISSUANCE_SCHEMA
-        or any(command.schema_id == PREPARATION_SCHEMA for command in commands)
         or any(embedded)
-        or any(
-            record.schema_id
-            in {
-                "chiplog.scheduler.interval-parent.v1",
-                "chiplog.scheduler.interval-result.v1",
-                "chiplog.scheduler.overflow-hold.v1",
-            }
-            for record in batch.complete_records
-        )
     )
     if not relevant:
         return
     try:
         _require(isinstance(batch, SingleOwnerBatch), "not single owner")
         assert isinstance(batch, SingleOwnerBatch)
-        validate_tick_batch(batch)
+        if (
+            isinstance(batch.authentication, WorkerAuthentication)
+            and batch.authentication.applicability_schema
+            == "chiplog.scheduler.interval-service-issuance.v3"
+        ):
+            from chiplog.composition.r15_interval_service import validate_service_interval_batch
+
+            validate_service_interval_batch(batch)
+        else:
+            validate_tick_batch(batch)
     except (ValueError, TypeError, KeyError) as error:
         raise OwnerJournalIntegrityError(
             "scheduler_tick_provenance", batch.identity.tenant_id, batch.identity.command_id

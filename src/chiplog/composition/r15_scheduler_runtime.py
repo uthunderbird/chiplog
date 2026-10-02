@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.adapters.driven.loop_prompts import OwnedStaticPrompts
@@ -16,6 +16,7 @@ from chiplog.capabilities.agent_loop.contracts import LoopRejected, LoopSnapshot
 from chiplog.composition.r7_planning import _open_runtime
 from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_runtime import R14PlanningRuntime
+from chiplog.composition.r15_interval_service import publish_service_interval
 from chiplog.composition.r15_lease_policy import LeasePolicyAdoptionRequest
 from chiplog.composition.r15_lease_publication import (
     LeaseExecutionSession,
@@ -27,6 +28,16 @@ from chiplog.composition.r15_lease_publication import (
 from chiplog.composition.r15_lease_service_auth import LeaseExecutionAuthority
 from chiplog.composition.r15_mandate_contracts import MandateClockPreview, MandateIssuanceAdoption
 from chiplog.composition.r15_mandate_publication import preview_mandate_clock, publish_mandate
+from chiplog.composition.r15_resolution_contracts import (
+    ResolutionPolicyAdoption,
+    ResolutionPolicyDraft,
+    ResolutionPolicyPreview,
+)
+from chiplog.composition.r15_resolution_evidence import (
+    resolution_id,
+    validate_selected_resolution,
+)
+from chiplog.composition.r15_resolution_runtime import preview_resolution, publish_resolution
 from chiplog.composition.r15_scheduler_history import read_loop_snapshot
 from chiplog.composition.r15_scheduler_publication import (
     preview_configuration,
@@ -58,11 +69,19 @@ from chiplog.composition.r15_tick_evidence import tick_id, validate_selected_tic
 from chiplog.composition.r15_tick_runtime import preview_tick, publish_tick
 from chiplog.platform.owner_publications import OwnerPublicationPending
 
+if TYPE_CHECKING:
+    from chiplog.composition.r15_interval_policy import IntervalPolicyAdoptionRequest
+    from chiplog.composition.r15_interval_service_auth import (
+        IntervalExecutionAuthority,
+        IntervalServiceSession,
+    )
+
 
 class R15SchedulerRuntime(R14PlanningRuntime):
     _tick_clock: TickClockPort
     _mandate_clock_issuances: dict[str, object]
     _lease_execution_sessions: list[LeaseExecutionSession]
+    _interval_service_sessions: list[object]
     _record_contracts: ClassVar[dict[str, str]] = {
         **R14PlanningRuntime._record_contracts,
         "broker_scheduler": "chiplog.r15.lease-policy-adoption.v1",
@@ -71,6 +90,8 @@ class R15SchedulerRuntime(R14PlanningRuntime):
         *R14PlanningRuntime._record_schema_variants,
         ("agent_loop", "chiplog.scheduler.lease-transition.v1"),
         ("broker_scheduler", "chiplog.r15.lease-execution-authority.v2"),
+        ("broker_scheduler", "chiplog.r15.interval-service-adoption.v3"),
+        ("broker_scheduler", "chiplog.r15.interval-execution-authority.v3"),
         ("agent_loop", "chiplog.scheduler.schedule-definition.v1"),
         ("agent_loop", "chiplog.scheduler.missed-policy.v1"),
         ("agent_loop", "chiplog.scheduler.interval-bound.v1"),
@@ -82,6 +103,7 @@ class R15SchedulerRuntime(R14PlanningRuntime):
                 "interval-parent",
                 "interval-result",
                 "overflow-hold",
+                "overflow-resolution",
                 "batch-primitive",
                 "stable-lineage",
                 "physical-root",
@@ -107,11 +129,19 @@ class R15SchedulerRuntime(R14PlanningRuntime):
         super().validate(previous, proposed)
 
     async def _prepare_startup(self) -> None:
+        from chiplog.composition.r15_interval_policy_publication import (
+            validate_selected_interval_policy_decision,
+            validate_selected_interval_service_decision,
+        )
+
         with self._authority_gate().hold():
             decisions = self._owner_decisions().snapshot().decisions
             for decision in decisions:
                 validate_selected_tick(decision)
                 validate_selected_lease_decision(decision, decisions)
+                validate_selected_interval_policy_decision(decision, decisions)
+                validate_selected_interval_service_decision(decision, decisions)
+                validate_selected_resolution(decision)
         await super()._prepare_startup()
         # Inherited recovery replays independently selected bytes before any live
         # owner starts. Complete readback rejects marker-only or partial history.
@@ -168,6 +198,60 @@ class R15SchedulerRuntime(R14PlanningRuntime):
             )
         except (ValueError, TypeError) as error:
             raise LoopRejected("invalid scheduler tick: " + str(error)) from error
+
+    async def preview_scheduler_resolution_policy(
+        self, peer: str, draft: ResolutionPolicyDraft
+    ) -> ResolutionPolicyPreview:
+        return await preview_resolution(self, peer, draft)
+
+    async def adopt_scheduler_resolution(
+        self, peer: str, adoption: ResolutionPolicyAdoption
+    ) -> BrokerPublicationResult:
+        try:
+            return await publish_resolution(self, peer, adoption)
+        except OwnerPublicationPending as error:
+            return PublicationRejected(
+                kind="HOLD",
+                tenant_id=self._tenant_id,
+                command_id=resolution_id(adoption.adoption_act_id),
+                reason=str(error),
+            )
+        except (ValueError, TypeError) as error:
+            raise LoopRejected("invalid scheduler resolution: " + str(error)) from error
+
+    async def open_scheduler_interval_service_session(self, peer: str) -> IntervalServiceSession:
+        from chiplog.composition.r15_interval_service_auth import open_interval_service_session
+
+        return await open_interval_service_session(self, peer)
+
+    async def adopt_scheduler_interval_service_policy(
+        self,
+        peer: str,
+        request: IntervalPolicyAdoptionRequest,
+        execution_authority: IntervalExecutionAuthority,
+    ) -> BrokerPublicationResult:
+        from chiplog.composition.r15_interval_policy_publication import adopt_interval_policy
+
+        return await adopt_interval_policy(self, peer, request, execution_authority)
+
+    async def decide_scheduler_interval(
+        self,
+        session: IntervalServiceSession,
+        schedule_id: str,
+        act_id: str,
+        signature: bytes,
+    ) -> BrokerPublicationResult:
+        try:
+            return await publish_service_interval(self, session, schedule_id, act_id, signature)
+        except OwnerPublicationPending as error:
+            from chiplog.composition.r15_interval_service import service_interval_id
+
+            return PublicationRejected(
+                kind="HOLD",
+                tenant_id=self._tenant_id,
+                command_id=service_interval_id(act_id, session.authority.principal_id),
+                reason=str(error),
+            )
 
     async def preview_scheduler_genesis(
         self, peer: str, draft: SchedulerGenesisDraft
@@ -255,6 +339,7 @@ async def open_r15_runtime(
         runtime._tick_clock = clock if clock is not None else SchedulerClock()
         runtime._mandate_clock_issuances = {}
         runtime._lease_execution_sessions = []
+        runtime._interval_service_sessions = []
         registered_clock_source(runtime._tick_clock)
         if runtime._trust.verify() is None:
             await runtime.bootstrap(

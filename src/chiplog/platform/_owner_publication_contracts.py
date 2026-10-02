@@ -66,6 +66,7 @@ BrokerOperation = Literal[
     "scheduler.genesis",
     "scheduler.issue_mandate",
     "r15.adopt_lease_execution_policy",
+    "r15.adopt_interval_service_policy",
     "scheduler.amend_schedule",
     "scheduler.amend_policy",
     "scheduler.replace_bound",

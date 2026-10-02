@@ -1,0 +1,136 @@
+"""Mounted signed service interval publication and exact restart replay."""
+
+from pathlib import Path
+
+import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
+from chiplog.capabilities.agent_loop.scheduler_configuration import policy_head, schedule_head
+from chiplog.composition.r15_interval_policy import (
+    IntervalDecisionMandateV3,
+    IntervalPolicyAdoptionRequest,
+)
+from chiplog.composition.r15_interval_service_auth import IntervalExecutionAuthority
+from chiplog.composition.r15_scheduler_runtime import R15SchedulerRuntime, open_r15_runtime
+from chiplog.composition.r15_tick_clock_v1 import EvaluationSchedulerClock
+from chiplog.composition.scheduler_source_registry import (
+    AdmittedSchedulerStartup,
+    read_admitted_scheduler_startup,
+)
+from chiplog.platform._owner_publication_contracts import (
+    BrokerPublicationResult,
+    JournalSelectedPublication,
+)
+from tests.composition.test_scheduler_interval_runtime import configure
+
+
+async def _adopt_service(
+    runtime: R15SchedulerRuntime,
+    key: Ed25519PrivateKey,
+    *,
+    max_cycles: int = 2,
+) -> None:
+    startup = read_admitted_scheduler_startup(
+        runtime._database,
+        runtime._tenant_id,
+        runtime._owner_decisions(),
+        runtime._commitment_journal,
+    )
+    assert isinstance(startup, AdmittedSchedulerStartup)
+    schedule = startup.index.schedules[0]
+    policy = startup.index.policies[0]
+    bound = startup.index.bounds[0][1]
+    mandate = IntervalDecisionMandateV3(
+        schedule=schedule_head(schedule),
+        missed_policy=policy_head(policy),
+        bound=bound,
+        first_due_ns=10,
+        last_due_ns=100,
+        expires_at_unix_ns=1_000_000_000_000,
+        max_cycles=max_cycles,
+    )
+    request = IntervalPolicyAdoptionRequest(
+        adoption_act_id="signed-interval-service",
+        mandate_bytes=mandate.canonical_bytes(),
+    )
+    authority = IntervalExecutionAuthority(
+        public_key=key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    )
+    result = await runtime.adopt_scheduler_interval_service_policy(
+        "hermetic-ingress", request, authority
+    )
+    assert result.kind == "COMMITTED"
+
+
+async def _decide(
+    runtime: R15SchedulerRuntime,
+    key: Ed25519PrivateKey,
+    act_id: str,
+) -> BrokerPublicationResult:
+    session = await runtime.open_scheduler_interval_service_session("hermetic-ingress")
+    signature = key.sign(session.signed_message("schedule", act_id))
+    return await runtime.decide_scheduler_interval(session, "schedule", act_id, signature)
+
+
+@pytest.mark.parametrize(
+    ("policy", "cutoff", "expected_members", "expected_runs"),
+    [
+        ("COALESCE", 10, 0, 0),
+        ("SKIP", 30, 2, 0),
+        ("MATERIALIZE_EACH", 30, 2, 2),
+    ],
+)
+async def test_signed_service_publishes_complete_policy_algebra(
+    tmp_path: Path,
+    policy: str,
+    cutoff: int,
+    expected_members: int,
+    expected_runs: int,
+) -> None:
+    clock = EvaluationSchedulerClock(cutoff)
+    key = Ed25519PrivateKey.generate()
+    async with open_r15_runtime(tmp_path / "service.sqlite", clock=clock) as runtime:
+        await configure(runtime, policy)
+        with pytest.raises(LoopRejected, match=r"selected|policy|service"):
+            await _decide(runtime, key, "before-adoption")
+        await _adopt_service(runtime, key)
+        result = await _decide(runtime, key, "one")
+        assert isinstance(result, JournalSelectedPublication) and result.kind == "COMMITTED"
+        interval = next(
+            row for row in result.complete_records if row.record_kind == "interval-result"
+        )
+        from chiplog.capabilities.agent_loop.scheduler_contracts import ScheduledIntervalDecision
+
+        decision = ScheduledIntervalDecision.model_validate_json(interval.canonical_bytes)
+        assert len(decision.manifest.members) == expected_members
+        assert len(decision.dispositions) == expected_members
+        assert len(runtime._loop_snapshot().records) == expected_runs
+
+
+async def test_signed_service_replays_original_after_restart_and_rejects_bad_signature(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "service-replay.sqlite"
+    clock = EvaluationSchedulerClock(30)
+    key = Ed25519PrivateKey.generate()
+    async with open_r15_runtime(database, clock=clock) as runtime:
+        await configure(runtime, "MATERIALIZE_EACH")
+        await _adopt_service(runtime, key, max_cycles=1)
+        session = await runtime.open_scheduler_interval_service_session("hermetic-ingress")
+        with pytest.raises(LoopRejected, match="signature"):
+            await runtime.decide_scheduler_interval(session, "schedule", "one", b"bad")
+        first = await runtime.decide_scheduler_interval(
+            session, "schedule", "one", key.sign(session.signed_message("schedule", "one"))
+        )
+        assert first.kind == "COMMITTED"
+        retained = first.complete_records
+        with pytest.raises(LoopRejected, match=r"cycles|mandate"):
+            await _decide(runtime, key, "second")
+    clock.unix_ns = 500
+    async with open_r15_runtime(database, clock=clock) as restarted:
+        replay = await _decide(restarted, key, "one")
+        assert isinstance(replay, JournalSelectedPublication) and replay.kind == "EXACT_REPLAY"
+        assert replay.complete_records == retained
+        assert len(restarted._loop_snapshot().records) == 2

@@ -23,7 +23,6 @@ from chiplog.capabilities.agent_loop.scheduler_configuration import (
 from chiplog.capabilities.agent_loop.scheduler_contracts import (
     DecideIntervalCommand,
     DueCoordinate,
-    ScheduledIntervalDecision,
     SchedulerCommandIdentity,
     SchedulerEligibilityBoundary,
 )
@@ -34,6 +33,10 @@ from chiplog.capabilities.agent_loop.scheduler_preparation import (
     IntervalPreparationSnapshot,
     PreparedSchedulerBatch,
     prepare_interval_request,
+)
+from chiplog.composition.r15_interval_service import (
+    parse_selected_interval_result,
+    selected_interval_progress,
 )
 from chiplog.composition.r15_scheduler_history import configuration_snapshot, read_loop_snapshot
 from chiplog.composition.r15_scheduler_publication import _authenticate
@@ -133,53 +136,23 @@ def _source_cut(sources: SchedulerFreshSources) -> TickSourceCut:
 def _progress(
     sources: SchedulerFreshSources, preview: TickPolicyPreview
 ) -> tuple[DueCoordinate, Absent | Present, tuple[DisposedOccurrence, ...]]:
-    """Project exhaustive admitted history; historical validator has already checked it."""
-    genesis = [
-        item
-        for item in sources.startup.index.registered_genesis
-        if item[0] == preview.schedule.schedule_id
-    ]
-    if len(genesis) != 1:
-        raise LoopRejected("tick requires one registered initial boundary")
-    previous = genesis[0][1]
-    predecessor: Absent | Present = Absent()
-    disposed: list[DisposedOccurrence] = []
+    """Project admitted history, filtering dispositions from prior schedule heads."""
+    previous, predecessor, disposed = selected_interval_progress(
+        sources.startup, preview.schedule.schedule_id
+    )
+    current_ids: set[str] = set()
     for batch in sources.startup.cut.selected:
         for record in batch.records:
             if record.record_kind != "interval-result":
                 continue
-            result = ScheduledIntervalDecision.model_validate_json(
+            result = parse_selected_interval_result(
                 base64.b64decode(record.canonical_base64, validate=True)
             )
-            boundary = result.boundary
-            if boundary.schedule_definition_head.schedule_id != preview.schedule.schedule_id:
-                continue
-            previous, predecessor = result.resulting_boundary, result.decision
-            if boundary.schedule_definition_head != preview.schedule:
-                continue
-            for disposition in result.dispositions:
-                member = disposition.occurrence
-                exact_disposition = [
-                    record
-                    for record in batch.records
-                    if record.record_kind == "occurrence-disposition"
-                    and json.loads(base64.b64decode(record.canonical_base64, validate=True))
-                    == disposition.model_dump(mode="json")
-                ]
-                if len(exact_disposition) != 1:
-                    raise LoopRejected("disposed occurrence lacks its exact selected record")
-                selected_disposition = exact_disposition[0]
-                disposed.append(
-                    DisposedOccurrence(
-                        occurrence_id=member.occurrence_id,
-                        due_coordinate=member.due_coordinate,
-                        disposition=Present(
-                            head=selected_disposition.record_id,
-                            fingerprint=selected_disposition.fingerprint,
-                        ),
-                    )
-                )
-    return previous, predecessor, tuple(disposed)
+            if result.boundary.schedule_definition_head == preview.schedule:
+                current_ids.update(item.occurrence.occurrence_id for item in result.dispositions)
+    return previous, predecessor, tuple(
+        item for item in disposed if item.occurrence_id in current_ids
+    )
 
 
 def _request(

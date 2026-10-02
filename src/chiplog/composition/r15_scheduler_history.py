@@ -247,7 +247,10 @@ def read_loop_snapshot(runtime: R14PlanningRuntime) -> LoopSnapshot:
                             "chiplog.scheduler.lease-transition.v1",
                         ):
                             raise ValueError("lease transition schema differs")
-                    elif batch.operation == "scheduler.decide_interval":
+                    elif batch.operation in (
+                        "scheduler.decide_interval",
+                        "scheduler.resolve_interval",
+                    ):
                         for member in batch.records:
                             if member.record_kind == "agent_loop.run":
                                 run = RunRecord.model_validate_json(

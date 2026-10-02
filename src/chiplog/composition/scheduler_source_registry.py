@@ -60,6 +60,8 @@ _MANIFEST_V2C = Path(__file__).with_name("scheduler_source_manifest_v2c.json")
 _MANIFEST_V2C_SHA = "3fa9a22edbd83b5d77c84c42a2b5a8e8d4d7d304bed8a803896ac503861a7299"
 _MANIFEST_V2D = Path(__file__).with_name("scheduler_source_manifest_v2d.json")
 _MANIFEST_V2D_SHA = "2f0fa7506bd3edbd3f097104f4f868eb9fe907061468df326b1a2af37a2ce385"
+_MANIFEST_V3 = Path(__file__).with_name("scheduler_source_manifest_v3.json")
+_MANIFEST_V3_SHA = "36041f23cf61e8834cfe3ac89ce7e884f1224f68be9e9694f501950e719a8ca2"
 _V2B_CLOSURE_SHA = "928b044048cfed0e9cd62677c5e8e040e221bd7d649945959b90918d17e3d49a"
 _MODULES = (
     "chiplog.composition.r15_lease_service_auth",
@@ -90,6 +92,22 @@ _MODULES = (
     "chiplog.verification.scheduler_schema",
     "chiplog.composition.r15_mandate_scope_registry",
     "chiplog.composition.scheduler_v1_compatibility",
+)
+_V3_MODULES = (
+    *_MODULES,
+    "chiplog.platform._owner_publication_contracts",
+    "chiplog.composition.r15_interval_policy",
+    "chiplog.composition.r15_interval_policy_publication",
+    "chiplog.composition.r15_interval_service_auth",
+    "chiplog.composition.r15_interval_service",
+    "chiplog.composition.r15_resolution_contracts",
+    "chiplog.composition.r15_resolution_evidence",
+    "chiplog.composition.r15_resolution_authority",
+    "chiplog.composition.r15_resolution_runtime",
+    "chiplog.composition.r15_scheduler_runtime",
+    "chiplog.composition.r15_scheduler_history",
+    "chiplog.composition.r15_tick_runtime",
+    "chiplog.composition.r15_tick_evidence",
 )
 _PACKAGES = (
     ("pydantic", "pydantic"),
@@ -137,14 +155,46 @@ def _loaded_module(name: str) -> ModuleType:
     return module
 
 
-def _observe() -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
+def _observe(*, v3: bool = False) -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
     """Observed artifacts only. Their existence never creates a trusted pin."""
     sources: dict[str, bytes] = {}
     from chiplog.composition import r15_lease_publication_v2b
 
     _ = r15_lease_publication_v2b
     registered_scope_sources()
-    for name in _MODULES:
+    if v3:
+        from chiplog.composition import (
+            r15_interval_policy,
+            r15_interval_policy_publication,
+            r15_interval_service,
+            r15_interval_service_auth,
+            r15_resolution_authority,
+            r15_resolution_contracts,
+            r15_resolution_evidence,
+            r15_resolution_runtime,
+            r15_scheduler_history,
+            r15_scheduler_runtime,
+            r15_tick_evidence,
+            r15_tick_runtime,
+        )
+        from chiplog.platform import _owner_publication_contracts
+
+        _ = (
+            r15_interval_policy,
+            r15_interval_policy_publication,
+            r15_interval_service,
+            r15_interval_service_auth,
+            r15_resolution_authority,
+            r15_resolution_contracts,
+            r15_resolution_evidence,
+            r15_resolution_runtime,
+            r15_scheduler_history,
+            r15_scheduler_runtime,
+            r15_tick_evidence,
+            r15_tick_runtime,
+            _owner_publication_contracts,
+        )
+    for name in _V3_MODULES if v3 else _MODULES:
         module = _loaded_module(name)
         source = _ROOT / "src" / Path(*name.split(".")).with_suffix(".py")
         if module.__file__ is None or Path(module.__file__).resolve() != source.resolve():
@@ -169,7 +219,9 @@ def _observe() -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
         raise ValueError("unsupported interpreter linkage")
     library = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")
     profile: dict[str, object] = {
-        "format": "chiplog.scheduler.source-profile.v2d",
+        "format": "chiplog.scheduler.source-profile.v3"
+        if v3
+        else "chiplog.scheduler.source-profile.v2d",
         "historical_v2c": {
             "manifest_sha256": _MANIFEST_V2C_SHA,
             "evaluator_sha256": _sha(
@@ -230,6 +282,8 @@ def _observe() -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
             ),
         },
     }
+    if v3:
+        profile["historical_v2d"] = {"manifest_sha256": _MANIFEST_V2D_SHA}
     return profile, sources, inventories
 
 
@@ -266,6 +320,12 @@ def _require_historical_equality(
         if isinstance(request, ConfigurationPreparationRequest):
             records = prepare_configuration(request).records
         elif isinstance(request, IntervalPreparationRequest):
+            if original.selection.prepared.request.operation == "scheduler.resolve_interval":
+                from chiplog.composition.r15_resolution_evidence import (
+                    validate_selected_resolution,
+                )
+
+                validate_selected_resolution(original.selection)
             records = prepare_interval_request(request).records
         elif isinstance(request, LeasePreparationRequest):
             from chiplog.composition.r15_lease_publication import validate_selected_lease
@@ -294,14 +354,14 @@ def _require_historical_equality(
 
 
 def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegistrationUnresolved:
-    """Match reviewed V2 current bytes; retain V1 only for exact selected history."""
+    """Match reviewed V3 bytes; retain V1 through V2d selected history."""
     try:
         _require_v2b_closure()
-        raw_manifest = _MANIFEST_V2D.read_bytes()
-        if _sha(raw_manifest) != _MANIFEST_V2D_SHA:
-            return SourceRegistrationUnresolved("reviewed V2 manifest bytes differ")
+        raw_manifest = _MANIFEST_V3.read_bytes()
+        if _sha(raw_manifest) != _MANIFEST_V3_SHA:
+            return SourceRegistrationUnresolved("reviewed V3 manifest bytes differ")
         expected = json.loads(raw_manifest)
-        observed, sources, _ = _observe()
+        observed, sources, _ = _observe(v3=True)
         if observed != expected:
             return SourceRegistrationUnresolved("reviewed source/runtime artifacts differ")
         require_v1_compatible(observed)
@@ -315,10 +375,42 @@ def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegi
         )
         digest = _sha(canonical)
         return SchedulerSourceRegistration(
-            Present(head="scheduler-source-registry-v2d:" + digest, fingerprint=digest), canonical
+            Present(head="scheduler-source-registry-v3:" + digest, fingerprint=digest), canonical
         )
     except (OSError, ValueError, TypeError, ImportError, KeyError) as error:
         return SourceRegistrationUnresolved(str(error))
+
+
+def _historical_v2d_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
+    raw = _MANIFEST_V2D.read_bytes()
+    if _sha(raw) != _MANIFEST_V2D_SHA:
+        raise ValueError("historical V2d reviewed manifest changed")
+    old = json.loads(raw)
+    current_sources = cast(dict[str, str], current_profile["sources"])
+    for name, fingerprint in old["sources"].items():
+        if current_sources.get(name) != fingerprint:
+            raise ValueError("historical V2d evaluator artifact changed: " + name)
+    for key in (
+        "canonicalization",
+        "runtime",
+        "packages",
+        "lock_sha256",
+        "historical_v1",
+        "historical_v2c",
+        "historical_v2b_closure_sha256",
+        "execution_crypto",
+    ):
+        if current_profile[key] != old[key]:
+            raise ValueError("historical V2d source closure changed: " + key)
+    graph = derive_schema_manifest(
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_materialization.py").read_bytes(),
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_rollover.py").read_bytes(),
+    )
+    canonical = _canonical({"profile": old, "generated_dependency_manifest": asdict(graph)})
+    digest = _sha(canonical)
+    return SchedulerSourceRegistration(
+        Present(head="scheduler-source-registry-v2d:" + digest, fingerprint=digest), canonical
+    )
 
 
 def _require_v2b_closure() -> None:
@@ -327,6 +419,22 @@ def _require_v2b_closure() -> None:
         raise ValueError("historical V2b evaluator closure manifest changed")
     for name, fingerprint in json.loads(raw).items():
         path = _ROOT / "src" / Path(*name.split(".")).with_suffix(".py")
+        if name == "chiplog.platform._owner_publication_contracts":
+            archived = (
+                Path(__file__)
+                .with_name("scheduler_v2b_sources")
+                .joinpath("_owner_publication_contracts.py.source")
+                .read_bytes()
+            )
+            additive = b'    "r15.adopt_interval_service_policy",\n'
+            current = path.read_bytes()
+            if (
+                _sha(archived) != fingerprint
+                or current.count(additive) != 1
+                or current.replace(additive, b"") != archived
+            ):
+                raise ValueError("historical V2b broker operation extension differs")
+            continue
         if _sha(path.read_bytes()) != fingerprint:
             raise ValueError("historical V2b evaluator dependency changed: " + name)
 
@@ -507,11 +615,22 @@ def read_admitted_scheduler_startup(
     if isinstance(registration, SourceRegistrationUnresolved):
         return registration
     cut = read_materialized_scheduler(database, tenant_id, journal, commitments)
-    observed, _, _ = _observe()
+    observed, _, _ = _observe(v3=True)
     legacy = _historical_v1_registration(observed)
     v2a = _historical_v2a_registration(observed)
     v2b = _historical_v2b_registration(observed)
     v2c = _historical_v2c_registration(observed)
+    v2d = _historical_v2d_registration(observed)
+    from chiplog.composition.r15_interval_policy_publication import (
+        validate_selected_interval_policy_decision,
+        validate_selected_interval_service_decision,
+    )
+    from chiplog.composition.r15_resolution_evidence import validate_selected_resolution
+
+    for decision in cut.protected_decisions:
+        validate_selected_interval_policy_decision(decision, cut.protected_decisions)
+        validate_selected_interval_service_decision(decision, cut.protected_decisions)
+        validate_selected_resolution(decision)
     rank = 0
     for historical, selected in zip(cut.historical_requests, cut.selected, strict=True):
         expected = historical.selection.prepared.request.expected
@@ -520,7 +639,8 @@ def read_admitted_scheduler_startup(
             v2a.reference.head: (1, v2a.reference),
             v2b.reference.head: (2, v2b.reference),
             v2c.reference.head: (3, v2c.reference),
-            registration.reference.head: (4, registration.reference),
+            v2d.reference.head: (4, v2d.reference),
+            registration.reference.head: (5, registration.reference),
         }
         candidate = admitted.get(historical.registry.head)
         if candidate is None or historical.registry != candidate[1] or candidate[0] < rank:
@@ -535,6 +655,7 @@ def read_admitted_scheduler_startup(
             2,
             3,
             4,
+            5,
         ):
             return SourceRegistrationUnresolved("lease acquire requires V2b selected source")
         if (
@@ -556,6 +677,22 @@ def read_admitted_scheduler_startup(
                     "lease evaluator differs from selected source version"
                 )
             validate_selected_lease_decision(historical.selection, cut.protected_decisions)
+        if (
+            historical.selection.prepared.request.operation == "scheduler.decide_interval"
+            and getattr(
+                historical.selection.prepared.request.authentication,
+                "applicability_schema",
+                None,
+            )
+            == "chiplog.scheduler.interval-service-issuance.v3"
+            and rank != 5
+        ):
+            return SourceRegistrationUnresolved("interval service requires V3 selected source")
+        if (
+            historical.selection.prepared.request.operation == "scheduler.resolve_interval"
+            and rank != 5
+        ):
+            return SourceRegistrationUnresolved("interval resolution requires V3 selected source")
         _require_historical_equality(historical, selected)
     physical_id = f"{cut.physical_database_path}:{cut.physical_device}:{cut.physical_inode}"
     index = validate_selected_scheduler_records(
