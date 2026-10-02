@@ -16,6 +16,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_installed_launcher_is_executable() -> None:
+    assert os.access(ROOT / ".harness/scripts/run-selector-durable.sh", os.X_OK)
+
+
 def _git(root: Path, *args: str) -> None:
     subprocess.run(("git", *args), cwd=root, check=True, capture_output=True)
 
