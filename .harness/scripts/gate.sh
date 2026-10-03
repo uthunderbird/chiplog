@@ -163,12 +163,12 @@ if [ "$SELFTEST" -eq 1 ]; then
     fi
     if [ "$SELF_FAILED" -ne 0 ]; then exit 1; fi
     echo "самотест пройден: базовые пары и снимки структуры тестов"
-    if ! uv run pytest -q tests/tooling/test_harness_preflight.py; then
-        echo "→ сделай: почини парные проверки fast и контрактов адаптеров" >&2
-        echo "✓ uv run pytest -q tests/tooling/test_harness_preflight.py возвращает ноль" >&2
+    if ! uv run pytest -q tests/tooling/test_harness_preflight.py tests/tooling/test_checkpoint_gate.py; then
+        echo "→ сделай: почини парные проверки strict R8, checkpoint, fast или контрактов адаптеров" >&2
+        echo "✓ tooling self-test возвращает ноль для strict R8, checkpoint и адаптеров" >&2
         exit 1
     fi
-    echo "fast и диспетчеры адаптеров проверены на успешных и отказных входах; полный набор здесь не запускается."
+    echo "strict R8, checkpoint, fast и диспетчеры адаптеров проверены на успешных и отказных входах; полный набор здесь не запускается."
     exit 0
 fi
 
@@ -197,6 +197,7 @@ if [ "$MODE" = checkpoint ]; then
         run "новые тесты checkpoint" python3 .harness/scripts/checkpoint.py
     fi
 else
+run "строгий R8 catalog"      python3 .harness/scripts/checkpoint.py --strict-r8
 run "R0 fast verification"   uv run python -m chiplog.verification fast
 run "разбор исходников"      sh .harness/scripts/lint.sh
 if [ "$FAILED" -eq 0 ]; then

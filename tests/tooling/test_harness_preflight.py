@@ -41,7 +41,9 @@ def _fixture(root: Path) -> tuple[Path, dict[str, str]]:
     uv.chmod(0o755)
     python = binaries / "python3"
     python.write_text(
-        "#!/bin/sh\nlabel=${1##*/}\n"
+        '#!/bin/sh\ncase "$*" in\n'
+        '  *"checkpoint.py --strict-r8") label=strict-r8;;\n'
+        "  *) label=${1##*/};;\nesac\n"
         'printf "%s\\n" "$label" >> "$ORDER_LOG"\n'
         '[ "${FAIL_AT:-}" != "$label" ]\n'
     )
@@ -115,7 +117,8 @@ def test_preflight_rejects_unknown_arguments(tmp_path: Path, args: tuple[str, ..
 
 
 @pytest.mark.parametrize(
-    "failure", ["", "rules_have_reproducers.py", "tests_layout.py", "fast", "lint", "test"]
+    "failure",
+    ["", "rules_have_reproducers.py", "tests_layout.py", "strict-r8", "fast", "lint", "test"],
 )
 def test_gate_does_not_start_test_adapter_after_prior_failure(tmp_path: Path, failure: str) -> None:
     scripts, env = _fixture(tmp_path)
@@ -133,7 +136,7 @@ def test_gate_does_not_start_test_adapter_after_prior_failure(tmp_path: Path, fa
         "handoff_pending.py",
         "tests_layout.py",
     ]
-    assert events[8:10] == ["fast", "lint"]
+    assert events[8:11] == ["strict-r8", "fast", "lint"]
     assert events.count("test") == (0 if failure not in {"", "test"} else 1)
     assert result.returncode == (1 if failure else 0)
     assert ("гейт открыт" in result.stdout) == (not failure)
@@ -182,13 +185,28 @@ def test_full_mode_still_dispatches_complete_checks(tmp_path: Path, mode: str | 
     scripts, env = _fixture(tmp_path)
     _stub(scripts / "lint.sh", "lint")
     _stub(scripts / "test.sh", "test")
+    env["CHIPLOG_EXECUTION_MODE"] = "development"
     if mode is not None:
         env["CHIPLOG_COMMIT_MODE"] = mode
     result, events = _run(scripts, env, "gate.sh")
     assert result.returncode == 0
     assert "retro_due.py" in events
-    assert events[-3:] == ["fast", "lint", "test"]
+    assert events[-4:] == ["strict-r8", "fast", "lint", "test"]
     assert "checkpoint.py" not in events
+
+
+def test_full_mode_stops_before_tests_when_strict_catalog_check_fails(tmp_path: Path) -> None:
+    scripts, env = _fixture(tmp_path)
+    _stub(scripts / "lint.sh", "lint")
+    _stub(scripts / "test.sh", "test")
+    env["CHIPLOG_EXECUTION_MODE"] = "development"
+    env["FAIL_AT"] = "strict-r8"
+
+    result, events = _run(scripts, env, "gate.sh")
+
+    assert result.returncode == 1
+    assert events[8:11] == ["strict-r8", "fast", "lint"]
+    assert "test" not in events
 
 
 def test_fast_profile_has_real_good_and_bad_source_inputs(tmp_path: Path) -> None:

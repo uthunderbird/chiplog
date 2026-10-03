@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, replace
 from hashlib import sha256
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from .r8_implementation import R8_IMPLEMENTATION_FILES
+if TYPE_CHECKING:
+    from .r8_execution_identity import ResolvedRuntimeIdentity
 
 
 @dataclass(frozen=True)
@@ -193,8 +194,7 @@ R7_EVALUATION_MANIFEST = replace(
 R8_PRODUCTION_MANIFEST = replace(
     R7_PRODUCTION_MANIFEST,
     manifest_version=2,
-    broker_version="r8-broker-v1:"
-    + sha256(json.dumps(R8_IMPLEMENTATION_FILES, sort_keys=True).encode()).hexdigest(),
+    broker_version="r8-broker-v1:e55a5987b397c0684d6f7a40a8fa39c3efee4f95c52b97c5b92e4d986f7b0594",
     application_loop_id="chiplog.r8.application-loop.v1",
     owners=tuple(
         replace(
@@ -1260,6 +1260,15 @@ class RuntimeManifestViolation(ValueError):
     pass
 
 
+def bind_execution_manifest(
+    template: RuntimeAssemblyManifest, identity: ResolvedRuntimeIdentity
+) -> RuntimeAssemblyManifest:
+    """Bind a current R8+ run without mutating frozen exported templates."""
+    if template.manifest_version < 2:
+        raise RuntimeManifestViolation("R7 historical manifest has no execution source binding")
+    return replace(template, broker_version=identity.broker_version)
+
+
 def _require_canonical_unique(values: tuple[str, ...], label: str) -> None:
     if values != tuple(sorted(values)) or len(values) != len(set(values)):
         raise RuntimeManifestViolation(f"{label} must be a canonical unique exact set")
@@ -1323,6 +1332,18 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         26: R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST,
         27: R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
+    if manifest.manifest_version >= 2:
+        if manifest.broker_version.startswith("r8-development-v1:"):
+            prefix = "r8-development-v1:"
+        elif manifest.broker_version.startswith("r8-broker-v1:"):
+            prefix = "r8-broker-v1:"
+        else:
+            raise RuntimeManifestViolation("R8 execution broker version is malformed")
+        digest = manifest.broker_version.removeprefix(prefix)
+        if len(digest) != 64 or any(
+            item not in "0123456789abcdef" for item in digest
+        ):
+            raise RuntimeManifestViolation("R8 execution broker version is malformed")
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
     if owner_ids != tuple(owner.owner_id for owner in expected_manifest.owners):
@@ -1424,6 +1445,7 @@ __all__ = [
     "RoutedCallDecl",
     "RuntimeAssemblyManifest",
     "RuntimeManifestViolation",
+    "bind_execution_manifest",
     "verify_production_evaluation_equivalence",
     "verify_runtime_manifest",
 ]

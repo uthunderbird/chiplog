@@ -1,18 +1,35 @@
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from chiplog.architecture.r8_execution_identity import snapshot_python_sources
 from chiplog.verification.r8_surface import (
     SURFACES,
     R8SurfaceViolation,
+    verify_implementation_identity,
     verify_offline_import_boundary,
     verify_r8_surfaces,
 )
 from tests.support.authority_and_surfaces import ROOT
+
+
+def _catalog_for_copy(root: Path) -> None:
+    path = root / "src/chiplog/inert_shared/r8-implementation-v1.json"
+    path.write_text(json.dumps(snapshot_python_sources(root), sort_keys=True))
+
+
+def test_strict_catalog_rejects_duplicate_json_keys(tmp_path: Path) -> None:
+    source = tmp_path / "src/chiplog"
+    shutil.copytree(ROOT / "src/chiplog", source)
+    path = source / "inert_shared/r8-implementation-v1.json"
+    path.write_text('{"__init__.py":"' + "a" * 64 + '","__init__.py":"' + "a" * 64 + '"}')
+    with pytest.raises(R8SurfaceViolation, match="duplicate"):
+        verify_implementation_identity(tmp_path)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "extra", "duplicate", "alias", "downstream"])
@@ -32,6 +49,7 @@ def test_surface_inventory_mutants_reject(mutation: str) -> None:
 def test_reached_executable_mutants_reject(tmp_path: Path, mutant: str) -> None:
     source = tmp_path / "src/chiplog"
     shutil.copytree(ROOT / "src/chiplog", source)
+    _catalog_for_copy(tmp_path)
     verify_r8_surfaces(tmp_path)
     verify_offline_import_boundary(tmp_path)
     cli = source / "cli.py"
@@ -60,7 +78,8 @@ def test_audited_implementation_identity_rejects_unreviewed_behavior(
 ) -> None:
     source = tmp_path / "src/chiplog"
     shutil.copytree(ROOT / "src/chiplog", source)
-    verify_r8_surfaces(tmp_path)
+    _catalog_for_copy(tmp_path)
+    verify_implementation_identity(tmp_path)
     if mutation == "plain-helper":
         (source / "new_helper.py").write_text("def extra():\n    return 1\n")
     elif mutation == "dead-gate":
@@ -87,7 +106,7 @@ def test_audited_implementation_identity_rejects_unreviewed_behavior(
             original.replace(marker, marker + '\n    print("unexpected fixture output")', 1)
         )
     with pytest.raises(R8SurfaceViolation, match="implementation"):
-        verify_r8_surfaces(tmp_path)
+        verify_implementation_identity(tmp_path)
 
 
 @pytest.mark.parametrize(

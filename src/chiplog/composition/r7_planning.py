@@ -21,11 +21,16 @@ from chiplog.adapters.driven.deployment_trust import (
     SQLiteTrustMaterializer,
 )
 from chiplog.adapters.driven.planning_sqlite import _publication
-from chiplog.architecture.r7_runtime import R7_PRODUCTION_MANIFEST, RuntimeAssemblyManifest
+from chiplog.architecture.r7_runtime import (
+    R7_PRODUCTION_MANIFEST,
+    RuntimeAssemblyManifest,
+    bind_execution_manifest,
+)
 from chiplog.architecture.r7_storage_surface import (
     AUTHORITY_STORAGE_MEMBERS,
     AUTHORITY_STORAGE_SURFACE_DIGEST,
 )
+from chiplog.architecture.r8_execution_identity import resolve_runtime_identity
 from chiplog.capabilities.planning import (
     CreateIntentionLine,
     PlanningCommittedResult,
@@ -72,6 +77,7 @@ _OPERATION = "planning.create_intention_line"
 _SCHEMA = "chiplog.planning.record.v1"
 _FENCE = "r6"
 _READ_PAGE_SIZE = 200
+_SOURCE_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _canonical(value: object) -> bytes:
@@ -984,6 +990,18 @@ async def _open_runtime(
     preflight: Callable[[AuthorityGate], object] | None = None,
     store_setup: Callable[[SQLiteMaterializer, AuthorityGate, object], None] | None = None,
 ) -> AsyncIterator[R7PlanningRuntime]:
+    source_root = _SOURCE_ROOT
+    execution_identity = None
+    if manifest.manifest_version >= 2:
+        from chiplog.verification.r8_surface import (
+            verify_offline_import_boundary,
+            verify_r8_surfaces,
+        )
+
+        verify_r8_surfaces(source_root)
+        verify_offline_import_boundary(source_root)
+        execution_identity = resolve_runtime_identity(source_root)
+        manifest = bind_execution_manifest(manifest, execution_identity)
     authority_gate = AuthorityGate.for_database(database)
     database = authority_gate.database
     # This must run before any runtime-owned sidecar constructor.  Installed
@@ -1009,6 +1027,8 @@ async def _open_runtime(
         authority_gate=authority_gate,
         read_ledger=read_ledger,
         trust=trust,
+        execution_identity=execution_identity,
+        source_root=source_root if execution_identity is not None else None,
     )
     materializer_kwargs = {
         "record_contracts": runtime_type._record_contracts,

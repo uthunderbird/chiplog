@@ -23,10 +23,20 @@ CREATE TABLE IF NOT EXISTS broker_epochs (
     endpoint_id TEXT NOT NULL,
     key_digest TEXT NOT NULL,
     current INTEGER NOT NULL CHECK (current IN (0, 1)),
+    epochbinding_required INTEGER NOT NULL DEFAULT 0 CHECK (epochbinding_required IN (0, 1)),
     PRIMARY KEY (tenant_id, epoch)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_current_broker_epoch
 ON broker_epochs(tenant_id) WHERE current = 1;
+CREATE TABLE IF NOT EXISTS broker_generation_identities (
+    tenant_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    generation_id TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK (mode IN ('development', 'release')),
+    source_snapshot_digest TEXT NOT NULL,
+    selected_manifest_fingerprint TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, epoch)
+);
 CREATE TABLE IF NOT EXISTS issued_operations (
     tenant_id TEXT NOT NULL,
     operation_id TEXT NOT NULL,
@@ -90,6 +100,13 @@ class OperationDisposition(_StrictModel):
     recovery_obligation_id: str | None
 
 
+class RuntimeGenerationIdentity(_StrictModel):
+    generation_id: str = Field(min_length=1)
+    mode: Literal["development", "release"]
+    source_snapshot_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selected_manifest_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class AuthorityLedgerConflict(RuntimeError):
     pass
 
@@ -113,6 +130,15 @@ class BrokerAuthorityLedger:
             )
             with sqlite3.connect(self._path) as connection:
                 connection.executescript(_SCHEMA)
+                columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(broker_epochs)")
+                }
+                if "epochbinding_required" not in columns:
+                    connection.execute(
+                        "ALTER TABLE broker_epochs ADD COLUMN epochbinding_required "
+                        "INTEGER NOT NULL DEFAULT 0 CHECK (epochbinding_required IN (0, 1))"
+                    )
             if authority_gate is not None:
                 self._identity = checked_file_identity(self._path, prior)
 
@@ -136,7 +162,14 @@ class BrokerAuthorityLedger:
                 if self._identity is not None:
                     checked_file_identity(self._path, self._identity)
 
-    def allocate_epoch(self, tenant_id: str, endpoint_id: str, key_digest: str) -> int:
+    def allocate_epoch(
+        self,
+        tenant_id: str,
+        endpoint_id: str,
+        key_digest: str,
+        *,
+        generation_identity: RuntimeGenerationIdentity | None = None,
+    ) -> int:
         with self._authority_scope(), sqlite3.connect(self._path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             previous = connection.execute(
@@ -149,10 +182,50 @@ class BrokerAuthorityLedger:
                 (tenant_id,),
             )
             connection.execute(
-                "INSERT INTO broker_epochs VALUES (?, ?, ?, ?, 1)",
-                (tenant_id, epoch, endpoint_id, key_digest),
+                "INSERT INTO broker_epochs "
+                "(tenant_id, epoch, endpoint_id, key_digest, current, epochbinding_required) "
+                "VALUES (?, ?, ?, ?, 1, ?)",
+                (tenant_id, epoch, endpoint_id, key_digest, generation_identity is not None),
             )
+            if generation_identity is not None:
+                connection.execute(
+                    "INSERT INTO broker_generation_identities VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        tenant_id,
+                        epoch,
+                        generation_identity.generation_id,
+                        generation_identity.mode,
+                        generation_identity.source_snapshot_digest,
+                        generation_identity.selected_manifest_fingerprint,
+                    ),
+                )
             return epoch
+
+    def read_generation_identity(
+        self, tenant_id: str, epoch: int
+    ) -> RuntimeGenerationIdentity | None:
+        with self._authority_scope(), sqlite3.connect(self._path) as connection:
+            epoch_row = connection.execute(
+                "SELECT epochbinding_required FROM broker_epochs WHERE tenant_id = ? AND epoch = ?",
+                (tenant_id, epoch),
+            ).fetchone()
+            if epoch_row is None:
+                raise AuthorityLedgerConflict("runtime generation epoch is unknown")
+            row = connection.execute(
+                "SELECT generation_id, mode, source_snapshot_digest, selected_manifest_fingerprint "
+                "FROM broker_generation_identities WHERE tenant_id = ? AND epoch = ?",
+                (tenant_id, epoch),
+            ).fetchone()
+            if row is None:
+                if bool(epoch_row[0]):
+                    raise AuthorityLedgerConflict("required runtime generation identity is absent")
+                return None
+            return RuntimeGenerationIdentity(
+                generation_id=str(row[0]),
+                mode=str(row[1]),
+                source_snapshot_digest=str(row[2]),
+                selected_manifest_fingerprint=str(row[3]),
+            )
 
     def current_epoch(self, tenant_id: str) -> int | None:
         with self._authority_scope():
@@ -381,4 +454,5 @@ __all__ = [
     "BrokerAuthorityLedger",
     "OperationDisposition",
     "OperationToken",
+    "RuntimeGenerationIdentity",
 ]

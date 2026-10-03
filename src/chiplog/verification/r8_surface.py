@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-
-from chiplog.architecture.r8_implementation import R8_IMPLEMENTATION_FILES
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,6 @@ def _calls(node: ast.AST) -> set[str]:
 
 
 def verify_r8_surfaces(root: Path, surfaces: tuple[DeploymentSurface, ...] = SURFACES) -> None:
-    verify_implementation_identity(root)
     cli = ast.parse((root / "src/chiplog/cli.py").read_text())
     imports = {
         (node.module, alias.name)
@@ -163,22 +162,63 @@ def verify_r8_surfaces(root: Path, surfaces: tuple[DeploymentSurface, ...] = SUR
         raise R8SurfaceViolation("broker registrations differ from independently observed surfaces")
 
 
-def verify_implementation_identity(root: Path) -> None:
-    expected = {
-        path.relative_to(root / "src/chiplog").as_posix()
-        for path in (root / "src/chiplog").rglob("*.py")
-    }
-    if set(R8_IMPLEMENTATION_FILES) != expected:
+def _implementation_catalog(root: Path) -> dict[str, str]:
+    path = root / "src/chiplog/inert_shared/r8-implementation-v1.json"
+
+    def reject_duplicate_keys(pairs: list[tuple[object, object]]) -> dict[object, object]:
+        result: dict[object, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise R8SurfaceViolation("audited implementation catalog has duplicate keys")
+            result[key] = value
+        return result
+
+    try:
+        raw: object = json.loads(path.read_bytes(), object_pairs_hook=reject_duplicate_keys)
+    except (OSError, json.JSONDecodeError) as error:
+        raise R8SurfaceViolation("audited implementation catalog is unreadable") from error
+    if not isinstance(raw, dict) or not raw:
+        raise R8SurfaceViolation("audited implementation catalog is not a nonempty object")
+    catalog: dict[str, str] = {}
+    for relative, digest in raw.items():
+        if (
+            not isinstance(relative, str)
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or Path(relative).is_absolute()
+            or "\\" in relative
+            or relative != Path(relative).as_posix()
+            or ".." in Path(relative).parts
+            or relative in catalog
+        ):
+            raise R8SurfaceViolation("audited implementation catalog is malformed")
+        catalog[relative] = digest
+    if list(catalog) != sorted(catalog):
+        raise R8SurfaceViolation("audited implementation catalog is not canonical")
+    return catalog
+
+
+def validated_catalog_broker_version(root: Path, observed: dict[str, str]) -> str:
+    catalog = _implementation_catalog(root)
+    if set(catalog) != set(observed):
         raise R8SurfaceViolation("audited implementation inventory is incomplete or unknown")
-    for relative, digest in R8_IMPLEMENTATION_FILES.items():
+    if any(observed[relative] != digest for relative, digest in catalog.items()):
+        raise R8SurfaceViolation("implementation requires renewed boundary evidence")
+    return "r8-broker-v1:" + hashlib.sha256(
+        json.dumps(catalog, sort_keys=True).encode()
+    ).hexdigest()
+
+
+def verify_implementation_identity(root: Path) -> None:
+    observed: dict[str, str] = {}
+    for path in sorted((root / "src/chiplog").rglob("*.py")):
         try:
-            actual = hashlib.sha256((root / "src/chiplog" / relative).read_bytes()).hexdigest()
+            observed[path.relative_to(root / "src/chiplog").as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
         except OSError as error:
             raise R8SurfaceViolation("audited implementation is missing") from error
-        if actual != digest:
-            raise R8SurfaceViolation(
-                f"implementation requires renewed boundary evidence: {relative}"
-            )
+    validated_catalog_broker_version(root, observed)
 
 
 def verify_offline_import_boundary(root: Path) -> None:
@@ -290,6 +330,8 @@ __all__ = [
     "SURFACES",
     "DeploymentSurface",
     "R8SurfaceViolation",
+    "validated_catalog_broker_version",
+    "verify_implementation_identity",
     "verify_offline_import_boundary",
     "verify_r8_surfaces",
 ]

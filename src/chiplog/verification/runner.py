@@ -13,7 +13,11 @@ from .identity import digest_file, sha256_bytes
 from .invariants import extract_invariant_manifest
 from .models import CheckResult, FixtureRegistration
 from .r8_surface import SURFACES as R8_SURFACES
-from .r8_surface import verify_offline_import_boundary, verify_r8_surfaces
+from .r8_surface import (
+    verify_implementation_identity,
+    verify_offline_import_boundary,
+    verify_r8_surfaces,
+)
 from .registries import (
     CLOSED_PROFILES,
     FIXTURES,
@@ -331,6 +335,7 @@ def _check_stage0(root: Path) -> list[CheckResult]:
     substrate = _check_fast(root)
     verify_r8_surfaces(root, R8_SURFACES)
     verify_offline_import_boundary(root)
+    verify_implementation_identity(root)
     compatibility_digest = verify_r7_compatibility_ledger(evidence_root=root)
     current_surfaces = CheckResult(
         "V10.current-operation-surfaces",

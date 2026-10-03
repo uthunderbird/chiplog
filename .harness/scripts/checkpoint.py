@@ -10,55 +10,82 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-R8_CATALOG = "src/chiplog/inert_shared/r8-implementation-v1.json"
 
 
 def git(*args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
 
 
-def reject(reason: str, action: str) -> int:
+def reject(
+    reason: str,
+    action: str,
+    criterion: str = "рабочая ветка, неизменный staged-снимок и явные pytest selectors",
+) -> int:
     print(f"checkpoint: {reason}", file=sys.stderr)
     print(f"→ сделай: {action}", file=sys.stderr)
-    print("✓ рабочая ветка, неизменный staged-снимок и явные pytest selectors", file=sys.stderr)
+    print(f"✓ {criterion}", file=sys.stderr)
     return 1
 
 
-def r8_implementation_preflight(staged: list[str]) -> int | None:
+def r8_development_preflight(staged: list[str]) -> int | None:
     untracked_names = git(
         "ls-files", "--others", "--exclude-standard", "-z", "--", "src/chiplog"
     ).split("\0")
-    untracked = [
-        name
-        for name in untracked_names
-        if name and Path(name).suffix == ".py"
-    ]
+    untracked = [name for name in untracked_names if name and Path(name).suffix == ".py"]
     if untracked:
         return reject(
-            f"неотслеживаемый Python вне R8 catalog: {untracked[0]}",
-            "добавь Python-файл в index, обнови проверенный R8 catalog и повтори checkpoint",
+            f"неотслеживаемый Python вне staged-снимка: {untracked[0]}",
+            "добавь Python-файл в index и повтори checkpoint",
         )
     implementation_changed = any(
-        name == R8_CATALOG
-        or (name.startswith("src/chiplog/") and Path(name).suffix == ".py")
-        for name in staged
+        name.startswith("src/chiplog/") and Path(name).suffix == ".py" for name in staged
     )
     if not implementation_changed:
         return None
     try:
         sys.path.insert(0, str(ROOT / "src"))
-        from chiplog.verification.r8_surface import verify_implementation_identity
+        from chiplog.verification.r8_surface import (
+            verify_offline_import_boundary,
+            verify_r8_surfaces,
+        )
 
-        verify_implementation_identity(ROOT)
+        verify_r8_surfaces(ROOT)
+        verify_offline_import_boundary(ROOT)
     except Exception as error:
         return reject(
-            f"не прошла проверка identity реализации R8: {error}",
-            "исправь import или R8 catalog, сделай узкий проверенный repin и повтори checkpoint",
+            f"не прошла структурная или import-проверка R8: {error}",
+            "исправь структуру или import-границу и повтори checkpoint",
         )
     return None
 
 
+def strict_r8_preflight() -> int:
+    """Full gates verify the current complete catalog independently of dev mode."""
+    try:
+        sys.path.insert(0, str(ROOT / "src"))
+        from chiplog.verification.r8_surface import (
+            verify_implementation_identity,
+            verify_offline_import_boundary,
+            verify_r8_surfaces,
+        )
+
+        verify_implementation_identity(ROOT)
+        verify_r8_surfaces(ROOT)
+        verify_offline_import_boundary(ROOT)
+    except Exception as error:
+        return reject(
+            f"не прошла строгая проверка R8 catalog: {error}",
+            "исправь полный R8 catalog или исходники и повтори full gate",
+            "строгий R8 catalog, структура и import-граница проверены",
+        )
+    return 0
+
+
 def main() -> int:
+    if sys.argv[1:] == ["--strict-r8"]:
+        return strict_r8_preflight()
+    if len(sys.argv) != 1:
+        return reject("неверные аргументы checkpoint", "запусти без аргументов или --strict-r8")
     try:
         git("rev-parse", "--verify", "HEAD")
         try:
@@ -86,7 +113,7 @@ def main() -> int:
         staged = [name for name in staged if name]
         if not staged:
             return reject("пустой staged-снимок", "добавь проверяемый срез в index")
-        preflight = r8_implementation_preflight(staged)
+        preflight = r8_development_preflight(staged)
         if preflight is not None:
             return preflight
         selectors = json.loads(os.environ.get("CHIPLOG_CHECKPOINT_TESTS", "[]"))
@@ -109,9 +136,14 @@ def main() -> int:
         for selector in selectors:
             name = selector.split("::", 1)[0]
             path = ROOT / name
-            if (not name.startswith("tests/") or ".." in Path(name).parts
-                    or not path.name.startswith("test_") or path.suffix != ".py"
-                    or not path.is_file() or not path.resolve().is_relative_to(ROOT / "tests")):
+            if (
+                not name.startswith("tests/")
+                or ".." in Path(name).parts
+                or not path.name.startswith("test_")
+                or path.suffix != ".py"
+                or not path.is_file()
+                or not path.resolve().is_relative_to(ROOT / "tests")
+            ):
                 return reject(
                     f"неверный selector: {selector!r}",
                     "исправь selector на существующий test_*.py под tests/",
@@ -119,8 +151,15 @@ def main() -> int:
             git("rev-parse", "--verify", ":" + name)
         print("checkpoint: только выбранные тесты; без регрессии, не готовность к main", flush=True)
         result = subprocess.run(
-            ["sh", str(ROOT / ".harness/scripts/clean-git-env.sh"),
-             "uv", "run", "pytest", "-q", *selectors],
+            [
+                "sh",
+                str(ROOT / ".harness/scripts/clean-git-env.sh"),
+                "uv",
+                "run",
+                "pytest",
+                "-q",
+                *selectors,
+            ],
             cwd=ROOT,
         )
         if result.returncode:

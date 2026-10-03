@@ -15,9 +15,13 @@ from typing import Protocol
 
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.architecture.r7_runtime import RuntimeAssemblyManifest
+from chiplog.architecture.r8_execution_identity import (
+    ResolvedRuntimeIdentity,
+    source_snapshot_digest,
+)
 from chiplog.composition.r7 import RuntimeGraphGeneration
 from chiplog.platform.authority_gate import AuthorityGate
-from chiplog.platform.authority_ledger import BrokerAuthorityLedger
+from chiplog.platform.authority_ledger import BrokerAuthorityLedger, RuntimeGenerationIdentity
 from chiplog.platform.broker import (
     BrokerSession,
     CallBudget,
@@ -212,6 +216,8 @@ class R7RuntimeSupervisor:
         authority_gate: AuthorityGate | None = None,
         read_ledger: BrokerReadLedger | None = None,
         trust: BrokerTrustDurability | None = None,
+        execution_identity: ResolvedRuntimeIdentity | None = None,
+        source_root: Path | None = None,
     ) -> None:
         if authority_gate is None:
             if read_ledger is not None or trust is not None:
@@ -231,8 +237,17 @@ class R7RuntimeSupervisor:
         self._owned_epoch: int | None = None
         self._retiring: list[AuthorityBrokerRuntime] = []
         self._tenant_id = tenant_id
+        if manifest.manifest_version >= 2 and (execution_identity is None or source_root is None):
+            raise ValueError("current R8 runtime requires a resolved source identity")
+        if (
+            execution_identity is not None
+            and manifest.broker_version != execution_identity.broker_version
+        ):
+            raise ValueError("runtime manifest differs from resolved source identity")
         self._ledger = BrokerAuthorityLedger(ledger_path, authority_gate=authority_gate)
         self._manifest = manifest
+        self._execution_identity = execution_identity
+        self._source_root = source_root
         self._admission = admission
         self._realized_leaves = realized_leaves
         self._runtime: AuthorityBrokerRuntime | None = None
@@ -463,12 +478,33 @@ class R7RuntimeSupervisor:
         endpoint_id = f"broker-endpoint:{secrets.token_hex(16)}"
         session_secret = secrets.token_bytes(32)
         key_digest = hashlib.sha256(session_secret).hexdigest()
+        identity = self._execution_identity
+        if identity is not None:
+            assert self._source_root is not None
+            if (
+                source_snapshot_digest(self._source_root)
+                != identity.source_identity.source_snapshot_digest
+            ):
+                raise RuntimeError("runtime source drift detected; restart from a stable tree")
+            generation_identity = RuntimeGenerationIdentity(
+                generation_id=generation_id,
+                mode=identity.source_identity.mode,
+                source_snapshot_digest=identity.source_identity.source_snapshot_digest,
+                selected_manifest_fingerprint=self._manifest.fingerprint(),
+            )
+        else:
+            generation_identity = None
         with self._authority_scope():
             self._transition += 1
             transition = self._transition
             self._drain_read_state(predecessor=True)
             self._detach()
-            epoch = self._ledger.allocate_epoch(self._tenant_id, endpoint_id, key_digest)
+            epoch = self._ledger.allocate_epoch(
+                self._tenant_id,
+                endpoint_id,
+                key_digest,
+                generation_identity=generation_identity,
+            )
             self._owned_epoch = epoch
             self._reconciled = self._ledger.reconcile_pending(self._tenant_id, epoch)
         self._close_retiring()

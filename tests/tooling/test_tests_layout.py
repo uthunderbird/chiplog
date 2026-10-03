@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -184,16 +186,37 @@ def test_real_gate_uses_full_index_and_propagates_layout_failure(repository: Pat
     for name in ("lint.sh", "test.sh"):
         (scripts / name).write_text("#!/bin/sh\nexit 0\n")
     shutil.copy2(ROOT / ".harness/scripts/clean-git-env.sh", scripts / "clean-git-env.sh")
+    shutil.copy2(ROOT / ".harness/scripts/checkpoint.py", scripts / "checkpoint.py")
+    source_root = repository / "src/chiplog"
+    composition = source_root / "composition"
+    verification = source_root / "verification"
+    catalog_directory = source_root / "inert_shared"
+    for directory in (source_root, composition, verification, catalog_directory):
+        directory.mkdir(parents=True, exist_ok=True)
+    for package in (source_root, composition, verification):
+        (package / "__init__.py").write_text("")
+    shutil.copy2(ROOT / "src/chiplog/cli.py", source_root / "cli.py")
+    shutil.copy2(ROOT / "src/chiplog/composition/r8.py", composition / "r8.py")
+    shutil.copy2(ROOT / "src/chiplog/verification/r8_surface.py", verification / "r8_surface.py")
+    catalog = {
+        path.relative_to(source_root).as_posix(): sha256(path.read_bytes()).hexdigest()
+        for path in source_root.rglob("*.py")
+    }
+    (catalog_directory / "r8-implementation-v1.json").write_text(
+        json.dumps(catalog, sort_keys=True)
+    )
     binaries = repository / "bin"
     binaries.mkdir()
     (binaries / "uv").write_text("#!/bin/sh\nexit 0\n")
     (binaries / "uv").chmod(0o755)
     env = {**clean_environment(), "PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}"}
     env.pop("HARNESS_GATE_SKIP", None)
+    env.pop("CHIPLOG_CHECKPOINT_TESTS", None)
+    env["CHIPLOG_COMMIT_MODE"] = "full"
     bad = repository / "tests/r9/test_old.py"
     bad.parent.mkdir()
     bad.write_text("def test_old(): pass\n")
-    git(repository, "add", "tests")
+    git(repository, "add", "tests", ".harness", "src")
     git(repository, "commit", "-qm", "invalid layout predates current diff")
     (repository / "unrelated.txt").write_text("changed")
     git(repository, "add", "unrelated.txt")
