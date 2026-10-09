@@ -990,6 +990,13 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return read_selected_accepted_open_recovery(self)
 
+    def read_selected_original_obligation_sources(self):
+        from chiplog.composition.r14_loop_history import (
+            read_selected_original_obligation_sources,
+        )
+
+        return read_selected_original_obligation_sources(self)
+
     def read_selected_accepted_open_frontier(self):
         from chiplog.composition.r14_accepted_open_accounting_publication import (
             read_selected_accepted_open_frontier,

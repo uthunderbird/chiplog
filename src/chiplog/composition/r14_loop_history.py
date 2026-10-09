@@ -1362,6 +1362,44 @@ def read_selected_accepted_open_recovery(runtime: R14PlanningRuntime):
         return found[0].result if len(found) == 1 else None
 
 
+def read_selected_original_obligation_sources(runtime: R14PlanningRuntime):
+    """Return exact selected R14 opening and terminal source records, or no cut."""
+    from chiplog.composition.r14_accepted_open_accounting_publication import (
+        validate_selected_accepted_open_recovery,
+    )
+    from chiplog.composition.r14_accepted_open_accounting_records import (
+        ACCEPTED_OPEN_RECOVERY_OPERATION,
+        accepted_open_recovery_command,
+        retained_accepted_open_recovery,
+    )
+    from chiplog.composition.r14_original_obligation_sources import (
+        accepted_open_recovery_sources,
+    )
+
+    with runtime._authority_gate().hold():
+        _read_call_history(runtime)
+        validate_selected_accepted_open_recovery(runtime)
+        selected = [
+            (decision_id, raw)
+            for decision_id, _, raw in runtime._loop_decisions().entries()
+            if (entry := _strict_json(raw)).get("kind") == "DECIDED"
+            and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
+        ]
+        if len(selected) != 1:
+            return None
+        decision_id, raw = selected[0]
+        evidence = retained_accepted_open_recovery(_strict_json(raw))
+        command = runtime._publication(_strict_json(raw))
+        expected = accepted_open_recovery_command(evidence)
+        if command != expected:
+            raise LoopIntegrityError("selected original obligation physical command differs")
+        return accepted_open_recovery_sources(
+            evidence,
+            selected_decision_id=decision_id,
+            selected_decision_bytes=raw.encode() if isinstance(raw, str) else raw,
+        )
+
+
 def read_selected_accepted_direct_terminal(runtime: R14PlanningRuntime):
     """Read the exact result of the unique selected closed-outcome terminal."""
     from chiplog.composition.r14_accepted_direct_terminal_publication import (
