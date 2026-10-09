@@ -200,3 +200,172 @@ async def test_selected_policy_catalog_rejects_extra_reducer_record(tmp_path: Pa
             )
         with pytest.raises(ValueError, match="physical catalog differs from selection"):
             _validate_physical_catalog(runtime, batch)
+
+
+@pytest.mark.asyncio
+async def test_invocation_publication_replays_exact_lost_ack_without_new_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    from unittest.mock import patch
+
+    from chiplog.architecture.r7_runtime import (
+        R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST,
+    )
+    from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        AcceptedOpenRecoveryOpeningV1,
+        AcceptedOpenTerminalDispositionV1,
+    )
+    from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+    from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+        original_effect_evidence_reducer_policy_v1,
+        original_resolver_authority_policy_v1,
+    )
+    from chiplog.capabilities.agent_loop.recovery_contracts import (
+        Absent,
+        OriginalObligationBinding,
+        Present,
+    )
+    from chiplog.composition import r14_original_resolver_invocation_publication as publication
+    from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+    from chiplog.platform._sqlite import LostCommitAcknowledgement
+
+    tenant = "hermetic-tenant"
+    binding = OriginalObligationBinding(
+        original_run_id="original-run",
+        original_call_id="original-call",
+        obligation_id="original-obligation",
+        obligation_stream_id="original-obligation-stream",
+        obligation_head="open-head",
+        closure_predicate_id="R14_ORIGINAL_EFFECT_CHILDREN_TERMINAL",
+        closure_predicate_version="1",
+        resolver_id="R14_AUTHENTICATED_ORIGINAL_PRINCIPAL_RESOLVER",
+        resolver_version="r14-original-resolver.v1",
+        reducer_id="R14_ORIGINAL_EFFECT_EVIDENCE_REDUCER",
+        reducer_version="r14-effect-evidence.v1",
+        evidence_stream_id="original-evidence-stream",
+        evidence_head=Absent(),
+    )
+    opening = AcceptedOpenRecoveryOpeningV1(
+        opening_id="accepted-open-opening:fixture",
+        source_cut_fingerprint="1" * 64,
+        original=binding,
+        evidence_sought=(),
+        safe_actions=("RESOLVE_ORIGINAL_OBLIGATION",),
+        denied_actions=("SEND", "RETRY", "APPEND_EVIDENCE"),
+    )
+    opening_digest = hashlib.sha256(opening.canonical_bytes()).hexdigest()
+    accepted_decision = CallSubjectHead(
+        subject_id="accepted-open-decision",
+        revision=Present(head="accepted-open-decision", fingerprint="2" * 64),
+    )
+    opening_ref = CallSubjectHead(
+        subject_id=opening.opening_id,
+        revision=Present(head="record:" + opening_digest, fingerprint=opening_digest),
+    )
+    opening_source = RecoverySourceRecord(
+        owner="agent_loop",
+        subject=CallSubjectHead(
+            subject_id=binding.obligation_id,
+            revision=Present(head=binding.obligation_head, fingerprint=opening_digest),
+        ),
+        schema_id=opening.schema_id,
+        canonical_record_bytes=opening.canonical_bytes(),
+        selected_decision=accepted_decision,
+        physical_record=opening_ref,
+    )
+    terminal = AcceptedOpenTerminalDispositionV1(
+        terminal_id="accepted-open-terminal:fixture",
+        source_cut_fingerprint="1" * 64,
+        original_call_id=binding.original_call_id,
+        response_id="response",
+        accepted=CallSubjectHead(
+            subject_id="acceptance", revision=Present(head="acceptance", fingerprint="3" * 64)
+        ),
+        external_effect_intent=CallSubjectHead(
+            subject_id="intent", revision=Present(head="intent", fingerprint="4" * 64)
+        ),
+        obligation_opening=opening_ref,
+    )
+    terminal_digest = hashlib.sha256(terminal.canonical_bytes()).hexdigest()
+    terminal_source = RecoverySourceRecord(
+        owner="agent_loop",
+        subject=CallSubjectHead(
+            subject_id=binding.original_call_id,
+            revision=Present(head="record:" + terminal_digest, fingerprint=terminal_digest),
+        ),
+        schema_id=terminal.schema_id,
+        canonical_record_bytes=terminal.canonical_bytes(),
+        selected_decision=accepted_decision,
+        physical_record=CallSubjectHead(
+            subject_id=terminal.terminal_id,
+            revision=Present(head="record:" + terminal_digest, fingerprint=terminal_digest),
+        ),
+    )
+    policy_decision = CallSubjectHead(
+        subject_id="policy-decision",
+        revision=Present(head="policy-decision", fingerprint="5" * 64),
+    )
+
+    def policy_source(policy, schema: str) -> RecoverySourceRecord:
+        digest = hashlib.sha256(policy.canonical_bytes()).hexdigest()
+        record_ref = CallSubjectHead(
+            subject_id=policy.policy_id,
+            revision=Present(head="record:" + digest, fingerprint=digest),
+        )
+        return RecoverySourceRecord(
+            owner="agent_loop",
+            subject=record_ref,
+            schema_id=schema,
+            canonical_record_bytes=policy.canonical_bytes(),
+            selected_decision=policy_decision,
+            physical_record=record_ref,
+        )
+
+    resolver_source = policy_source(
+        original_resolver_authority_policy_v1(tenant),
+        "chiplog.loop.original-resolver-authority-policy.v1",
+    )
+    reducer_source = policy_source(
+        original_effect_evidence_reducer_policy_v1(tenant),
+        "chiplog.loop.original-effect-evidence-reducer-policy.v1",
+    )
+    sources = (opening_source, terminal_source, resolver_source, reducer_source)
+    monkeypatch.setattr(publication, "_current_sources", lambda _runtime: sources)
+
+    database = tmp_path / "resolver-invocation.sqlite"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
+    )
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        manifest=R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST,
+    ) as runtime:
+        submit = runtime._appender.submit
+
+        async def commit_then_lose_ack(batch):
+            await submit(batch)
+            raise LostCommitAcknowledgement("invocation acknowledgement lost")
+
+        with (
+            patch.object(runtime._appender, "submit", side_effect=commit_then_lose_ack),
+            pytest.raises(LostCommitAcknowledgement),
+        ):
+            await runtime.publish_original_resolver_invocation()
+
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        manifest=R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST,
+    ) as runtime:
+        selected, source = runtime.read_selected_original_resolver_invocation_source()
+        assert selected.original == binding
+        assert source.canonical_record_bytes == selected.canonical_bytes()
+        with patch.object(
+            publication,
+            "issue_execution_recovery_actor_v1",
+            side_effect=AssertionError("selected replay must not authenticate a new invocation"),
+        ):
+            assert await runtime.publish_original_resolver_invocation() == selected

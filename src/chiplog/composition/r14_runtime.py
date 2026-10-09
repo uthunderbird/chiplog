@@ -634,6 +634,9 @@ class R14PlanningRuntime(R13PlanningRuntime):
             validate_selected_accepted_open_accounting(self)
             validate_selected_accepted_open_recovery(self)
             validate_selected_accepted_direct_terminal(self)
+            from chiplog.composition.r14_original_resolver_invocation_publication import (
+                validate_invocation_startup,
+            )
             from chiplog.composition.r14_original_resolver_policy_publication import (
                 validate_policy_startup,
             )
@@ -644,6 +647,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
 
             validate_profile_startup(self)
             validate_policy_startup(self)
+            validate_invocation_startup(self)
             validate_recovery_startup(self)
             validate_selected_denials(self._owner_decisions().snapshot())
             validate_selected_ingress(self._owner_decisions().snapshot())

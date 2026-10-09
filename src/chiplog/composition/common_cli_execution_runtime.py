@@ -973,6 +973,21 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         with self._authority_gate().hold():
             return read_selected_original_effect_evidence_reducer_policy_source_held(self)
 
+    async def publish_original_resolver_invocation(self, peer: str = "hermetic-ingress"):
+        from chiplog.composition.r14_original_resolver_invocation_publication import (
+            publish_original_resolver_invocation,
+        )
+
+        return await publish_original_resolver_invocation(self, peer)
+
+    def read_selected_original_resolver_invocation_source(self):
+        from chiplog.composition.r14_original_resolver_invocation_publication import (
+            read_selected_original_resolver_invocation_source_held,
+        )
+
+        with self._authority_gate().hold():
+            return read_selected_original_resolver_invocation_source_held(self)
+
     async def publish_execution_accounting_readiness(self, peer: str = "hermetic-ingress"):
         from chiplog.composition.r14_recovery_publication import (
             publish_execution_accounting_readiness,
