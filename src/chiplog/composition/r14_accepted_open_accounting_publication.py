@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from dataclasses import replace
 from typing import Literal
@@ -11,14 +12,28 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjec
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PrepareAcceptedOpenAccounting,
+    PrepareAcceptedOpenRecoveryV1,
     PreparedAcceptedOpenAccounting,
+    PreparedAcceptedOpenRecoveryV1,
 )
-from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
+from chiplog.capabilities.agent_loop.recovery_domain import sealed_call_accounting
+from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+    ConsequentialAcceptedCall,
+    RecoveredOutcomeSubject,
+    RecoveryRequiredResult,
+    TerminalCallFrontier,
+)
 from chiplog.composition.r14_accepted_open_accounting_records import (
     ACCEPTED_OPEN_ACCOUNTING_OPERATION,
+    ACCEPTED_OPEN_RECOVERY_OPERATION,
+    ACCEPTED_OPEN_RECOVERY_OWNER_OPERATION,
     RetainedAcceptedOpenAccountingPublication,
+    RetainedAcceptedOpenRecoveryPublication,
     accepted_open_accounting_command,
+    accepted_open_recovery_command,
     retained_accepted_open_accounting,
+    retained_accepted_open_recovery,
 )
 from chiplog.composition.r14_call_preview import execution_run_head
 from chiplog.composition.r14_loop_history import read_execution_recovery_history
@@ -34,6 +49,84 @@ from chiplog.composition.r14_recovery_publication import (
     _exchange,
     issue_execution_recovery_actor_v1,
 )
+from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+from chiplog.platform.workspace_snapshot import read_connection
+
+
+def _accepted_open_sealed_accounting(facts, cut, result):
+    """Build the exact one-call RECOVERY_REQUIRED frontier from selected records."""
+    opening, terminal = result.opening, result.terminal
+    opening_raw, terminal_raw = opening.canonical_bytes(), terminal.canonical_bytes()
+    opening_digest = hashlib.sha256(opening_raw).hexdigest()
+    terminal_digest = hashlib.sha256(terminal_raw).hexdigest()
+    opening_ref = CallSubjectHead(
+        subject_id=opening.opening_id,
+        revision=Present(head="record:" + opening_digest, fingerprint=opening_digest),
+    )
+    terminal_ref = CallSubjectHead(
+        subject_id=terminal.terminal_id,
+        revision=Present(head="record:" + terminal_digest, fingerprint=terminal_digest),
+    )
+    accepted = facts.accepted.acceptance
+    manifest = tuple(
+        member.revision
+        for member in accepted.loop_proposal.complete_acceptance_manifest
+    )
+    mismatches = {
+        "opening_source_cut": opening.source_cut_fingerprint == cut.cut_fingerprint,
+        "terminal_source_cut": terminal.source_cut_fingerprint == cut.cut_fingerprint,
+        "original_call": opening.original.original_call_id == cut.original_call_id,
+        "original_run": opening.original.original_run_id == cut.current_run.subject_id,
+        "terminal_call": terminal.original_call_id == cut.original_call_id,
+        "response": terminal.response_id == cut.response_id,
+        "accepted": terminal.accepted == cut.accepted,
+        "effect": terminal.external_effect_intent == cut.external_effect_intent,
+        "opening_ref": terminal.obligation_opening == opening_ref,
+        "manifest_len": len(manifest) == 3,
+        "manifest": manifest
+        == (
+            cut.accepted.revision,
+            cut.execution_intent.revision,
+            cut.external_effect_intent.revision,
+        ),
+        "evidence_stream": (
+            opening.original.evidence_stream_id == cut.external_effect_intent.subject_id
+        ),
+    }
+    if not all(mismatches.values()):
+        raise LoopRejected(
+            "accepted/open terminal or obligation differs from exact source cut: "
+            + ",".join(name for name, matches in mismatches.items() if not matches)
+        )
+    call = TerminalCallFrontier(
+        original_call_id=cut.original_call_id,
+        response_id=cut.response_id,
+        acceptance=ConsequentialAcceptedCall(
+            initialized=cut.initialized.revision,
+            accepted=cut.accepted.revision,
+            execution_intent=cut.execution_intent.revision,
+            external_effect_intent=cut.external_effect_intent.revision,
+            complete_acceptance_manifest=manifest,
+        ),
+        disposition=RecoveryRequiredResult(
+            terminal=terminal_ref.revision,
+            obligation=opening.original,
+            result=Absent(),
+            recovered_outcome=RecoveredOutcomeSubject(
+                original_call_id=cut.original_call_id,
+                recovery_obligation_id=opening.original.obligation_id,
+                outcome=Absent(),
+            ),
+        ),
+    )
+    seal = facts.accepted.selected_seal
+    ordered_call_ids = tuple(item.original_call_id for item in seal.initialized_records)
+    return sealed_call_accounting(
+        cut.response_id,
+        seal.response_seal.revision.fingerprint,
+        ordered_call_ids,
+        (call,),
+    )
 
 
 def _selected(runtime, identity: str) -> dict[str, object] | None:
@@ -241,6 +334,11 @@ def validate_selected_accepted_open_accounting(runtime) -> None:
         if entry.get("kind") != "DECIDED":
             continue
         command = runtime._publication(entry)
+        if (
+            command.operation_kind == ACCEPTED_OPEN_RECOVERY_OPERATION
+            or "accepted_open_recovery_evidence" in entry
+        ):
+            continue
         marker = (
             command.operation_kind == ACCEPTED_OPEN_ACCOUNTING_OPERATION
             or "accepted_open_accounting_evidence" in entry
@@ -276,8 +374,6 @@ def validate_selected_accepted_open_accounting(runtime) -> None:
         current = _current_cut(
             runtime,
             selected_only=True,
-            source_materialization_commitment=str(entry["predecessor"]),
-            source_tenant_commit_sequence=command.expected_head,
         )
         if current is None:
             raise LoopRejected("accepted/open current cut unavailable")
@@ -296,8 +392,240 @@ async def hold_if_accepted_open(runtime, peer: str) -> bool:
     current = _current_cut(runtime)
     if current is None:
         return False
-    await publish_accepted_open_accounting(runtime, peer)
+    await publish_accepted_open_recovery(runtime, peer)
     return True
 
 
-__all__ = ["publish_accepted_open_accounting"]
+def _selected_recovery(runtime, identity: str) -> dict[str, object] | None:
+    runtime._pending()
+    entries = [
+        json.loads(raw)
+        for _, _, raw in runtime._loop_decisions().entries()
+        if (entry := json.loads(raw)).get("kind") == "DECIDED"
+        and entry.get("operation_id") == identity
+    ]
+    if len(entries) > 1:
+        raise LoopRejected("ambiguous accepted/open recovery selection")
+    if not entries:
+        return None
+    entry = entries[0]
+    if entry.get("operation_kind") != ACCEPTED_OPEN_RECOVERY_OPERATION:
+        raise LoopRejected("accepted/open recovery identity belongs to another operation")
+    return entry
+
+
+async def _finish_recovery(runtime, entry: dict[str, object]):
+    from chiplog.composition.r14_loop_history import read_selected_accepted_open_recovery
+
+    evidence = retained_accepted_open_recovery(entry)
+    command = accepted_open_recovery_command(evidence)
+    if runtime._publication(entry) != command:
+        raise LoopRejected("selected accepted/open recovery differs from retained command")
+    await runtime._recover_exact(
+        command,
+        str(entry["predecessor"]),
+        str(entry["resulting"]),
+        is_materialized=lambda: runtime._loop_decision_materialized(
+            command.idempotency_key, entry
+        ),
+    )
+    runtime._finish_decision(command.idempotency_key, expected=entry)
+    if read_selected_accepted_open_recovery(runtime) != evidence.result:
+        raise LoopRejected("selected accepted/open recovery was not observed")
+    return evidence.result
+
+
+async def publish_accepted_open_recovery(runtime, peer: str = "hermetic-ingress"):
+    """Atomically publish OPEN accounting, terminal disposition, and loop obligation."""
+    observed = await runtime._execution_actor(peer)
+    with runtime._authority_gate().hold():
+        runtime._check_execution_actor(observed)
+        runtime._pending()
+        selected = [
+            json.loads(raw)
+            for _, _, raw in runtime._loop_decisions().entries()
+            if (entry := json.loads(raw)).get("kind") == "DECIDED"
+            and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
+        ]
+        if len(selected) > 1:
+            raise LoopRejected("ambiguous accepted/open recovery history")
+        prior = selected[0] if selected else None
+    if prior is not None:
+        return await _finish_recovery(runtime, prior)
+
+    with runtime._authority_gate().hold():
+        runtime._check_execution_actor(observed)
+        current = _current_cut(runtime)
+        if current is None:
+            raise LoopRejected("exact selected accepted/open outcome unavailable; HOLD")
+        facts, cut = current
+        identity = "accepted-open-recovery:" + cut.cut_fingerprint
+        if _selected_recovery(runtime, identity) is not None:
+            raise LoopRejected("accepted/open recovery selection changed during source read")
+        predecessor = runtime._commitment_journal.load(runtime._tenant_id)
+        worker = runtime.current_worker()
+        session = runtime._supervisor.runtime().session("agent_loop")
+        if predecessor != cut.materialization_commitment:
+            raise LoopRejected("accepted/open recovery cut predecessor differs")
+
+    refreshed, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)
+    with runtime._authority_gate().hold():
+        if not runtime._same_execution_actor_identity(observed, refreshed):
+            raise LoopRejected("accepted/open recovery actor changed before owner IPC")
+        observed = refreshed
+
+    request = PrepareAcceptedOpenRecoveryV1(command_id=identity, cut=cut)
+    result, owner_call, owner_reply = await _exchange(
+        runtime,
+        request,
+        ACCEPTED_OPEN_RECOVERY_OWNER_OPERATION,
+        PreparedAcceptedOpenRecoveryV1,
+    )
+    evidence = RetainedAcceptedOpenRecoveryPublication(
+        request=request,
+        result=result,
+        owner_call=owner_call,
+        owner_reply=owner_reply,
+        actor_budget_v1=actor_budget,
+    )
+    command = accepted_open_recovery_command(evidence)
+
+    def guard() -> Literal["STALE"] | None:
+        with runtime._authority_gate().hold():
+            try:
+                runtime._check_execution_actor(observed)
+                current_facts, current_cut = _current_cut(runtime)
+                if (
+                    current_facts != facts
+                    or current_cut != cut
+                    or runtime.current_worker() != worker
+                    or runtime._supervisor.runtime().session("agent_loop") != session
+                    or runtime._commitment_journal.load(runtime._tenant_id) != predecessor
+                ):
+                    return "STALE"
+            except (LoopRejected, ValueError, TypeError, RuntimeError):
+                return "STALE"
+        return None
+
+    def decide(resulting: str) -> None:
+        with runtime._authority_gate().hold():
+            runtime._require_no_pending()
+            runtime._append_decision(
+                {
+                    "version": 1,
+                    "kind": "DECIDED",
+                    "operation_id": identity,
+                    "operation_kind": ACCEPTED_OPEN_RECOVERY_OPERATION,
+                    "expected_head": command.expected_head,
+                    "fingerprint": command.request_fingerprint,
+                    "predecessor": predecessor,
+                    "resulting": resulting,
+                    "records": [
+                        {
+                            "record_id": record.record_id,
+                            "owner": record.owner,
+                            "schema": record.schema_id,
+                            "payload": base64.b64encode(record.canonical_bytes).decode(),
+                            "digest": record.fingerprint,
+                        }
+                        for record in command.records
+                    ],
+                    "accepted_open_recovery_evidence": evidence.canonical_bytes().decode(),
+                }
+            )
+
+    submitted = await runtime._appender.submit(
+        replace(command, admission_guard=guard, decision_guard=decide)
+    )
+    if submitted.disposition not in ("COMMITTED", "EXACT_REPLAY"):
+        raise LoopRejected("accepted/open recovery publication " + submitted.disposition)
+    entry = _selected_recovery(runtime, identity)
+    if entry is None:
+        raise LoopRejected("accepted/open recovery selected decision is absent")
+    return await _finish_recovery(runtime, entry)
+
+
+def validate_selected_accepted_open_recovery(runtime) -> None:
+    """Recompute every selected recovery publication before startup replay."""
+    claimed = False
+    selected = []
+    for _, _, raw in runtime._loop_decisions().entries():
+        entry = json.loads(raw)
+        if entry.get("kind") != "DECIDED":
+            continue
+        command = runtime._publication(entry)
+        marker = (
+            command.operation_kind == ACCEPTED_OPEN_RECOVERY_OPERATION
+            or "accepted_open_recovery_evidence" in entry
+            or any(
+                record.schema_id == "chiplog.execution.accepted-open-terminal-disposition.v1"
+                for record in command.records
+            )
+        )
+        if not marker:
+            continue
+        claimed = True
+        evidence = retained_accepted_open_recovery(entry)
+        expected = accepted_open_recovery_command(evidence)
+        if (
+            command != expected
+            or entry.get("operation_kind") != ACCEPTED_OPEN_RECOVERY_OPERATION
+            or entry.get("operation_id") != command.idempotency_key
+            or entry.get("predecessor") != evidence.request.cut.materialization_commitment
+            or entry.get("expected_head") != command.expected_head
+            or entry.get("fingerprint") != command.request_fingerprint
+            or len(command.records) != 3
+        ):
+            raise LoopRejected("selected accepted/open recovery envelope differs")
+        with read_connection(runtime._database) as connection:
+            actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+        anchored = runtime._commitment_journal.load(runtime._tenant_id)
+        if actual not in (entry.get("predecessor"), entry.get("resulting")) or anchored not in (
+            entry.get("predecessor"),
+            entry.get("resulting"),
+        ):
+            raise LoopRejected("accepted/open recovery publication is not exact predecessor/result")
+        current = _current_cut(
+            runtime,
+            selected_only=True,
+            source_materialization_commitment=evidence.request.cut.materialization_commitment,
+            source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
+        )
+        if current is None or current[1] != evidence.request.cut:
+            raise LoopRejected("accepted/open recovery selected source cut differs")
+        _accepted_open_sealed_accounting(current[0], current[1], evidence.result)
+        selected.append(entry)
+    if claimed and len(selected) != 1:
+        raise LoopRejected("ambiguous accepted/open recovery selection")
+
+
+def read_selected_accepted_open_frontier(runtime):
+    """Return the exact weak sealed-call accounting join for selected OPEN R16."""
+    from chiplog.composition.r14_loop_history import read_execution_recovery_history
+
+    with runtime._authority_gate().hold():
+        read_execution_recovery_history(runtime)
+        validate_selected_accepted_open_recovery(runtime)
+        entries = [
+            json.loads(raw)
+            for _, _, raw in runtime._loop_decisions().entries()
+            if (entry := json.loads(raw)).get("kind") == "DECIDED"
+            and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
+        ]
+        if not entries:
+            return None
+        evidence = retained_accepted_open_recovery(entries[0])
+        current = _current_cut(
+            runtime,
+            selected_only=True,
+            source_materialization_commitment=evidence.request.cut.materialization_commitment,
+            source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
+        )
+        if current is None:
+            raise LoopRejected("selected accepted/open frontier source is unavailable")
+        return _accepted_open_sealed_accounting(
+            current[0], evidence.request.cut, evidence.result
+        )
+
+
+__all__ = ["publish_accepted_open_accounting", "publish_accepted_open_recovery"]

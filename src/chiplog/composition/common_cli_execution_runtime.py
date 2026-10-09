@@ -293,6 +293,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 ("effects", H1_SCOPED_INTENT_SCHEMA),
                 (AGENT_LOOP_OWNER, DELIVERY_WORK_SCHEMA),
                 (AGENT_LOOP_OWNER, "chiplog.execution.accepted-open-accounting.v1"),
+                (AGENT_LOOP_OWNER, "chiplog.execution.accepted-open-recovery-opening.v1"),
+                (AGENT_LOOP_OWNER, "chiplog.execution.accepted-open-terminal-disposition.v1"),
             )
         )
     )
@@ -956,6 +958,25 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         )
 
         return read_selected_accepted_open_accounting(self)
+
+    async def publish_accepted_open_recovery(self, peer: str = "hermetic-ingress"):
+        from chiplog.composition.r14_accepted_open_accounting_publication import (
+            publish_accepted_open_recovery,
+        )
+
+        return await publish_accepted_open_recovery(self, peer)
+
+    def read_selected_accepted_open_recovery(self):
+        from chiplog.composition.r14_loop_history import read_selected_accepted_open_recovery
+
+        return read_selected_accepted_open_recovery(self)
+
+    def read_selected_accepted_open_frontier(self):
+        from chiplog.composition.r14_accepted_open_accounting_publication import (
+            read_selected_accepted_open_frontier,
+        )
+
+        return read_selected_accepted_open_frontier(self)
 
     async def start_next_execution_turn(
         self, run_id: str, expected_head: str, peer: str = "hermetic-ingress"

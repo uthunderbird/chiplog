@@ -18,7 +18,13 @@ from .execution_recovery_observations import (
 )
 from .execution_run_versions import CreateExecutionRunVersion, ExecutionRun
 from .post_terminal_contracts import PreparedPostTerminalWork
-from .recovery_contracts import Digest, Identity, RunExecutionFence, UInt64
+from .recovery_contracts import (
+    Digest,
+    Identity,
+    OriginalObligationBinding,
+    RunExecutionFence,
+    UInt64,
+)
 from .recovery_frontier_contracts import ObligationObservation, RecoveryProofDisposition
 
 
@@ -94,6 +100,50 @@ class PreparedAcceptedOpenAccounting(ExecutionRecoveryDTO):
     )
     source_request_fingerprint: Digest
     accounting: AcceptedOpenAccountingRecordV1
+
+
+class AcceptedOpenRecoveryOpeningV1(ExecutionRecoveryDTO):
+    """Loop-owned original obligation opened for one accepted uncertain call."""
+
+    schema_id: Literal["chiplog.execution.accepted-open-recovery-opening.v1"] = (
+        "chiplog.execution.accepted-open-recovery-opening.v1"
+    )
+    opening_id: Identity
+    source_cut_fingerprint: Digest
+    original: OriginalObligationBinding
+    evidence_sought: tuple[CallSubjectHead, ...]
+    safe_actions: tuple[Identity, ...]
+    denied_actions: tuple[Identity, ...]
+
+
+class AcceptedOpenTerminalDispositionV1(ExecutionRecoveryDTO):
+    """Immutable terminal fact; it never implies model continuation."""
+
+    schema_id: Literal["chiplog.execution.accepted-open-terminal-disposition.v1"] = (
+        "chiplog.execution.accepted-open-terminal-disposition.v1"
+    )
+    kind: Literal["RECOVERY_REQUIRED"] = "RECOVERY_REQUIRED"
+    terminal_id: Identity
+    source_cut_fingerprint: Digest
+    original_call_id: Identity
+    response_id: Identity
+    accepted: CallSubjectHead
+    external_effect_intent: CallSubjectHead
+    obligation_opening: CallSubjectHead
+
+
+class PrepareAcceptedOpenRecoveryV1(ExecutionRecoveryDTO):
+    kind: Literal["PREPARE_ACCEPTED_OPEN_RECOVERY_V1"] = "PREPARE_ACCEPTED_OPEN_RECOVERY_V1"
+    command_id: Identity
+    cut: AcceptedOpenRecoveryCutV1
+
+
+class PreparedAcceptedOpenRecoveryV1(ExecutionRecoveryDTO):
+    kind: Literal["PREPARED_ACCEPTED_OPEN_RECOVERY_V1"] = "PREPARED_ACCEPTED_OPEN_RECOVERY_V1"
+    source_request_fingerprint: Digest
+    accounting: AcceptedOpenAccountingRecordV1
+    opening: AcceptedOpenRecoveryOpeningV1
+    terminal: AcceptedOpenTerminalDispositionV1
 
 
 class PrepareExecutionContinuation(ExecutionRecoveryDTO):
@@ -189,6 +239,7 @@ class PrepareAbortCancelExecution(ExecutionRecoveryDTO):
 ExecutionRecoveryRequest = Annotated[
     PrepareExecutionAccounting
     | PrepareAcceptedOpenAccounting
+    | PrepareAcceptedOpenRecoveryV1
     | PrepareExecutionContinuation
     | PrepareExecutionSuspension
     | PrepareExecutionResume
@@ -304,6 +355,7 @@ class ExecutionRecoveryClassified(ExecutionRecoveryDTO):
 ExecutionRecoveryResult = Annotated[
     PreparedExecutionAccounting
     | PreparedAcceptedOpenAccounting
+    | PreparedAcceptedOpenRecoveryV1
     | PreparedExecutionContinuation
     | PreparedExecutionSuspension
     | PreparedExecutionResume

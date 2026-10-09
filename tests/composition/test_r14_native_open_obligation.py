@@ -6,14 +6,17 @@ from pathlib import Path
 import pytest
 
 from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
-from chiplog.architecture.r7_runtime import R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PrepareAcceptedOpenAccounting,
+    PrepareAcceptedOpenRecoveryV1,
     PreparedAcceptedOpenAccounting,
+    PreparedAcceptedOpenRecoveryV1,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
     prepare_accepted_open_accounting,
+    prepare_accepted_open_recovery_v1,
 )
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 from chiplog.composition.common_cli_execution_runtime import (
@@ -61,7 +64,7 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         database,
         resources=resources,
         responses=(native_response(),),
-        manifest=R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST,
+        manifest=R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
     ) as runtime:
         wire = await admit_runtime_slot(runtime, "native-open-obligation")
         receipt = await runtime.drive_input(wire)
@@ -162,10 +165,31 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert prepared.accounting.kind == "RECOVERY_REQUIRED"
         assert prepared.accounting.selected_outcome_bytes == exact_open.outcome.canonical_bytes()
 
-        selected_accounting = await runtime.publish_accepted_open_accounting()
-        assert selected_accounting == prepared.accounting
-        assert selected_accounting.kind == "RECOVERY_REQUIRED"
-        assert selected_accounting.selected_outcome_bytes == exact_open.outcome.canonical_bytes()
+        recovery_request = PrepareAcceptedOpenRecoveryV1(
+            command_id="accepted-open-recovery:" + open_cut.cut_fingerprint,
+            cut=open_cut,
+        )
+        recovery_prepared = prepare_accepted_open_recovery_v1(recovery_request)
+        assert isinstance(recovery_prepared, PreparedAcceptedOpenRecoveryV1), recovery_prepared
+        assert recovery_prepared.accounting == prepared.accounting
+        assert recovery_prepared.opening.original.original_call_id == calls[0].original_call_id
+        assert recovery_prepared.opening.original.evidence_head.kind == "ABSENT"
+        assert recovery_prepared.terminal.original_call_id == calls[0].original_call_id
+
+        selected_recovery = await runtime.publish_accepted_open_recovery()
+        assert selected_recovery == recovery_prepared
+        assert selected_recovery.accounting.kind == "RECOVERY_REQUIRED"
+        assert (
+            selected_recovery.accounting.selected_outcome_bytes
+            == exact_open.outcome.canonical_bytes()
+        )
+        joined = runtime.read_selected_accepted_open_frontier()
+        assert len(joined.calls) == 1
+        assert joined.calls[0].original_call_id == calls[0].original_call_id
+        assert joined.calls[0].acceptance.kind == "CONSEQUENTIAL_ACCEPTED"
+        assert joined.calls[0].disposition.kind == "RECOVERY_REQUIRED"
+        assert joined.calls[0].disposition.obligation == selected_recovery.opening.original
+        assert joined.calls[0].disposition.recovered_outcome.outcome.kind == "ABSENT"
         from chiplog.composition import r14_next_turn_publication
 
         async def reject_successor_prepare(*_args, **_kwargs):
@@ -180,16 +204,23 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
-        manifest=R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST,
+        manifest=R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
     ) as reopened:
-        assert reopened.read_selected_accepted_open_accounting() == selected_accounting
+        assert reopened.read_selected_accepted_open_recovery() == selected_recovery
+        assert reopened.read_selected_accepted_open_frontier() == joined
+        with pytest.raises(LoopRejected, match="OUTCOME_UNKNOWN/OPEN"):
+            await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
         assert len(resources.require_original_provider().transfers) == 1
     with sqlite3.connect(database) as connection:
         record_id, canonical = connection.execute(
             "SELECT r.record_id, r.canonical_bytes FROM publications AS p "
-            "JOIN records AS r ON r.tenant_id=p.tenant_id AND r.record_id=p.record_ids "
-            "WHERE p.operation_kind=?",
-            ("agent_loop.accepted-open-accounting.v1",),
+            "JOIN records AS r ON r.tenant_id=p.tenant_id "
+            "AND instr(char(10)||p.record_ids||char(10),char(10)||r.record_id||char(10))>0 "
+            "WHERE p.operation_kind=? AND r.schema_id=?",
+            (
+                "agent_loop.accepted-open-recovery.v1",
+                "chiplog.execution.accepted-open-terminal-disposition.v1",
+            ),
         ).fetchone()
         damaged = canonical[:-1] + (b" " if canonical[-1:] != b" " else b"\n")
         assert connection.execute(
@@ -209,7 +240,7 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         async with open_common_cli_execution_runtime(
             database,
             resources=resources,
-            manifest=R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST,
+            manifest=R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
         ):
             pytest.fail("corrupt accepted/open physical record reopened")
     assert recover_calls == []

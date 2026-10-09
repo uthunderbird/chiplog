@@ -1292,6 +1292,40 @@ R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST = replace(
     ),
 )
 
+_V29_ACCEPTED_OPEN_RECOVERY_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_accepted_open_recovery.v1",
+    "broker",
+    "agent_loop",
+    "chiplog.execution.recovery-request.v1",
+    "chiplog.execution.recovery-result.v1",
+)
+_V29_EXECUTION_OPERATIONS = tuple(
+    sorted((*_V28_EXECUTION_OPERATIONS, _V29_ACCEPTED_OPEN_RECOVERY_ROUTE.operation_id))
+)
+R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST = replace(
+    R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST,
+    manifest_version=29,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_V29_EXECUTION_OPERATIONS,
+            public_operations=_V29_EXECUTION_OPERATIONS,
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST.routes,
+                _V29_ACCEPTED_OPEN_RECOVERY_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -1339,8 +1373,9 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         24,
         25,
         26,
-        27,
-        28,
+            27,
+            28,
+            29,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1370,6 +1405,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         26: R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST,
         27: R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
         28: R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST,
+        29: R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     if manifest.manifest_version >= 2:
         if manifest.broker_version.startswith("r8-development-v1:"):

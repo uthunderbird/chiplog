@@ -488,6 +488,7 @@ def _read_call_history(
                         "agent_loop.execution-accounting-readiness.v1",
                         "agent_loop.execution-next-turn.v1",
                         "agent_loop.accepted-open-accounting.v1",
+                        "agent_loop.accepted-open-recovery.v1",
                         "agent_loop.native-one-call-recovery-profile.v1",
                         "agent_loop.native-one-call-recovery-profile.v2",
                         EXECUTION_TRANSITION_OPERATION,
@@ -643,6 +644,42 @@ def _read_call_history(
                         mixed_records.append(terminal)
                         continue
                     first, *companions = command.records
+                    if (
+                        command.operation_kind == "agent_loop.accepted-open-recovery.v1"
+                        or "accepted_open_recovery_evidence" in entry
+                        or any(
+                            item.schema_id
+                            == "chiplog.execution.accepted-open-terminal-disposition.v1"
+                            for item in command.records
+                        )
+                    ):
+                        from chiplog.composition.r14_accepted_open_accounting_records import (
+                            ACCEPTED_OPEN_RECOVERY_OPERATION,
+                            accepted_open_recovery_command,
+                            retained_accepted_open_recovery,
+                        )
+
+                        evidence = retained_accepted_open_recovery(entry)
+                        expected = accepted_open_recovery_command(evidence)
+                        if (
+                            command.operation_kind != ACCEPTED_OPEN_RECOVERY_OPERATION
+                            or entry.get("operation_kind") != ACCEPTED_OPEN_RECOVERY_OPERATION
+                            or entry.get("operation_id") != command.idempotency_key
+                            or command != expected
+                            or len(command.records) != 3
+                            or command.records[0].canonical_bytes
+                            != evidence.result.accounting.canonical_bytes()
+                            or command.records[1].canonical_bytes
+                            != evidence.result.opening.canonical_bytes()
+                            or command.records[2].canonical_bytes
+                            != evidence.result.terminal.canonical_bytes()
+                            or entry.get("fingerprint") != command.request_fingerprint
+                            or entry.get("expected_head") != command.expected_head
+                        ):
+                            raise ValueError("selected accepted/open recovery differs")
+                        expected_ids.update(record.record_id for record in command.records)
+                        expected_publications.add((command.operation_kind, identity))
+                        continue
                     if (
                         command.operation_kind
                         == "agent_loop.accepted-open-accounting.v1"
@@ -1297,6 +1334,28 @@ def read_selected_accepted_open_accounting(runtime: R14PlanningRuntime):
             and entry.get("operation_kind") == ACCEPTED_OPEN_ACCOUNTING_OPERATION
         ]
         return found[0].result.accounting if len(found) == 1 else None
+
+
+def read_selected_accepted_open_recovery(runtime: R14PlanningRuntime):
+    """Read the atomic accepted/open terminal and obligation publication."""
+    from chiplog.composition.r14_accepted_open_accounting_publication import (
+        validate_selected_accepted_open_recovery,
+    )
+    from chiplog.composition.r14_accepted_open_accounting_records import (
+        ACCEPTED_OPEN_RECOVERY_OPERATION,
+        retained_accepted_open_recovery,
+    )
+
+    with runtime._authority_gate().hold():
+        _read_call_history(runtime)
+        validate_selected_accepted_open_recovery(runtime)
+        found = [
+            retained_accepted_open_recovery(entry)
+            for _, _, raw in runtime._loop_decisions().entries()
+            if (entry := _strict_json(raw)).get("kind") == "DECIDED"
+            and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
+        ]
+        return found[0].result if len(found) == 1 else None
 
 
 def validate_selected_native_accounting(runtime: R14PlanningRuntime) -> None:

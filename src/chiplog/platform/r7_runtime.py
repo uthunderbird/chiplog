@@ -408,6 +408,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             _V26_EXECUTION_OPERATIONS,
             _V27_EXECUTION_OPERATIONS,
             _V28_EXECUTION_OPERATIONS,
+            _V29_EXECUTION_OPERATIONS,
         )
 
         if identity.capability_ids == _V26_EXECUTION_OPERATIONS:
@@ -415,6 +416,8 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
         if identity.capability_ids == _V27_EXECUTION_OPERATIONS:
             return "chiplog.capabilities.agent_loop._execution_next_turn_process"
         if identity.capability_ids == _V28_EXECUTION_OPERATIONS:
+            return "chiplog.capabilities.agent_loop._execution_accepted_open_process"
+        if identity.capability_ids == _V29_EXECUTION_OPERATIONS:
             return "chiplog.capabilities.agent_loop._execution_accepted_open_process"
         raise OwnerProcessFailure("unknown agent-loop capability partition")
     if identity.owner_id == "projections" and identity.capability_ids == (
@@ -457,9 +460,13 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
                         replace(
                             identity,
                             capability_ids=tuple(
-                                item
-                                for item in identity.capability_ids
-                                if item != "agent_loop.prepare_accepted_open_accounting.v1"
+                                    item
+                                    for item in identity.capability_ids
+                                    if item
+                                    not in {
+                                        "agent_loop.prepare_accepted_open_accounting.v1",
+                                        "agent_loop.prepare_accepted_open_recovery.v1",
+                                    }
                             ),
                         )
                     ),

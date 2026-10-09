@@ -27,9 +27,12 @@ from .call_acceptance_preparation import call_record_reference
 from .execution_contracts import ExecutionRunRecord
 from .execution_recovery_contracts import (
     AcceptedOpenAccountingRecordV1,
-    AcceptedOpenRecoveryCutV1,
+    AcceptedOpenRecoveryOpeningV1,
+    AcceptedOpenTerminalDispositionV1,
     PrepareAcceptedOpenAccounting,
+    PrepareAcceptedOpenRecoveryV1,
     PreparedAcceptedOpenAccounting,
+    PreparedAcceptedOpenRecoveryV1,
     PreparedExecutionAccounting,
     PreparedExecutionContinuation,
     PrepareExecutionAccounting,
@@ -43,7 +46,7 @@ from .execution_recovery_observations import (
 )
 from .native_recovery_cut_validation import validate_native_recovery_cut
 from .native_recovery_profile_contracts import SCHEMA, SCHEMA_V2
-from .recovery_contracts import Present, RecoveryDTO
+from .recovery_contracts import Absent, OriginalObligationBinding, Present, RecoveryDTO
 from .recovery_domain import (
     RecoveryHold,
     RecoveryIntegrityFault,
@@ -444,6 +447,78 @@ def prepare_accepted_open_accounting(
             source_request_fingerprint=request.digest(), accounting=accounting
         )
     except (ValueError, TypeError) as error:
+        return _rejected(request.command_id, error)
+
+
+def prepare_accepted_open_recovery_v1(
+    request: PrepareAcceptedOpenRecoveryV1,
+) -> PreparedAcceptedOpenRecoveryV1 | CallPreparationRejected:
+    """Prepare a weak source fact plus immutable loop-owned OPEN obligation."""
+    try:
+        request = PrepareAcceptedOpenRecoveryV1.model_validate_json(request.canonical_bytes())
+        accounting_result = prepare_accepted_open_accounting(
+            PrepareAcceptedOpenAccounting(
+                command_id="accepted-open-accounting:" + request.cut.cut_fingerprint,
+                cut=request.cut,
+            )
+        )
+        if not isinstance(accounting_result, PreparedAcceptedOpenAccounting):
+            raise RecoveryHold("accepted/open accounting source is not selectable")
+        cut = request.cut
+        effect = DispatchOutcomeRecordV2.model_validate_json(cut.selected_outcome_bytes)
+        obligation = effect.snapshot.obligation
+        obligation_id = "native-open-obligation:" + _sha(
+            (cut.original_call_id + "\x00" + cut.external_effect_intent.subject_id).encode()
+        )
+        opening = AcceptedOpenRecoveryOpeningV1(
+            opening_id="original-obligation-opening:" + obligation_id,
+            source_cut_fingerprint=cut.cut_fingerprint,
+            original=OriginalObligationBinding(
+                original_run_id=cut.current_run.subject_id,
+                original_call_id=cut.original_call_id,
+                obligation_id=obligation_id,
+                obligation_stream_id="original-obligation-stream:" + cut.original_call_id,
+                obligation_head="open:" + obligation_id,
+                closure_predicate_id="R14_ORIGINAL_EFFECT_CHILDREN_TERMINAL",
+                closure_predicate_version="r14-native-effect-closure.v1",
+                resolver_id="R14_AUTHENTICATED_ORIGINAL_PRINCIPAL_RESOLVER",
+                resolver_version="r14-original-resolver.v1",
+                reducer_id="R14_ORIGINAL_EFFECT_EVIDENCE_REDUCER",
+                reducer_version="r14-effect-evidence.v1",
+                evidence_stream_id=cut.external_effect_intent.subject_id,
+                evidence_head=Absent(),
+            ),
+            evidence_sought=tuple(
+                CallSubjectHead(
+                    subject_id=child.subject_id,
+                    revision=Present(head=child.head, fingerprint=child.fingerprint),
+                )
+                for child in obligation.original_children
+            ),
+            safe_actions=("APPEND_AUTHENTICATED_ORIGINAL_EVIDENCE", "RESOLVE_ORIGINAL_OBLIGATION"),
+            denied_actions=("RESEND_ORIGINAL_EFFECT", "ASSUME_ABSENCE_IS_NO_EFFECT"),
+        )
+        opening_digest = _sha(opening.canonical_bytes())
+        opening_ref = CallSubjectHead(
+            subject_id=opening.opening_id,
+            revision=Present(head="record:" + opening_digest, fingerprint=opening_digest),
+        )
+        terminal = AcceptedOpenTerminalDispositionV1(
+            terminal_id="accepted-open-terminal:" + cut.cut_fingerprint,
+            source_cut_fingerprint=cut.cut_fingerprint,
+            original_call_id=cut.original_call_id,
+            response_id=cut.response_id,
+            accepted=cut.accepted,
+            external_effect_intent=cut.external_effect_intent,
+            obligation_opening=opening_ref,
+        )
+        return PreparedAcceptedOpenRecoveryV1(
+            source_request_fingerprint=request.digest(),
+            accounting=accounting_result.accounting,
+            opening=opening,
+            terminal=terminal,
+        )
+    except (ValueError, TypeError, AttributeError) as error:
         return _rejected(request.command_id, error)
 
 
