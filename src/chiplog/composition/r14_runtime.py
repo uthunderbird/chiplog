@@ -178,6 +178,10 @@ class R14PlanningRuntime(R13PlanningRuntime):
         ("agent_loop", "chiplog.loop.original-resolver-authority-policy.v1"),
         ("agent_loop", "chiplog.loop.original-effect-evidence-reducer-policy.v1"),
         ("agent_loop", "chiplog.loop.original-resolver-invocation.v1"),
+        ("agent_loop", "chiplog.loop.original-resolution-basis.v1"),
+        ("agent_loop", "chiplog.loop.original-obligation-closure.v1"),
+        ("agent_loop", "chiplog.loop.recovered-call-outcome.v1"),
+        ("agent_loop", "chiplog.loop.original-resolver-batch.v1"),
         ("broker_ingress", "chiplog.ingress.admission-epoch.v2"),
         ("broker_ingress", "chiplog.ingress.admission-capacity.v1"),
         ("broker_ingress", "chiplog.ingress.authenticated-record.v2"),
@@ -648,6 +652,11 @@ class R14PlanningRuntime(R13PlanningRuntime):
             validate_profile_startup(self)
             validate_policy_startup(self)
             validate_invocation_startup(self)
+            from chiplog.composition.r14_original_call_resolution_publication import (
+                validate_original_call_resolution_startup,
+            )
+
+            validate_original_call_resolution_startup(self)
             validate_recovery_startup(self)
             validate_selected_denials(self._owner_decisions().snapshot())
             validate_selected_ingress(self._owner_decisions().snapshot())

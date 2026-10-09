@@ -106,6 +106,8 @@ def _selected_witness_source(closed: R14NativeAcceptedOpenOutcome) -> RecoverySo
 
 def capture_original_call_resolution_request(
     runtime: CommonCliExecutionRuntime,
+    *,
+    allow_selected_resolution: bool = False,
 ) -> PrepareOriginalCallResolution:
     """Capture revalidated R14 sources and the complete selected closed R16 cut.
 
@@ -203,7 +205,8 @@ def capture_original_call_resolution_request(
             or closed.materialization_commitment != before
         ):
             raise LoopRejected("selected R14 and R16 resolution sources do not share one cut")
-        _require_resolution_absent(runtime)
+        if not allow_selected_resolution:
+            _require_resolution_absent(runtime)
 
         stream = LoopRecoveryStream(
             stream_id=original.obligation_stream_id,
