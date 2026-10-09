@@ -129,6 +129,32 @@ def test_r14_resolver_policy_is_tenant_bound_and_has_only_the_narrow_operation()
         original.original_resolver_authority_policy_v1("")
 
 
+def test_original_resolver_policy_adoption_has_one_closed_owner_preparation() -> None:
+    from chiplog.capabilities.agent_loop.original_resolver_policy_preparation import (
+        prepare_original_resolver_authority_policy_v1,
+    )
+
+    policy = original.original_resolver_authority_policy_v1("tenant")
+    request = original.AdoptOriginalResolverAuthorityPolicyV1(
+        command_id="adopt-original-resolver-authority:tenant", policy=policy
+    )
+    result = prepare_original_resolver_authority_policy_v1(request)
+    assert isinstance(result, original.PreparedOriginalResolverAuthorityPolicyV1)
+    assert result.source_request_fingerprint == request.digest()
+    assert result.policy == policy
+    assert result.complete_batch_fingerprint == policy.digest()
+    assert result == prepare_original_resolver_authority_policy_v1(request)
+
+    tampered = request.model_copy(update={"command_id": "other"})
+    rejected = prepare_original_resolver_authority_policy_v1(tampered)
+    assert rejected.kind == "CALL_PREPARATION_REJECTED_V1"
+
+    adapter: TypeAdapter[original.OriginalRecoveryRequest] = TypeAdapter(
+        original.OriginalRecoveryRequest
+    )
+    assert adapter.validate_json(request.canonical_bytes()) == request
+
+
 @pytest.mark.parametrize(
     "field",
     [

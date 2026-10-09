@@ -271,10 +271,16 @@ class PreparedLoopSemanticReduction(ExecutionRecoveryDTO):
 
 
 OriginalRecoveryRequest = Annotated[
-    PrepareOriginalCallResolution | PrepareLoopSemanticReduction, Field(discriminator="kind")
+    AdoptOriginalResolverAuthorityPolicyV1
+    | PrepareOriginalCallResolution
+    | PrepareLoopSemanticReduction,
+    Field(discriminator="kind"),
 ]
 OriginalRecoveryResult = Annotated[
-    PreparedOriginalCallResolution | PreparedLoopSemanticReduction | CallPreparationRejected,
+    PreparedOriginalResolverAuthorityPolicyV1
+    | PreparedOriginalCallResolution
+    | PreparedLoopSemanticReduction
+    | CallPreparationRejected,
     Field(discriminator="kind"),
 ]
 

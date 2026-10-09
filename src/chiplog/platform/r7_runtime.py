@@ -410,6 +410,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             _V28_EXECUTION_OPERATIONS,
             _V29_EXECUTION_OPERATIONS,
             _V30_EXECUTION_OPERATIONS,
+            _V31_EXECUTION_OPERATIONS,
         )
 
         if identity.capability_ids == _V26_EXECUTION_OPERATIONS:
@@ -422,6 +423,8 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             return "chiplog.capabilities.agent_loop._execution_accepted_open_process"
         if identity.capability_ids == _V30_EXECUTION_OPERATIONS:
             return "chiplog.capabilities.agent_loop._execution_direct_terminal_process"
+        if identity.capability_ids == _V31_EXECUTION_OPERATIONS:
+            return "chiplog.capabilities.agent_loop._original_recovery_process"
         raise OwnerProcessFailure("unknown agent-loop capability partition")
     if identity.owner_id == "projections" and identity.capability_ids == (
         "projections.prepare_conversation_completion",
@@ -455,6 +458,22 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
 
 def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
     module = _owner_module(identity)
+    if module == "chiplog.capabilities.agent_loop._original_recovery_process":
+        from chiplog.architecture.r7_runtime import _V30_EXECUTION_OPERATIONS
+
+        return tuple(
+            sorted(
+                name
+                for name in (
+                    *_owner_module_closure(
+                        replace(identity, capability_ids=_V30_EXECUTION_OPERATIONS)
+                    ),
+                    module,
+                )
+                if name.rsplit(".", 1)[-1].startswith("_")
+                and name.rsplit(".", 1)[-1].endswith("_process")
+            )
+        )
     if module == "chiplog.capabilities.agent_loop._execution_direct_terminal_process":
         from chiplog.architecture.r7_runtime import _V29_EXECUTION_OPERATIONS
 

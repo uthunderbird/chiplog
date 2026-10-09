@@ -11,6 +11,8 @@ from chiplog.architecture.r7_runtime import (
     R13_EVALUATION_MANIFEST,
     R13_PRODUCTION_MANIFEST,
     R14_EVALUATION_MANIFEST,
+    R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_EVALUATION_MANIFEST,
+    R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST,
     R14_PRODUCTION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_EVALUATION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
@@ -23,6 +25,24 @@ from chiplog.architecture.r7_runtime import (
     verify_runtime_manifest,
 )
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+
+
+def test_v31_registers_the_original_resolver_policy_owner_route() -> None:
+    production = R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST
+    evaluation = R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_EVALUATION_MANIFEST
+    assert verify_runtime_manifest(production)
+    verify_production_evaluation_equivalence(production, evaluation)
+    assert production.manifest_version == 31
+    route = next(
+        item
+        for item in production.routes
+        if item.operation_id == "agent_loop.adopt_original_resolver_authority_policy.v1"
+    )
+    assert route.request_schema_id == "chiplog.loop.original-recovery-request.v1"
+    loop = next(owner for owner in production.owners if owner.owner_id == "agent_loop")
+    assert loop.target_ids == (
+        "chiplog.capabilities.agent_loop._original_recovery_process:dispatch",
+    )
 
 
 def test_v23_adds_only_bounded_native_accounting_route() -> None:

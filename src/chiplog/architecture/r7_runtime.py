@@ -1360,6 +1360,45 @@ R14_EXECUTION_ACCEPTED_DIRECT_TERMINAL_V30_PRODUCTION_MANIFEST = replace(
     ),
 )
 
+_V31_ORIGINAL_RESOLVER_POLICY_ROUTE = RoutedCallDecl(
+    "agent_loop.adopt_original_resolver_authority_policy.v1",
+    "broker",
+    "agent_loop",
+    "chiplog.loop.original-recovery-request.v1",
+    "chiplog.loop.original-recovery-result.v1",
+)
+_V31_EXECUTION_OPERATIONS = tuple(
+    sorted((*_V30_EXECUTION_OPERATIONS, _V31_ORIGINAL_RESOLVER_POLICY_ROUTE.operation_id))
+)
+R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST = replace(
+    R14_EXECUTION_ACCEPTED_DIRECT_TERMINAL_V30_PRODUCTION_MANIFEST,
+    manifest_version=31,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_V31_EXECUTION_OPERATIONS,
+            public_operations=_V31_EXECUTION_OPERATIONS,
+            target_ids=("chiplog.capabilities.agent_loop._original_recovery_process:dispatch",),
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_EXECUTION_ACCEPTED_DIRECT_TERMINAL_V30_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_EXECUTION_ACCEPTED_DIRECT_TERMINAL_V30_PRODUCTION_MANIFEST.routes,
+                _V31_ORIGINAL_RESOLVER_POLICY_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_EVALUATION_MANIFEST = replace(
+    R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST,
+    environment="evaluation",
+)
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -1411,6 +1450,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         28,
         29,
         30,
+        31,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1442,6 +1482,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         28: R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST,
         29: R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
         30: R14_EXECUTION_ACCEPTED_DIRECT_TERMINAL_V30_PRODUCTION_MANIFEST,
+        31: R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     if manifest.manifest_version >= 2:
         if manifest.broker_version.startswith("r8-development-v1:"):
