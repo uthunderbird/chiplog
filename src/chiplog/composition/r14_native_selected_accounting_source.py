@@ -535,14 +535,6 @@ class R14NativeSelectedAccountingSource:
             and type(expected_selected_decision) is not CallSubjectHead
         ):
             raise TypeError("historical OPEN selected decision must be exact")
-        accepted = self.collect_one_accepted(target_run, selected_only=selected_only)
-        if accepted is None:
-            return None
-        branch = accepted.source.target_inventory_rows[0].acceptance
-        if not isinstance(branch, ConsequentialAcceptedCall) or not isinstance(
-            branch.external_effect_intent, Present
-        ):
-            return None
         from chiplog.composition.r16_dispatch_history import verify_dispatch_history
         from chiplog.composition.r16_effects import _read_materialized_effects_with_history
 
@@ -555,9 +547,18 @@ class R14NativeSelectedAccountingSource:
                 identity = runtime._database_identity
                 with read_connection(runtime._database) as connection:
                     before = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
-                if self.collect(target_run, selected_only=selected_only) != accepted.source:
-                    return None
                 journal = runtime._owner_decisions().snapshot()
+                # Collect under the authority gate so this exact selected source
+                # remains fixed through the R16 history read below. Recollecting
+                # it under the same gate added a second complete R14 replay.
+                accepted = self.collect_one_accepted(target_run, selected_only=selected_only)
+                if accepted is None:
+                    return None
+                branch = accepted.source.target_inventory_rows[0].acceptance
+                if not isinstance(branch, ConsequentialAcceptedCall) or not isinstance(
+                    branch.external_effect_intent, Present
+                ):
+                    return None
                 cut, retained_journal = _read_materialized_effects_with_history(
                     runtime, runtime._owner_decisions()
                 )
