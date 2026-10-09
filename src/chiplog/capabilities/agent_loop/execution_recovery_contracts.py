@@ -28,6 +28,74 @@ class PrepareExecutionAccounting(ExecutionRecoveryDTO):
     cut: ExecutionRecoveryCut
 
 
+class AcceptedOpenRecoveryCutV1(ExecutionRecoveryDTO):
+    """Effects-specific R14 recovery cut; never projects R16 into generic bindings."""
+
+    schema_id: Literal["chiplog.execution.accepted-open-recovery-cut.v1"] = (
+        "chiplog.execution.accepted-open-recovery-cut.v1"
+    )
+    tenant_id: Identity
+    database_id: Identity
+    tenant_commit_sequence: UInt64
+    materialization_commitment: Digest
+    current_run: CallSubjectHead
+    current_run_bytes: bytes = Field(min_length=1)
+    response_id: Identity
+    original_call_id: Identity
+    initialized: CallSubjectHead
+    accepted: CallSubjectHead
+    accepted_record_bytes: bytes = Field(min_length=1)
+    execution_intent: CallSubjectHead
+    execution_intent_record_bytes: bytes = Field(min_length=1)
+    external_effect_intent: CallSubjectHead
+    selected_outcome_record_id: Identity
+    selected_outcome_bytes: bytes = Field(min_length=1)
+    selected_outcome_fingerprint: Digest
+    selected_decision: CallSubjectHead
+    outcome_commit_sequence: UInt64
+    publication_ordinal: UInt64
+    batch_record_ids: tuple[Identity, ...] = Field(min_length=1)
+    cut_fingerprint: Digest
+
+
+class PrepareAcceptedOpenAccounting(ExecutionRecoveryDTO):
+    kind: Literal["PREPARE_ACCEPTED_OPEN_ACCOUNTING_V1"] = (
+        "PREPARE_ACCEPTED_OPEN_ACCOUNTING_V1"
+    )
+    command_id: Identity
+    cut: AcceptedOpenRecoveryCutV1
+
+
+class AcceptedOpenAccountingRecordV1(ExecutionRecoveryDTO):
+    """Durable R14 weak accounting for one exact selected R16 OPEN obligation."""
+
+    schema_id: Literal["chiplog.execution.accepted-open-accounting.v1"] = (
+        "chiplog.execution.accepted-open-accounting.v1"
+    )
+    kind: Literal["RECOVERY_REQUIRED"] = "RECOVERY_REQUIRED"
+    accounting_id: Identity
+    source_cut_fingerprint: Digest
+    original_call_id: Identity
+    accepted: CallSubjectHead
+    execution_intent: CallSubjectHead
+    external_effect_intent: CallSubjectHead
+    selected_outcome_record_id: Identity
+    selected_outcome_bytes: bytes = Field(min_length=1)
+    selected_outcome_fingerprint: Digest
+    selected_decision: CallSubjectHead
+    outcome_commit_sequence: UInt64
+    publication_ordinal: UInt64
+    batch_record_ids: tuple[Identity, ...] = Field(min_length=1)
+
+
+class PreparedAcceptedOpenAccounting(ExecutionRecoveryDTO):
+    kind: Literal["PREPARED_ACCEPTED_OPEN_ACCOUNTING_V1"] = (
+        "PREPARED_ACCEPTED_OPEN_ACCOUNTING_V1"
+    )
+    source_request_fingerprint: Digest
+    accounting: AcceptedOpenAccountingRecordV1
+
+
 class PrepareExecutionContinuation(ExecutionRecoveryDTO):
     kind: Literal["PREPARE_EXECUTION_CONTINUATION_V1"] = "PREPARE_EXECUTION_CONTINUATION_V1"
     command_id: Identity
@@ -120,6 +188,7 @@ class PrepareAbortCancelExecution(ExecutionRecoveryDTO):
 
 ExecutionRecoveryRequest = Annotated[
     PrepareExecutionAccounting
+    | PrepareAcceptedOpenAccounting
     | PrepareExecutionContinuation
     | PrepareExecutionSuspension
     | PrepareExecutionResume
@@ -234,6 +303,7 @@ class ExecutionRecoveryClassified(ExecutionRecoveryDTO):
 
 ExecutionRecoveryResult = Annotated[
     PreparedExecutionAccounting
+    | PreparedAcceptedOpenAccounting
     | PreparedExecutionContinuation
     | PreparedExecutionSuspension
     | PreparedExecutionResume

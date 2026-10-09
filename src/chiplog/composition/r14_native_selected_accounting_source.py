@@ -26,7 +26,13 @@ from chiplog.capabilities.agent_loop.execution_preparation_bindings_contracts im
     decode_native_execution_preparation_bindings_v2,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
-from chiplog.capabilities.agent_loop.recovery_frontier_contracts import InitializedCall
+from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+    ConsequentialAcceptedCall,
+    InitializedCall,
+)
+from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEffectHistoryMember
+from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
+from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
 from chiplog.composition.r14_execution_cancellation_contracts import (
@@ -43,6 +49,8 @@ from chiplog.composition.r14_original_prepare_source import (
     R14OriginalNativePrepareProjection,
     R14OriginalNativePrepareSource,
 )
+from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+from chiplog.platform.workspace_snapshot import read_connection
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +93,35 @@ class R14NativeOneCallCancelledFacts:
     initialized: CallSubjectHead
 
 
+@dataclass(frozen=True, slots=True)
+class R14NativeOneCallAcceptedFacts:
+    """One accepted native consequential call with its exact selected acceptance."""
+
+    source: R14NativeSelectedAccountingSourceFacts
+    selected_seal: R14NativeSelectedResponseSealFacts
+    original_call_id: str
+    initialized: CallSubjectHead
+    acceptance: RetainedAcceptancePreparationV2
+
+
+@dataclass(frozen=True, slots=True)
+class R14NativeAcceptedOpenOutcome:
+    """Exact latest selected R16 OPEN outcome joined to one accepted call."""
+
+    accepted: R14NativeOneCallAcceptedFacts
+    outcome: DispatchOutcomeRecordV2
+    selected_member: SelectedEffectHistoryMember
+    outcome_record_id: str
+    commit_sequence: int
+    publication_ordinal: int
+    batch_record_ids: tuple[str, ...]
+    tenant_id: str
+    tenant_commit_sequence: int
+    materialization_commitment: str
+    owner_journal_head: str | None
+    database_identity: tuple[str, int, int]
+
+
 class R14NativeSelectedAccountingSource:
     """Read complete selected native facts for the original Prepare Run only."""
 
@@ -105,7 +142,10 @@ class R14NativeSelectedAccountingSource:
         self._preparation_bindings = preparation_bindings
 
     def collect(
-        self, target_run: CallSubjectHead | None = None
+        self,
+        target_run: CallSubjectHead | None = None,
+        *,
+        selected_only: bool = False,
     ) -> R14NativeSelectedAccountingSourceFacts | None:
         """Collect one complete Run lineage; ``target_run`` can only anchor it exactly."""
         if target_run is not None and type(target_run) is not CallSubjectHead:
@@ -115,7 +155,9 @@ class R14NativeSelectedAccountingSource:
             with gate.hold():
                 self._runtime._check_database_identity()
                 database_identity = self._runtime._database_identity
-                facts = self._collect_held(target_run, database_identity)
+                facts = self._collect_held(
+                    target_run, database_identity, selected_only=selected_only
+                )
                 self._runtime._check_database_identity()
                 if self._runtime._database_identity != database_identity:
                     return None
@@ -183,10 +225,182 @@ class R14NativeSelectedAccountingSource:
             initialized=initialized,
         )
 
+    def collect_one_accepted(
+        self, target_run: CallSubjectHead | None = None, *, selected_only: bool = False
+    ) -> R14NativeOneCallAcceptedFacts | None:
+        """Hold unless selected history proves one accepted self-effect call."""
+        facts = self.collect(target_run, selected_only=selected_only)
+        if facts is None or facts.target_legacy_seals or facts.target_cancellations:
+            return None
+        if len(facts.selected_native_seals) != 1 or len(facts.target_acceptances) != 1:
+            return None
+        seal = facts.selected_native_seals[0]
+        if len(seal.initialized_records) != 1 or len(seal.inventory_rows) != 1:
+            return None
+        record, row = seal.initialized_records[0], seal.inventory_rows[0]
+        initialized = reference(record.original_call_id, record)
+        try:
+            raw = base64.b64decode(record.call.canonical_call_base64, validate=True)
+            tool = ConsequentialToolCall.model_validate_json(raw)
+        except ValueError, binascii.Error:
+            return None
+        acceptance = facts.target_acceptances[0]
+        binding = acceptance.loop_request.binding
+        branch = row.acceptance
+        manifest = tuple(
+            member.revision for member in acceptance.loop_proposal.complete_acceptance_manifest
+        )
+        if (
+            len(manifest) != 3
+            or tool.canonical_bytes() != raw
+            or tool.tool != "request_self_effect"
+            or row.original_call_id != record.original_call_id
+            or row.initialized != initialized
+            or row.initialized_record != record
+            or not isinstance(branch, ConsequentialAcceptedCall)
+            or branch.initialized != initialized.revision
+            or branch.accepted != manifest[0]
+            or branch.execution_intent != manifest[1]
+            or branch.external_effect_intent != manifest[2]
+            or branch.complete_acceptance_manifest != manifest
+            or row.terminal.kind != "ABSENT"
+            or binding.original_call_id != record.original_call_id
+            or binding.initialized != initialized
+            or acceptance.loop_request.initialized_record != record
+            or binding.original != record.call.original
+            or acceptance.loop_proposal.accepted.binding != binding
+            or acceptance.loop_proposal.execution_intent.original_call_id
+            != record.original_call_id
+            or acceptance.loop_proposal.execution_intent.initialized != initialized
+        ):
+            return None
+        return R14NativeOneCallAcceptedFacts(
+            source=facts,
+            selected_seal=seal,
+            original_call_id=record.original_call_id,
+            initialized=initialized,
+            acceptance=acceptance,
+        )
+
+    def collect_one_accepted_open_outcome(
+        self, target_run: CallSubjectHead | None = None, *, selected_only: bool = False
+    ) -> R14NativeAcceptedOpenOutcome | None:
+        """Join one accepted call to its exact selected latest OPEN R16 outcome."""
+        accepted = self.collect_one_accepted(target_run, selected_only=selected_only)
+        if accepted is None:
+            return None
+        branch = accepted.source.target_inventory_rows[0].acceptance
+        if not isinstance(branch, ConsequentialAcceptedCall) or not isinstance(
+            branch.external_effect_intent, Present
+        ):
+            return None
+        from chiplog.composition.r16_effects import _read_materialized_effects_with_history
+        from chiplog.composition.r16_dispatch_history import verify_dispatch_history
+
+        runtime = self._runtime
+        try:
+            if not hasattr(runtime, "_owner_decisions"):
+                return None
+            with runtime._authority_gate().hold():
+                runtime._check_database_identity()
+                identity = runtime._database_identity
+                with read_connection(runtime._database) as connection:
+                    before = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+                if self.collect(target_run, selected_only=selected_only) != accepted.source:
+                    return None
+                journal = runtime._owner_decisions().snapshot()
+                cut, retained_journal = _read_materialized_effects_with_history(
+                    runtime, runtime._owner_decisions()
+                )
+                verified = verify_dispatch_history(cut, retained_journal)
+                if (
+                    retained_journal != journal
+                    or cut.materialization_commitment != before
+                    or runtime._commitment_journal.load(runtime._tenant_id) != before
+                    or runtime._database_identity != identity
+                ):
+                    return None
+            expected_intent = accepted.acceptance.loop_proposal.execution_intent.external_intent
+            candidates: list[tuple[DispatchOutcomeRecordV2, SelectedEffectHistoryMember, object]] = []
+            latest: dict[str, object] = {}
+            member_by_bytes = {item.record_bytes: item for item in verified.members}
+            if len(member_by_bytes) != len(verified.members):
+                return None
+            for row in cut.rows:
+                member = member_by_bytes.get(row.record.canonical_bytes)
+                if member is None:
+                    return None
+                record = next(
+                    (item for item in verified.v2_records if item.record.head == member.record.head),
+                    None,
+                )
+                if record is None:
+                    return None
+                latest[record.snapshot.intent.intent_id] = record
+                if not isinstance(record, DispatchOutcomeRecordV2):
+                    continue
+                intent_ref = effects_reference(
+                    record.snapshot.intent.intent_id,
+                    record.snapshot.intent.canonical_bytes(),
+                )
+                if (
+                    expected_intent.subject_id == intent_ref.subject_id
+                    and expected_intent.revision.fingerprint == intent_ref.fingerprint
+                ):
+                    candidates.append((record, member, row))
+            selected = [
+                item
+                for item in candidates
+                if latest.get(item[0].snapshot.intent.intent_id) == item[0]
+            ]
+            if len(selected) != 1:
+                return None
+            outcome, member, row = selected[0]
+            if (
+                outcome.snapshot.state != "OUTCOME_UNKNOWN"
+                or outcome.snapshot.obligation.state != "OPEN"
+                or outcome.snapshot.intent.intent_id != expected_intent.subject_id
+                or outcome.snapshot.obligation.original_intent != effects_reference(
+                    outcome.snapshot.intent.intent_id,
+                    outcome.snapshot.intent.canonical_bytes(),
+                )
+                or member.record_bytes != row.record.canonical_bytes
+                or member.publication_ordinal != row.publication_ordinal
+                or row.commit_sequence < 1
+                or not row.batch_record_ids
+            ):
+                return None
+            with read_connection(runtime._database) as connection:
+                after = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+            if (
+                after != before
+                or runtime._commitment_journal.load(runtime._tenant_id) != before
+                or runtime._database_identity != identity
+            ):
+                return None
+            return R14NativeAcceptedOpenOutcome(
+                accepted=accepted,
+                outcome=outcome,
+                selected_member=member,
+                outcome_record_id=row.record.record_id,
+                commit_sequence=row.commit_sequence,
+                publication_ordinal=row.publication_ordinal,
+                batch_record_ids=row.batch_record_ids,
+                tenant_id=cut.tenant_id,
+                tenant_commit_sequence=cut.tenant_frontier,
+                materialization_commitment=cut.materialization_commitment,
+                owner_journal_head=cut.owner_journal_head,
+                database_identity=identity,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError):
+            return None
+
     def _collect_held(
         self,
         target_run: CallSubjectHead | None,
         database_identity: tuple[str, int, int],
+        *,
+        selected_only: bool = False,
     ) -> R14NativeSelectedAccountingSourceFacts | None:
         # Both values are public DTOs.  Reopen their only authenticated source
         # before using a single field from either supplied instance.
@@ -219,7 +433,7 @@ class R14NativeSelectedAccountingSource:
         ):
             return None
         snapshot, inventory, legacy, seals, cancellations, acceptances = (
-            read_execution_recovery_history(self._runtime)
+            read_execution_recovery_history(self._runtime, selected_only=selected_only)
         )
         lineage = self._lineage(
             snapshot.records, reopened.prepared_run, reopened.prepared_run_bytes
@@ -407,6 +621,8 @@ class R14NativeSelectedAccountingSource:
 
 
 __all__ = [
+    "R14NativeAcceptedOpenOutcome",
+    "R14NativeOneCallAcceptedFacts",
     "R14NativeOneCallCancelledFacts",
     "R14NativeSelectedAccountingSource",
     "R14NativeSelectedAccountingSourceFacts",

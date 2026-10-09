@@ -35,7 +35,10 @@ ROUTES = tuple(
 
 
 def dispatch(operation: str, payload: bytes) -> dict[str, object]:
-    if operation not in {ACCOUNTING_OPERATION, CONTINUATION_OPERATION}:
+    if operation not in {
+        ACCOUNTING_OPERATION,
+        CONTINUATION_OPERATION,
+    }:
         return _native_one_call_accounting_v2_process.dispatch(operation, payload)
     try:
         decoded = decode_execution_recovery_request(REQUEST_SCHEMA, payload)

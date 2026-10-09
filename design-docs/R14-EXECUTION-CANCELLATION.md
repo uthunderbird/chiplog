@@ -1,8 +1,12 @@
 # Execution-call cancellation
 
-Status: contract candidate; runtime publication and acceptance/cancellation races
-remain HOLD. Base: published 5c46409. Full R14–R17 scope stays in
-R14-R17-COMPLETION.md. No retrospective or live provider operation is included.
+Status: bounded execution-call cancellation and acceptance/cancellation competition
+are mounted in the registered hermetic CLI runtime. The test
+`tests/composition/test_execution_call_branch_competition.py::test_selected_acceptance_and_native_cancellation_compete_on_one_initialized_cut`
+passes both winner orders on the current checkout. It uses isolated owner processes
+within one broker runtime; it does not establish competition between independently
+started broker runtimes. Full R14–R17 scope stays OPEN in
+R14-R17-COMPLETION.md. No live provider operation is included.
 
 ## Context and boundary
 
@@ -52,8 +56,8 @@ Cold context retains the shared-model ceiling.
 
 | Claim | Owned decision/data | Independent observable | Forbidden substitute | Boundary fixtures | Evidence |
 |---|---|---|---|---|---|
-| Exact unaccepted branch | original initialized + Run + complete inventory | selected/physical history has one winner | embedded terminal or shape validity | cancel/accept both orders, stale Run, foreign call | runtime HOLD |
-| Atomic pair | owner-authored terminal/result ordered bytes | journal and exact SQL membership | regenerated owner result or digest-only count | omit/add/reorder/duplicate/alias, whole encoded request N/N+1 | envelope/crash HOLD |
+| Exact unaccepted branch | original initialized + Run + complete inventory | selected/physical history has one winner | embedded terminal or shape validity | cancel/accept both orders, stale Run, foreign call | `test_selected_acceptance_and_native_cancellation_compete_on_one_initialized_cut` passes both winner selectors on 2026-10-09; cross-runtime competition is not covered |
+| Atomic pair | owner-authored terminal/result ordered bytes | journal and exact SQL membership | regenerated owner result or digest-only count | omit/add/reorder/duplicate/alias, whole encoded request N/N+1 | race witness checks the exact selected batch; independent omission/addition/alias/size mutations and cancellation crash histories remain HOLD |
 | Authenticated act | actual original trust and IPC plus private live admission | changed peer/source/session denies selection | caller credential DTO or historical trust as current authority | wrong tenant/principal/database, revoke/expiry | runtime HOLD |
 | Stable replay | exact original act, batch and receipt | restart preserves complete receipt/history | renewed act, fresh owner output or fabricated Run edge | changed bytes, Run advancement, partial materialization | runtime HOLD |
 | Historical separation | distinct retained/envelope/receipt discriminants | old/new consumers reject substitution | widening old RunRecord | unknown version, legacy/new envelope and retained substitution | public consumer tests passed; mixed runtime HOLD |
@@ -74,11 +78,17 @@ History rejects unknown/substituted operations and omitted or extra physical com
 Replay checks original submitted bytes and current caller, recovers only selected bytes,
 and validates complete history before returning. It never refreshes the original act.
 
-Required histories: both cancel/accept orders, actual two-process competition,
-accepted lost-response remaining uncertain, changed current Run, wrong act/subject/peer,
-revocation/expiry/stale worker, journal-before-SQL and SQL-before-reply failures,
-restart, corrupt/omitted companions and mixed legacy/execution history. Subsequent
-call accounting, reduction, continuation, frontier and Run terminalization remain open.
+Required histories: both cancel/accept orders now have a bounded same-runtime mounted
+witness; accepted lost-response remaining uncertain, changed current Run, wrong
+act/subject/peer, revocation/expiry/stale worker, journal-before-SQL and SQL-before-
+reply failures, restart, corrupt/omitted companions and mixed legacy/execution
+history remain required. Independently opening a second broker runtime advances the
+active generation (`_open_runtime` calls `restart_generation`), and `current_worker`
+binds the generation; that startup fences the previous runtime instead of creating
+two equally current workers. Any requirement for two independent broker processes
+to race the same active Run therefore needs an explicit supported runtime model.
+Subsequent call accounting, reduction, continuation, frontier and Run terminalization
+remain open.
 
 ## Contract validation
 

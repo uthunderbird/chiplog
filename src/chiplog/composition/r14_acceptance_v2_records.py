@@ -18,7 +18,7 @@ from ._pure_bytes import reuse_exact_bytes
 from .r14_acceptance_contracts import (
     ACCEPTED_SCHEMA,
     EXECUTION_SCHEMA,
-    MAX_ACCEPTANCE_BYTES,
+    MAX_ACCEPTANCE_V2_BYTES,
     AcceptancePhysicalMember,
 )
 from .r14_acceptance_records import _require, _translate, _without, verify_loop_preparation
@@ -281,7 +281,8 @@ def _envelope_bytes(raw: bytes) -> bytes:
         update={"physical_batch_fingerprint": _without(envelope, "physical_batch_fingerprint")}
     )
     _require(
-        len(envelope.canonical_bytes()) <= MAX_ACCEPTANCE_BYTES, "physical byte bound exceeded"
+        len(envelope.canonical_bytes()) <= MAX_ACCEPTANCE_V2_BYTES,
+        "physical byte bound exceeded",
     )
     return envelope.canonical_bytes()
 

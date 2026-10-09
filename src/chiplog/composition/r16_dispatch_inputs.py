@@ -159,28 +159,32 @@ def capture_dispatch(
     if epoch != resource_observation.clock_epoch:
         raise LoopRejected("offline resource clock continuity changed")
     entries = runtime._loop_decisions().entries()
-    planning_records = tuple(
-        (record.record_id.value, record.canonical_bytes)
-        for publication in runtime._verified_publications("planning")
-        for record in publication.records
-    )
-    own_planning_records = tuple(
-        (
-            record.snapshot.intent.intent_id,
-            tuple(
-                item.record_id
+    if original_call_id is None:
+        planning_records = tuple(
+            (record.record_id.value, record.canonical_bytes)
+            for publication in runtime._verified_publications("planning")
+            for record in publication.records
+        )
+        own_planning_records = tuple(
+            (
+                record.snapshot.intent.intent_id,
+                tuple(
+                    item.record_id
+                    for item in decision.prepared.request.complete_records
+                    if item.owner == "planning"
+                ),
+            )
+            for record in history.v2_records
+            if record.kind == "PLAN_EFFECT_PUBLISHED"
+            for decision in selected.decisions
+            if any(
+                item.record_id == record.record.head
                 for item in decision.prepared.request.complete_records
-                if item.owner == "planning"
-            ),
+            )
         )
-        for record in history.v2_records
-        if record.kind == "PLAN_EFFECT_PUBLISHED"
-        for decision in selected.decisions
-        if any(
-            item.record_id == record.record.head
-            for item in decision.prepared.request.complete_records
-        )
-    )
+    else:
+        planning_records = ()
+        own_planning_records = ()
     return DispatchCapture(
         cut,
         history,
@@ -195,7 +199,14 @@ def capture_dispatch(
     )
 
 
-def planning_scope(captured: DispatchCapture, own: ExternalActionIntentV2 | None) -> bytes:
+def planning_scope(
+    captured: DispatchCapture,
+    own: ExternalActionIntentV2 | None,
+    *,
+    call_origin: bool = False,
+) -> bytes:
+    if call_origin or (own is not None and isinstance(own.mandate.origin, InitializedCallOrigin)):
+        return canonical([])
     exempt = set()
     if own is not None and not isinstance(own.mandate.origin, InitializedCallOrigin):
         exempt = {

@@ -12,6 +12,7 @@ ACCEPTED_SCHEMA = "chiplog.call.accepted.v1"
 EXECUTION_SCHEMA = "chiplog.call.execution-intent.v1"
 EFFECT_SCHEMA = "chiplog.effects.record.v1"
 MAX_ACCEPTANCE_BYTES = 1_048_576
+MAX_ACCEPTANCE_V2_BYTES = 4_194_304
 
 
 class SemanticComponent(RecoveryDTO):

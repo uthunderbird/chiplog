@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
 from chiplog.adapters.driven.effects_hermetic import IssuedEffectSendTicket
@@ -12,9 +12,16 @@ from chiplog.capabilities.effects.dispatch_authority_contracts import DispatchOb
 from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2, canonical, digest, reference
 from chiplog.composition.r16_denial_inputs import require_invocation
 from chiplog.composition.r16_dispatch_authority import validate_issuance
-from chiplog.composition.r16_dispatch_history import RECORD_SCHEMA, verify_dispatch_history
+from chiplog.composition.r16_dispatch_history import (
+    RECORD_SCHEMA,
+    VerifiedDispatchHistory,
+    verify_dispatch_history,
+)
 from chiplog.composition.r16_dispatch_publication import authenticate
-from chiplog.composition.r16_effects import read_materialized_effects
+from chiplog.composition.r16_effects import (
+    MaterializedEffectsCut,
+    _read_materialized_effects_with_history,
+)
 from chiplog.composition.r16_effects_authority import effect_materialization_state
 from chiplog.composition.r16_effects_inputs import canonical as retained_canonical
 from chiplog.platform._owner_publication_contracts import (
@@ -30,6 +37,7 @@ from chiplog.platform._owner_publication_contracts import (
     SingleOwnerBatch,
     WorkerAuthentication,
 )
+from chiplog.platform.owner_decision_journal import OwnerJournalSnapshot
 from chiplog.platform.owner_publications import (
     BrokerPublicationCoordinator,
     PreparedOwnerPublication,
@@ -64,12 +72,27 @@ class ConsumptionRecord(DispatchObservationDTO):
     request: ConsumeRequest
 
 
+@dataclass(frozen=True)
+class _ConsumptionSources:
+    cut: MaterializedEffectsCut
+    journal: OwnerJournalSnapshot
+    dispatch: VerifiedDispatchHistory
+
+
+def _capture_sources(runtime: R16DispatchRuntime) -> _ConsumptionSources:
+    cut, journal = _read_materialized_effects_with_history(
+        runtime, runtime._owner_decisions()
+    )
+    dispatch = verify_dispatch_history(cut, journal)
+    return _ConsumptionSources(cut, journal, dispatch)
+
+
 def _send(
-    runtime: R16DispatchRuntime, intent_id: str
+    runtime: R16DispatchRuntime, intent_id: str, sources: _ConsumptionSources | None = None
 ) -> tuple[SelectedOwnerDecision, DispatchRecordV2]:
-    journal = runtime._owner_decisions().snapshot()
-    cut = read_materialized_effects(runtime, runtime._owner_decisions())
-    history = verify_dispatch_history(cut, journal)
+    captured = _capture_sources(runtime) if sources is None else sources
+    journal = captured.journal
+    history = captured.dispatch
     selected = tuple(
         row
         for row in history.v2_records
@@ -146,8 +169,10 @@ def _request(
     ), ticket
 
 
-def validate_consumptions(runtime: R16DispatchRuntime) -> None:
-    history = runtime._owner_decisions().snapshot()
+def validate_consumptions(
+    runtime: R16DispatchRuntime, journal: OwnerJournalSnapshot | None = None
+) -> None:
+    history = runtime._owner_decisions().snapshot() if journal is None else journal
     sends: dict[str, tuple[SelectedOwnerDecision, DispatchRecordV2]] = {}
     consumed: set[str] = set()
     for decision in history.decisions:
@@ -264,10 +289,12 @@ class _ConsumeAuthority:
             return "DENIED"
         try:
             require_invocation(self.runtime, self.observed)
-            validate_consumptions(self.runtime)
-            current = read_materialized_effects(self.runtime, self.runtime._owner_decisions())
-            expected, _ = _request(*_send(self.runtime, self.subject.intent.subject_id))
-            return None if current == self.cut and expected == self.subject else "STALE"
+            current = _capture_sources(self.runtime)
+            validate_consumptions(self.runtime, current.journal)
+            expected, _ = _request(
+                *_send(self.runtime, self.subject.intent.subject_id, current)
+            )
+            return None if current.cut == self.cut and expected == self.subject else "STALE"
         except ValueError, RuntimeError, OSError, KeyError:
             return "INDETERMINATE"
 
@@ -296,14 +323,15 @@ async def consume_and_emit(runtime: R16DispatchRuntime, peer: str, intent_id: st
     )
     with runtime._authority_gate().hold():
         runtime._require_no_pending()
-        validate_consumptions(runtime)
-        request, ticket = _request(*_send(runtime, intent_id))
+        sources = _capture_sources(runtime)
+        validate_consumptions(runtime, sources.journal)
+        request, ticket = _request(*_send(runtime, intent_id, sources))
         existing = runtime._owner_decisions().lookup(runtime._tenant_id, request.command_id)
         if existing is not None:
             # This API never returns an executable permit for a historical selection.
             validate_consumptions(runtime)
             return None
-        cut = read_materialized_effects(runtime, runtime._owner_decisions())
+        cut = sources.cut
         identity = PublicationIdentity(
             tenant_id=runtime._tenant_id,
             command_id=request.command_id,

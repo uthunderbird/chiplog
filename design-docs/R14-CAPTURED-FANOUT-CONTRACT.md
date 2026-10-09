@@ -155,6 +155,6 @@ Boundary evidence is tracked in the atomic-publication plan and checkpoint.
 
 The immutable offline profile caps calls at 256 and also respects Run.policy.max_tool_calls,
 semantic manifest bytes at 64 KiB, and the full physical envelope at 16 MiB. The IPC
-transport's 8 MiB frame limit remains independent. Larger inputs may fail transport
+transport's 16 MiB frame limit remains independent. Larger inputs may fail transport
 earlier; they cannot bypass the physical publication limit. No supplied registry can
 upgrade these proposal-only tools to executable or consequential authority.

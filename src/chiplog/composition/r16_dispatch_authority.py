@@ -294,7 +294,7 @@ class DispatchPublicationAuthority:
                 ):
                     return "STALE"
                 return None
-            except ValueError, RuntimeError, OSError, KeyError, TypeError:
+            except (ValueError, RuntimeError, OSError, KeyError, TypeError):
                 return "INDETERMINATE"
         return "DENIED"
 

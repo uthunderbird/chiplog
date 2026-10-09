@@ -3,8 +3,11 @@
 Status: implemented boundary with scoped evidence below. Full R14–R17 remains
 OPEN in R14-R17-COMPLETION.md. This slice connects original executable call
 initialization to authenticated adoption, atomic acceptance, dispatch and durable
-outcome handling. It does not complete cancellation, reduction, continuation,
-scheduler execution or channel delivery.
+outcome handling. The native execution-call cancellation route is also mounted;
+the bounded acceptance/cancellation race evidence is recorded below. R14.1
+accounting and continuation, recovery reduction, frontier/successor, worker fencing,
+post-terminal work, model-attempt recovery, scheduler execution and channel delivery
+remain incomplete.
 
 ## Scope and assembly
 
@@ -166,9 +169,43 @@ and test bytes unchanged throughout. `uv run mypy`, `uv run ruff check` and
 assertion in the new witness; that witness passed again after the test-only repair.
 Cold staged review and the normal merge gate are separate publication checks.
 
-Next R14 boundary is actual execution-schema cancellation and acceptance/cancellation
-competition. Full call reduction, frontier, resume/successor, read-only retry budgets,
-post-terminal work and model-attempt recovery remain open. R15 scheduling execution,
-R16 remaining recovery/compensation and R17 complete ingress/admission/quarantine,
-exact delivery and CLI/Telegram parity remain required by the completion ledger.
+The mounted test
+`tests/composition/test_execution_call_branch_competition.py::test_selected_acceptance_and_native_cancellation_compete_on_one_initialized_cut`
+passed both `[acceptance]` and `[cancellation]` cases on 2026-10-09 (1 passed in
+9.89s and 1 passed in 9.39s). It checks both winner orders, exact selected physical
+members, loser rejection, replay and zero provider transfers. The two public calls
+compete within one broker runtime and use isolated owner processes; this does not
+establish competition between independently started broker runtimes.
+
+The next R14.1 slice is a composed direct-terminal continuation for one accepted
+consequential call: selected acceptance and execution intent, exact effects-owned
+terminal lifecycle outcome, its explicit versioned mapping to the R14 frontier's
+`SUCCEEDED` or `FAILED_DEFINITE` result, and complete call accounting must join by
+original-call lineage and exact selected/physical bytes before a successor Turn is
+published. The selected recovery reader does not yet carry this join.
+`ExecutionDispatchRuntime` selects R14/R16 acceptance and effect outcomes but has
+no V27 next-Turn route. `CommonCliExecutionRuntime` has both route families, but
+its installed `NativeRecoveryCutSource` admits only the cancellation profile and
+does not select R16 outcome records.
+R16 terminal states such as `CONFIRMED` and `FAILED_NO_EFFECT` are not themselves
+R14 frontier result discriminants; their semantic mapping must be specified and
+versioned before the continuation implementation.
+The existing
+unknown-outcome test proves that an unresolved effect blocks a later adoption in
+that effect scope, while the mounted next-Turn tests cover cancellation-only
+accounting. Neither proves that the specific open effect obligation is present in
+or causes a HOLD from the continuation cut. Do not claim that causal join until the
+composed reader carries its selected obligation into that same cut and rejects
+without successor publication.
+
+The first composed continuation slice must reject omitted or foreign terminal
+records and confirm record references, canonical bytes/fingerprints, original-call
+lineage and physical `COMPLETE` membership. An open `LOST_RESPONSE_AFTER_EFFECT`
+remains a hold; it cannot become `NOT_EXECUTED` or a successful result. Making an
+uncertain call continuation-ready requires the R14.2 original resolver closure,
+recovered outcome and current semantic reduction join. R14.3 frontier/resume/successor
+and read-only retry budgets, R14.4 worker fencing/post-terminal work, and R14.5
+model-attempt recovery remain open. R15 scheduling execution, R16 remaining
+recovery/compensation and R17 complete ingress/admission/quarantine, exact delivery
+and CLI/Telegram parity remain required by the completion ledger.
 No retrospective or live external sending is included.

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from chiplog.capabilities.effects import dispatch_v2
+from chiplog.composition import r14_acceptance_v2_records as verifier
 from chiplog.composition.r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
 from chiplog.composition.r14_acceptance_v2_records import (
     build_acceptance_envelope,
@@ -40,6 +41,21 @@ def test_both_real_owner_outputs_form_exact_three_member_envelope(
                     update={"complete_records": tuple(envelope.complete_records[i] for i in order)}
                 ),
             )
+
+
+def test_v2_physical_byte_bound_accepts_n_and_rejects_n_plus_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retained = prepared_acceptance()
+    assert verifier.MAX_ACCEPTANCE_V2_BYTES == 4 * 1024 * 1024
+    # Recompute under each monkeypatched limit instead of reusing the pure-byte cache.
+    monkeypatch.setattr(verifier, "_envelope_bytes", verifier._envelope_bytes.__wrapped__)
+    size = len(build_acceptance_envelope(retained).canonical_bytes())
+    monkeypatch.setattr(verifier, "MAX_ACCEPTANCE_V2_BYTES", size)
+    build_acceptance_envelope(retained)
+    monkeypatch.setattr(verifier, "MAX_ACCEPTANCE_V2_BYTES", size - 1)
+    with pytest.raises(ValueError, match="physical byte bound"):
+        build_acceptance_envelope(retained)
 
 
 @pytest.mark.parametrize(

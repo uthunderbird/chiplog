@@ -38,7 +38,7 @@ from chiplog.platform.broker import (
 from chiplog.platform.operator_grant_key_pin import PinnedOperatorGrantKey
 from chiplog.platform.operator_policy_key_pin import PinnedOperatorPolicyKey
 
-_MAX_FRAME_BYTES = 8 * 1024 * 1024
+_MAX_FRAME_BYTES = 16 * 1024 * 1024
 
 
 class OwnerProcessFailure(RuntimeError):
@@ -407,12 +407,15 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
         from chiplog.architecture.r7_runtime import (
             _V26_EXECUTION_OPERATIONS,
             _V27_EXECUTION_OPERATIONS,
+            _V28_EXECUTION_OPERATIONS,
         )
 
         if identity.capability_ids == _V26_EXECUTION_OPERATIONS:
             return "chiplog.capabilities.agent_loop._execution_recovery_process"
         if identity.capability_ids == _V27_EXECUTION_OPERATIONS:
             return "chiplog.capabilities.agent_loop._execution_next_turn_process"
+        if identity.capability_ids == _V28_EXECUTION_OPERATIONS:
+            return "chiplog.capabilities.agent_loop._execution_accepted_open_process"
         raise OwnerProcessFailure("unknown agent-loop capability partition")
     if identity.owner_id == "projections" and identity.capability_ids == (
         "projections.prepare_conversation_completion",
@@ -446,6 +449,24 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
 
 def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
     module = _owner_module(identity)
+    if module == "chiplog.capabilities.agent_loop._execution_accepted_open_process":
+        return tuple(
+            sorted(
+                (
+                    *_owner_module_closure(
+                        replace(
+                            identity,
+                            capability_ids=tuple(
+                                item
+                                for item in identity.capability_ids
+                                if item != "agent_loop.prepare_accepted_open_accounting.v1"
+                            ),
+                        )
+                    ),
+                    module,
+                )
+            )
+        )
     if module == "chiplog.capabilities.agent_loop._execution_next_turn_process":
         return tuple(
             sorted(
@@ -718,7 +739,9 @@ def _owner_request_bytes(call: PublicPortCall) -> bytes:
 
 def _send_frame(connection: socket.socket, secret: bytes, payload: bytes) -> None:
     if len(payload) > _MAX_FRAME_BYTES:
-        raise OwnerProcessFailure("IPC frame exceeds the registered bound")
+        raise OwnerProcessFailure(
+            f"IPC frame exceeds the registered bound ({len(payload)} > {_MAX_FRAME_BYTES})"
+        )
     signature = hmac.digest(secret, payload, "sha256")
     connection.sendall(struct.pack("!I", len(payload)) + signature + payload)
 

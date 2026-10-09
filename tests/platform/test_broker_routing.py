@@ -117,6 +117,23 @@ def test_guarded_broker_call_admits_the_exact_request_once_immediately_before_se
         assert [event[0] for event in events] == ["guard", "send"]
 
 
+def test_owner_ipc_frame_bound_is_finite_and_exact(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert r7_runtime._MAX_FRAME_BYTES == 16 * 1024 * 1024
+
+    class Sink:
+        sent: bytes | None = None
+
+        def sendall(self, value: bytes) -> None:
+            self.sent = value
+
+    sink = Sink()
+    monkeypatch.setattr(r7_runtime, "_MAX_FRAME_BYTES", 4)
+    r7_runtime._send_frame(sink, b"secret", b"1234")  # type: ignore[arg-type]
+    assert sink.sent is not None
+    with pytest.raises(RuntimeError, match="5 > 4"):
+        r7_runtime._send_frame(sink, b"secret", b"12345")  # type: ignore[arg-type]
+
+
 def test_guard_failure_sends_no_frame_and_propagates_unchanged(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

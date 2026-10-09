@@ -1183,6 +1183,8 @@ def read_execution_call_history(
 
 def read_execution_recovery_history(
     runtime: R14PlanningRuntime,
+    *,
+    selected_only: bool = False,
 ) -> tuple[
     ExecutionHistorySnapshot,
     CallInventorySnapshot,
@@ -1199,7 +1201,7 @@ def read_execution_recovery_history(
     recovery cut or confer writer authority.
     """
     _, legacy, cancellations, snapshot, executions, execution_cancellations, acceptances = (
-        _read_call_history(runtime)
+        _read_call_history(runtime, selected_only=selected_only)
     )
     return (
         snapshot,

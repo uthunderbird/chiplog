@@ -11,16 +11,25 @@ import json
 
 from pydantic import ValidationError
 
+from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
+from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
+
 from .call_acceptance_contracts import (
     CallPreparationRejected,
     CallSubjectHead,
     CancelledBeforeAcceptRecord,
     InitializedCallRecord,
     NotExecutedCallResultRecord,
+    ToolCallAcceptedRecord,
+    ToolExecutionIntentRecord,
 )
 from .call_acceptance_preparation import call_record_reference
 from .execution_contracts import ExecutionRunRecord
 from .execution_recovery_contracts import (
+    AcceptedOpenAccountingRecordV1,
+    AcceptedOpenRecoveryCutV1,
+    PrepareAcceptedOpenAccounting,
+    PreparedAcceptedOpenAccounting,
     PreparedExecutionAccounting,
     PreparedExecutionContinuation,
     PrepareExecutionAccounting,
@@ -350,6 +359,89 @@ def prepare_execution_accounting(
         return PreparedExecutionAccounting(
             source_request_fingerprint=request.digest(),
             complete_accounting=_accounting(request.cut),
+        )
+    except (ValueError, TypeError) as error:
+        return _rejected(request.command_id, error)
+
+
+def prepare_accepted_open_accounting(
+    request: PrepareAcceptedOpenAccounting,
+) -> PreparedAcceptedOpenAccounting | CallPreparationRejected:
+    """Create only effects-specific weak accounting for one selected OPEN source."""
+    try:
+        request = PrepareAcceptedOpenAccounting.model_validate_json(request.canonical_bytes())
+        cut = request.cut
+        content = cut.model_dump(mode="json")
+        del content["cut_fingerprint"]
+        fingerprint = _sha(
+            json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        )
+        if cut.cut_fingerprint != fingerprint:
+            raise RecoveryIntegrityFault("accepted/open cut fingerprint differs")
+        if (
+            cut.selected_outcome_fingerprint != _sha(cut.selected_outcome_bytes)
+            or cut.outcome_commit_sequence > cut.tenant_commit_sequence
+            or cut.selected_outcome_record_id not in cut.batch_record_ids
+            or len(set(cut.batch_record_ids)) != len(cut.batch_record_ids)
+        ):
+            raise RecoveryIntegrityFault("accepted/open selected publication provenance differs")
+        outcome = DispatchOutcomeRecordV2.model_validate_json(cut.selected_outcome_bytes)
+        run = ExecutionRunRecord.model_validate_json(cut.current_run_bytes)
+        accepted = ToolCallAcceptedRecord.model_validate_json(cut.accepted_record_bytes)
+        execution_intent = ToolExecutionIntentRecord.model_validate_json(
+            cut.execution_intent_record_bytes
+        )
+        intent = outcome.snapshot.intent
+        intent_ref = effects_reference(intent.intent_id, intent.canonical_bytes())
+        accepted_ref = call_record_reference(accepted.accepted_id, accepted)
+        execution_intent_ref = call_record_reference(
+            execution_intent.execution_intent_id, execution_intent
+        )
+        if (
+            outcome.canonical_bytes() != cut.selected_outcome_bytes
+            or run.canonical_bytes() != cut.current_run_bytes
+            or _run_ref(run) != cut.current_run
+            or run.tenant != cut.tenant_id
+            or run.state != "ACTIVE"
+            or accepted.canonical_bytes() != cut.accepted_record_bytes
+            or execution_intent.canonical_bytes() != cut.execution_intent_record_bytes
+            or accepted_ref != cut.accepted
+            or execution_intent_ref != cut.execution_intent
+            or accepted.execution_intent_id != execution_intent.execution_intent_id
+            or accepted.binding.original_call_id != cut.original_call_id
+            or accepted.binding.original_call_id != cut.original_call_id
+            or accepted.binding.initialized != cut.initialized
+            or accepted.binding.external_intent != cut.external_effect_intent
+            or execution_intent.original_call_id != cut.original_call_id
+            or execution_intent.initialized != cut.initialized
+            or execution_intent.accepted != cut.accepted
+            or execution_intent.external_intent != cut.external_effect_intent
+            or outcome.snapshot.state != "OUTCOME_UNKNOWN"
+            or outcome.snapshot.obligation.state != "OPEN"
+            or cut.external_effect_intent.subject_id != intent.intent_id
+            or cut.external_effect_intent.revision.fingerprint != intent_ref.fingerprint
+            or outcome.snapshot.obligation.original_intent != intent_ref
+            or cut.initialized.subject_id != cut.original_call_id
+            or request.command_id != "accepted-open-accounting:" + cut.cut_fingerprint
+        ):
+            raise RecoveryHold("accepted/open call and selected R16 obligation do not join")
+        accounting = AcceptedOpenAccountingRecordV1(
+            accounting_id="accepted-open-accounting:" + cut.cut_fingerprint,
+            source_cut_fingerprint=cut.cut_fingerprint,
+            original_call_id=cut.original_call_id,
+            accepted=cut.accepted,
+            execution_intent=cut.execution_intent,
+            external_effect_intent=cut.external_effect_intent,
+            selected_outcome_record_id=cut.selected_outcome_record_id,
+            selected_outcome_bytes=cut.selected_outcome_bytes,
+            selected_outcome_fingerprint=cut.selected_outcome_fingerprint,
+            selected_decision=cut.selected_decision,
+            outcome_commit_sequence=cut.outcome_commit_sequence,
+            publication_ordinal=cut.publication_ordinal,
+            batch_record_ids=cut.batch_record_ids,
+        )
+        return PreparedAcceptedOpenAccounting(
+            source_request_fingerprint=request.digest(), accounting=accounting
         )
     except (ValueError, TypeError) as error:
         return _rejected(request.command_id, error)

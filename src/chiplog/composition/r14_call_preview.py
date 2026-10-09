@@ -145,7 +145,10 @@ def validate_call_preview(value: CallPreviewIssuance, runtime: ExecutionDispatch
     origin = mandate.origin
     policy = call_policy.policy_reference()
     basis = reference("dispatch.preexisting-principal", captured.principal)
-    scope = reference("dispatch.planning-scope", planning_scope(captured, None))
+    scope = reference(
+        "dispatch.planning-scope",
+        planning_scope(captured, None, call_origin=isinstance(origin, InitializedCallOrigin)),
+    )
     if (
         not isinstance(origin, InitializedCallOrigin)
         or preview.target.initialized != call_reference(initialized.original_call_id, initialized)
@@ -334,7 +337,9 @@ async def preview_call_acceptance(
         )
         policy = call_policy.policy_reference()
         basis = reference("dispatch.preexisting-principal", captured.principal)
-        scope = reference("dispatch.planning-scope", planning_scope(captured, None))
+        scope = reference(
+            "dispatch.planning-scope", planning_scope(captured, None, call_origin=True)
+        )
         mandate = DispatchMandateV2(
             schema_id="chiplog.effects.dispatch-mandate.v2",
             mandate_id=target.original_call_id + "/mandate/" + secrets.token_hex(24),

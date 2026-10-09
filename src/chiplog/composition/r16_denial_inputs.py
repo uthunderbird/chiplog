@@ -49,8 +49,28 @@ class DenialCapture:
 
 
 def require_invocation(runtime: R14PlanningRuntime, observed: ObservedTrustCall) -> bytes:
-    if runtime._trust_observation_guard(observed) is not None:
-        raise LoopRejected("denying invocation is not currently authenticated")
+    refusal = runtime._trust_observation_guard(observed)
+    if refusal is not None:
+        detail = refusal
+        if refusal == "STALE":
+            if time.monotonic_ns() >= observed.request.budget.absolute_deadline_ns:
+                detail = "STALE:deadline-expired"
+            elif (
+                runtime._supervisor.runtime().session("deployment_trust")
+                != observed.request.callee
+            ):
+                detail = "STALE:trust-session-changed"
+            else:
+                state = runtime._read_ledger.current_state(runtime._tenant_id)
+                if (
+                    state.owner_draining
+                    or state.broker_epoch != observed.request.callee.broker_epoch
+                    or state.owner_generation != observed.request.callee.generation_id
+                ):
+                    detail = "STALE:trust-generation-changed"
+                else:
+                    detail = "STALE:trust-observation-changed"
+        raise LoopRejected(f"denying invocation is not currently authenticated ({detail})")
     raw = observed.result.reference_bytes
     if raw is None:
         raise LoopRejected("denying invocation has no principal reference")
@@ -365,6 +385,22 @@ def _retained_trust_snapshot(raw: bytes) -> dict[str, Any]:
             state["phase"] = "ACTIVE"
         elif kind in {"OPERATOR_BINDING_KEY_ROTATION", "JOURNAL_ROOT_ROTATION"}:
             state["trust_head"] = trust_digest(payload)
+        elif kind == "NATIVE_ONE_CALL_CONTEXT_SCOPE_V1":
+            from chiplog.capabilities.deployment_trust.native_one_call_scope_contracts import (
+                NativeOneCallContextScopeV1,
+            )
+
+            scope_value = payload.get("scope")
+            if set(payload) != {"scope"} or not isinstance(scope_value, dict):
+                raise ValueError("retained native one-call scope payload is invalid")
+            try:
+                scope = NativeOneCallContextScopeV1.model_validate_json(
+                    canonical(scope_value)
+                )
+            except ValueError as error:
+                raise ValueError("retained native one-call scope payload is invalid") from error
+            if scope.model_dump(mode="json") != scope_value:
+                raise ValueError("retained native one-call scope payload is noncanonical")
         else:
             raise ValueError("unregistered historical denial trust decision")
     return state

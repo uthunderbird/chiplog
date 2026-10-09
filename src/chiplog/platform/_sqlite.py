@@ -174,9 +174,20 @@ _H1_SCOPED_INTENT_PAIR = (
     "chiplog.effects.external-action-intent.v3",
 )
 
+_NATIVE_EXECUTION_PUBLICATION_OPERATIONS = frozenset(
+    {
+        "scheduler.native-execution-policy-publication.v1",
+        "scheduler.native-lease-publication.v1",
+    }
+)
+
 
 def _requires_owner_publication_resolver(operation_kind: str) -> bool:
-    return operation_kind == _COMPLETE_ACCEPTANCE_V2 or operation_kind in _DELIVERY_WORK_OPERATIONS
+    return (
+        operation_kind == _COMPLETE_ACCEPTANCE_V2
+        or operation_kind in _DELIVERY_WORK_OPERATIONS
+        or operation_kind in _NATIVE_EXECUTION_PUBLICATION_OPERATIONS
+    )
 
 
 def _require_closed_delivery_work_publication(command: PhysicalPublicationCommand) -> None:

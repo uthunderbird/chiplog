@@ -24,6 +24,13 @@ checks are independent and may not rewrite this origin or renew the mandate.
 it cannot masquerade as call acceptance or create a second intent from the same
 adoption. Neither origin borrows the old publication-only registry's SEND rights.
 
+The planning source has two registered interpretations. `PlanEffectOrigin` binds
+the complete selected planning inventory and its adopted revision. For
+`InitializedCallOrigin`, the planning projection is canonically empty: authority
+comes from the exact selected Run, initialized call, sealed arguments, call policy,
+and accepted-call evidence. Unrelated planning publications do not participate in
+that call-origin mandate or its later dispatch checks.
+
 Effects owns `DispatchMandateV2` and `ExternalActionIntentV2`. Mandate scope includes
 every original authority/constraint/dependency/evidence/applicability reference,
 normative conflict generation, exact recipient and payload, member order, semantic
