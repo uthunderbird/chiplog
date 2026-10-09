@@ -1358,6 +1358,28 @@ def read_selected_accepted_open_recovery(runtime: R14PlanningRuntime):
         return found[0].result if len(found) == 1 else None
 
 
+def read_selected_accepted_direct_terminal(runtime: R14PlanningRuntime):
+    """Read the exact result of the unique selected closed-outcome terminal."""
+    from chiplog.composition.r14_accepted_direct_terminal_publication import (
+        validate_selected_accepted_direct_terminal,
+    )
+    from chiplog.composition.r14_accepted_direct_terminal_records import (
+        ACCEPTED_DIRECT_TERMINAL_OPERATION,
+        retained_accepted_direct_terminal,
+    )
+
+    with runtime._authority_gate().hold():
+        _read_call_history(runtime)
+        validate_selected_accepted_direct_terminal(runtime)
+        found = [
+            retained_accepted_direct_terminal(entry)
+            for _, _, raw in runtime._loop_decisions().entries()
+            if (entry := _strict_json(raw)).get("kind") == "DECIDED"
+            and entry.get("operation_kind") == ACCEPTED_DIRECT_TERMINAL_OPERATION
+        ]
+        return found[0].result if len(found) == 1 else None
+
+
 def validate_selected_native_accounting(runtime: R14PlanningRuntime) -> None:
     """Validate selected semantics before startup materializes pending SQL."""
     runtime._pending()

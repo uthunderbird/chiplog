@@ -296,6 +296,7 @@ async def publish_accepted_open_accounting(runtime, peer: str = "hermetic-ingres
                     or runtime.current_worker() != worker
                     or runtime._supervisor.runtime().session("agent_loop") != session
                     or runtime._commitment_journal.load(runtime._tenant_id) != predecessor
+                    or _selected_competing_direct(runtime, cut.original_call_id)
                 ):
                     return "STALE"
             except (LoopRejected, ValueError, TypeError, RuntimeError):
@@ -305,6 +306,10 @@ async def publish_accepted_open_accounting(runtime, peer: str = "hermetic-ingres
     def decide(resulting: str) -> None:
         with runtime._authority_gate().hold():
             runtime._require_no_pending()
+            if _selected_competing_direct(runtime, cut.original_call_id):
+                raise LoopRejected(
+                    "accepted/open accounting conflicts with selected direct terminal"
+                )
             runtime._append_decision(
                 {
                     "version": 1,
@@ -521,6 +526,7 @@ async def publish_accepted_open_recovery(runtime, peer: str = "hermetic-ingress"
                     or runtime.current_worker() != worker
                     or runtime._supervisor.runtime().session("agent_loop") != session
                     or runtime._commitment_journal.load(runtime._tenant_id) != predecessor
+                    or _selected_competing_direct(runtime, cut.original_call_id)
                 ):
                     return "STALE"
             except (LoopRejected, ValueError, TypeError, RuntimeError):
@@ -530,6 +536,10 @@ async def publish_accepted_open_recovery(runtime, peer: str = "hermetic-ingress"
     def decide(resulting: str) -> None:
         with runtime._authority_gate().hold():
             runtime._require_no_pending()
+            if _selected_competing_direct(runtime, cut.original_call_id):
+                raise LoopRejected(
+                    "accepted/open recovery conflicts with selected direct terminal"
+                )
             runtime._append_decision(
                 {
                     "version": 1,
@@ -654,6 +664,14 @@ def read_selected_accepted_open_frontier(runtime):
         return _accepted_open_sealed_accounting(
             current[0], evidence.request.cut, evidence.result
         )
+
+
+def _selected_competing_direct(runtime, original_call_id: str) -> bool:
+    from chiplog.composition.r14_accepted_direct_terminal_publication import (
+        selected_direct_terminal_for_call,
+    )
+
+    return selected_direct_terminal_for_call(runtime, original_call_id)
 
 
 __all__ = ["publish_accepted_open_accounting", "publish_accepted_open_recovery"]

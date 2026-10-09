@@ -112,6 +112,16 @@ class R14NativeOneCallAcceptedFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class R14NativeSelectedOutcomePublication:
+    """Physical provenance for one exact selected current R16 outcome."""
+
+    record_id: str
+    commit_sequence: int
+    publication_ordinal: int
+    batch_record_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class R14NativeAcceptedOpenOutcome:
     """Retained selected R16 OPEN cause and current outcome for one accepted call."""
 
@@ -129,6 +139,39 @@ class R14NativeAcceptedOpenOutcome:
     materialization_commitment: str
     owner_journal_head: str | None
     database_identity: tuple[str, int, int]
+    latest_outcome_record_id: str
+    latest_commit_sequence: int
+    latest_publication_ordinal: int
+    latest_batch_record_ids: tuple[str, ...]
+
+
+def _selected_outcome_publication(
+    outcome: DispatchOutcomeRecordV2,
+    member: SelectedEffectHistoryMember,
+    row: StoredEffectRow,
+) -> R14NativeSelectedOutcomePublication | None:
+    raw = outcome.canonical_bytes()
+    if not (
+        row.record.owner == "effects"
+        and row.record.record_id == outcome.record.head
+        and row.record.schema_id == outcome.schema_id
+        and row.record.record_kind == "effects." + outcome.kind
+        and row.record.canonical_bytes == raw
+        and row.record.fingerprint == hashlib.sha256(raw).hexdigest()
+        and member.record == outcome.record
+        and member.record_bytes == raw
+        and member.publication_ordinal == row.publication_ordinal
+        and row.commit_sequence > 0
+        and bool(row.batch_record_ids)
+        and outcome.record.head in row.batch_record_ids
+    ):
+        return None
+    return R14NativeSelectedOutcomePublication(
+        record_id=row.record.record_id,
+        commit_sequence=row.commit_sequence,
+        publication_ordinal=row.publication_ordinal,
+        batch_record_ids=row.batch_record_ids,
+    )
 
 
 def _open_outcome_join_is_valid(
@@ -613,6 +656,11 @@ class R14NativeSelectedAccountingSource:
                 )
             if latest_outcome is None:
                 return None
+            latest_publication = _selected_outcome_publication(
+                latest_outcome, latest_member, latest_row
+            )
+            if latest_publication is None:
+                return None
             with read_connection(runtime._database) as connection:
                 after = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
             if (
@@ -636,6 +684,10 @@ class R14NativeSelectedAccountingSource:
                 materialization_commitment=cut.materialization_commitment,
                 owner_journal_head=cut.owner_journal_head,
                 database_identity=identity,
+                latest_outcome_record_id=latest_publication.record_id,
+                latest_commit_sequence=latest_publication.commit_sequence,
+                latest_publication_ordinal=latest_publication.publication_ordinal,
+                latest_batch_record_ids=latest_publication.batch_record_ids,
             )
         except OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError:
             return None

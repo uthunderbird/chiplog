@@ -15,6 +15,7 @@ from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2, reference
 from chiplog.composition.r14_native_selected_accounting_source import (
     _closed_outcome_join_is_valid,
     _open_outcome_join_is_valid,
+    _selected_outcome_publication,
 )
 from chiplog.composition.r16_dispatch_history import VerifiedDispatchHistory
 from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
@@ -255,6 +256,25 @@ def test_closed_join_accepts_exact_selected_terminal_chain(
     retained_tuple = _selected_tuple(retained, ordinal=1)
     evidence_tuple = _selected_tuple(evidence, ordinal=2, commit_sequence=2)
     closed_tuple = _selected_tuple(closed, ordinal=3, commit_sequence=3)
+    current_publication = _selected_outcome_publication(
+        closed_tuple[0], closed_tuple[1], closed_tuple[2]
+    )
+    cause_publication = _selected_outcome_publication(
+        retained_tuple[0], retained_tuple[1], retained_tuple[2]
+    )
+    assert current_publication is not None
+    assert cause_publication is not None
+    assert current_publication.record_id == closed.record.head
+    assert current_publication.commit_sequence == 3
+    assert current_publication.publication_ordinal == 3
+    assert current_publication.batch_record_ids == (closed.record.head,)
+    assert current_publication != cause_publication
+    assert (
+        _selected_outcome_publication(
+            closed_tuple[0], closed_tuple[1], replace(closed_tuple[2], commit_sequence=0)
+        )
+        is None
+    )
     history = VerifiedDispatchHistory(
         members=(retained_tuple[1], evidence_tuple[1], closed_tuple[1]),
         v2_records=(retained, evidence, closed),
