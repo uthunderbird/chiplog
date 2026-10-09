@@ -104,6 +104,31 @@ def test_resolver_retains_original_identity_and_already_selected_foreign_evidenc
         adapter.validate_python(wire)
 
 
+def test_r14_resolver_policy_is_tenant_bound_and_has_only_the_narrow_operation() -> None:
+    policy = original.original_resolver_authority_policy_v1("tenant")
+    assert policy.tenant_id == "tenant"
+    assert policy.policy_id == "r14-original-resolver-policy:tenant"
+    assert policy.principal_id == "hermetic-principal"
+    assert policy.resolver_id == "R14_AUTHENTICATED_ORIGINAL_PRINCIPAL_RESOLVER"
+    assert policy.resolver_version == "r14-original-resolver.v1"
+    assert policy.operation == "RESOLVE_ORIGINAL_OBLIGATION"
+    restored = original.OriginalResolverAuthorityPolicyV1.model_validate_json(
+        policy.canonical_bytes()
+    )
+    assert restored == policy
+
+    wire = policy.model_dump()
+    wire["principal_id"] = "another-principal"
+    with pytest.raises(ValidationError):
+        original.OriginalResolverAuthorityPolicyV1.model_validate(wire)
+    wire = policy.model_dump()
+    wire["operation"] = "APPEND_EVIDENCE"
+    with pytest.raises(ValidationError):
+        original.OriginalResolverAuthorityPolicyV1.model_validate(wire)
+    with pytest.raises(ValueError):
+        original.original_resolver_authority_policy_v1("")
+
+
 @pytest.mark.parametrize(
     "field",
     [

@@ -42,6 +42,58 @@ class WorkerResolverAuthority(ExecutionRecoveryDTO):
     applicability: WorkerCommitApplicability
 
 
+class OriginalResolverAuthorityPolicyV1(ExecutionRecoveryDTO):
+    """Narrow adopted authority for one exact original obligation per command."""
+
+    schema_id: Literal["chiplog.loop.original-resolver-authority-policy.v1"] = (
+        "chiplog.loop.original-resolver-authority-policy.v1"
+    )
+    policy_id: Identity
+    tenant_id: Identity
+    principal_id: Literal["hermetic-principal"] = "hermetic-principal"
+    resolver_id: Literal["R14_AUTHENTICATED_ORIGINAL_PRINCIPAL_RESOLVER"] = (
+        "R14_AUTHENTICATED_ORIGINAL_PRINCIPAL_RESOLVER"
+    )
+    resolver_version: Literal["r14-original-resolver.v1"] = "r14-original-resolver.v1"
+    operation: Literal["RESOLVE_ORIGINAL_OBLIGATION"] = "RESOLVE_ORIGINAL_OBLIGATION"
+    invocation_rule: Literal["FRESH_AUTHENTICATED_TENANT_PRINCIPAL_MATCH_V1"] = (
+        "FRESH_AUTHENTICATED_TENANT_PRINCIPAL_MATCH_V1"
+    )
+    binding_rule: Literal["EXACT_SELECTED_ACCEPTED_CALL_AND_OPEN_OBLIGATION_V1"] = (
+        "EXACT_SELECTED_ACCEPTED_CALL_AND_OPEN_OBLIGATION_V1"
+    )
+    denied_capability_class: Literal["NO_SEND_RETRY_APPEND_EVIDENCE_OR_OTHER_OBLIGATION_V1"] = (
+        "NO_SEND_RETRY_APPEND_EVIDENCE_OR_OTHER_OBLIGATION_V1"
+    )
+
+
+def original_resolver_authority_policy_v1(tenant_id: str) -> OriginalResolverAuthorityPolicyV1:
+    """Closed first hermetic policy; identity and scope cannot be caller-selected."""
+    if not tenant_id:
+        raise ValueError("resolver policy requires a tenant")
+    return OriginalResolverAuthorityPolicyV1(
+        policy_id="r14-original-resolver-policy:" + tenant_id,
+        tenant_id=tenant_id,
+    )
+
+
+class AdoptOriginalResolverAuthorityPolicyV1(ExecutionRecoveryDTO):
+    kind: Literal["ADOPT_ORIGINAL_RESOLVER_AUTHORITY_POLICY_V1"] = (
+        "ADOPT_ORIGINAL_RESOLVER_AUTHORITY_POLICY_V1"
+    )
+    command_id: Identity
+    policy: OriginalResolverAuthorityPolicyV1
+
+
+class PreparedOriginalResolverAuthorityPolicyV1(ExecutionRecoveryDTO):
+    kind: Literal["PREPARED_ORIGINAL_RESOLVER_AUTHORITY_POLICY_V1"] = (
+        "PREPARED_ORIGINAL_RESOLVER_AUTHORITY_POLICY_V1"
+    )
+    source_request_fingerprint: Digest
+    policy: OriginalResolverAuthorityPolicyV1
+    complete_batch_fingerprint: Digest
+
+
 ResolverAuthority = Annotated[
     IndependentResolverAuthority | WorkerResolverAuthority, Field(discriminator="kind")
 ]
