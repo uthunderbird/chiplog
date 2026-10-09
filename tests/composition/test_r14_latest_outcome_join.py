@@ -11,10 +11,12 @@ from chiplog.capabilities.effects.dispatch_outcome_contracts import (
     DispatchOutcomeRecordV2,
 )
 from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
-from chiplog.capabilities.effects.dispatch_v2 import reference
+from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2, reference
 from chiplog.composition.r14_native_selected_accounting_source import (
+    _closed_outcome_join_is_valid,
     _open_outcome_join_is_valid,
 )
+from chiplog.composition.r16_dispatch_history import VerifiedDispatchHistory
 from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
 from tests.capabilities.effects.support.dispatch_outcomes import original_send
 from tests.capabilities.effects.test_dispatch_outcomes import request
@@ -56,7 +58,7 @@ def _selected_tuple(
 
 
 @pytest.fixture
-def retained_and_latest():
+def retained_and_latest() -> tuple[DispatchRecordV2, DispatchOutcomeRecordV2]:
     send = original_send(members=("subject", "second"))
     retained = prepare_outcome(request(send, send))
     assert retained.snapshot.state == "OUTCOME_UNKNOWN"
@@ -73,7 +75,12 @@ def retained_and_latest():
         (("subject",), ("second",), "PARTIAL_CONFIRMED"),
     ],
 )
-def test_join_accepts_current_open_r16_states(retained_and_latest, positive, negative, expected):
+def test_join_accepts_current_open_r16_states(
+    retained_and_latest: tuple[DispatchRecordV2, DispatchOutcomeRecordV2],
+    positive: tuple[str, ...],
+    negative: tuple[str, ...],
+    expected: str,
+) -> None:
     send, retained = retained_and_latest
     latest = (
         retained
@@ -82,37 +89,44 @@ def test_join_accepts_current_open_r16_states(retained_and_latest, positive, neg
     )
     assert latest.snapshot.state == expected
     assert latest.snapshot.obligation.state == "OPEN"
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        _selected_tuple(retained),
-        _selected_tuple(latest, ordinal=2),
-    ) == latest
-
-
-def test_join_rejects_closed_or_rebound_latest_and_bad_physical_members(retained_and_latest):
-    send, retained = retained_and_latest
-    latest = prepare_outcome(
-        request(retained, send, ("subject", "second"), name="late-confirmed")
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            _selected_tuple(retained),
+            _selected_tuple(latest, ordinal=2),
+        )
+        == latest
     )
+
+
+def test_join_rejects_closed_or_rebound_latest_and_bad_physical_members(
+    retained_and_latest: tuple[DispatchRecordV2, DispatchOutcomeRecordV2],
+) -> None:
+    send, retained = retained_and_latest
+    latest = prepare_outcome(request(retained, send, ("subject", "second"), name="late-confirmed"))
     retained_tuple = _selected_tuple(retained)
     latest_tuple = _selected_tuple(latest, ordinal=2)
     _, latest_member, latest_row = latest_tuple
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        retained_tuple,
-        (send, latest_member, latest_row),
-    ) is None
-    assert _open_outcome_join_is_valid(
-        "another-intent", retained_tuple, latest_tuple
-    ) is None
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            retained_tuple,
+            (send, latest_member, latest_row),
+        )
+        is None
+    )
+    assert _open_outcome_join_is_valid("another-intent", retained_tuple, latest_tuple) is None
 
     closed_snapshot = latest.snapshot.model_copy(
         update={"obligation": latest.snapshot.obligation.model_copy(update={"state": "CLOSED"})}
     )
     closed = latest.model_copy(update={"snapshot": closed_snapshot})
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id, retained_tuple, _selected_tuple(closed, ordinal=2)
-    ) is None
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id, retained_tuple, _selected_tuple(closed, ordinal=2)
+        )
+        is None
+    )
 
     changed_original = latest.snapshot.model_copy(
         update={
@@ -122,9 +136,12 @@ def test_join_rejects_closed_or_rebound_latest_and_bad_physical_members(retained
         }
     )
     rebound = latest.model_copy(update={"snapshot": changed_original})
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id, retained_tuple, _selected_tuple(rebound, ordinal=2)
-    ) is None
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id, retained_tuple, _selected_tuple(rebound, ordinal=2)
+        )
+        is None
+    )
 
     changed_intent = latest.snapshot.intent.model_copy(
         update={"mandate": latest.snapshot.intent.mandate.model_copy(update={"payload": b"other"})}
@@ -132,63 +149,177 @@ def test_join_rejects_closed_or_rebound_latest_and_bad_physical_members(retained
     changed_intent_record = latest.model_copy(
         update={"snapshot": latest.snapshot.model_copy(update={"intent": changed_intent})}
     )
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        retained_tuple,
-        _selected_tuple(changed_intent_record, ordinal=2),
-    ) is None
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            retained_tuple,
+            _selected_tuple(changed_intent_record, ordinal=2),
+        )
+        is None
+    )
 
     closed_retained = retained.model_copy(
-        update={
-            "snapshot": retained.snapshot.model_copy(
-                update={"state": "CONFIRMED"}
-            )
-        }
+        update={"snapshot": retained.snapshot.model_copy(update={"state": "CONFIRMED"})}
     )
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        _selected_tuple(closed_retained),
-        latest_tuple,
-    ) is None
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            _selected_tuple(closed_retained),
+            latest_tuple,
+        )
+        is None
+    )
 
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        retained_tuple,
-        (latest, latest_member.model_copy(update={"record_bytes": b"wrong"}), latest_row),
-    ) is None
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        retained_tuple,
-        (latest, latest_member, replace(latest_row, publication_ordinal=3)),
-    ) is None
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        retained_tuple,
-        (latest, latest_member, replace(latest_row, commit_sequence=0)),
-    ) is None
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        retained_tuple,
-        (latest, latest_member, replace(latest_row, batch_record_ids=())),
-    ) is None
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            retained_tuple,
+            (latest, latest_member.model_copy(update={"record_bytes": b"wrong"}), latest_row),
+        )
+        is None
+    )
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            retained_tuple,
+            (latest, latest_member, replace(latest_row, publication_ordinal=3)),
+        )
+        is None
+    )
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            retained_tuple,
+            (latest, latest_member, replace(latest_row, commit_sequence=0)),
+        )
+        is None
+    )
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            retained_tuple,
+            (latest, latest_member, replace(latest_row, batch_record_ids=())),
+        )
+        is None
+    )
     _, retained_member, retained_row = retained_tuple
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        (retained, retained_member.model_copy(update={"record_bytes": b"wrong"}), retained_row),
-        latest_tuple,
-    ) is None
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        (retained, retained_member, replace(retained_row, publication_ordinal=3)),
-        latest_tuple,
-    ) is None
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        (retained, retained_member, replace(retained_row, commit_sequence=0)),
-        latest_tuple,
-    ) is None
-    assert _open_outcome_join_is_valid(
-        send.snapshot.intent.intent_id,
-        (retained, retained_member, replace(retained_row, batch_record_ids=())),
-        latest_tuple,
-    ) is None
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            (retained, retained_member.model_copy(update={"record_bytes": b"wrong"}), retained_row),
+            latest_tuple,
+        )
+        is None
+    )
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            (retained, retained_member, replace(retained_row, publication_ordinal=3)),
+            latest_tuple,
+        )
+        is None
+    )
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            (retained, retained_member, replace(retained_row, commit_sequence=0)),
+            latest_tuple,
+        )
+        is None
+    )
+    assert (
+        _open_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            (retained, retained_member, replace(retained_row, batch_record_ids=())),
+            latest_tuple,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("positive", "negative", "expected"),
+    [(("subject",), (), "CONFIRMED"), ((), ("subject",), "FAILED_NO_EFFECT")],
+)
+def test_closed_join_accepts_exact_selected_terminal_chain(
+    positive: tuple[str, ...], negative: tuple[str, ...], expected: str
+) -> None:
+    send = original_send(members=("subject",))
+    retained = prepare_outcome(request(send, send))
+    evidence = prepare_outcome(request(retained, send, positive, negative, name="closed-evidence"))
+    closed = prepare_outcome(request(evidence, send, close=True, name="close"))
+    assert retained.snapshot.state == "OUTCOME_UNKNOWN"
+    assert retained.snapshot.obligation.state == "OPEN"
+    assert closed.snapshot.state == expected
+    assert closed.snapshot.obligation.state == "CLOSED"
+    retained_tuple = _selected_tuple(retained, ordinal=1)
+    evidence_tuple = _selected_tuple(evidence, ordinal=2, commit_sequence=2)
+    closed_tuple = _selected_tuple(closed, ordinal=3, commit_sequence=3)
+    history = VerifiedDispatchHistory(
+        members=(retained_tuple[1], evidence_tuple[1], closed_tuple[1]),
+        v2_records=(retained, evidence, closed),
+    )
+
+    assert (
+        _closed_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            retained_tuple,
+            closed_tuple,
+            history.v2_records,
+            history.members,
+        )
+        == closed
+    )
+
+
+def test_closed_join_rejects_open_foreign_and_stale_chain_members() -> None:
+    send = original_send(members=("subject",))
+    retained = prepare_outcome(request(send, send))
+    evidence = prepare_outcome(request(retained, send, ("subject",), name="evidence"))
+    closed = prepare_outcome(request(evidence, send, close=True, name="close"))
+    retained_tuple = _selected_tuple(retained, ordinal=1)
+    evidence_tuple = _selected_tuple(evidence, ordinal=2, commit_sequence=2)
+    closed_tuple = _selected_tuple(closed, ordinal=3, commit_sequence=3)
+    history = VerifiedDispatchHistory(
+        members=(retained_tuple[1], evidence_tuple[1], closed_tuple[1]),
+        v2_records=(retained, evidence, closed),
+    )
+    assert (
+        _closed_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            retained_tuple,
+            evidence_tuple,
+            history.v2_records,
+            history.members,
+        )
+        is None
+    )
+
+    assert (
+        _closed_outcome_join_is_valid(
+            "foreign-intent",
+            retained_tuple,
+            closed_tuple,
+            history.v2_records,
+            history.members,
+        )
+        is None
+    )
+
+    alternate_evidence = prepare_outcome(
+        request(retained, send, (), ("subject",), name="alternate-evidence")
+    )
+    alternate_closed = prepare_outcome(
+        request(alternate_evidence, send, close=True, name="alternate-close")
+    )
+    stale_tuple = _selected_tuple(alternate_closed, ordinal=5, commit_sequence=5)
+    assert (
+        _closed_outcome_join_is_valid(
+            send.snapshot.intent.intent_id,
+            retained_tuple,
+            stale_tuple,
+            history.v2_records,
+            history.members,
+        )
+        is None
+    )

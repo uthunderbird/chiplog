@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 from dataclasses import dataclass
+from typing import Literal
 
 from chiplog.adapters.driven.effects_queries import StoredEffectRow
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
@@ -112,7 +113,7 @@ class R14NativeOneCallAcceptedFacts:
 
 @dataclass(frozen=True, slots=True)
 class R14NativeAcceptedOpenOutcome:
-    """Retained selected R16 OPEN cause and the current outcome for one accepted call."""
+    """Retained selected R16 OPEN cause and current outcome for one accepted call."""
 
     accepted: R14NativeOneCallAcceptedFacts
     outcome: DispatchOutcomeRecordV2
@@ -168,6 +169,99 @@ def _open_outcome_join_is_valid(
         and latest_member.publication_ordinal == latest_row.publication_ordinal
         and latest_row.commit_sequence > 0
         and bool(latest_row.batch_record_ids)
+    ):
+        return None
+    return latest_record
+
+
+def _closed_outcome_join_is_valid(
+    expected_intent_id: str,
+    retained: tuple[DispatchOutcomeRecordV2, SelectedEffectHistoryMember, StoredEffectRow],
+    latest: tuple[
+        DispatchRecordV2 | DispatchOutcomeRecordV2,
+        SelectedEffectHistoryMember,
+        StoredEffectRow,
+    ],
+    verified_records: tuple[DispatchRecordV2 | DispatchOutcomeRecordV2, ...],
+    verified_members: tuple[SelectedEffectHistoryMember, ...],
+) -> DispatchOutcomeRecordV2 | None:
+    """Join one retained OPEN cause to its exact terminal in this verified chain."""
+    outcome, member, row = retained
+    latest_record, latest_member, latest_row = latest
+    if not isinstance(latest_record, DispatchOutcomeRecordV2):
+        return None
+    intent = outcome.snapshot.intent
+    latest_snapshot = latest_record.snapshot
+    intent_reference = effects_reference(intent.intent_id, intent.canonical_bytes())
+    if not (
+        outcome.snapshot.state == "OUTCOME_UNKNOWN"
+        and outcome.snapshot.obligation.state == "OPEN"
+        and latest_snapshot.state in {"CONFIRMED", "FAILED_NO_EFFECT"}
+        and latest_snapshot.obligation.state == "CLOSED"
+        and intent.intent_id == expected_intent_id
+        and outcome.snapshot.obligation.original_intent == intent_reference
+        and latest_snapshot.intent.canonical_bytes() == intent.canonical_bytes()
+        and latest_snapshot.obligation.original_intent
+        == outcome.snapshot.obligation.original_intent
+        and latest_snapshot.obligation.obligation == outcome.snapshot.obligation.obligation
+        and latest_snapshot.obligation.original_send == outcome.snapshot.obligation.original_send
+        and latest_snapshot.obligation.original_children
+        == outcome.snapshot.obligation.original_children
+        and member in verified_members
+        and latest_member in verified_members
+        and member.record == outcome.record
+        and latest_member.record == latest_record.record
+        and member.record_bytes == row.record.canonical_bytes == outcome.canonical_bytes()
+        and latest_member.record_bytes
+        == latest_row.record.canonical_bytes
+        == latest_record.canonical_bytes()
+        and member.intent == effects_reference(intent.intent_id, intent.canonical_bytes())
+        and latest_member.intent == effects_reference(intent.intent_id, intent.canonical_bytes())
+        and row.record.owner == "effects"
+        and latest_row.record.owner == "effects"
+        and row.record.record_id == outcome.record.head
+        and latest_row.record.record_id == latest_record.record.head
+        and row.record.schema_id == outcome.schema_id
+        and latest_row.record.schema_id == latest_record.schema_id
+        and row.record.record_kind == "effects." + outcome.kind
+        and latest_row.record.record_kind == "effects." + latest_record.kind
+        and row.record.fingerprint == hashlib.sha256(outcome.canonical_bytes()).hexdigest()
+        and latest_row.record.fingerprint
+        == hashlib.sha256(latest_record.canonical_bytes()).hexdigest()
+        and member.publication_ordinal == row.publication_ordinal
+        and latest_member.publication_ordinal == latest_row.publication_ordinal
+        and row.commit_sequence > 0
+        and latest_row.commit_sequence > 0
+        and bool(row.batch_record_ids)
+        and bool(latest_row.batch_record_ids)
+        and outcome.record.head in row.batch_record_ids
+        and latest_record.record.head in latest_row.batch_record_ids
+    ):
+        return None
+    try:
+        retained_index = verified_records.index(outcome)
+        latest_index = verified_records.index(latest_record)
+    except ValueError:
+        return None
+    if retained_index >= latest_index:
+        return None
+    intent_history = tuple(
+        record
+        for record in verified_records
+        if record.snapshot.intent.intent_id == expected_intent_id
+    )
+    if not intent_history or intent_history[-1] != latest_record:
+        return None
+    try:
+        first = intent_history.index(outcome)
+        last = intent_history.index(latest_record)
+    except ValueError:
+        return None
+    if first >= last or any(
+        current.predecessor != previous.record
+        for previous, current in zip(
+            intent_history[first:last], intent_history[first + 1 : last + 1], strict=True
+        )
     ):
         return None
     return latest_record
@@ -320,8 +414,7 @@ class R14NativeSelectedAccountingSource:
             or acceptance.loop_request.initialized_record != record
             or binding.original != record.call.original
             or acceptance.loop_proposal.accepted.binding != binding
-            or acceptance.loop_proposal.execution_intent.original_call_id
-            != record.original_call_id
+            or acceptance.loop_proposal.execution_intent.original_call_id != record.original_call_id
             or acceptance.loop_proposal.execution_intent.initialized != initialized
         ):
             return None
@@ -341,18 +434,58 @@ class R14NativeSelectedAccountingSource:
         expected_outcome_record_id: str | None = None,
         expected_selected_decision: CallSubjectHead | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
-        """Join one accepted call to its selected OPEN R16 history member.
+        """Join the retained OPEN cause to a still-open current R16 outcome."""
+        return self._collect_one_accepted_outcome(
+            target_run,
+            selected_only=selected_only,
+            expected_outcome_record_id=expected_outcome_record_id,
+            expected_selected_decision=expected_selected_decision,
+            current_obligation_state="OPEN",
+        )
 
-        Without a retained locator, select only the current OPEN head.  Startup
-        validation may provide the exact original V29 member, which remains
-        historical cause after later authenticated R16 evidence advances the
-        outcome stream.
+    def collect_one_accepted_closed_outcome(
+        self,
+        target_run: CallSubjectHead | None = None,
+        *,
+        selected_only: bool = False,
+        expected_outcome_record_id: str | None = None,
+        expected_selected_decision: CallSubjectHead | None = None,
+    ) -> R14NativeAcceptedOpenOutcome | None:
+        """Read a closed current outcome while retaining its original OPEN cause.
+
+        This is an inert observation only; it does not select or publish an R14
+        terminal disposition.
+        """
+        return self._collect_one_accepted_outcome(
+            target_run,
+            selected_only=selected_only,
+            expected_outcome_record_id=expected_outcome_record_id,
+            expected_selected_decision=expected_selected_decision,
+            current_obligation_state="CLOSED",
+        )
+
+    def _collect_one_accepted_outcome(
+        self,
+        target_run: CallSubjectHead | None = None,
+        *,
+        selected_only: bool = False,
+        expected_outcome_record_id: str | None = None,
+        expected_selected_decision: CallSubjectHead | None = None,
+        current_obligation_state: Literal["OPEN", "CLOSED"],
+    ) -> R14NativeAcceptedOpenOutcome | None:
+        """Join one accepted call's retained OPEN cause to its current outcome.
+
+        For an OPEN current head, select only that current record. For a CLOSED
+        current head, select the unique original OUTCOME_UNKNOWN/OPEN member as
+        cause and verify that its exact chain ends at the current closed member.
+        Startup validation may provide the exact original member explicitly.
         """
         if (expected_outcome_record_id is None) != (expected_selected_decision is None):
             raise TypeError("historical OPEN locator requires its selected decision")
-        if expected_selected_decision is not None and type(
-            expected_selected_decision
-        ) is not CallSubjectHead:
+        if (
+            expected_selected_decision is not None
+            and type(expected_selected_decision) is not CallSubjectHead
+        ):
             raise TypeError("historical OPEN selected decision must be exact")
         accepted = self.collect_one_accepted(target_run, selected_only=selected_only)
         if accepted is None:
@@ -430,12 +563,20 @@ class R14NativeSelectedAccountingSource:
                 ):
                     candidates.append((record, member, row))
             if expected_outcome_record_id is None:
-                selected = [
-                    item
-                    for item in candidates
-                    if latest.get(item[0].snapshot.intent.intent_id, (None, None, None))[0]
-                    == item[0]
-                ]
+                if current_obligation_state == "OPEN":
+                    selected = [
+                        item
+                        for item in candidates
+                        if latest.get(item[0].snapshot.intent.intent_id, (None, None, None))[0]
+                        == item[0]
+                    ]
+                else:
+                    selected = [
+                        item
+                        for item in candidates
+                        if item[0].snapshot.state == "OUTCOME_UNKNOWN"
+                        and item[0].snapshot.obligation.state == "OPEN"
+                    ]
             else:
                 expected_decision = expected_selected_decision
                 if expected_decision is None:
@@ -444,8 +585,7 @@ class R14NativeSelectedAccountingSource:
                     item
                     for item in candidates
                     if item[2].record.record_id == expected_outcome_record_id
-                    and item[1].selected_decision.subject_id
-                    == expected_decision.subject_id
+                    and item[1].selected_decision.subject_id == expected_decision.subject_id
                     and item[1].selected_decision.head == expected_decision.revision.head
                     and item[1].selected_decision.fingerprint
                     == expected_decision.revision.fingerprint
@@ -457,11 +597,20 @@ class R14NativeSelectedAccountingSource:
             if current is None:
                 return None
             latest_record, latest_member, latest_row = current
-            latest_outcome = _open_outcome_join_is_valid(
-                expected_intent.subject_id,
-                (outcome, member, row),
-                (latest_record, latest_member, latest_row),
-            )
+            if current_obligation_state == "OPEN":
+                latest_outcome = _open_outcome_join_is_valid(
+                    expected_intent.subject_id,
+                    (outcome, member, row),
+                    (latest_record, latest_member, latest_row),
+                )
+            else:
+                latest_outcome = _closed_outcome_join_is_valid(
+                    expected_intent.subject_id,
+                    (outcome, member, row),
+                    (latest_record, latest_member, latest_row),
+                    verified.v2_records,
+                    verified.members,
+                )
             if latest_outcome is None:
                 return None
             with read_connection(runtime._database) as connection:
@@ -488,7 +637,7 @@ class R14NativeSelectedAccountingSource:
                 owner_journal_head=cut.owner_journal_head,
                 database_identity=identity,
             )
-        except (OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError):
+        except OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError:
             return None
 
     def _collect_held(
