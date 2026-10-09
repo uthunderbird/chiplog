@@ -261,6 +261,26 @@ def test_preparation_binds_selected_witness_and_exact_evidence() -> None:
     assert result.batch.closure.revision.fingerprint == result.closure.digest()
 
 
+def test_original_recovery_owner_dispatches_resolution_route() -> None:
+    import base64
+
+    from chiplog.capabilities.agent_loop._original_recovery_process import (
+        PREPARE_RESOLUTION_OPERATION,
+        dispatch,
+    )
+    from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
+        ORIGINAL_RECOVERY_RESULT_SCHEMA,
+        decode_original_recovery_result,
+    )
+
+    result = dispatch(PREPARE_RESOLUTION_OPERATION, request().canonical_bytes())
+    assert result["schema_id"] == ORIGINAL_RECOVERY_RESULT_SCHEMA
+    prepared = decode_original_recovery_result(
+        ORIGINAL_RECOVERY_RESULT_SCHEMA, base64.b64decode(result["payload"])
+    ).value
+    assert prepared == prepare_original_call_resolution(request())
+
+
 @pytest.mark.parametrize(
     "mutation", ("missing_witness", "foreign_intent", "incomplete_evidence", "effects_reduction")
 )

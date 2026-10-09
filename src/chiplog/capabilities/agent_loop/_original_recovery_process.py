@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 
 from . import _execution_direct_terminal_process
+from .original_call_resolution_preparation import prepare_original_call_resolution
 from .original_recovery_contracts import (
     AdoptOriginalResolverAuthorityPolicyV1,
+    PrepareOriginalCallResolution,
     PrepareOriginalResolverInvocationV1,
 )
 from .original_resolver_invocation_preparation import (
@@ -23,6 +25,7 @@ from .recovery_wire_contracts import (
 
 ADOPT_POLICY_OPERATION = "agent_loop.adopt_original_resolver_authority_policy.v1"
 PREPARE_INVOCATION_OPERATION = "agent_loop.prepare_original_resolver_invocation.v1"
+PREPARE_RESOLUTION_OPERATION = "agent_loop.prepare_original_call_resolution.v1"
 REQUEST_SCHEMA = ORIGINAL_RECOVERY_REQUEST_SCHEMA
 RESULT_SCHEMA = ORIGINAL_RECOVERY_RESULT_SCHEMA
 ROUTES = tuple(
@@ -31,13 +34,18 @@ ROUTES = tuple(
             *_execution_direct_terminal_process.ROUTES,
             (ADOPT_POLICY_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
             (PREPARE_INVOCATION_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
+            (PREPARE_RESOLUTION_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
         )
     )
 )
 
 
 def dispatch(operation: str, payload: bytes) -> dict[str, object]:
-    if operation not in (ADOPT_POLICY_OPERATION, PREPARE_INVOCATION_OPERATION):
+    if operation not in (
+        ADOPT_POLICY_OPERATION,
+        PREPARE_INVOCATION_OPERATION,
+        PREPARE_RESOLUTION_OPERATION,
+    ):
         return _execution_direct_terminal_process.dispatch(operation, payload)
     try:
         decoded = decode_original_recovery_request(REQUEST_SCHEMA, payload)
@@ -45,13 +53,19 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
         if operation == ADOPT_POLICY_OPERATION:
             if not isinstance(request, AdoptOriginalResolverAuthorityPolicyV1):
                 raise ValueError("policy adoption operation requires the exact adoption request")
-            result = prepare_original_resolver_authority_policy_v1(request)
-        else:
+            result_payload = prepare_original_resolver_authority_policy_v1(
+                request
+            ).canonical_bytes()
+        elif operation == PREPARE_INVOCATION_OPERATION:
             if not isinstance(request, PrepareOriginalResolverInvocationV1):
                 raise ValueError("invocation operation requires the exact invocation request")
-            result = prepare_original_resolver_invocation_v1(request)
+            result_payload = prepare_original_resolver_invocation_v1(request).canonical_bytes()
+        else:
+            if not isinstance(request, PrepareOriginalCallResolution):
+                raise ValueError("resolution operation requires the exact resolution request")
+            result_payload = prepare_original_call_resolution(request).canonical_bytes()
         return {
-            "payload": base64.b64encode(result.canonical_bytes()).decode(),
+            "payload": base64.b64encode(result_payload).decode(),
             "schema_id": RESULT_SCHEMA,
         }
     except (TypeError, ValueError) as error:

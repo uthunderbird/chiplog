@@ -11,6 +11,8 @@ from chiplog.architecture.r7_runtime import (
     R13_EVALUATION_MANIFEST,
     R13_PRODUCTION_MANIFEST,
     R14_EVALUATION_MANIFEST,
+    R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_EVALUATION_MANIFEST,
+    R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_PRODUCTION_MANIFEST,
     R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_EVALUATION_MANIFEST,
     R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST,
     R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_EVALUATION_MANIFEST,
@@ -63,6 +65,23 @@ def test_v32_adds_invocation_route_without_mutating_v31() -> None:
     }
     loop = next(owner for owner in production.owners if owner.owner_id == "agent_loop")
     assert "agent_loop.prepare_original_resolver_invocation.v1" in loop.capability_ids
+
+
+def test_v33_adds_original_call_resolution_route_without_mutating_v32() -> None:
+    v32 = R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST
+    production = R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_PRODUCTION_MANIFEST
+    evaluation = R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_EVALUATION_MANIFEST
+    assert verify_runtime_manifest(production)
+    verify_production_evaluation_equivalence(production, evaluation)
+    assert production.manifest_version == 33
+    assert v32.manifest_version == 32
+    operation = "agent_loop.prepare_original_call_resolution.v1"
+    assert operation not in {route.operation_id for route in v32.routes}
+    route = next(route for route in production.routes if route.operation_id == operation)
+    assert route.request_schema_id == "chiplog.loop.original-recovery-request.v1"
+    assert route.result_schema_id == "chiplog.loop.original-recovery-result.v1"
+    loop = next(owner for owner in production.owners if owner.owner_id == "agent_loop")
+    assert operation in loop.capability_ids
 
 
 def test_v23_adds_only_bounded_native_accounting_route() -> None:
