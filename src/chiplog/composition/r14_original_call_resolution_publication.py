@@ -8,7 +8,7 @@ import json
 import secrets
 import time
 from dataclasses import replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.original_call_resolution_preparation import (
@@ -35,6 +35,13 @@ from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+
+
+class OriginalResolutionHistoryRuntime(Protocol):
+    _tenant_id: str
+    _database_identity: tuple[str, int, int]
+
+    def _check_database_identity(self) -> None: ...
 
 OPERATION = "agent_loop.original-call-resolution.v1"
 OWNER_OPERATION = "agent_loop.prepare_original_call_resolution.v1"
@@ -233,8 +240,8 @@ def _validate_current_sources(
         raise ValueError("selected original resolution differs from current source cut")
 
 
-def validate_selected(
-    runtime: CommonCliExecutionRuntime,
+def validate_selected_command(
+    runtime: OriginalResolutionHistoryRuntime,
     entry: dict[str, object],
     batch: PhysicalPublicationCommand,
 ) -> RetainedOriginalCallResolutionPublication:
@@ -242,7 +249,12 @@ def validate_selected(
     if not isinstance(raw, str):
         raise ValueError("selected original resolution evidence missing")
     evidence = RetainedOriginalCallResolutionPublication.model_validate_json(raw)
-    _validate_current_sources(runtime, evidence)
+    runtime._check_database_identity()
+    resulting = entry.get("resulting")
+    if not isinstance(resulting, str) or len(resulting) != 64 or any(
+        char not in "0123456789abcdef" for char in resulting
+    ):
+        raise ValueError("selected original resolution resulting commitment is invalid")
     if (
         evidence.canonical_bytes().decode() != raw
         or evidence.tenant_id != runtime._tenant_id
@@ -251,9 +263,22 @@ def validate_selected(
         or command(evidence) != batch
         or entry.get("operation_kind") != OPERATION
         or entry.get("operation_id") != batch.idempotency_key
+        or type(entry.get("expected_head")) is not int
+        or entry.get("expected_head") != batch.expected_head
+        or entry.get("fingerprint") != batch.request_fingerprint
         or evidence.prepared.batch.command_id != evidence.request.command_id
     ):
-        raise ValueError("selected original resolution differs from exact current sources")
+        raise ValueError("selected original resolution command differs from retained evidence")
+    return evidence
+
+
+def validate_selected(
+    runtime: CommonCliExecutionRuntime,
+    entry: dict[str, object],
+    batch: PhysicalPublicationCommand,
+) -> RetainedOriginalCallResolutionPublication:
+    evidence = validate_selected_command(runtime, entry, batch)
+    _validate_current_sources(runtime, evidence)
     return evidence
 
 

@@ -494,6 +494,7 @@ def _read_call_history(
                         "agent_loop.execution-next-turn.v1",
                         "agent_loop.accepted-open-accounting.v1",
                         "agent_loop.accepted-open-recovery.v1",
+                        "agent_loop.original-call-resolution.v1",
                         "agent_loop.native-one-call-recovery-profile.v1",
                         "agent_loop.native-one-call-recovery-profile.v2",
                         EXECUTION_TRANSITION_OPERATION,
@@ -510,6 +511,23 @@ def _read_call_history(
                         != "COMPLETE"
                     ):
                         raise ValueError("selected loop publication is not exactly materialized")
+                    if (
+                        command.operation_kind == "agent_loop.original-call-resolution.v1"
+                        or "original_call_resolution_evidence" in entry
+                    ):
+                        from chiplog.composition.r14_original_call_resolution_publication import (
+                            OPERATION,
+                            validate_selected_command,
+                        )
+
+                        if command.operation_kind != OPERATION:
+                            raise ValueError("original resolution has a substituted operation")
+                        validate_selected_command(runtime, entry, command)
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        continue
                     if (
                         command.operation_kind
                         in (
