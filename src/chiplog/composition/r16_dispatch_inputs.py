@@ -349,7 +349,7 @@ def source_inventory(
         raise LoopRejected("unregistered dispatch Run source version")
     policy, semantics = captured_policy(captured)
     policy_head = reference(semantics.normative_manifest, policy)
-    deadline = min(mandate.horizon.expires_at_ns, captured.observed_time_ns + 5_000_000_000)
+    deadline = mandate.horizon.expires_at_ns
     # The call issuance retains the full independently selected Run in captured.cut.
     # Bind that exact revision here without recursively embedding its prompt history
     # in every accepted record and immutable intent copy. Version 2 stays exact;
@@ -421,7 +421,7 @@ def current_inputs(
     mandate = intent.mandate
     policy, semantics = captured_policy(captured)
     sources = source_inventory(captured, mandate, original_adoption_bytes, intent)
-    deadline = min(mandate.horizon.expires_at_ns, captured.observed_time_ns + 5_000_000_000)
+    deadline = mandate.horizon.expires_at_ns
     cut = captured.cut
     observation = DispatchAuthorityObservation(
         schema_id="chiplog.effects.dispatch-observation.v2",

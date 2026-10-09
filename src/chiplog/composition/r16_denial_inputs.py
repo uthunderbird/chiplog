@@ -51,10 +51,15 @@ class DenialCapture:
 def require_invocation(runtime: R14PlanningRuntime, observed: ObservedTrustCall) -> bytes:
     refusal = runtime._trust_observation_guard(observed)
     if refusal is not None:
-        detail = refusal
+        detail: str = refusal
         if refusal == "STALE":
-            if time.monotonic_ns() >= observed.request.budget.absolute_deadline_ns:
-                detail = "STALE:deadline-expired"
+            observation_deadline = (
+                observed.request.budget.absolute_deadline_ns
+                if observed.admission_valid_until_ns is None
+                else observed.admission_valid_until_ns
+            )
+            if time.monotonic_ns() >= observation_deadline:
+                detail = "STALE:admission-expired"
             elif (
                 runtime._supervisor.runtime().session("deployment_trust")
                 != observed.request.callee
@@ -81,6 +86,44 @@ def require_invocation(runtime: R14PlanningRuntime, observed: ObservedTrustCall)
         "CLI",
     ):
         raise LoopRejected("denying invocation has a foreign principal or contour")
+    return raw
+
+
+def require_selected_send_consumption_invocation(
+    runtime: R14PlanningRuntime, observed: ObservedTrustCall
+) -> bytes:
+    """Recheck current trust for broker-owned consumption after exact SEND selection.
+
+    The AUTHENTICATE RPC deadline bounds that RPC. It is not the selected SEND's
+    mandate horizon or a post-selection consumption deadline. Consumption still
+    requires the exact current observation and the same live trust session and
+    generation.
+    """
+    raw = observed.result.reference_bytes
+    if (
+        observed.result.disposition != "VALID"
+        or raw is None
+        or observed.request.operation_id != "deployment_trust.authenticate"
+        or observed.request.schema_id != "chiplog.deployment-trust.owner-call.v1"
+        or observed.request.callee
+        != runtime._supervisor.runtime().session("deployment_trust")
+    ):
+        raise LoopRejected("selected SEND consumption lacks fresh current authentication")
+    state = runtime._read_ledger.current_state(runtime._tenant_id)
+    if (
+        state.owner_draining
+        or state.broker_epoch != observed.request.callee.broker_epoch
+        or state.owner_generation != observed.request.callee.generation_id
+        or runtime._trust.capture_verified_observation() != observed.observation
+    ):
+        raise LoopRejected("selected SEND consumption trust observation is no longer current")
+    principal = json.loads(raw)
+    if (principal["tenant_id"], principal["principal_id"], principal["contour"]) != (
+        runtime._tenant_id,
+        "hermetic-principal",
+        "CLI",
+    ):
+        raise LoopRejected("selected SEND consumption has a foreign principal or contour")
     return raw
 
 

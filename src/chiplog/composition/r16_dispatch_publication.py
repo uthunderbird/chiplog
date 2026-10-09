@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
 from chiplog.capabilities.agent_loop.contracts import LoopRejected, ProposalDisplay
@@ -564,11 +565,23 @@ async def publish_dispatch(
         runtime, "effects.prepare_dispatch_v2", request.schema_id, request.canonical_bytes()
     )
     record = DispatchRecordV2.model_validate_json(output)
+    refreshed = await authenticate(runtime, peer)
+    if (
+        refreshed.result.disposition != "VALID"
+        or refreshed.result.reference_bytes is None
+        or refreshed.result.reference_bytes != captured.principal
+    ):
+        raise LoopRejected("dispatch trust principal changed before invocation")
+    refreshed = replace(
+        refreshed,
+        admission_valid_until_ns=intent.mandate.horizon.expires_at_ns,
+    )
+    authority.observed = refreshed
     with runtime._authority_gate().hold():
         issuance = DispatchIssuance(
             schema_id="chiplog.effects.dispatch-issuance.v2",
             captured=captured,
-            observed=observed,
+            observed=refreshed,
             sent=sent,
             request=request,
             record=record,

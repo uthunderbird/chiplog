@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
 from chiplog.adapters.driven.effects_hermetic import IssuedEffectSendTicket
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.effects.contracts import ExactHead
 from chiplog.capabilities.effects.dispatch_authority_contracts import DispatchObservationDTO
 from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2, canonical, digest, reference
-from chiplog.composition.r16_denial_inputs import require_invocation
+from chiplog.composition.r16_denial_inputs import (
+    require_selected_send_consumption_invocation,
+)
 from chiplog.composition.r16_dispatch_authority import validate_issuance
 from chiplog.composition.r16_dispatch_history import (
     RECORD_SCHEMA,
@@ -244,7 +248,7 @@ class _ConsumeAuthority:
         self.cut: object = None
 
     def invocation(self, identity: PublicationIdentity) -> InvocationProofRef:
-        require_invocation(self.runtime, self.observed)
+        require_selected_send_consumption_invocation(self.runtime, self.observed)
         session = self.observed.request.caller
         self.proof = InvocationProofRef(
             issuance_id=secrets.token_hex(24),
@@ -257,7 +261,7 @@ class _ConsumeAuthority:
         return self.proof
 
     def authenticate_replay(self, query: ExactReplayQuery) -> PublicationRejected | None:
-        require_invocation(self.runtime, self.observed)
+        require_selected_send_consumption_invocation(self.runtime, self.observed)
         if (
             self.proof is not query.current_invocation
             or self.proof.operation_subject != query.identity.command_id
@@ -288,14 +292,16 @@ class _ConsumeAuthority:
         if prepared is not self.prepared or self.subject is None:
             return "DENIED"
         try:
-            require_invocation(self.runtime, self.observed)
+            require_selected_send_consumption_invocation(self.runtime, self.observed)
             current = _capture_sources(self.runtime)
             validate_consumptions(self.runtime, current.journal)
             expected, _ = _request(
                 *_send(self.runtime, self.subject.intent.subject_id, current)
             )
             return None if current.cut == self.cut and expected == self.subject else "STALE"
-        except ValueError, RuntimeError, OSError, KeyError:
+        except LoopRejected:
+            return "STALE"
+        except (ValueError, RuntimeError, OSError, KeyError, TypeError):
             return "INDETERMINATE"
 
     def materialization_state(
@@ -309,14 +315,38 @@ class _ConsumeAuthority:
 
 
 async def consume_and_emit(runtime: R16DispatchRuntime, peer: str, intent_id: str) -> bytes | None:
-    observed = await authenticate(runtime, peer)
     from chiplog.composition.r16_dispatch_outcomes import observe_outcome
 
     # The original OPEN obligation is selected before any consumption or provider I/O.
     opening = await observe_outcome(runtime, intent_id, boundary=True)
     if not isinstance(opening, JournalSelectedPublication):
         return None
+    with runtime._authority_gate().hold():
+        runtime._require_no_pending()
+        selected_sources = _capture_sources(runtime)
+        validate_consumptions(runtime, selected_sources.journal)
+        selected_decision, selected_record = _send(runtime, intent_id, selected_sources)
+        request, ticket = _request(selected_decision, selected_record)
+        existing = runtime._owner_decisions().lookup(runtime._tenant_id, request.command_id)
+        if existing is not None:
+            # This API never returns an executable permit for a historical selection.
+            validate_consumptions(runtime)
+            return None
+
+    # Bind a new observation to the exact selected SEND; the selection observation
+    # is not authority to consume it.
     observed = await authenticate(runtime, peer)
+    principal = None if observed.result.reference_bytes is None else json.loads(
+        observed.result.reference_bytes
+    )
+    mandate = selected_record.snapshot.intent.mandate
+    if (
+        observed.result.disposition != "VALID"
+        or not isinstance(principal, dict)
+        or principal.get("tenant_id") != mandate.tenant_id
+        or principal.get("principal_id") != mandate.principal_id
+    ):
+        return None
     authority = _ConsumeAuthority(runtime, observed)
     coordinator = BrokerPublicationCoordinator(
         runtime._appender, authority, runtime._owner_decisions()
@@ -325,11 +355,14 @@ async def consume_and_emit(runtime: R16DispatchRuntime, peer: str, intent_id: st
         runtime._require_no_pending()
         sources = _capture_sources(runtime)
         validate_consumptions(runtime, sources.journal)
-        request, ticket = _request(*_send(runtime, intent_id, sources))
-        existing = runtime._owner_decisions().lookup(runtime._tenant_id, request.command_id)
-        if existing is not None:
-            # This API never returns an executable permit for a historical selection.
-            validate_consumptions(runtime)
+        current_decision, current_record = _send(runtime, intent_id, sources)
+        current_request, current_ticket = _request(current_decision, current_record)
+        if (
+            sources.cut != selected_sources.cut
+            or current_request != request
+            or current_ticket != ticket
+            or runtime._owner_decisions().lookup(runtime._tenant_id, request.command_id) is not None
+        ):
             return None
         cut = sources.cut
         identity = PublicationIdentity(

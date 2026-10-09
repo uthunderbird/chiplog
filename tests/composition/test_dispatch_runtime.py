@@ -388,7 +388,7 @@ async def test_late_grant_revocation_does_not_redirect_or_reauthorize_selected_s
         assert len(provider.transfers) == 1
 
 
-async def test_send_writer_rejects_lease_expiring_during_final_capture(
+async def test_send_writer_rejects_mandate_lease_expiring_during_final_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import time
@@ -445,17 +445,19 @@ async def test_send_writer_rejects_lease_expiring_during_final_capture(
                 assert intent_id == value.request.previous.snapshot.intent.intent_id
                 actual = original_capture(owner, custody, observed, run_id, intent_id=intent_id)
                 assert actual == value.captured
-                deadline = min(
-                    value.sent.budget.absolute_deadline_ns,
-                    value.request.current.lease_expires_at_ns,
-                )
+                deadline = value.request.current.lease_expires_at_ns
                 assert time.monotonic_ns() < deadline
                 reached.append(deadline)
-                time.sleep((deadline - time.monotonic_ns()) / 1_000_000_000 + 0.01)
                 return actual
 
             with monkeypatch.context() as patch:
                 patch.setattr(module, "capture_dispatch", capture)
+                original_monotonic_ns = time.monotonic_ns
+                patch.setattr(
+                    module.time,
+                    "monotonic_ns",
+                    lambda: reached[-1] if reached else original_monotonic_ns(),
+                )
                 return original_check(authority, prepared)
 
         monkeypatch.setattr(DispatchPublicationAuthority, "check_prepared", check)

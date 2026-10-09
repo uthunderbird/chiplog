@@ -283,17 +283,16 @@ class DispatchPublicationAuthority:
                     None if value.request.previous is None else intent,
                     first_send=isinstance(value.request.command, CommitFirstSendV2),
                 )
-                if fresh != value.captured or fresh.observed_time_ns >= min(
-                    value.sent.budget.absolute_deadline_ns,
-                    value.request.current.lease_expires_at_ns,
+                if (
+                    fresh != value.captured
+                    or fresh.observed_time_ns >= value.request.current.lease_expires_at_ns
                 ):
                     return "STALE"
-                if time.monotonic_ns() >= min(
-                    value.sent.budget.absolute_deadline_ns,
-                    value.request.current.lease_expires_at_ns,
-                ):
+                if time.monotonic_ns() >= value.request.current.lease_expires_at_ns:
                     return "STALE"
                 return None
+            except LoopRejected:
+                return "STALE"
             except (ValueError, RuntimeError, OSError, KeyError, TypeError):
                 return "INDETERMINATE"
         return "DENIED"
