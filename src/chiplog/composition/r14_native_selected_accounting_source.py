@@ -12,6 +12,7 @@ import binascii
 import hashlib
 from dataclasses import dataclass
 
+from chiplog.adapters.driven.effects_queries import StoredEffectRow
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallLifecycleObservation,
     CallSubjectHead,
@@ -32,7 +33,12 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
 )
 from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEffectHistoryMember
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
-from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
+from chiplog.capabilities.effects.dispatch_v2 import (
+    DispatchRecordV2,
+)
+from chiplog.capabilities.effects.dispatch_v2 import (
+    reference as effects_reference,
+)
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
 from chiplog.composition.r14_execution_cancellation_contracts import (
@@ -106,11 +112,13 @@ class R14NativeOneCallAcceptedFacts:
 
 @dataclass(frozen=True, slots=True)
 class R14NativeAcceptedOpenOutcome:
-    """Exact latest selected R16 OPEN outcome joined to one accepted call."""
+    """Retained selected R16 OPEN cause and the current outcome for one accepted call."""
 
     accepted: R14NativeOneCallAcceptedFacts
     outcome: DispatchOutcomeRecordV2
     selected_member: SelectedEffectHistoryMember
+    latest_outcome: DispatchOutcomeRecordV2
+    latest_selected_member: SelectedEffectHistoryMember
     outcome_record_id: str
     commit_sequence: int
     publication_ordinal: int
@@ -120,6 +128,49 @@ class R14NativeAcceptedOpenOutcome:
     materialization_commitment: str
     owner_journal_head: str | None
     database_identity: tuple[str, int, int]
+
+
+def _open_outcome_join_is_valid(
+    expected_intent_id: str,
+    retained: tuple[DispatchOutcomeRecordV2, SelectedEffectHistoryMember, StoredEffectRow],
+    latest: tuple[
+        DispatchRecordV2 | DispatchOutcomeRecordV2,
+        SelectedEffectHistoryMember,
+        StoredEffectRow,
+    ],
+) -> DispatchOutcomeRecordV2 | None:
+    """Check the inert R14 cause/current-outcome join after verified traversal.
+
+    The caller supplies the last per-intent member from the authenticated,
+    ordered R16 history. This helper does not select or authenticate history.
+    """
+    outcome, member, row = retained
+    latest_record, latest_member, latest_row = latest
+    if not isinstance(latest_record, DispatchOutcomeRecordV2):
+        return None
+    intent = outcome.snapshot.intent
+    latest_snapshot = latest_record.snapshot
+    intent_reference = effects_reference(intent.intent_id, intent.canonical_bytes())
+    if not (
+        outcome.snapshot.state == "OUTCOME_UNKNOWN"
+        and outcome.snapshot.obligation.state == "OPEN"
+        and intent.intent_id == expected_intent_id
+        and outcome.snapshot.obligation.original_intent == intent_reference
+        and member.record_bytes == row.record.canonical_bytes
+        and member.publication_ordinal == row.publication_ordinal
+        and row.commit_sequence > 0
+        and bool(row.batch_record_ids)
+        and latest_snapshot.intent.canonical_bytes() == intent.canonical_bytes()
+        and latest_snapshot.obligation.state == "OPEN"
+        and latest_snapshot.obligation.original_intent
+        == outcome.snapshot.obligation.original_intent
+        and latest_member.record_bytes == latest_row.record.canonical_bytes
+        and latest_member.publication_ordinal == latest_row.publication_ordinal
+        and latest_row.commit_sequence > 0
+        and bool(latest_row.batch_record_ids)
+    ):
+        return None
+    return latest_record
 
 
 class R14NativeSelectedAccountingSource:
@@ -339,9 +390,16 @@ class R14NativeSelectedAccountingSource:
                     return None
             expected_intent = accepted.acceptance.loop_proposal.execution_intent.external_intent
             candidates: list[
-                tuple[DispatchOutcomeRecordV2, SelectedEffectHistoryMember, object]
+                tuple[DispatchOutcomeRecordV2, SelectedEffectHistoryMember, StoredEffectRow]
             ] = []
-            latest: dict[str, object] = {}
+            latest: dict[
+                str,
+                tuple[
+                    DispatchRecordV2 | DispatchOutcomeRecordV2,
+                    SelectedEffectHistoryMember,
+                    StoredEffectRow,
+                ],
+            ] = {}
             member_by_bytes = {item.record_bytes: item for item in verified.members}
             if len(member_by_bytes) != len(verified.members):
                 return None
@@ -359,7 +417,7 @@ class R14NativeSelectedAccountingSource:
                 )
                 if record is None:
                     return None
-                latest[record.snapshot.intent.intent_id] = record
+                latest[record.snapshot.intent.intent_id] = (record, member, row)
                 if not isinstance(record, DispatchOutcomeRecordV2):
                     continue
                 intent_ref = effects_reference(
@@ -375,35 +433,36 @@ class R14NativeSelectedAccountingSource:
                 selected = [
                     item
                     for item in candidates
-                    if latest.get(item[0].snapshot.intent.intent_id) == item[0]
+                    if latest.get(item[0].snapshot.intent.intent_id, (None, None, None))[0]
+                    == item[0]
                 ]
             else:
+                expected_decision = expected_selected_decision
+                if expected_decision is None:
+                    return None
                 selected = [
                     item
                     for item in candidates
                     if item[2].record.record_id == expected_outcome_record_id
                     and item[1].selected_decision.subject_id
-                    == expected_selected_decision.subject_id
-                    and item[1].selected_decision.head == expected_selected_decision.revision.head
+                    == expected_decision.subject_id
+                    and item[1].selected_decision.head == expected_decision.revision.head
                     and item[1].selected_decision.fingerprint
-                    == expected_selected_decision.revision.fingerprint
+                    == expected_decision.revision.fingerprint
                 ]
             if len(selected) != 1:
                 return None
             outcome, member, row = selected[0]
-            if (
-                outcome.snapshot.state != "OUTCOME_UNKNOWN"
-                or outcome.snapshot.obligation.state != "OPEN"
-                or outcome.snapshot.intent.intent_id != expected_intent.subject_id
-                or outcome.snapshot.obligation.original_intent != effects_reference(
-                    outcome.snapshot.intent.intent_id,
-                    outcome.snapshot.intent.canonical_bytes(),
-                )
-                or member.record_bytes != row.record.canonical_bytes
-                or member.publication_ordinal != row.publication_ordinal
-                or row.commit_sequence < 1
-                or not row.batch_record_ids
-            ):
+            current = latest.get(outcome.snapshot.intent.intent_id)
+            if current is None:
+                return None
+            latest_record, latest_member, latest_row = current
+            latest_outcome = _open_outcome_join_is_valid(
+                expected_intent.subject_id,
+                (outcome, member, row),
+                (latest_record, latest_member, latest_row),
+            )
+            if latest_outcome is None:
                 return None
             with read_connection(runtime._database) as connection:
                 after = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
@@ -417,6 +476,8 @@ class R14NativeSelectedAccountingSource:
                 accepted=accepted,
                 outcome=outcome,
                 selected_member=member,
+                latest_outcome=latest_outcome,
+                latest_selected_member=latest_member,
                 outcome_record_id=row.record.record_id,
                 commit_sequence=row.commit_sequence,
                 publication_ordinal=row.publication_ordinal,

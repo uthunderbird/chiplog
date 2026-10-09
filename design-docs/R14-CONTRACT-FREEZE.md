@@ -51,12 +51,73 @@ or caller classification grants an authority lane. Writer registry resolves appl
 Only shared files are distributed by hash-checked patch. The physical command/appender,
 callable admission guards and unrestricted operation strings remain broker-private.
 
+## Direct terminal accounting from a closed R16 outcome
+
+Mapping ID: `R14_DIRECT_EFFECT_TERMINAL_V1`.
+Mapping version: `r14-direct-effect-terminal.v1`.
+
+This policy is a pure classification rule for the first R14 terminal accounting
+choice for an accepted consequential call. The classification itself is not a
+durable selection and does not authorize an R16 selection, close an R16
+obligation, publish an R14 terminal, or grant continuation. The registered R14
+accounting writer must atomically publish the chosen disposition, its typed
+result, and the complete accounting frontier after transaction-local admission
+checks. R16 selection and obligation closure remain with their registered
+owners.
+
+The policy may be applied only when the exact selected R16 outcome is available
+to the R14 accounting cut and proves all of the following: the outcome is from
+the accepted call's selected effect intent; it is the selected result of the
+registered original-stream resolver; the obligation is `CLOSED`; the original
+child set and ordered transmissions are exhaustive; authenticated evidence
+partitions every original child exactly once without overlap or conflict; and
+the outcome's semantic class is supported by the versioned R16 reducer. The
+current pure classifier is
+`R14_R16_V2_OUTCOME_TRANSLATION` (`r14-r16-outcome-translation.v1`); the R14
+mapping below is a separate policy and version boundary.
+
+The only mappings in v1 are:
+
+| Exact R16 semantic class | R14 terminal disposition | Required R14 result |
+|---|---|---|
+| `R14_EFFECT_CONFIRMED` | `SUCCEEDED` | Typed success result bound to the accepted call and exact selected effect intent/outcome |
+| `R14_EFFECT_FAILED_NO_EFFECT` | `FAILED_DEFINITE` | Typed definite error bound to the accepted call and exact selected effect intent/outcome |
+
+Any open obligation, incomplete or conflicting evidence, unsupported R16
+class, stale or foreign selection, missing lineage join, or failure to prove
+the complete original child partition is `HOLD`; it must not be guessed into a
+terminal disposition. This policy does not convert `PARTIAL_CONFIRMED`,
+`UNKNOWN`, or mixed outcomes into success or definite failure.
+
+If R14 has already selected `RECOVERY_REQUIRED`, that terminal disposition and
+its exact original obligation are immutable. A later R16 closure cannot
+rewrite it to `SUCCEEDED` or `FAILED_DEFINITE`; it must use the separately
+specified R14.2 recovered-outcome and semantic-reduction continuation protocol.
+The direct policy is available only before the first R14 accounting selection.
+
+The R14 mapping identifier and version, the complete R16
+`DispatchSemanticBinding` (normative manifest identity, reducer version,
+transition-registry version, canonicalization/fingerprint version, and
+adapter-contract version), classifier identifier and version, exact accepted-call/intent identity, exact
+selected R16 terminal and evidence heads, semantic class, resulting typed R14
+result, and complete accounting frontier must travel together in the writer's
+atomic publication and selected cut. Replay must reproduce that same complete
+set. A changed policy/reducer/classifier version, head, mapping, result, or
+frontier is a conflict and leaves the call held; no latest-value lookup or
+recomputed replacement may authorize it.
+
+Contract consumers must cover both allowed mappings and reject open, partial,
+conflicting, incomplete, stale/foreign, and post-`RECOVERY_REQUIRED` cases.
+Mounted runtime verification must additionally prove the owner selection and
+the R14 accounting/continuation join in the same reached history.
+
 ## Requirement-to-evidence map
 
 All rows are planned HOLD; a path is not proof until its reached history is inspected.
 
 | Requirement | Planned public scenario / observable | Evidence target |
 |---|---|---|
+| Closed R16 outcome to first R14 terminal mapping | Exact confirmed/no-effect classes map to versioned R14 disposition with full R16 semantic binding; open, partial, foreign or unbound cases HOLD | tests/composition/test_r14_direct_effect_terminal_policy.py |
 | R14.1 sealed fan-out | response and every ordered initialized call appear atomically; partial/extra/duplicate/reorder/oversize publish nothing | tests/composition/test_recovery_accounting.py |
 | Exact acceptance branches | initialized-head CAS selects consequential intents, read-only acceptance or pre-accept cancel; cancellation after accepted unknown cannot become never-executed | tests/composition/test_recovery_accounting.py |
 | Terminal accounting vs continuation | open exact recovery obligation satisfies accounting but bars Turn/completion; pending bars both; full manifests inspect every earlier response | tests/composition/test_recovery_accounting.py |

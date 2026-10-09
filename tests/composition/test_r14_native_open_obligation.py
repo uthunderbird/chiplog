@@ -1,5 +1,7 @@
 """Mounted accepted-call accounting keeps unresolved R16 work on HOLD."""
 
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -7,12 +9,20 @@ import pytest
 
 from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
 from chiplog.architecture.r7_runtime import R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallPreparationRejected
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
+from chiplog.capabilities.agent_loop.direct_terminal_contracts import (
+    AcceptedDirectTerminalCutV1,
+    PrepareAcceptedDirectTerminalV1,
+)
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PrepareAcceptedOpenAccounting,
     PrepareAcceptedOpenRecoveryV1,
     PreparedAcceptedOpenAccounting,
     PreparedAcceptedOpenRecoveryV1,
+)
+from chiplog.capabilities.agent_loop.direct_terminal_preparation import (
+    prepare_accepted_direct_terminal_v1,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
     prepare_accepted_open_accounting,
@@ -55,21 +65,15 @@ from tests.support.native_cancelled import native_response
 
 def test_historical_recovery_publication_requires_complete_or_exact_pending_state() -> None:
     predecessor, resulting, later = "before", "after", "later"
-    assert _accepted_open_publication_state_is_valid(
-        "COMPLETE", later, later, predecessor
-    )
+    assert _accepted_open_publication_state_is_valid("COMPLETE", later, later, predecessor)
     assert _accepted_open_publication_state_is_valid(
         "ABSENT", predecessor, predecessor, predecessor
     )
-    assert not _accepted_open_publication_state_is_valid(
-        "ABSENT", later, later, predecessor
-    )
+    assert not _accepted_open_publication_state_is_valid("ABSENT", later, later, predecessor)
     assert not _accepted_open_publication_state_is_valid(
         "PARTIAL", resulting, resulting, predecessor
     )
-    assert not _accepted_open_publication_state_is_valid(
-        "COMPLETE", later, resulting, predecessor
-    )
+    assert not _accepted_open_publication_state_is_valid("COMPLETE", later, resulting, predecessor)
 
 
 @pytest.mark.asyncio
@@ -146,9 +150,9 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert len(open_outcomes) == 1
         assert open_outcomes[0].snapshot.obligation.state == "OPEN"
         assert open_outcomes[0].snapshot.state == "OUTCOME_UNKNOWN"
-        response_seal = read_execution_recovery_history(runtime)[
-            3
-        ][0].proposal.fan_out.response_seal
+        response_seal = read_execution_recovery_history(runtime)[3][
+            0
+        ].proposal.fan_out.response_seal
         from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
         from chiplog.capabilities.agent_loop.recovery_contracts import Present
 
@@ -178,6 +182,52 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert exact_open.batch_record_ids
         open_cut = build_accepted_open_recovery_cut(runtime, exact_open)
         assert open_cut is not None
+        direct_cut = AcceptedDirectTerminalCutV1(
+            tenant_id=open_cut.tenant_id,
+            database_id=open_cut.database_id,
+            tenant_commit_sequence=open_cut.tenant_commit_sequence,
+            materialization_commitment=open_cut.materialization_commitment,
+            current_run=open_cut.current_run,
+            current_run_bytes=open_cut.current_run_bytes,
+            response_id=open_cut.response_id,
+            original_call_id=open_cut.original_call_id,
+            initialized=open_cut.initialized,
+            accepted=open_cut.accepted,
+            accepted_record_bytes=open_cut.accepted_record_bytes,
+            execution_intent=open_cut.execution_intent,
+            execution_intent_record_bytes=open_cut.execution_intent_record_bytes,
+            external_effect_intent=open_cut.external_effect_intent,
+            selected_outcome_record_id=open_cut.selected_outcome_record_id,
+            selected_outcome_bytes=open_cut.selected_outcome_bytes,
+            selected_outcome_fingerprint=open_cut.selected_outcome_fingerprint,
+            selected_effect_member_bytes=exact_open.selected_member.canonical_bytes(),
+            selected_decision=open_cut.selected_decision,
+            semantic_binding=exact_open.selected_member.semantics,
+            outcome_commit_sequence=open_cut.outcome_commit_sequence,
+            publication_ordinal=open_cut.publication_ordinal,
+            batch_record_ids=open_cut.batch_record_ids,
+            prior_terminal="ABSENT",
+            cut_fingerprint="0" * 64,
+        )
+        cut_body = direct_cut.model_dump(mode="json")
+        cut_body.pop("cut_fingerprint")
+        direct_cut = direct_cut.model_copy(
+            update={
+                "cut_fingerprint": hashlib.sha256(
+                    json.dumps(
+                        cut_body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                    ).encode()
+                ).hexdigest()
+            }
+        )
+        direct_prepared = prepare_accepted_direct_terminal_v1(
+            PrepareAcceptedDirectTerminalV1(
+                command_id="accepted-direct-terminal:" + direct_cut.cut_fingerprint,
+                cut=direct_cut,
+            )
+        )
+        assert isinstance(direct_prepared, CallPreparationRejected)
+        assert direct_prepared.code == "HOLD"
         accounting_request = PrepareAcceptedOpenAccounting(
             command_id="accepted-open-accounting:" + open_cut.cut_fingerprint,
             cut=open_cut,
@@ -235,6 +285,20 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert updated_outcomes[-1].snapshot.state == "CONFIRMED"
         assert updated_outcomes[-1].snapshot.obligation.state == "OPEN"
         assert updated_outcomes[-1].snapshot.evidence[-1].observation == "PROVIDER_RECEIPT"
+        reopened_facts = source.collect_one_accepted_open_outcome(
+            execution_run_head(sealed),
+            expected_outcome_record_id=exact_open.outcome_record_id,
+            expected_selected_decision=exact_open.selected_member.selected_decision,
+        )
+        assert reopened_facts is not None
+        assert reopened_facts.outcome == exact_open.outcome
+        assert reopened_facts.latest_outcome == updated_outcomes[-1]
+        assert reopened_facts.latest_outcome.snapshot.state == "CONFIRMED"
+        assert reopened_facts.latest_outcome.snapshot.obligation.state == "OPEN"
+        assert (
+            reopened_facts.latest_selected_member.record_bytes
+            == updated_outcomes[-1].canonical_bytes()
+        )
         assert (
             selected_recovery.accounting.selected_outcome_bytes
             == open_outcomes[0].canonical_bytes()
@@ -277,9 +341,12 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
             ),
         ).fetchone()
         damaged = canonical[:-1] + (b" " if canonical[-1:] != b" " else b"\n")
-        assert connection.execute(
-            "UPDATE records SET canonical_bytes=? WHERE record_id=?", (damaged, record_id)
-        ).rowcount == 1
+        assert (
+            connection.execute(
+                "UPDATE records SET canonical_bytes=? WHERE record_id=?", (damaged, record_id)
+            ).rowcount
+            == 1
+        )
     with read_connection(database) as connection:
         before = capture_authority_snapshot_commitment(connection, "hermetic-tenant")
     recover_calls = []

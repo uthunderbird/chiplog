@@ -409,6 +409,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             _V27_EXECUTION_OPERATIONS,
             _V28_EXECUTION_OPERATIONS,
             _V29_EXECUTION_OPERATIONS,
+            _V30_EXECUTION_OPERATIONS,
         )
 
         if identity.capability_ids == _V26_EXECUTION_OPERATIONS:
@@ -419,6 +420,8 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             return "chiplog.capabilities.agent_loop._execution_accepted_open_process"
         if identity.capability_ids == _V29_EXECUTION_OPERATIONS:
             return "chiplog.capabilities.agent_loop._execution_accepted_open_process"
+        if identity.capability_ids == _V30_EXECUTION_OPERATIONS:
+            return "chiplog.capabilities.agent_loop._execution_direct_terminal_process"
         raise OwnerProcessFailure("unknown agent-loop capability partition")
     if identity.owner_id == "projections" and identity.capability_ids == (
         "projections.prepare_conversation_completion",
@@ -452,6 +455,23 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
 
 def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
     module = _owner_module(identity)
+    if module == "chiplog.capabilities.agent_loop._execution_direct_terminal_process":
+        from chiplog.architecture.r7_runtime import _V29_EXECUTION_OPERATIONS
+
+        return tuple(
+            sorted(
+                (
+                    *_owner_module_closure(
+                        replace(identity, capability_ids=_V29_EXECUTION_OPERATIONS)
+                    ),
+                    module,
+                    "chiplog.capabilities.agent_loop.direct_terminal_contracts",
+                    "chiplog.capabilities.agent_loop.direct_terminal_preparation",
+                    "chiplog.capabilities.agent_loop.direct_terminal_wire_contracts",
+                    "chiplog.capabilities.agent_loop.direct_effect_terminal_contracts",
+                )
+            )
+        )
     if module == "chiplog.capabilities.agent_loop._execution_accepted_open_process":
         return tuple(
             sorted(
@@ -460,13 +480,14 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
                         replace(
                             identity,
                             capability_ids=tuple(
-                                    item
-                                    for item in identity.capability_ids
-                                    if item
-                                    not in {
-                                        "agent_loop.prepare_accepted_open_accounting.v1",
-                                        "agent_loop.prepare_accepted_open_recovery.v1",
-                                    }
+                                item
+                                for item in identity.capability_ids
+                                if item
+                                not in {
+                                    "agent_loop.prepare_accepted_open_accounting.v1",
+                                    "agent_loop.prepare_accepted_open_recovery.v1",
+                                    "agent_loop.prepare_accepted_direct_terminal.v1",
+                                }
                             ),
                         )
                     ),

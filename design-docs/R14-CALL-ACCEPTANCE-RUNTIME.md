@@ -182,14 +182,19 @@ consequential call: selected acceptance and execution intent, exact effects-owne
 terminal lifecycle outcome, its explicit versioned mapping to the R14 frontier's
 `SUCCEEDED` or `FAILED_DEFINITE` result, and complete call accounting must join by
 original-call lineage and exact selected/physical bytes before a successor Turn is
-published. The selected recovery reader does not yet carry this join.
+published. `R14_DIRECT_EFFECT_TERMINAL_V1` now freezes the two allowed semantic
+mappings and their hold cases in `R14-CONTRACT-FREEZE.md`; a pure classifier and
+focused consumer tests implement only that mapping boundary. The selected recovery
+reader still does not carry the closed outcome into the R14 accounting cut, and no
+terminal disposition/result is published by this classifier.
 `ExecutionDispatchRuntime` selects R14/R16 acceptance and effect outcomes but has
 no V27 next-Turn route. `CommonCliExecutionRuntime` has both route families, but
 its installed `NativeRecoveryCutSource` admits only the cancellation profile and
 does not select R16 outcome records.
 R16 terminal states such as `CONFIRMED` and `FAILED_NO_EFFECT` are not themselves
-R14 frontier result discriminants; their semantic mapping must be specified and
-versioned before the continuation implementation.
+R14 frontier result discriminants; the frozen mapping must be joined with the
+exact accepted call, selected R16 semantic binding, typed result and complete
+frontier before continuation implementation is complete.
 The existing
 unknown-outcome test proves that an unresolved effect blocks a later adoption in
 that effect scope, while the mounted next-Turn tests cover cancellation-only

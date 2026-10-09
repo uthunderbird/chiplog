@@ -136,6 +136,7 @@ class ObservedTrustCall:
     request: PublicPortCall
     response: PublicPortResult
     result: TrustOwnerResult
+    admission_valid_until_ns: int | None = None
 
 
 @dataclass(frozen=True)
@@ -311,7 +312,12 @@ class R7PlanningRuntime:
             return observed.result.disposition
         if observed.result.reference_bytes is None:
             return "INDETERMINATE"
-        if time.monotonic_ns() >= observed.request.budget.absolute_deadline_ns:
+        deadline = (
+            observed.request.budget.absolute_deadline_ns
+            if observed.admission_valid_until_ns is None
+            else observed.admission_valid_until_ns
+        )
+        if time.monotonic_ns() >= deadline:
             return "STALE"
         current_session = self._supervisor.runtime().session("deployment_trust")
         if current_session != observed.request.callee:

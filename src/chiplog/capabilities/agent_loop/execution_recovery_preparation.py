@@ -114,9 +114,7 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
     """Check the bounded native one-call profile without claiming cut authenticity."""
 
     profiles_v1 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA)
-    profiles_v2 = tuple(
-        source for source in cut.complete_sources if source.schema_id == SCHEMA_V2
-    )
+    profiles_v2 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA_V2)
     cancellation_registry = execution_native_one_call_cancellation_frontier_registry_v1()
     recovery_registry = execution_native_one_call_recovery_frontier_registry_v2()
     if cut.frontier.registry == recovery_registry:
@@ -183,7 +181,11 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
     ):
         raise RecoveryIntegrityFault("sealed response and complete call frontier differ")
     _source(cut, _SEAL, seal_ref, seal.canonical_bytes())
-    captured = [run for run in runs if _run_ref(run) == view.original_run]
+    captured = [
+        run
+        for run in runs
+        if isinstance(run, ExecutionRunRecord) and _run_ref(run) == view.original_run
+    ]
     if len(captured) != 1:
         raise RecoveryHold("sealed response has no unique captured Run")
     captured_turn = captured[0].turns[-1]
@@ -239,7 +241,7 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
     ):
         raise RecoveryIntegrityFault("cancellation terminal/result chain differs")
     expected_sources = (
-        *(_run_ref(run) for run in runs),
+        *(_run_ref(run) for run in runs if isinstance(run, ExecutionRunRecord)),
         seal_ref,
         init_ref,
         terminal_head,
@@ -301,6 +303,8 @@ def _unique_record_by_revision[T: RecoveryDTO](
         raise RecoveryHold("missing or duplicate terminal source")
     record = _record(matches[0], type_)
     identity = getattr(record, "terminal_id", None) or getattr(record, "result_id", None)
+    if not isinstance(identity, str):
+        raise RecoveryIntegrityFault("terminal source lacks a stable record identity")
     _source(cut, schema, call_record_reference(identity, record), record.canonical_bytes())
     return record
 
@@ -345,7 +349,7 @@ def _accounting(cut: ExecutionRecoveryCut) -> tuple[SealedAccountingRecord, ...]
     return tuple(records)
 
 
-def _rejected(command_id: str, error: ValueError) -> CallPreparationRejected:
+def _rejected(command_id: str, error: Exception) -> CallPreparationRejected:
     return CallPreparationRejected(
         command_id=command_id,
         code="HOLD" if isinstance(error, RecoveryHold) else "INTEGRITY_FAULT",

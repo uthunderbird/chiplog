@@ -295,6 +295,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 (AGENT_LOOP_OWNER, "chiplog.execution.accepted-open-accounting.v1"),
                 (AGENT_LOOP_OWNER, "chiplog.execution.accepted-open-recovery-opening.v1"),
                 (AGENT_LOOP_OWNER, "chiplog.execution.accepted-open-terminal-disposition.v1"),
+                (AGENT_LOOP_OWNER, "chiplog.execution.accepted-direct-terminal-accounting.v1"),
+                (AGENT_LOOP_OWNER, "chiplog.execution.accepted-direct-terminal-disposition.v1"),
+                (AGENT_LOOP_OWNER, "chiplog.execution.accepted-direct-terminal-result.v1"),
             )
         )
     )

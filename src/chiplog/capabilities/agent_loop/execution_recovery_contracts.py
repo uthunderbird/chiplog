@@ -65,9 +65,7 @@ class AcceptedOpenRecoveryCutV1(ExecutionRecoveryDTO):
 
 
 class PrepareAcceptedOpenAccounting(ExecutionRecoveryDTO):
-    kind: Literal["PREPARE_ACCEPTED_OPEN_ACCOUNTING_V1"] = (
-        "PREPARE_ACCEPTED_OPEN_ACCOUNTING_V1"
-    )
+    kind: Literal["PREPARE_ACCEPTED_OPEN_ACCOUNTING_V1"] = "PREPARE_ACCEPTED_OPEN_ACCOUNTING_V1"
     command_id: Identity
     cut: AcceptedOpenRecoveryCutV1
 
@@ -95,9 +93,7 @@ class AcceptedOpenAccountingRecordV1(ExecutionRecoveryDTO):
 
 
 class PreparedAcceptedOpenAccounting(ExecutionRecoveryDTO):
-    kind: Literal["PREPARED_ACCEPTED_OPEN_ACCOUNTING_V1"] = (
-        "PREPARED_ACCEPTED_OPEN_ACCOUNTING_V1"
-    )
+    kind: Literal["PREPARED_ACCEPTED_OPEN_ACCOUNTING_V1"] = "PREPARED_ACCEPTED_OPEN_ACCOUNTING_V1"
     source_request_fingerprint: Digest
     accounting: AcceptedOpenAccountingRecordV1
 

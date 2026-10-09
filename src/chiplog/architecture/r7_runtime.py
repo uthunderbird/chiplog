@@ -1326,6 +1326,40 @@ R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST = replace(
     ),
 )
 
+_V30_ACCEPTED_DIRECT_TERMINAL_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_accepted_direct_terminal.v1",
+    "broker",
+    "agent_loop",
+    "chiplog.execution.direct-terminal-request.v1",
+    "chiplog.execution.direct-terminal-result.v1",
+)
+_V30_EXECUTION_OPERATIONS = tuple(
+    sorted((*_V29_EXECUTION_OPERATIONS, _V30_ACCEPTED_DIRECT_TERMINAL_ROUTE.operation_id))
+)
+R14_EXECUTION_ACCEPTED_DIRECT_TERMINAL_V30_PRODUCTION_MANIFEST = replace(
+    R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
+    manifest_version=30,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_V30_EXECUTION_OPERATIONS,
+            public_operations=_V30_EXECUTION_OPERATIONS,
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST.routes,
+                _V30_ACCEPTED_DIRECT_TERMINAL_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -1373,9 +1407,10 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         24,
         25,
         26,
-            27,
-            28,
-            29,
+        27,
+        28,
+        29,
+        30,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1406,6 +1441,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         27: R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
         28: R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST,
         29: R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
+        30: R14_EXECUTION_ACCEPTED_DIRECT_TERMINAL_V30_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     if manifest.manifest_version >= 2:
         if manifest.broker_version.startswith("r8-development-v1:"):
@@ -1415,9 +1451,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         else:
             raise RuntimeManifestViolation("R8 execution broker version is malformed")
         digest = manifest.broker_version.removeprefix(prefix)
-        if len(digest) != 64 or any(
-            item not in "0123456789abcdef" for item in digest
-        ):
+        if len(digest) != 64 or any(item not in "0123456789abcdef" for item in digest):
             raise RuntimeManifestViolation("R8 execution broker version is malformed")
     owner_ids = tuple(item.owner_id for item in manifest.owners)
     _require_canonical_unique(owner_ids, "owners")
