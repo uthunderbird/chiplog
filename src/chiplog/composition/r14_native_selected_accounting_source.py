@@ -283,9 +283,26 @@ class R14NativeSelectedAccountingSource:
         )
 
     def collect_one_accepted_open_outcome(
-        self, target_run: CallSubjectHead | None = None, *, selected_only: bool = False
+        self,
+        target_run: CallSubjectHead | None = None,
+        *,
+        selected_only: bool = False,
+        expected_outcome_record_id: str | None = None,
+        expected_selected_decision: CallSubjectHead | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
-        """Join one accepted call to its exact selected latest OPEN R16 outcome."""
+        """Join one accepted call to its selected OPEN R16 history member.
+
+        Without a retained locator, select only the current OPEN head.  Startup
+        validation may provide the exact original V29 member, which remains
+        historical cause after later authenticated R16 evidence advances the
+        outcome stream.
+        """
+        if (expected_outcome_record_id is None) != (expected_selected_decision is None):
+            raise TypeError("historical OPEN locator requires its selected decision")
+        if expected_selected_decision is not None and type(
+            expected_selected_decision
+        ) is not CallSubjectHead:
+            raise TypeError("historical OPEN selected decision must be exact")
         accepted = self.collect_one_accepted(target_run, selected_only=selected_only)
         if accepted is None:
             return None
@@ -294,8 +311,8 @@ class R14NativeSelectedAccountingSource:
             branch.external_effect_intent, Present
         ):
             return None
-        from chiplog.composition.r16_effects import _read_materialized_effects_with_history
         from chiplog.composition.r16_dispatch_history import verify_dispatch_history
+        from chiplog.composition.r16_effects import _read_materialized_effects_with_history
 
         runtime = self._runtime
         try:
@@ -321,7 +338,9 @@ class R14NativeSelectedAccountingSource:
                 ):
                     return None
             expected_intent = accepted.acceptance.loop_proposal.execution_intent.external_intent
-            candidates: list[tuple[DispatchOutcomeRecordV2, SelectedEffectHistoryMember, object]] = []
+            candidates: list[
+                tuple[DispatchOutcomeRecordV2, SelectedEffectHistoryMember, object]
+            ] = []
             latest: dict[str, object] = {}
             member_by_bytes = {item.record_bytes: item for item in verified.members}
             if len(member_by_bytes) != len(verified.members):
@@ -331,7 +350,11 @@ class R14NativeSelectedAccountingSource:
                 if member is None:
                     return None
                 record = next(
-                    (item for item in verified.v2_records if item.record.head == member.record.head),
+                    (
+                        item
+                        for item in verified.v2_records
+                        if item.record.head == member.record.head
+                    ),
                     None,
                 )
                 if record is None:
@@ -348,11 +371,23 @@ class R14NativeSelectedAccountingSource:
                     and expected_intent.revision.fingerprint == intent_ref.fingerprint
                 ):
                     candidates.append((record, member, row))
-            selected = [
-                item
-                for item in candidates
-                if latest.get(item[0].snapshot.intent.intent_id) == item[0]
-            ]
+            if expected_outcome_record_id is None:
+                selected = [
+                    item
+                    for item in candidates
+                    if latest.get(item[0].snapshot.intent.intent_id) == item[0]
+                ]
+            else:
+                selected = [
+                    item
+                    for item in candidates
+                    if item[2].record.record_id == expected_outcome_record_id
+                    and item[1].selected_decision.subject_id
+                    == expected_selected_decision.subject_id
+                    and item[1].selected_decision.head == expected_selected_decision.revision.head
+                    and item[1].selected_decision.fingerprint
+                    == expected_selected_decision.revision.fingerprint
+                ]
             if len(selected) != 1:
                 return None
             outcome, member, row = selected[0]

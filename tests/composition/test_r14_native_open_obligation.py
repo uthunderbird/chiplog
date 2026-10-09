@@ -23,6 +23,9 @@ from chiplog.composition.common_cli_execution_runtime import (
     CommonCliExecutionRuntime,
     open_common_cli_execution_runtime,
 )
+from chiplog.composition.r14_accepted_open_accounting_publication import (
+    _accepted_open_publication_state_is_valid,
+)
 from chiplog.composition.r14_call_acceptance_port import (
     CallAcceptanceAdoption,
     CallAcceptanceTarget,
@@ -48,6 +51,25 @@ from chiplog.platform.authority_reads import capture_authority_snapshot_commitme
 from chiplog.platform.workspace_snapshot import read_connection
 from tests.support.h1_cli_execution import admit_runtime_slot
 from tests.support.native_cancelled import native_response
+
+
+def test_historical_recovery_publication_requires_complete_or_exact_pending_state() -> None:
+    predecessor, resulting, later = "before", "after", "later"
+    assert _accepted_open_publication_state_is_valid(
+        "COMPLETE", later, later, predecessor
+    )
+    assert _accepted_open_publication_state_is_valid(
+        "ABSENT", predecessor, predecessor, predecessor
+    )
+    assert not _accepted_open_publication_state_is_valid(
+        "ABSENT", later, later, predecessor
+    )
+    assert not _accepted_open_publication_state_is_valid(
+        "PARTIAL", resulting, resulting, predecessor
+    )
+    assert not _accepted_open_publication_state_is_valid(
+        "COMPLETE", later, resulting, predecessor
+    )
 
 
 @pytest.mark.asyncio
@@ -201,6 +223,37 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         with pytest.raises(LoopRejected, match="OUTCOME_UNKNOWN/OPEN"):
             await runtime.start_next_execution_turn(sealed.run_id, sealed.head)
         assert len(resources.require_original_provider().transfers) == 1
+        evidence_append = await runtime.observe_dispatch_outcome(intent_id)
+        assert evidence_append.complete_records
+        updated_outcomes = [
+            DispatchOutcomeRecordV2.model_validate_json(record.canonical_bytes)
+            for decision in runtime._owner_decisions().snapshot().decisions
+            for record in decision.prepared.request.complete_records
+            if record.schema_id == "chiplog.effects.dispatch-outcome-record.v2"
+        ]
+        assert len(updated_outcomes) == 2
+        assert updated_outcomes[-1].snapshot.state == "CONFIRMED"
+        assert updated_outcomes[-1].snapshot.obligation.state == "OPEN"
+        assert updated_outcomes[-1].snapshot.evidence[-1].observation == "PROVIDER_RECEIPT"
+        assert (
+            selected_recovery.accounting.selected_outcome_bytes
+            == open_outcomes[0].canonical_bytes()
+        )
+        assert selected_recovery.accounting.selected_decision.subject_id == (
+            exact_open.selected_member.selected_decision.subject_id
+        )
+        assert selected_recovery.accounting.selected_decision.revision.head == (
+            exact_open.selected_member.selected_decision.head
+        )
+        assert selected_recovery.accounting.selected_decision.revision.fingerprint == (
+            exact_open.selected_member.selected_decision.fingerprint
+        )
+        assert selected_recovery.accounting.batch_record_ids == exact_open.batch_record_ids
+        assert runtime.read_selected_accepted_open_frontier() == joined
+        assert joined.calls[0].disposition.recovered_outcome.outcome.kind == "ABSENT"
+        with pytest.raises(LoopRejected, match="HOLD"):
+            await runtime.start_next_execution_turn(sealed.run_id, sealed.head)
+        assert len(resources.require_original_provider().transfers) == 1
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
@@ -208,7 +261,8 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
     ) as reopened:
         assert reopened.read_selected_accepted_open_recovery() == selected_recovery
         assert reopened.read_selected_accepted_open_frontier() == joined
-        with pytest.raises(LoopRejected, match="OUTCOME_UNKNOWN/OPEN"):
+        assert joined.calls[0].disposition.recovered_outcome.outcome.kind == "ABSENT"
+        with pytest.raises(LoopRejected, match="HOLD"):
             await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
         assert len(resources.require_original_provider().transfers) == 1
     with sqlite3.connect(database) as connection:

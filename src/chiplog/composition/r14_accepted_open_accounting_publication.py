@@ -11,6 +11,7 @@ from typing import Literal
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+    AcceptedOpenRecoveryCutV1,
     PrepareAcceptedOpenAccounting,
     PrepareAcceptedOpenRecoveryV1,
     PreparedAcceptedOpenAccounting,
@@ -129,6 +130,17 @@ def _accepted_open_sealed_accounting(facts, cut, result):
     )
 
 
+def _accepted_open_publication_state_is_valid(
+    state: str, actual: str, anchored: str, predecessor: str
+) -> bool:
+    """Allow exact pending recovery or complete history under a newer anchor."""
+    if actual != anchored:
+        return False
+    if state == "COMPLETE":
+        return True
+    return state == "ABSENT" and actual == predecessor
+
+
 def _selected(runtime, identity: str) -> dict[str, object] | None:
     runtime._pending()
     entries = [
@@ -151,6 +163,7 @@ def _current_cut(
     runtime,
     *,
     selected_only: bool = False,
+    expected_source_cut: AcceptedOpenRecoveryCutV1 | None = None,
     source_materialization_commitment: str | None = None,
     source_tenant_commit_sequence: int | None = None,
 ):
@@ -173,7 +186,14 @@ def _current_cut(
         bind_native_execution_preparation_v2(projection),
     )
     facts = source.collect_one_accepted_open_outcome(
-        execution_run_head(snapshot.records[-1]), selected_only=selected_only
+        execution_run_head(snapshot.records[-1]),
+        selected_only=selected_only,
+        expected_outcome_record_id=(
+            None if expected_source_cut is None else expected_source_cut.selected_outcome_record_id
+        ),
+        expected_selected_decision=(
+            None if expected_source_cut is None else expected_source_cut.selected_decision
+        ),
     )
     if facts is None:
         return None
@@ -580,14 +600,21 @@ def validate_selected_accepted_open_recovery(runtime) -> None:
         with read_connection(runtime._database) as connection:
             actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
         anchored = runtime._commitment_journal.load(runtime._tenant_id)
-        if actual not in (entry.get("predecessor"), entry.get("resulting")) or anchored not in (
-            entry.get("predecessor"),
-            entry.get("resulting"),
+        if actual != anchored:
+            raise LoopRejected("accepted/open current physical and anchored commitments differ")
+        state, publication_actual, publication_anchor = runtime._selected_physical_state(command)
+        if (
+            publication_actual != actual
+            or publication_anchor != anchored
+            or not _accepted_open_publication_state_is_valid(
+                state, actual, anchored, str(entry["predecessor"])
+            )
         ):
-            raise LoopRejected("accepted/open recovery publication is not exact predecessor/result")
+            raise LoopRejected("accepted/open exact publication is absent, partial, or stale")
         current = _current_cut(
             runtime,
             selected_only=True,
+            expected_source_cut=evidence.request.cut,
             source_materialization_commitment=evidence.request.cut.materialization_commitment,
             source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
         )
@@ -618,6 +645,7 @@ def read_selected_accepted_open_frontier(runtime):
         current = _current_cut(
             runtime,
             selected_only=True,
+            expected_source_cut=evidence.request.cut,
             source_materialization_commitment=evidence.request.cut.materialization_commitment,
             source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
         )
