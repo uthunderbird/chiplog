@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import TYPE_CHECKING
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
@@ -72,6 +73,94 @@ def _require_resolution_absent(runtime: CommonCliExecutionRuntime) -> None:
         raise LoopRejected("unselected original resolution physical records exist")
 
 
+def _selected_resolution_preimage(runtime, expected_cut):
+    """Prove the selected resolution is the sole physical suffix of its source cut."""
+    import sqlite3
+    from contextlib import closing
+
+    from chiplog.composition import r14_original_call_resolution_publication as publication
+    from chiplog.platform.publication_readback import inspect_publication
+
+    selected = publication._selected_entries(runtime)
+    if len(selected) != 1:
+        raise LoopRejected("selected original resolution is absent or ambiguous")
+    _, _, entry, batch = selected[0]
+    evidence = publication.validate_selected_command(runtime, entry, batch)
+    predecessor, resulting = entry.get("predecessor"), entry.get("resulting")
+    if (
+        batch.expected_head != expected_cut.tenant_commit_sequence
+        or predecessor != expected_cut.materialization_commitment
+    ):
+        raise LoopRejected("selected original resolution does not extend its retained source cut")
+    with read_connection(runtime._database) as connection:
+        actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+        head = connection.execute(
+            "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+        ).fetchone()
+        state = inspect_publication(connection, batch, batch.expected_head + 1)
+        anchored = runtime._commitment_journal.load(runtime._tenant_id)
+        if (
+            state != "COMPLETE"
+            or head != (batch.expected_head + 1,)
+            or actual != resulting
+            or anchored not in (predecessor, resulting)
+        ):
+            raise LoopRejected("selected original resolution is not the exact current suffix")
+        with closing(sqlite3.connect(":memory:")) as historical:
+            connection.backup(historical)
+            historical.execute("BEGIN")
+            for record in batch.records:
+                if historical.execute(
+                    "DELETE FROM records WHERE tenant_id=? AND record_id=?",
+                    (runtime._tenant_id, record.record_id),
+                ).rowcount != 1:
+                    raise LoopRejected("selected original resolution predecessor is incomplete")
+            if historical.execute(
+                "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
+                "AND idempotency_key=?",
+                (runtime._tenant_id, batch.operation_kind, batch.idempotency_key),
+            ).rowcount != 1:
+                raise LoopRejected("selected original resolution publication is incomplete")
+            historical.execute(
+                "UPDATE tenant_heads SET head=? WHERE tenant_id=?",
+                (batch.expected_head, runtime._tenant_id),
+            )
+            if (
+                capture_authority_snapshot_commitment(historical, runtime._tenant_id)
+                != predecessor
+            ):
+                raise LoopRejected("selected original resolution predecessor commitment differs")
+    return evidence, actual, anchored
+
+
+def authenticate_selected_resolution_prefix_held(runtime, actual: str, anchored: str) -> bool:
+    """Authenticate one selected resolution as the complete current suffix."""
+    runtime._authority_gate().require_held()
+    try:
+        from chiplog.composition import r14_original_call_resolution_publication as publication
+
+        selected = publication._selected_entries(runtime)
+        if len(selected) != 1:
+            return False
+        evidence = selected[0][2].get(publication.EVIDENCE_FIELD)
+        if not isinstance(evidence, str):
+            return False
+        retained = publication.RetainedOriginalCallResolutionPublication.model_validate_json(
+            evidence
+        )
+        checked, current, current_anchor = _selected_resolution_preimage(
+            runtime, retained.request.cut
+        )
+        return (
+            checked == retained
+            and current == actual
+            and current_anchor == anchored
+            and runtime._commitment_journal.load(runtime._tenant_id) == anchored
+        )
+    except (ValueError, TypeError, RuntimeError, OSError, sqlite3.Error):
+        return False
+
+
 def _selected_witness_source(closed: R14NativeAcceptedOpenOutcome) -> RecoverySourceRecord:
     outcome = closed.latest_outcome
     member = closed.latest_selected_member
@@ -108,6 +197,7 @@ def capture_original_call_resolution_request(
     runtime: CommonCliExecutionRuntime,
     *,
     allow_selected_resolution: bool = False,
+    expected_cut=None,
 ) -> PrepareOriginalCallResolution:
     """Capture revalidated R14 sources and the complete selected closed R16 cut.
 
@@ -134,18 +224,25 @@ def capture_original_call_resolution_request(
             ).fetchone()
             tenant_commit_sequence = 0 if head_row is None else int(head_row[0])
         anchored = runtime._commitment_journal.load(runtime._tenant_id)
-        if before != anchored:
+        selected_suffix = None
+        if expected_cut is not None:
+            if not allow_selected_resolution:
+                raise LoopRejected("selected source suffix supplied on a fresh resolution")
+            selected_suffix = _selected_resolution_preimage(runtime, expected_cut)
+        if before != anchored and selected_suffix is None:
             raise LoopRejected("original resolution source cut differs from authority anchor")
 
-        opened = runtime.read_selected_original_obligation_sources()  # type: ignore[no-untyped-call]
+        opened = runtime.read_selected_original_obligation_sources(  # type: ignore[no-untyped-call]
+            historical=allow_selected_resolution
+        )
         resolver = read_selected_original_resolver_authority_policy_source_held(  # type: ignore[no-untyped-call]
-            runtime
+            runtime, historical=True
         )
         reducer = read_selected_original_effect_evidence_reducer_policy_source_held(  # type: ignore[no-untyped-call]
-            runtime
+            runtime, historical=True
         )
-        invocation = read_selected_original_resolver_invocation_source_held(  # type: ignore[no-untyped-call]
-            runtime
+        invocation = read_selected_original_resolver_invocation_source_held(
+            runtime, historical=allow_selected_resolution
         )
         if opened is None or resolver is None or reducer is None or invocation is None:
             raise LoopRejected(
@@ -173,7 +270,9 @@ def capture_original_call_resolution_request(
             runtime, projection, bind_native_execution_preparation_v2(projection)
         )
         closed = accounting.collect_one_accepted_closed_outcome(
-            execution_run_head(snapshot.records[-1]), selected_only=True
+            execution_run_head(snapshot.records[-1]),
+            selected_only=True,
+            allow_authenticated_later_suffix=selected_suffix is not None,
         )
         if closed is None:
             raise LoopRejected("exact selected closed R16 outcome unavailable; HOLD")
@@ -205,6 +304,20 @@ def capture_original_call_resolution_request(
             or closed.materialization_commitment != before
         ):
             raise LoopRejected("selected R14 and R16 resolution sources do not share one cut")
+        source_sequence = tenant_commit_sequence
+        source_commitment = before
+        if selected_suffix is not None:
+            _, selected_actual, selected_anchor = selected_suffix
+            if (
+                tenant_commit_sequence != expected_cut.tenant_commit_sequence + 1
+                or selected_actual != before
+                or selected_anchor not in (expected_cut.materialization_commitment, before)
+            ):
+                raise LoopRejected(
+                    "selected resolution suffix changed the authenticated source cut"
+                )
+            source_sequence = expected_cut.tenant_commit_sequence
+            source_commitment = expected_cut.materialization_commitment
         if not allow_selected_resolution:
             _require_resolution_absent(runtime)
 
@@ -225,8 +338,8 @@ def capture_original_call_resolution_request(
         cut = OriginalResolverCut(
             tenant_id=runtime._tenant_id,
             database_id=str(database_identity[0]),
-            tenant_commit_sequence=tenant_commit_sequence,
-            materialization_commitment=before,
+            tenant_commit_sequence=source_sequence,
+            materialization_commitment=source_commitment,
             original=original,
             obligation_stream=stream,
             current_obligation=opening_source,
@@ -249,7 +362,7 @@ def capture_original_call_resolution_request(
         runtime._check_database_identity()
         if (
             after != before
-            or runtime._commitment_journal.load(runtime._tenant_id) != before
+            or runtime._commitment_journal.load(runtime._tenant_id) != anchored
             or runtime._database_identity != database_identity
         ):
             raise LoopRejected("original resolution source cut changed during capture")

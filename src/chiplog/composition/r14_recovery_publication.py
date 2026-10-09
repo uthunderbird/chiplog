@@ -548,6 +548,24 @@ def authenticate_selected_recovery_prefix_held(runtime, actual, anchored) -> boo
             from .r14_next_turn_pending import authenticate_selected_next_turn_prefix_held
 
             return authenticate_selected_next_turn_prefix_held(runtime, actual, anchored)
+        if (
+            len(pending) == 1
+            and pending[0].get("operation_kind")
+            == "agent_loop.original-resolver-invocation.v1"
+        ):
+            from .r14_invocation_pending import authenticate_selected_invocation_prefix_held
+
+            return authenticate_selected_invocation_prefix_held(runtime, actual, anchored)
+        if (
+            len(pending) == 1
+            and pending[0].get("operation_kind")
+            == "agent_loop.original-call-resolution.v1"
+        ):
+            from .r14_original_call_resolution_source import (
+                authenticate_selected_resolution_prefix_held,
+            )
+
+            return authenticate_selected_resolution_prefix_held(runtime, actual, anchored)
         if len(pending) != 1 or runtime._pending_owners() or runtime._pending_gate_publications():
             return False
         entry = pending[0]

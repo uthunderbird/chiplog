@@ -28,6 +28,9 @@ from chiplog.composition.r14_loop_history import read_selected_original_obligati
 from chiplog.composition.r14_original_resolver_policy_publication import (
     _validate_actor_history,
 )
+from chiplog.composition.r14_original_resolver_policy_publication import (
+    validate_selected as validate_policy_selected,
+)
 from chiplog.composition.r14_recovery_publication import (
     RecoveryActorBudgetV1,
     issue_execution_recovery_actor_v1,
@@ -138,18 +141,56 @@ def _validate_invocation_actor_fields(receipt, invocation) -> None:
 
 
 def _current_sources(runtime):
-    from chiplog.composition.r14_original_resolver_policy_publication import (
-        read_selected_original_effect_evidence_reducer_policy_source_held,
-        read_selected_original_resolver_authority_policy_source_held,
-    )
+    from chiplog.composition import r14_original_resolver_policy_publication
 
-    opened = read_selected_original_obligation_sources(runtime)
-    resolver = read_selected_original_resolver_authority_policy_source_held(runtime)
-    reducer = read_selected_original_effect_evidence_reducer_policy_source_held(runtime)
-    if opened is None or resolver is None or reducer is None:
+    opened = read_selected_original_obligation_sources(runtime, historical=True)
+    selected = r14_original_resolver_policy_publication._selected_entries(runtime)
+    if opened is None or not selected:
         return None
-    opening, terminal = opened
-    return opening, terminal, resolver[1], reducer[1]
+    decision_id, decision_bytes, entry, batch = selected[0]
+    evidence = validate_policy_selected(runtime, entry, batch)
+    if len(batch.records) != 2:
+        raise ValueError("selected resolver policy lacks reducer record")
+    from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+    from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+    from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+        original_effect_evidence_reducer_policy_v1,
+    )
+    from chiplog.capabilities.agent_loop.recovery_contracts import Present
+    from chiplog.composition.r14_original_resolver_policy_publication import REDUCER_SCHEMA, SCHEMA
+
+    raw = decision_bytes.encode() if isinstance(decision_bytes, str) else decision_bytes
+    selected_digest = hashlib.sha256(raw).hexdigest()
+    policy_sources = []
+    for record in batch.records:
+        digest = hashlib.sha256(record.canonical_bytes).hexdigest()
+        subject_id = (
+            evidence.request.policy.policy_id
+            if record.schema_id == SCHEMA
+            else original_effect_evidence_reducer_policy_v1(runtime._tenant_id).policy_id
+        )
+        if record.schema_id not in (SCHEMA, REDUCER_SCHEMA):
+            raise ValueError("selected resolver policy source schema differs")
+        policy_sources.append(
+            RecoverySourceRecord(
+                owner=record.owner,
+                subject=CallSubjectHead(
+                    subject_id=subject_id,
+                    revision=Present(head="record:" + digest, fingerprint=digest),
+                ),
+                schema_id=record.schema_id,
+                canonical_record_bytes=record.canonical_bytes,
+                selected_decision=CallSubjectHead(
+                    subject_id=decision_id,
+                    revision=Present(head=decision_id, fingerprint=selected_digest),
+                ),
+                physical_record=CallSubjectHead(
+                    subject_id=record.record_id,
+                    revision=Present(head="record:" + digest, fingerprint=digest),
+                ),
+            )
+        )
+    return (*opened, *policy_sources)
 
 
 def _selected_entries(runtime):
@@ -243,7 +284,7 @@ def validate_selected(runtime, entry, batch):
     return evidence
 
 
-def read_selected_original_resolver_invocation_source_held(runtime):
+def read_selected_original_resolver_invocation_source_held(runtime, *, historical=False):
     runtime._pending()
     selected = _selected_entries(runtime)
     if not selected:
@@ -255,7 +296,20 @@ def read_selected_original_resolver_invocation_source_held(runtime):
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
-    if state != "COMPLETE" or actual != anchored or actual != entry.get("resulting"):
+    historical_suffix = False
+    if historical and actual != anchored:
+        from chiplog.composition.r14_historical_suffix import (
+            authenticate_selected_r14_suffix_held,
+        )
+
+        historical_suffix = authenticate_selected_r14_suffix_held(
+            runtime, actual, anchored, target_commitment=str(entry.get("resulting"))
+        )
+    if (
+        state != "COMPLETE"
+        or (actual != anchored and not historical_suffix)
+        or (not historical and actual != entry.get("resulting"))
+    ):
         raise ValueError("selected original resolver invocation selected/physical mismatch")
     _validate_physical_catalog(runtime, batch)
     record = batch.records[0]
@@ -308,6 +362,16 @@ def _startup_state(runtime, entry, batch):
     ):
         _validate_physical_catalog(runtime, batch)
         return
+    if state == "COMPLETE" and actual == anchored:
+        from chiplog.composition.r14_historical_suffix import (
+            authenticate_selected_r14_suffix_held,
+        )
+
+        if authenticate_selected_r14_suffix_held(
+            runtime, actual, anchored, target_commitment=resulting
+        ):
+            _validate_physical_catalog(runtime, batch)
+            return
     raise ValueError("selected original resolver invocation has partial physical state")
 
 

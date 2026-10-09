@@ -224,7 +224,9 @@ def _validate_current_sources(
     evidence: RetainedOriginalCallResolutionPublication,
 ) -> None:
     current = capture_original_call_resolution_request(
-        runtime, allow_selected_resolution=True
+        runtime,
+        allow_selected_resolution=True,
+        expected_cut=evidence.request.cut,
     )
     current = current.model_copy(
         update={

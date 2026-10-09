@@ -963,7 +963,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         )
 
         with self._authority_gate().hold():
-            return read_selected_original_resolver_authority_policy_source_held(self)
+            return read_selected_original_resolver_authority_policy_source_held(
+                self, historical=True
+            )
 
     def read_selected_original_effect_evidence_reducer_policy_source(self):
         from chiplog.composition.r14_original_resolver_policy_publication import (
@@ -971,7 +973,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         )
 
         with self._authority_gate().hold():
-            return read_selected_original_effect_evidence_reducer_policy_source_held(self)
+            return read_selected_original_effect_evidence_reducer_policy_source_held(
+                self, historical=True
+            )
 
     async def publish_original_resolver_invocation(self, peer: str = "hermetic-ingress"):
         from chiplog.composition.r14_original_resolver_invocation_publication import (
@@ -986,7 +990,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         )
 
         with self._authority_gate().hold():
-            return read_selected_original_resolver_invocation_source_held(self)
+            return read_selected_original_resolver_invocation_source_held(
+                self, historical=True
+            )
 
     async def publish_original_call_resolution(self, peer: str = "hermetic-ingress"):
         from chiplog.composition.r14_original_call_resolution_publication import (
@@ -1036,12 +1042,12 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return read_selected_accepted_open_recovery(self)
 
-    def read_selected_original_obligation_sources(self):
+    def read_selected_original_obligation_sources(self, *, historical: bool = False):
         from chiplog.composition.r14_loop_history import (
             read_selected_original_obligation_sources,
         )
 
-        return read_selected_original_obligation_sources(self)
+        return read_selected_original_obligation_sources(self, historical=historical)
 
     def read_selected_accepted_open_frontier(self):
         from chiplog.composition.r14_accepted_open_accounting_publication import (

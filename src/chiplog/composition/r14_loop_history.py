@@ -602,12 +602,7 @@ def _read_call_history(
                             r.schema_id for r in command.records
                         ) != (SCHEMA, REDUCER_SCHEMA):
                             raise ValueError("selected resolver policy record schemas differ")
-                        decision_id = entry.get("_selected_decision_id")
-                        decision_bytes = entry.get("_selected_decision_bytes")
-                        if not isinstance(decision_id, str) or not isinstance(
-                            decision_bytes, (str, bytes)
-                        ):
-                            raise ValueError("selected resolver policy lacks decision identity")
+                        decision_id, decision_bytes = selected_decision_envelopes[identity]
                         selected_digest = hashlib.sha256(
                             decision_bytes.encode()
                             if isinstance(decision_bytes, str)

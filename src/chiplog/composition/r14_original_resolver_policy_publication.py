@@ -268,7 +268,7 @@ def _validate_physical_catalog(runtime, batch: PhysicalPublicationCommand | None
             raise ValueError("original resolver policy physical catalog differs from selection")
 
 
-def read_selected_original_resolver_authority_policy_source_held(runtime):
+def read_selected_original_resolver_authority_policy_source_held(runtime, *, historical=False):
     runtime._pending()
     selected = _selected_entries(runtime)
     if not selected:
@@ -280,7 +280,20 @@ def read_selected_original_resolver_authority_policy_source_held(runtime):
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
-    if state != "COMPLETE" or actual != anchored or actual != entry.get("resulting"):
+    historical_suffix = False
+    if historical and actual != anchored:
+        from chiplog.composition.r14_historical_suffix import (
+            authenticate_selected_r14_suffix_held,
+        )
+
+        historical_suffix = authenticate_selected_r14_suffix_held(
+            runtime, actual, anchored, target_commitment=str(entry.get("resulting"))
+        )
+    if (
+        state != "COMPLETE"
+        or (actual != anchored and not historical_suffix)
+        or (not historical and actual != entry.get("resulting"))
+    ):
         raise ValueError("selected original resolver policy selected/physical mismatch")
     _validate_physical_catalog(runtime, batch)
     if len(batch.records) != 2:
@@ -321,8 +334,12 @@ def read_selected_original_resolver_authority_policy_source_held(runtime):
     return evidence.request.policy, source
 
 
-def read_selected_original_effect_evidence_reducer_policy_source_held(runtime):
-    selected = read_selected_original_resolver_authority_policy_source_held(runtime)
+def read_selected_original_effect_evidence_reducer_policy_source_held(
+    runtime, *, historical=False
+):
+    selected = read_selected_original_resolver_authority_policy_source_held(
+        runtime, historical=historical
+    )
     if selected is None:
         return None
     policy = original_effect_evidence_reducer_policy_v1(runtime._tenant_id)
@@ -357,7 +374,9 @@ def read_selected_original_effect_evidence_reducer_policy_source_held(runtime):
 
 
 def read_selected_original_resolver_authority_policy_held(runtime):
-    selected = read_selected_original_resolver_authority_policy_source_held(runtime)
+    selected = read_selected_original_resolver_authority_policy_source_held(
+        runtime, historical=True
+    )
     return None if selected is None else selected[0]
 
 
@@ -382,6 +401,16 @@ def _validate_startup_state(runtime, entry, batch) -> None:
     ):
         _validate_physical_catalog(runtime, batch)
         return
+    if state == "COMPLETE" and actual == anchored:
+        from chiplog.composition.r14_historical_suffix import (
+            authenticate_selected_r14_suffix_held,
+        )
+
+        if authenticate_selected_r14_suffix_held(
+            runtime, actual, anchored, target_commitment=resulting
+        ):
+            _validate_physical_catalog(runtime, batch)
+            return
     raise ValueError(
         "selected original resolver policy has partial or mismatched physical state: "
         f"state={state}, actual={actual}, anchored={anchored}, "
