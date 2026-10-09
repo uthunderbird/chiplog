@@ -12,9 +12,12 @@ from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
 from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     PROFILE_OPERATION,
+    PROFILE_OPERATION_V2,
     SCHEMA,
+    SCHEMA_V2,
     decode_native_one_call_recovery_profile,
-    native_one_call_recovery_profile,
+    decode_native_one_call_recovery_profile_v2,
+    native_one_call_recovery_profile_v2,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present, RecoveryDTO
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
@@ -31,11 +34,16 @@ class RetainedNativeProfilePublication(RecoveryDTO):
 
 
 def profile_command(evidence):
-    profile = decode_native_one_call_recovery_profile(evidence.record_bytes)
+    try:
+        profile = decode_native_one_call_recovery_profile(evidence.record_bytes)
+        operation, schema = PROFILE_OPERATION, SCHEMA
+    except ValueError:
+        profile = decode_native_one_call_recovery_profile_v2(evidence.record_bytes)
+        operation, schema = PROFILE_OPERATION_V2, SCHEMA_V2
     digest = profile.digest()
     return PhysicalPublicationCommand(
         tenant_id=evidence.tenant_id,
-        operation_kind=PROFILE_OPERATION,
+        operation_kind=operation,
         idempotency_key="native-recovery-profile:" + digest,
         request_fingerprint=evidence.digest(),
         expected_head=evidence.expected_head,
@@ -46,12 +54,63 @@ def profile_command(evidence):
             PhysicalRecord(
                 "native-recovery-profile:" + digest,
                 "agent_loop",
-                SCHEMA,
+                schema,
                 evidence.record_bytes,
                 digest,
             ),
         ),
     )
+
+
+def _selected_v1_profile(runtime) -> bool:
+    for _, _, raw in runtime._loop_decisions().entries():
+        entry = json.loads(raw)
+        if entry.get("kind") != "DECIDED":
+            continue
+        batch = runtime._publication(entry)
+        if batch.operation_kind == PROFILE_OPERATION or any(
+            record.schema_id == SCHEMA for record in batch.records
+        ):
+            return True
+    return False
+
+
+def _assert_v2_precedes_covered_lineage(runtime, profile_sequence: int | None = None) -> None:
+    """Reject V2 when V1 profile state exists or covered call lineage came first."""
+    if _selected_v1_profile(runtime):
+        raise ValueError("V1 recovery profile selection blocks V2")
+    covered = (
+        "chiplog.call.initialized.v1",
+        "chiplog.call.response-seal.v1",
+        "chiplog.call.cancelled-before-accept.v1",
+        "chiplog.call.not-executed-result.v1",
+        "chiplog.call.accepted.v1",
+        "chiplog.call.execution-intent.v1",
+        "chiplog.effects.record.v1",
+    )
+    placeholders = ",".join("?" for _ in covered)
+    with read_connection(runtime._database) as connection:
+        if connection.execute(
+            "SELECT 1 FROM records WHERE tenant_id=? AND schema_id=? LIMIT 1",
+            (runtime._tenant_id, SCHEMA),
+        ).fetchone() is not None:
+            raise ValueError("V1 recovery profile physical record blocks V2")
+        if connection.execute(
+            "SELECT 1 FROM publications WHERE tenant_id=? AND operation_kind=? LIMIT 1",
+            (runtime._tenant_id, PROFILE_OPERATION),
+        ).fetchone() is not None:
+            raise ValueError("V1 recovery profile publication blocks V2")
+        row = connection.execute(
+            "SELECT MIN(commit_sequence) FROM records "
+            f"WHERE tenant_id=? AND schema_id IN ({placeholders})",
+            (runtime._tenant_id, *covered),
+        ).fetchone()
+    if (
+        row is not None
+        and row[0] is not None
+        and (profile_sequence is None or int(row[0]) <= profile_sequence)
+    ):
+        raise ValueError("V2 recovery profile must precede covered call lineage")
 
 
 def validate_profile_selected(runtime, entry, batch):
@@ -65,6 +124,7 @@ def validate_profile_selected(runtime, entry, batch):
         or evidence.database_id != runtime._database_identity[0]
         or evidence.predecessor != entry.get("predecessor")
         or profile_command(evidence) != batch
+        or entry.get("operation_kind") != batch.operation_kind
     ):
         raise ValueError("native recovery profile selection differs from exact configuration")
     return evidence
@@ -80,8 +140,9 @@ def read_native_recovery_profile_held(runtime):
         batch = runtime._publication(entry)
         if (
             batch.operation_kind == PROFILE_OPERATION
+            or batch.operation_kind == PROFILE_OPERATION_V2
             or "native_recovery_profile_evidence" in entry
-            or any(r.schema_id == SCHEMA for r in batch.records)
+            or any(r.schema_id in (SCHEMA, SCHEMA_V2) for r in batch.records)
         ):
             evidence = validate_profile_selected(runtime, entry, batch)
             selections.append((decision_id, raw, entry, batch, evidence))
@@ -93,6 +154,8 @@ def read_native_recovery_profile_held(runtime):
     with read_connection(runtime._database) as connection:
         if inspect_publication(connection, batch, batch.expected_head + 1) != "COMPLETE":
             raise ValueError("native recovery profile selected/physical mismatch")
+    if batch.operation_kind == PROFILE_OPERATION_V2:
+        _assert_v2_precedes_covered_lineage(runtime, batch.expected_head + 1)
     record = batch.records[0]
     digest = hashlib.sha256(raw).hexdigest()
     subject = CallSubjectHead(
@@ -102,7 +165,7 @@ def read_native_recovery_profile_held(runtime):
     return RecoverySourceRecord(
         owner="agent_loop",
         subject=subject,
-        schema_id=SCHEMA,
+        schema_id=record.schema_id,
         canonical_record_bytes=evidence.record_bytes,
         selected_decision=CallSubjectHead(
             subject_id=batch.idempotency_key,
@@ -136,7 +199,7 @@ async def publish_native_recovery_profile(runtime, peer="hermetic-ingress"):
             json.loads(raw)
             for _, _, raw in runtime._loop_decisions().entries()
             if (e := json.loads(raw)).get("kind") == "DECIDED"
-            and e.get("operation_kind") == PROFILE_OPERATION
+            and e.get("operation_kind") in (PROFILE_OPERATION, PROFILE_OPERATION_V2)
         ]
         if len(prior) > 1:
             raise LoopRejected("ambiguous native profile history")
@@ -153,12 +216,16 @@ async def publish_native_recovery_profile(runtime, peer="hermetic-ingress"):
                 sequence = 0 if row is None else int(row[0])
             if current != predecessor:
                 raise LoopRejected("native profile predecessor not anchored")
+            try:
+                _assert_v2_precedes_covered_lineage(runtime)
+            except ValueError as error:
+                raise LoopRejected(str(error)) from error
             worker = runtime.current_worker()
             session = runtime._supervisor.runtime().session("agent_loop")
             evidence = RetainedNativeProfilePublication(
                 tenant_id=runtime._tenant_id,
                 database_id=runtime._database_identity[0],
-                record_bytes=native_one_call_recovery_profile().canonical_bytes(),
+                record_bytes=native_one_call_recovery_profile_v2().canonical_bytes(),
                 expected_head=sequence,
                 predecessor=predecessor,
             )
@@ -184,12 +251,16 @@ async def publish_native_recovery_profile(runtime, peer="hermetic-ingress"):
         if guard() is not None:
             raise LoopRejected("native profile source changed at selection")
         runtime._require_no_pending()
+        try:
+            _assert_v2_precedes_covered_lineage(runtime)
+        except ValueError as error:
+            raise LoopRejected(str(error)) from error
         runtime._append_decision(
             {
                 "version": 1,
                 "kind": "DECIDED",
                 "operation_id": batch.idempotency_key,
-                "operation_kind": PROFILE_OPERATION,
+                "operation_kind": PROFILE_OPERATION_V2,
                 "expected_head": batch.expected_head,
                 "fingerprint": batch.request_fingerprint,
                 "predecessor": predecessor,
@@ -233,7 +304,8 @@ def validate_profile_startup(runtime):
             batch = runtime._publication(entry)
             if (
                 batch.operation_kind == PROFILE_OPERATION
+                or batch.operation_kind == PROFILE_OPERATION_V2
                 or "native_recovery_profile_evidence" in entry
-                or any(r.schema_id == SCHEMA for r in batch.records)
+                or any(r.schema_id in (SCHEMA, SCHEMA_V2) for r in batch.records)
             ):
                 validate_profile_selected(runtime, entry, batch)

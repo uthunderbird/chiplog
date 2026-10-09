@@ -1,0 +1,90 @@
+import sqlite3
+from types import SimpleNamespace
+
+import pytest
+
+from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
+    decode_native_one_call_recovery_profile,
+    decode_native_one_call_recovery_profile_v2,
+    native_one_call_recovery_profile,
+    native_one_call_recovery_profile_v2,
+)
+from chiplog.composition.r14_recovery_profile_publication import (
+    RetainedNativeProfilePublication,
+    _assert_v2_precedes_covered_lineage,
+    profile_command,
+)
+
+
+def test_native_recovery_profile_v2_is_closed_and_distinct_from_v1():
+    old = native_one_call_recovery_profile()
+    current = native_one_call_recovery_profile_v2()
+
+    assert decode_native_one_call_recovery_profile(old.canonical_bytes()) == old
+    assert decode_native_one_call_recovery_profile_v2(current.canonical_bytes()) == current
+    assert current.schema_id.endswith(".v2")
+    assert current.registry.version == "2"
+    assert current.call_branches == (
+        "CANCELLED_BEFORE_ACCEPT",
+        "CONSEQUENTIAL_ACCEPTED_RECOVERY",
+    )
+    assert current.obligation_states == ("OPEN", "CLOSED")
+    assert "SEND_COMMITTED" in current.dispatch_record_kinds
+    assert current.dispatch_outcome_record_kinds == ("EVIDENCE_RECORDED", "RECONCILED")
+    with pytest.raises(ValueError):
+        decode_native_one_call_recovery_profile_v2(old.canonical_bytes())
+    with pytest.raises(ValueError):
+        decode_native_one_call_recovery_profile(current.canonical_bytes())
+
+
+def test_profile_command_keeps_exact_v1_decoder_and_selects_v2_schema():
+    old = RetainedNativeProfilePublication(
+        tenant_id="tenant",
+        database_id="db",
+        record_bytes=native_one_call_recovery_profile().canonical_bytes(),
+        expected_head=0,
+        predecessor="0" * 64,
+    )
+    current = old.model_copy(
+        update={"record_bytes": native_one_call_recovery_profile_v2().canonical_bytes()}
+    )
+
+    old_command = profile_command(old)
+    current_command = profile_command(current)
+
+    assert old_command.operation_kind == "agent_loop.native-one-call-recovery-profile.v1"
+    assert old_command.records[0].schema_id.endswith(".v1")
+    assert current_command.operation_kind == "agent_loop.native-one-call-recovery-profile.v2"
+    assert current_command.records[0].schema_id.endswith(".v2")
+
+
+def test_v2_selection_guard_rejects_v1_rows_and_late_lineage(tmp_path):
+    database = tmp_path / "profile.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE records (tenant_id TEXT, schema_id TEXT, commit_sequence INTEGER)"
+        )
+        connection.execute(
+            "CREATE TABLE publications (tenant_id TEXT, operation_kind TEXT)"
+        )
+    journal = SimpleNamespace(entries=lambda: ())
+    runtime = SimpleNamespace(
+        _tenant_id="tenant", _database=database, _loop_decisions=lambda: journal
+    )
+
+    _assert_v2_precedes_covered_lineage(runtime)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO records VALUES (?, ?, ?)",
+            ("tenant", "chiplog.call.initialized.v1", 4),
+        )
+    with pytest.raises(ValueError, match="must precede"):
+        _assert_v2_precedes_covered_lineage(runtime)
+    _assert_v2_precedes_covered_lineage(runtime, profile_sequence=3)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO records VALUES (?, ?, ?)",
+            ("tenant", "chiplog.execution.native-one-call-recovery-profile.v1", 2),
+        )
+    with pytest.raises(ValueError, match="V1 recovery profile"):
+        _assert_v2_precedes_covered_lineage(runtime, profile_sequence=1)

@@ -488,6 +488,7 @@ def _read_call_history(
                         "agent_loop.execution-accounting-readiness.v1",
                         "agent_loop.execution-next-turn.v1",
                         "agent_loop.native-one-call-recovery-profile.v1",
+                        "agent_loop.native-one-call-recovery-profile.v2",
                         EXECUTION_TRANSITION_OPERATION,
                         EXECUTION_INBOX_INITIALIZATION_OPERATION,
                         EXECUTION_FANOUT_OPERATION,
@@ -503,7 +504,11 @@ def _read_call_history(
                     ):
                         raise ValueError("selected loop publication is not exactly materialized")
                     if (
-                        command.operation_kind == "agent_loop.native-one-call-recovery-profile.v1"
+                        command.operation_kind
+                        in (
+                            "agent_loop.native-one-call-recovery-profile.v1",
+                            "agent_loop.native-one-call-recovery-profile.v2",
+                        )
                         or "native_recovery_profile_evidence" in entry
                     ):
                         from chiplog.composition.r14_recovery_profile_publication import (

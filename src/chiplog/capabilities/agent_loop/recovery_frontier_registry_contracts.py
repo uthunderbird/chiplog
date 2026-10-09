@@ -22,8 +22,10 @@ __all__ = [
     "RecoveryFrontierRegistryIntegrityError",
     "decode_frontier_registry",
     "decode_native_one_call_cancellation_frontier_registry_v1",
+    "decode_native_one_call_recovery_frontier_registry_v2",
     "execution_h1_zero_call_frontier_registry_v2",
     "execution_native_one_call_cancellation_frontier_registry_v1",
+    "execution_native_one_call_recovery_frontier_registry_v2",
     "execution_zero_call_frontier_registry",
     "frontier_registry_content_fingerprint",
     "frontier_registry_reference",
@@ -37,6 +39,10 @@ _EXECUTION_NATIVE_ONE_CALL_CANCELLATION_REGISTRY_ID = (
     "chiplog.execution.native-one-call-cancellation-recovery-frontier"
 )
 _EXECUTION_NATIVE_ONE_CALL_CANCELLATION_REGISTRY_VERSION = "1"
+_EXECUTION_NATIVE_ONE_CALL_RECOVERY_REGISTRY_ID = (
+    "chiplog.execution.native-one-call-recovery-frontier"
+)
+_EXECUTION_NATIVE_ONE_CALL_RECOVERY_REGISTRY_VERSION = "2"
 _CANONICALIZATION_VERSION = "chiplog.recovery.frontier.v1"
 
 # This is deliberately a literal tuple rather than the RecoveryRegistryRow
@@ -332,6 +338,80 @@ def execution_native_one_call_cancellation_frontier_registry_v1() -> RecoveryFro
             rows,
         ),
     )
+
+
+def execution_native_one_call_recovery_frontier_registry_v2() -> RecoveryFrontierRegistry:
+    """Closed branch-aware native recovery registry V2.
+
+    V2 gives every family new extractor, cardinality, conflict, and serialization
+    identities. V1 cancellation bytes cannot be reinterpreted under accepted-call
+    semantics.
+    """
+
+    rows = tuple(
+        RecoveryRegistryRow(
+            family=cast(
+                Literal[
+                    "RUN",
+                    "TURN",
+                    "SEALED_RESPONSE",
+                    "CALL",
+                    "EFFECT",
+                    "EVIDENCE",
+                    "DELIVERY",
+                    "AUTHORITY",
+                    "MANDATE",
+                    "POLICY",
+                    "PROMPT",
+                    "TOOL_SCHEMA",
+                    "RECIPIENT",
+                    "SEMANTIC_BINDING",
+                    "EXECUTION_LINEAGE",
+                    "OBLIGATION",
+                    "SEMANTIC_REDUCTION",
+                ],
+                family,
+            ),
+            ordinal=ordinal,
+            subject_extractor_id=f"execution-native-one-call-v2:{family}:subjects",
+            cardinality_rule=f"execution-native-one-call-v2:{family}:cardinality",
+            terminal_conflict_rule=f"execution-native-one-call-v2:{family}:conflicts",
+            serialization_rule=f"execution-native-one-call-v2:{family}:serialization",
+            canonicalization_version=_CANONICALIZATION_VERSION,
+        )
+        for ordinal, family in enumerate(_NATIVE_ONE_CALL_CANCELLATION_V1_FAMILIES)
+    )
+    return RecoveryFrontierRegistry(
+        registry_id=_EXECUTION_NATIVE_ONE_CALL_RECOVERY_REGISTRY_ID,
+        version=_EXECUTION_NATIVE_ONE_CALL_RECOVERY_REGISTRY_VERSION,
+        ordered_rows=rows,
+        fingerprint=frontier_registry_content_fingerprint(
+            _EXECUTION_NATIVE_ONE_CALL_RECOVERY_REGISTRY_ID,
+            _EXECUTION_NATIVE_ONE_CALL_RECOVERY_REGISTRY_VERSION,
+            rows,
+        ),
+    )
+
+
+def decode_native_one_call_recovery_frontier_registry_v2(
+    schema_id: str,
+    canonical_registry_bytes: bytes,
+    *,
+    expected_reference: CallSubjectHead,
+) -> RecoveryFrontierRegistry:
+    """Decode only the fixed branch-aware native recovery registry V2."""
+    registry = decode_frontier_registry(
+        schema_id, canonical_registry_bytes, expected_reference=expected_reference
+    )
+    fixed = execution_native_one_call_recovery_frontier_registry_v2()
+    if registry != fixed or expected_reference != frontier_registry_reference(fixed):
+        raise RecoveryFrontierRegistryIntegrityError(
+            "decode_native_one_call_recovery_frontier_registry_v2",
+            schema_id,
+            expected_reference,
+            "registry differs from fixed native recovery V2 profile",
+        )
+    return registry
 
 
 def decode_native_one_call_cancellation_frontier_registry_v1(
