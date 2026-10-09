@@ -250,13 +250,13 @@ def _validate_physical_catalog(runtime, batch: PhysicalPublicationCommand | None
             raise ValueError("original resolver policy physical catalog differs from selection")
 
 
-def read_selected_original_resolver_authority_policy_held(runtime):
+def read_selected_original_resolver_authority_policy_source_held(runtime):
     runtime._pending()
     selected = _selected_entries(runtime)
     if not selected:
         _validate_physical_catalog(runtime, None)
         return None
-    _, _, entry, batch = selected[0]
+    decision_id, decision_bytes, entry, batch = selected[0]
     evidence = validate_selected(runtime, entry, batch)
     with read_connection(runtime._database) as connection:
         state = inspect_publication(connection, batch, batch.expected_head + 1)
@@ -268,7 +268,37 @@ def read_selected_original_resolver_authority_policy_held(runtime):
     record = batch.records[0]
     if record.canonical_bytes != evidence.request.policy.canonical_bytes():
         raise ValueError("selected original resolver policy physical bytes differ")
-    return evidence.request.policy
+    from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+    from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+    from chiplog.capabilities.agent_loop.recovery_contracts import Present
+
+    digest = hashlib.sha256(record.canonical_bytes).hexdigest()
+    selected_digest = hashlib.sha256(
+        decision_bytes.encode() if isinstance(decision_bytes, str) else decision_bytes
+    ).hexdigest()
+    source = RecoverySourceRecord(
+        owner=record.owner,
+        subject=CallSubjectHead(
+            subject_id=evidence.request.policy.policy_id,
+            revision=Present(head="record:" + digest, fingerprint=digest),
+        ),
+        schema_id=record.schema_id,
+        canonical_record_bytes=record.canonical_bytes,
+        selected_decision=CallSubjectHead(
+            subject_id=decision_id,
+            revision=Present(head=decision_id, fingerprint=selected_digest),
+        ),
+        physical_record=CallSubjectHead(
+            subject_id=record.record_id,
+            revision=Present(head="record:" + digest, fingerprint=digest),
+        ),
+    )
+    return evidence.request.policy, source
+
+
+def read_selected_original_resolver_authority_policy_held(runtime):
+    selected = read_selected_original_resolver_authority_policy_source_held(runtime)
+    return None if selected is None else selected[0]
 
 
 def _validate_startup_state(runtime, entry, batch) -> None:
