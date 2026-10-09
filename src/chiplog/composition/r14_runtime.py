@@ -177,6 +177,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
         ("agent_loop", "chiplog.execution.continuation-ready.v1"),
         ("agent_loop", "chiplog.loop.original-resolver-authority-policy.v1"),
         ("agent_loop", "chiplog.loop.original-effect-evidence-reducer-policy.v1"),
+        ("agent_loop", "chiplog.loop.original-resolver-invocation.v1"),
         ("broker_ingress", "chiplog.ingress.admission-epoch.v2"),
         ("broker_ingress", "chiplog.ingress.admission-capacity.v1"),
         ("broker_ingress", "chiplog.ingress.authenticated-record.v2"),

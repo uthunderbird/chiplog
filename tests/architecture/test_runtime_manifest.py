@@ -11,6 +11,8 @@ from chiplog.architecture.r7_runtime import (
     R13_EVALUATION_MANIFEST,
     R13_PRODUCTION_MANIFEST,
     R14_EVALUATION_MANIFEST,
+    R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_EVALUATION_MANIFEST,
+    R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST,
     R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_EVALUATION_MANIFEST,
     R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST,
     R14_PRODUCTION_MANIFEST,
@@ -43,6 +45,24 @@ def test_v31_registers_the_original_resolver_policy_owner_route() -> None:
     assert loop.target_ids == (
         "chiplog.capabilities.agent_loop._original_recovery_process:dispatch",
     )
+
+
+def test_v32_adds_invocation_route_without_mutating_v31() -> None:
+    v31 = R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST
+    production = R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST
+    evaluation = R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_EVALUATION_MANIFEST
+    assert verify_runtime_manifest(production)
+    verify_production_evaluation_equivalence(production, evaluation)
+    assert production.manifest_version == 32
+    assert v31.manifest_version == 31
+    assert "agent_loop.prepare_original_resolver_invocation.v1" not in {
+        route.operation_id for route in v31.routes
+    }
+    assert "agent_loop.prepare_original_resolver_invocation.v1" in {
+        route.operation_id for route in production.routes
+    }
+    loop = next(owner for owner in production.owners if owner.owner_id == "agent_loop")
+    assert "agent_loop.prepare_original_resolver_invocation.v1" in loop.capability_ids
 
 
 def test_v23_adds_only_bounded_native_accounting_route() -> None:

@@ -31,6 +31,7 @@ from .original_recovery_contracts import (
     OriginalResolutionBasis,
     OriginalResolverAuthorityPolicyV1,
     OriginalResolverBatchRecord,
+    OriginalResolverInvocationV1,
     RecoveredCallOutcomeRecord,
     ResolvedReductionAnchor,
 )
@@ -133,6 +134,13 @@ RECOVERY_RECORD_ROWS = (
         "chiplog.loop.original-effect-evidence-reducer-policy.v1",
         OriginalEffectEvidenceReducerPolicyV1,
         "policy_id",
+    ),
+    RecoveryRecordRow(
+        AGENT_LOOP_OWNER,
+        "ORIGINAL_RESOLVER_INVOCATION",
+        "chiplog.loop.original-resolver-invocation.v1",
+        OriginalResolverInvocationV1,
+        "invocation_id",
     ),
     RecoveryRecordRow(
         AGENT_LOOP_OWNER,

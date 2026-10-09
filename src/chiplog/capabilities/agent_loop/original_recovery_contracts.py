@@ -103,6 +103,41 @@ def original_effect_evidence_reducer_policy_v1(
     )
 
 
+class OriginalResolverInvocationV1(ExecutionRecoveryDTO):
+    """One fresh, authenticated invocation for one exact selected OPEN obligation."""
+
+    schema_id: Literal["chiplog.loop.original-resolver-invocation.v1"] = (
+        "chiplog.loop.original-resolver-invocation.v1"
+    )
+    invocation_id: Identity
+    tenant_id: Identity
+    original: OriginalObligationBinding
+    accepted_opening_source: RecoverySourceRecord
+    accepted_terminal_source: RecoverySourceRecord
+    resolver_policy_source: RecoverySourceRecord
+    reducer_policy_source: RecoverySourceRecord
+    principal_id: Literal["hermetic-principal"] = "hermetic-principal"
+    trust_journal_head: Identity
+    trust_response_fingerprint: Digest
+
+
+class PrepareOriginalResolverInvocationV1(ExecutionRecoveryDTO):
+    kind: Literal["PREPARE_ORIGINAL_RESOLVER_INVOCATION_V1"] = (
+        "PREPARE_ORIGINAL_RESOLVER_INVOCATION_V1"
+    )
+    command_id: Identity
+    invocation: OriginalResolverInvocationV1
+
+
+class PreparedOriginalResolverInvocationV1(ExecutionRecoveryDTO):
+    kind: Literal["PREPARED_ORIGINAL_RESOLVER_INVOCATION_V1"] = (
+        "PREPARED_ORIGINAL_RESOLVER_INVOCATION_V1"
+    )
+    source_request_fingerprint: Digest
+    invocation: OriginalResolverInvocationV1
+    complete_batch_fingerprint: Digest
+
+
 class AdoptOriginalResolverAuthorityPolicyV1(ExecutionRecoveryDTO):
     kind: Literal["ADOPT_ORIGINAL_RESOLVER_AUTHORITY_POLICY_V1"] = (
         "ADOPT_ORIGINAL_RESOLVER_AUTHORITY_POLICY_V1"
@@ -298,12 +333,14 @@ class PreparedLoopSemanticReduction(ExecutionRecoveryDTO):
 
 OriginalRecoveryRequest = Annotated[
     AdoptOriginalResolverAuthorityPolicyV1
+    | PrepareOriginalResolverInvocationV1
     | PrepareOriginalCallResolution
     | PrepareLoopSemanticReduction,
     Field(discriminator="kind"),
 ]
 OriginalRecoveryResult = Annotated[
     PreparedOriginalResolverAuthorityPolicyV1
+    | PreparedOriginalResolverInvocationV1
     | PreparedOriginalCallResolution
     | PreparedLoopSemanticReduction
     | CallPreparationRejected,

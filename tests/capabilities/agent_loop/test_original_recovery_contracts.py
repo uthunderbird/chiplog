@@ -155,6 +155,204 @@ def test_original_resolver_policy_adoption_has_one_closed_owner_preparation() ->
     assert adapter.validate_json(request.canonical_bytes()) == request
 
 
+def test_resolver_invocation_owner_preparation_binds_exact_open_call_and_policies() -> None:
+    import hashlib
+
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        AcceptedOpenRecoveryOpeningV1,
+        AcceptedOpenTerminalDispositionV1,
+    )
+    from chiplog.capabilities.agent_loop.original_resolver_invocation_preparation import (
+        prepare_original_resolver_invocation_v1,
+    )
+
+    original_binding = binding().model_copy(
+        update={
+            "resolver_id": "R14_AUTHENTICATED_ORIGINAL_PRINCIPAL_RESOLVER",
+            "resolver_version": "r14-original-resolver.v1",
+            "reducer_id": "R14_ORIGINAL_EFFECT_EVIDENCE_REDUCER",
+            "reducer_version": "r14-effect-evidence.v1",
+        }
+    )
+    opening = AcceptedOpenRecoveryOpeningV1(
+        opening_id="opening-1",
+        source_cut_fingerprint="a" * 64,
+        original=original_binding,
+        evidence_sought=(),
+        safe_actions=("RESOLVE_ORIGINAL_OBLIGATION",),
+        denied_actions=("SEND", "RETRY", "APPEND_EVIDENCE"),
+    )
+    opening_digest = hashlib.sha256(opening.canonical_bytes()).hexdigest()
+    decision_open = CallSubjectHead(
+        subject_id="accepted-open-decision",
+        revision=Present(head="accepted-open-decision", fingerprint="b" * 64),
+    )
+    opening_source = RecoverySourceRecord(
+        owner="agent_loop",
+        subject=CallSubjectHead(
+            subject_id=original_binding.obligation_id,
+            revision=Present(head=original_binding.obligation_head, fingerprint=opening_digest),
+        ),
+        schema_id=opening.schema_id,
+        canonical_record_bytes=opening.canonical_bytes(),
+        selected_decision=decision_open,
+        physical_record=ref(opening.opening_id, opening_digest),
+    )
+    terminal = AcceptedOpenTerminalDispositionV1(
+        terminal_id="terminal-1",
+        source_cut_fingerprint="a" * 64,
+        original_call_id=original_binding.original_call_id,
+        response_id="response-1",
+        accepted=head("accepted"),
+        external_effect_intent=head("intent"),
+        obligation_opening=CallSubjectHead(
+            subject_id=opening.opening_id,
+            revision=Present(head="record:" + opening_digest, fingerprint=opening_digest),
+        ),
+    )
+    terminal_digest = hashlib.sha256(terminal.canonical_bytes()).hexdigest()
+    terminal_source = RecoverySourceRecord(
+        owner="agent_loop",
+        subject=ref(terminal.original_call_id, terminal_digest),
+        schema_id=terminal.schema_id,
+        canonical_record_bytes=terminal.canonical_bytes(),
+        selected_decision=decision_open,
+        physical_record=ref(terminal.terminal_id, terminal_digest),
+    )
+    resolver_policy = original.original_resolver_authority_policy_v1("tenant")
+    reducer_policy = original.original_effect_evidence_reducer_policy_v1("tenant")
+    policy_decision = CallSubjectHead(
+        subject_id="policy-decision",
+        revision=Present(head="policy-decision", fingerprint="c" * 64),
+    )
+
+    def policy_source(policy, schema):
+        digest = hashlib.sha256(policy.canonical_bytes()).hexdigest()
+        return RecoverySourceRecord(
+            owner="agent_loop",
+            subject=ref(policy.policy_id, digest),
+            schema_id=schema,
+            canonical_record_bytes=policy.canonical_bytes(),
+            selected_decision=policy_decision,
+            physical_record=ref(policy.policy_id, digest),
+        )
+
+    invocation = original.OriginalResolverInvocationV1(
+        invocation_id="r14-resolver-invocation:tenant:obligation",
+        tenant_id="tenant",
+        original=original_binding,
+        accepted_opening_source=opening_source,
+        accepted_terminal_source=terminal_source,
+        resolver_policy_source=policy_source(
+            resolver_policy, "chiplog.loop.original-resolver-authority-policy.v1"
+        ),
+        reducer_policy_source=policy_source(
+            reducer_policy, "chiplog.loop.original-effect-evidence-reducer-policy.v1"
+        ),
+        trust_journal_head="trust-head-1",
+        trust_response_fingerprint="d" * 64,
+    )
+    request = original.PrepareOriginalResolverInvocationV1(
+        command_id=invocation.invocation_id, invocation=invocation
+    )
+    prepared = prepare_original_resolver_invocation_v1(request)
+    assert isinstance(prepared, original.PreparedOriginalResolverInvocationV1)
+    assert prepared.invocation == invocation
+    assert (
+        prepared.complete_batch_fingerprint
+        == hashlib.sha256(invocation.canonical_bytes()).hexdigest()
+    )
+    from chiplog.capabilities.agent_loop.recovery_record_contracts import (
+        RecoveryRecordMember,
+        decode_recovery_record_member,
+    )
+
+    decoded_member = decode_recovery_record_member(
+        RecoveryRecordMember(
+            owner="agent_loop",
+            record_kind="ORIGINAL_RESOLVER_INVOCATION",
+            schema_id="chiplog.loop.original-resolver-invocation.v1",
+            record_id=invocation.invocation_id,
+            canonical_record_bytes=invocation.canonical_bytes(),
+            fingerprint=hashlib.sha256(invocation.canonical_bytes()).hexdigest(),
+        )
+    )
+    assert decoded_member.record == invocation
+
+    forged = invocation.model_copy(update={"tenant_id": "foreign-tenant"})
+    rejected = prepare_original_resolver_invocation_v1(
+        request.model_copy(update={"command_id": forged.invocation_id, "invocation": forged})
+    )
+    assert rejected.kind == "CALL_PREPARATION_REJECTED_V1"
+
+    terminal_with_wrong_opening = terminal.model_copy(
+        update={
+            "obligation_opening": terminal.obligation_opening.model_copy(
+                update={
+                    "revision": Present(
+                        head="record:wrong-opening",
+                        fingerprint=opening_digest,
+                    )
+                }
+            )
+        }
+    )
+    bad_terminal_source = terminal_source.model_copy(
+        update={"canonical_record_bytes": terminal_with_wrong_opening.canonical_bytes()}
+    )
+    bad_invocation = invocation.model_copy(update={"accepted_terminal_source": bad_terminal_source})
+    bad_request = request.model_copy(update={"invocation": bad_invocation})
+    assert prepare_original_resolver_invocation_v1(bad_request).kind == (
+        "CALL_PREPARATION_REJECTED_V1"
+    )
+
+    forged_opening_source = opening_source.model_copy(
+        update={
+            "physical_record": opening_source.physical_record.model_copy(
+                update={"subject_id": "unselected-opening"}
+            )
+        }
+    )
+    terminal_with_forged_opening = terminal.model_copy(
+        update={"obligation_opening": forged_opening_source.physical_record}
+    )
+    terminal_with_forged_opening_source = terminal_source.model_copy(
+        update={"canonical_record_bytes": terminal_with_forged_opening.canonical_bytes()}
+    )
+    forged_physical_invocation = invocation.model_copy(
+        update={
+            "accepted_opening_source": forged_opening_source,
+            "accepted_terminal_source": terminal_with_forged_opening_source,
+        }
+    )
+    assert (
+        prepare_original_resolver_invocation_v1(
+            request.model_copy(update={"invocation": forged_physical_invocation})
+        ).kind
+        == "CALL_PREPARATION_REJECTED_V1"
+    )
+
+    forged_terminal_source = terminal_source.model_copy(
+        update={
+            "physical_record": terminal_source.physical_record.model_copy(
+                update={"subject_id": "unselected-terminal"}
+            )
+        }
+    )
+    assert (
+        prepare_original_resolver_invocation_v1(
+            request.model_copy(
+                update={
+                    "invocation": invocation.model_copy(
+                        update={"accepted_terminal_source": forged_terminal_source}
+                    )
+                }
+            )
+        ).kind
+        == "CALL_PREPARATION_REJECTED_V1"
+    )
+
+
 @pytest.mark.parametrize(
     "field",
     [

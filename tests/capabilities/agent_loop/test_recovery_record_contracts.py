@@ -56,8 +56,8 @@ def accounting() -> SealedAccountingRecord:
     )
 
 
-def test_literal_closed_table_has_all_seventeen_exact_rows() -> None:
-    assert len(RECOVERY_RECORD_ROWS) == 18
+def test_literal_closed_table_has_all_nineteen_exact_rows() -> None:
+    assert len(RECOVERY_RECORD_ROWS) == 19
     assert {(row.owner, row.record_kind, row.schema_id) for row in RECOVERY_RECORD_ROWS} == {
         (AGENT_LOOP_OWNER, "SEALED_ACCOUNTING", "chiplog.execution.sealed-accounting.v1"),
         (AGENT_LOOP_OWNER, "CONTINUATION_READY", "chiplog.execution.continuation-ready.v1"),
@@ -74,6 +74,11 @@ def test_literal_closed_table_has_all_seventeen_exact_rows() -> None:
             AGENT_LOOP_OWNER,
             "ORIGINAL_EFFECT_EVIDENCE_REDUCER_POLICY",
             "chiplog.loop.original-effect-evidence-reducer-policy.v1",
+        ),
+        (
+            AGENT_LOOP_OWNER,
+            "ORIGINAL_RESOLVER_INVOCATION",
+            "chiplog.loop.original-resolver-invocation.v1",
         ),
         (
             AGENT_LOOP_OWNER,
