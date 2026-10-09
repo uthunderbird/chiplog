@@ -11,7 +11,7 @@ from chiplog.adapters.driven.loop_sqlite import OWNER, SCHEMA, LoopIntegrityErro
 from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER, CONVERSATION_SCHEMA
 from chiplog.architecture.r7_storage_surface import AUTHORITY_STORAGE_SURFACE_DIGEST
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallInventorySnapshot
-from chiplog.capabilities.agent_loop.contracts import LoopSnapshot, RunRecord
+from chiplog.capabilities.agent_loop.contracts import LoopRejected, LoopSnapshot, RunRecord
 from chiplog.capabilities.agent_loop.domain import validate_record
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.execution_history_contracts import ExecutionRunRecordV3
@@ -23,6 +23,10 @@ from chiplog.capabilities.agent_loop.execution_run_record_contracts import (
 from chiplog.capabilities.agent_loop.execution_transition_contracts import (
     CreateExecutionRun,
     PrepareExecutionRequest,
+)
+from chiplog.capabilities.agent_loop.recovery_domain import SealedAccounting
+from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+    ConsequentialAcceptedCall,
 )
 from chiplog.composition.h1_v2_authority_cut import (
     H1_V2_AUTHORITY_CUT_FIELD,
@@ -113,6 +117,7 @@ from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
+    from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
     from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 
@@ -681,8 +686,7 @@ def _read_call_history(
                         expected_publications.add((command.operation_kind, identity))
                         continue
                     if (
-                        command.operation_kind
-                        == "agent_loop.accepted-open-accounting.v1"
+                        command.operation_kind == "agent_loop.accepted-open-accounting.v1"
                         or "accepted_open_accounting_evidence" in entry
                         or any(
                             item.schema_id == "chiplog.execution.accepted-open-accounting.v1"
@@ -1378,6 +1382,85 @@ def read_selected_accepted_direct_terminal(runtime: R14PlanningRuntime):
             and entry.get("operation_kind") == ACCEPTED_DIRECT_TERMINAL_OPERATION
         ]
         return found[0].result if len(found) == 1 else None
+
+
+def read_selected_accepted_direct_terminal_frontier(
+    runtime: CommonCliExecutionRuntime,
+) -> SealedAccounting | None:
+    """Return sealed accounting only after the selected terminal batch is COMPLETE."""
+    from chiplog.composition.r14_accepted_direct_terminal_frontier import (
+        accepted_direct_terminal_sealed_accounting,
+        require_complete_direct_terminal_publication,
+    )
+    from chiplog.composition.r14_accepted_direct_terminal_publication import (
+        _current_cut,
+        validate_selected_accepted_direct_terminal,
+    )
+    from chiplog.composition.r14_accepted_direct_terminal_records import (
+        ACCEPTED_DIRECT_TERMINAL_OPERATION,
+        accepted_direct_terminal_command,
+        retained_accepted_direct_terminal,
+    )
+    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+    from chiplog.platform.workspace_snapshot import read_connection
+
+    with runtime._authority_gate().hold():
+        _read_call_history(runtime)
+        validate_selected_accepted_direct_terminal(runtime)
+        entries = [
+            _strict_json(raw)
+            for _, _, raw in runtime._loop_decisions().entries()
+            if (entry := _strict_json(raw)).get("kind") == "DECIDED"
+            and entry.get("operation_kind") == ACCEPTED_DIRECT_TERMINAL_OPERATION
+        ]
+        if not entries:
+            return None
+        if len(entries) != 1:
+            raise LoopRejected("ambiguous selected accepted/direct terminal frontier")
+        entry = entries[0]
+        evidence = retained_accepted_direct_terminal(entry)
+        command = accepted_direct_terminal_command(evidence)
+        if runtime._publication(entry) != command:
+            raise LoopRejected("selected accepted/direct terminal physical command differs")
+
+        runtime._check_database_identity()
+        with read_connection(runtime._database) as connection:
+            current_snapshot = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+        journal_anchor = runtime._commitment_journal.load(runtime._tenant_id)
+        state, selected_snapshot, selected_anchor = runtime._selected_physical_state(command)
+        require_complete_direct_terminal_publication(
+            state,
+            current_snapshot,
+            journal_anchor,
+            selected_snapshot,
+            selected_anchor,
+        )
+
+        current = _current_cut(
+            runtime,
+            selected_only=True,
+            source_materialization_commitment=(evidence.request.cut.materialization_commitment),
+            source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
+        )
+        if current is None or current[1] != evidence.request.cut:
+            raise LoopRejected("selected accepted/direct terminal source cut differs")
+        facts, cut = current
+        seal = facts.accepted.selected_seal
+        ordered_call_ids = tuple(item.original_call_id for item in seal.initialized_records)
+        acceptance = facts.accepted.source.target_inventory_rows[0].acceptance
+        if (
+            facts.accepted.original_call_id != cut.original_call_id
+            or seal.response_seal.subject_id != cut.response_id
+            or not isinstance(acceptance, ConsequentialAcceptedCall)
+        ):
+            raise LoopRejected("selected direct terminal acceptance branch differs")
+        return accepted_direct_terminal_sealed_accounting(
+            cut,
+            evidence.result,
+            acceptance,
+            ordered_call_ids,
+            seal.response_seal.revision.fingerprint,
+        )
 
 
 def validate_selected_native_accounting(runtime: R14PlanningRuntime) -> None:

@@ -55,6 +55,7 @@ from chiplog.capabilities.agent_loop.post_terminal_record_contracts import (
     SUBJECT_SCHEMA,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
+from chiplog.capabilities.agent_loop.recovery_domain import SealedAccounting
 from chiplog.capabilities.agent_loop.recovery_record_contracts import AGENT_LOOP_OWNER
 from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     BrokerSelectedH1EvidenceV1,
@@ -994,6 +995,13 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         )
 
         return read_selected_accepted_direct_terminal(self)
+
+    def read_selected_accepted_direct_terminal_frontier(self) -> SealedAccounting | None:
+        from chiplog.composition.r14_loop_history import (
+            read_selected_accepted_direct_terminal_frontier,
+        )
+
+        return read_selected_accepted_direct_terminal_frontier(self)
 
     async def start_next_execution_turn(
         self, run_id: str, expected_head: str, peer: str = "hermetic-ingress"

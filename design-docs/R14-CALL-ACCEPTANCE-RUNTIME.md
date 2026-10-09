@@ -177,16 +177,16 @@ members, loser rejection, replay and zero provider transfers. The two public cal
 compete within one broker runtime and use isolated owner processes; this does not
 establish competition between independently started broker runtimes.
 
-The next R14.1 slice is a composed direct-terminal continuation for one accepted
-consequential call: selected acceptance and execution intent, exact effects-owned
-terminal lifecycle outcome, its explicit versioned mapping to the R14 frontier's
-`SUCCEEDED` or `FAILED_DEFINITE` result, and complete call accounting must join by
-original-call lineage and exact selected/physical bytes before a successor Turn is
-published. `R14_DIRECT_EFFECT_TERMINAL_V1` now freezes the two allowed semantic
-mappings and their hold cases in `R14-CONTRACT-FREEZE.md`; a pure classifier and
-focused consumer tests implement only that mapping boundary. The selected recovery
-reader still does not carry the closed outcome into the R14 accounting cut, and no
-terminal disposition/result is published by this classifier.
+`R14_DIRECT_EFFECT_TERMINAL_V1` freezes the two allowed semantic mappings and
+their hold cases in `R14-CONTRACT-FREEZE.md`. The selected direct-terminal writer
+now stores accounting, terminal disposition and typed result together for one
+accepted call with an exact closed R16 outcome. The read-only
+`read_selected_accepted_direct_terminal_frontier` joins that selection to the
+complete ordered seal manifest and accepted branch, verifies terminal/result
+references and mapping, and requires the exact physical batch to be `COMPLETE`
+with matching current authority snapshots and journal anchor. It rejects a
+multi-call seal rather than projecting a one-call subset. This is an accounting
+frontier only; it does not publish a successor Turn or implement R14.2 recovery.
 `ExecutionDispatchRuntime` selects R14/R16 acceptance and effect outcomes but has
 no V27 next-Turn route. `CommonCliExecutionRuntime` has both route families, but
 its installed `NativeRecoveryCutSource` admits only the cancellation profile and
@@ -203,9 +203,10 @@ or causes a HOLD from the continuation cut. Do not claim that causal join until 
 composed reader carries its selected obligation into that same cut and rejects
 without successor publication.
 
-The first composed continuation slice must reject omitted or foreign terminal
-records and confirm record references, canonical bytes/fingerprints, original-call
-lineage and physical `COMPLETE` membership. An open `LOST_RESPONSE_AFTER_EFFECT`
+The remaining composed continuation path must reject omitted or foreign terminal
+records and prove the same record references, canonical bytes/fingerprints,
+original-call lineage and physical `COMPLETE` membership at successor admission.
+An open `LOST_RESPONSE_AFTER_EFFECT`
 remains a hold; it cannot become `NOT_EXECUTED` or a successful result. Making an
 uncertain call continuation-ready requires the R14.2 original resolver closure,
 recovered outcome and current semantic reduction join. R14.3 frontier/resume/successor
