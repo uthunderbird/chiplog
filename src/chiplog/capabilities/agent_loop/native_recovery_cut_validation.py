@@ -7,7 +7,9 @@ import hashlib
 from .execution_recovery_observations import ExecutionRecoveryCut
 from .native_recovery_profile_contracts import (
     SCHEMA,
+    SCHEMA_V2,
     decode_native_one_call_recovery_profile,
+    decode_native_one_call_recovery_profile_v2,
     native_recovery_fingerprint,
 )
 from .recovery_contracts import Present
@@ -16,10 +18,14 @@ from .recovery_contracts import Present
 def validate_native_recovery_cut(cut: ExecutionRecoveryCut) -> None:
     """Reject altered complete DTOs without turning their construction into trust."""
     sources = cut.complete_sources
-    profiles = tuple(row for row in sources if row.schema_id == SCHEMA)
+    profiles = tuple(row for row in sources if row.schema_id in (SCHEMA, SCHEMA_V2))
     if len(profiles) != 1:
         raise ValueError("missing or duplicate selected native profile source")
-    profile = decode_native_one_call_recovery_profile(profiles[0].canonical_record_bytes)
+    profile = (
+        decode_native_one_call_recovery_profile(profiles[0].canonical_record_bytes)
+        if profiles[0].schema_id == SCHEMA
+        else decode_native_one_call_recovery_profile_v2(profiles[0].canonical_record_bytes)
+    )
     if cut.frontier.registry != profile.registry:
         raise ValueError("native cut registry differs from selected profile")
     families = tuple(row.family for row in profile.registry.ordered_rows)

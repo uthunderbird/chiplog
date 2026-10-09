@@ -25,8 +25,11 @@ from chiplog.capabilities.agent_loop.execution_recovery_observations import (
 )
 from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     SCHEMA,
+    SCHEMA_V2,
     NativeOneCallRecoveryProfileV1,
+    NativeOneCallRecoveryProfileV2,
     decode_native_one_call_recovery_profile,
+    decode_native_one_call_recovery_profile_v2,
     native_recovery_fingerprint,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import (
@@ -281,9 +284,16 @@ class NativeRecoveryCutSource:
                 read_native_recovery_profile_held,
             )
         profile_source = profile_reader(runtime)
-        if profile_source is None or profile_source.schema_id != SCHEMA:
+        if profile_source is None or profile_source.schema_id not in (SCHEMA, SCHEMA_V2):
             return None
-        profile = decode_native_one_call_recovery_profile(profile_source.canonical_record_bytes)
+        if profile_source.schema_id == SCHEMA:
+            profile = decode_native_one_call_recovery_profile(
+                profile_source.canonical_record_bytes
+            )
+        else:
+            profile = decode_native_one_call_recovery_profile_v2(
+                profile_source.canonical_record_bytes
+            )
         subset = R14NativeRecoverySourceSubsetReader(runtime).collect()
         if subset is None:
             return None
@@ -491,7 +501,7 @@ class NativeRecoveryCutSource:
         runtime: CommonCliExecutionRuntime,
         subset: R14NativeRecoverySourceSubset,
         profile_source: RecoverySourceRecord,
-        profile: NativeOneCallRecoveryProfileV1,
+        profile: NativeOneCallRecoveryProfileV1 | NativeOneCallRecoveryProfileV2,
         lineage: tuple[ExecutionRunRecord, ...],
         seal: SealedResponseRecord,
         cancellation: RetainedExecutionCancellationPreparation,

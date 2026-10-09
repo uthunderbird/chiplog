@@ -33,7 +33,7 @@ from .execution_recovery_observations import (
     SealedAccountingRecord,
 )
 from .native_recovery_cut_validation import validate_native_recovery_cut
-from .native_recovery_profile_contracts import SCHEMA
+from .native_recovery_profile_contracts import SCHEMA, SCHEMA_V2
 from .recovery_contracts import Present, RecoveryDTO
 from .recovery_domain import (
     RecoveryHold,
@@ -44,6 +44,7 @@ from .recovery_domain import (
 from .recovery_frontier_contracts import CancelledBeforeAcceptResult, InitializedCall
 from .recovery_frontier_registry_contracts import (
     execution_native_one_call_cancellation_frontier_registry_v1,
+    execution_native_one_call_recovery_frontier_registry_v2,
     frontier_registry_reference,
 )
 
@@ -87,7 +88,7 @@ def _source(
         raise RecoveryHold("exact selected source is missing, repeated, or differs")
     source = matches[0]
 
-    native_profile = any(item.schema_id == SCHEMA for item in cut.complete_sources)
+    native_profile = any(item.schema_id in (SCHEMA, SCHEMA_V2) for item in cut.complete_sources)
     if source.subject.revision.fingerprint != _sha(raw) or (
         not native_profile and source.physical_record.revision.fingerprint != _sha(raw)
     ):
@@ -100,11 +101,24 @@ def _source(
 def _validate_cut(cut: ExecutionRecoveryCut) -> None:
     """Check the bounded native one-call profile without claiming cut authenticity."""
 
-    native_profile = any(source.schema_id == SCHEMA for source in cut.complete_sources)
-    if native_profile:
+    profiles_v1 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA)
+    profiles_v2 = tuple(
+        source for source in cut.complete_sources if source.schema_id == SCHEMA_V2
+    )
+    cancellation_registry = execution_native_one_call_cancellation_frontier_registry_v1()
+    recovery_registry = execution_native_one_call_recovery_frontier_registry_v2()
+    if cut.frontier.registry == recovery_registry:
+        if len(profiles_v2) != 1 or profiles_v1:
+            raise RecoveryHold("V2 registry requires exactly one selected V2 profile")
         validate_native_recovery_cut(cut)
-    if cut.frontier.registry != execution_native_one_call_cancellation_frontier_registry_v1():
+    elif cut.frontier.registry == cancellation_registry:
+        if profiles_v2 or len(profiles_v1) > 1:
+            raise RecoveryHold("V1 registry has an incompatible selected native profile")
+        if profiles_v1:
+            validate_native_recovery_cut(cut)
+    else:
         raise RecoveryHold("unsupported recovery registry")
+    native_profile = bool(profiles_v1 or profiles_v2)
     if (
         cut.frontier.tenant_id != cut.tenant_id
         or cut.frontier.run_id != cut.current_run.subject_id

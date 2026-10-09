@@ -18,7 +18,9 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjec
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     SCHEMA,
+    SCHEMA_V2,
     decode_native_one_call_recovery_profile,
+    decode_native_one_call_recovery_profile_v2,
 )
 from chiplog.composition.r14_execution_cancellation_contracts import (
     decode_execution_cancellation_preparation,
@@ -260,10 +262,16 @@ def authenticate_native_recovery_selected(
                         physical_record=_ref(record_id, raw),
                     )
                 )
-            profiles = [row for row in physical if row.schema_id == SCHEMA]
+            profiles = [row for row in physical if row.schema_id in (SCHEMA, SCHEMA_V2)]
             if len(profiles) != 1 or len(fanouts) != 1 or len(cancellations) != 1:
                 return False
-            profile = decode_native_one_call_recovery_profile(profiles[0].canonical_record_bytes)
+            profile = (
+                decode_native_one_call_recovery_profile(profiles[0].canonical_record_bytes)
+                if profiles[0].schema_id == SCHEMA
+                else decode_native_one_call_recovery_profile_v2(
+                    profiles[0].canonical_record_bytes
+                )
+            )
             run = runs[-1]
             if (
                 any(row.run_id != authenticated.scope.planned_run_id for row in runs)
@@ -409,7 +417,7 @@ def authenticate_native_recovery_selected(
                 row.physical_record.subject_id
                 for row in physical
                 if row.subject in native_refs.values()
-                or row.schema_id == SCHEMA
+                or row.schema_id in (SCHEMA, SCHEMA_V2)
                 or row.physical_record.subject_id == bounded.record.record_id
                 or row.schema_id
                 in {

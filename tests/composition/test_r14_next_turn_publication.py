@@ -36,9 +36,9 @@ async def test_selected_next_turn_restarts_and_replays(tmp_path: Path):
         manifest=R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
         recovery_cut_source=source,
     ) as runtime:
+        await runtime.publish_native_recovery_profile()
         await selected_native_cancelled(runtime, bound=True)
         await runtime.publish_native_one_call_cancelled_accounting()
-        await runtime.publish_native_recovery_profile()
         await runtime.publish_execution_accounting_readiness()
         cut = source.collect(runtime)
         assert cut is not None
@@ -91,9 +91,9 @@ async def test_foreign_evidence_holds_next_turn_without_publication(tmp_path: Pa
         manifest=R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
         recovery_cut_source=source,
     ) as runtime:
+        await runtime.publish_native_recovery_profile()
         await selected_native_cancelled(runtime, bound=True)
         await runtime.publish_native_one_call_cancelled_accounting()
-        await runtime.publish_native_recovery_profile()
         await runtime.publish_execution_accounting_readiness()
         cut = source.collect(runtime)
         assert cut is not None
@@ -130,9 +130,9 @@ async def test_selected_next_turn_physical_record_tamper_blocks_restart(tmp_path
         manifest=R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
         recovery_cut_source=source,
     ) as runtime:
+        await runtime.publish_native_recovery_profile()
         await selected_native_cancelled(runtime, bound=True)
         await runtime.publish_native_one_call_cancelled_accounting()
-        await runtime.publish_native_recovery_profile()
         await runtime.publish_execution_accounting_readiness()
         cut = source.collect(runtime)
         assert cut is not None

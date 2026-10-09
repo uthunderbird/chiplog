@@ -7,6 +7,11 @@ import pytest
 from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST,
 )
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallPreparationRejected
+from chiplog.capabilities.agent_loop.execution_recovery_contracts import PrepareExecutionAccounting
+from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+    prepare_execution_accounting,
+)
 from chiplog.capabilities.agent_loop.native_recovery_cut_validation import (
     validate_native_recovery_cut,
 )
@@ -33,10 +38,11 @@ async def test_selected_native_cut_reopens_and_legacy_prepare_holds(tmp_path: Pa
         manifest=R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST,
         recovery_cut_source=source,
     ) as runtime:
+        await publish_native_recovery_profile(runtime)
         await selected_native_cancelled(runtime, bound=bound)
         await runtime.publish_native_one_call_cancelled_accounting()
-        assert source.collect(runtime) is None
-        await publish_native_recovery_profile(runtime)
+        if not bound:
+            assert source.collect(runtime) is None
         # Call the internal method here so failure diagnostics cannot be hidden
         # behind the public HOLD projection while the positive path is mounted.
         with runtime._authority_gate().hold():
@@ -44,6 +50,25 @@ async def test_selected_native_cut_reopens_and_legacy_prepare_holds(tmp_path: Pa
         if bound:
             assert cut is not None
             validate_native_recovery_cut(cut)
+            profileless_v2_cut = cut.model_copy(
+                update={
+                    "complete_sources": tuple(
+                        row
+                        for row in cut.complete_sources
+                        if row.schema_id
+                        not in (
+                            "chiplog.execution.native-one-call-recovery-profile.v1",
+                            "chiplog.execution.native-one-call-recovery-profile.v2",
+                        )
+                    )
+                }
+            )
+            rejected = prepare_execution_accounting(
+                PrepareExecutionAccounting(command_id="profileless-v2", cut=profileless_v2_cut)
+            )
+            assert isinstance(rejected, CallPreparationRejected)
+            assert rejected.code == "HOLD"
+            assert rejected.reason == "V2 registry requires exactly one selected V2 profile"
             with pytest.raises(ValueError, match="member lacks"):
                 validate_native_recovery_cut(
                     cut.model_copy(
