@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 _SCRIPT = Path(__file__).resolve().parents[2] / ".harness/scripts/retro-inputs.sh"
+_CADENCE = Path(__file__).resolve().parents[2] / ".harness/scripts/checks/retro_due.py"
 _CATALOG = "src/chiplog/inert_shared/r8-implementation-v1.json"
 
 
@@ -26,6 +27,14 @@ def _run_retro(root: Path) -> str:
     )
 
 
+def _run_cadence(root: Path) -> str:
+    return subprocess.check_output(
+        ["python3", ".harness/scripts/checks/retro_due.py", "--status"],
+        cwd=root,
+        text=True,
+    )
+
+
 def test_pin_counts_include_root_and_follow_last_committed_retro(tmp_path: Path) -> None:
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "user.name", "Retro Fixture")
@@ -33,6 +42,12 @@ def test_pin_counts_include_root_and_follow_last_committed_retro(tmp_path: Path)
     script = tmp_path / ".harness/scripts/retro-inputs.sh"
     script.parent.mkdir(parents=True)
     script.write_bytes(_SCRIPT.read_bytes())
+    cadence = tmp_path / ".harness/scripts/checks/retro_due.py"
+    cadence.parent.mkdir(parents=True)
+    cadence.write_bytes(_CADENCE.read_bytes())
+    retro_dir = tmp_path / ".harness/retro"
+    retro_dir.mkdir(parents=True)
+    (retro_dir / "TEMPLATE.md").write_text("template\n")
     catalog = tmp_path / _CATALOG
     catalog.parent.mkdir(parents=True)
     catalog.write_text("{}\n")
@@ -44,10 +59,18 @@ def test_pin_counts_include_root_and_follow_last_committed_retro(tmp_path: Path)
     assert f"коммитов с R8 catalog: 1   (git rev-list --count HEAD -- {_CATALOG})" in first
 
     retro = tmp_path / ".harness/retro/2026-01-01.md"
-    retro.parent.mkdir(parents=True)
+    retro.parent.mkdir(parents=True, exist_ok=True)
     retro.write_text("---\ndate: 2026-01-01\noutcome: change\n---\n")
     _git(tmp_path, "add", ".")
     _git(tmp_path, "commit", "-qm", "retro")
+    # A cadence review may update its existing record; both retro_due.py and
+    # the input range must then use that last committed touch as the baseline.
+    retro.write_text("---\ndate: 2026-01-01\noutcome: change\n---\nreviewed\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "retro review update")
+    (retro_dir / "TEMPLATE.md").write_text("updated template\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "retro template update")
     base = _git(tmp_path, "rev-parse", "--short", "HEAD")
     (tmp_path / "other.txt").write_text("one\n")
     _git(tmp_path, "add", ".")
@@ -58,6 +81,7 @@ def test_pin_counts_include_root_and_follow_last_committed_retro(tmp_path: Path)
 
     current = _run_retro(tmp_path)
     assert f"коммитов периода: 2   (git rev-list --count {base}..HEAD)" in current
+    assert "retro_since=2" in _run_cadence(tmp_path)
     assert (
         f"коммитов с R8 catalog: 1   "
         f"(git rev-list --count {base}..HEAD -- {_CATALOG})"

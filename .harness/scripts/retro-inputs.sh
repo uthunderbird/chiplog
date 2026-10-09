@@ -40,14 +40,11 @@ for f in .harness/retro/*.md; do
     [ -f "$f" ] && RECORDS="$RECORDS $f"
 done
 
-# Коммит, которым ретро ЗАВЕДЕНА (--diff-filter=A), а не последний тронувший файл:
-# опечатка, поправленная в старой записи, иначе сдвинет период вперёд и покажет
-# «нет изменений» там, где работа была. И один git log на весь список, а не цикл:
-# цикл выбирал бы алфавитно последнее имя, а инцидентная ретро датируется задним
-# числом штатно.
+# Последний коммит, затронувший каталог ретро. Каданс `retro_due.py` считает от
+# того же пути, поэтому diff-вход использует тот же baseline. Инцидентная ретро
+# датируется задним числом штатно.
 LAST=""
-# shellcheck disable=SC2086
-[ -n "$RECORDS" ] && LAST=$(git log -1 --diff-filter=A --format=%h -- $RECORDS 2>/dev/null || true)
+[ -n "$RECORDS" ] && LAST=$(git log -1 --format=%h -- .harness/retro 2>/dev/null || true)
 
 S_T=$(python3 "$C/retro_due.py" --status 2>/dev/null || echo BROKEN)
 if [ "$S_T" = BROKEN ]; then
