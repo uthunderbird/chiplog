@@ -5,6 +5,7 @@ import time
 from chiplog.adapters.driven.effects_hermetic import HermeticEffectsProvider
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import (
+    _V33_EXECUTION_OPERATIONS,
     R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST,
 )
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
@@ -33,7 +34,25 @@ from chiplog.platform.broker import (
     PublicPortSuccess,
 )
 from chiplog.platform.r7_leaves import ProductionClock, ProductionPlanningStore
-from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+from chiplog.platform.r7_runtime import (
+    AuthorityBrokerRuntime,
+    OwnerProcessIdentity,
+    _owner_module,
+)
+
+
+def test_v33_partition_resolves_to_the_static_original_recovery_process() -> None:
+    identity = OwnerProcessIdentity(
+        tenant_id="tenant",
+        broker_epoch=1,
+        owner_id="agent_loop",
+        generation_id="generation",
+        session_id="session",
+        capability_ids=_V33_EXECUTION_OPERATIONS,
+    )
+    assert _owner_module(identity) == (
+        "chiplog.capabilities.agent_loop._original_recovery_process"
+    )
 
 
 def test_v31_adoption_route_runs_in_isolated_owner_and_preserves_v30_routes() -> None:
