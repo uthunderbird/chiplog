@@ -15,6 +15,7 @@ from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.original_recovery_contracts import (
     AdoptOriginalResolverAuthorityPolicyV1,
     PreparedOriginalResolverAuthorityPolicyV1,
+    original_effect_evidence_reducer_policy_v1,
     original_resolver_authority_policy_v1,
 )
 from chiplog.capabilities.agent_loop.original_resolver_policy_preparation import (
@@ -40,6 +41,7 @@ from chiplog.platform.workspace_snapshot import read_connection
 OPERATION = "agent_loop.original-resolver-authority-policy.v1"
 OWNER_OPERATION = "agent_loop.adopt_original_resolver_authority_policy.v1"
 SCHEMA = "chiplog.loop.original-resolver-authority-policy.v1"
+REDUCER_SCHEMA = "chiplog.loop.original-effect-evidence-reducer-policy.v1"
 EVIDENCE_FIELD = "original_resolver_authority_policy_evidence"
 
 
@@ -86,6 +88,8 @@ def command(evidence: RetainedOriginalResolverPolicyPublication) -> PhysicalPubl
         raise ValueError("original resolver policy owner exchange or actor differs")
     policy_bytes = expected_policy.canonical_bytes()
     digest = expected_policy.digest()
+    reducer_policy = original_effect_evidence_reducer_policy_v1(evidence.tenant_id)
+    reducer_bytes = reducer_policy.canonical_bytes()
     return PhysicalPublicationCommand(
         tenant_id=evidence.tenant_id,
         operation_kind=OPERATION,
@@ -102,6 +106,13 @@ def command(evidence: RetainedOriginalResolverPolicyPublication) -> PhysicalPubl
                 SCHEMA,
                 policy_bytes,
                 hashlib.sha256(policy_bytes).hexdigest(),
+            ),
+            PhysicalRecord(
+                reducer_policy.policy_id,
+                "agent_loop",
+                REDUCER_SCHEMA,
+                reducer_bytes,
+                hashlib.sha256(reducer_bytes).hexdigest(),
             ),
         ),
     )
@@ -195,7 +206,7 @@ def _selected_entries(runtime):
             continue
         rows = entry.get("records")
         schema_match = isinstance(rows, list) and any(
-            isinstance(row, dict) and row.get("schema") == SCHEMA for row in rows
+            isinstance(row, dict) and row.get("schema") in (SCHEMA, REDUCER_SCHEMA) for row in rows
         )
         if entry.get("operation_kind") == OPERATION or EVIDENCE_FIELD in entry or schema_match:
             matches.append((decision_id, raw, entry, runtime._publication(entry)))
@@ -210,8 +221,8 @@ def _validate_physical_catalog(runtime, batch: PhysicalPublicationCommand | None
         records = tuple(
             connection.execute(
                 "SELECT record_id, owner, schema_id, canonical_bytes, commit_sequence "
-                "FROM records WHERE tenant_id=? AND schema_id=? ORDER BY record_id",
-                (runtime._tenant_id, SCHEMA),
+                "FROM records WHERE tenant_id=? AND schema_id IN (?, ?) ORDER BY record_id",
+                (runtime._tenant_id, SCHEMA, REDUCER_SCHEMA),
             ).fetchall()
         )
         publications = tuple(
@@ -226,26 +237,33 @@ def _validate_physical_catalog(runtime, batch: PhysicalPublicationCommand | None
             if records or publications:
                 raise ValueError("unselected original resolver policy physical records exist")
             return
-        record = expected_records[0]
-        expected_record = (
-            record.record_id,
-            record.owner,
-            record.schema_id,
-            record.canonical_bytes,
-            batch.expected_head + 1,
+        expected_records_rows = tuple(
+            sorted(
+                (
+                    (
+                        record.record_id,
+                        record.owner,
+                        record.schema_id,
+                        record.canonical_bytes,
+                        batch.expected_head + 1,
+                    )
+                    for record in expected_records
+                ),
+                key=lambda row: row[0],
+            )
         )
         expected_publication = (
             batch.idempotency_key,
             batch.request_fingerprint,
             batch.expected_head + 1,
-            record.record_id,
+            "\n".join(record.record_id for record in expected_records),
         )
         actual_publications = tuple(
             (key, fingerprint, sequence, record_ids.split("\n"))
             for key, fingerprint, sequence, record_ids in publications
         )
-        if records != (expected_record,) or actual_publications != (
-            (*expected_publication[:3], [expected_publication[3]]),
+        if records != expected_records_rows or actual_publications != (
+            (*expected_publication[:3], expected_publication[3].split("\n")),
         ):
             raise ValueError("original resolver policy physical catalog differs from selection")
 
@@ -265,9 +283,16 @@ def read_selected_original_resolver_authority_policy_source_held(runtime):
     if state != "COMPLETE" or actual != anchored or actual != entry.get("resulting"):
         raise ValueError("selected original resolver policy selected/physical mismatch")
     _validate_physical_catalog(runtime, batch)
-    record = batch.records[0]
-    if record.canonical_bytes != evidence.request.policy.canonical_bytes():
-        raise ValueError("selected original resolver policy physical bytes differ")
+    if len(batch.records) != 2:
+        raise ValueError("selected resolver policy catalog must contain exactly two records")
+    record, reducer_record = batch.records
+    reducer_policy = original_effect_evidence_reducer_policy_v1(runtime._tenant_id)
+    if (
+        record.canonical_bytes != evidence.request.policy.canonical_bytes()
+        or reducer_record.canonical_bytes != reducer_policy.canonical_bytes()
+        or reducer_record.schema_id != REDUCER_SCHEMA
+    ):
+        raise ValueError("selected resolver or reducer policy physical bytes differ")
     from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
     from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
     from chiplog.capabilities.agent_loop.recovery_contracts import Present
@@ -294,6 +319,41 @@ def read_selected_original_resolver_authority_policy_source_held(runtime):
         ),
     )
     return evidence.request.policy, source
+
+
+def read_selected_original_effect_evidence_reducer_policy_source_held(runtime):
+    selected = read_selected_original_resolver_authority_policy_source_held(runtime)
+    if selected is None:
+        return None
+    policy = original_effect_evidence_reducer_policy_v1(runtime._tenant_id)
+    decision_id, decision_bytes, _, batch = _selected_entries(runtime)[0]
+    record = batch.records[1]
+    from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+    from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+    from chiplog.capabilities.agent_loop.recovery_contracts import Present
+
+    digest = hashlib.sha256(record.canonical_bytes).hexdigest()
+    selected_digest = hashlib.sha256(
+        decision_bytes.encode() if isinstance(decision_bytes, str) else decision_bytes
+    ).hexdigest()
+    source = RecoverySourceRecord(
+        owner=record.owner,
+        subject=CallSubjectHead(
+            subject_id=policy.policy_id,
+            revision=Present(head="record:" + digest, fingerprint=digest),
+        ),
+        schema_id=record.schema_id,
+        canonical_record_bytes=record.canonical_bytes,
+        selected_decision=CallSubjectHead(
+            subject_id=decision_id,
+            revision=Present(head=decision_id, fingerprint=selected_digest),
+        ),
+        physical_record=CallSubjectHead(
+            subject_id=record.record_id,
+            revision=Present(head="record:" + digest, fingerprint=digest),
+        ),
+    )
+    return policy, source
 
 
 def read_selected_original_resolver_authority_policy_held(runtime):

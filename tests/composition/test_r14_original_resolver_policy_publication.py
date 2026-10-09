@@ -40,6 +40,17 @@ async def test_selected_policy_replays_and_reopens_with_physical_readback(tmp_pa
         assert selected.principal_id == "hermetic-principal"
         assert runtime.read_selected_original_resolver_authority_policy() == selected
         source_policy, source = runtime.read_selected_original_resolver_authority_policy_source()
+        reducer_policy, reducer_source = (
+            runtime.read_selected_original_effect_evidence_reducer_policy_source()
+        )
+        assert reducer_policy.reducer_id == "R14_ORIGINAL_EFFECT_EVIDENCE_REDUCER"
+        assert reducer_policy.reducer_version == "r14-effect-evidence.v1"
+        assert reducer_source.schema_id == (
+            "chiplog.loop.original-effect-evidence-reducer-policy.v1"
+        )
+        assert reducer_source.canonical_record_bytes == reducer_policy.canonical_bytes()
+        assert reducer_source.selected_decision == source.selected_decision
+        assert reducer_source.physical_record.subject_id == reducer_policy.policy_id
         assert source_policy == selected
         assert source.schema_id == "chiplog.loop.original-resolver-authority-policy.v1"
         assert source.canonical_record_bytes == selected.canonical_bytes()
@@ -68,6 +79,10 @@ async def test_selected_policy_replays_and_reopens_with_physical_readback(tmp_pa
     ) as runtime:
         assert runtime.read_selected_original_resolver_authority_policy() == selected
         assert runtime.read_selected_original_resolver_authority_policy_source()[0] == selected
+        assert (
+            runtime.read_selected_original_effect_evidence_reducer_policy_source()[0]
+            == reducer_policy
+        )
         assert await runtime.publish_original_resolver_authority_policy() == selected
 
 
@@ -147,3 +162,41 @@ async def test_lost_acknowledgement_recovers_exact_pending_policy_selection(
         selected = runtime.read_selected_original_resolver_authority_policy()
         assert isinstance(selected, OriginalResolverAuthorityPolicyV1)
         assert await runtime.publish_original_resolver_authority_policy() == selected
+
+
+@pytest.mark.asyncio
+async def test_selected_policy_catalog_rejects_extra_reducer_record(tmp_path: Path) -> None:
+    import sqlite3
+    from contextlib import closing
+
+    from chiplog.composition.r14_original_resolver_policy_publication import (
+        _selected_entries,
+        _validate_physical_catalog,
+    )
+
+    database = tmp_path / "resolver-policy-extra.sqlite"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
+    )
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        manifest=R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST,
+    ) as runtime:
+        await runtime.publish_original_resolver_authority_policy()
+        batch = _selected_entries(runtime)[0][3]
+        reducer = batch.records[1]
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute(
+                "INSERT INTO records VALUES (?,?,?,?,?,?)",
+                (
+                    runtime._tenant_id,
+                    "unselected-extra-reducer-policy",
+                    reducer.owner,
+                    reducer.schema_id,
+                    reducer.canonical_bytes,
+                    batch.expected_head + 1,
+                ),
+            )
+        with pytest.raises(ValueError, match="physical catalog differs from selection"):
+            _validate_physical_catalog(runtime, batch)

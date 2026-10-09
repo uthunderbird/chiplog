@@ -77,6 +77,32 @@ def original_resolver_authority_policy_v1(tenant_id: str) -> OriginalResolverAut
     )
 
 
+class OriginalEffectEvidenceReducerPolicyV1(ExecutionRecoveryDTO):
+    """Separate selected provenance for the closed reducer named by R14 openings."""
+
+    schema_id: Literal["chiplog.loop.original-effect-evidence-reducer-policy.v1"] = (
+        "chiplog.loop.original-effect-evidence-reducer-policy.v1"
+    )
+    policy_id: Identity
+    tenant_id: Identity
+    reducer_id: Literal["R14_ORIGINAL_EFFECT_EVIDENCE_REDUCER"] = (
+        "R14_ORIGINAL_EFFECT_EVIDENCE_REDUCER"
+    )
+    reducer_version: Literal["r14-effect-evidence.v1"] = "r14-effect-evidence.v1"
+    operation: Literal["REDUCE_ORIGINAL_EFFECT_EVIDENCE"] = "REDUCE_ORIGINAL_EFFECT_EVIDENCE"
+
+
+def original_effect_evidence_reducer_policy_v1(
+    tenant_id: str,
+) -> OriginalEffectEvidenceReducerPolicyV1:
+    if not tenant_id:
+        raise ValueError("reducer policy requires a tenant")
+    return OriginalEffectEvidenceReducerPolicyV1(
+        policy_id="r14-original-effect-evidence-reducer-policy:" + tenant_id,
+        tenant_id=tenant_id,
+    )
+
+
 class AdoptOriginalResolverAuthorityPolicyV1(ExecutionRecoveryDTO):
     kind: Literal["ADOPT_ORIGINAL_RESOLVER_AUTHORITY_POLICY_V1"] = (
         "ADOPT_ORIGINAL_RESOLVER_AUTHORITY_POLICY_V1"

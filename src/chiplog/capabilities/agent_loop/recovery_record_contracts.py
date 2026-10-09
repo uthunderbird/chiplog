@@ -26,6 +26,7 @@ from .execution_recovery_observations import (
 from .model_attempt_recovery_contracts import LateExecutionResponseRecord
 from .original_recovery_contracts import (
     LoopSemanticReductionRecord,
+    OriginalEffectEvidenceReducerPolicyV1,
     OriginalObligationClosureRecord,
     OriginalResolutionBasis,
     OriginalResolverAuthorityPolicyV1,
@@ -124,6 +125,13 @@ RECOVERY_RECORD_ROWS = (
         "ORIGINAL_RESOLVER_AUTHORITY_POLICY",
         "chiplog.loop.original-resolver-authority-policy.v1",
         OriginalResolverAuthorityPolicyV1,
+        "policy_id",
+    ),
+    RecoveryRecordRow(
+        AGENT_LOOP_OWNER,
+        "ORIGINAL_EFFECT_EVIDENCE_REDUCER_POLICY",
+        "chiplog.loop.original-effect-evidence-reducer-policy.v1",
+        OriginalEffectEvidenceReducerPolicyV1,
         "policy_id",
     ),
     RecoveryRecordRow(
