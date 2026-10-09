@@ -10,8 +10,11 @@ from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEf
 from chiplog.capabilities.effects.dispatch_outcome_contracts import (
     DispatchOutcomeRecordV2,
 )
-from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
+from chiplog.capabilities.effects.dispatch_outcomes import evidence_head, prepare_outcome
 from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2, reference
+from chiplog.composition.r14_native_evidence_sources import (
+    complete_ordered_evidence_sources,
+)
 from chiplog.composition.r14_native_selected_accounting_source import (
     _closed_outcome_join_is_valid,
     _open_outcome_join_is_valid,
@@ -28,7 +31,7 @@ def _selected_tuple(
 ) -> tuple[DispatchOutcomeRecordV2, SelectedEffectHistoryMember, StoredEffectRow]:
     raw = outcome.canonical_bytes()
     member = SelectedEffectHistoryMember(
-        kind="EVIDENCE_RECORDED",
+        kind=outcome.kind,
         selected_decision=reference("decision", b"selected decision"),
         publication_ordinal=ordinal,
         original_selected_cut=reference("cut", b"selected cut"),
@@ -314,7 +317,6 @@ def test_closed_join_rejects_open_foreign_and_stale_chain_members() -> None:
         )
         is None
     )
-
     assert (
         _closed_outcome_join_is_valid(
             "foreign-intent",
@@ -343,3 +345,92 @@ def test_closed_join_rejects_open_foreign_and_stale_chain_members() -> None:
         )
         is None
     )
+
+
+def test_complete_evidence_sources_bind_ordered_items_to_unique_selected_carriers() -> None:
+    send = original_send(members=("first", "second"))
+    pending = prepare_outcome(request(send, send))
+    first_evidence = prepare_outcome(request(pending, send, ("first",), name="evidence-first"))
+    second_evidence = prepare_outcome(
+        request(first_evidence, send, ("second",), name="evidence-second")
+    )
+    terminal = prepare_outcome(request(second_evidence, send, close=True, name="close"))
+    chain = (
+        _selected_tuple(pending, ordinal=1),
+        _selected_tuple(first_evidence, ordinal=2, commit_sequence=2),
+        _selected_tuple(second_evidence, ordinal=3, commit_sequence=3),
+        _selected_tuple(terminal, ordinal=4, commit_sequence=4),
+    )
+    history = VerifiedDispatchHistory(
+        members=tuple(item[1] for item in chain),
+        v2_records=tuple(item[0] for item in chain),
+    )
+
+    sources = complete_ordered_evidence_sources(terminal, history)
+
+    assert sources is not None
+    assert tuple(source.subject.subject_id for source in sources) == tuple(
+        evidence_head(item).subject_id for item in terminal.snapshot.evidence
+    )
+    expected_carriers = tuple(
+        next(
+            record
+            for record in history.v2_records
+            if isinstance(record, DispatchOutcomeRecordV2)
+            and record.kind == "EVIDENCE_RECORDED"
+            and record.command.evidence == item
+        )
+        for item in terminal.snapshot.evidence
+    )
+    assert tuple(source.physical_record.subject_id for source in sources) == tuple(
+        record.record.subject_id for record in expected_carriers
+    )
+    assert tuple(source.canonical_record_bytes for source in sources) == tuple(
+        record.canonical_bytes() for record in expected_carriers
+    )
+
+    duplicate_carrier = replace(
+        history,
+        members=(*history.members, history.members[1]),
+    )
+    omitted_carrier = replace(
+        history,
+        members=tuple(
+            member for member in history.members if member.record != second_evidence.record
+        ),
+    )
+    reversed_manifest = terminal.model_copy(
+        update={
+            "snapshot": terminal.snapshot.model_copy(
+                update={"evidence_heads": tuple(reversed(terminal.snapshot.evidence_heads))}
+            )
+        }
+    )
+    assert complete_ordered_evidence_sources(terminal, duplicate_carrier) is None
+    assert complete_ordered_evidence_sources(terminal, omitted_carrier) is None
+    assert complete_ordered_evidence_sources(reversed_manifest, history) is None
+
+    foreign_send = original_send(members=("first", "second"))
+    foreign_pending = prepare_outcome(request(foreign_send, foreign_send))
+    foreign = prepare_outcome(request(foreign_pending, foreign_send, ("first",), name="foreign"))
+    foreign_evidence = foreign.snapshot.evidence[-1]
+    foreign_terminal = terminal.model_copy(
+        update={
+            "snapshot": terminal.snapshot.model_copy(
+                update={
+                    "evidence": (foreign_evidence,),
+                    "evidence_heads": (evidence_head(foreign_evidence),),
+                }
+            )
+        }
+    )
+    assert complete_ordered_evidence_sources(foreign_terminal, history) is None
+
+    malformed_member = history.members[1].model_copy(
+        update={"kind": "OUTCOME_UNKNOWN"},
+    )
+    malformed_history = replace(
+        history,
+        members=(history.members[0], malformed_member, *history.members[2:]),
+    )
+    assert complete_ordered_evidence_sources(terminal, malformed_history) is None
