@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Literal
@@ -465,6 +466,7 @@ def _read_materialized_effects_with_history(
     journal: IndependentOwnerDecisionJournal,
     *,
     run_id: str | None = None,
+    authenticate_later_suffix: Callable[[R13PlanningRuntime, str, str], bool] | None = None,
 ) -> tuple[MaterializedEffectsCut, OwnerJournalSnapshot]:
     """Prove complete effects membership against independently selected decisions."""
     tenant = runtime._tenant_id
@@ -486,7 +488,12 @@ def _read_materialized_effects_with_history(
         with workspace_snapshot(runtime._database) as physical:
             connection = physical.connection
             commitment = capture_authority_snapshot_commitment(connection, tenant)
-            if commitment != committed:
+            suffix_authenticated = (
+                authenticate_later_suffix(runtime, commitment, committed)
+                if commitment != committed and authenticate_later_suffix is not None
+                else False
+            )
+            if commitment != committed and not suffix_authenticated:
                 raise ValueError("physical authority differs from independent commitment")
             head = connection.execute(
                 "SELECT head FROM main.tenant_heads WHERE tenant_id = ?", (tenant,)
@@ -559,7 +566,12 @@ def _read_materialized_effects_with_history(
             if expected_effect_ids != actual_effect_ids:
                 raise ValueError("complete effects scope has missing tail or unknown rows")
             latest_runs = _reconstruct_registered_runs(
-                runtime, connection, tenant, before, frontier
+                runtime,
+                connection,
+                tenant,
+                before,
+                frontier,
+                historical=suffix_authenticated,
             )
             if (
                 journal.snapshot() != before
@@ -615,11 +627,16 @@ def _reconstruct_registered_runs(
     tenant: str,
     journal: OwnerJournalSnapshot,
     frontier: int,
+    *,
+    historical: bool = False,
 ) -> tuple[RunRecord | ExecutionRunRecord, ...]:
     """Explicit selected-history reader for executable Runs; legacy proof is preserved."""
     legacy = _reconstruct_runs(connection, tenant, journal)
     from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCHEMA
-    from chiplog.composition.r14_loop_history import read_execution_history
+    from chiplog.composition.r14_loop_history import (
+        read_execution_history,
+        read_execution_recovery_history,
+    )
     from chiplog.composition.r14_runtime import R14PlanningRuntime
 
     physical = dict(
@@ -636,7 +653,12 @@ def _reconstruct_registered_runs(
         or ("agent_loop", EXECUTION_RUN_SCHEMA) not in runtime._record_schema_variants
     ):
         raise ValueError("execution Run history has no registered effects worker reader")
-    snapshot = read_execution_history(runtime)
+    if historical:
+        snapshot, _, _, _, _, _ = read_execution_recovery_history(
+            runtime, selected_only=True, exact_historical_sources=True
+        )
+    else:
+        snapshot = read_execution_history(runtime)
     executions = tuple(
         record for record in snapshot.records if isinstance(record, ExecutionRunRecord)
     )

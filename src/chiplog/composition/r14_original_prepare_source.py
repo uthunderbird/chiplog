@@ -40,6 +40,7 @@ from chiplog.composition.h1_workspace_policy_v2 import (
 from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_h1_workspace_issuance_contracts import H1WorkspaceIssuanceRefV1
 from chiplog.platform.h1_scope_lineage import AuthenticatedHermeticOutputScope
+from chiplog.platform.owner_publications import OwnerPublicationPending
 
 from .r14_execution_transition_records import RetainedExecutionTransitionV4
 from .r14_native_scope_binding import NativePrepareScopeBindingV1, verify_native_prepare_scope
@@ -104,9 +105,14 @@ class R14OriginalNativePrepareSource:
             with gate.hold():
                 self._runtime._check_database_identity()
                 database_identity = self._runtime._database_identity
-                selected = select_h1_v3_prepare_for_native_fanout(
-                    self._runtime, selected_seal=selected_seal
-                )
+                try:
+                    selected = select_h1_v3_prepare_for_native_fanout(
+                        self._runtime, selected_seal=selected_seal
+                    )
+                except OwnerPublicationPending:
+                    selected = select_h1_v3_prepare_for_native_fanout(
+                        self._runtime, selected_seal=selected_seal, historical=True
+                    )
                 if selected is None:
                     selected = select_h1_v3_prepare_for_seal(
                         self._runtime, selected_seal=selected_seal, historical=True

@@ -481,6 +481,7 @@ class R14NativeSelectedAccountingSource:
         selected_only: bool = False,
         expected_outcome_record_id: str | None = None,
         expected_selected_decision: CallSubjectHead | None = None,
+        expected_tenant_commit_sequence: int | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join the retained OPEN cause to a still-open current R16 outcome."""
         return self._collect_one_accepted_outcome(
@@ -488,6 +489,7 @@ class R14NativeSelectedAccountingSource:
             selected_only=selected_only,
             expected_outcome_record_id=expected_outcome_record_id,
             expected_selected_decision=expected_selected_decision,
+            expected_tenant_commit_sequence=expected_tenant_commit_sequence,
             current_obligation_state="OPEN",
         )
 
@@ -498,6 +500,7 @@ class R14NativeSelectedAccountingSource:
         selected_only: bool = False,
         expected_outcome_record_id: str | None = None,
         expected_selected_decision: CallSubjectHead | None = None,
+        allow_authenticated_later_suffix: bool = False,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Read a closed current outcome while retaining its original OPEN cause.
 
@@ -510,6 +513,7 @@ class R14NativeSelectedAccountingSource:
             expected_outcome_record_id=expected_outcome_record_id,
             expected_selected_decision=expected_selected_decision,
             current_obligation_state="CLOSED",
+            allow_authenticated_later_suffix=allow_authenticated_later_suffix,
         )
 
     def _collect_one_accepted_outcome(
@@ -519,7 +523,9 @@ class R14NativeSelectedAccountingSource:
         selected_only: bool = False,
         expected_outcome_record_id: str | None = None,
         expected_selected_decision: CallSubjectHead | None = None,
+        expected_tenant_commit_sequence: int | None = None,
         current_obligation_state: Literal["OPEN", "CLOSED"],
+        allow_authenticated_later_suffix: bool = False,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join one accepted call's retained OPEN cause to its current outcome.
 
@@ -528,7 +534,11 @@ class R14NativeSelectedAccountingSource:
         cause and verify that its exact chain ends at the current closed member.
         Startup validation may provide the exact original member explicitly.
         """
-        if (expected_outcome_record_id is None) != (expected_selected_decision is None):
+        if (
+            (expected_outcome_record_id is None) != (expected_selected_decision is None)
+            or (expected_outcome_record_id is None)
+            != (expected_tenant_commit_sequence is None)
+        ):
             raise TypeError("historical OPEN locator requires its selected decision")
         if (
             expected_selected_decision is not None
@@ -547,6 +557,7 @@ class R14NativeSelectedAccountingSource:
                 identity = runtime._database_identity
                 with read_connection(runtime._database) as connection:
                     before = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+                anchored_before = runtime._commitment_journal.load(runtime._tenant_id)
                 journal = runtime._owner_decisions().snapshot()
                 # Collect under the authority gate so this exact selected source
                 # remains fixed through the R16 history read below. Recollecting
@@ -559,14 +570,44 @@ class R14NativeSelectedAccountingSource:
                     branch.external_effect_intent, Present
                 ):
                     return None
+                suffix_verifier = None
+                if (
+                    expected_tenant_commit_sequence is not None
+                    or allow_authenticated_later_suffix
+                ):
+                    from chiplog.composition.r14_original_call_resolution_source import (
+                        authenticate_selected_resolution_prefix_held,
+                    )
+
+                    suffix_verifier = authenticate_selected_resolution_prefix_held
                 cut, retained_journal = _read_materialized_effects_with_history(
-                    runtime, runtime._owner_decisions()
+                    runtime,
+                    runtime._owner_decisions(),
+                    authenticate_later_suffix=suffix_verifier,
                 )
                 verified = verify_dispatch_history(cut, retained_journal)
+                authenticated_suffix = False
+                if (
+                    expected_tenant_commit_sequence is not None
+                    or allow_authenticated_later_suffix
+                ) and (
+                    before != anchored_before
+                    or anchored_before != cut.materialization_commitment
+                ):
+                    from chiplog.composition.r14_original_call_resolution_source import (
+                        authenticate_selected_resolution_prefix_held,
+                    )
+
+                    authenticated_suffix = authenticate_selected_resolution_prefix_held(
+                        runtime, before, anchored_before
+                    )
                 if (
                     retained_journal != journal
                     or cut.materialization_commitment != before
-                    or runtime._commitment_journal.load(runtime._tenant_id) != before
+                    or (
+                        runtime._commitment_journal.load(runtime._tenant_id) != before
+                        and not authenticated_suffix
+                    )
                     or runtime._database_identity != identity
                 ):
                     return None
@@ -575,6 +616,14 @@ class R14NativeSelectedAccountingSource:
                 tuple[DispatchOutcomeRecordV2, SelectedEffectHistoryMember, StoredEffectRow]
             ] = []
             latest: dict[
+                str,
+                tuple[
+                    DispatchRecordV2 | DispatchOutcomeRecordV2,
+                    SelectedEffectHistoryMember,
+                    StoredEffectRow,
+                ],
+            ] = {}
+            latest_at_cut: dict[
                 str,
                 tuple[
                     DispatchRecordV2 | DispatchOutcomeRecordV2,
@@ -600,6 +649,11 @@ class R14NativeSelectedAccountingSource:
                 if record is None:
                     return None
                 latest[record.snapshot.intent.intent_id] = (record, member, row)
+                if (
+                    expected_tenant_commit_sequence is not None
+                    and row.commit_sequence <= expected_tenant_commit_sequence
+                ):
+                    latest_at_cut[record.snapshot.intent.intent_id] = (record, member, row)
                 if not isinstance(record, DispatchOutcomeRecordV2):
                     continue
                 intent_ref = effects_reference(
@@ -638,11 +692,17 @@ class R14NativeSelectedAccountingSource:
                     and item[1].selected_decision.head == expected_decision.revision.head
                     and item[1].selected_decision.fingerprint
                     == expected_decision.revision.fingerprint
+                    and latest_at_cut.get(item[0].snapshot.intent.intent_id)
+                    == (item if item[0].snapshot.obligation.state == "OPEN" else None)
                 ]
             if len(selected) != 1:
                 return None
             outcome, member, row = selected[0]
-            current = latest.get(outcome.snapshot.intent.intent_id)
+            current = (
+                latest_at_cut.get(outcome.snapshot.intent.intent_id)
+                if expected_tenant_commit_sequence is not None
+                else latest.get(outcome.snapshot.intent.intent_id)
+            )
             if current is None:
                 return None
             latest_record, latest_member, latest_row = current
@@ -672,9 +732,22 @@ class R14NativeSelectedAccountingSource:
                 return None
             with read_connection(runtime._database) as connection:
                 after = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+            anchored_after = runtime._commitment_journal.load(runtime._tenant_id)
+            if (
+                expected_tenant_commit_sequence is not None or allow_authenticated_later_suffix
+            ) and (
+                after != anchored_after or anchored_after != before
+            ):
+                from chiplog.composition.r14_original_call_resolution_source import (
+                    authenticate_selected_resolution_prefix_held,
+                )
+
+                authenticated_suffix = authenticate_selected_resolution_prefix_held(
+                    runtime, after, anchored_after
+                )
             if (
                 after != before
-                or runtime._commitment_journal.load(runtime._tenant_id) != before
+                or (anchored_after != before and not authenticated_suffix)
                 or runtime._database_identity != identity
             ):
                 return None

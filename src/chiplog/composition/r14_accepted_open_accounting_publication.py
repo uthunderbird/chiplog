@@ -131,10 +131,15 @@ def _accepted_open_sealed_accounting(facts, cut, result):
 
 
 def _accepted_open_publication_state_is_valid(
-    state: str, actual: str, anchored: str, predecessor: str
+    state: str,
+    actual: str,
+    anchored: str,
+    predecessor: str,
+    *,
+    authenticated_later_suffix: bool = False,
 ) -> bool:
     """Allow exact pending recovery or complete history under a newer anchor."""
-    if actual != anchored:
+    if actual != anchored and not authenticated_later_suffix:
         return False
     if state == "COMPLETE":
         return True
@@ -167,7 +172,11 @@ def _current_cut(
     source_materialization_commitment: str | None = None,
     source_tenant_commit_sequence: int | None = None,
 ):
-    history = read_execution_recovery_history(runtime, selected_only=selected_only)
+    history = read_execution_recovery_history(
+        runtime,
+        selected_only=selected_only,
+        exact_historical_sources=expected_source_cut is not None,
+    )
     snapshot, _, _, executions, _, _ = history
     if len(executions) != 1 or not snapshot.records:
         raise LoopRejected("accepted/open source requires one selected native execution")
@@ -193,6 +202,9 @@ def _current_cut(
         ),
         expected_selected_decision=(
             None if expected_source_cut is None else expected_source_cut.selected_decision
+        ),
+        expected_tenant_commit_sequence=(
+            None if expected_source_cut is None else expected_source_cut.tenant_commit_sequence
         ),
     )
     if facts is None:
@@ -610,14 +622,28 @@ def validate_selected_accepted_open_recovery(runtime) -> None:
         with read_connection(runtime._database) as connection:
             actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
         anchored = runtime._commitment_journal.load(runtime._tenant_id)
+        authenticated_later_suffix = False
         if actual != anchored:
+            from chiplog.composition.r14_original_call_resolution_source import (
+                authenticate_selected_resolution_prefix_held,
+            )
+
+            with runtime._authority_gate().hold():
+                authenticated_later_suffix = authenticate_selected_resolution_prefix_held(
+                    runtime, actual, anchored
+                )
+        if actual != anchored and not authenticated_later_suffix:
             raise LoopRejected("accepted/open current physical and anchored commitments differ")
         state, publication_actual, publication_anchor = runtime._selected_physical_state(command)
         if (
             publication_actual != actual
             or publication_anchor != anchored
             or not _accepted_open_publication_state_is_valid(
-                state, actual, anchored, str(entry["predecessor"])
+                state,
+                actual,
+                anchored,
+                str(entry["predecessor"]),
+                authenticated_later_suffix=authenticated_later_suffix,
             )
         ):
             raise LoopRejected("accepted/open exact publication is absent, partial, or stale")
@@ -628,8 +654,15 @@ def validate_selected_accepted_open_recovery(runtime) -> None:
             source_materialization_commitment=evidence.request.cut.materialization_commitment,
             source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
         )
-        if current is None or current[1] != evidence.request.cut:
+        if current is None:
             raise LoopRejected("accepted/open recovery selected source cut differs")
+        if current[1] != evidence.request.cut:
+            observed = current[1].model_dump(mode="json")
+            retained = evidence.request.cut.model_dump(mode="json")
+            differing = tuple(key for key in retained if retained[key] != observed.get(key))
+            raise LoopRejected(
+                "accepted/open recovery selected source cut differs: " + ",".join(differing)
+            )
         _accepted_open_sealed_accounting(current[0], current[1], evidence.result)
         selected.append(entry)
     if claimed and len(selected) != 1:

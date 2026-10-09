@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sqlite3
 from typing import TYPE_CHECKING, Literal, cast
 
-from chiplog.adapters.driven.loop_sqlite import OWNER, SCHEMA, LoopIntegrityError
+from chiplog.adapters.driven.loop_sqlite import OWNER, LoopIntegrityError
 from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER, CONVERSATION_SCHEMA
 from chiplog.architecture.r7_storage_surface import AUTHORITY_STORAGE_SURFACE_DIGEST
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallInventorySnapshot
@@ -346,6 +347,7 @@ def _read_call_history(
     runtime: R14PlanningRuntime,
     *,
     selected_only: bool = False,
+    exact_historical_sources: bool = False,
 ) -> tuple[
     LoopSnapshot,
     tuple[RetainedFanOutPreparation, ...],
@@ -369,9 +371,13 @@ def _read_call_history(
                 runtime._require_no_pending()
             tenant = runtime._tenant_id
             entries = []
-            for _, _, raw in runtime._loop_decisions().entries():
+            selected_decision_envelopes = {}
+            for decision_id, _, raw in runtime._loop_decisions().entries():
                 _strict_json(raw)
-                entries.append(json.loads(raw))
+                entry = json.loads(raw)
+                entries.append(entry)
+                if entry.get("kind") == "DECIDED":
+                    selected_decision_envelopes[entry["operation_id"]] = (decision_id, raw)
             decisions = [entry for entry in entries if entry.get("kind") == "DECIDED"]
             identities = [entry["operation_id"] for entry in decisions]
             if len(identities) != len(set(identities)):
@@ -427,6 +433,37 @@ def _read_call_history(
                 actual = capture_authority_snapshot_commitment(connection, tenant)
                 if not selected_only and actual != runtime._commitment_journal.load(tenant):
                     raise ValueError("loop read cut differs from current independent anchor")
+                pending_source_publication = None
+                if exact_historical_sources:
+                    anchor = runtime._commitment_journal.load(tenant)
+                    pending = runtime._pending()
+                    if pending:
+                        operation = pending[0].get("operation_kind") if len(pending) == 1 else None
+                        if operation == "agent_loop.original-resolver-invocation.v1":
+                            from chiplog.composition.r14_invocation_pending import (
+                                authenticate_selected_invocation_prefix_held,
+                            )
+
+                            authenticated = authenticate_selected_invocation_prefix_held(
+                                runtime, actual, anchor
+                            )
+                        elif operation == "agent_loop.original-call-resolution.v1":
+                            from chiplog.composition.r14_original_call_resolution_source import (
+                                authenticate_selected_resolution_prefix_held,
+                            )
+
+                            authenticated = authenticate_selected_resolution_prefix_held(
+                                runtime, actual, anchor
+                            )
+                        else:
+                            authenticated = False
+                        if not authenticated:
+                            raise ValueError(
+                                "historical source read has an unverified pending write"
+                            )
+                        pending_source_publication = pending[0]
+                    elif actual != anchor:
+                        raise ValueError("historical source read differs from independent anchor")
                 fence = connection.execute(
                     "SELECT generation, frontier FROM deletion_fences WHERE tenant_id=?", (tenant,)
                 ).fetchone()
@@ -482,6 +519,8 @@ def _read_call_history(
                 native_accounting_count = 0
                 captured_heads: set[str] = set()
                 native_prepares: dict[tuple[str, str], str] = {}
+                original_sources = None
+                resolver_policy_sources = None
                 for command, entry in selected:
                     identity = command.idempotency_key
                     if command.operation_kind not in (
@@ -495,6 +534,8 @@ def _read_call_history(
                         "agent_loop.accepted-open-accounting.v1",
                         "agent_loop.accepted-open-recovery.v1",
                         "agent_loop.original-call-resolution.v1",
+                        "agent_loop.original-resolver-authority-policy.v1",
+                        "agent_loop.original-resolver-invocation.v1",
                         "agent_loop.native-one-call-recovery-profile.v1",
                         "agent_loop.native-one-call-recovery-profile.v2",
                         EXECUTION_TRANSITION_OPERATION,
@@ -522,7 +563,134 @@ def _read_call_history(
 
                         if command.operation_kind != OPERATION:
                             raise ValueError("original resolution has a substituted operation")
-                        validate_selected_command(runtime, entry, command)
+                        evidence = validate_selected_command(runtime, entry, command)
+                        cut = evidence.request.cut
+                        if original_sources is None or resolver_policy_sources is None:
+                            raise ValueError("original resolution precedes its selected sources")
+                        if (cut.current_obligation, cut.call_terminal) != original_sources or (
+                            cut.resolver_policy,
+                            cut.reducer_policy,
+                        ) != resolver_policy_sources:
+                            raise ValueError(
+                                "original resolution source references differ from selected history"
+                            )
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if command.operation_kind == "agent_loop.original-resolver-authority-policy.v1":
+                        from chiplog.capabilities.agent_loop import execution_recovery_observations
+                        from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
+                            CallSubjectHead,
+                        )
+                        from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+                            original_effect_evidence_reducer_policy_v1,
+                        )
+                        from chiplog.capabilities.agent_loop.recovery_contracts import Present
+                        from chiplog.composition.r14_original_resolver_policy_publication import (
+                            EVIDENCE_FIELD,
+                            REDUCER_SCHEMA,
+                            SCHEMA,
+                        )
+                        from chiplog.composition.r14_original_resolver_policy_publication import (
+                            validate_selected as validate_policy_selected,
+                        )
+
+                        evidence = validate_policy_selected(runtime, entry, command)
+                        if len(command.records) != 2 or tuple(
+                            r.schema_id for r in command.records
+                        ) != (SCHEMA, REDUCER_SCHEMA):
+                            raise ValueError("selected resolver policy record schemas differ")
+                        decision_id = entry.get("_selected_decision_id")
+                        decision_bytes = entry.get("_selected_decision_bytes")
+                        if not isinstance(decision_id, str) or not isinstance(
+                            decision_bytes, (str, bytes)
+                        ):
+                            raise ValueError("selected resolver policy lacks decision identity")
+                        selected_digest = hashlib.sha256(
+                            decision_bytes.encode()
+                            if isinstance(decision_bytes, str)
+                            else decision_bytes
+                        ).hexdigest()
+                        sources = []
+                        for record in command.records:
+                            digest = hashlib.sha256(record.canonical_bytes).hexdigest()
+                            subject_id = (
+                                evidence.request.policy.policy_id
+                                if record.schema_id == SCHEMA
+                                else original_effect_evidence_reducer_policy_v1(
+                                    runtime._tenant_id
+                                ).policy_id
+                            )
+                            sources.append(
+                                execution_recovery_observations.RecoverySourceRecord(
+                                    owner=record.owner,
+                                    subject=CallSubjectHead(
+                                        subject_id=subject_id,
+                                        revision=Present(
+                                            head="record:" + digest, fingerprint=digest
+                                        ),
+                                    ),
+                                    schema_id=record.schema_id,
+                                    canonical_record_bytes=record.canonical_bytes,
+                                    selected_decision=CallSubjectHead(
+                                        subject_id=decision_id,
+                                        revision=Present(
+                                            head=decision_id, fingerprint=selected_digest
+                                        ),
+                                    ),
+                                    physical_record=CallSubjectHead(
+                                        subject_id=record.record_id,
+                                        revision=Present(
+                                            head="record:" + digest, fingerprint=digest
+                                        ),
+                                    ),
+                                )
+                            )
+                        resolver_policy_sources = tuple(sources)
+                        if EVIDENCE_FIELD not in entry:
+                            raise ValueError("selected resolver policy lacks retained evidence")
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if command.operation_kind == "agent_loop.original-resolver-invocation.v1":
+                        from chiplog.composition import (
+                            r14_original_resolver_invocation_publication as inv_pub,
+                        )
+
+                        raw = entry.get(inv_pub.EVIDENCE_FIELD)
+                        if (
+                            not isinstance(raw, str)
+                            or original_sources is None
+                            or resolver_policy_sources is None
+                        ):
+                            raise ValueError(
+                                "selected resolver invocation lacks historical sources"
+                            )
+                        evidence_type = inv_pub.RetainedOriginalResolverInvocationPublication
+                        evidence = evidence_type.model_validate_json(raw)
+                        invocation = evidence.prepared.invocation
+                        if (
+                            evidence.canonical_bytes().decode() != raw
+                            or inv_pub.command(evidence) != command
+                            or tuple(record.schema_id for record in command.records)
+                            != (inv_pub.SCHEMA,)
+                            or (
+                                invocation.accepted_opening_source,
+                                invocation.accepted_terminal_source,
+                            )
+                            != original_sources
+                            or (invocation.resolver_policy_source, invocation.reducer_policy_source)
+                            != resolver_policy_sources
+                            or entry.get("operation_id") != identity
+                        ):
+                            raise ValueError(
+                                "selected resolver invocation differs from historical source cut"
+                            )
+                        inv_pub._validate_invocation_actor(runtime, evidence)
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
@@ -700,6 +868,18 @@ def _read_call_history(
                             or entry.get("expected_head") != command.expected_head
                         ):
                             raise ValueError("selected accepted/open recovery differs")
+                        from chiplog.composition.r14_original_obligation_sources import (
+                            accepted_open_recovery_sources,
+                        )
+
+                        selected_decision_id, raw_decision = selected_decision_envelopes[identity]
+                        original_sources = accepted_open_recovery_sources(
+                            evidence,
+                            selected_decision_id=selected_decision_id,
+                            selected_decision_bytes=raw_decision.encode()
+                            if isinstance(raw_decision, str)
+                            else raw_decision,
+                        )
                         expected_ids.update(record.record_id for record in command.records)
                         expected_publications.add((command.operation_kind, identity))
                         continue
@@ -1214,7 +1394,26 @@ def _read_call_history(
                     latest[record.run_id] = record
                     records.append(record)
                     mixed_records.append(record)
-                if not selected_only and (
+                if exact_historical_sources and pending_source_publication is not None:
+                    pending_command = runtime._publication(pending_source_publication)
+                    with read_connection(runtime._database) as current_connection:
+                        pending_state = inspect_publication(
+                            current_connection,
+                            pending_command,
+                            pending_command.expected_head + 1,
+                        )
+                    if pending_state == "ABSENT":
+                        expected_ids.difference_update(
+                            row.record_id
+                            for row in pending_command.records
+                            if row.owner == OWNER
+                        )
+                        expected_publications.discard(
+                            (pending_command.operation_kind, pending_command.idempotency_key)
+                        )
+                    elif pending_state != "COMPLETE":
+                        raise ValueError("pending historical source publication conflicts")
+                if (not selected_only or exact_historical_sources) and (
                     physical_ids != expected_ids or physical_publications != expected_publications
                 ):
                     raise ValueError("orphaned, missing or unknown loop publication members")
@@ -1235,6 +1434,7 @@ def _read_call_history(
     except (ValueError, TypeError, KeyError, sqlite3.Error) as error:
         raise LoopIntegrityError(
             f"operation=snapshot tenant={runtime._tenant_id} record_id={identity}"
+            + (f" historical_source_error={error}" if exact_historical_sources else "")
         ) from error
 
 
@@ -1279,6 +1479,7 @@ def read_execution_recovery_history(
     runtime: R14PlanningRuntime,
     *,
     selected_only: bool = False,
+    exact_historical_sources: bool = False,
 ) -> tuple[
     ExecutionHistorySnapshot,
     CallInventorySnapshot,
@@ -1295,7 +1496,11 @@ def read_execution_recovery_history(
     recovery cut or confer writer authority.
     """
     _, legacy, cancellations, snapshot, executions, execution_cancellations, acceptances = (
-        _read_call_history(runtime, selected_only=selected_only)
+        _read_call_history(
+            runtime,
+            selected_only=selected_only,
+            exact_historical_sources=exact_historical_sources,
+        )
     )
     return (
         snapshot,
@@ -1380,7 +1585,9 @@ def read_selected_accepted_open_recovery(runtime: R14PlanningRuntime):
         return found[0].result if len(found) == 1 else None
 
 
-def read_selected_original_obligation_sources(runtime: R14PlanningRuntime):
+def read_selected_original_obligation_sources(
+    runtime: R14PlanningRuntime, *, historical: bool = False
+):
     """Return exact selected R14 opening and terminal source records, or no cut."""
     from chiplog.composition.r14_accepted_open_accounting_publication import (
         validate_selected_accepted_open_recovery,
@@ -1395,8 +1602,13 @@ def read_selected_original_obligation_sources(runtime: R14PlanningRuntime):
     )
 
     with runtime._authority_gate().hold():
-        _read_call_history(runtime)
-        validate_selected_accepted_open_recovery(runtime)
+        _read_call_history(
+            runtime,
+            selected_only=historical,
+            exact_historical_sources=historical,
+        )
+        if not historical:
+            validate_selected_accepted_open_recovery(runtime)
         selected = [
             (decision_id, raw)
             for decision_id, _, raw in runtime._loop_decisions().entries()

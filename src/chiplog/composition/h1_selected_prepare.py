@@ -328,6 +328,7 @@ def select_h1_v3_prepare_for_native_fanout(
     runtime: CommonCliExecutionRuntime,
     *,
     selected_seal: CallSubjectHead,
+    historical: bool = False,
 ) -> H1SelectedNativeFanoutPrepare | None:
     """Reopen the V3 Prepare preceding one exact native response fanout.
 
@@ -343,7 +344,11 @@ def select_h1_v3_prepare_for_native_fanout(
     with runtime._authority_gate().hold():
         runtime._check_database_identity()
         _snapshot, _inventory, _legacy, authenticated_fanouts, _cancellations, _acceptances = (
-            read_execution_recovery_history(runtime)
+            read_execution_recovery_history(
+                runtime,
+                selected_only=historical,
+                exact_historical_sources=historical,
+            )
         )
         database = Path(runtime._database).resolve(strict=True)
         before = database.stat()
