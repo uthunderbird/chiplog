@@ -8,6 +8,7 @@ from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
 from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_PRODUCTION_MANIFEST,
 )
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.original_recovery_contracts import (
     PreparedOriginalCallResolution,
 )
@@ -113,6 +114,14 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert isinstance(resolution, PreparedOriginalCallResolution)
         assert resolution.closure.original == open_recovery.opening.original
         assert resolution.recovered_outcome.original == open_recovery.opening.original
+        resolved_frontier = runtime.read_selected_accepted_open_frontier()
+        resolved_disposition = resolved_frontier.calls[0].disposition
+        assert resolved_disposition.kind == "RECOVERY_REQUIRED"
+        assert resolved_disposition.result.kind == "ABSENT"
+        assert resolved_disposition.recovered_outcome.outcome.kind == "PRESENT"
+        assert resolved_disposition.recovered_outcome.outcome.head == (
+            "record:" + resolution.recovered_outcome.digest()
+        )
         assert len(resources.require_original_provider().transfers) == 1
 
     async with open_common_cli_execution_runtime(
@@ -124,4 +133,14 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert reopened.read_selected_original_resolver_authority_policy() == policy
         assert reopened.read_selected_original_resolver_invocation_source()[0] == invocation
         assert reopened.read_selected_original_call_resolution() == resolution
+        resolved_frontier = reopened.read_selected_accepted_open_frontier()
+        resolved_disposition = resolved_frontier.calls[0].disposition
+        assert resolved_disposition.kind == "RECOVERY_REQUIRED"
+        assert resolved_disposition.result.kind == "ABSENT"
+        assert resolved_disposition.recovered_outcome.outcome.kind == "PRESENT"
+        assert resolved_disposition.recovered_outcome.outcome.head == (
+            "record:" + resolution.recovered_outcome.digest()
+        )
+        with pytest.raises(LoopRejected, match="HOLD"):
+            await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
         assert len(resources.require_original_provider().transfers) == 1

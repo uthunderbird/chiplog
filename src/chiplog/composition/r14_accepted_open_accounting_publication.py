@@ -17,8 +17,11 @@ from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PreparedAcceptedOpenAccounting,
     PreparedAcceptedOpenRecoveryV1,
 )
-from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
-from chiplog.capabilities.agent_loop.recovery_domain import sealed_call_accounting
+from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+    PreparedOriginalCallResolution,
+)
+from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present, RecoveryDTO
+from chiplog.capabilities.agent_loop.recovery_domain import SealedAccounting, sealed_call_accounting
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     ConsequentialAcceptedCall,
     RecoveredOutcomeSubject,
@@ -128,6 +131,75 @@ def _accepted_open_sealed_accounting(facts, cut, result):
         ordered_call_ids,
         (call,),
     )
+
+
+def _with_selected_recovered_outcome(
+    accounting: SealedAccounting,
+    opening: PreparedAcceptedOpenRecoveryV1,
+    prepared: PreparedOriginalCallResolution | None,
+) -> SealedAccounting:
+    """Overlay only the exact selected resolver outcome on the recovery frontier."""
+    if prepared is None:
+        return accounting
+
+    from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+        RecoveredOutcomeSubject,
+        RecoveryRequiredResult,
+    )
+
+    basis, closure, outcome, batch = (
+        prepared.basis,
+        prepared.closure,
+        prepared.recovered_outcome,
+        prepared.batch,
+    )
+
+    def record_ref(record_id: str, record: RecoveryDTO) -> CallSubjectHead:
+        digest = hashlib.sha256(record.canonical_bytes()).hexdigest()
+        return CallSubjectHead(
+            subject_id=record_id,
+            revision=Present(head="record:" + digest, fingerprint=digest),
+        )
+
+    basis_ref = record_ref(basis.basis_id, basis)
+    closure_ref = record_ref(closure.closure_id, closure)
+    outcome_ref = record_ref(outcome.outcome_id, outcome)
+    selected_terminal_ref = record_ref(opening.terminal.terminal_id, opening.terminal)
+    opening_ref = record_ref(opening.opening.opening_id, opening.opening)
+    original = opening.opening.original
+    if (
+        basis.original != original
+        or basis.original_terminal != selected_terminal_ref
+        or closure.basis != basis_ref
+        or closure.original != original
+        or closure.prior_obligation != opening_ref
+        or closure.accepted_witness != basis.selected_witness
+        or outcome.basis != basis_ref
+        or outcome.original != original
+        or outcome.closure != closure_ref
+        or outcome.accepted_witness != closure.accepted_witness
+        or outcome.accepted_semantic_class != basis.accepted_semantic_class
+        or batch.basis != basis_ref
+        or batch.closure != closure_ref
+        or batch.recovered_outcome != outcome_ref
+        or outcome.result_schema != "chiplog.loop.recovered-effect-status.v1"
+    ):
+        raise LoopRejected("selected resolver outcome does not join exact accepted/open obligation")
+
+    if len(accounting.calls) != 1:
+        raise LoopRejected("resolved accepted/open accounting requires one sealed call")
+    call = accounting.calls[0]
+    if call.original_call_id != original.original_call_id or not isinstance(
+        call.disposition, RecoveryRequiredResult
+    ):
+        raise LoopRejected("selected resolver outcome conflicts with accepted/open frontier")
+    recovered = RecoveredOutcomeSubject(
+        original_call_id=original.original_call_id,
+        recovery_obligation_id=original.obligation_id,
+        outcome=outcome_ref.revision,
+    )
+    disposition = call.disposition.model_copy(update={"recovered_outcome": recovered})
+    return replace(accounting, calls=(call.model_copy(update={"disposition": disposition}),))
 
 
 def _accepted_open_publication_state_is_valid(
@@ -670,8 +742,11 @@ def validate_selected_accepted_open_recovery(runtime) -> None:
 
 
 def read_selected_accepted_open_frontier(runtime):
-    """Return the exact weak sealed-call accounting join for selected OPEN R16."""
+    """Return selected recovery accounting, with an exact outcome when resolved."""
     from chiplog.composition.r14_loop_history import read_execution_recovery_history
+    from chiplog.composition.r14_original_call_resolution_publication import (
+        read_selected_original_call_resolution_source_held,
+    )
 
     with runtime._authority_gate().hold():
         read_execution_recovery_history(runtime)
@@ -694,8 +769,16 @@ def read_selected_accepted_open_frontier(runtime):
         )
         if current is None:
             raise LoopRejected("selected accepted/open frontier source is unavailable")
-        return _accepted_open_sealed_accounting(
+        accounting = _accepted_open_sealed_accounting(
             current[0], evidence.request.cut, evidence.result
+        )
+        resolution = read_selected_original_call_resolution_source_held(runtime)
+        if resolution is None:
+            return accounting
+        return _with_selected_recovered_outcome(
+            accounting,
+            evidence.result,
+            resolution,
         )
 
 

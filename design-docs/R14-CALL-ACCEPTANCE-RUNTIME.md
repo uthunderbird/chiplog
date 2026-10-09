@@ -4,10 +4,12 @@ Status: implemented boundary with scoped evidence below. Full R14–R17 remains
 OPEN in R14-R17-COMPLETION.md. This slice connects original executable call
 initialization to authenticated adoption, atomic acceptance, dispatch and durable
 outcome handling. The native execution-call cancellation route is also mounted;
-the bounded acceptance/cancellation race evidence is recorded below. R14.1
-accounting and continuation, recovery reduction, frontier/successor, worker fencing,
-post-terminal work, model-attempt recovery, scheduler execution and channel delivery
-remain incomplete.
+the bounded acceptance/cancellation race evidence is recorded below. A mounted
+one-call recovery projection now reads the exact selected original resolver outcome
+after reopen while preserving the existing `RECOVERY_REQUIRED` terminal; continuation
+still holds until semantic reduction. Broader R14.1 accounting, recovery reduction,
+frontier/successor, worker fencing, post-terminal work, model-attempt recovery,
+scheduler execution and channel delivery remain incomplete.
 
 ## Scope and assembly
 
@@ -73,6 +75,14 @@ including closed work. Unknown work prevents fresh adoption in the same register
 scope. The actual mixed-policy tests cover both first-policy orders and both
 confirmed/closed and lost-response outcomes, with exactly one SEND and transfer.
 These effects outcomes do not yet terminalize/reduce the loop call.
+
+The mounted R14 resolver publishes its exact basis, obligation closure and recovered
+outcome as one selected physical batch. The accepted/open accounting reader now links
+that authenticated outcome into the existing `RECOVERY_REQUIRED` frontier as
+`PRESENT`; it leaves the result absent and publishes no second terminal. Reopen
+reconstructs the same projection, and next-turn remains on HOLD without a current
+semantic reduction. The bounded evidence is
+`tests/composition/test_r14_original_resolution_mounted.py::test_original_resolution_publishes_closed_outcome_and_reopens_without_resend`.
 
 ## Bounded representations and computation reuse
 
