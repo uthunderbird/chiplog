@@ -312,6 +312,7 @@ async def publish_outcome(
     evidence: DispatchEvidenceV2 | None,
     observed: ObservedTrustCall | None = None,
     act_id: str | None = None,
+    resolver_peer: str = "hermetic-ingress",
 ) -> BrokerPublicationResult:
     with runtime._authority_gate().hold():
         runtime._require_no_pending()
@@ -335,8 +336,12 @@ async def publish_outcome(
             if effect_materialization_state(runtime, existing) != "COMPLETE":
                 raise ValueError("outcome exact replay lacks complete physical materialization")
             if observed is not None:
-                # Release-time current caller, after retained and physical validation.
-                require_invocation(runtime, observed)
+                # Refresh after retained and physical validation, which may be slow.
+                refreshed = await authenticate(runtime, resolver_peer)
+                if not same_resolver_authority(observed, refreshed):
+                    raise ValueError("resolver authority changed during exact replay validation")
+                require_invocation(runtime, refreshed)
+                observed = refreshed
             return JournalSelectedPublication(
                 kind="EXACT_REPLAY",
                 tenant_id=runtime._tenant_id,
@@ -362,7 +367,14 @@ async def publish_outcome(
         if evidence is None:
             if observed is None or act_id is None:
                 raise ValueError("resolver requires authenticated explicit command")
-            raw_principal = require_invocation(runtime, observed)
+            # Selected-history validation can outlive the short auth observation.
+            # Reauthenticate after the cut is captured; keep the original authority
+            # binding and its five-second admission window.
+            refreshed = await authenticate(runtime, resolver_peer)
+            if not same_resolver_authority(observed, refreshed):
+                raise ValueError("resolver authority changed during source validation")
+            raw_principal = require_invocation(runtime, refreshed)
+            observed = refreshed
             resolver = reference(send.snapshot.intent.mandate.principal_id, raw_principal)
         command = DispatchOutcomeCommandV2(
             schema_id="chiplog.effects.dispatch-outcome-command.v2",
@@ -394,7 +406,7 @@ async def publish_outcome(
     )
     record = DispatchOutcomeRecordV2.model_validate_json(raw)
     if observed is not None:
-        refreshed = await authenticate(runtime, "hermetic-ingress")
+        refreshed = await authenticate(runtime, resolver_peer)
         if not same_resolver_authority(observed, refreshed):
             raise ValueError("resolver authority changed during owner preparation")
         authority.observed = refreshed
@@ -490,5 +502,10 @@ async def resolve_outcome(
 ) -> BrokerPublicationResult:
     observed = await authenticate(runtime, peer)
     return await publish_outcome(
-        runtime, intent_id, evidence=None, observed=observed, act_id=act_id
+        runtime,
+        intent_id,
+        evidence=None,
+        observed=observed,
+        act_id=act_id,
+        resolver_peer=peer,
     )
