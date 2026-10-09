@@ -169,8 +169,9 @@ class OriginalResolverCut(ExecutionRecoveryDTO):
     obligation_stream: LoopRecoveryStream
     current_obligation: RecoverySourceRecord
     call_terminal: RecoverySourceRecord
+    selected_witness: RecoverySourceRecord
     complete_ordered_evidence: tuple[RecoverySourceRecord, ...]
-    complete_selected_foreign_reductions: tuple[RecoverySourceRecord, ...]
+    complete_selected_effects_reductions: tuple[RecoverySourceRecord, ...]
     expected_closure: Annotated[Absent | Present, Field(discriminator="kind")]
     expected_recovered_outcome: Annotated[Absent | Present, Field(discriminator="kind")]
     resolver_policy: RecoverySourceRecord
