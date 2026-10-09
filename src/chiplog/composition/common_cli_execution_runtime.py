@@ -292,6 +292,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 ("effects", H1_LOCAL_INTENT_SCHEMA),
                 ("effects", H1_SCOPED_INTENT_SCHEMA),
                 (AGENT_LOOP_OWNER, DELIVERY_WORK_SCHEMA),
+                (AGENT_LOOP_OWNER, "chiplog.execution.accepted-open-accounting.v1"),
             )
         )
     )
@@ -941,6 +942,20 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         )
 
         return await publish_execution_accounting_readiness(self, peer)
+
+    async def publish_accepted_open_accounting(self, peer: str = "hermetic-ingress"):
+        from chiplog.composition.r14_accepted_open_accounting_publication import (
+            publish_accepted_open_accounting,
+        )
+
+        return await publish_accepted_open_accounting(self, peer)
+
+    def read_selected_accepted_open_accounting(self):
+        from chiplog.composition.r14_loop_history import (
+            read_selected_accepted_open_accounting,
+        )
+
+        return read_selected_accepted_open_accounting(self)
 
     async def start_next_execution_turn(
         self, run_id: str, expected_head: str, peer: str = "hermetic-ingress"

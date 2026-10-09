@@ -606,6 +606,9 @@ class R14PlanningRuntime(R13PlanningRuntime):
 
     async def _prepare_startup(self) -> None:
         with self._authority_gate().hold():
+            from chiplog.composition.r14_accepted_open_accounting_publication import (
+                validate_selected_accepted_open_accounting,
+            )
             from chiplog.composition.r14_loop_history import (
                 validate_selected_cancellations,
                 validate_selected_delivery_work_genesis,
@@ -621,6 +624,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
             validate_selected_cancellations(self)
             validate_selected_executions(self)
             validate_selected_native_accounting(self)
+            validate_selected_accepted_open_accounting(self)
             from chiplog.composition.r14_recovery_profile_publication import (
                 validate_profile_startup,
             )

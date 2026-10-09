@@ -178,6 +178,15 @@ async def start_next_execution_turn(
         observed = await runtime._execution_actor(peer)
         with runtime._authority_gate().hold():
             runtime._check_execution_actor(observed)
+        from chiplog.composition.r14_accepted_open_accounting_publication import (
+            hold_if_accepted_open,
+        )
+
+        if await hold_if_accepted_open(runtime, peer):
+            raise LoopRejected(
+                "selected R16 outcome is OUTCOME_UNKNOWN/OPEN; RECOVERY_REQUIRED holds next Turn"
+            )
+        with runtime._authority_gate().hold():
             prior = [
                 json.loads(raw)
                 for _, _, raw in runtime._loop_decisions().entries()

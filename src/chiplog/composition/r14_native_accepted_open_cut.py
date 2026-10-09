@@ -32,6 +32,9 @@ def _fingerprint(cut: AcceptedOpenRecoveryCutV1) -> str:
 def build_accepted_open_recovery_cut(
     runtime: CommonCliExecutionRuntime,
     accepted_open: R14NativeAcceptedOpenOutcome,
+    *,
+    source_materialization_commitment: str | None = None,
+    source_tenant_commit_sequence: int | None = None,
 ) -> AcceptedOpenRecoveryCutV1 | None:
     """Bind retained R14 acceptance and selected R16 OPEN evidence to one source cut."""
     if type(runtime) is not CommonCliExecutionRuntime:
@@ -71,8 +74,16 @@ def build_accepted_open_recovery_cut(
             cut = AcceptedOpenRecoveryCutV1(
                 tenant_id=runtime._tenant_id,
                 database_id=runtime._database_identity[0],
-                tenant_commit_sequence=accepted_open.tenant_commit_sequence,
-                materialization_commitment=accepted_open.materialization_commitment,
+                tenant_commit_sequence=(
+                    accepted_open.tenant_commit_sequence
+                    if source_tenant_commit_sequence is None
+                    else source_tenant_commit_sequence
+                ),
+                materialization_commitment=(
+                    accepted_open.materialization_commitment
+                    if source_materialization_commitment is None
+                    else source_materialization_commitment
+                ),
                 current_run=CallSubjectHead(
                     subject_id=run.run_id,
                     revision=Present(head=run.head, fingerprint=run.digest()),

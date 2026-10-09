@@ -1,13 +1,25 @@
 """Mounted accepted-call accounting keeps unresolved R16 work on HOLD."""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
 from chiplog.architecture.r7_runtime import R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
+from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+    PrepareAcceptedOpenAccounting,
+    PreparedAcceptedOpenAccounting,
+)
+from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+    prepare_accepted_open_accounting,
+)
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
-from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
+from chiplog.composition.common_cli_execution_runtime import (
+    CommonCliExecutionRuntime,
+    open_common_cli_execution_runtime,
+)
 from chiplog.composition.r14_call_acceptance_port import (
     CallAcceptanceAdoption,
     CallAcceptanceTarget,
@@ -17,36 +29,20 @@ from chiplog.composition.r14_loop_history import (
     read_execution_call_history,
     read_execution_recovery_history,
 )
-from chiplog.composition.r14_native_preparation_bindings import (
-    bind_native_execution_preparation_v2,
-)
 from chiplog.composition.r14_native_accepted_open_cut import (
     build_accepted_open_recovery_cut,
+)
+from chiplog.composition.r14_native_preparation_bindings import (
+    bind_native_execution_preparation_v2,
 )
 from chiplog.composition.r14_native_selected_accounting_source import (
     R14NativeSelectedAccountingSource,
 )
-from chiplog.composition.r14_accepted_open_accounting_records import (
-    ACCEPTED_OPEN_ACCOUNTING_OPERATION,
-    ACCEPTED_OPEN_ACCOUNTING_OWNER_OPERATION,
-    ACCEPTED_OPEN_ACCOUNTING_SCHEMA,
-    RetainedAcceptedOpenAccountingPublication,
-    accepted_open_accounting_command,
-)
-from chiplog.composition.r14_recovery_publication import (
-    _exchange,
-    issue_execution_recovery_actor_v1,
-)
 from chiplog.composition.r14_original_prepare_source import R14OriginalNativePrepareSource
-from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
-    PrepareAcceptedOpenAccounting,
-    PreparedAcceptedOpenAccounting,
-)
-from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
-    prepare_accepted_open_accounting,
-)
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._owner_publication_contracts import JournalSelectedPublication
+from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+from chiplog.platform.workspace_snapshot import read_connection
 from tests.support.h1_cli_execution import admit_runtime_slot
 from tests.support.native_cancelled import native_response
 
@@ -125,7 +121,9 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert len(open_outcomes) == 1
         assert open_outcomes[0].snapshot.obligation.state == "OPEN"
         assert open_outcomes[0].snapshot.state == "OUTCOME_UNKNOWN"
-        response_seal = read_execution_recovery_history(runtime)[3][0].proposal.fan_out.response_seal
+        response_seal = read_execution_recovery_history(runtime)[
+            3
+        ][0].proposal.fan_out.response_seal
         from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
         from chiplog.capabilities.agent_loop.recovery_contracts import Present
 
@@ -164,22 +162,56 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert prepared.accounting.kind == "RECOVERY_REQUIRED"
         assert prepared.accounting.selected_outcome_bytes == exact_open.outcome.canonical_bytes()
 
-        _, actor_budget = await issue_execution_recovery_actor_v1(runtime, "hermetic-ingress")
-        owner_result, owner_call, owner_reply = await _exchange(
-            runtime,
-            accounting_request,
-            ACCEPTED_OPEN_ACCOUNTING_OWNER_OPERATION,
-            PreparedAcceptedOpenAccounting,
+        selected_accounting = await runtime.publish_accepted_open_accounting()
+        assert selected_accounting == prepared.accounting
+        assert selected_accounting.kind == "RECOVERY_REQUIRED"
+        assert selected_accounting.selected_outcome_bytes == exact_open.outcome.canonical_bytes()
+        from chiplog.composition import r14_next_turn_publication
+
+        async def reject_successor_prepare(*_args, **_kwargs):
+            raise AssertionError("next-turn owner preparation must not run for OPEN obligation")
+
+        monkeypatch.setattr(
+            r14_next_turn_publication, "_exchange_next_turn", reject_successor_prepare
         )
-        retained = RetainedAcceptedOpenAccountingPublication(
-            request=accounting_request,
-            result=owner_result,
-            owner_call=owner_call,
-            owner_reply=owner_reply,
-            actor_budget_v1=actor_budget,
-        )
-        command = accepted_open_accounting_command(retained)
-        assert command.operation_kind == ACCEPTED_OPEN_ACCOUNTING_OPERATION
-        assert len(command.records) == 1
-        assert command.records[0].schema_id == ACCEPTED_OPEN_ACCOUNTING_SCHEMA
-        assert command.records[0].canonical_bytes == prepared.accounting.canonical_bytes()
+        with pytest.raises(LoopRejected, match="OUTCOME_UNKNOWN/OPEN"):
+            await runtime.start_next_execution_turn(sealed.run_id, sealed.head)
+        assert len(resources.require_original_provider().transfers) == 1
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        manifest=R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST,
+    ) as reopened:
+        assert reopened.read_selected_accepted_open_accounting() == selected_accounting
+        assert len(resources.require_original_provider().transfers) == 1
+    with sqlite3.connect(database) as connection:
+        record_id, canonical = connection.execute(
+            "SELECT r.record_id, r.canonical_bytes FROM publications AS p "
+            "JOIN records AS r ON r.tenant_id=p.tenant_id AND r.record_id=p.record_ids "
+            "WHERE p.operation_kind=?",
+            ("agent_loop.accepted-open-accounting.v1",),
+        ).fetchone()
+        damaged = canonical[:-1] + (b" " if canonical[-1:] != b" " else b"\n")
+        assert connection.execute(
+            "UPDATE records SET canonical_bytes=? WHERE record_id=?", (damaged, record_id)
+        ).rowcount == 1
+    with read_connection(database) as connection:
+        before = capture_authority_snapshot_commitment(connection, "hermetic-tenant")
+    recover_calls = []
+    original_recover = CommonCliExecutionRuntime._recover_exact
+
+    async def count_recover(self, *args, **kwargs):
+        recover_calls.append(args[0])
+        return await original_recover(self, *args, **kwargs)
+
+    monkeypatch.setattr(CommonCliExecutionRuntime, "_recover_exact", count_recover)
+    with pytest.raises((ValueError, RuntimeError)):
+        async with open_common_cli_execution_runtime(
+            database,
+            resources=resources,
+            manifest=R14_EXECUTION_ACCEPTED_OPEN_V28_PRODUCTION_MANIFEST,
+        ):
+            pytest.fail("corrupt accepted/open physical record reopened")
+    assert recover_calls == []
+    with read_connection(database) as connection:
+        assert capture_authority_snapshot_commitment(connection, "hermetic-tenant") == before
