@@ -175,6 +175,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
         ("agent_loop", "chiplog.execution.native-one-call-recovery-profile.v2"),
         ("agent_loop", "chiplog.execution.sealed-accounting.v1"),
         ("agent_loop", "chiplog.execution.continuation-ready.v1"),
+        ("agent_loop", "chiplog.loop.original-resolver-authority-policy.v1"),
         ("broker_ingress", "chiplog.ingress.admission-epoch.v2"),
         ("broker_ingress", "chiplog.ingress.admission-capacity.v1"),
         ("broker_ingress", "chiplog.ingress.authenticated-record.v2"),
@@ -631,12 +632,16 @@ class R14PlanningRuntime(R13PlanningRuntime):
             validate_selected_accepted_open_accounting(self)
             validate_selected_accepted_open_recovery(self)
             validate_selected_accepted_direct_terminal(self)
+            from chiplog.composition.r14_original_resolver_policy_publication import (
+                validate_policy_startup,
+            )
             from chiplog.composition.r14_recovery_profile_publication import (
                 validate_profile_startup,
             )
             from chiplog.composition.r14_recovery_publication import validate_recovery_startup
 
             validate_profile_startup(self)
+            validate_policy_startup(self)
             validate_recovery_startup(self)
             validate_selected_denials(self._owner_decisions().snapshot())
             validate_selected_ingress(self._owner_decisions().snapshot())

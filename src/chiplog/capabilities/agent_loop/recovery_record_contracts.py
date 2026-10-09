@@ -28,6 +28,7 @@ from .original_recovery_contracts import (
     LoopSemanticReductionRecord,
     OriginalObligationClosureRecord,
     OriginalResolutionBasis,
+    OriginalResolverAuthorityPolicyV1,
     OriginalResolverBatchRecord,
     RecoveredCallOutcomeRecord,
     ResolvedReductionAnchor,
@@ -117,6 +118,13 @@ RECOVERY_RECORD_ROWS = (
         "chiplog.execution.successor-edge.v1",
         ExecutionSuccessorEdge,
         None,
+    ),
+    RecoveryRecordRow(
+        AGENT_LOOP_OWNER,
+        "ORIGINAL_RESOLVER_AUTHORITY_POLICY",
+        "chiplog.loop.original-resolver-authority-policy.v1",
+        OriginalResolverAuthorityPolicyV1,
+        "policy_id",
     ),
     RecoveryRecordRow(
         AGENT_LOOP_OWNER,

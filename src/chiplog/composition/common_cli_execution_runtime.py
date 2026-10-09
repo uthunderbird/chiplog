@@ -942,6 +942,21 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await publish_native_recovery_profile(self, peer)
 
+    async def publish_original_resolver_authority_policy(self, peer: str = "hermetic-ingress"):
+        from chiplog.composition.r14_original_resolver_policy_publication import (
+            publish_original_resolver_authority_policy,
+        )
+
+        return await publish_original_resolver_authority_policy(self, peer)
+
+    def read_selected_original_resolver_authority_policy(self):
+        from chiplog.composition.r14_original_resolver_policy_publication import (
+            read_selected_original_resolver_authority_policy_held,
+        )
+
+        with self._authority_gate().hold():
+            return read_selected_original_resolver_authority_policy_held(self)
+
     async def publish_execution_accounting_readiness(self, peer: str = "hermetic-ingress"):
         from chiplog.composition.r14_recovery_publication import (
             publish_execution_accounting_readiness,

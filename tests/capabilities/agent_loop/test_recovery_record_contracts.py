@@ -11,6 +11,9 @@ from chiplog.capabilities.agent_loop.execution_recovery_observations import (
     RecoverySourceRecord,
     SealedAccountingRecord,
 )
+from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+    original_resolver_authority_policy_v1,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import Present, RecoveryDTO
 from chiplog.capabilities.agent_loop.recovery_record_contracts import (
     AGENT_LOOP_OWNER,
@@ -53,8 +56,8 @@ def accounting() -> SealedAccountingRecord:
     )
 
 
-def test_literal_closed_table_has_all_sixteen_exact_rows() -> None:
-    assert len(RECOVERY_RECORD_ROWS) == 16
+def test_literal_closed_table_has_all_seventeen_exact_rows() -> None:
+    assert len(RECOVERY_RECORD_ROWS) == 17
     assert {(row.owner, row.record_kind, row.schema_id) for row in RECOVERY_RECORD_ROWS} == {
         (AGENT_LOOP_OWNER, "SEALED_ACCOUNTING", "chiplog.execution.sealed-accounting.v1"),
         (AGENT_LOOP_OWNER, "CONTINUATION_READY", "chiplog.execution.continuation-ready.v1"),
@@ -62,6 +65,11 @@ def test_literal_closed_table_has_all_sixteen_exact_rows() -> None:
         (AGENT_LOOP_OWNER, "SUSPENSION_PAIR", "chiplog.execution.suspension-pair.v2"),
         (AGENT_LOOP_OWNER, "TERMINAL_MANIFEST", "chiplog.execution.terminal-manifest.v1"),
         (AGENT_LOOP_OWNER, "SUCCESSOR_EDGE", "chiplog.execution.successor-edge.v1"),
+        (
+            AGENT_LOOP_OWNER,
+            "ORIGINAL_RESOLVER_AUTHORITY_POLICY",
+            "chiplog.loop.original-resolver-authority-policy.v1",
+        ),
         (
             AGENT_LOOP_OWNER,
             "ORIGINAL_RESOLUTION_BASIS",
@@ -92,6 +100,17 @@ def test_decoder_binds_canonical_bytes_identity_and_dto_discriminant_separately(
     assert decoded.record == record
     assert decoded.member.canonical_record_bytes == record.canonical_bytes()
     assert decoded.member.fingerprint == hashlib.sha256(record.canonical_bytes()).hexdigest()
+
+
+def test_decoder_accepts_only_registered_original_resolver_policy_member() -> None:
+    policy = original_resolver_authority_policy_v1("tenant")
+    supplied = member(
+        "ORIGINAL_RESOLVER_AUTHORITY_POLICY",
+        "chiplog.loop.original-resolver-authority-policy.v1",
+        policy,
+        policy.policy_id,
+    )
+    assert decode_recovery_record_member(supplied).record == policy
 
 
 @pytest.mark.parametrize("field", ["owner", "record_kind", "schema_id", "record_id", "fingerprint"])
