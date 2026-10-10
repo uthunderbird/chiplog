@@ -166,3 +166,46 @@ def test_read_only_probe_preserves_mixed_and_permanent_outcomes_without_retry() 
         observed = verify_hermetic_receipt(ticket, receipt, registered_receipt_key=b"registered")
         assert (observed.occurred_members, observed.permanently_incapable_members) == expected
         assert len(leaf.transfers) == 1
+
+
+@pytest.mark.parametrize("late_scenario", ("COMPATIBLE", "RIVAL"))
+def test_late_receipt_is_a_durable_observation_of_the_original_send(
+    tmp_path, late_scenario: str
+) -> None:
+    ticket = _ticket()
+    transfer_path = tmp_path / "provider.transfers"
+    observation_path = tmp_path / "provider.observations"
+    options = {
+        "receipt_key": b"registered",
+        "scenarios": ("CONFIRM",),
+        "late_receipt_scenarios": ((late_scenario,),),
+        "journal_path": transfer_path,
+        "observation_journal_path": observation_path,
+    }
+    provider = HermeticEffectsProvider(**options)
+    first = asyncio.run(provider.emit_issued(ticket))
+    late = provider.observe_late_receipt(ticket.transmission_id)
+    initial_observation = verify_hermetic_receipt(
+        ticket, first, registered_receipt_key=b"registered"
+    )
+    late_observation = verify_hermetic_receipt(
+        ticket, late, registered_receipt_key=b"registered"
+    )
+
+    assert late_observation.sequence == initial_observation.sequence + 1
+    assert len(provider.transfers) == 1
+    assert transfer_path.read_bytes().count(b"\n") == 1
+    assert observation_path.read_bytes().count(b"\n") == 1
+    if late_scenario == "COMPATIBLE":
+        assert late_observation.occurred_members == initial_observation.occurred_members
+        assert late_observation.permanently_incapable_members == ()
+    else:
+        assert late_observation.occurred_members == ()
+        assert late_observation.permanently_incapable_members == ("effect",)
+
+    reopened = HermeticEffectsProvider(**options)
+    assert len(reopened.transfers) == 1
+    with pytest.raises(ValueError, match="exhausted"):
+        reopened.observe_late_receipt(ticket.transmission_id)
+    with pytest.raises(ValueError, match="original SEND"):
+        reopened.observe_late_receipt("unknown-transmission")

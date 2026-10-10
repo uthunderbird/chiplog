@@ -217,6 +217,9 @@ class HermeticDispatchResources:
             receipt_key=self._receipt_key,
             scenarios=scenarios,
             journal_path=None if custody_path is None else custody_path.with_suffix(".transfers"),
+            observation_journal_path=(
+                None if custody_path is None else custody_path.with_suffix(".observations")
+            ),
         )
         self._original_provider = self._provider
         self._grant_id = (

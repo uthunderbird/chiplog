@@ -214,50 +214,131 @@ class HermeticEffectsProvider:
         scenarios: tuple[
             Literal["CONFIRM", "PERMANENT_NO_EFFECT", "LOST_RESPONSE_AFTER_EFFECT", "MIXED"], ...
         ],
+        late_receipt_scenarios: tuple[tuple[Literal["COMPATIBLE", "RIVAL"], ...], ...] = (),
         maximum_payload_bytes: int = 65536,
         journal_path: Path | None = None,
+        observation_journal_path: Path | None = None,
     ) -> None:
         if not receipt_key or maximum_payload_bytes <= 0:
             raise ValueError("independent fixture receipt key and positive raw bound required")
         self._receipt_key = receipt_key
         self._scenarios = scenarios
+        if len(late_receipt_scenarios) > len(scenarios):
+            raise ValueError("late receipt scenarios must belong to a registered SEND scenario")
+        self._late_receipt_scenarios = late_receipt_scenarios
         self._maximum_payload_bytes = maximum_payload_bytes
         self._transfers: list[HermeticTransfer] = []
         self._journal_path = journal_path
+        self._observation_journal_path = observation_journal_path
+        self._late_receipts: list[tuple[str, bytes]] = []
         self._load_transfers()
 
     def _load_transfers(self) -> None:
         if self._journal_path is None:
+            rows = self._transfers
+        elif not self._journal_path.exists():
+            rows = []
+        else:
+            rows = []
+            for line in self._journal_path.read_bytes().splitlines():
+                value = json.loads(line)
+                body = value["ticket"]
+                body["payload"] = bytes.fromhex(body["payload"])
+                body["canonical_address"] = bytes.fromhex(body["canonical_address"])
+                body["bundle_members"] = tuple(body["bundle_members"])
+                ticket = IssuedEffectSendTicket(**body)
+                receipt = bytes.fromhex(value["receipt"])
+                observation = verify_hermetic_receipt(
+                    ticket, receipt, registered_receipt_key=self._receipt_key
+                )
+                if observation.sequence != len(rows) or any(
+                    row.ticket.transmission_id == ticket.transmission_id for row in rows
+                ):
+                    raise ValueError("durable provider receipt order or identity differs")
+                rows.append(
+                    HermeticTransfer(
+                        observation.sequence,
+                        ticket,
+                        observation.occurred_members,
+                        observation.permanently_incapable_members,
+                        receipt,
+                    )
+                )
+        self._transfers = rows
+        self._load_late_receipts()
+
+    def _load_late_receipts(self) -> None:
+        if self._observation_journal_path is None:
+            self._late_receipts = []
             return
-        if not self._journal_path.exists():
-            self._transfers = []
+        if not self._observation_journal_path.exists():
+            self._late_receipts = []
             return
-        rows: list[HermeticTransfer] = []
-        for line in self._journal_path.read_bytes().splitlines():
+        events: list[tuple[str, bytes]] = []
+        tickets = {row.ticket.transmission_id: row.ticket for row in self._transfers}
+        expected_sequence = {
+            row.ticket.transmission_id: row.sequence + 1 for row in self._transfers
+        }
+        for line in self._observation_journal_path.read_bytes().splitlines():
             value = json.loads(line)
-            body = value["ticket"]
-            body["payload"] = bytes.fromhex(body["payload"])
-            body["canonical_address"] = bytes.fromhex(body["canonical_address"])
-            body["bundle_members"] = tuple(body["bundle_members"])
-            ticket = IssuedEffectSendTicket(**body)
+            transmission_id = value["transmission_id"]
             receipt = bytes.fromhex(value["receipt"])
+            ticket = tickets.get(transmission_id)
+            if ticket is None:
+                raise ValueError("durable receipt event has no retained SEND ticket")
             observation = verify_hermetic_receipt(
                 ticket, receipt, registered_receipt_key=self._receipt_key
             )
-            if observation.sequence != len(rows) or any(
-                row.ticket.transmission_id == ticket.transmission_id for row in rows
-            ):
-                raise ValueError("durable provider receipt order or identity differs")
-            rows.append(
-                HermeticTransfer(
-                    observation.sequence,
-                    ticket,
-                    observation.occurred_members,
-                    observation.permanently_incapable_members,
-                    receipt,
-                )
+            if observation.sequence != expected_sequence[transmission_id]:
+                raise ValueError("durable receipt event order differs")
+            expected_sequence[transmission_id] += 1
+            events.append((transmission_id, receipt))
+        self._late_receipts = events
+
+    def _persist_late_receipt(self, transmission_id: str, receipt: bytes) -> None:
+        if self._observation_journal_path is None:
+            return
+        raw = (
+            json.dumps(
+                {"transmission_id": transmission_id, "receipt": receipt.hex()},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
+        descriptor = os.open(
+            self._observation_journal_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600
+        )
+        with os.fdopen(descriptor, "ab") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            self._load_transfers()
+            ticket = next(
+                (
+                    row.ticket
+                    for row in self._transfers
+                    if row.ticket.transmission_id == transmission_id
+                ),
+                None,
             )
-        self._transfers = rows
+            if ticket is None:
+                raise ValueError("late receipt requires a retained original SEND")
+            prior = sum(1 for key, _ in self._late_receipts if key == transmission_id)
+            observation = verify_hermetic_receipt(
+                ticket, receipt, registered_receipt_key=self._receipt_key
+            )
+            if observation.sequence != next(
+                row.sequence for row in self._transfers if row.ticket == ticket
+            ) + prior + 1:
+                raise ValueError("concurrent late receipt sequence differs")
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+            directory = os.open(self._observation_journal_path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            fcntl.flock(stream, fcntl.LOCK_UN)
 
     def _persist_transfer(self, transfer: HermeticTransfer) -> None:
         if self._journal_path is None:
@@ -338,6 +419,50 @@ class HermeticEffectsProvider:
         self._transfers.append(transfer)
         if scenario == "LOST_RESPONSE_AFTER_EFFECT":
             raise HermeticResponseLost("provider effect observed; response unavailable")
+        return receipt
+
+    def observe_late_receipt(self, transmission_id: str) -> bytes:
+        """Emit a preconfigured provider observation for an existing SEND, never a retry."""
+        self._load_transfers()
+        self._load_late_receipts()
+        transfer = next(
+            (row for row in self._transfers if row.ticket.transmission_id == transmission_id),
+            None,
+        )
+        if transfer is None:
+            raise ValueError("late receipt requires a retained original SEND")
+        transfer_index = transfer.sequence
+        if transfer_index >= len(self._late_receipt_scenarios):
+            raise ValueError("unregistered hermetic late receipt scenario")
+        prior = sum(1 for key, _ in self._late_receipts if key == transmission_id)
+        scenarios = self._late_receipt_scenarios[transfer_index]
+        if prior >= len(scenarios):
+            raise ValueError("hermetic late receipt scenario is exhausted")
+        initial = verify_hermetic_receipt(
+            transfer.ticket,
+            transfer.signed_receipt,
+            registered_receipt_key=self._receipt_key,
+        )
+        scenario = scenarios[prior]
+        if scenario == "COMPATIBLE":
+            occurred = initial.occurred_members
+            incapable = initial.permanently_incapable_members
+        else:
+            occurred = initial.permanently_incapable_members
+            incapable = initial.occurred_members
+        sequence = initial.sequence + prior + 1
+        observation = _observation(transfer.ticket, sequence, occurred, incapable)
+        raw = observation.canonical_bytes()
+        receipt = _ReceiptEnvelope(
+            schema_id="chiplog.hermetic-effects.receipt.v1",
+            observation_hex=raw.hex(),
+            signature=hmac.digest(self._receipt_key, _RECEIPT_DOMAIN + raw, "sha256").hex(),
+        ).canonical_bytes()
+        verify_hermetic_receipt(
+            transfer.ticket, receipt, registered_receipt_key=self._receipt_key
+        )
+        self._persist_late_receipt(transmission_id, receipt)
+        self._late_receipts.append((transmission_id, receipt))
         return receipt
 
     def reconcile(self, transmission_id: str) -> bytes | None:
