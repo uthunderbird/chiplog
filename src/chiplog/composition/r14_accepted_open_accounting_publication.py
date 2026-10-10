@@ -497,6 +497,7 @@ async def hold_if_accepted_open(runtime, peer: str) -> bool:
     current = _current_cut(runtime)
     if current is None:
         return False
+    facts, _ = current
     await publish_accepted_open_recovery(runtime, peer)
     from chiplog.composition.r14_original_call_resolution_publication import (
         read_selected_original_call_resolution_source_held,
@@ -509,7 +510,21 @@ async def hold_if_accepted_open(runtime, peer: str) -> bool:
     reduction = runtime.read_selected_loop_semantic_reduction()
     if reduction is None:
         return True
-    return not _reduction_matches_resolution(resolution, reduction)
+    return not (
+        _reduction_matches_resolution(resolution, reduction)
+        and _reduction_matches_current_evidence(
+            reduction, facts.complete_ordered_evidence_sources
+        )
+    )
+
+
+def _reduction_matches_current_evidence(reduction, evidence_sources) -> bool:
+    """A consumable reduction must cover the complete current authenticated R16 cut."""
+    try:
+        current = tuple(source.physical_record for source in evidence_sources)
+    except (AttributeError, TypeError):
+        return False
+    return bool(current) and reduction.record.complete_ordered_evidence == current
 
 
 def _reduction_matches_resolution(resolution, reduction) -> bool:

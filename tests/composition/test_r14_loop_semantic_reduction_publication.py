@@ -26,6 +26,7 @@ from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
 )
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 from chiplog.composition.r14_accepted_open_accounting_publication import (
+    _reduction_matches_current_evidence,
     _reduction_matches_resolution,
 )
 from chiplog.composition.r14_loop_semantic_reduction_publication import (
@@ -173,6 +174,26 @@ def test_turn_consumer_requires_exact_current_consumable_reduction() -> None:
     )
     stale = reduction.record.model_copy(update={"anchor": stale_anchor})
     assert not _reduction_matches_resolution(resolution, SimpleNamespace(record=stale))
+
+
+def test_turn_consumer_holds_when_authenticated_evidence_is_newer_than_reduction() -> None:
+    prepared = prepare_loop_semantic_reduction(request())
+    assert isinstance(prepared, PreparedLoopSemanticReduction)
+    reduction = SimpleNamespace(record=prepared.record)
+    sources = request().complete_ordered_evidence
+
+    assert _reduction_matches_current_evidence(reduction, sources)
+    late_source = sources[-1].model_copy(
+        update={
+            "physical_record": sources[-1].physical_record.model_copy(
+                update={"subject_id": "late-rival"}
+            )
+        }
+    )
+    assert not _reduction_matches_current_evidence(
+        reduction, (*sources, late_source)
+    )
+    assert not _reduction_matches_current_evidence(reduction, ())
 
 
 def test_historical_witness_must_be_latest_selected_outcome_at_its_cut() -> None:
