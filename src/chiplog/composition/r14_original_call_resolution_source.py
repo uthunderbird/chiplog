@@ -521,6 +521,7 @@ def capture_original_call_resolution_request(
     *,
     allow_selected_resolution: bool = False,
     expected_cut=None,
+    accepted_closed: R14NativeAcceptedOpenOutcome | None = None,
 ) -> PrepareOriginalCallResolution:
     """Capture revalidated R14 sources and the complete selected closed R16 cut.
 
@@ -576,27 +577,29 @@ def capture_original_call_resolution_request(
         reducer_policy, reducer_source = reducer
         authenticated_invocation, invocation_source = invocation
 
-        history = read_execution_recovery_history(runtime, selected_only=True)
-        snapshot, _, _, executions, _, _ = history
-        if len(executions) != 1 or not snapshot.records:
-            raise LoopRejected("original resolution requires one selected native execution")
-        seal = executions[0].proposal.fan_out.response_seal
-        seal_digest = seal.digest()
-        seal_ref = CallSubjectHead(
-            subject_id=seal.response_seal_id,
-            revision=Present(head="record:" + seal_digest, fingerprint=seal_digest),
-        )
-        projection = R14OriginalNativePrepareSource(runtime).collect(seal_ref)
-        if projection is None:
-            raise LoopRejected("original resolution native Prepare source unavailable")
-        accounting = R14NativeSelectedAccountingSource(
-            runtime, projection, bind_native_execution_preparation_v2(projection)
-        )
-        closed = accounting.collect_one_accepted_closed_outcome(
-            execution_run_head(snapshot.records[-1]),
-            selected_only=True,
-            allow_authenticated_later_suffix=selected_suffix is not None,
-        )
+        closed = accepted_closed
+        if closed is None:
+            history = read_execution_recovery_history(runtime, selected_only=True)
+            snapshot, _, _, executions, _, _ = history
+            if len(executions) != 1 or not snapshot.records:
+                raise LoopRejected("original resolution requires one selected native execution")
+            seal = executions[0].proposal.fan_out.response_seal
+            seal_digest = seal.digest()
+            seal_ref = CallSubjectHead(
+                subject_id=seal.response_seal_id,
+                revision=Present(head="record:" + seal_digest, fingerprint=seal_digest),
+            )
+            projection = R14OriginalNativePrepareSource(runtime).collect(seal_ref)
+            if projection is None:
+                raise LoopRejected("original resolution native Prepare source unavailable")
+            accounting = R14NativeSelectedAccountingSource(
+                runtime, projection, bind_native_execution_preparation_v2(projection)
+            )
+            closed = accounting.collect_one_accepted_closed_outcome(
+                execution_run_head(snapshot.records[-1]),
+                selected_only=True,
+                allow_authenticated_later_suffix=selected_suffix is not None,
+            )
         if closed is None:
             raise LoopRejected("exact selected closed R16 outcome unavailable; HOLD")
 

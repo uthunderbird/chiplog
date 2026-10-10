@@ -14,9 +14,11 @@ from dataclasses import dataclass
 from pydantic import TypeAdapter
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+from chiplog.composition.r14_acceptance_v2_contracts import RetainedAcceptancePreparationV2
 from chiplog.composition.r14_execution_cancellation_contracts import (
     RetainedExecutionCancellationPreparation,
 )
@@ -33,7 +35,16 @@ from chiplog.composition.r14_native_execution_record_source import (
     R14NativeExecutionRecordSourceMember,
     _fingerprint,
 )
-from chiplog.composition.r14_native_selected_accounting_source import R14NativeOneCallCancelledFacts
+from chiplog.composition.r14_native_preparation_bindings import (
+    bind_native_execution_preparation_v2,
+)
+from chiplog.composition.r14_native_selected_accounting_source import (
+    R14NativeAcceptedOpenOutcome,
+    R14NativeOneCallAcceptedFacts,
+    R14NativeOneCallCancelledFacts,
+    R14NativeSelectedAccountingSource,
+)
+from chiplog.composition.r14_original_prepare_source import R14OriginalNativePrepareSource
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.workspace_snapshot import join_workspace_snapshot, read_connection
 
@@ -46,12 +57,14 @@ class R14NativeRecoverySourceSubset:
     database_identity: tuple[str, int, int]
     tenant_commit_sequence: int
     materialization_commitment: str
-    selected_accounting: NativeOneCallCancelledAccountingRecord
-    selected_facts: R14NativeOneCallCancelledFacts
+    selected_accounting: NativeOneCallCancelledAccountingRecord | None
+    selected_facts: R14NativeOneCallCancelledFacts | R14NativeOneCallAcceptedFacts
     execution_sources: tuple[RecoverySourceRecord, ...]
     authenticated_execution_snapshot: ExecutionHistorySnapshot | None = None
     authenticated_seals: tuple[RetainedExecutionFanOutPreparation, ...] = ()
     authenticated_cancellations: tuple[RetainedExecutionCancellationPreparation, ...] = ()
+    authenticated_acceptances: tuple[RetainedAcceptancePreparationV2, ...] = ()
+    accepted_closed_outcome: R14NativeAcceptedOpenOutcome | None = None
 
 
 def _source(
@@ -93,10 +106,25 @@ class R14NativeRecoverySourceSubsetReader:
                 before = runtime._commitment_journal.load(runtime._tenant_id)
                 # This selected-history reader validates the retained V24 source
                 # against every selected decision and physical execution row.
-                execution_snapshot, _, legacy, seals, cancellations, acceptances = (
-                    read_execution_recovery_history(runtime)
+                execution_snapshot, call_inventory, legacy, seals, cancellations, acceptances = (
+                    read_execution_recovery_history(
+                        runtime, selected_only=True, exact_historical_sources=True
+                    )
                 )
-                if legacy or len(seals) != 1 or len(cancellations) != 1 or acceptances:
+                if legacy or len(seals) != 1:
+                    return None
+                if acceptances:
+                    return self._collect_accepted(
+                        runtime,
+                        identity,
+                        before,
+                        execution_snapshot,
+                        call_inventory,
+                        seals,
+                        cancellations,
+                        acceptances,
+                    )
+                if len(cancellations) != 1:
                     return None
                 selected = []
                 for _, _, raw in runtime._loop_decisions().entries():
@@ -180,6 +208,105 @@ class R14NativeRecoverySourceSubsetReader:
                 )
         except OSError, RuntimeError, TypeError, ValueError:
             return None
+
+    @staticmethod
+    def _collect_accepted(
+        runtime,
+        identity,
+        before,
+        execution_snapshot,
+        call_inventory,
+        seals,
+        cancellations,
+        acceptances,
+    ) -> R14NativeRecoverySourceSubset | None:
+        if (
+            cancellations
+            or len(acceptances) != 1
+            or not execution_snapshot.records
+            or not isinstance(execution_snapshot.records[-1], ExecutionRunRecord)
+        ):
+            return None
+        seal = seals[0].proposal.fan_out.response_seal
+        seal_ref = CallSubjectHead(
+            subject_id=seal.response_seal_id,
+            revision=Present(head="record:" + seal.digest(), fingerprint=seal.digest()),
+        )
+        projection = R14OriginalNativePrepareSource(runtime).collect(seal_ref)
+        if projection is None:
+            return None
+        source = R14NativeSelectedAccountingSource(
+            runtime, projection, bind_native_execution_preparation_v2(projection)
+        )
+        run = execution_snapshot.records[-1]
+        run_ref = CallSubjectHead(
+            subject_id=run.run_id,
+            revision=Present(head=run.head, fingerprint=run.digest()),
+        )
+        history = (
+            execution_snapshot,
+            call_inventory,
+            (),
+            seals,
+            cancellations,
+            acceptances,
+        )
+        selected = source._collect_held(
+            run_ref,
+            identity,
+            selected_only=True,
+            authenticated_history=history,
+            authenticated_projection=True,
+        )
+        accepted = source._accepted_facts(selected)
+        if accepted is None:
+            return None
+        from chiplog.composition import r14_original_call_resolution_publication
+
+        allow_resolution_suffix = bool(
+            r14_original_call_resolution_publication._selected_entries(runtime)
+        )
+        closed = source.collect_one_accepted_closed_outcome(
+            run_ref,
+            selected_only=True,
+            allow_authenticated_later_suffix=allow_resolution_suffix,
+            _accepted_facts=accepted,
+        )
+        if (
+            closed is None
+            or closed.accepted.source.target_run_lineage[-1] != run_ref
+            or closed.accepted.acceptance != acceptances[0]
+            or closed.database_identity != identity
+            or closed.tenant_id != runtime._tenant_id
+            or closed.materialization_commitment != before
+        ):
+            return None
+        with read_connection(runtime._database) as connection:
+            commitment = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+            row = connection.execute(
+                "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+            ).fetchone()
+        if (
+            row is None
+            or commitment != before
+            or runtime._commitment_journal.load(runtime._tenant_id) != before
+            or runtime._database_identity != identity
+        ):
+            return None
+        return R14NativeRecoverySourceSubset(
+            tenant_id=runtime._tenant_id,
+            database_identity=identity,
+            tenant_commit_sequence=int(row[0]),
+            materialization_commitment=commitment,
+            selected_accounting=None,
+            selected_facts=closed.accepted,
+            execution_sources=(),
+            authenticated_execution_snapshot=execution_snapshot,
+            authenticated_seals=seals,
+            authenticated_cancellations=(),
+            authenticated_acceptances=acceptances,
+            accepted_closed_outcome=closed,
+        )
 
 
 __all__ = ["R14NativeRecoverySourceSubset", "R14NativeRecoverySourceSubsetReader"]

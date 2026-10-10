@@ -43,7 +43,7 @@ from chiplog.platform.owner_decision_journal import (
     IndependentOwnerDecisionJournal,
     OwnerJournalSnapshot,
 )
-from chiplog.platform.workspace_snapshot import workspace_snapshot
+from chiplog.platform.workspace_snapshot import join_workspace_snapshot
 
 
 def _canonical(value: object) -> bytes:
@@ -485,7 +485,7 @@ def _read_materialized_effects_with_history(
         ):
             raise ValueError("pending selected owner decision requires recovery")
         committed = runtime._commitment_journal.load(tenant)
-        with workspace_snapshot(runtime._database) as physical:
+        with join_workspace_snapshot(runtime._database) as physical:
             connection = physical.connection
             commitment = capture_authority_snapshot_commitment(connection, tenant)
             suffix_authenticated = (

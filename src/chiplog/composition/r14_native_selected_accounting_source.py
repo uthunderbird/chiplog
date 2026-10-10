@@ -425,6 +425,13 @@ class R14NativeSelectedAccountingSource:
     ) -> R14NativeOneCallAcceptedFacts | None:
         """Hold unless selected history proves one accepted self-effect call."""
         facts = self.collect(target_run, selected_only=selected_only)
+        return self._accepted_facts(facts)
+
+    @staticmethod
+    def _accepted_facts(
+        facts: R14NativeSelectedAccountingSourceFacts | None,
+    ) -> R14NativeOneCallAcceptedFacts | None:
+        """Project already-authenticated selected history to one exact acceptance."""
         if facts is None or facts.target_legacy_seals or facts.target_cancellations:
             return None
         if len(facts.selected_native_seals) != 1 or len(facts.target_acceptances) != 1:
@@ -503,6 +510,7 @@ class R14NativeSelectedAccountingSource:
         expected_outcome_record_id: str | None = None,
         expected_selected_decision: CallSubjectHead | None = None,
         allow_authenticated_later_suffix: bool = False,
+        _accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Read a closed current outcome while retaining its original OPEN cause.
 
@@ -516,6 +524,7 @@ class R14NativeSelectedAccountingSource:
             expected_selected_decision=expected_selected_decision,
             current_obligation_state="CLOSED",
             allow_authenticated_later_suffix=allow_authenticated_later_suffix,
+            accepted_facts=_accepted_facts,
         )
 
     def _collect_one_accepted_outcome(
@@ -528,6 +537,7 @@ class R14NativeSelectedAccountingSource:
         expected_tenant_commit_sequence: int | None = None,
         current_obligation_state: Literal["OPEN", "CLOSED"],
         allow_authenticated_later_suffix: bool = False,
+        accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join one accepted call's retained OPEN cause to its current outcome.
 
@@ -564,7 +574,9 @@ class R14NativeSelectedAccountingSource:
                 # Collect under the authority gate so this exact selected source
                 # remains fixed through the R16 history read below. Recollecting
                 # it under the same gate added a second complete R14 replay.
-                accepted = self.collect_one_accepted(target_run, selected_only=selected_only)
+                accepted = accepted_facts or self.collect_one_accepted(
+                    target_run, selected_only=selected_only
+                )
                 if accepted is None:
                     return None
                 branch = accepted.source.target_inventory_rows[0].acceptance
@@ -785,11 +797,17 @@ class R14NativeSelectedAccountingSource:
         database_identity: tuple[str, int, int],
         *,
         selected_only: bool = False,
+        authenticated_history=None,
+        authenticated_projection: bool = False,
     ) -> R14NativeSelectedAccountingSourceFacts | None:
         # Both values are public DTOs.  Reopen their only authenticated source
         # before using a single field from either supplied instance.
-        reopened = R14OriginalNativePrepareSource(self._runtime).collect(
-            self._original_prepare.selected_response_seal
+        reopened = (
+            self._original_prepare
+            if authenticated_projection
+            else R14OriginalNativePrepareSource(self._runtime).collect(
+                self._original_prepare.selected_response_seal
+            )
         )
         if reopened is None or reopened != self._original_prepare:
             return None
@@ -816,9 +834,15 @@ class R14NativeSelectedAccountingSource:
             or decoded.policy_bytes != reopened.policy_bytes
         ):
             return None
-        snapshot, inventory, legacy, seals, cancellations, acceptances = (
-            read_execution_recovery_history(self._runtime, selected_only=selected_only)
-        )
+        if authenticated_history is None:
+            history = read_execution_recovery_history(
+                self._runtime, selected_only=selected_only
+            )
+        else:
+            if not selected_only:
+                return None
+            history = authenticated_history
+        snapshot, inventory, legacy, seals, cancellations, acceptances = history
         lineage = self._lineage(
             snapshot.records, reopened.prepared_run, reopened.prepared_run_bytes
         )
