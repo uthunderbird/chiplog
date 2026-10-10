@@ -124,7 +124,14 @@ def _connection(connection):
 
 
 def _setup(
-    monkeypatch, loop_steps, *, owner_steps=(), head=None, omit_record=None, extra_publication=None
+    monkeypatch,
+    loop_steps,
+    *,
+    owner_steps=(),
+    head=None,
+    anchor=None,
+    omit_record=None,
+    extra_publication=None,
 ):
     resolution_op = "agent_loop.original-call-resolution.v1"
     resolution_command = _Command(
@@ -161,7 +168,8 @@ def _setup(
             ]
         )
     )
-    runtime._commitment_journal = SimpleNamespace(load=lambda _tenant: f"commit-{current_head}")
+    anchor_head = current_head if anchor is None else anchor
+    runtime._commitment_journal = SimpleNamespace(load=lambda _tenant: f"commit-{anchor_head}")
     connection = sqlite3.connect(":memory:")
     connection.executescript(
         "CREATE TABLE tenant_heads (tenant_id TEXT, head INTEGER);"
@@ -254,9 +262,12 @@ def _setup(
     return runtime, connection, current_head
 
 
-def _run(runtime, connection, head, target="commit-1"):
+def _run(runtime, connection, head, target="commit-1", anchor=None):
     return suffix.authenticate_selected_r14_suffix_held(
-        runtime, f"commit-{head}", f"commit-{head}", target_commitment=target
+        runtime,
+        f"commit-{head}",
+        f"commit-{head if anchor is None else anchor}",
+        target_commitment=target,
     )
 
 
@@ -275,15 +286,40 @@ def test_exact_mixed_owner_loop_suffix_is_reversed_by_tenant_sequence(
     assert _run(runtime, connection, head)
 
 
+def test_one_unanchored_final_publication_is_authenticated_as_exact_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop("agent_loop.loop-semantic-reduction.v1", 2, "commit-1", "commit-2")
+    owner = _owner(3, "commit-2", "commit-3")
+    runtime, connection, head = _setup(
+        monkeypatch, [loop], owner_steps=[owner], anchor=2
+    )
+
+    assert _run(runtime, connection, head, anchor=2)
+    assert not _run(runtime, connection, head, anchor=1)
+
+
 def test_decision_collection_order_does_not_replace_persisted_sequence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first = _loop("agent_loop.original-resolver-invocation.v1", 2, "commit-1", "commit-2")
     second = _loop("agent_loop.loop-semantic-reduction.v1", 3, "commit-2", "commit-3")
-    runtime, connection, head = _setup(monkeypatch, [second, first])
+    accounting = _loop(
+        "agent_loop.execution-accounting-readiness.v1", 4, "commit-3", "commit-4"
+    )
+    next_turn = _loop("agent_loop.execution-next-turn.v1", 5, "commit-4", "commit-5")
+    runtime, connection, head = _setup(monkeypatch, [next_turn, second, accounting, first])
+    from chiplog.composition import r14_next_turn_records as next_turn_records
     from chiplog.composition import r14_original_resolver_invocation_publication as invocation
+    from chiplog.composition import r14_recovery_publication as recovery
 
-    monkeypatch.setattr(invocation, "validate_selected", lambda *_args: object())
+    monkeypatch.setattr(
+        invocation, "validate_selected_for_historical_suffix", lambda *_args: object()
+    )
+    monkeypatch.setattr(recovery, "validate_selected", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        next_turn_records, "validate_selected_next_turn", lambda *_args: object()
+    )
     assert _run(runtime, connection, head)
 
 

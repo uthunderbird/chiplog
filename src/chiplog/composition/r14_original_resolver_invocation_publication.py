@@ -140,12 +140,11 @@ def _validate_invocation_actor_fields(receipt, invocation) -> None:
         raise ValueError("resolver invocation trust reference differs from retained actor receipt")
 
 
-def _current_sources(runtime):
+def _selected_policy_source_records(runtime):
     from chiplog.composition import r14_original_resolver_policy_publication
 
-    opened = read_selected_original_obligation_sources(runtime, historical=True)
     selected = r14_original_resolver_policy_publication._selected_entries(runtime)
-    if opened is None or not selected:
+    if not selected:
         return None
     decision_id, decision_bytes, entry, batch = selected[0]
     evidence = validate_policy_selected(runtime, entry, batch)
@@ -190,7 +189,94 @@ def _current_sources(runtime):
                 ),
             )
         )
+    return tuple(policy_sources)
+
+
+def _selected_open_sources_for_historical_suffix(runtime):
+    from chiplog.composition.r14_accepted_open_accounting_records import (
+        ACCEPTED_OPEN_RECOVERY_OPERATION,
+        RetainedAcceptedOpenRecoveryPublication,
+        accepted_open_recovery_command,
+        retained_accepted_open_recovery,
+    )
+    from chiplog.composition.r14_original_obligation_sources import (
+        accepted_open_recovery_sources,
+    )
+
+    matches = []
+    for decision_id, _, raw in runtime._loop_decisions().entries():
+        entry = json.loads(raw)
+        if (
+            entry.get("kind") == "DECIDED"
+            and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
+        ):
+            matches.append((decision_id, raw, entry))
+    if len(matches) != 1:
+        return None
+    decision_id, raw, entry = matches[0]
+    evidence = RetainedAcceptedOpenRecoveryPublication.model_validate_json(
+        retained_accepted_open_recovery(entry).canonical_bytes()
+    )
+    batch = accepted_open_recovery_command(evidence)
+    if (
+        runtime._publication(entry) != batch
+        or entry.get("operation_id") != batch.idempotency_key
+        or entry.get("expected_head") != batch.expected_head
+        or entry.get("fingerprint") != batch.request_fingerprint
+        or decision_id != batch.idempotency_key
+    ):
+        raise ValueError("selected accepted/open sources differ from exact publication")
+    state, _, _ = runtime._selected_physical_state(batch)
+    if state != "COMPLETE":
+        raise ValueError("selected accepted/open sources are not physically complete")
+    selected_bytes = raw.encode() if isinstance(raw, str) else raw
+    return accepted_open_recovery_sources(
+        evidence,
+        selected_decision_id=decision_id,
+        selected_decision_bytes=selected_bytes,
+    )
+
+
+def _current_sources(runtime):
+    opened = read_selected_original_obligation_sources(runtime, historical=True)
+    policy_sources = _selected_policy_source_records(runtime)
+    if opened is None or policy_sources is None:
+        return None
     return (*opened, *policy_sources)
+
+
+def validate_selected_for_historical_suffix(runtime, entry, batch):
+    """Validate invocation evidence against leaf selected sources without reentering history."""
+    raw = entry.get(EVIDENCE_FIELD)
+    if not isinstance(raw, str):
+        raise ValueError("selected original resolver invocation evidence missing")
+    evidence = RetainedOriginalResolverInvocationPublication.model_validate_json(raw)
+    invocation = evidence.prepared.invocation
+    opening_sources = _selected_open_sources_for_historical_suffix(runtime)
+    policy_sources = _selected_policy_source_records(runtime)
+    if opening_sources is None or policy_sources is None:
+        raise ValueError("selected invocation historical sources are absent")
+    sources = (*opening_sources, *policy_sources)
+    if (
+        evidence.canonical_bytes().decode() != raw
+        or evidence.tenant_id != runtime._tenant_id
+        or evidence.database_id != runtime._database_identity[0]
+        or evidence.predecessor != entry.get("predecessor")
+        or command(evidence) != batch
+        or entry.get("operation_kind") != OPERATION
+        or entry.get("operation_id") != batch.idempotency_key
+        or invocation.tenant_id != runtime._tenant_id
+        or (
+            invocation.accepted_opening_source,
+            invocation.accepted_terminal_source,
+            invocation.resolver_policy_source,
+            invocation.reducer_policy_source,
+        )
+        != sources
+    ):
+        raise ValueError("selected invocation differs from exact historical sources")
+    _validate_invocation_actor(runtime, evidence)
+    return evidence
 
 
 def _selected_entries(runtime):
@@ -299,10 +385,10 @@ def read_selected_original_resolver_invocation_source_held(runtime, *, historica
     historical_suffix = False
     if historical and actual != anchored:
         from chiplog.composition.r14_historical_suffix import (
-            authenticate_selected_r14_suffix_held,
+            authenticate_selected_r14_source_cut_held,
         )
 
-        historical_suffix = authenticate_selected_r14_suffix_held(
+        historical_suffix = authenticate_selected_r14_source_cut_held(
             runtime, actual, anchored, target_commitment=str(entry.get("resulting"))
         )
     if (

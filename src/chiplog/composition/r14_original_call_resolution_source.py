@@ -148,9 +148,9 @@ def _authenticate_append_evidence_suffix(
 ) -> None:
     """Authenticate every selected publication between an R14 cut and its successor.
 
-    Only same-intent R16 APPEND_EVIDENCE publications may advance this interval.
-    Owner and loop journals are separate, so both are stitched against the complete
-    physical publication sequence while the canonical authority gate is held.
+    Same-intent R16 APPEND_EVIDENCE plus the registered R14 accounting/readiness
+    and next-Turn publications may advance this interval. Owner and loop journals
+    are stitched against the complete physical sequence under the authority gate.
     """
     from chiplog.capabilities.effects.dispatch_outcome_contracts import (
         DispatchOutcomeRecordV2,
@@ -183,14 +183,21 @@ def _authenticate_append_evidence_suffix(
     loop_journal = runtime._loop_decisions()
     loop_before = loop_entries if loop_entries is not None else loop_journal.entries()
 
-    steps: dict[int, tuple[object, str, str, str]] = {}
+    steps: dict[int, tuple[object, str, str, str, dict[str, object] | None]] = {}
 
-    def add_step(sequence: int, batch, predecessor: str, resulting: str, family: str) -> None:
+    def add_step(
+        sequence: int,
+        batch,
+        predecessor: str,
+        resulting: str,
+        family: str,
+        entry: dict[str, object] | None = None,
+    ) -> None:
         if sequence in steps:
             raise LoopRejected("R14 evidence interval has competing selected publications")
         if batch.expected_head + 1 != sequence or batch.tenant_id != runtime._tenant_id:
             raise LoopRejected("R14 evidence interval selected header differs from its sequence")
-        steps[sequence] = (batch, predecessor, resulting, family)
+        steps[sequence] = (batch, predecessor, resulting, family, entry)
 
     for decision in owner_before.decisions:
         sequence = decision.tenant_commit_sequence
@@ -225,6 +232,7 @@ def _authenticate_append_evidence_suffix(
                 str(entry.get("predecessor")),
                 str(entry.get("resulting")),
                 "loop",
+                entry,
             )
 
     _verify_selected_commitment_chain(
@@ -294,7 +302,7 @@ def _authenticate_append_evidence_suffix(
 
         for publication in publications:
             sequence = publication[3]
-            batch, _, _, family = steps[sequence]
+            batch, _, _, family, entry = steps[sequence]
             if publication != (
                 batch.operation_kind,
                 batch.idempotency_key,
@@ -316,6 +324,24 @@ def _authenticate_append_evidence_suffix(
             )
             if physical != expected_physical:
                 raise LoopRejected("R14 evidence interval physical records differ")
+            if family == "loop":
+                if entry is None:
+                    raise LoopRejected("R14 evidence interval loop evidence is absent")
+                if batch.operation_kind == "agent_loop.execution-accounting-readiness.v1":
+                    from chiplog.composition.r14_recovery_publication import validate_selected
+
+                    validate_selected(
+                        runtime, entry, batch, through_sequence=batch.expected_head
+                    )
+                    continue
+                if batch.operation_kind == "agent_loop.execution-next-turn.v1":
+                    from chiplog.composition.r14_next_turn_records import (
+                        validate_selected_next_turn,
+                    )
+
+                    validate_selected_next_turn(runtime, entry, batch)
+                    continue
+                raise LoopRejected("R14 evidence interval contains an unregistered R14 record")
             if family != "owner" or len(batch.records) != 1:
                 raise LoopRejected("R14 evidence interval contains a non-R16 publication")
             physical_record = batch.records[0]

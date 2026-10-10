@@ -283,10 +283,10 @@ def read_selected_original_resolver_authority_policy_source_held(runtime, *, his
     historical_suffix = False
     if historical and actual != anchored:
         from chiplog.composition.r14_historical_suffix import (
-            authenticate_selected_r14_suffix_held,
+            authenticate_selected_r14_source_cut_held,
         )
 
-        historical_suffix = authenticate_selected_r14_suffix_held(
+        historical_suffix = authenticate_selected_r14_source_cut_held(
             runtime, actual, anchored, target_commitment=str(entry.get("resulting"))
         )
     if (

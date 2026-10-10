@@ -1,5 +1,6 @@
 """Mounted R14 resolver selects the exact closed R16 result and reopens it."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ from chiplog.composition.r14_call_acceptance_port import (
 )
 from chiplog.composition.r14_call_preview import execution_run_head
 from chiplog.composition.r14_loop_history import read_execution_call_history
+from chiplog.composition.r14_next_turn_records import NEXT_TURN_PUBLICATION
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._owner_publication_contracts import JournalSelectedPublication
 from tests.support.h1_cli_execution import admit_runtime_slot
@@ -197,6 +199,21 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         )
         with pytest.raises(LoopRejected, match="HOLD"):
             await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
+        assert not any(
+            json.loads(raw).get("operation_kind") == NEXT_TURN_PUBLICATION
+            for _, _, raw in reopened._loop_decisions().entries()
+        )
+
+        await reopened.publish_execution_accounting_readiness()
+        next_run = await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
+        assert next_run.event == "TurnStarted"
+        assert tuple(turn.ordinal for turn in next_run.turns) == (1, 2)
+        assert next_run.turns[-1].state == "PREPARING"
+        assert await reopened.start_next_execution_turn(sealed.run_id, sealed.head) == next_run
+        assert sum(
+            json.loads(raw).get("operation_kind") == NEXT_TURN_PUBLICATION
+            for _, _, raw in reopened._loop_decisions().entries()
+        ) == 1
 
         provider = resources.require_original_provider()
         rival_receipt = provider.observe_late_receipt(
@@ -214,4 +231,10 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert isinstance(held_reduction.record.disposition, HeldReduction)
         assert held_reduction.record.reduction_id == refined_reduction.record.reduction_id
         assert await hold_if_accepted_open(reopened, "hermetic-ingress")
+        with pytest.raises(LoopRejected, match="HOLD"):
+            await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
+        assert sum(
+            json.loads(raw).get("operation_kind") == NEXT_TURN_PUBLICATION
+            for _, _, raw in reopened._loop_decisions().entries()
+        ) == 1
         assert len(provider.transfers) == 1

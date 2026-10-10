@@ -16,6 +16,8 @@ _SUFFIX_OPERATIONS = frozenset(
         "agent_loop.original-resolver-invocation.v1",
         "agent_loop.original-call-resolution.v1",
         "agent_loop.loop-semantic-reduction.v1",
+        "agent_loop.execution-accounting-readiness.v1",
+        "agent_loop.execution-next-turn.v1",
     }
 )
 _APPEND_EVIDENCE = "effects.record_evidence"
@@ -30,7 +32,7 @@ def _validate_loop_entry(runtime, entry, command) -> None:
     elif operation == "agent_loop.original-resolver-invocation.v1":
         from chiplog.composition import r14_original_resolver_invocation_publication as inv
 
-        inv.validate_selected(runtime, entry, command)
+        inv.validate_selected_for_historical_suffix(runtime, entry, command)
     elif operation == "agent_loop.original-call-resolution.v1":
         from chiplog.composition import r14_original_call_resolution_publication as resolution
 
@@ -39,6 +41,14 @@ def _validate_loop_entry(runtime, entry, command) -> None:
         from chiplog.composition import r14_loop_semantic_reduction_publication as reduction
 
         reduction.validate_selected_command(runtime, entry, command)
+    elif operation == "agent_loop.execution-accounting-readiness.v1":
+        from chiplog.composition.r14_recovery_publication import validate_selected
+
+        validate_selected(runtime, entry, command, through_sequence=command.expected_head)
+    elif operation == "agent_loop.execution-next-turn.v1":
+        from chiplog.composition.r14_next_turn_records import validate_selected_next_turn
+
+        validate_selected_next_turn(runtime, entry, command)
     else:
         raise ValueError("suffix contains an unregistered loop operation")
 
@@ -50,7 +60,7 @@ def authenticate_selected_r14_suffix_held(
     runtime._authority_gate().require_held()
     try:
         runtime._check_database_identity()
-        if actual != anchored or runtime._pending_owners() or runtime._pending_gate_publications():
+        if runtime._pending_owners() or runtime._pending_gate_publications():
             return False
 
         from chiplog.composition import r14_original_call_resolution_publication as resolution
@@ -149,7 +159,7 @@ def authenticate_selected_r14_suffix_held(
             )
 
         with read_connection(runtime._database) as source:
-            if capture_authority_snapshot_commitment(source, runtime._tenant_id) != anchored:
+            if capture_authority_snapshot_commitment(source, runtime._tenant_id) != actual:
                 return False
             head_row = source.execute(
                 "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
@@ -183,7 +193,8 @@ def authenticate_selected_r14_suffix_held(
 
             with closing(sqlite3.connect(":memory:")) as historical:
                 source.backup(historical)
-                current_commitment = anchored
+                current_commitment = actual
+                latest_predecessor = None
                 for sequence in reversed(expected_sequences):
                     entry, command, predecessor, resulting = steps[sequence]
                     publication = publications[sequence - target_sequence - 1]
@@ -245,12 +256,33 @@ def authenticate_selected_r14_suffix_held(
                         return False
                     historical.commit()
                     current_commitment = predecessor
+                    if sequence == expected_sequences[-1]:
+                        latest_predecessor = predecessor
 
             runtime._check_database_identity()
             return (
                 current_commitment == target_commitment
-                and capture_authority_snapshot_commitment(source, runtime._tenant_id) == anchored
+                and capture_authority_snapshot_commitment(source, runtime._tenant_id) == actual
                 and runtime._commitment_journal.load(runtime._tenant_id) == anchored
+                and anchored in (actual, latest_predecessor)
             )
     except ValueError, TypeError, RuntimeError, OSError, sqlite3.Error:
         return False
+
+
+def authenticate_selected_r14_source_cut_held(
+    runtime, actual: str, anchored: str, *, target_commitment: str
+) -> bool:
+    """Authenticate a pending resolution with its purpose-built prefix verifier first."""
+    runtime._authority_gate().require_held()
+    if actual == anchored:
+        return False
+    from chiplog.composition.r14_original_call_resolution_source import (
+        authenticate_selected_resolution_prefix_held,
+    )
+
+    if authenticate_selected_resolution_prefix_held(runtime, actual, anchored):
+        return True
+    return authenticate_selected_r14_suffix_held(
+        runtime, actual, anchored, target_commitment=target_commitment
+    )
