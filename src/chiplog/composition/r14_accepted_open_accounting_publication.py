@@ -496,7 +496,7 @@ async def hold_if_accepted_open(runtime, peer: str) -> bool:
     """Only current consumable reduction can clear an accepted/open Turn hold."""
     current = _current_cut(runtime)
     if current is None:
-        return False
+        return _hold_if_resolved_reduction_stale(runtime)
     facts, _ = current
     await publish_accepted_open_recovery(runtime, peer)
     from chiplog.composition.r14_original_call_resolution_publication import (
@@ -518,13 +518,73 @@ async def hold_if_accepted_open(runtime, peer: str) -> bool:
     )
 
 
-def _reduction_matches_current_evidence(reduction, evidence_sources) -> bool:
+def _hold_if_resolved_reduction_stale(runtime) -> bool:
+    """Keep resolved R14 obligations held until their reduction matches current R16."""
+    from chiplog.composition import (
+        r14_loop_semantic_reduction_publication as reduction_publication,
+    )
+    from chiplog.composition import (
+        r14_original_call_resolution_publication as resolution_publication,
+    )
+    from chiplog.composition.r14_original_call_resolution_source import (
+        capture_original_call_resolution_request,
+    )
+
+    selected_resolution = resolution_publication._selected_entries(runtime)
+    if not selected_resolution:
+        return False
+    if len(selected_resolution) != 1:
+        return True
+    try:
+        retained_resolution = resolution_publication.validate_selected_command(
+            runtime, selected_resolution[0][2], selected_resolution[0][3]
+        )
+        current_request = capture_original_call_resolution_request(
+            runtime,
+            allow_selected_resolution=True,
+            expected_cut=retained_resolution.request.cut,
+        )
+        resolution = resolution_publication.read_selected_original_call_resolution_source_held(
+            runtime
+        )
+        reduction = runtime.read_selected_loop_semantic_reduction()
+        selected_reductions = reduction_publication._selected_entries(runtime)
+        if reduction is None or len(selected_reductions) != 1:
+            return True
+        retained_reduction = reduction_publication.validate_selected_command(
+            runtime, selected_reductions[0][2], selected_reductions[0][3]
+        )
+        return not (
+            resolution is not None
+            and _reduction_matches_resolution(resolution, reduction)
+            and _reduction_matches_current_evidence(
+                reduction,
+                current_request.cut.complete_ordered_evidence,
+                current_witness=current_request.cut.selected_witness,
+                reduction_witness=retained_reduction.request.complete_anchor_sources[-1],
+            )
+        )
+    except (LoopRejected, ValueError, TypeError, RuntimeError, OSError):
+        return True
+
+
+def _reduction_matches_current_evidence(
+    reduction,
+    evidence_sources,
+    *,
+    current_witness=None,
+    reduction_witness=None,
+) -> bool:
     """A consumable reduction must cover the complete current authenticated R16 cut."""
     try:
         current = tuple(source.physical_record for source in evidence_sources)
     except (AttributeError, TypeError):
         return False
-    return bool(current) and reduction.record.complete_ordered_evidence == current
+    if not current or reduction.record.complete_ordered_evidence != current:
+        return False
+    if current_witness is not None or reduction_witness is not None:
+        return current_witness is not None and current_witness == reduction_witness
+    return True
 
 
 def _reduction_matches_resolution(resolution, reduction) -> bool:

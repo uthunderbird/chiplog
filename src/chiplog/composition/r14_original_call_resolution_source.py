@@ -72,8 +72,250 @@ def _require_resolution_absent(runtime: CommonCliExecutionRuntime) -> None:
         raise LoopRejected("unselected original resolution physical records exist")
 
 
+def _verify_selected_commitment_chain(
+    base_sequence: int,
+    base_commitment: str,
+    end_sequence: int,
+    end_commitment: str,
+    steps: dict[int, tuple[str, str]],
+) -> None:
+    """Require one contiguous selected publication and commitment per tenant sequence."""
+    expected = tuple(range(base_sequence + 1, end_sequence + 1))
+    if tuple(sorted(steps)) != expected:
+        raise LoopRejected("R14 evidence interval has a sequence gap or competing publication")
+    previous = base_commitment
+    for sequence in expected:
+        predecessor, resulting = steps[sequence]
+        if predecessor != previous:
+            raise LoopRejected("R14 evidence interval commitment chain forks")
+        previous = resulting
+    if previous != end_commitment:
+        raise LoopRejected("R14 evidence interval terminal commitment differs")
+
+
+def _authenticate_append_evidence_suffix(
+    runtime: CommonCliExecutionRuntime,
+    *,
+    base_sequence: int,
+    base_commitment: str,
+    end_sequence: int,
+    end_commitment: str,
+    base_witness: RecoverySourceRecord,
+    owner_snapshot=None,
+    loop_entries=None,
+) -> None:
+    """Authenticate every selected publication between an R14 cut and its successor.
+
+    Only same-intent R16 APPEND_EVIDENCE publications may advance this interval.
+    Owner and loop journals are separate, so both are stitched against the complete
+    physical publication sequence while the canonical authority gate is held.
+    """
+    from chiplog.capabilities.effects.dispatch_outcome_contracts import (
+        DispatchOutcomeRecordV2,
+    )
+    from chiplog.capabilities.effects.dispatch_outcomes import evidence_head
+    from chiplog.composition.r14_loop_semantic_reduction_publication import (
+        validate_selected_witness_at_cut,
+    )
+    from chiplog.platform.publication_readback import inspect_publication
+
+    runtime._authority_gate().require_held()
+    if (
+        type(base_sequence) is not int
+        or type(end_sequence) is not int
+        or base_sequence < 0
+        or end_sequence < base_sequence
+        or not isinstance(base_commitment, str)
+        or not isinstance(end_commitment, str)
+    ):
+        raise LoopRejected("R14 evidence interval has an invalid frontier")
+    owner_journal = runtime._owner_decisions()
+    owner_before = owner_snapshot or owner_journal.snapshot()
+    if owner_before.tenant_id != runtime._tenant_id:
+        raise LoopRejected("R14 evidence interval has a foreign owner journal")
+    owner_ids = {
+        decision.prepared.request.identity.command_id
+        for decision in owner_before.decisions
+    }
+    if owner_ids != set(owner_before.materialized_command_ids):
+        raise LoopRejected("R14 evidence interval has an unfinished owner publication")
+    loop_journal = runtime._loop_decisions()
+    loop_before = loop_entries if loop_entries is not None else loop_journal.entries()
+
+    steps: dict[int, tuple[object, str, str, str]] = {}
+
+    def add_step(sequence: int, batch, predecessor: str, resulting: str, family: str) -> None:
+        if sequence in steps:
+            raise LoopRejected("R14 evidence interval has competing selected publications")
+        if batch.expected_head + 1 != sequence or batch.tenant_id != runtime._tenant_id:
+            raise LoopRejected("R14 evidence interval selected header differs from its sequence")
+        steps[sequence] = (batch, predecessor, resulting, family)
+
+    for decision in owner_before.decisions:
+        sequence = decision.tenant_commit_sequence
+        if base_sequence < sequence <= end_sequence:
+            batch = runtime._owner_command(decision)
+            add_step(
+                sequence,
+                batch,
+                decision.prepared.predecessor_commitment,
+                decision.resulting_commitment,
+                "owner",
+            )
+
+    for identity, _, raw in loop_before:
+        entry = json.loads(raw)
+        if entry.get("kind") != "DECIDED":
+            continue
+        expected_head = entry.get("expected_head")
+        if type(expected_head) is not int:
+            raise LoopRejected("R14 evidence interval loop decision lacks its sequence")
+        sequence = expected_head + 1
+        if base_sequence < sequence <= end_sequence:
+            batch = runtime._publication(entry)
+            if (
+                entry.get("operation_id") != batch.idempotency_key
+                or identity != batch.idempotency_key
+            ):
+                raise LoopRejected("R14 evidence interval loop identity differs")
+            add_step(
+                sequence,
+                batch,
+                str(entry.get("predecessor")),
+                str(entry.get("resulting")),
+                "loop",
+            )
+
+    _verify_selected_commitment_chain(
+        base_sequence,
+        base_commitment,
+        end_sequence,
+        end_commitment,
+        {sequence: (step[1], step[2]) for sequence, step in steps.items()},
+    )
+    previous_outcome = DispatchOutcomeRecordV2.model_validate_json(
+        base_witness.canonical_record_bytes
+    )
+    if previous_outcome.canonical_bytes() != base_witness.canonical_record_bytes:
+        raise LoopRejected("R14 evidence interval base witness is noncanonical")
+    validate_selected_witness_at_cut(
+        runtime, base_witness, base_sequence, snapshot=owner_before
+    )
+
+    with read_connection(runtime._database) as connection:
+        runtime._check_database_identity()
+        actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+        anchored = runtime._commitment_journal.load(runtime._tenant_id)
+        row = connection.execute(
+            "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+        ).fetchone()
+        current_sequence = 0 if row is None else int(row[0])
+        publications = tuple(
+            connection.execute(
+                "SELECT operation_kind,idempotency_key,request_fingerprint,commit_sequence,"
+                "record_ids "
+                "FROM publications WHERE tenant_id=? AND commit_sequence>? AND commit_sequence<=? "
+                "ORDER BY commit_sequence",
+                (runtime._tenant_id, base_sequence, end_sequence),
+            ).fetchall()
+        )
+        expected_sequences = tuple(range(base_sequence + 1, end_sequence + 1))
+        if (
+            current_sequence < end_sequence
+            or len(publications) != len(expected_sequences)
+            or tuple(item[3] for item in publications) != expected_sequences
+            or set(steps) != set(expected_sequences)
+        ):
+            raise LoopRejected("R14 evidence interval has a gap or incomplete physical cut")
+        if actual != anchored:
+            pending = runtime._pending()
+            if len(pending) != 1:
+                raise LoopRejected("R14 evidence interval has an unauthenticated current suffix")
+            pending_entry = pending[0]
+            pending_batch = runtime._publication(pending_entry)
+            pending_sequence = pending_batch.expected_head + 1
+            pending_follows_interval = (
+                end_sequence + 1 == pending_sequence
+                and pending_entry.get("predecessor") == end_commitment
+            )
+            pending_is_interval_base = (
+                base_sequence == end_sequence == pending_sequence
+                and base_commitment == actual
+            )
+            if (
+                pending_sequence != current_sequence
+                or pending_entry.get("predecessor") != anchored
+                or pending_entry.get("resulting") != actual
+                or not (pending_follows_interval or pending_is_interval_base)
+                or inspect_publication(connection, pending_batch, pending_sequence) != "COMPLETE"
+            ):
+                raise LoopRejected("R14 evidence interval pending publication is not exact")
+
+        for publication in publications:
+            sequence = publication[3]
+            batch, _, _, family = steps[sequence]
+            if publication != (
+                batch.operation_kind,
+                batch.idempotency_key,
+                batch.request_fingerprint,
+                sequence,
+                "\n".join(record.record_id for record in batch.records),
+            ) or inspect_publication(connection, batch, sequence) != "COMPLETE":
+                raise LoopRejected("R14 evidence interval differs from physical publication")
+            physical = tuple(
+                connection.execute(
+                    "SELECT record_id,owner,schema_id,canonical_bytes FROM records "
+                    "WHERE tenant_id=? AND commit_sequence=? ORDER BY rowid",
+                    (runtime._tenant_id, sequence),
+                ).fetchall()
+            )
+            expected_physical = tuple(
+                (record.record_id, record.owner, record.schema_id, record.canonical_bytes)
+                for record in batch.records
+            )
+            if physical != expected_physical:
+                raise LoopRejected("R14 evidence interval physical records differ")
+            if family != "owner" or len(batch.records) != 1:
+                raise LoopRejected("R14 evidence interval contains a non-R16 publication")
+            physical_record = batch.records[0]
+            if (
+                physical_record.owner != "effects"
+                or physical_record.schema_id != "chiplog.effects.dispatch-outcome-record.v2"
+            ):
+                raise LoopRejected("R14 evidence interval contains a foreign R16 record")
+            try:
+                outcome = DispatchOutcomeRecordV2.model_validate_json(
+                    physical_record.canonical_bytes
+                )
+            except (TypeError, ValueError) as error:
+                raise LoopRejected("R14 evidence interval has malformed R16 outcome") from error
+            evidence = outcome.command.evidence
+            if (
+                outcome.canonical_bytes() != physical_record.canonical_bytes
+                or outcome.command.operation != "APPEND_EVIDENCE"
+                or evidence is None
+                or outcome.snapshot.intent != previous_outcome.snapshot.intent
+                or outcome.snapshot.obligation != previous_outcome.snapshot.obligation
+                or outcome.command.original_send != previous_outcome.command.original_send
+                or outcome.command.prior_evidence != previous_outcome.snapshot.evidence_heads
+                or outcome.snapshot.evidence_heads
+                != (*previous_outcome.snapshot.evidence_heads, evidence_head(evidence))
+                or outcome.snapshot.evidence
+                != (*previous_outcome.snapshot.evidence, evidence)
+            ):
+                raise LoopRejected("R14 evidence interval is not a same-obligation append")
+            previous_outcome = outcome
+
+    if (
+        owner_journal.snapshot() != owner_before
+        or loop_journal.entries() != loop_before
+        or runtime._commitment_journal.load(runtime._tenant_id) != anchored
+    ):
+        raise LoopRejected("R14 evidence interval changed while its cut was checked")
+
+
 def _selected_resolution_preimage(runtime, expected_cut):
-    """Prove the selected resolution is the sole physical suffix of its source cut."""
+    """Prove the selected resolution and its allowed later R16 evidence suffix."""
     import sqlite3
     from contextlib import closing
 
@@ -98,20 +340,8 @@ def _selected_resolution_preimage(runtime, expected_cut):
         from chiplog.composition.r14_loop_history import read_execution_recovery_history
 
         read_execution_recovery_history(runtime, selected_only=True)
-        latest_entry = reductions[-1][2]
-        with read_connection(runtime._database) as connection:
-            actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
-            head = connection.execute(
-                "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
-            ).fetchone()
-        anchored = runtime._commitment_journal.load(runtime._tenant_id)
-        if (
-            head != (reductions[-1][3].expected_head + 1,)
-            or actual != anchored
-            or actual != latest_entry.get("resulting")
-        ):
-            raise LoopRejected("selected semantic reduction chain is not the current suffix")
-        return evidence, actual, anchored, len(reductions)
+    owner_snapshot = runtime._owner_decisions().snapshot()
+    loop_entries = runtime._loop_decisions().entries()
     with read_connection(runtime._database) as connection:
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
         head = connection.execute(
@@ -119,41 +349,63 @@ def _selected_resolution_preimage(runtime, expected_cut):
         ).fetchone()
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         anchored = runtime._commitment_journal.load(runtime._tenant_id)
-        if (
-            state != "COMPLETE"
-            or head != (batch.expected_head + 1,)
-            or actual != resulting
-            or anchored not in (predecessor, resulting)
-        ):
-            raise LoopRejected("selected original resolution is not the exact current suffix")
-        with closing(sqlite3.connect(":memory:")) as historical:
-            connection.backup(historical)
-            historical.execute("BEGIN")
-            for record in batch.records:
-                if (
-                    historical.execute(
-                        "DELETE FROM records WHERE tenant_id=? AND record_id=?",
-                        (runtime._tenant_id, record.record_id),
-                    ).rowcount
-                    != 1
-                ):
-                    raise LoopRejected("selected original resolution predecessor is incomplete")
-            if (
+        current_sequence = 0 if head is None else int(head[0])
+        if state != "COMPLETE":
+            raise LoopRejected("selected original resolution source differs from current authority")
+
+        if not reductions:
+            # Reconstruct the resolver's exact source preimage while removing the
+            # complete selected suffix, including any authenticated later appends.
+            with closing(sqlite3.connect(":memory:")) as historical:
+                connection.backup(historical)
+                historical.execute("BEGIN")
                 historical.execute(
-                    "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
-                    "AND idempotency_key=?",
-                    (runtime._tenant_id, batch.operation_kind, batch.idempotency_key),
-                ).rowcount
-                != 1
-            ):
-                raise LoopRejected("selected original resolution publication is incomplete")
-            historical.execute(
-                "UPDATE tenant_heads SET head=? WHERE tenant_id=?",
-                (batch.expected_head, runtime._tenant_id),
-            )
-            if capture_authority_snapshot_commitment(historical, runtime._tenant_id) != predecessor:
-                raise LoopRejected("selected original resolution predecessor commitment differs")
-    return evidence, actual, anchored
+                    "DELETE FROM records WHERE tenant_id=? AND commit_sequence>?",
+                    (runtime._tenant_id, expected_cut.tenant_commit_sequence),
+                )
+                historical.execute(
+                    "DELETE FROM publications WHERE tenant_id=? AND commit_sequence>?",
+                    (runtime._tenant_id, expected_cut.tenant_commit_sequence),
+                )
+                if expected_cut.tenant_commit_sequence:
+                    historical.execute(
+                        "UPDATE tenant_heads SET head=? WHERE tenant_id=?",
+                        (expected_cut.tenant_commit_sequence, runtime._tenant_id),
+                    )
+                else:
+                    historical.execute(
+                        "DELETE FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+                    )
+                if (
+                    capture_authority_snapshot_commitment(historical, runtime._tenant_id)
+                    != expected_cut.materialization_commitment
+                ):
+                    raise LoopRejected("selected original resolver source preimage differs")
+
+    if reductions:
+        latest_entry = reductions[-1][2]
+        retained_reduction = (
+            r14_loop_semantic_reduction_publication.RetainedLoopSemanticReductionPublication
+            .model_validate_json(latest_entry[r14_loop_semantic_reduction_publication.EVIDENCE_FIELD])
+        )
+        base_sequence = reductions[-1][3].expected_head + 1
+        base_commitment = str(latest_entry["resulting"])
+        base_witness = retained_reduction.request.complete_anchor_sources[-1]
+    else:
+        base_sequence = batch.expected_head + 1
+        base_commitment = str(resulting)
+        base_witness = expected_cut.selected_witness
+    _authenticate_append_evidence_suffix(
+        runtime,
+        base_sequence=base_sequence,
+        base_commitment=base_commitment,
+        end_sequence=current_sequence,
+        end_commitment=actual,
+        base_witness=base_witness,
+        owner_snapshot=owner_snapshot,
+        loop_entries=loop_entries,
+    )
+    return evidence, actual, anchored, len(reductions), current_sequence
 
 
 def authenticate_selected_resolution_prefix_held(runtime, actual: str, anchored: str) -> bool:
@@ -171,7 +423,7 @@ def authenticate_selected_resolution_prefix_held(runtime, actual: str, anchored:
         retained = publication.RetainedOriginalCallResolutionPublication.model_validate_json(
             evidence
         )
-        checked, current, current_anchor = _selected_resolution_preimage(
+        checked, current, current_anchor, _, _ = _selected_resolution_preimage(
             runtime, retained.request.cut
         )
         return (
@@ -330,27 +582,24 @@ def capture_original_call_resolution_request(
         source_sequence = tenant_commit_sequence
         source_commitment = before
         if selected_suffix is not None:
-            _, selected_actual, selected_anchor, *selected_reductions = selected_suffix
-            if selected_reductions:
-                if (
-                    tenant_commit_sequence
-                    != expected_cut.tenant_commit_sequence + 1 + selected_reductions[0]
-                    or selected_actual != before
-                    or selected_anchor != before
-                ):
-                    raise LoopRejected(
-                        "selected semantic reduction suffix changed the authenticated source cut"
-                    )
-                source_sequence = tenant_commit_sequence
-                source_commitment = before
-            elif (
-                tenant_commit_sequence != expected_cut.tenant_commit_sequence + 1
-                or selected_actual != before
-                or selected_anchor not in (expected_cut.materialization_commitment, before)
+            (
+                _,
+                selected_actual,
+                selected_anchor,
+                reduction_count,
+                checked_sequence,
+            ) = selected_suffix
+            if (
+                selected_actual != before
+                or selected_anchor != before
+                or checked_sequence != tenant_commit_sequence
             ):
                 raise LoopRejected(
                     "selected resolution suffix changed the authenticated source cut"
                 )
+            if reduction_count:
+                source_sequence = tenant_commit_sequence
+                source_commitment = before
             else:
                 source_sequence = expected_cut.tenant_commit_sequence
                 source_commitment = expected_cut.materialization_commitment

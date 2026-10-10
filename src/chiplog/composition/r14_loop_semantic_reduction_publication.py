@@ -366,37 +366,86 @@ def validate_loop_semantic_reduction_startup(runtime) -> None:
     if not selected:
         _require_absent(runtime)
         return
+    from chiplog.composition import (
+        r14_original_call_resolution_publication as resolution_publication,
+    )
+    from chiplog.composition.r14_original_call_resolution_source import (
+        _authenticate_append_evidence_suffix,
+    )
+
+    resolutions = resolution_publication._selected_entries(runtime)
+    if len(resolutions) != 1:
+        raise ValueError("semantic reduction chain has no unique original resolution")
+    resolution = resolution_publication.validate_selected_command(
+        runtime, resolutions[0][2], resolutions[0][3]
+    )
+    owner_snapshot = runtime._owner_decisions().snapshot()
+    loop_entries = runtime._loop_decisions().entries()
     prior_reduction = None
-    prior_entry = None
+    prior_request = None
+    base_sequence = resolutions[0][3].expected_head + 1
+    base_commitment = str(resolutions[0][2].get("resulting"))
+    base_witness = resolution.request.cut.selected_witness
     for item in selected:
         evidence = validate_selected_command(runtime, item[2], item[3])
         expected = Absent() if prior_reduction is None else prior_reduction
         if evidence.request.expected != expected or (
-            prior_entry is not None
-            and (
-                item[3].expected_head != runtime._publication(prior_entry).expected_head + 1
-                or item[2].get("predecessor") != prior_entry.get("resulting")
-            )
+            prior_request is not None
+            and evidence.request.complete_ordered_evidence[
+                : len(prior_request.request.complete_ordered_evidence)
+            ]
+            != prior_request.request.complete_ordered_evidence
         ):
             raise ValueError("selected semantic reduction chain has a stale predecessor")
+        _authenticate_append_evidence_suffix(
+            runtime,
+            base_sequence=base_sequence,
+            base_commitment=base_commitment,
+            end_sequence=evidence.request.tenant_commit_sequence,
+            end_commitment=evidence.request.materialization_commitment,
+            base_witness=base_witness,
+            owner_snapshot=owner_snapshot,
+            loop_entries=loop_entries,
+        )
         _, prior_reduction = _selected_value(runtime, item)
-        prior_entry = item[2]
+        prior_request = evidence
+        base_sequence = item[3].expected_head + 1
+        base_commitment = str(item[2].get("resulting"))
+        base_witness = evidence.request.complete_anchor_sources[-1]
     _, _, entry, batch = selected[-1]
     resulting = str(entry["resulting"])
     with read_connection(runtime._database) as connection:
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+        head = connection.execute(
+            "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+        ).fetchone()
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
     materialized = runtime._loop_decision_materialized(batch.idempotency_key, entry)
     predecessor = str(entry["predecessor"])
     if state == "ABSENT" and not materialized and actual == predecessor and anchored == predecessor:
         _validate_physical_catalog(runtime, tuple(item[3] for item in selected[:-1]) or None)
         return
-    if (
-        state == "COMPLETE"
-        and actual == resulting
-        and (anchored == resulting or (not materialized and anchored == predecessor))
-    ):
+    current_sequence = 0 if head is None else int(head[0])
+    if state == "COMPLETE":
+        if actual == anchored:
+            _authenticate_append_evidence_suffix(
+                runtime,
+                base_sequence=batch.expected_head + 1,
+                base_commitment=resulting,
+                end_sequence=current_sequence,
+                end_commitment=actual,
+                base_witness=prior_request.request.complete_anchor_sources[-1],
+                owner_snapshot=owner_snapshot,
+                loop_entries=loop_entries,
+            )
+        elif not (
+            not materialized
+            and anchored == predecessor
+            and actual == resulting
+            and current_sequence == batch.expected_head + 1
+        ):
+            raise ValueError("selected semantic reduction has a partial current suffix")
         _validate_physical_catalog(runtime, tuple(item[3] for item in selected))
         return
     raise ValueError("selected semantic reduction has partial physical state")
@@ -416,7 +465,7 @@ def read_selected_loop_semantic_reduction_source_held(runtime):
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
-    if state != "COMPLETE" or actual != anchored or actual != decision[2].get("resulting"):
+    if state != "COMPLETE" or actual != anchored:
         raise ValueError("selected semantic reduction selection/physical mismatch")
     _validate_physical_catalog(runtime, tuple(item[3] for item in selected))
     return selected_reduction

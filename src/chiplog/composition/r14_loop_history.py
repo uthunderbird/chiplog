@@ -9,6 +9,7 @@ import sqlite3
 from typing import TYPE_CHECKING, Literal, cast
 
 from chiplog.adapters.driven.loop_sqlite import OWNER, LoopIntegrityError
+from chiplog.adapters.driven.loop_sqlite import SCHEMA as RUN_SCHEMA
 from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER, CONVERSATION_SCHEMA
 from chiplog.architecture.r7_storage_surface import AUTHORITY_STORAGE_SURFACE_DIGEST
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallInventorySnapshot
@@ -371,8 +372,9 @@ def _read_call_history(
                 runtime._require_no_pending()
             tenant = runtime._tenant_id
             entries = []
+            loop_journal_entries = runtime._loop_decisions().entries()
             selected_decision_envelopes = {}
-            for decision_id, _, raw in runtime._loop_decisions().entries():
+            for decision_id, _, raw in loop_journal_entries:
                 _strict_json(raw)
                 entry = json.loads(raw)
                 entries.append(entry)
@@ -524,7 +526,8 @@ def _read_call_history(
                 original_resolution_evidence = None
                 original_resolution_resulting = None
                 current_semantic_reduction = None
-                semantic_reduction_index = 0
+                current_semantic_reduction_evidence = None
+                current_semantic_reduction_entry = None
                 resolver_policy_sources = None
                 for command, entry in selected:
                     identity = command.idempotency_key
@@ -607,16 +610,6 @@ def _read_call_history(
                         if (
                             original_resolution_evidence is None
                             or not isinstance(original_resolution_resulting, str)
-                            or evidence.request.materialization_commitment
-                            != (
-                                original_resolution_resulting
-                                if current_semantic_reduction is None
-                                else entry.get("predecessor")
-                            )
-                            or evidence.request.tenant_commit_sequence
-                            != original_resolution_evidence.request.cut.tenant_commit_sequence
-                            + 1
-                            + semantic_reduction_index
                             or len(evidence.request.complete_ordered_evidence)
                             < len(
                                 original_resolution_evidence.request.cut.complete_ordered_evidence
@@ -631,6 +624,40 @@ def _read_call_history(
                             raise ValueError(
                                 "semantic reduction does not extend selected original resolution"
                             )
+                        from chiplog.composition.r14_original_call_resolution_source import (
+                            _authenticate_append_evidence_suffix,
+                        )
+
+                        if current_semantic_reduction_evidence is None:
+                            base_sequence = (
+                                original_resolution_evidence.request.cut.tenant_commit_sequence + 1
+                            )
+                            base_commitment = original_resolution_resulting
+                            base_witness = (
+                                original_resolution_evidence.request.cut.selected_witness
+                            )
+                        else:
+                            previous_reduction = current_semantic_reduction_evidence
+                            previous_reduction_batch = runtime._publication(
+                                current_semantic_reduction_entry
+                            )
+                            base_sequence = previous_reduction_batch.expected_head + 1
+                            base_commitment = str(
+                                current_semantic_reduction_entry.get("resulting")
+                            )
+                            base_witness = (
+                                previous_reduction.request.complete_anchor_sources[-1]
+                            )
+                        _authenticate_append_evidence_suffix(
+                            runtime,
+                            base_sequence=base_sequence,
+                            base_commitment=base_commitment,
+                            end_sequence=evidence.request.tenant_commit_sequence,
+                            end_commitment=evidence.request.materialization_commitment,
+                            base_witness=base_witness,
+                            owner_snapshot=owner_snapshot,
+                            loop_entries=loop_journal_entries,
+                        )
                         selected_resolution = resolution_publication._selected_entries(runtime)
                         if len(selected_resolution) != 1:
                             raise ValueError("semantic reduction has no unique resolver batch")
@@ -658,7 +685,8 @@ def _read_call_history(
                         _, current_semantic_reduction = reduction_publication._selected_value(
                             runtime, (identity, b"", entry, command)
                         )
-                        semantic_reduction_index += 1
+                        current_semantic_reduction_evidence = evidence
+                        current_semantic_reduction_entry = entry
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
@@ -676,7 +704,9 @@ def _read_call_history(
                         from chiplog.composition.r14_original_resolver_policy_publication import (
                             EVIDENCE_FIELD,
                             REDUCER_SCHEMA,
-                            SCHEMA,
+                        )
+                        from chiplog.composition.r14_original_resolver_policy_publication import (
+                            SCHEMA as RESOLVER_POLICY_SCHEMA,
                         )
                         from chiplog.composition.r14_original_resolver_policy_publication import (
                             validate_selected as validate_policy_selected,
@@ -685,7 +715,7 @@ def _read_call_history(
                         evidence = validate_policy_selected(runtime, entry, command)
                         if len(command.records) != 2 or tuple(
                             r.schema_id for r in command.records
-                        ) != (SCHEMA, REDUCER_SCHEMA):
+                        ) != (RESOLVER_POLICY_SCHEMA, REDUCER_SCHEMA):
                             raise ValueError("selected resolver policy record schemas differ")
                         decision_id, decision_bytes = selected_decision_envelopes[identity]
                         selected_digest = hashlib.sha256(
@@ -698,7 +728,7 @@ def _read_call_history(
                             digest = hashlib.sha256(record.canonical_bytes).hexdigest()
                             subject_id = (
                                 evidence.request.policy.policy_id
-                                if record.schema_id == SCHEMA
+                                if record.schema_id == RESOLVER_POLICY_SCHEMA
                                 else original_effect_evidence_reducer_policy_v1(
                                     runtime._tenant_id
                                 ).policy_id
@@ -1373,7 +1403,7 @@ def _read_call_history(
                     record = RunRecord.model_validate_json(first.canonical_bytes)
                     if (
                         first.owner != OWNER
-                        or first.schema_id != SCHEMA
+                        or first.schema_id != RUN_SCHEMA
                         or first.record_id != record.head
                         or record.tenant != tenant
                         or (

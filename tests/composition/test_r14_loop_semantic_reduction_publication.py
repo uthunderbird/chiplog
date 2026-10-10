@@ -39,6 +39,9 @@ from chiplog.composition.r14_loop_semantic_reduction_publication import (
     validate_selected_command,
     validate_selected_witness_at_cut,
 )
+from chiplog.composition.r14_original_call_resolution_source import (
+    _verify_selected_commitment_chain,
+)
 from chiplog.platform.broker import BrokerSession, PublicPortCall, PublicPortSuccess
 from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
     request as resolution_request,
@@ -183,6 +186,19 @@ def test_turn_consumer_holds_when_authenticated_evidence_is_newer_than_reduction
     sources = request().complete_ordered_evidence
 
     assert _reduction_matches_current_evidence(reduction, sources)
+    original_witness = request().complete_anchor_sources[-1]
+    successor_decision = original_witness.selected_decision.model_copy(
+        update={"subject_id": "new-decision"}
+    )
+    successor_witness = original_witness.model_copy(
+        update={"selected_decision": successor_decision}
+    )
+    assert not _reduction_matches_current_evidence(
+        reduction,
+        sources,
+        current_witness=successor_witness,
+        reduction_witness=original_witness,
+    )
     late_source = sources[-1].model_copy(
         update={
             "physical_record": sources[-1].physical_record.model_copy(
@@ -194,6 +210,20 @@ def test_turn_consumer_holds_when_authenticated_evidence_is_newer_than_reduction
         reduction, (*sources, late_source)
     )
     assert not _reduction_matches_current_evidence(reduction, ())
+
+
+def test_authenticated_late_evidence_chain_rejects_gap_fork_and_wrong_terminal() -> None:
+    steps = {8: ("base", "append-1"), 9: ("append-1", "append-2")}
+    _verify_selected_commitment_chain(7, "base", 9, "append-2", steps)
+
+    with pytest.raises(ValueError, match="sequence gap"):
+        _verify_selected_commitment_chain(7, "base", 9, "append-2", {8: steps[8]})
+    with pytest.raises(ValueError, match="forks"):
+        _verify_selected_commitment_chain(
+            7, "base", 9, "append-2", {8: steps[8], 9: ("foreign", "append-2")}
+        )
+    with pytest.raises(ValueError, match="terminal commitment"):
+        _verify_selected_commitment_chain(7, "base", 9, "stale", steps)
 
 
 def test_historical_witness_must_be_latest_selected_outcome_at_its_cut() -> None:
