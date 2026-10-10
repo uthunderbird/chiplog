@@ -46,6 +46,7 @@ from chiplog.capabilities.agent_loop.recovery_domain import sealed_call_accounti
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
     ConsequentialAcceptedCall,
+    DefiniteFailureResult,
     EvidenceReduction,
     FrontierMember,
     FrozenRunBindings,
@@ -53,6 +54,7 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     RecoveredOutcomeSubject,
     RecoveryFrontier,
     RecoveryRequiredResult,
+    SuccessResult,
     TerminalCallFrontier,
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
@@ -81,6 +83,7 @@ async def _request(
     substituted_initialized: Present | None = None,
     mismatched_frontier_call: bool = False,
     recovered: bool = False,
+    direct_terminal: str | None = None,
 ) -> PrepareNextExecutionTurn:
     """Build a coherent inert shape, not a selected or physical-source witness."""
     fanout = await fixture()
@@ -210,6 +213,68 @@ async def _request(
                 consumability="CONSUMABLE",
             ),
         )
+        if direct_terminal is not None:
+            accepted = Present(head="accepted", fingerprint="2" * 64)
+            execution_intent = Present(head="execution-intent", fingerprint="3" * 64)
+            effect_intent = Present(head="effect-intent", fingerprint="4" * 64)
+            terminal_acceptance = ConsequentialAcceptedCall(
+                initialized=initialized.revision,
+                accepted=accepted,
+                execution_intent=execution_intent,
+                external_effect_intent=effect_intent,
+                complete_acceptance_manifest=(accepted, execution_intent, effect_intent),
+            )
+            terminal_disposition = (
+                SuccessResult(
+                    terminal=Present(head="terminal", fingerprint="5" * 64),
+                    result=Present(head="result", fingerprint="6" * 64),
+                    recovered_outcome=NotApplicable(),
+                )
+                if direct_terminal == "SUCCEEDED"
+                else DefiniteFailureResult(
+                    terminal=Present(head="terminal", fingerprint="5" * 64),
+                    result=Present(head="result", fingerprint="6" * 64),
+                    recovered_outcome=NotApplicable(),
+                )
+            )
+            terminal = TerminalCallFrontier(
+                original_call_id=call_id,
+                response_id=seal.response_seal_id,
+                acceptance=terminal_acceptance,
+                disposition=terminal_disposition,
+            )
+    elif direct_terminal is not None:
+        accepted = Present(head="accepted", fingerprint="2" * 64)
+        execution_intent = Present(head="execution-intent", fingerprint="3" * 64)
+        effect_intent = Present(head="effect-intent", fingerprint="4" * 64)
+        acceptance = ConsequentialAcceptedCall(
+            initialized=initialized.revision,
+            accepted=accepted,
+            execution_intent=execution_intent,
+            external_effect_intent=effect_intent,
+            complete_acceptance_manifest=(accepted, execution_intent, effect_intent),
+        )
+        disposition = (
+            SuccessResult(
+                terminal=Present(head="terminal", fingerprint="5" * 64),
+                result=Present(head="result", fingerprint="6" * 64),
+                recovered_outcome=NotApplicable(),
+            )
+            if direct_terminal == "SUCCEEDED"
+            else DefiniteFailureResult(
+                terminal=Present(head="terminal", fingerprint="5" * 64),
+                result=Present(head="result", fingerprint="6" * 64),
+                recovered_outcome=NotApplicable(),
+            )
+        )
+        terminal = TerminalCallFrontier(
+            original_call_id=call_id,
+            response_id=seal.response_seal_id,
+            acceptance=acceptance,
+            disposition=disposition,
+        )
+        closures = ()
+        reductions = ()
     else:
         terminal = TerminalCallFrontier(
             original_call_id=call_id,
@@ -441,6 +506,22 @@ async def test_next_turn_preserves_recovered_obligation_and_current_reduction() 
     assert result.continuation.complete_current_reductions == request.cut.current_reductions
 
 
+@pytest.mark.parametrize("kind", ["SUCCEEDED", "FAILED_DEFINITE"])
+async def test_next_turn_accepts_only_direct_terminal_with_no_recovery_pair(kind: str) -> None:
+    request = await _request(direct_terminal=kind)
+    result = prepare_next_native_execution_turn(request)
+    verify_next_native_execution_turn(request, result)
+    assert request.cut.original_closures == ()
+    assert request.cut.current_reductions == ()
+    assert result.run.turns[-1].state == "PREPARING"
+
+
+async def test_next_turn_holds_direct_terminal_with_recovery_material() -> None:
+    request = await _request(recovered=True, direct_terminal="SUCCEEDED")
+    with pytest.raises(ValueError, match="direct terminal next Turn carries"):
+        prepare_next_native_execution_turn(request)
+
+
 async def test_continuation_projection_keeps_exact_recovered_pair() -> None:
     request = await _request(recovered=True)
     cut = request.cut
@@ -458,8 +539,7 @@ async def test_continuation_projection_keeps_exact_recovered_pair() -> None:
     assert reductions == cut.current_reductions
     assert len(closures) == len(reductions) == 1
     assert (
-        closures[0].recovered_outcome
-        == view.ordered_calls[0].disposition.recovered_outcome.outcome
+        closures[0].recovered_outcome == view.ordered_calls[0].disposition.recovered_outcome.outcome
     )
     assert reductions[0].accepted_witness == closures[0].accepted_evidence
 

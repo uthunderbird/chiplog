@@ -28,9 +28,11 @@ from .recovery_domain import RecoveredClosure, model_continuation_ready, sealed_
 from .recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
     ConsequentialAcceptedCall,
+    DefiniteFailureResult,
     EvidenceReduction,
     InitializedCall,
     RecoveryRequiredResult,
+    SuccessResult,
     TerminalCallFrontier,
 )
 from .recovery_frontier_registry_contracts import frontier_registry_reference
@@ -336,7 +338,8 @@ def _check_source(request: PrepareNextExecutionTurn) -> ExecutionRunRecord:
         and captured_attempt.state == "RESPONSE_CAPTURED"
         and sealed_attempt.model_copy(
             update={"state": "RESPONSE_CAPTURED", "head": captured_attempt.head}
-        ) == captured_attempt
+        )
+        == captured_attempt
         and view.original_run == _reference(captured.run_id, captured, head=captured.head)
         and view.original_turn
         == _reference(captured.turns[-1].turn_id, captured.turns[-1], head=captured.turns[-1].head)
@@ -356,8 +359,7 @@ def _check_source(request: PrepareNextExecutionTurn) -> ExecutionRunRecord:
         "continuation readiness is absent, stale, or differs from complete cut",
     )
     _require(
-        len(view.ordered_calls) == 1
-        and isinstance(view.ordered_calls[0], TerminalCallFrontier),
+        len(view.ordered_calls) == 1 and isinstance(view.ordered_calls[0], TerminalCallFrontier),
         "supported next Turn requires one terminal call",
     )
     terminal = view.ordered_calls[0]
@@ -405,6 +407,15 @@ def _check_source(request: PrepareNextExecutionTurn) -> ExecutionRunRecord:
             for item in cut.original_closures
         )
         reductions = cut.current_reductions
+    elif isinstance(terminal.disposition, (SuccessResult, DefiniteFailureResult)):
+        _require(
+            isinstance(terminal.acceptance, ConsequentialAcceptedCall)
+            and terminal.acceptance.initialized
+            == view.seal.complete_ordered_initialized[0].revision
+            and not cut.original_closures
+            and not cut.current_reductions,
+            "direct terminal next Turn carries recovery evidence or foreign acceptance",
+        )
     else:
         raise ValueError("next Turn requires a cancellation or recovered obligation")
     recomputed = sealed_call_accounting(
