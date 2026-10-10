@@ -195,6 +195,7 @@ class HermeticDispatchResources:
             Literal["CONFIRM", "PERMANENT_NO_EFFECT", "LOST_RESPONSE_AFTER_EFFECT", "MIXED"], ...
         ],
         cap: int,
+        late_receipt_scenarios: tuple[tuple[Literal["COMPATIBLE", "RIVAL"], ...], ...] = (),
         custody_path: Path | None = None,
     ) -> None:
         if cap < 1 or cap > len(scenarios):
@@ -216,6 +217,7 @@ class HermeticDispatchResources:
         self._provider = HermeticEffectsProvider(
             receipt_key=self._receipt_key,
             scenarios=scenarios,
+            late_receipt_scenarios=late_receipt_scenarios,
             journal_path=None if custody_path is None else custody_path.with_suffix(".transfers"),
             observation_journal_path=(
                 None if custody_path is None else custody_path.with_suffix(".observations")

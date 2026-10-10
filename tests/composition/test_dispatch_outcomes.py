@@ -221,6 +221,52 @@ if __name__ == "__main__":
     }
 
 
+async def test_late_provider_evidence_is_selected_before_and_after_closure(
+    tmp_path: Path,
+) -> None:
+    custody = tmp_path / "custody.json"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",),
+        late_receipt_scenarios=(("COMPATIBLE", "RIVAL"),),
+        cap=1,
+        custody_path=custody,
+    )
+    async with open_dispatch_loop(
+        tmp_path / "late-evidence.db", resources=resources, responses=(_response(),)
+    ) as loop:
+        created = await loop.create("r", "Prepare my action", BudgetPolicy())
+        active = await loop.activate("r", created.head)
+        await loop.step("r", active.head)
+        runtime = loop._planning
+        assert isinstance(runtime, R16DispatchRuntime)
+        intent_id = await prepare(runtime)
+        await runtime.emit_committed("hermetic-ingress", intent_id)
+        provider = resources.require_original_provider()
+        first_late = provider.observe_late_receipt(provider.transfers[0].ticket.transmission_id)
+        compatible = outcome(await runtime.observe_dispatch_outcome(intent_id, first_late))
+        assert compatible.snapshot.obligation.state == "OPEN"
+        assert len(compatible.snapshot.evidence_heads) == 3
+        assert tuple(item.observation for item in compatible.snapshot.evidence) == (
+            "BOUNDARY_CROSSED",
+            "PROVIDER_RECEIPT",
+            "PROVIDER_RECEIPT",
+        )
+
+        closed = outcome(
+            await runtime.resolve_dispatch_outcome("hermetic-ingress", intent_id, "close-late")
+        )
+        assert closed.snapshot.obligation.state == "CLOSED"
+        assert closed.snapshot.obligation.closure_evidence == closed.snapshot.evidence_heads
+
+        rival_receipt = provider.observe_late_receipt(provider.transfers[0].ticket.transmission_id)
+        rival = outcome(await runtime.observe_dispatch_outcome(intent_id, rival_receipt))
+        assert rival.snapshot.obligation.state == "CLOSED"
+        assert rival.snapshot.state == closed.snapshot.state
+        assert rival.snapshot.conflicting_evidence is True
+        assert len(rival.snapshot.evidence_heads) == 4
+        assert len(provider.transfers) == 1
+
+
 async def test_receipt_publication_crash_reopens_original_obligation_without_reemission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
