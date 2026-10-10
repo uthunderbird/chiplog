@@ -82,6 +82,60 @@ def commits_since(root, path):
         return None
 
 
+def introduction_commits(root, relative_paths):
+    """Resolve entry origins from one first-parent name-status history scan."""
+    unresolved = set(relative_paths)
+    origins = {}
+    renamed_to_source = {}
+    try:
+        history = subprocess.run(
+            [
+                "git", "-C", str(root), "log", "--first-parent",
+                "--diff-merges=first-parent", "--root", "-M", "-C",
+                "--find-copies-harder", "--name-status", "--format=COMMIT:%H",
+                "--", ".harness/retro",
+            ],
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+    except subprocess.CalledProcessError:
+        return origins
+
+    commit = ""
+    for line in history:
+        if line.startswith("COMMIT:"):
+            commit = line.removeprefix("COMMIT:")
+            continue
+        fields = line.split("\t")
+        if not fields:
+            continue
+        status = fields[0]
+        if status.startswith("R") and len(fields) == 3:
+            _, source, destination = fields
+            if destination in unresolved:
+                unresolved.remove(destination)
+                unresolved.add(source)
+                renamed_to_source[destination] = source
+        elif status.startswith("C") and len(fields) == 3:
+            _, _, destination = fields
+            if destination in unresolved:
+                origins[destination] = commit
+                unresolved.remove(destination)
+        elif status == "A" and len(fields) == 2 and fields[1] in unresolved:
+            origins[fields[1]] = commit
+            unresolved.remove(fields[1])
+        if not unresolved:
+            break
+    for relative in relative_paths:
+        source = relative
+        visited = set()
+        while source in renamed_to_source and source not in visited:
+            visited.add(source)
+            source = renamed_to_source[source]
+        if source in origins:
+            origins[relative] = origins[source]
+    return origins
+
+
 def order_entries_by_history(root, entries):
     """Order committed retros by repository history; current work follows HEAD."""
     try:
@@ -109,31 +163,16 @@ def order_entries_by_history(root, entries):
     except subprocess.CalledProcessError:
         pass
 
+    paths_to_resolve = {
+        staged_sources.get(str(path.relative_to(root)), str(path.relative_to(root)))
+        for path in entries
+    }
+    origins = introduction_commits(root, paths_to_resolve)
+
     def key(path):
         relative = str(path.relative_to(root))
         historical_path = staged_sources.get(relative, relative)
-        try:
-            created = subprocess.run(
-                [
-                    "git", "-C", str(root), "log", "--follow", "--diff-filter=A", "-1",
-                    "--format=%H", "--", historical_path,
-                ],
-                capture_output=True, text=True, check=True,
-            ).stdout.strip()
-        except subprocess.CalledProcessError:
-            created = ""
-        if not created:
-            # A retro first appearing in a merge has no ordinary add record.
-            try:
-                created = subprocess.run(
-                    [
-                        "git", "-C", str(root), "log", "--first-parent", "-m",
-                        "--diff-filter=A", "-1", "--format=%H", "--", historical_path,
-                    ],
-                    capture_output=True, text=True, check=True,
-                ).stdout.strip()
-            except subprocess.CalledProcessError:
-                created = ""
+        created = origins.get(historical_path, "")
         return (positions.get(created, len(positions)), path.name)
 
     return sorted(entries, key=key)
