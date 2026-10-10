@@ -43,6 +43,7 @@ class OriginalResolutionHistoryRuntime(Protocol):
 
     def _check_database_identity(self) -> None: ...
 
+
 OPERATION = "agent_loop.original-call-resolution.v1"
 OWNER_OPERATION = "agent_loop.prepare_original_call_resolution.v1"
 EVIDENCE_FIELD = "original_call_resolution_evidence"
@@ -151,9 +152,7 @@ def _selected_entries(runtime: CommonCliExecutionRuntime) -> list[SelectedEntry]
             isinstance(row, dict) and row.get("schema") in _SCHEMAS for row in rows
         )
         if (
-            entry.get("operation_kind") == OPERATION
-            or EVIDENCE_FIELD in entry
-            or schema_match
+            entry.get("operation_kind") == OPERATION or EVIDENCE_FIELD in entry or schema_match
         ) and entry.get("kind") == "DECIDED":
             matches.append(
                 (
@@ -223,6 +222,15 @@ def _validate_current_sources(
     runtime: CommonCliExecutionRuntime,
     evidence: RetainedOriginalCallResolutionPublication,
 ) -> None:
+    from chiplog.composition import r14_loop_semantic_reduction_publication
+
+    if r14_loop_semantic_reduction_publication._selected_entries(runtime):
+        # The append-only reduction is a valid later suffix. The mounted history
+        # reader verifies that it extends this exact selected resolver batch.
+        from chiplog.composition.r14_loop_history import read_execution_recovery_history
+
+        read_execution_recovery_history(runtime, selected_only=True)
+        return
     current = capture_original_call_resolution_request(
         runtime,
         allow_selected_resolution=True,
@@ -253,8 +261,10 @@ def validate_selected_command(
     evidence = RetainedOriginalCallResolutionPublication.model_validate_json(raw)
     runtime._check_database_identity()
     resulting = entry.get("resulting")
-    if not isinstance(resulting, str) or len(resulting) != 64 or any(
-        char not in "0123456789abcdef" for char in resulting
+    if (
+        not isinstance(resulting, str)
+        or len(resulting) != 64
+        or any(char not in "0123456789abcdef" for char in resulting)
     ):
         raise ValueError("selected original resolution resulting commitment is invalid")
     if (
@@ -302,8 +312,10 @@ def _startup_state(
     if state == "ABSENT" and not materialized and actual == predecessor and anchored == predecessor:
         _validate_physical_catalog(runtime, None)
         return
-    if state == "COMPLETE" and actual == resulting and (
-        anchored == resulting or (not materialized and anchored == predecessor)
+    if (
+        state == "COMPLETE"
+        and actual == resulting
+        and (anchored == resulting or (not materialized and anchored == predecessor))
     ):
         _validate_physical_catalog(runtime, batch)
         return
@@ -324,8 +336,16 @@ def read_selected_original_call_resolution_source_held(
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
-    if state != "COMPLETE" or actual != anchored or actual != entry.get("resulting"):
+    if state != "COMPLETE" or actual != anchored:
         raise ValueError("selected original resolution selected/physical mismatch")
+    if actual != entry.get("resulting"):
+        from chiplog.composition import r14_loop_semantic_reduction_publication
+
+        if not r14_loop_semantic_reduction_publication._selected_entries(runtime):
+            raise ValueError("selected original resolution has an unknown later suffix")
+        from chiplog.composition.r14_loop_history import read_execution_recovery_history
+
+        read_execution_recovery_history(runtime, selected_only=True)
     _validate_physical_catalog(runtime, batch)
     return evidence.prepared
 
@@ -453,7 +473,7 @@ async def publish_original_call_resolution(
                     or capture_original_call_resolution_request(runtime) != request
                 ):
                     return "STALE"
-            except (LoopRejected, ValueError, TypeError, RuntimeError):
+            except LoopRejected, ValueError, TypeError, RuntimeError:
                 return "STALE"
         return None
 

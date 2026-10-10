@@ -152,7 +152,8 @@ def test_capture_builds_cut_from_selected_sources_and_closed_effect_member(
         def _check_database_identity(self):
             return None
 
-        def read_selected_original_obligation_sources(self):
+        def read_selected_original_obligation_sources(self, *, historical=False):
+            assert historical is False
             return cut.current_obligation, cut.call_terminal
 
         def _loop_decisions(self):
@@ -186,17 +187,17 @@ def test_capture_builds_cut_from_selected_sources_and_closed_effect_member(
     monkeypatch.setattr(
         r14_original_resolver_policy_publication,
         "read_selected_original_resolver_authority_policy_source_held",
-        lambda _runtime: (resolver, cut.resolver_policy),
+        lambda _runtime, **_kwargs: (resolver, cut.resolver_policy),
     )
     monkeypatch.setattr(
         r14_original_resolver_policy_publication,
         "read_selected_original_effect_evidence_reducer_policy_source_held",
-        lambda _runtime: (reducer, cut.reducer_policy),
+        lambda _runtime, **_kwargs: (reducer, cut.reducer_policy),
     )
     monkeypatch.setattr(
         r14_original_resolver_invocation_publication,
         "read_selected_original_resolver_invocation_source_held",
-        lambda _runtime: (invocation, cut.authority.authenticated_invocation),
+        lambda _runtime, **_kwargs: (invocation, cut.authority.authenticated_invocation),
     )
     monkeypatch.setattr(
         source_module,

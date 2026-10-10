@@ -520,6 +520,10 @@ def _read_call_history(
                 captured_heads: set[str] = set()
                 native_prepares: dict[tuple[str, str], str] = {}
                 original_sources = None
+                original_resolution_evidence = None
+                original_resolution_resulting = None
+                current_semantic_reduction = None
+                semantic_reduction_index = 0
                 resolver_policy_sources = None
                 for command, entry in selected:
                     identity = command.idempotency_key
@@ -534,6 +538,7 @@ def _read_call_history(
                         "agent_loop.accepted-open-accounting.v1",
                         "agent_loop.accepted-open-recovery.v1",
                         "agent_loop.original-call-resolution.v1",
+                        "agent_loop.loop-semantic-reduction.v1",
                         "agent_loop.original-resolver-authority-policy.v1",
                         "agent_loop.original-resolver-invocation.v1",
                         "agent_loop.native-one-call-recovery-profile.v1",
@@ -574,6 +579,79 @@ def _read_call_history(
                             raise ValueError(
                                 "original resolution source references differ from selected history"
                             )
+                        original_resolution_evidence = evidence
+                        original_resolution_resulting = entry.get("resulting")
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if (
+                        command.operation_kind == "agent_loop.loop-semantic-reduction.v1"
+                        or "loop_semantic_reduction_evidence" in entry
+                    ):
+                        from chiplog.capabilities.agent_loop.recovery_contracts import Absent
+                        from chiplog.composition import (
+                            r14_loop_semantic_reduction_publication as reduction_publication,
+                        )
+                        from chiplog.composition import (
+                            r14_original_call_resolution_publication as resolution_publication,
+                        )
+
+                        if command.operation_kind != reduction_publication.OPERATION:
+                            raise ValueError("semantic reduction has a substituted operation")
+                        evidence = reduction_publication.validate_selected_command(
+                            runtime, entry, command
+                        )
+                        if (
+                            original_resolution_evidence is None
+                            or not isinstance(original_resolution_resulting, str)
+                            or evidence.request.materialization_commitment
+                            != (
+                                original_resolution_resulting
+                                if current_semantic_reduction is None
+                                else entry.get("predecessor")
+                            )
+                            or evidence.request.tenant_commit_sequence
+                            != original_resolution_evidence.request.cut.tenant_commit_sequence
+                            + 1
+                            + semantic_reduction_index
+                            or len(evidence.request.complete_ordered_evidence)
+                            < len(
+                                original_resolution_evidence.request.cut.complete_ordered_evidence
+                            )
+                            or evidence.request.complete_ordered_evidence[
+                                : len(
+                                    original_resolution_evidence.request.cut.complete_ordered_evidence
+                                )
+                            ]
+                            != original_resolution_evidence.request.cut.complete_ordered_evidence
+                        ):
+                            raise ValueError(
+                                "semantic reduction does not extend selected original resolution"
+                            )
+                        selected_resolution = resolution_publication._selected_entries(runtime)
+                        if len(selected_resolution) != 1:
+                            raise ValueError("semantic reduction has no unique resolver batch")
+                        retained_resolution = resolution_publication.validate_selected_command(
+                            runtime, selected_resolution[0][2], selected_resolution[0][3]
+                        )
+                        expected_anchors = reduction_publication._selected_anchor_sources(
+                            runtime, selected_resolution[0], retained_resolution
+                        )
+                        if evidence.request.complete_anchor_sources[:-1] != expected_anchors[:-1]:
+                            raise ValueError("semantic reduction resolver anchors differ")
+                        expected_reduction = (
+                            Absent()
+                            if current_semantic_reduction is None
+                            else current_semantic_reduction
+                        )
+                        if evidence.request.expected != expected_reduction:
+                            raise ValueError("semantic reduction selected predecessor differs")
+                        _, current_semantic_reduction = reduction_publication._selected_value(
+                            runtime, (identity, b"", entry, command)
+                        )
+                        semantic_reduction_index += 1
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
@@ -1399,9 +1477,7 @@ def _read_call_history(
                         )
                     if pending_state == "ABSENT":
                         expected_ids.difference_update(
-                            row.record_id
-                            for row in pending_command.records
-                            if row.owner == OWNER
+                            row.record_id for row in pending_command.records if row.owner == OWNER
                         )
                         expected_publications.discard(
                             (pending_command.operation_kind, pending_command.idempotency_key)

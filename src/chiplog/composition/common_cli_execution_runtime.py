@@ -990,9 +990,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         )
 
         with self._authority_gate().hold():
-            return read_selected_original_resolver_invocation_source_held(
-                self, historical=True
-            )
+            return read_selected_original_resolver_invocation_source_held(self, historical=True)
 
     async def publish_original_call_resolution(self, peer: str = "hermetic-ingress"):
         from chiplog.composition.r14_original_call_resolution_publication import (
@@ -1008,6 +1006,21 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         with self._authority_gate().hold():
             return read_selected_original_call_resolution_source_held(self)
+
+    async def publish_loop_semantic_reduction(self, peer: str = "hermetic-ingress"):
+        from chiplog.composition.r14_loop_semantic_reduction_publication import (
+            publish_loop_semantic_reduction,
+        )
+
+        return await publish_loop_semantic_reduction(self, peer)
+
+    def read_selected_loop_semantic_reduction(self):
+        from chiplog.composition.r14_loop_semantic_reduction_publication import (
+            read_selected_loop_semantic_reduction_source_held,
+        )
+
+        with self._authority_gate().hold():
+            return read_selected_loop_semantic_reduction_source_held(self)
 
     async def publish_execution_accounting_readiness(self, peer: str = "hermetic-ingress"):
         from chiplog.composition.r14_recovery_publication import (

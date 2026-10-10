@@ -6,10 +6,11 @@ import pytest
 
 from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
 from chiplog.architecture.r7_runtime import (
-    R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_PRODUCTION_MANIFEST,
+    R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
 )
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+    PreparedLoopSemanticReduction,
     PreparedOriginalCallResolution,
 )
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
@@ -37,7 +38,7 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
     resources = HermeticDispatchResources(
         scenarios=("LOST_RESPONSE_AFTER_EFFECT",), cap=1, custody_path=custody
     )
-    manifest = R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_PRODUCTION_MANIFEST
+    manifest = R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST
 
     async with open_common_cli_execution_runtime(
         database,
@@ -114,6 +115,11 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert isinstance(resolution, PreparedOriginalCallResolution)
         assert resolution.closure.original == open_recovery.opening.original
         assert resolution.recovered_outcome.original == open_recovery.opening.original
+        reduction = await runtime.publish_loop_semantic_reduction()
+        assert isinstance(reduction, PreparedLoopSemanticReduction)
+        assert reduction.record.disposition.kind == "CONSUMABLE"
+        selected_reduction = runtime.read_selected_loop_semantic_reduction()
+        assert selected_reduction.record == reduction.record
         resolved_frontier = runtime.read_selected_accepted_open_frontier()
         resolved_disposition = resolved_frontier.calls[0].disposition
         assert resolved_disposition.kind == "RECOVERY_REQUIRED"
@@ -133,6 +139,7 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert reopened.read_selected_original_resolver_authority_policy() == policy
         assert reopened.read_selected_original_resolver_invocation_source()[0] == invocation
         assert reopened.read_selected_original_call_resolution() == resolution
+        assert reopened.read_selected_loop_semantic_reduction().record == reduction.record
         resolved_frontier = reopened.read_selected_accepted_open_frontier()
         resolved_disposition = resolved_frontier.calls[0].disposition
         assert resolved_disposition.kind == "RECOVERY_REQUIRED"

@@ -658,6 +658,11 @@ class R14PlanningRuntime(R13PlanningRuntime):
             )
 
             validate_original_call_resolution_startup(self)
+            from chiplog.composition.r14_loop_semantic_reduction_publication import (
+                validate_loop_semantic_reduction_startup,
+            )
+
+            validate_loop_semantic_reduction_startup(self)
             validate_recovery_startup(self)
             validate_selected_denials(self._owner_decisions().snapshot())
             validate_selected_ingress(self._owner_decisions().snapshot())

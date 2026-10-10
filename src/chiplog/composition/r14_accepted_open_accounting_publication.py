@@ -73,8 +73,7 @@ def _accepted_open_sealed_accounting(facts, cut, result):
     )
     accepted = facts.accepted.acceptance
     manifest = tuple(
-        member.revision
-        for member in accepted.loop_proposal.complete_acceptance_manifest
+        member.revision for member in accepted.loop_proposal.complete_acceptance_manifest
     )
     mismatches = {
         "opening_source_cut": opening.source_cut_fingerprint == cut.cut_fingerprint,
@@ -303,9 +302,7 @@ async def _finish(runtime, entry: dict[str, object]):
         command,
         str(entry["predecessor"]),
         str(entry["resulting"]),
-        is_materialized=lambda: runtime._loop_decision_materialized(
-            command.idempotency_key, entry
-        ),
+        is_materialized=lambda: runtime._loop_decision_materialized(command.idempotency_key, entry),
     )
     runtime._finish_decision(command.idempotency_key, expected=entry)
     selected = read_selected_accepted_open_accounting(runtime)
@@ -383,7 +380,7 @@ async def publish_accepted_open_accounting(runtime, peer: str = "hermetic-ingres
                     or _selected_competing_direct(runtime, cut.original_call_id)
                 ):
                     return "STALE"
-            except (LoopRejected, ValueError, TypeError, RuntimeError):
+            except LoopRejected, ValueError, TypeError, RuntimeError:
                 return "STALE"
         return None
 
@@ -452,8 +449,7 @@ def validate_selected_accepted_open_accounting(runtime) -> None:
             command.operation_kind == ACCEPTED_OPEN_ACCOUNTING_OPERATION
             or "accepted_open_accounting_evidence" in entry
             or any(
-                record.schema_id
-                == "chiplog.execution.accepted-open-accounting.v1"
+                record.schema_id == "chiplog.execution.accepted-open-accounting.v1"
                 for record in command.records
             )
         )
@@ -497,12 +493,55 @@ def validate_selected_accepted_open_accounting(runtime) -> None:
 
 
 async def hold_if_accepted_open(runtime, peer: str) -> bool:
-    """Durably account and HOLD before any successor-turn owner preparation."""
+    """Only current consumable reduction can clear an accepted/open Turn hold."""
     current = _current_cut(runtime)
     if current is None:
         return False
     await publish_accepted_open_recovery(runtime, peer)
-    return True
+    from chiplog.composition.r14_original_call_resolution_publication import (
+        read_selected_original_call_resolution_source_held,
+    )
+
+    with runtime._authority_gate().hold():
+        resolution = read_selected_original_call_resolution_source_held(runtime)
+    if resolution is None:
+        return True
+    reduction = runtime.read_selected_loop_semantic_reduction()
+    if reduction is None:
+        return True
+    return not _reduction_matches_resolution(resolution, reduction)
+
+
+def _reduction_matches_resolution(resolution, reduction) -> bool:
+    from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+        ConsumableReduction,
+        ResolvedReductionAnchor,
+    )
+
+    def reference(record_id: str, record: RecoveryDTO) -> CallSubjectHead:
+        fingerprint = hashlib.sha256(record.canonical_bytes()).hexdigest()
+        return CallSubjectHead(
+            subject_id=record_id,
+            revision=Present(head="record:" + fingerprint, fingerprint=fingerprint),
+        )
+
+    record = reduction.record
+    anchor = record.anchor
+    return (
+        isinstance(record.disposition, ConsumableReduction)
+        and isinstance(anchor, ResolvedReductionAnchor)
+        and record.stream.stream_id == resolution.basis.original.evidence_stream_id
+        and record.reduction_id == resolution.basis.reduction_id
+        and record.reducer_id == resolution.basis.original.reducer_id
+        and record.reducer_version == resolution.basis.original.reducer_version
+        and record.disposition.semantic_class == resolution.basis.accepted_semantic_class
+        and anchor.original == resolution.basis.original
+        and anchor.accepted_witness == resolution.basis.selected_witness
+        and anchor.closure == reference(resolution.closure.closure_id, resolution.closure)
+        and anchor.recovered_outcome
+        == reference(resolution.recovered_outcome.outcome_id, resolution.recovered_outcome)
+        and anchor.resolver_batch == reference(resolution.batch.batch_id, resolution.batch)
+    )
 
 
 def _selected_recovery(runtime, identity: str) -> dict[str, object] | None:
@@ -534,9 +573,7 @@ async def _finish_recovery(runtime, entry: dict[str, object]):
         command,
         str(entry["predecessor"]),
         str(entry["resulting"]),
-        is_materialized=lambda: runtime._loop_decision_materialized(
-            command.idempotency_key, entry
-        ),
+        is_materialized=lambda: runtime._loop_decision_materialized(command.idempotency_key, entry),
     )
     runtime._finish_decision(command.idempotency_key, expected=entry)
     if read_selected_accepted_open_recovery(runtime) != evidence.result:
@@ -613,7 +650,7 @@ async def publish_accepted_open_recovery(runtime, peer: str = "hermetic-ingress"
                     or _selected_competing_direct(runtime, cut.original_call_id)
                 ):
                     return "STALE"
-            except (LoopRejected, ValueError, TypeError, RuntimeError):
+            except LoopRejected, ValueError, TypeError, RuntimeError:
                 return "STALE"
         return None
 
@@ -621,9 +658,7 @@ async def publish_accepted_open_recovery(runtime, peer: str = "hermetic-ingress"
         with runtime._authority_gate().hold():
             runtime._require_no_pending()
             if _selected_competing_direct(runtime, cut.original_call_id):
-                raise LoopRejected(
-                    "accepted/open recovery conflicts with selected direct terminal"
-                )
+                raise LoopRejected("accepted/open recovery conflicts with selected direct terminal")
             runtime._append_decision(
                 {
                     "version": 1,

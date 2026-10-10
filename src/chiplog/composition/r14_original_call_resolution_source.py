@@ -54,8 +54,7 @@ def _require_resolution_absent(runtime: CommonCliExecutionRuntime) -> None:
             raise LoopRejected("selected original call resolution already exists")
         records = entry.get("records")
         if isinstance(records, list) and any(
-            isinstance(row, dict) and row.get("schema") in _RESOLUTION_SCHEMAS
-            for row in records
+            isinstance(row, dict) and row.get("schema") in _RESOLUTION_SCHEMAS for row in records
         ):
             raise LoopRejected("original resolution records exist without a selected resolution")
 
@@ -78,6 +77,7 @@ def _selected_resolution_preimage(runtime, expected_cut):
     import sqlite3
     from contextlib import closing
 
+    from chiplog.composition import r14_loop_semantic_reduction_publication
     from chiplog.composition import r14_original_call_resolution_publication as publication
     from chiplog.platform.publication_readback import inspect_publication
 
@@ -92,6 +92,26 @@ def _selected_resolution_preimage(runtime, expected_cut):
         or predecessor != expected_cut.materialization_commitment
     ):
         raise LoopRejected("selected original resolution does not extend its retained source cut")
+    reductions = r14_loop_semantic_reduction_publication._selected_entries(runtime)
+    if reductions:
+        r14_loop_semantic_reduction_publication.validate_loop_semantic_reduction_startup(runtime)
+        from chiplog.composition.r14_loop_history import read_execution_recovery_history
+
+        read_execution_recovery_history(runtime, selected_only=True)
+        latest_entry = reductions[-1][2]
+        with read_connection(runtime._database) as connection:
+            actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+            head = connection.execute(
+                "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+            ).fetchone()
+        anchored = runtime._commitment_journal.load(runtime._tenant_id)
+        if (
+            head != (reductions[-1][3].expected_head + 1,)
+            or actual != anchored
+            or actual != latest_entry.get("resulting")
+        ):
+            raise LoopRejected("selected semantic reduction chain is not the current suffix")
+        return evidence, actual, anchored, len(reductions)
     with read_connection(runtime._database) as connection:
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
         head = connection.execute(
@@ -110,25 +130,28 @@ def _selected_resolution_preimage(runtime, expected_cut):
             connection.backup(historical)
             historical.execute("BEGIN")
             for record in batch.records:
-                if historical.execute(
-                    "DELETE FROM records WHERE tenant_id=? AND record_id=?",
-                    (runtime._tenant_id, record.record_id),
-                ).rowcount != 1:
+                if (
+                    historical.execute(
+                        "DELETE FROM records WHERE tenant_id=? AND record_id=?",
+                        (runtime._tenant_id, record.record_id),
+                    ).rowcount
+                    != 1
+                ):
                     raise LoopRejected("selected original resolution predecessor is incomplete")
-            if historical.execute(
-                "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
-                "AND idempotency_key=?",
-                (runtime._tenant_id, batch.operation_kind, batch.idempotency_key),
-            ).rowcount != 1:
+            if (
+                historical.execute(
+                    "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
+                    "AND idempotency_key=?",
+                    (runtime._tenant_id, batch.operation_kind, batch.idempotency_key),
+                ).rowcount
+                != 1
+            ):
                 raise LoopRejected("selected original resolution publication is incomplete")
             historical.execute(
                 "UPDATE tenant_heads SET head=? WHERE tenant_id=?",
                 (batch.expected_head, runtime._tenant_id),
             )
-            if (
-                capture_authority_snapshot_commitment(historical, runtime._tenant_id)
-                != predecessor
-            ):
+            if capture_authority_snapshot_commitment(historical, runtime._tenant_id) != predecessor:
                 raise LoopRejected("selected original resolution predecessor commitment differs")
     return evidence, actual, anchored
 
@@ -157,7 +180,7 @@ def authenticate_selected_resolution_prefix_held(runtime, actual: str, anchored:
             and current_anchor == anchored
             and runtime._commitment_journal.load(runtime._tenant_id) == anchored
         )
-    except (ValueError, TypeError, RuntimeError, OSError, sqlite3.Error):
+    except ValueError, TypeError, RuntimeError, OSError, sqlite3.Error:
         return False
 
 
@@ -167,10 +190,10 @@ def _selected_witness_source(closed: R14NativeAcceptedOpenOutcome) -> RecoverySo
     raw = outcome.canonical_bytes()
     if (
         member.record_bytes != raw
-            or member.record != outcome.record
-            or member.kind != outcome.kind
-            or member.intent.subject_id != outcome.snapshot.intent.intent_id
-        ):
+        or member.record != outcome.record
+        or member.kind != outcome.kind
+        or member.intent.subject_id != outcome.snapshot.intent.intent_id
+    ):
         raise LoopRejected("closed R16 selected witness differs from retained physical record")
     record = CallSubjectHead(
         subject_id=member.record.subject_id,
@@ -307,8 +330,20 @@ def capture_original_call_resolution_request(
         source_sequence = tenant_commit_sequence
         source_commitment = before
         if selected_suffix is not None:
-            _, selected_actual, selected_anchor = selected_suffix
-            if (
+            _, selected_actual, selected_anchor, *selected_reductions = selected_suffix
+            if selected_reductions:
+                if (
+                    tenant_commit_sequence
+                    != expected_cut.tenant_commit_sequence + 1 + selected_reductions[0]
+                    or selected_actual != before
+                    or selected_anchor != before
+                ):
+                    raise LoopRejected(
+                        "selected semantic reduction suffix changed the authenticated source cut"
+                    )
+                source_sequence = tenant_commit_sequence
+                source_commitment = before
+            elif (
                 tenant_commit_sequence != expected_cut.tenant_commit_sequence + 1
                 or selected_actual != before
                 or selected_anchor not in (expected_cut.materialization_commitment, before)
@@ -316,8 +351,9 @@ def capture_original_call_resolution_request(
                 raise LoopRejected(
                     "selected resolution suffix changed the authenticated source cut"
                 )
-            source_sequence = expected_cut.tenant_commit_sequence
-            source_commitment = expected_cut.materialization_commitment
+            else:
+                source_sequence = expected_cut.tenant_commit_sequence
+                source_commitment = expected_cut.materialization_commitment
         if not allow_selected_resolution:
             _require_resolution_absent(runtime)
 
