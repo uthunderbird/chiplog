@@ -6,6 +6,8 @@ from dataclasses import replace
 import pytest
 
 from chiplog.adapters.driven.effects_queries import StoredEffectRow
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEffectHistoryMember
 from chiplog.capabilities.effects.dispatch_outcome_contracts import (
     DispatchOutcomeRecordV2,
@@ -13,6 +15,7 @@ from chiplog.capabilities.effects.dispatch_outcome_contracts import (
 from chiplog.capabilities.effects.dispatch_outcomes import evidence_head, prepare_outcome
 from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2, reference
 from chiplog.composition.r14_native_evidence_sources import (
+    complete_ordered_dispatch_sources,
     complete_ordered_evidence_sources,
 )
 from chiplog.composition.r14_native_selected_accounting_source import (
@@ -365,6 +368,29 @@ def test_complete_evidence_sources_bind_ordered_items_to_unique_selected_carrier
         members=tuple(item[1] for item in chain),
         v2_records=tuple(item[0] for item in chain),
     )
+
+    intent = reference(
+        terminal.snapshot.intent.intent_id,
+        terminal.snapshot.intent.canonical_bytes(),
+    )
+    call_intent = CallSubjectHead(
+        subject_id=intent.subject_id,
+        revision=Present(head=intent.head, fingerprint=intent.fingerprint),
+    )
+    dispatch_sources = complete_ordered_dispatch_sources(
+        call_intent, history
+    )
+    assert dispatch_sources is not None
+    assert tuple(source.physical_record.subject_id for source in dispatch_sources) == tuple(
+        item.record.subject_id for item in history.members
+    )
+    assert tuple(source.canonical_record_bytes for source in dispatch_sources) == tuple(
+        item.record_bytes for item in history.members
+    )
+    assert complete_ordered_dispatch_sources(
+        call_intent,
+        replace(history, members=history.members[:-1]),
+    ) is None
 
     sources = complete_ordered_evidence_sources(terminal, history)
 

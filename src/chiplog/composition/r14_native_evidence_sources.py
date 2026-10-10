@@ -5,10 +5,13 @@ from __future__ import annotations
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.effects.contracts import ExactHead
 from chiplog.capabilities.effects.dispatch_outcome_contracts import (
     DispatchOutcomeRecordV2,
 )
 from chiplog.capabilities.effects.dispatch_outcomes import evidence_head
+from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2
+from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
 from chiplog.composition.r16_dispatch_history import VerifiedDispatchHistory
 
 
@@ -86,4 +89,88 @@ def complete_ordered_evidence_sources(
                 ),
             )
         )
+    return tuple(sources)
+
+
+def complete_ordered_dispatch_sources(
+    intent: CallSubjectHead,
+    history: VerifiedDispatchHistory,
+) -> tuple[RecoverySourceRecord, ...] | None:
+    """Project the exact selected R16 chain for one intent into recovery sources.
+
+    ``verify_dispatch_history`` has already authenticated this selected history.
+    This projection preserves each member's own selected decision and physical
+    record; it does not infer them from the current outcome or evidence heads.
+    """
+    if type(intent) is not CallSubjectHead or type(history) is not VerifiedDispatchHistory:
+        return None
+    if not isinstance(intent.revision, Present):
+        return None
+    records = {
+        record.record: record
+        for record in history.v2_records
+        if isinstance(record, (DispatchRecordV2, DispatchOutcomeRecordV2))
+    }
+    if len(records) != len(history.v2_records):
+        return None
+    expected_records = tuple(
+        record
+        for record in history.v2_records
+        if record.snapshot.intent.intent_id == intent.subject_id
+        and effects_reference(
+            record.snapshot.intent.intent_id,
+            record.snapshot.intent.canonical_bytes(),
+        )
+        == ExactHead(
+            subject_id=intent.subject_id,
+            head=intent.revision.head,
+            fingerprint=intent.revision.fingerprint,
+        )
+    )
+    selected = tuple(
+        member for member in history.members if member.intent.subject_id == intent.subject_id
+    )
+    if not selected or len(selected) != len(expected_records):
+        return None
+    if tuple(member.record for member in selected) != tuple(
+        record.record for record in expected_records
+    ):
+        return None
+    sources: list[RecoverySourceRecord] = []
+    seen: set[CallSubjectHead] = set()
+    for member, record in zip(selected, expected_records, strict=True):
+        if records.get(member.record) != record:
+            return None
+        if (
+            member.record in seen
+            or member.intent.head != intent.revision.head
+            or member.intent.fingerprint != intent.revision.fingerprint
+            or member.record_bytes != record.canonical_bytes()
+            or member.record.subject_id != record.record.subject_id
+            or member.record.head != record.record.head
+        ):
+            return None
+        seen.add(member.record)
+        physical = CallSubjectHead(
+            subject_id=member.record.subject_id,
+            revision=Present(head=member.record.head, fingerprint=member.record.fingerprint),
+        )
+        sources.append(
+            RecoverySourceRecord(
+                owner="effects",
+                subject=physical,
+                schema_id=record.schema_id,
+                canonical_record_bytes=member.record_bytes,
+                selected_decision=CallSubjectHead(
+                    subject_id=member.selected_decision.subject_id,
+                    revision=Present(
+                        head=member.selected_decision.head,
+                        fingerprint=member.selected_decision.fingerprint,
+                    ),
+                ),
+                physical_record=physical,
+            )
+        )
+    if len(seen) != len(selected):
+        return None
     return tuple(sources)
