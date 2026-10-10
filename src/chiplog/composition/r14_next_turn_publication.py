@@ -32,6 +32,7 @@ from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
     EXECUTION_RECOVERY_REQUEST_SCHEMA,
 )
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
+from chiplog.platform.r7_trust_durability import FrozenTrustObservation
 
 from .r14_loop_history import read_execution_history
 from .r14_next_turn_records import (
@@ -169,6 +170,13 @@ def _loop_decision_head(runtime: CommonCliExecutionRuntime) -> tuple[str, str | 
     return identity, predecessor, hashlib.sha256(raw).hexdigest()
 
 
+def _require_trust_continuity(
+    expected: FrozenTrustObservation, actual: FrozenTrustObservation, stage: str
+) -> None:
+    if expected != actual:
+        raise LoopRejected(stage)
+
+
 async def _finish(
     runtime: CommonCliExecutionRuntime, entry: dict[str, object]
 ) -> ExecutionRunRecord:
@@ -219,6 +227,12 @@ async def start_next_execution_turn(
                 cut = source(runtime).collect_held(runtime)  # type: ignore[no-untyped-call]
                 if cut is None or cut.tenant_id != runtime._tenant_id:
                     raise LoopRejected("complete current next Turn cut unavailable; HOLD")
+                cut_trust_observation = runtime._trust.capture_verified_observation()
+                _require_trust_continuity(
+                    observed.observation,
+                    cut_trust_observation,
+                    "trust changed between next Turn actor authentication and source cut",
+                )
                 run = cut.complete_ordered_run_lineage[-1]
                 if (
                     not isinstance(run, ExecutionRunRecord)
@@ -285,6 +299,11 @@ async def start_next_execution_turn(
         with runtime._authority_gate().hold():
             if not runtime._same_execution_actor_identity(observed, refreshed):
                 raise LoopRejected("next Turn actor changed before publication")
+            _require_trust_continuity(
+                cut_trust_observation,
+                refreshed.observation,
+                "trust source changed during next Turn owner exchange",
+            )
             observed = refreshed
         evidence = RetainedNextTurnPublication(
             request=request,

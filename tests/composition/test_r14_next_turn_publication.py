@@ -40,9 +40,7 @@ async def test_selected_next_turn_restarts_and_replays(tmp_path: Path):
         await selected_native_cancelled(runtime, bound=True)
         await runtime.publish_native_one_call_cancelled_accounting()
         await runtime.publish_execution_accounting_readiness()
-        cut = source.collect(runtime)
-        assert cut is not None
-        run = cut.complete_ordered_run_lineage[-1]
+        run = read_execution_history(runtime).records[-1]
         with pytest.raises(LoopRejected, match="stale or foreign"):
             await runtime.start_next_execution_turn(run.run_id, "stale-head")
         assert read_execution_history(runtime).records[-1] == run
@@ -95,9 +93,7 @@ async def test_foreign_evidence_holds_next_turn_without_publication(tmp_path: Pa
         await selected_native_cancelled(runtime, bound=True)
         await runtime.publish_native_one_call_cancelled_accounting()
         await runtime.publish_execution_accounting_readiness()
-        cut = source.collect(runtime)
-        assert cut is not None
-        run = cut.complete_ordered_run_lineage[-1]
+        run = read_execution_history(runtime).records[-1]
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
