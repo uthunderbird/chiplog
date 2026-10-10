@@ -48,12 +48,19 @@ from .native_recovery_cut_validation import validate_native_recovery_cut
 from .native_recovery_profile_contracts import SCHEMA, SCHEMA_V2
 from .recovery_contracts import Absent, OriginalObligationBinding, Present, RecoveryDTO
 from .recovery_domain import (
+    RecoveredClosure,
     RecoveryHold,
     RecoveryIntegrityFault,
     model_continuation_ready,
     sealed_call_accounting,
 )
-from .recovery_frontier_contracts import CancelledBeforeAcceptResult, InitializedCall
+from .recovery_frontier_contracts import (
+    CancelledBeforeAcceptResult,
+    ConsequentialAcceptedCall,
+    InitializedCall,
+    RecoveryRequiredResult,
+    TerminalCallFrontier,
+)
 from .recovery_frontier_registry_contracts import (
     execution_native_one_call_cancellation_frontier_registry_v1,
     execution_native_one_call_recovery_frontier_registry_v2,
@@ -201,15 +208,8 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
         raise RecoveryIntegrityFault("response lost captured/current Turn binding")
     call = view.ordered_calls[0]
     init_ref = seal.complete_ordered_initialized[0]
-    if (
-        call.original_call_id != init_ref.subject_id
-        or call.response_id != seal.response_seal_id
-        or call.kind != "TERMINAL"
-        or not isinstance(call.acceptance, InitializedCall)
-        or call.acceptance.initialized != init_ref.revision
-        or not isinstance(call.disposition, CancelledBeforeAcceptResult)
-    ):
-        raise RecoveryHold("native call is not exactly cancelled before acceptance")
+    if call.original_call_id != init_ref.subject_id or call.response_id != seal.response_seal_id:
+        raise RecoveryIntegrityFault("native terminal call differs from sealed initialization")
     init = _record(_source_by_ref(cut, _INITIALIZED, init_ref), InitializedCallRecord)
     _source(cut, _INITIALIZED, init_ref, init.canonical_bytes())
     if (
@@ -221,6 +221,21 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
         or init.call.classification != "CONSEQUENTIAL"
     ):
         raise RecoveryIntegrityFault("initialized call differs from original response")
+    if (
+        isinstance(call.acceptance, ConsequentialAcceptedCall)
+        and isinstance(call.disposition, RecoveryRequiredResult)
+    ):
+        if cut.frontier.registry != recovery_registry:
+            raise RecoveryHold("accepted recovery requires the V2 native recovery profile")
+        _validate_accepted_recovery(cut, call, init, init_ref)
+        return
+    if (
+        call.kind != "TERMINAL"
+        or not isinstance(call.acceptance, InitializedCall)
+        or call.acceptance.initialized != init_ref.revision
+        or not isinstance(call.disposition, CancelledBeforeAcceptResult)
+    ):
+        raise RecoveryHold("native call is not exactly cancelled before acceptance")
     terminal = _unique_record_by_revision(
         cut, _CANCELLED, call.disposition.terminal, CancelledBeforeAcceptRecord
     )
@@ -256,6 +271,250 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
         _validate_extension_sources(cut, cut.complete_sources[len(expected_sources) :])
     if cut.original_closures or cut.current_reductions:
         raise RecoveryHold("unneeded closure or reduction in preaccept cancellation")
+
+
+def _source_for_revision(
+    cut: ExecutionRecoveryCut, revision: Present, schema: str
+) -> RecoverySourceRecord:
+    matches = tuple(
+        source
+        for source in cut.complete_sources
+        if source.owner == "agent_loop"
+        and source.schema_id == schema
+        and source.subject.revision == revision
+    )
+    if len(matches) != 1:
+        raise RecoveryHold("missing or duplicate accepted-recovery source")
+    source = matches[0]
+    _source(cut, schema, source.subject, source.canonical_record_bytes)
+    return source
+
+
+def _source_for_subject_head(
+    cut: ExecutionRecoveryCut, subject_id: str, head: str, schema: str
+) -> RecoverySourceRecord:
+    matches = tuple(
+        source
+        for source in cut.complete_sources
+        if source.owner == "agent_loop"
+        and source.schema_id == schema
+        and source.subject.subject_id == subject_id
+        and source.subject.revision.head == head
+    )
+    if len(matches) != 1:
+        raise RecoveryHold("missing or duplicate accepted-recovery subject")
+    source = matches[0]
+    _source(cut, schema, source.subject, source.canonical_record_bytes)
+    return source
+
+
+def _validate_accepted_recovery(
+    cut: ExecutionRecoveryCut,
+    call: TerminalCallFrontier,
+    initialized: InitializedCallRecord,
+    initialized_ref: CallSubjectHead,
+) -> None:
+    """Validate the owner-visible closed recovery pair without granting authority."""
+    from .execution_recovery_contracts import (
+        AcceptedOpenRecoveryOpeningV1,
+        AcceptedOpenTerminalDispositionV1,
+    )
+    from .original_recovery_contracts import (
+        LoopSemanticReductionRecord,
+        OriginalObligationClosureRecord,
+        OriginalResolutionBasis,
+        OriginalResolverBatchRecord,
+        RecoveredCallOutcomeRecord,
+    )
+    from .recovery_frontier_contracts import EvidenceReduction
+
+    acceptance = call.acceptance
+    disposition = call.disposition
+    assert isinstance(acceptance, ConsequentialAcceptedCall)
+    assert isinstance(disposition, RecoveryRequiredResult)
+    if (
+        acceptance.initialized != initialized_ref.revision
+        or acceptance.external_effect_intent.kind != "PRESENT"
+        or disposition.result.kind != "ABSENT"
+        or disposition.recovered_outcome.outcome.kind != "PRESENT"
+        or disposition.recovered_outcome.original_call_id != call.original_call_id
+        or disposition.recovered_outcome.recovery_obligation_id
+        != disposition.obligation.obligation_id
+    ):
+        raise RecoveryHold("accepted recovery frontier is incomplete")
+
+    from chiplog.composition.r14_acceptance_contracts import ACCEPTED_SCHEMA, EXECUTION_SCHEMA
+
+    accepted_source = _source_for_revision(cut, acceptance.accepted, ACCEPTED_SCHEMA)
+    accepted = _record(accepted_source, ToolCallAcceptedRecord)
+    accepted_ref = call_record_reference(accepted.accepted_id, accepted)
+    execution_source = _source_for_revision(cut, acceptance.execution_intent, EXECUTION_SCHEMA)
+    execution_intent = _record(execution_source, ToolExecutionIntentRecord)
+    execution_ref = call_record_reference(execution_intent.execution_intent_id, execution_intent)
+    if (
+        acceptance.accepted != accepted_ref.revision
+        or acceptance.execution_intent != execution_ref.revision
+        or acceptance.complete_acceptance_manifest
+        != (acceptance.accepted, acceptance.execution_intent, acceptance.external_effect_intent)
+        or accepted.binding.original_call_id != call.original_call_id
+        or accepted.binding.initialized != initialized_ref
+        or accepted.execution_intent_id != execution_intent.execution_intent_id
+        or execution_intent.original_call_id != call.original_call_id
+        or execution_intent.initialized != initialized_ref
+        or execution_intent.accepted != accepted_ref
+        or execution_intent.external_intent != acceptance.external_effect_intent
+        or initialized.call.original_call_id != call.original_call_id
+    ):
+        raise RecoveryIntegrityFault("accepted call and selected execution intent differ")
+
+    opening_source = _source_for_subject_head(
+        cut,
+        disposition.obligation.obligation_id,
+        disposition.obligation.obligation_head,
+        "chiplog.execution.accepted-open-recovery-opening.v1",
+    )
+    opening = _record(opening_source, AcceptedOpenRecoveryOpeningV1)
+    terminal_source = _source_for_revision(
+        cut,
+        disposition.terminal,
+        "chiplog.execution.accepted-open-terminal-disposition.v1",
+    )
+    terminal = _record(terminal_source, AcceptedOpenTerminalDispositionV1)
+    if (
+        opening.original != disposition.obligation
+        or opening_source.subject.subject_id != disposition.obligation.obligation_id
+        or terminal.kind != "RECOVERY_REQUIRED"
+        or terminal.original_call_id != call.original_call_id
+        or terminal.accepted != accepted_ref
+        or terminal.external_effect_intent != acceptance.external_effect_intent
+        or terminal.obligation_opening.subject_id != opening.opening_id
+        or disposition.terminal.fingerprint != _sha(terminal.canonical_bytes())
+    ):
+        raise RecoveryIntegrityFault("accepted recovery opening or immutable terminal differs")
+
+    recovered = disposition.recovered_outcome.outcome
+    outcome_source = _source_for_revision(
+        cut, recovered, "chiplog.loop.recovered-call-outcome.v1"
+    )
+    outcome = _record(outcome_source, RecoveredCallOutcomeRecord)
+    if len(cut.original_closures) != 1 or len(cut.current_reductions) != 1:
+        raise RecoveryHold("accepted recovery requires exactly one closure and current reduction")
+    closure_summary = cut.original_closures[0]
+    closure_source = _source_for_revision(
+        cut, closure_summary.closure, "chiplog.loop.original-obligation-closure.v1"
+    )
+    closure = _record(closure_source, OriginalObligationClosureRecord)
+    batch_source = _source_for_revision(
+        cut, closure_summary.resolver_batch, "chiplog.loop.original-resolver-batch.v1"
+    )
+    batch = _record(batch_source, OriginalResolverBatchRecord)
+    basis_source = _source_for_revision(
+        cut, outcome.basis.revision, "chiplog.loop.original-resolution-basis.v1"
+    )
+    basis = _record(basis_source, OriginalResolutionBasis)
+    if (
+        closure_summary.original != disposition.obligation
+        or closure_summary.terminal_disposition != disposition.terminal
+        or closure_summary.recovered_outcome != recovered
+        or closure_summary.closure != closure_source.subject.revision
+        or closure_source.subject.subject_id != closure.closure_id
+        or closure.basis != outcome.basis
+        or closure.original != disposition.obligation
+        or closure.prior_obligation != opening_source.physical_record
+        or closure.accepted_witness.revision != closure_summary.accepted_evidence
+        or outcome.basis != basis_source.subject
+        or outcome.original != disposition.obligation
+        or outcome_source.subject.subject_id != outcome.outcome_id
+        or outcome.closure != closure_source.subject
+        or outcome.accepted_witness.revision != closure_summary.accepted_evidence
+        or outcome.accepted_semantic_class != closure_summary.accepted_semantic_class
+        or basis.original != disposition.obligation
+        or basis.original_terminal != terminal_source.physical_record
+        or basis.selected_witness != closure.accepted_witness
+        or any(
+            not any(source.subject == item for source in cut.complete_sources)
+            for item in (
+                *basis.complete_evidence_manifest,
+                basis.resolver_policy,
+                basis.reducer_policy,
+            )
+        )
+        or batch.basis != outcome.basis
+        or batch.closure != closure_source.subject
+        or batch_source.subject.subject_id != batch.batch_id
+        or batch.recovered_outcome != outcome_source.subject
+        or batch.batch_id != batch_source.subject.subject_id
+    ):
+        raise RecoveryIntegrityFault("selected resolution records do not form one exact pair")
+
+    reduction = cut.current_reductions[0]
+    if not isinstance(reduction, EvidenceReduction):
+        raise RecoveryIntegrityFault("current reduction has an unsupported shape")
+    reduction_source = _source_for_revision(
+        cut,
+        reduction.current_reduction,
+        "chiplog.loop.semantic-reduction.v1",
+    )
+    reduction_record = _record(reduction_source, LoopSemanticReductionRecord)
+    if (
+        not isinstance(reduction, EvidenceReduction)
+        or reduction.stream_id != disposition.obligation.evidence_stream_id
+        or reduction.reduction_id != reduction_record.reduction_id
+        or reduction.reducer_id != reduction_record.reducer_id
+        or reduction.reducer_version != reduction_record.reducer_version
+        or reduction_record.stream.stream_id != reduction.stream_id
+        or reduction_record.anchor.kind != "RESOLVED"
+        or reduction_record.anchor.original != disposition.obligation
+        or reduction_record.anchor.accepted_witness.revision != reduction.accepted_witness
+        or reduction_record.anchor.recovered_outcome.revision != reduction.accepted_outcome
+        or reduction_record.anchor.closure.revision != reduction.obligation_closure
+        or reduction_record.anchor.resolver_batch.revision != reduction.resolver_batch
+        or tuple(item.revision for item in reduction_record.complete_ordered_evidence)
+        != reduction.ordered_consumed_evidence
+        or reduction_record.disposition.kind != "CONSUMABLE"
+        or reduction_record.disposition.semantic_class != reduction.semantic_class
+        or any(
+            not any(source.subject == evidence for source in cut.complete_sources)
+            for evidence in reduction_record.complete_ordered_evidence
+        )
+    ):
+        raise RecoveryIntegrityFault("selected current reduction differs from its cut")
+    if reduction.consumability != "CONSUMABLE":
+        raise RecoveryHold("current semantic reduction is not consumable")
+    if not any(
+        source.subject.revision == closure_summary.accepted_evidence
+        for source in cut.complete_sources
+    ):
+        raise RecoveryHold("accepted witness source is missing")
+
+
+def _continuation_closures(cut: ExecutionRecoveryCut, accounting):
+    closures = tuple(
+        RecoveredClosure(
+            original_call_id=item.original.original_call_id,
+            obligation_id=item.original.obligation_id,
+            original_obligation_head=item.original.obligation_head,
+            terminal_disposition=item.terminal_disposition,
+            outcome=item.recovered_outcome,
+            accepted_evidence=item.accepted_evidence,
+            closure=item.closure,
+            resolver_batch=item.resolver_batch,
+            resolver_id=item.original.resolver_id,
+            resolver_version=item.original.resolver_version,
+            reducer_id=item.original.reducer_id,
+            reducer_version=item.original.reducer_version,
+            reduction_id=item.reduction_id,
+            accepted_semantic_class=item.accepted_semantic_class,
+        )
+        for item in cut.original_closures
+    )
+    if any(call.disposition.kind == "RECOVERY_REQUIRED" for call in accounting.calls):
+        model_continuation_ready(accounting, closures, cut.current_reductions)
+        return cut.original_closures, cut.current_reductions
+    if closures or cut.current_reductions:
+        raise RecoveryHold("cancellation readiness contains recovery closure or reduction")
+    model_continuation_ready(accounting, (), ())
+    return (), ()
 
 
 def _validate_extension_sources(
@@ -543,7 +802,7 @@ def prepare_execution_continuation(
                 tuple(ref.subject_id for ref in view.seal.complete_ordered_initialized),
                 view.ordered_calls,
             )
-            model_continuation_ready(joined, (), ())
+            closures, reductions = _continuation_closures(request.cut, joined)
             preimage = (
                 b"chiplog.execution.continuation-ready.v1\x00"
                 + request.cut.digest().encode()
@@ -554,8 +813,8 @@ def prepare_execution_continuation(
                     readiness_id="continuation-ready:" + _sha(preimage),
                     source_cut_fingerprint=request.cut.digest(),
                     accounting=accounting,
-                    complete_original_closures=(),
-                    complete_current_reductions=(),
+                    complete_original_closures=closures,
+                    complete_current_reductions=reductions,
                 )
             )
         return PreparedExecutionContinuation(

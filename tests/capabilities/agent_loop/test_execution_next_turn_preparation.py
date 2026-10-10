@@ -30,6 +30,9 @@ from chiplog.capabilities.agent_loop.execution_recovery_observations import (
     SealedAccountingRecord,
     SealedResponseRecoveryView,
 )
+from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+    _continuation_closures,
+)
 from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     native_recovery_fingerprint,
 )
@@ -39,6 +42,7 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
     OriginalObligationBinding,
     Present,
 )
+from chiplog.capabilities.agent_loop.recovery_domain import sealed_call_accounting
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
     ConsequentialAcceptedCall,
@@ -435,6 +439,29 @@ async def test_next_turn_preserves_recovered_obligation_and_current_reduction() 
     )
     assert result.continuation.complete_original_closures == request.cut.original_closures
     assert result.continuation.complete_current_reductions == request.cut.current_reductions
+
+
+async def test_continuation_projection_keeps_exact_recovered_pair() -> None:
+    request = await _request(recovered=True)
+    cut = request.cut
+    view = cut.complete_ordered_responses[0]
+    accounting = sealed_call_accounting(
+        view.seal.response_seal_id,
+        view.seal.digest(),
+        tuple(item.subject_id for item in view.seal.complete_ordered_initialized),
+        view.ordered_calls,
+    )
+
+    closures, reductions = _continuation_closures(cut, accounting)
+
+    assert closures == cut.original_closures
+    assert reductions == cut.current_reductions
+    assert len(closures) == len(reductions) == 1
+    assert (
+        closures[0].recovered_outcome
+        == view.ordered_calls[0].disposition.recovered_outcome.outcome
+    )
+    assert reductions[0].accepted_witness == closures[0].accepted_evidence
 
 
 @pytest.mark.parametrize("mutation", ["missing_closure", "missing_reduction", "held_reduction"])
