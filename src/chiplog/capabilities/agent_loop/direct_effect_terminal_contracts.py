@@ -54,16 +54,33 @@ class DirectEffectTerminalClassificationV1(ExecutionRecoveryDTO):
 def translate_selected_outcome_v1(
     outcome: DispatchOutcomeRecordV2,
 ) -> RecoveredEffectStatusV1:
-    """Translate only exhaustive, non-conflicting terminal child evidence."""
+    """Translate a selected closed outcome or its authenticated late evidence head."""
     command, snapshot = outcome.command, outcome.snapshot
     children = tuple(item.subject_id for item in snapshot.intent.mandate.bundle_members)
     transmissions = tuple(item.transmission for item in snapshot.transmissions)
     evidence_ids = tuple(item.evidence_id for item in snapshot.evidence)
+    evidence_heads = tuple(evidence_head(item) for item in snapshot.evidence)
     intent_ref = reference(snapshot.intent.intent_id, snapshot.intent.canonical_bytes())
+    resolver_close = (
+        command.operation == "RESOLVE_OBLIGATION"
+        and command.evidence is None
+        and command.resolver is not None
+        and command.prior_evidence == evidence_heads
+        and snapshot.obligation.closure_evidence == evidence_heads
+    )
+    late_closed_append = (
+        command.operation == "APPEND_EVIDENCE"
+        and command.evidence is not None
+        and command.resolver is None
+        and len(snapshot.evidence_heads) > 1
+        and command.evidence == snapshot.evidence[-1]
+        and command.prior_evidence == snapshot.evidence_heads[:-1]
+        and 0 < len(snapshot.obligation.closure_evidence) < len(snapshot.evidence_heads)
+        and snapshot.obligation.closure_evidence
+        == snapshot.evidence_heads[: len(snapshot.obligation.closure_evidence)]
+    )
     if (
-        command.operation != "RESOLVE_OBLIGATION"
-        or command.evidence is not None
-        or command.resolver is None
+        not (resolver_close or late_closed_append)
         or command.intent != intent_ref
         or snapshot.obligation.original_intent != intent_ref
         or command.original_send != snapshot.obligation.original_send
@@ -71,12 +88,9 @@ def translate_selected_outcome_v1(
         or len(children) != len(set(children))
         or len(evidence_ids) != len(set(evidence_ids))
         or tuple(command.complete_children) != transmissions
-        or tuple(command.prior_evidence) != tuple(snapshot.evidence_heads)
-        or tuple(snapshot.evidence_heads)
-        != tuple(evidence_head(item) for item in snapshot.evidence)
+        or snapshot.evidence_heads != evidence_heads
         or tuple(snapshot.obligation.original_children) != tuple(command.complete_children)
         or snapshot.obligation.state != "CLOSED"
-        or tuple(snapshot.obligation.closure_evidence) != tuple(snapshot.evidence_heads)
         or snapshot.conflicting_evidence
     ):
         raise ValueError("R16 outcome is not a complete, closed resolver snapshot")

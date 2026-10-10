@@ -9,7 +9,10 @@ from tests.capabilities.agent_loop.test_original_call_resolution_preparation imp
 from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
     request as resolution_request,
 )
+from tests.capabilities.effects.support.dispatch_outcomes import original_send
+from tests.capabilities.effects.test_dispatch_outcomes import request as outcome_request
 
+from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
 from chiplog.capabilities.agent_loop.original_call_resolution_preparation import (
     prepare_original_call_resolution,
 )
@@ -23,6 +26,7 @@ from chiplog.capabilities.agent_loop.original_semantic_reduction_preparation imp
     prepare_loop_semantic_reduction,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent
+from chiplog.capabilities.effects.dispatch_outcomes import evidence_head, prepare_outcome
 
 
 def request() -> PrepareLoopSemanticReduction:
@@ -180,3 +184,89 @@ def test_compatible_refinement_advances_exact_selected_predecessor() -> None:
     assert refined.record.predecessor.head == "record:" + first_digest
     assert refined.record.reduction_id == first.record.reduction_id
     assert refined.record.disposition == first.record.disposition
+
+
+def test_late_compatible_and_rival_evidence_prepare_exact_reduction_successors() -> None:
+    source = request()
+    first = prepare_loop_semantic_reduction(source)
+    assert isinstance(first, PreparedLoopSemanticReduction)
+    first_raw = first.record.canonical_bytes()
+    import hashlib
+
+    first_digest = hashlib.sha256(first_raw).hexdigest()
+    first_source = _source(
+        first.record,
+        record_id="chiplog.loop.semantic-reduction.v1:" + first_digest,
+        owner="agent_loop",
+        schema="chiplog.loop.semantic-reduction.v1",
+        subject=_head(source.stream.stream_id, "record:" + first_digest, first_digest),
+    )
+    expected = SelectedLoopSemanticReduction(record=first.record, source=first_source)
+
+    send = original_send()
+    opening = prepare_outcome(outcome_request(send, send))
+    initial = prepare_outcome(
+        outcome_request(opening, send, name="receipt-initial")
+    )
+    confirmed = prepare_outcome(
+        outcome_request(initial, send, positive=("subject",), name="confirm")
+    )
+    closed = prepare_outcome(outcome_request(confirmed, send, close=True))
+
+    def prepare_late(name: str, *, negative: tuple[str, ...] = ()):
+        late = prepare_outcome(
+            outcome_request(closed, send, negative=negative, name=name)
+        )
+        evidence = late.command.evidence
+        assert evidence is not None
+        evidence_ref = evidence_head(evidence)
+        carrier = _head(late.record.subject_id, late.record.head, late.record.fingerprint)
+        evidence_source = RecoverySourceRecord(
+            owner="effects",
+            subject=_head(
+                evidence_ref.subject_id, evidence_ref.head, evidence_ref.fingerprint
+            ),
+            schema_id=late.schema_id,
+            canonical_record_bytes=late.canonical_bytes(),
+            selected_decision=_head("selected:late:" + name, "decision", "a" * 64),
+            physical_record=carrier,
+        )
+        witness_source = RecoverySourceRecord(
+            owner="effects",
+            subject=carrier,
+            schema_id=late.schema_id,
+            canonical_record_bytes=late.canonical_bytes(),
+            selected_decision=_head("selected:witness:late:" + name, "decision", "b" * 64),
+            physical_record=carrier,
+        )
+        revised = source.model_copy(
+            update={
+                "command_id": "refine:" + name,
+                "expected": expected,
+                "complete_ordered_evidence": (*source.complete_ordered_evidence, evidence_source),
+                "complete_anchor_sources": (
+                    *source.complete_anchor_sources[:-1],
+                    witness_source,
+                ),
+            }
+        )
+        return prepare_loop_semantic_reduction(revised), carrier
+
+    compatible, compatible_carrier = prepare_late("late-neutral")
+    assert isinstance(compatible, PreparedLoopSemanticReduction)
+    assert compatible.record.predecessor.head == "record:" + first_digest
+    assert compatible.record.predecessor.fingerprint == first_digest
+    assert compatible.record.reduction_id == first.record.reduction_id
+    assert compatible.record.disposition == first.record.disposition
+    assert compatible.record.complete_ordered_evidence == (
+        *first.record.complete_ordered_evidence,
+        compatible_carrier,
+    )
+
+    rival, rival_carrier = prepare_late("late-rival", negative=("subject",))
+    assert isinstance(rival, PreparedLoopSemanticReduction)
+    assert rival.record.predecessor.head == "record:" + first_digest
+    assert rival.record.reduction_id == first.record.reduction_id
+    assert rival.record.complete_ordered_evidence[-1] == rival_carrier
+    assert rival.record.disposition.kind == "HOLD"
+    assert rival.record.disposition.reason == "CONTRADICTORY"

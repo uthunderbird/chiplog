@@ -82,3 +82,42 @@ def test_v1_rejects_non_exact_status_and_empty_evidence_lineage() -> None:
         classify_direct_effect_terminal_v1(cast(RecoveredEffectStatusV1, status.model_dump()))
     with pytest.raises(ValueError):
         classify_direct_effect_terminal_v1(status.model_copy(update={"ordered_evidence": ()}))
+
+
+def test_v1_classifies_authenticated_neutral_evidence_appended_after_closure() -> None:
+    send = original_send()
+    unknown = prepare_outcome(request(send, send))
+    confirmed = prepare_outcome(
+        request(unknown, send, positive=("subject",), name="confirmed")
+    )
+    closed = prepare_outcome(request(confirmed, send, close=True))
+    late = prepare_outcome(request(closed, send, name="late-neutral"))
+
+    status = translate_selected_outcome_v1(late)
+
+    assert status.semantic_class == "R14_EFFECT_CONFIRMED"
+    assert status.terminal == late.record
+    assert status.ordered_evidence == late.snapshot.evidence_heads
+
+    bad_prefix = late.model_copy(
+        update={
+            "snapshot": late.snapshot.model_copy(
+                update={
+                    "obligation": late.snapshot.obligation.model_copy(
+                        update={"closure_evidence": ()}
+                    )
+                }
+            )
+        }
+    )
+    bad_prior = late.model_copy(
+        update={
+            "command": late.command.model_copy(
+                update={"prior_evidence": late.snapshot.evidence_heads}
+            )
+        }
+    )
+    with pytest.raises(ValueError):
+        translate_selected_outcome_v1(bad_prefix)
+    with pytest.raises(ValueError):
+        translate_selected_outcome_v1(bad_prior)

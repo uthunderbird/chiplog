@@ -197,7 +197,7 @@ def test_late_receipt_is_a_durable_observation_of_the_original_send(
     assert transfer_path.read_bytes().count(b"\n") == 1
     assert observation_path.read_bytes().count(b"\n") == 1
     if late_scenario == "COMPATIBLE":
-        assert late_observation.occurred_members == initial_observation.occurred_members
+        assert late_observation.occurred_members == ()
         assert late_observation.permanently_incapable_members == ()
     else:
         assert late_observation.occurred_members == ()

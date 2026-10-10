@@ -445,8 +445,8 @@ class HermeticEffectsProvider:
         )
         scenario = scenarios[prior]
         if scenario == "COMPATIBLE":
-            occurred = initial.occurred_members
-            incapable = initial.permanently_incapable_members
+            occurred = ()
+            incapable = ()
         else:
             occurred = initial.permanently_incapable_members
             incapable = initial.occurred_members

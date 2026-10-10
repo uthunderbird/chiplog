@@ -76,6 +76,16 @@ current pure classifier is
 `R14_R16_V2_OUTCOME_TRANSLATION` (`r14-r16-outcome-translation.v1`); the R14
 mapping below is a separate policy and version boundary.
 
+For an initial resolution, the selected record is the `RESOLVE_OBLIGATION`
+publication and its closure evidence equals the complete evidence list. For an
+R14.2 refinement, the current selected record may instead be an
+`APPEND_EVIDENCE` successor after that closure. Its command must append exactly
+the final evidence item, name the complete earlier evidence prefix, and retain
+the original nonempty closure evidence as a strict prefix. The mounted R16
+history reader must authenticate the full predecessor chain back to the
+selected resolver publication before R14 uses this current record. The
+classifier does not establish physical selection or ancestry by itself.
+
 The only mappings in v1 are:
 
 | Exact R16 semantic class | R14 terminal disposition | Required R14 result |
