@@ -200,14 +200,17 @@ def _selection_prefix(selected, current) -> bool:
     )
 
 
-def validate_selected_witness_at_cut(runtime, source, tenant_commit_sequence: int) -> None:
+def validate_selected_witness_at_cut(
+    runtime, source, tenant_commit_sequence: int, *, snapshot=None
+) -> None:
     """Bind a historical R16 witness to the latest selected outcome at its cut."""
     from chiplog.capabilities.effects.dispatch_outcome_contracts import (
         DispatchOutcomeRecordV2,
     )
     from chiplog.platform.owner_decision_journal import OwnerJournalSnapshot
 
-    snapshot = runtime._owner_decisions().snapshot()
+    if snapshot is None:
+        snapshot = runtime._owner_decisions().snapshot()
     if not isinstance(snapshot, OwnerJournalSnapshot):
         raise ValueError("semantic reduction witness has no authenticated owner history")
     decisions = snapshot.decisions

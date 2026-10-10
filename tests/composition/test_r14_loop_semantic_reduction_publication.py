@@ -203,15 +203,14 @@ def test_historical_witness_must_be_latest_selected_outcome_at_its_cut() -> None
         prepared=SimpleNamespace(request=SimpleNamespace(complete_records=(member,))),
     )
     decisions = [decision]
-    runtime = SimpleNamespace(
-        _owner_decisions=lambda: SimpleNamespace(
-            snapshot=lambda: OwnerJournalSnapshot(
-                "tenant-original", "head", tuple(decisions), frozenset()
-            )
-        )
-    )
+    runtime = SimpleNamespace(_owner_decisions=lambda: pytest.fail("snapshot should be reused"))
 
-    validate_selected_witness_at_cut(runtime, source, tenant_commit_sequence=6)
+    def owner_snapshot():
+        return OwnerJournalSnapshot("tenant-original", "head", tuple(decisions), frozenset())
+
+    validate_selected_witness_at_cut(
+        runtime, source, tenant_commit_sequence=6, snapshot=owner_snapshot()
+    )
 
     later = witness.model_copy(
         update={"snapshot": witness.snapshot.model_copy(update={"conflicting_evidence": True})}
@@ -233,7 +232,9 @@ def test_historical_witness_must_be_latest_selected_outcome_at_its_cut() -> None
         )
     )
     with pytest.raises(ValueError, match="not latest"):
-        validate_selected_witness_at_cut(runtime, source, tenant_commit_sequence=7)
+        validate_selected_witness_at_cut(
+            runtime, source, tenant_commit_sequence=7, snapshot=owner_snapshot()
+        )
 
     forged = source.model_copy(
         update={
@@ -241,7 +242,9 @@ def test_historical_witness_must_be_latest_selected_outcome_at_its_cut() -> None
         }
     )
     with pytest.raises(ValueError, match="physical member"):
-        validate_selected_witness_at_cut(runtime, forged, tenant_commit_sequence=6)
+        validate_selected_witness_at_cut(
+            runtime, forged, tenant_commit_sequence=6, snapshot=owner_snapshot()
+        )
 
 
 def test_selection_prefix_rejects_rewritten_or_truncated_history() -> None:

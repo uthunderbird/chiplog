@@ -388,7 +388,8 @@ def _read_call_history(
                 if str(entry.get("operation_kind", "")).startswith("agent_loop")
             ]
             call_values = {}
-            for decision in runtime._owner_decisions().snapshot().decisions:
+            owner_snapshot = runtime._owner_decisions().snapshot()
+            for decision in owner_snapshot.decisions:
                 batch = decision.prepared.request
                 if batch.kind != "CALL_EFFECT_ATOMIC":
                     if isinstance(batch, CompleteDeliveryBatchV2):
@@ -645,6 +646,7 @@ def _read_call_history(
                             runtime,
                             evidence.request.complete_anchor_sources[-1],
                             command.expected_head,
+                            snapshot=owner_snapshot,
                         )
                         expected_reduction = (
                             Absent()
