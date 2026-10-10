@@ -9,7 +9,7 @@ ID=
 has_complete_inputs() {
     file=$1
     [ "$(grep -Fxc '1. КОПИЛКА  .harness/observations.md' "$file" || true)" -eq 1 ] &&
-    [ "$(grep -Ec '^2\. ДИФФЫ  ([[:xdigit:]]{7,40}|вся история)$' "$file" || true)" -eq 1 ] &&
+    [ "$(grep -Ec '^2\. ДИФФЫ  ([[:xdigit:]]{7,40}(\.\.HEAD)?|вся история)$' "$file" || true)" -eq 1 ] &&
     [ "$(grep -Fxc '3. ХВОСТЫ  .harness/handoff.md' "$file" || true)" -eq 1 ] &&
     [ "$(grep -Fxc '4. КЕЙСЫ  .harness/reproducers/*/case.md' "$file" || true)" -eq 1 ] &&
     [ "$(grep -Fxc '5. ИНВАРИАНТЫ И ДОЛГИ' "$file" || true)" -eq 1 ] &&

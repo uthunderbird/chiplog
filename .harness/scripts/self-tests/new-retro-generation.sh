@@ -32,13 +32,13 @@ if [ -n "${RETRO_TEST_RACE_TARGET:-}" ]; then
     printf 'raced target\n' > "$RETRO_TEST_RACE_TARGET"
 fi
 printf '1. КОПИЛКА  .harness/observations.md\n'
-printf '2. ДИФФЫ  abcdef0\n'
+printf '2. ДИФФЫ  abcdef0..HEAD\n'
 printf '3. ХВОСТЫ  .harness/handoff.md\n'
 printf '4. КЕЙСЫ  .harness/reproducers/*/case.md\n'
 printf '5. ИНВАРИАНТЫ И ДОЛГИ\nline with trailing spaces  \nRETRO_INPUTS_COMPLETE=1\n'
 SH
 EXPECTED="$TMP/expected.txt"
-printf '1. КОПИЛКА  .harness/observations.md\n2. ДИФФЫ  abcdef0\n3. ХВОСТЫ  .harness/handoff.md\n4. КЕЙСЫ  .harness/reproducers/*/case.md\n5. ИНВАРИАНТЫ И ДОЛГИ\nline with trailing spaces  \nRETRO_INPUTS_COMPLETE=1\n' > "$EXPECTED"
+printf '1. КОПИЛКА  .harness/observations.md\n2. ДИФФЫ  abcdef0..HEAD\n3. ХВОСТЫ  .harness/handoff.md\n4. КЕЙСЫ  .harness/reproducers/*/case.md\n5. ИНВАРИАНТЫ И ДОЛГИ\nline with trailing spaces  \nRETRO_INPUTS_COMPLETE=1\n' > "$EXPECTED"
 CALLS="$TMP/success-calls"
 RETRO_TEST_CALLS=$CALLS sh "$SUCCESS_ROOT/.harness/scripts/new-retro.sh" --id success > "$TMP/success.stdout"
 [ "$(wc -c < "$CALLS" | tr -d ' ')" -eq 1 ]
