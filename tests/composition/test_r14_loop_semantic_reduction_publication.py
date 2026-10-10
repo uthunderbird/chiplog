@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
+from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
 from chiplog.capabilities.agent_loop.original_call_resolution_preparation import (
     prepare_original_call_resolution,
 )
@@ -25,6 +29,7 @@ from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
     ORIGINAL_RECOVERY_RESULT_SCHEMA,
 )
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
+from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
 from chiplog.composition.r14_accepted_open_accounting_publication import (
     _reduction_matches_current_evidence,
     _reduction_matches_resolution,
@@ -40,13 +45,35 @@ from chiplog.composition.r14_loop_semantic_reduction_publication import (
     validate_selected_witness_at_cut,
 )
 from chiplog.composition.r14_original_call_resolution_source import (
+    _authenticate_append_evidence_suffix,
     _verify_selected_commitment_chain,
 )
+from chiplog.platform._owner_publication_contracts import (
+    SingleOwnerBatch,
+)
+from chiplog.platform._sqlite import (
+    EventAppender,
+    FenceAdvanceCommand,
+    SQLiteMaterializer,
+)
+from chiplog.platform.authority_gate import AuthorityGate
+from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.broker import BrokerSession, PublicPortCall, PublicPortSuccess
+from chiplog.platform.owner_decision_journal import IndependentOwnerDecisionJournal
+from chiplog.platform.owner_publications import (
+    BrokerPublicationCoordinator,
+    PreparedOwnerPublication,
+)
+from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
+    _closed_r16,
+    _head,
+)
 from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
     request as resolution_request,
 )
 from tests.capabilities.agent_loop.test_original_semantic_reduction_preparation import request
+from tests.capabilities.effects.support.dispatch_outcomes import original_send
+from tests.capabilities.effects.test_dispatch_outcomes import request as outcome_request
 
 
 def retained() -> RetainedLoopSemanticReductionPublication:
@@ -296,6 +323,212 @@ def test_historical_witness_must_be_latest_selected_outcome_at_its_cut() -> None
         validate_selected_witness_at_cut(
             runtime, forged, tenant_commit_sequence=6, snapshot=owner_snapshot()
         )
+
+
+def _owner_outcome_batch(outcome, *, tenant: str, sequence: int, predecessor: str):
+    raw = outcome.canonical_bytes()
+    fingerprint = hashlib.sha256(raw).hexdigest()
+    command_id = f"selected-r16-outcome-{sequence}"
+    command_raw = f"select:{command_id}".encode()
+
+    def digest(value: bytes) -> str:
+        return hashlib.sha256(value).hexdigest()
+
+    return SingleOwnerBatch.model_validate(
+        {
+            "operation": (
+                "effects.reconcile"
+                if outcome.command.operation == "RESOLVE_OBLIGATION"
+                else "effects.record_evidence"
+            ),
+            "identity": {
+                "tenant_id": tenant,
+                "command_id": command_id,
+                "command_fingerprint": digest(command_raw),
+                "canonicalization_version": "chiplog.owner-publication.v1",
+            },
+            "authentication": {
+                "kind": "WORKER",
+                "invocation": {
+                    "issuance_id": "issued",
+                    "issuance_fingerprint": digest(b"issued"),
+                    "broker_epoch": "epoch",
+                    "broker_session": "session",
+                    "runtime_generation": "generation",
+                    "operation_subject": command_id,
+                },
+                "applicability_schema": "r14-test.selected-r16-outcome.v1",
+                "applicability_bytes": command_raw,
+                "applicability_fingerprint": digest(command_raw),
+            },
+            "expected": {
+                "tenant_id": tenant,
+                "tenant_frontier": sequence - 1,
+                "expected_materialization_commitment": predecessor,
+                "registry_head": "registry",
+                "registry_fingerprint": digest(b"registry"),
+                "ordered_heads": (),
+                "complete_manifest_fingerprint": digest(raw),
+            },
+            "command": {
+                "owner": "effects",
+                "schema_id": outcome.command.schema_id,
+                "canonical_bytes": outcome.command.canonical_bytes(),
+                "fingerprint": digest(outcome.command.canonical_bytes()),
+            },
+            "complete_records": (
+                {
+                    "owner": "effects",
+                    "record_kind": "DISPATCH_OUTCOME",
+                    "record_id": outcome.record.head,
+                    "schema_id": outcome.schema_id,
+                    "canonical_bytes": raw,
+                    "fingerprint": fingerprint,
+                },
+            ),
+            "complete_batch_fingerprint": digest(b"batch:" + raw),
+        }
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("foreign_obligation", (False, True))
+async def test_append_suffix_authenticates_real_selected_owner_lineage(
+    tmp_path: Path, foreign_obligation: bool
+) -> None:
+    send, _, closed = _closed_r16()
+    if foreign_obligation:
+        other_send = original_send(("foreign-subject",))
+        other_open = prepare_outcome(outcome_request(other_send, other_send))
+        appended = prepare_outcome(
+            outcome_request(
+                other_open,
+                other_send,
+                positive=("foreign-subject",),
+                name="foreign-obligation-evidence",
+            )
+        )
+    else:
+        appended = prepare_outcome(
+            outcome_request(
+                closed,
+                send,
+                negative=("subject",),
+                name="late-rival-evidence",
+            )
+        )
+
+    path = tmp_path / "r14-owner-lineage.sqlite"
+    tenant = send.snapshot.intent.mandate.tenant_id
+    owner_journal = IndependentOwnerDecisionJournal(
+        IndependentTenantDecisionJournal(tmp_path / "owner-journal"), tenant
+    )
+
+    class Authority:
+        async def prepare(self, batch):
+            return PreparedOwnerPublication(
+                batch,
+                "issued",
+                "fence",
+                0,
+                batch.expected.expected_materialization_commitment,
+            )
+
+        def authenticate_replay(self, query):
+            return None
+
+        def check_prepared(self, prepared):
+            return None
+
+        def materialization_state(self, decision):
+            return "COMPLETE"
+
+        def check_selected_predecessor(self, decision):
+            return True
+
+    async def publish(appender, outcome, sequence: int):
+        predecessor = capture_authority_storage_state(path)[0]
+        batch = _owner_outcome_batch(
+            outcome, tenant=tenant, sequence=sequence, predecessor=predecessor
+        )
+        result = await BrokerPublicationCoordinator(
+            appender, Authority(), owner_journal
+        ).commit(batch)
+        assert result.kind == "COMMITTED"
+        decision = owner_journal.lookup(tenant, batch.identity.command_id)
+        assert decision is not None
+        return decision
+
+    with SQLiteMaterializer(
+        path,
+        record_contracts={"effects": "chiplog.effects.dispatch-outcome-record.v2"},
+    ) as store:
+        async with EventAppender(store, capacity=2) as appender:
+            await appender.advance_fence(FenceAdvanceCommand(tenant, "fence", 0))
+            base = await publish(appender, closed, 1)
+            await publish(appender, appended, 2)
+
+    base_outcome = DispatchOutcomeRecordV2.model_validate_json(
+        base.prepared.request.complete_records[0].canonical_bytes
+    )
+    base_record = base_outcome.record
+    base_ref = _head(base_record.subject_id, base_record.head, base_record.fingerprint)
+    base_witness = RecoverySourceRecord(
+        owner="effects",
+        subject=base_ref,
+        schema_id=base_outcome.schema_id,
+        canonical_record_bytes=base_outcome.canonical_bytes(),
+        selected_decision=_head(
+            base.decision_id, base.decision_head, base.decision_fingerprint
+        ),
+        physical_record=base_ref,
+    )
+
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
+    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+    from chiplog.platform.workspace_snapshot import read_connection
+
+    gate = AuthorityGate(path)
+    with read_connection(path) as connection:
+        terminal = capture_authority_snapshot_commitment(connection, tenant)
+    loop_journal = SimpleNamespace(entries=lambda: ())
+    runtime = SimpleNamespace(
+        _tenant_id=tenant,
+        _database=path,
+        _authority_gate=lambda: gate,
+        _owner_decisions=lambda: owner_journal,
+        _loop_decisions=lambda: loop_journal,
+        _owner_command=R14PlanningRuntime._owner_command,
+        _publication=lambda entry: pytest.fail("no loop publication is selected"),
+        _check_database_identity=lambda: None,
+        _commitment_journal=SimpleNamespace(load=lambda _tenant: terminal),
+        _pending=lambda: (),
+    )
+
+    with gate.hold():
+        if foreign_obligation:
+            with pytest.raises(LoopRejected, match="same-obligation append"):
+                _authenticate_append_evidence_suffix(
+                    runtime,
+                    base_sequence=base.tenant_commit_sequence,
+                    base_commitment=base.resulting_commitment,
+                    end_sequence=2,
+                    end_commitment=terminal,
+                    base_witness=base_witness,
+                    owner_snapshot=owner_journal.snapshot(),
+                    loop_entries=(),
+                )
+        else:
+            _authenticate_append_evidence_suffix(
+                runtime,
+                base_sequence=base.tenant_commit_sequence,
+                base_commitment=base.resulting_commitment,
+                end_sequence=2,
+                end_commitment=terminal,
+                base_witness=base_witness,
+                owner_snapshot=owner_journal.snapshot(),
+                loop_entries=(),
+            )
 
 
 def test_selection_prefix_rejects_rewritten_or_truncated_history() -> None:
