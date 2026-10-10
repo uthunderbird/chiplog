@@ -245,11 +245,14 @@ def validate_selected_witness_at_cut(
     exact = tuple(
         item
         for item in expected_members
-        if item[2].record_id == source.physical_record.subject_id
+        if item[2].record_id == source.physical_record.revision.head
         and item[2].canonical_bytes == source.canonical_record_bytes
-        and item[2].fingerprint == source.physical_record.revision.fingerprint
-        and item[2].record_id == source.subject.subject_id
-        and item[2].fingerprint == source.subject.revision.fingerprint
+        and item[3].record.subject_id == source.physical_record.subject_id
+        and item[3].record.head == source.physical_record.revision.head
+        and item[3].record.fingerprint == source.physical_record.revision.fingerprint
+        and item[3].record.subject_id == source.subject.subject_id
+        and item[3].record.head == source.subject.revision.head
+        and item[3].record.fingerprint == source.subject.revision.fingerprint
     )
     if len(exact) != 1:
         raise ValueError("semantic reduction witness differs from its selected physical member")

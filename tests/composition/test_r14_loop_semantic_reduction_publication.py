@@ -243,9 +243,9 @@ def test_historical_witness_must_be_latest_selected_outcome_at_its_cut() -> None
     member = SimpleNamespace(
         owner="effects",
         schema_id=source.schema_id,
-        record_id=source.physical_record.subject_id,
+        record_id=source.physical_record.revision.head,
         canonical_bytes=source.canonical_record_bytes,
-        fingerprint=source.physical_record.revision.fingerprint,
+        fingerprint=hashlib.sha256(source.canonical_record_bytes).hexdigest(),
     )
     decision = SimpleNamespace(
         decision_id=source.selected_decision.subject_id,
