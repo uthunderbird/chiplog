@@ -373,8 +373,21 @@ async def test_signed_provider_partition_terminalizes_only_separate_resolver(
 
         monkeypatch.setattr(runtime, "_trust_observation_guard", track_auth)
         original_prepare = OutcomeAuthority.prepare
+        original_preflight = OutcomeAuthority.preflight_prepared
         reached: list[str] = []
         captured_preparations: list[tuple[OutcomeAuthority, PreparedOwnerPublication]] = []
+        delayed_preflight: list[bool] = []
+
+        def slow_preflight(
+            authority: OutcomeAuthority, prepared: PreparedOwnerPublication
+        ) -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
+            disposition = original_preflight(authority, prepared)
+            if scenario == "MIXED" and disposition is None and not delayed_preflight:
+                time.sleep(5.1)
+                delayed_preflight.append(True)
+            return disposition
+
+        monkeypatch.setattr(OutcomeAuthority, "preflight_prepared", slow_preflight)
 
         async def checked_prepare(
             authority: OutcomeAuthority, request: RegisteredPublication
@@ -501,6 +514,8 @@ async def test_signed_provider_partition_terminalizes_only_separate_resolver(
         assert resolved.snapshot.state == expected
         assert resolved.snapshot.obligation.state == "CLOSED"
         assert "effects.record_evidence" in reached and "effects.reconcile" in reached
+        assert delayed_preflight == ([True] if scenario == "MIXED" else [])
+        assert trust_checks[-1][2] is None
         original_authority, original_prepared = captured_preparations[0]
-        assert original_authority.check_prepared(original_prepared) == "STALE"
+        assert original_authority.preflight_prepared(original_prepared) == "STALE"
         assert len(resources.require_original_provider().transfers) == 1

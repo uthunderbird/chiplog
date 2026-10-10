@@ -15,6 +15,7 @@ from chiplog.capabilities.effects.dispatch_outcome_contracts import (
 )
 from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
 from chiplog.capabilities.effects.dispatch_v2 import canonical, digest, reference
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.composition.r16_denial_inputs import require_invocation
 from chiplog.composition.r16_dispatch_history import verify_dispatch_history
 from chiplog.composition.r16_dispatch_outbox import _request, _send, validate_consumptions
@@ -220,6 +221,8 @@ class OutcomeAuthority:
         self.runtime, self.observed, self.cut = runtime, observed, cut
         self.owner_session = runtime._supervisor.runtime().session("effects")
         self.prepared: PreparedOwnerPublication | None = None
+        self.preflighted: PreparedOwnerPublication | None = None
+        self.preflight_issuance: OutcomeIssuance | None = None
         self.proof: InvocationProofRef | None = None
 
     def invocation(self, identity: PublicationIdentity) -> InvocationProofRef:
@@ -268,31 +271,51 @@ class OutcomeAuthority:
             reason="unissued outcome request",
         )
 
-    def check_prepared(
+    def preflight_prepared(
         self, prepared: PreparedOwnerPublication
     ) -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
         if prepared is not self.prepared:
             return "DENIED"
         try:
+            with self.runtime._authority_gate().hold():
+                resources = self.runtime._require_dispatch_resources()
+                issuance = validate_outcome_issuance(prepared.request, self.runtime)
+                if not _boundary(issuance.request):
+                    resources.require_original_provider()
+                if self.runtime._supervisor.runtime().session("effects") != self.owner_session:
+                    return "STALE"
+                validate_consumptions(self.runtime)
+                current = read_materialized_effects(
+                    self.runtime, self.runtime._owner_decisions()
+                )
+                if current != self.cut:
+                    return "STALE"
+                self.preflighted = prepared
+                self.preflight_issuance = issuance
+            return None
+        except ValueError, RuntimeError, OSError, KeyError:
+            return "INDETERMINATE"
+
+    def check_prepared(
+        self, prepared: PreparedOwnerPublication
+    ) -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
+        if prepared is not self.prepared:
+            return "DENIED"
+        if self.preflighted is not prepared or self.preflight_issuance is None:
+            return "INDETERMINATE"
+        try:
             resources = self.runtime._require_dispatch_resources()
-            issuance = validate_outcome_issuance(prepared.request, self.runtime)
+            issuance = self.preflight_issuance
             if not _boundary(issuance.request):
                 resources.require_original_provider()
             if self.runtime._supervisor.runtime().session("effects") != self.owner_session:
                 return "STALE"
             if self.observed is not None:
                 require_invocation(self.runtime, self.observed)
-            validate_consumptions(self.runtime)
-            current = read_materialized_effects(self.runtime, self.runtime._owner_decisions())
-            if current != self.cut:
-                return "STALE"
-            resources = self.runtime._require_dispatch_resources()
-            if not _boundary(issuance.request):
-                resources.require_original_provider()
-            if self.observed is not None:
-                require_invocation(self.runtime, self.observed)
             return None
-        except ValueError, RuntimeError, OSError, KeyError:
+        except LoopRejected:
+            return "STALE"
+        except (ValueError, RuntimeError, OSError, KeyError):
             return "INDETERMINATE"
 
     def materialization_state(
@@ -454,10 +477,22 @@ async def publish_outcome(
             complete_records=(row,),
             complete_batch_fingerprint=digest(retained_canonical((row,))),
         )
-        validate_outcome_issuance(batch, runtime)
         authority.prepared = PreparedOwnerPublication(
             batch, secrets.token_hex(24), "r6", 0, cut.materialization_commitment
         )
+    preflight = authority.preflight_prepared(authority.prepared)
+    if preflight is not None:
+        return PublicationRejected(
+            kind=preflight if preflight != "INDETERMINATE" else "HOLD",
+            tenant_id=runtime._tenant_id,
+            command_id=command_id,
+            reason="outcome publication preflight is " + preflight,
+        )
+    if observed is not None:
+        refreshed = await authenticate(runtime, resolver_peer)
+        if not same_resolver_authority(observed, refreshed):
+            raise ValueError("resolver authority changed during publication preflight")
+        authority.observed = refreshed
     return await BrokerPublicationCoordinator(
         runtime._appender, authority, runtime._owner_decisions()
     ).commit(batch)
