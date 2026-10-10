@@ -689,12 +689,14 @@ class R14ExecutionRuntime(R14PlanningRuntime):
             workspace_port = R13Workspace(self)
             h1_preissuance_selection = None
             h1_original_deadline: int | None = None
+            h1_preissuance_source = None
             if getattr(self, "_h1_preissuance_registration_source_port", None) is not None:
                 from chiplog.composition.h1_preissuance_registration import (
                     H1PreissuanceRegistrationSource,
                 )
 
                 source = H1PreissuanceRegistrationSource(self)
+                h1_preissuance_source = source
                 h1_original_deadline = observed.request.budget.absolute_deadline_ns
                 h1_preissuance_selection = await source.prepare_preissuance(
                     (started.run_id, started.head), observed.observation
@@ -835,10 +837,18 @@ class R14ExecutionRuntime(R14PlanningRuntime):
             emitted = await self._publish_initial_transition(
                 peer, EmitExecutionAttempt(command_id="emit:" + prepared.head, run=prepared)
             )
+            refreshed = await self._execution_actor(peer)
             with self._authority_gate().hold():
                 if h1_original_deadline is not None and time.monotonic_ns() >= h1_original_deadline:
                     raise LoopRejected("H1 execution actor original deadline expired")
-                self._check_execution_actor(observed)
+                if not self._same_execution_actor_identity(observed, refreshed):
+                    raise LoopRejected("execution actor changed before model invocation")
+                self._check_execution_actor(refreshed)
+                if h1_preissuance_selection is not None and (
+                    h1_preissuance_source is None
+                    or not h1_preissuance_source.check_current(h1_preissuance_selection)
+                ):
+                    raise LoopRejected("H1 execution workspace selection is stale")
                 current = read_execution_history(self)
                 selected = [run for run in current.records if run.run_id == run_id]
                 if (

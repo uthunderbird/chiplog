@@ -218,3 +218,54 @@ async def test_workspace_cut_changed_during_render_never_reaches_model(
         assert runtime._execution_model.requests == []
         history = read_execution_history(runtime)
         assert [row for row in history.records if row.run_id == "run"][-1] == started
+
+
+async def test_actor_substitution_after_emit_never_reaches_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    invoked: list[ExecutionModelAttempt] = []
+    original_invoke = HermeticModel.invoke
+
+    async def observe(
+        model: HermeticModel, attempt: ModelAttempt | ExecutionModelAttempt
+    ) -> tuple[bytes, str]:
+        invoked.append(attempt)
+        return await original_invoke(model, attempt)
+
+    monkeypatch.setattr(HermeticModel, "invoke", observe)
+    async with open_execution_runtime(
+        tmp_path / "actor-substitution.sqlite", responses=(b"unused",)
+    ) as runtime:
+        created = await runtime.create_execution("hermetic-ingress", "run", "Plan", BudgetPolicy())
+        started = await runtime.begin_execution("hermetic-ingress", "run", created.head)
+        authenticate = runtime._execution_actor
+        calls = 0
+
+        async def substitute_final_actor(peer: str):
+            nonlocal calls
+            calls += 1
+            observed = await authenticate(peer)
+            if calls != 4:  # capture start, Prepare, Emit, then the final pre-model refresh
+                return observed
+            reference = json.loads(observed.result.reference_bytes or b"{}")
+            reference["principal_id"] = "substituted-principal"
+            result = observed.result.model_copy(
+                update={
+                    "reference_bytes": json.dumps(
+                        reference, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                }
+            )
+            return replace(observed, result=result)
+
+        monkeypatch.setattr(runtime, "_execution_actor", substitute_final_actor)
+        with pytest.raises(
+            LoopRejected,
+            match=(
+                r"caller outside registered hermetic execution ingress"
+                r"|actor changed before model invocation"
+            ),
+        ):
+            await runtime.capture_execution("hermetic-ingress", "run", started.head)
+        assert calls == 4
+        assert invoked == []
