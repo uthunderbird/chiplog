@@ -121,6 +121,20 @@ def _verify_same_obligation_append(previous, outcome) -> None:
         raise LoopRejected("R14 evidence interval is not a same-obligation append")
 
 
+def _selected_resolution_anchor_is_valid(
+    actual: str,
+    anchored: str,
+    predecessor: str,
+    resulting: str,
+    *,
+    materialized: bool,
+) -> bool:
+    """Accept either a current anchor or this exact pending selected publication."""
+    return anchored == actual or (
+        not materialized and actual == resulting and anchored == predecessor
+    )
+
+
 def _authenticate_append_evidence_suffix(
     runtime: CommonCliExecutionRuntime,
     *,
@@ -357,6 +371,17 @@ def _selected_resolution_preimage(runtime, expected_cut):
         read_execution_recovery_history(runtime, selected_only=True)
     owner_snapshot = runtime._owner_decisions().snapshot()
     loop_entries = runtime._loop_decisions().entries()
+    materialization_markers = []
+    for _, _, raw in loop_entries:
+        entry = json.loads(raw)
+        if (
+            entry.get("kind") == "MATERIALIZED"
+            and entry.get("operation_id") == batch.idempotency_key
+        ):
+            materialization_markers.append(entry)
+    if len(materialization_markers) > 1:
+        raise LoopRejected("selected original resolution has rival materialization markers")
+    materialized = bool(materialization_markers)
     with read_connection(runtime._database) as connection:
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
         head = connection.execute(
@@ -367,6 +392,14 @@ def _selected_resolution_preimage(runtime, expected_cut):
         current_sequence = 0 if head is None else int(head[0])
         if state != "COMPLETE":
             raise LoopRejected("selected original resolution source differs from current authority")
+        if not _selected_resolution_anchor_is_valid(
+            actual,
+            anchored,
+            str(predecessor),
+            str(resulting),
+            materialized=materialized,
+        ):
+            raise LoopRejected("selected original resolution has a foreign or stale anchor")
 
         if not reductions:
             # Reconstruct the resolver's exact source preimage while removing the
@@ -606,7 +639,8 @@ def capture_original_call_resolution_request(
             ) = selected_suffix
             if (
                 selected_actual != before
-                or selected_anchor != before
+                or selected_anchor
+                not in (before, expected_cut.materialization_commitment)
                 or checked_sequence != tenant_commit_sequence
             ):
                 raise LoopRejected(

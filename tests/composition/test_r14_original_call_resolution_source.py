@@ -34,6 +34,7 @@ from chiplog.composition import (
     r14_original_resolver_policy_publication,
 )
 from chiplog.composition.r14_original_call_resolution_source import (
+    _selected_resolution_anchor_is_valid,
     _selected_witness_source,
     _verify_same_obligation_append,
     capture_original_call_resolution_request,
@@ -41,6 +42,28 @@ from chiplog.composition.r14_original_call_resolution_source import (
 from tests.capabilities.agent_loop.test_original_call_resolution_preparation import request
 from tests.capabilities.effects.support.dispatch_outcomes import original_send
 from tests.capabilities.effects.test_dispatch_outcomes import request as outcome_request
+
+
+@pytest.mark.parametrize(
+    ("actual", "anchored", "materialized", "valid"),
+    (
+        ("current", "current", False, True),
+        ("resulting", "predecessor", False, True),
+        ("resulting", "predecessor", True, False),
+        ("resulting", "foreign", False, False),
+        ("advanced", "predecessor", False, False),
+    ),
+)
+def test_selected_resolution_anchor_accepts_only_exact_unmaterialized_recovery(
+    actual: str, anchored: str, materialized: bool, valid: bool
+) -> None:
+    assert _selected_resolution_anchor_is_valid(
+        actual,
+        anchored,
+        "predecessor",
+        "resulting",
+        materialized=materialized,
+    ) is valid
 
 
 def test_selected_witness_source_uses_exact_selected_member_and_rejects_changed_bytes() -> None:
