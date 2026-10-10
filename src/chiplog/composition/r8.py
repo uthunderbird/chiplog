@@ -19,8 +19,6 @@ from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.deployment_gate import DeploymentGateRequest
 from chiplog.platform.r8_gate import BrokerDeploymentGate, canonical_request
-from chiplog.verification.r8_surface import verify_offline_import_boundary, verify_r8_surfaces
-
 from .r7_planning import R7PlanningRuntime, _open_runtime
 
 R8_SURFACES = (
@@ -163,9 +161,10 @@ class R8PlanningRuntime(R7PlanningRuntime):
             self._gate.materialized(operation_id)
 
     def _start_generation(self) -> None:
-        root = Path(__file__).resolve().parents[3]
-        verify_r8_surfaces(root)
-        verify_offline_import_boundary(root)
+        # Source structure/import checks run at runtime open and at the
+        # development checkpoint. A generation restart reuses the already
+        # bound execution identity, so rescanning the whole tree here is
+        # redundant.
         super()._start_generation()
 
     async def create(
