@@ -1475,6 +1475,44 @@ R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_EVALUATION_MANIFEST = replace(
     environment="evaluation",
 )
 
+_V34_LOOP_SEMANTIC_REDUCTION_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_loop_semantic_reduction.v1",
+    "broker",
+    "agent_loop",
+    "chiplog.loop.original-recovery-request.v1",
+    "chiplog.loop.original-recovery-result.v1",
+)
+_V34_EXECUTION_OPERATIONS = tuple(
+    sorted((*_V33_EXECUTION_OPERATIONS, _V34_LOOP_SEMANTIC_REDUCTION_ROUTE.operation_id))
+)
+R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST = replace(
+    R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_PRODUCTION_MANIFEST,
+    manifest_version=34,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_V34_EXECUTION_OPERATIONS,
+            public_operations=_V34_EXECUTION_OPERATIONS,
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_PRODUCTION_MANIFEST.routes,
+                _V34_LOOP_SEMANTIC_REDUCTION_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_EVALUATION_MANIFEST = replace(
+    R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
+    environment="evaluation",
+)
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -1529,6 +1567,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         31,
         32,
         33,
+        34,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1563,6 +1602,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         31: R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST,
         32: R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST,
         33: R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_PRODUCTION_MANIFEST,
+        34: R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     if manifest.manifest_version >= 2:
         if manifest.broker_version.startswith("r8-development-v1:"):
