@@ -40,6 +40,7 @@ from chiplog.composition.r14_loop_semantic_reduction_publication import (
     OWNER_OPERATION,
     RetainedLoopSemanticReductionPublication,
     _selection_prefix,
+    _validate_physical_catalog,
     command,
     validate_selected_command,
     validate_selected_witness_at_cut,
@@ -54,6 +55,8 @@ from chiplog.platform._owner_publication_contracts import (
 from chiplog.platform._sqlite import (
     EventAppender,
     FenceAdvanceCommand,
+    PhysicalPublicationCommand,
+    PhysicalRecord,
     SQLiteMaterializer,
 )
 from chiplog.platform.authority_gate import AuthorityGate
@@ -164,6 +167,62 @@ def test_selected_command_binds_retained_owner_exchange_and_header() -> None:
 
     with pytest.raises(ValueError, match="selected semantic reduction command differs"):
         validate_selected_command(runtime, {**entry, "operation_id": "foreign"}, batch)
+
+
+def test_physical_catalog_requires_exact_selected_reduction_rows(tmp_path: Path) -> None:
+    database = tmp_path / "semantic-reduction-catalog.sqlite"
+    tenant = "tenant-r14"
+    raw = b'{"selected":true}'
+    record = PhysicalRecord(
+        record_id="chiplog.loop.semantic-reduction.v1:selected",
+        owner="agent_loop",
+        schema_id="chiplog.loop.semantic-reduction.v1",
+        canonical_bytes=raw,
+        fingerprint=hashlib.sha256(raw).hexdigest(),
+    )
+    batch = PhysicalPublicationCommand(
+        tenant_id=tenant,
+        operation_kind=OPERATION,
+        idempotency_key="semantic-reduction:selected",
+        request_fingerprint="a" * 64,
+        expected_head=3,
+        fence_generation="r6",
+        expected_fence_frontier=0,
+        minimum_fence_frontier=0,
+        records=(record,),
+    )
+    runtime = SimpleNamespace(_database=database, _tenant_id=tenant)
+
+    with SQLiteMaterializer(
+        database,
+        record_contracts={"agent_loop": "chiplog.loop.semantic-reduction.v1"},
+    ) as store:
+        with store._connection:
+            store._connection.execute(
+                "INSERT INTO records VALUES (?,?,?,?,?,?)",
+                (tenant, record.record_id, record.owner, record.schema_id, raw, 4),
+            )
+            store._connection.execute(
+                "INSERT INTO publications VALUES (?,?,?,?,?,?)",
+                (
+                    tenant,
+                    OPERATION,
+                    batch.idempotency_key,
+                    batch.request_fingerprint,
+                    4,
+                    record.record_id,
+                ),
+            )
+
+        _validate_physical_catalog(runtime, (batch,))
+
+        with store._connection:
+            store._connection.execute(
+                "UPDATE records SET commit_sequence=5 WHERE tenant_id=? AND record_id=?",
+                (tenant, record.record_id),
+            )
+        with pytest.raises(ValueError, match="physical catalog differs from selection"):
+            _validate_physical_catalog(runtime, (batch,))
 
 
 def test_turn_consumer_requires_exact_current_consumable_reduction() -> None:
