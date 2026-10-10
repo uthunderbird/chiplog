@@ -24,6 +24,7 @@ from chiplog.capabilities.agent_loop.original_recovery_contracts import (
 )
 from chiplog.capabilities.effects.contracts import ExactHead
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
+from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
 from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
 from chiplog.composition import (
     r14_original_call_resolution_source as source_module,
@@ -34,9 +35,12 @@ from chiplog.composition import (
 )
 from chiplog.composition.r14_original_call_resolution_source import (
     _selected_witness_source,
+    _verify_same_obligation_append,
     capture_original_call_resolution_request,
 )
 from tests.capabilities.agent_loop.test_original_call_resolution_preparation import request
+from tests.capabilities.effects.support.dispatch_outcomes import original_send
+from tests.capabilities.effects.test_dispatch_outcomes import request as outcome_request
 
 
 def test_selected_witness_source_uses_exact_selected_member_and_rejects_changed_bytes() -> None:
@@ -81,6 +85,30 @@ def test_selected_witness_source_uses_exact_selected_member_and_rejects_changed_
         _selected_witness_source(
             SimpleNamespace(latest_outcome=outcome, latest_selected_member=changed)
         )
+
+
+def test_late_evidence_append_preserves_selected_r16_intent_and_obligation() -> None:
+    send = original_send()
+    unknown = prepare_outcome(outcome_request(send, send))
+    confirmed = prepare_outcome(
+        outcome_request(unknown, send, positive=("subject",), name="confirmed")
+    )
+    closed = prepare_outcome(outcome_request(confirmed, send, close=True, name="closed"))
+    late = prepare_outcome(
+        outcome_request(closed, send, negative=("subject",), name="late-rival")
+    )
+
+    _verify_same_obligation_append(closed, late)
+    with pytest.raises(LoopRejected, match="same-obligation append"):
+        _verify_same_obligation_append(unknown, late)
+
+    foreign_send = original_send(members=("foreign-child",))
+    foreign_unknown = prepare_outcome(outcome_request(foreign_send, foreign_send))
+    foreign = prepare_outcome(
+        outcome_request(foreign_unknown, foreign_send, name="foreign-evidence")
+    )
+    with pytest.raises(LoopRejected, match="same-obligation append"):
+        _verify_same_obligation_append(closed, foreign)
 
 
 def test_capture_builds_cut_from_selected_sources_and_closed_effect_member(

@@ -93,6 +93,34 @@ def _verify_selected_commitment_chain(
         raise LoopRejected("R14 evidence interval terminal commitment differs")
 
 
+def _verify_same_obligation_append(previous, outcome) -> None:
+    """Validate the R16 evidence/attempt link between adjacent selected outcomes."""
+    from chiplog.capabilities.effects.dispatch_outcomes import evidence_head
+    from chiplog.capabilities.effects.dispatch_v2 import reference
+
+    evidence = outcome.command.evidence
+    expected_intent = reference(
+        previous.snapshot.intent.intent_id, previous.snapshot.intent.canonical_bytes()
+    )
+    if (
+        outcome.command.operation != "APPEND_EVIDENCE"
+        or outcome.kind != "EVIDENCE_RECORDED"
+        or evidence is None
+        or outcome.predecessor != previous.record
+        or outcome.command.expected_attempt != previous.snapshot.attempt
+        or outcome.command.intent != expected_intent
+        or outcome.snapshot.intent != previous.snapshot.intent
+        or outcome.snapshot.obligation != previous.snapshot.obligation
+        or outcome.command.original_send != previous.command.original_send
+        or outcome.command.complete_children != previous.command.complete_children
+        or outcome.command.prior_evidence != previous.snapshot.evidence_heads
+        or outcome.snapshot.evidence_heads
+        != (*previous.snapshot.evidence_heads, evidence_head(evidence))
+        or outcome.snapshot.evidence != (*previous.snapshot.evidence, evidence)
+    ):
+        raise LoopRejected("R14 evidence interval is not a same-obligation append")
+
+
 def _authenticate_append_evidence_suffix(
     runtime: CommonCliExecutionRuntime,
     *,
@@ -113,7 +141,6 @@ def _authenticate_append_evidence_suffix(
     from chiplog.capabilities.effects.dispatch_outcome_contracts import (
         DispatchOutcomeRecordV2,
     )
-    from chiplog.capabilities.effects.dispatch_outcomes import evidence_head
     from chiplog.composition.r14_loop_semantic_reduction_publication import (
         validate_selected_witness_at_cut,
     )
@@ -289,21 +316,9 @@ def _authenticate_append_evidence_suffix(
                 )
             except (TypeError, ValueError) as error:
                 raise LoopRejected("R14 evidence interval has malformed R16 outcome") from error
-            evidence = outcome.command.evidence
-            if (
-                outcome.canonical_bytes() != physical_record.canonical_bytes
-                or outcome.command.operation != "APPEND_EVIDENCE"
-                or evidence is None
-                or outcome.snapshot.intent != previous_outcome.snapshot.intent
-                or outcome.snapshot.obligation != previous_outcome.snapshot.obligation
-                or outcome.command.original_send != previous_outcome.command.original_send
-                or outcome.command.prior_evidence != previous_outcome.snapshot.evidence_heads
-                or outcome.snapshot.evidence_heads
-                != (*previous_outcome.snapshot.evidence_heads, evidence_head(evidence))
-                or outcome.snapshot.evidence
-                != (*previous_outcome.snapshot.evidence, evidence)
-            ):
-                raise LoopRejected("R14 evidence interval is not a same-obligation append")
+            if outcome.canonical_bytes() != physical_record.canonical_bytes:
+                raise LoopRejected("R14 evidence interval has noncanonical R16 bytes")
+            _verify_same_obligation_append(previous_outcome, outcome)
             previous_outcome = outcome
 
     if (
