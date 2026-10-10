@@ -73,6 +73,17 @@ async def test_checkpoint_hook_failure_rolls_back_sql_before_decision(tmp_path: 
             assert store.durable_records() == ()
 
 
+async def test_preimage_commitment_mismatch_rejects_before_publication(tmp_path: Path) -> None:
+    database = tmp_path / "authority.sqlite"
+    with SQLiteMaterializer(database, record_contracts={"owner": "schema"}) as store:
+        async with EventAppender(store, capacity=1) as appender:
+            await appender.advance_fence(FenceAdvanceCommand("tenant", "fence", 0))
+            command = replace(_command(), expected_preimage_commitment="0" * 64)
+            result = await appender.submit(command)
+            assert result.disposition == "STALE"
+            assert store.durable_records() == ()
+
+
 async def test_checkpoint_enabled_bundle_rejects_callbackless_attach(tmp_path: Path) -> None:
     with pytest.raises(Exception, match="requires mutation admission"):
         SQLiteMaterializer(

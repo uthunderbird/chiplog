@@ -89,6 +89,7 @@ def next_turn_command(evidence: RetainedNextTurnPublication) -> PhysicalPublicat
         idempotency_key=f"execution-next-turn:{run.run_id}:{request.next_ordinal}",
         request_fingerprint=evidence.digest(),
         expected_head=request.cut.tenant_commit_sequence,
+        expected_preimage_commitment=request.cut.materialization_commitment,
         fence_generation="r6",
         expected_fence_frontier=0,
         minimum_fence_frontier=0,

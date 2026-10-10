@@ -145,6 +145,7 @@ class PhysicalPublicationCommand:
     expected_fence_frontier: int
     minimum_fence_frontier: int
     records: tuple[PhysicalRecord, ...]
+    expected_preimage_commitment: str | None = None
     fault: Literal["none", "before_commit", "after_commit"] = "none"
     admission_guard: Callable[[], Literal["DENIED", "STALE", "INDETERMINATE"] | None] | None = None
     decision_guard: Callable[[str], Literal["DENIED", "STALE", "INDETERMINATE"] | None] | None = (
@@ -631,11 +632,6 @@ class SQLiteMaterializer:
                 self._require_ready_bundle(
                     pending_admission=True, kind="publication", context=recovery_context
                 )
-                if command.admission_guard is not None:
-                    disposition = command.admission_guard()
-                    if disposition is not None:
-                        self._connection.rollback()
-                        return PublicationResult(disposition, None, ())
                 row = self._connection.execute(
                     "SELECT head FROM tenant_heads WHERE tenant_id = ?", (command.tenant_id,)
                 ).fetchone()
@@ -643,6 +639,20 @@ class SQLiteMaterializer:
                 if current_head != command.expected_head:
                     self._connection.rollback()
                     return PublicationResult("STALE", None, ())
+                if command.expected_preimage_commitment is not None:
+                    from .authority_reads import capture_authority_snapshot_commitment
+
+                    preimage = capture_authority_snapshot_commitment(
+                        self._connection, command.tenant_id
+                    )
+                    if preimage != command.expected_preimage_commitment:
+                        self._connection.rollback()
+                        return PublicationResult("STALE", None, ())
+                if command.admission_guard is not None:
+                    disposition = command.admission_guard()
+                    if disposition is not None:
+                        self._connection.rollback()
+                        return PublicationResult(disposition, None, ())
                 commit_sequence = current_head + 1
                 for record in command.records:
                     self._connection.execute(

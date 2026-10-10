@@ -161,6 +161,14 @@ def _selected_pair_held(
     return publication, readiness
 
 
+def _loop_decision_head(runtime: CommonCliExecutionRuntime) -> tuple[str, str | None, str] | None:
+    entries = runtime._loop_decisions().entries()
+    if not entries:
+        return None
+    identity, predecessor, raw = entries[-1]
+    return identity, predecessor, hashlib.sha256(raw).hexdigest()
+
+
 async def _finish(
     runtime: CommonCliExecutionRuntime, entry: dict[str, object]
 ) -> ExecutionRunRecord:
@@ -226,6 +234,7 @@ async def start_next_execution_turn(
                     raise LoopRejected("next Turn commitment differs from current cut")
                 worker = runtime.current_worker()
                 session = runtime._supervisor.runtime().session("agent_loop")
+                decision_head = _loop_decision_head(runtime)
                 sealed_response = run.turns[-1].response_seal
                 if sealed_response is None:
                     raise LoopRejected("next Turn preceding response is unsealed")
@@ -255,6 +264,23 @@ async def start_next_execution_turn(
                 raise LoopRejected("changed replay request for selected next Turn")
             return await _finish(runtime, prior[0])
         result, sent, reply = await _exchange_next_turn(runtime, request)
+
+        # The complete source cut is already validated before owner exchange.
+        # Recheck independent anchors; the appender verifies the exact SQLite
+        # preimage and head inside its write transaction.
+        with runtime._authority_gate().hold():
+            runtime._check_database_identity()
+            if _loop_decision_head(runtime) != decision_head:
+                raise LoopRejected(
+                    "selected decision journal changed during next Turn owner exchange"
+                )
+            if runtime.current_worker() != worker:
+                raise LoopRejected("worker changed during next Turn owner exchange")
+            if runtime._supervisor.runtime().session("agent_loop") != session:
+                raise LoopRejected("runtime session changed during next Turn owner exchange")
+            if runtime._commitment_journal.load(runtime._tenant_id) != predecessor:
+                raise LoopRejected("recovery commitment changed during next Turn owner exchange")
+
         refreshed, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)  # type: ignore[no-untyped-call]
         with runtime._authority_gate().hold():
             if not runtime._same_execution_actor_identity(observed, refreshed):
@@ -274,24 +300,21 @@ async def start_next_execution_turn(
             nonlocal guard_failure
             with runtime._authority_gate().hold():
                 try:
-                    runtime._check_execution_actor(observed)
                     if time.monotonic_ns() >= actor_budget.request.budget.absolute_deadline_ns:
                         guard_failure = "recovery actor budget expired"
                         return "STALE"
-                    if source(runtime).collect_held(runtime) != cut:  # type: ignore[no-untyped-call]
-                        guard_failure = "recovery cut changed"
+                    if _loop_decision_head(runtime) != decision_head:
+                        guard_failure = "selected decision journal changed"
                         return "STALE"
-                    if _selected_pair_held(runtime, cut) != (publication, readiness):
-                        guard_failure = "current readiness pair changed"
+                    runtime._check_database_identity()
+                    if runtime._commitment_journal.load(runtime._tenant_id) != predecessor:
+                        guard_failure = "recovery commitment changed"
                         return "STALE"
                     if runtime.current_worker() != worker:
                         guard_failure = "worker changed"
                         return "STALE"
                     if runtime._supervisor.runtime().session("agent_loop") != session:
                         guard_failure = "runtime session changed"
-                        return "STALE"
-                    if runtime._commitment_journal.load(runtime._tenant_id) != predecessor:
-                        guard_failure = "recovery commitment changed"
                         return "STALE"
                     runtime._check_execution_actor(observed)
                     if time.monotonic_ns() >= actor_budget.request.budget.absolute_deadline_ns:
@@ -303,35 +326,55 @@ async def start_next_execution_turn(
                 return None
 
         def decide(resulting: str) -> None:
-            if guard() is not None:
-                raise LoopRejected(
-                    "next Turn source changed at final decision: "
-                    + str(guard_failure or "unknown stale source")
+            with runtime._authority_gate().hold():
+                failure = None
+                try:
+                    runtime._check_database_identity()
+                    if runtime.current_worker() != worker:
+                        failure = "worker changed"
+                    elif runtime._supervisor.runtime().session("agent_loop") != session:
+                        failure = "runtime session changed"
+                    elif _loop_decision_head(runtime) != decision_head:
+                        failure = "selected decision journal changed"
+                    elif runtime._commitment_journal.load(runtime._tenant_id) != predecessor:
+                        failure = "recovery commitment changed"
+                    elif runtime._require_no_pending() is not None:
+                        failure = "pending publication appeared"
+                    elif not resulting:
+                        failure = "candidate commitment unavailable"
+                    if failure is None:
+                        runtime._check_execution_actor(observed)
+                        if time.monotonic_ns() >= actor_budget.request.budget.absolute_deadline_ns:
+                            failure = "recovery actor budget expired"
+                except (ValueError, TypeError, RuntimeError, LoopRejected) as error:
+                    failure = f"fresh recovery validation failed: {error}"
+                if failure is not None:
+                    raise LoopRejected(
+                        "next Turn source changed at final decision: " + failure
+                    )
+                runtime._append_decision(
+                    {
+                        "version": 1,
+                        "kind": "DECIDED",
+                        "operation_id": command.idempotency_key,
+                        "operation_kind": command.operation_kind,
+                        "expected_head": command.expected_head,
+                        "fingerprint": command.request_fingerprint,
+                        "predecessor": predecessor,
+                        "resulting": resulting,
+                        "records": [
+                            {
+                                "record_id": row.record_id,
+                                "owner": row.owner,
+                                "schema": row.schema_id,
+                                "payload": base64.b64encode(row.canonical_bytes).decode(),
+                                "digest": row.fingerprint,
+                            }
+                            for row in command.records
+                        ],
+                        "execution_next_turn_evidence": evidence.canonical_bytes().decode(),
+                    }
                 )
-            runtime._require_no_pending()
-            runtime._append_decision(
-                {
-                    "version": 1,
-                    "kind": "DECIDED",
-                    "operation_id": command.idempotency_key,
-                    "operation_kind": command.operation_kind,
-                    "expected_head": command.expected_head,
-                    "fingerprint": command.request_fingerprint,
-                    "predecessor": predecessor,
-                    "resulting": resulting,
-                    "records": [
-                        {
-                            "record_id": row.record_id,
-                            "owner": row.owner,
-                            "schema": row.schema_id,
-                            "payload": base64.b64encode(row.canonical_bytes).decode(),
-                            "digest": row.fingerprint,
-                        }
-                        for row in command.records
-                    ],
-                    "execution_next_turn_evidence": evidence.canonical_bytes().decode(),
-                }
-            )
 
         published = await runtime._appender.submit(
             replace(command, admission_guard=guard, decision_guard=decide)
