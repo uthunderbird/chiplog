@@ -397,6 +397,18 @@ async def test_append_suffix_authenticates_real_selected_owner_lineage(
     tmp_path: Path, foreign_obligation: bool
 ) -> None:
     send, _, closed = _closed_r16()
+    baseline_request = request()
+    baseline_reduction = prepare_loop_semantic_reduction(baseline_request)
+    assert isinstance(baseline_reduction, PreparedLoopSemanticReduction)
+    baseline_sources = baseline_request.complete_ordered_evidence
+    baseline_witness = baseline_request.complete_anchor_sources[-1]
+    held_baseline = SimpleNamespace(record=baseline_reduction.record)
+    assert _reduction_matches_current_evidence(
+        held_baseline,
+        baseline_sources,
+        current_witness=baseline_witness,
+        reduction_witness=baseline_witness,
+    )
     if foreign_obligation:
         other_send = original_send(("foreign-subject",))
         other_open = prepare_outcome(outcome_request(other_send, other_send))
@@ -467,6 +479,41 @@ async def test_append_suffix_authenticates_real_selected_owner_lineage(
             await appender.advance_fence(FenceAdvanceCommand(tenant, "fence", 0))
             base = await publish(appender, closed, 1)
             await publish(appender, appended, 2)
+
+    if not foreign_obligation:
+        assert baseline_witness.canonical_record_bytes == closed.canonical_bytes()
+        assert appended.command.operation == "APPEND_EVIDENCE"
+        assert appended.snapshot.intent == closed.snapshot.intent
+        assert appended.snapshot.obligation == closed.snapshot.obligation
+        late_selected = owner_journal.lookup(tenant, "selected-r16-outcome-2")
+        assert late_selected is not None
+        late_member = late_selected.prepared.request.complete_records[0]
+        late_outcome = DispatchOutcomeRecordV2.model_validate_json(late_member.canonical_bytes)
+        assert late_outcome.canonical_bytes() == late_member.canonical_bytes
+        assert late_member.record_id == late_outcome.record.head
+        late_ref = _head(
+            late_outcome.record.subject_id,
+            late_outcome.record.head,
+            late_outcome.record.fingerprint,
+        )
+        late_source = RecoverySourceRecord(
+            owner="effects",
+            subject=late_ref,
+            schema_id=late_outcome.schema_id,
+            canonical_record_bytes=late_member.canonical_bytes,
+            selected_decision=_head(
+                late_selected.decision_id,
+                late_selected.decision_head,
+                late_selected.decision_fingerprint,
+            ),
+            physical_record=late_ref,
+        )
+        assert not _reduction_matches_current_evidence(
+            held_baseline,
+            (*baseline_sources, late_source),
+            current_witness=late_source,
+            reduction_witness=baseline_witness,
+        )
 
     base_outcome = DispatchOutcomeRecordV2.model_validate_json(
         base.prepared.request.complete_records[0].canonical_bytes
