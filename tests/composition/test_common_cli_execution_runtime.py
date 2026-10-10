@@ -108,6 +108,36 @@ async def _admit(runtime: CommonCliExecutionRuntime) -> tuple[str, DriveInputReq
     return token, request
 
 
+@pytest.mark.asyncio
+async def test_selected_input_reuses_authenticated_historical_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
+    )
+    async with open_common_cli_execution_runtime(
+        tmp_path / "state.sqlite", resources=resources
+    ) as runtime:
+        token, request = await _admit(runtime)
+        admitted = runtime.read_historical_admitted_inbox(token)
+        assert admitted is not None
+
+        def unexpected_second_read(_: str) -> None:
+            raise AssertionError("historical inbox was read more than once")
+
+        monkeypatch.setattr(runtime, "read_historical_admitted_inbox", unexpected_second_read)
+        selected = runtime._selected_input(
+            request, resources.observe(), historical=True, admitted=admitted
+        )
+
+        assert selected.raw_input_bytes == b"make a native run"
+        assert selected.selected_decision.revision.head == admitted.selected_decision.head
+        assert (
+            selected.selected_decision.revision.fingerprint
+            == admitted.selected_decision.fingerprint
+        )
+
+
 async def _admit_complete_script(
     database: Path, custody: Path
 ) -> tuple[DriveInputRequestV1, bytes]:

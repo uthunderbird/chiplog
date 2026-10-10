@@ -148,6 +148,7 @@ from chiplog.platform.broker import (
     PublicPortResult,
     PublicPortSuccess,
 )
+from chiplog.platform.ingress_authenticated_contracts import AdmittedInboxObservation
 from chiplog.platform.ingress_custody_records import canonical, reference
 from chiplog.platform.ingress_transition_contracts import RetainedIngressSource
 from chiplog.platform.prepared_external_delivery_grant_lineage import (
@@ -1744,12 +1745,14 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         observation: ResourceObservation,
         *,
         historical: bool = False,
+        admitted: AdmittedInboxObservation | None = None,
     ) -> SelectedAdmittedRunInput:
         source = request.selected_source
         if source.kind != "CLI_RETAINED_SELECTED_SOURCE_V1":
             raise PermissionError("only the deployed retained CLI route is mounted")
-        reader = self.read_historical_admitted_inbox if historical else self.read_admitted_inbox
-        admitted = reader(source.original_ingress_identity.command_id)
+        if admitted is None:
+            reader = self.read_historical_admitted_inbox if historical else self.read_admitted_inbox
+            admitted = reader(source.original_ingress_identity.command_id)
         if admitted is None:
             raise PermissionError("selected admitted inbox is absent")
         record = admitted.record
@@ -2440,7 +2443,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         )
         if admitted is None:
             raise LoopRejected("historical selected inbox is absent")
-        decoded = self._selected_input(wire, observation, historical=True)
+        decoded = self._selected_input(wire, observation, historical=True, admitted=admitted)
         if decoded != evidence.request.admitted:
             raise LoopRejected("historical selected R17 input differs")
 
