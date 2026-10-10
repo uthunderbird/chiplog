@@ -153,12 +153,13 @@ def validate_dispatch_issuance_value(
     ):
         raise ValueError("retained source interpretation differs from original current inputs")
     effects = tuple(row for row in batch.complete_records if row.owner == "effects")
+    record_bytes = value.record.canonical_bytes()
     if (
         prepare_dispatch(request) != value.record
         or len(effects) != 1
-        or effects[0].canonical_bytes != value.record.canonical_bytes()
+        or effects[0].canonical_bytes != record_bytes
         or effects[0].record_id != value.record.record.head
-        or effects[0].fingerprint != digest(value.record.canonical_bytes())
+        or effects[0].fingerprint != digest(record_bytes)
         or captured.cut.materialization_commitment
         != batch.expected.expected_materialization_commitment
         or captured.cut.tenant_frontier != batch.expected.tenant_frontier
