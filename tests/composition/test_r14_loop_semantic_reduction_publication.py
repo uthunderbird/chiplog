@@ -24,6 +24,7 @@ from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
     ORIGINAL_RECOVERY_REQUEST_SCHEMA,
     ORIGINAL_RECOVERY_RESULT_SCHEMA,
 )
+from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 from chiplog.composition.r14_accepted_open_accounting_publication import (
     _reduction_matches_resolution,
 )
@@ -32,8 +33,10 @@ from chiplog.composition.r14_loop_semantic_reduction_publication import (
     OPERATION,
     OWNER_OPERATION,
     RetainedLoopSemanticReductionPublication,
+    _selection_prefix,
     command,
     validate_selected_command,
+    validate_selected_witness_at_cut,
 )
 from chiplog.platform.broker import BrokerSession, PublicPortCall, PublicPortSuccess
 from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
@@ -170,3 +173,80 @@ def test_turn_consumer_requires_exact_current_consumable_reduction() -> None:
     )
     stale = reduction.record.model_copy(update={"anchor": stale_anchor})
     assert not _reduction_matches_resolution(resolution, SimpleNamespace(record=stale))
+
+
+def test_historical_witness_must_be_latest_selected_outcome_at_its_cut() -> None:
+    from chiplog.platform.owner_decision_journal import OwnerJournalSnapshot
+
+    source = request().complete_anchor_sources[-1]
+    decision_id = "selected-r16-outcome"
+    source = source.model_copy(
+        update={
+            "selected_decision": CallSubjectHead(
+                subject_id=decision_id,
+                revision=Present(head=decision_id, fingerprint="d" * 64),
+            )
+        }
+    )
+    witness = DispatchOutcomeRecordV2.model_validate_json(source.canonical_record_bytes)
+    member = SimpleNamespace(
+        owner="effects",
+        schema_id=source.schema_id,
+        record_id=source.physical_record.subject_id,
+        canonical_bytes=source.canonical_record_bytes,
+        fingerprint=source.physical_record.revision.fingerprint,
+    )
+    decision = SimpleNamespace(
+        decision_id=source.selected_decision.subject_id,
+        decision_fingerprint=source.selected_decision.revision.fingerprint,
+        tenant_commit_sequence=5,
+        prepared=SimpleNamespace(request=SimpleNamespace(complete_records=(member,))),
+    )
+    decisions = [decision]
+    runtime = SimpleNamespace(
+        _owner_decisions=lambda: SimpleNamespace(
+            snapshot=lambda: OwnerJournalSnapshot(
+                "tenant-original", "head", tuple(decisions), frozenset()
+            )
+        )
+    )
+
+    validate_selected_witness_at_cut(runtime, source, tenant_commit_sequence=6)
+
+    later = witness.model_copy(
+        update={"snapshot": witness.snapshot.model_copy(update={"conflicting_evidence": True})}
+    )
+    later_bytes = later.canonical_bytes()
+    later_member = SimpleNamespace(
+        owner="effects",
+        schema_id=source.schema_id,
+        record_id="later-outcome",
+        canonical_bytes=later_bytes,
+        fingerprint=hashlib.sha256(later_bytes).hexdigest(),
+    )
+    decisions.append(
+        SimpleNamespace(
+            decision_id="later-decision",
+            decision_fingerprint="e" * 64,
+            tenant_commit_sequence=6,
+            prepared=SimpleNamespace(request=SimpleNamespace(complete_records=(later_member,))),
+        )
+    )
+    with pytest.raises(ValueError, match="not latest"):
+        validate_selected_witness_at_cut(runtime, source, tenant_commit_sequence=7)
+
+    forged = source.model_copy(
+        update={
+            "canonical_record_bytes": later_bytes
+        }
+    )
+    with pytest.raises(ValueError, match="physical member"):
+        validate_selected_witness_at_cut(runtime, forged, tenant_commit_sequence=6)
+
+
+def test_selection_prefix_rejects_rewritten_or_truncated_history() -> None:
+    prior = (("decision-a", b"entry-a", {}, "batch-a"),)
+
+    assert _selection_prefix(prior, (*prior, ("decision-b", b"entry-b", {}, "batch-b")))
+    assert not _selection_prefix(prior, (("decision-a", b"changed", {}, "batch-a"),))
+    assert not _selection_prefix(prior, ())

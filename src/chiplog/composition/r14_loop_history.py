@@ -641,6 +641,11 @@ def _read_call_history(
                         )
                         if evidence.request.complete_anchor_sources[:-1] != expected_anchors[:-1]:
                             raise ValueError("semantic reduction resolver anchors differ")
+                        reduction_publication.validate_selected_witness_at_cut(
+                            runtime,
+                            evidence.request.complete_anchor_sources[-1],
+                            command.expected_head,
+                        )
                         expected_reduction = (
                             Absent()
                             if current_semantic_reduction is None

@@ -155,7 +155,7 @@ def validate_selected_command(runtime, entry, batch):
     return evidence
 
 
-def _selected_anchor_sources(runtime, selected, retained):
+def _selected_anchor_sources(runtime, selected, retained, current_witness=None):
     decision_id, decision_bytes, _, batch = selected
     decision_raw = decision_bytes.encode() if isinstance(decision_bytes, str) else decision_bytes
     decision_digest = _sha(decision_raw)
@@ -187,7 +187,82 @@ def _selected_anchor_sources(runtime, selected, retained):
                 physical_record=physical,
             )
         )
-    return (*sources, retained.request.cut.selected_witness)
+    # Resolver identity is fixed at the accepted basis. The final source is the
+    # current selected R16 outcome and carries the evidence visible at this cut.
+    return (*sources, current_witness or retained.request.cut.selected_witness)
+
+
+def _selection_prefix(selected, current) -> bool:
+    """Require the full previously authenticated selection chain unchanged."""
+    return len(current) >= len(selected) and all(
+        before[0] == after[0] and before[1] == after[1] and before[3] == after[3]
+        for before, after in zip(selected, current, strict=False)
+    )
+
+
+def validate_selected_witness_at_cut(runtime, source, tenant_commit_sequence: int) -> None:
+    """Bind a historical R16 witness to the latest selected outcome at its cut."""
+    from chiplog.capabilities.effects.dispatch_outcome_contracts import (
+        DispatchOutcomeRecordV2,
+    )
+    from chiplog.platform.owner_decision_journal import OwnerJournalSnapshot
+
+    snapshot = runtime._owner_decisions().snapshot()
+    if not isinstance(snapshot, OwnerJournalSnapshot):
+        raise ValueError("semantic reduction witness has no authenticated owner history")
+    decisions = snapshot.decisions
+    selected_decisions = tuple(
+        decision
+        for decision in decisions
+        if decision.decision_id == source.selected_decision.subject_id
+        and decision.decision_id == source.selected_decision.revision.head
+        and decision.decision_fingerprint == source.selected_decision.revision.fingerprint
+        and decision.tenant_commit_sequence <= tenant_commit_sequence
+    )
+    if len(selected_decisions) != 1:
+        raise ValueError("semantic reduction witness decision is not selected at its cut")
+
+    def outcome_members(decision):
+        members = []
+        for ordinal, record in enumerate(decision.prepared.request.complete_records):
+            if record.owner != "effects" or record.schema_id != source.schema_id:
+                continue
+            try:
+                outcome = DispatchOutcomeRecordV2.model_validate_json(record.canonical_bytes)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    "selected semantic reduction witness has invalid R16 bytes"
+                ) from error
+            if outcome.canonical_bytes() != record.canonical_bytes:
+                raise ValueError("selected semantic reduction witness is noncanonical")
+            members.append((decision, ordinal, record, outcome))
+        return members
+
+    expected_members = outcome_members(selected_decisions[0])
+    exact = tuple(
+        item
+        for item in expected_members
+        if item[2].record_id == source.physical_record.subject_id
+        and item[2].canonical_bytes == source.canonical_record_bytes
+        and item[2].fingerprint == source.physical_record.revision.fingerprint
+        and item[2].record_id == source.subject.subject_id
+        and item[2].fingerprint == source.subject.revision.fingerprint
+    )
+    if len(exact) != 1:
+        raise ValueError("semantic reduction witness differs from its selected physical member")
+    intent_id = exact[0][3].snapshot.intent.intent_id
+    same_intent = [
+        item
+        for decision in decisions
+        if decision.tenant_commit_sequence <= tenant_commit_sequence
+        for item in outcome_members(decision)
+        if item[3].snapshot.intent.intent_id == intent_id
+    ]
+    if not same_intent:
+        raise ValueError("semantic reduction witness has no selected R16 outcome history")
+    latest = max(same_intent, key=lambda item: (item[0].tenant_commit_sequence, item[1]))
+    if latest != exact[0]:
+        raise ValueError("semantic reduction witness is not latest at its authenticated cut")
 
 
 def _require_absent(runtime: CommonCliExecutionRuntime) -> None:
@@ -409,7 +484,9 @@ def capture_request(runtime: CommonCliExecutionRuntime) -> PrepareLoopSemanticRe
             expected=expected,
             original=original,
             complete_ordered_evidence=cut.complete_ordered_evidence,
-            complete_anchor_sources=_selected_anchor_sources(runtime, selected[0], retained),
+            complete_anchor_sources=_selected_anchor_sources(
+                runtime, selected[0], retained, source_request.cut.selected_witness
+            ),
             reducer_policy=cut.reducer_policy,
             authority=cut.authority,
         )
@@ -476,15 +553,26 @@ async def publish_loop_semantic_reduction(
     with runtime._authority_gate().hold():
         selected = _selected_entries(runtime)
         if selected:
-            validate_selected_command(runtime, selected[0][2], selected[0][3])
-            replay_entry = selected[0][2]
+            validate_loop_semantic_reduction_startup(runtime)
+            replay_entry = selected[-1][2]
         else:
             replay_entry = None
     if replay_entry is not None:
-        return await _finish(runtime, replay_entry)
+        # A durable decision may outlive its physical append or acknowledgement.
+        # Finish that exact retained command before considering a successor.
+        await _finish(runtime, replay_entry)
 
     with runtime._authority_gate().hold():
+        selected_before = tuple(_selected_entries(runtime))
         request = capture_request(runtime)
+        if selected_before:
+            latest = selected_before[-1]
+            _, current_reduction = _selected_value(runtime, latest)
+            current_evidence = tuple(
+                source.physical_record for source in request.complete_ordered_evidence
+            )
+            if current_reduction.record.complete_ordered_evidence == current_evidence:
+                return current_reduction
         predecessor = runtime._commitment_journal.load(runtime._tenant_id)
         if predecessor != request.materialization_commitment:
             raise LoopRejected("semantic reduction predecessor differs from current source cut")
@@ -511,7 +599,7 @@ async def publish_loop_semantic_reduction(
                     runtime.current_worker() != worker
                     or runtime._supervisor.runtime().session("agent_loop") != session
                     or runtime._commitment_journal.load(runtime._tenant_id) != predecessor
-                    or _selected_entries(runtime)
+                    or not _selection_prefix(selected_before, _selected_entries(runtime))
                     or capture_request(runtime) != request
                 ):
                     return "STALE"
@@ -553,6 +641,9 @@ async def publish_loop_semantic_reduction(
         raise LoopRejected("semantic reduction publication " + result.disposition)
     with runtime._authority_gate().hold():
         selected = _selected_entries(runtime)
-        if len(selected) != 1:
-            raise LoopRejected("selected semantic reduction identity missing")
-    return await _finish(runtime, selected[0][2])
+        if (
+            not _selection_prefix(selected_before, selected)
+            or len(selected) != len(selected_before) + 1
+        ):
+            raise LoopRejected("selected semantic reduction successor identity missing")
+    return await _finish(runtime, selected[-1][2])
