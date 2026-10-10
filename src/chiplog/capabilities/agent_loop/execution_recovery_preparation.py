@@ -11,6 +11,10 @@ import json
 
 from pydantic import ValidationError
 
+from chiplog.capabilities.agent_loop.direct_effect_terminal_contracts import (
+    classify_direct_effect_terminal_v1,
+    translate_selected_outcome_v1,
+)
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
 
@@ -24,6 +28,11 @@ from .call_acceptance_contracts import (
     ToolExecutionIntentRecord,
 )
 from .call_acceptance_preparation import call_record_reference
+from .direct_terminal_contracts import (
+    AcceptedDirectTerminalAccountingV1,
+    AcceptedDirectTerminalDispositionV1,
+    AcceptedDirectTerminalResultV1,
+)
 from .execution_contracts import ExecutionRunRecord
 from .execution_recovery_contracts import (
     AcceptedOpenAccountingRecordV1,
@@ -41,6 +50,7 @@ from .execution_recovery_contracts import (
 from .execution_recovery_observations import (
     ContinuationReadyRecord,
     ExecutionRecoveryCut,
+    OriginalRecoveredClosure,
     RecoverySourceRecord,
     SealedAccountingRecord,
 )
@@ -51,14 +61,18 @@ from .recovery_domain import (
     RecoveredClosure,
     RecoveryHold,
     RecoveryIntegrityFault,
+    SealedAccounting,
     model_continuation_ready,
     sealed_call_accounting,
 )
 from .recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
     ConsequentialAcceptedCall,
+    DefiniteFailureResult,
+    EvidenceReduction,
     InitializedCall,
     RecoveryRequiredResult,
+    SuccessResult,
     TerminalCallFrontier,
 )
 from .recovery_frontier_registry_contracts import (
@@ -72,6 +86,9 @@ _SEAL = "chiplog.call.response-seal.v1"
 _INITIALIZED = "chiplog.call.initialized.v1"
 _CANCELLED = "chiplog.call.cancelled-before-accept.v1"
 _NOT_EXECUTED = "chiplog.call.not-executed-result.v1"
+_DIRECT_ACCOUNTING = "chiplog.execution.accepted-direct-terminal-accounting.v1"
+_DIRECT_TERMINAL = "chiplog.execution.accepted-direct-terminal-disposition.v1"
+_DIRECT_RESULT = "chiplog.execution.accepted-direct-terminal-result.v1"
 
 
 def _sha(raw: bytes) -> str:
@@ -210,6 +227,8 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
     ):
         raise RecoveryIntegrityFault("response lost captured/current Turn binding")
     call = view.ordered_calls[0]
+    if not isinstance(call, TerminalCallFrontier):
+        raise RecoveryHold("native next-turn call is not terminal")
     init_ref = seal.complete_ordered_initialized[0]
     if call.original_call_id != init_ref.subject_id or call.response_id != seal.response_seal_id:
         raise RecoveryIntegrityFault("native terminal call differs from sealed initialization")
@@ -224,15 +243,23 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
         or init.call.classification != "CONSEQUENTIAL"
     ):
         raise RecoveryIntegrityFault("initialized call differs from original response")
-    if (
-        isinstance(call.acceptance, ConsequentialAcceptedCall)
-        and isinstance(call.disposition, RecoveryRequiredResult)
+    if isinstance(call.acceptance, ConsequentialAcceptedCall) and isinstance(
+        call.disposition, RecoveryRequiredResult
     ):
         if cut.frontier.registry != recovery_registry:
             raise RecoveryHold("accepted recovery requires the V2 native recovery registry")
         if len(profiles_v3) != 1 or profiles_v2:
             raise RecoveryHold("accepted recovery requires the selected V3 native profile")
         _validate_accepted_recovery(cut, call, init, init_ref)
+        return
+    if isinstance(call.acceptance, ConsequentialAcceptedCall) and isinstance(
+        call.disposition, (SuccessResult, DefiniteFailureResult)
+    ):
+        if cut.frontier.registry != recovery_registry:
+            raise RecoveryHold("direct terminal requires the V2 native recovery registry")
+        if len(profiles_v3) != 1 or profiles_v2:
+            raise RecoveryHold("direct terminal requires the selected V3 native profile")
+        _validate_direct_terminal(cut, call, init_ref)
         return
     if (
         call.kind != "TERMINAL"
@@ -276,6 +303,126 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
         _validate_extension_sources(cut, cut.complete_sources[len(expected_sources) :])
     if cut.original_closures or cut.current_reductions:
         raise RecoveryHold("unneeded closure or reduction in preaccept cancellation")
+
+
+def _validate_direct_terminal(
+    cut: ExecutionRecoveryCut,
+    call: TerminalCallFrontier,
+    initialized: CallSubjectHead,
+) -> None:
+    """Check only the frozen one-call direct terminal projection."""
+    acceptance = call.acceptance
+    disposition = call.disposition
+    if not isinstance(acceptance, ConsequentialAcceptedCall) or not isinstance(
+        disposition, (SuccessResult, DefiniteFailureResult)
+    ):
+        raise RecoveryHold("direct terminal branch has a foreign terminal type")
+    if cut.original_closures or cut.current_reductions:
+        raise RecoveryHold("direct terminal cannot carry resolver closure or reduction")
+    terminal = _unique_record_by_revision(
+        cut, _DIRECT_TERMINAL, disposition.terminal, AcceptedDirectTerminalDispositionV1
+    )
+    result = _unique_record_by_revision(
+        cut, _DIRECT_RESULT, disposition.result, AcceptedDirectTerminalResultV1
+    )
+    accounting_rows = tuple(
+        row
+        for row in cut.complete_sources
+        if row.owner == "agent_loop" and row.schema_id == _DIRECT_ACCOUNTING
+    )
+    if len(accounting_rows) != 1:
+        raise RecoveryHold("direct terminal accounting is missing or ambiguous")
+    accounting = _record(accounting_rows[0], AcceptedDirectTerminalAccountingV1)
+    outcome_rows = tuple(
+        row
+        for row in cut.complete_sources
+        if row.physical_record.subject_id == accounting.selected_outcome_record_id
+        and row.owner == "effects"
+        and row.schema_id == "chiplog.effects.dispatch-outcome-record.v2"
+    )
+    if len(outcome_rows) != 1:
+        raise RecoveryHold("direct terminal selected R16 outcome is absent or ambiguous")
+    try:
+        outcome = DispatchOutcomeRecordV2.model_validate_json(
+            outcome_rows[0].canonical_record_bytes
+        )
+    except (ValidationError, ValueError) as error:
+        raise RecoveryIntegrityFault("invalid selected R16 outcome bytes") from error
+    if outcome.canonical_bytes() != outcome_rows[0].canonical_record_bytes:
+        raise RecoveryIntegrityFault("selected R16 outcome is noncanonical")
+    try:
+        expected_classification = classify_direct_effect_terminal_v1(
+            translate_selected_outcome_v1(outcome)
+        )
+    except (TypeError, ValueError) as error:
+        raise RecoveryHold("selected R16 outcome is outside the frozen direct mapping") from error
+    expected_kind = "SUCCEEDED" if isinstance(disposition, SuccessResult) else "FAILED_DEFINITE"
+    expected_state = "CONFIRMED" if expected_kind == "SUCCEEDED" else "FAILED_NO_EFFECT"
+    classification = result.classification
+    expected_semantic = (
+        "R14_EFFECT_CONFIRMED" if expected_kind == "SUCCEEDED" else "R14_EFFECT_FAILED_NO_EFFECT"
+    )
+    selected_outcome = outcome_rows[0]
+    external_effect = acceptance.external_effect_intent
+    if not isinstance(external_effect, Present):
+        raise RecoveryHold("direct terminal acceptance has no external effect intent")
+    if (
+        call.original_call_id != initialized.subject_id
+        or acceptance.initialized != initialized.revision
+        or len(acceptance.complete_acceptance_manifest) != 3
+        or accounting.original_call_id != call.original_call_id
+        or accounting.response_id != call.response_id
+        or accounting.accepted.revision != acceptance.accepted
+        or accounting.execution_intent.revision != acceptance.execution_intent
+        or accounting.external_effect_intent.revision != external_effect
+        or not isinstance(accounting.terminal.revision, Present)
+        or accounting.terminal.revision != disposition.terminal
+        or not isinstance(accounting.result.revision, Present)
+        or accounting.result.revision != disposition.result
+        or acceptance.complete_acceptance_manifest
+        != (
+            acceptance.accepted,
+            acceptance.execution_intent,
+            acceptance.external_effect_intent,
+        )
+        or accounting.selected_outcome_fingerprint
+        != selected_outcome.physical_record.revision.fingerprint
+        or accounting.selected_decision != selected_outcome.selected_decision
+        or accounting.selected_outcome_record_id != outcome.record.head
+        or outcome.canonical_bytes() != selected_outcome.canonical_record_bytes
+        or outcome.snapshot.state != expected_state
+        or outcome.snapshot.obligation.state != "CLOSED"
+        or outcome.snapshot.intent.intent_id != classification.intent.subject_id
+        or terminal.kind != expected_kind
+        or terminal.original_call_id != call.original_call_id
+        or terminal.response_id != call.response_id
+        or terminal.accepted.revision != acceptance.accepted
+        or terminal.external_effect_intent.revision != external_effect
+        or terminal.mapping_id != "R14_DIRECT_EFFECT_TERMINAL_V1"
+        or terminal.mapping_version != "r14-direct-effect-terminal.v1"
+        or result.result_id != accounting.result.subject_id
+        or result.original_call_id != call.original_call_id
+        or result.terminal.revision != disposition.terminal
+        or classification.disposition != expected_kind
+        or classification.semantic_class != expected_semantic
+        or classification.mapping_id != "R14_DIRECT_EFFECT_TERMINAL_V1"
+        or classification.mapping_version != "r14-direct-effect-terminal.v1"
+        or classification != expected_classification
+        or terminal.selected_effect_terminal != classification.terminal
+        or classification.intent.subject_id != outcome.snapshot.intent.intent_id
+        or classification.intent.fingerprint != external_effect.fingerprint
+    ):
+        raise RecoveryIntegrityFault("direct terminal does not join its exact accepted R16 outcome")
+    for evidence in classification.ordered_evidence:
+        refs = tuple(
+            row
+            for row in cut.complete_sources
+            if row.physical_record.subject_id == evidence.subject_id
+            and row.physical_record.revision.head == evidence.head
+            and row.physical_record.revision.fingerprint == evidence.fingerprint
+        )
+        if len(refs) != 1:
+            raise RecoveryHold("direct terminal evidence source is absent or ambiguous")
 
 
 def _source_for_revision(
@@ -367,8 +514,8 @@ def _validate_accepted_recovery(
         or execution_intent.original_call_id != call.original_call_id
         or execution_intent.initialized != initialized_ref
         or execution_intent.accepted != accepted_ref
-        or execution_intent.external_intent != acceptance.external_effect_intent
-        or initialized.call.original_call_id != call.original_call_id
+        or execution_intent.external_intent.revision != acceptance.external_effect_intent
+        or initialized.original_call_id != call.original_call_id
     ):
         raise RecoveryIntegrityFault("accepted call and selected execution intent differ")
 
@@ -391,16 +538,14 @@ def _validate_accepted_recovery(
         or terminal.kind != "RECOVERY_REQUIRED"
         or terminal.original_call_id != call.original_call_id
         or terminal.accepted != accepted_ref
-        or terminal.external_effect_intent != acceptance.external_effect_intent
+        or terminal.external_effect_intent.revision != acceptance.external_effect_intent
         or terminal.obligation_opening.subject_id != opening.opening_id
         or disposition.terminal.fingerprint != _sha(terminal.canonical_bytes())
     ):
         raise RecoveryIntegrityFault("accepted recovery opening or immutable terminal differs")
 
     recovered = disposition.recovered_outcome.outcome
-    outcome_source = _source_for_revision(
-        cut, recovered, "chiplog.loop.recovered-call-outcome.v1"
-    )
+    outcome_source = _source_for_revision(cut, recovered, "chiplog.loop.recovered-call-outcome.v1")
     outcome = _record(outcome_source, RecoveredCallOutcomeRecord)
     if len(cut.original_closures) != 1 or len(cut.current_reductions) != 1:
         raise RecoveryHold("accepted recovery requires exactly one closure and current reduction")
@@ -493,7 +638,9 @@ def _validate_accepted_recovery(
         raise RecoveryHold("accepted witness source is missing")
 
 
-def _continuation_closures(cut: ExecutionRecoveryCut, accounting):
+def _continuation_closures(
+    cut: ExecutionRecoveryCut, accounting: SealedAccounting
+) -> tuple[tuple[OriginalRecoveredClosure, ...], tuple[EvidenceReduction, ...]]:
     closures = tuple(
         RecoveredClosure(
             original_call_id=item.original.original_call_id,

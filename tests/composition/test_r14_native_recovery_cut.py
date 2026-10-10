@@ -1,6 +1,8 @@
 """Mounted selected native full-cut boundary; inert DTOs never grant authority."""
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +23,47 @@ from chiplog.composition.r14_recovery_profile_publication import publish_native_
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 from tests.support.recovery_candidate import inert_recovery_candidate
+
+
+@pytest.mark.parametrize(
+    "schema_id",
+    (
+        "chiplog.execution.accepted-open-accounting.v1",
+        "chiplog.execution.accepted-open-recovery-opening.v1",
+        "chiplog.loop.original-resolver-batch.v1",
+        "chiplog.loop.semantic-reduction.v1",
+        "chiplog.loop.semantic-reducer-policy.v1",
+    ),
+)
+def test_direct_selector_holds_rival_r14_schema_under_foreign_operation(schema_id: str):
+    raw = json.dumps({"kind": "DECIDED"}).encode()
+    command = SimpleNamespace(
+        operation_kind="custom.foreign-operation.v1",
+        records=(SimpleNamespace(schema_id=schema_id),),
+    )
+    log = SimpleNamespace(entries=lambda: (("decision", "unused", raw),))
+    runtime = SimpleNamespace(_loop_decisions=lambda: log, _publication=lambda entry: command)
+
+    claimed, selected = NativeRecoveryCutSource._selected_accepted_direct_terminal_inputs(
+        runtime, None
+    )
+
+    assert claimed
+    assert selected is None
+
+
+def test_direct_selector_holds_retained_rival_marker_under_foreign_operation():
+    raw = json.dumps({"kind": "DECIDED", "original_call_resolution_evidence": "retained"}).encode()
+    command = SimpleNamespace(operation_kind="custom.foreign-operation.v1", records=())
+    log = SimpleNamespace(entries=lambda: (("decision", "unused", raw),))
+    runtime = SimpleNamespace(_loop_decisions=lambda: log, _publication=lambda entry: command)
+
+    claimed, selected = NativeRecoveryCutSource._selected_accepted_direct_terminal_inputs(
+        runtime, None
+    )
+
+    assert claimed
+    assert selected is None
 
 
 @pytest.mark.asyncio
@@ -68,7 +111,7 @@ async def test_selected_native_cut_reopens_and_legacy_prepare_holds(tmp_path: Pa
             )
             assert isinstance(rejected, CallPreparationRejected)
             assert rejected.code == "HOLD"
-            assert rejected.reason == "V2 registry requires exactly one selected V2 profile"
+            assert rejected.reason == "V2 registry requires exactly one selected V2/V3 profile"
             with pytest.raises(ValueError, match="member lacks"):
                 validate_native_recovery_cut(
                     cut.model_copy(
