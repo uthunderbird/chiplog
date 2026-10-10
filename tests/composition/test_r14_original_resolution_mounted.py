@@ -10,12 +10,17 @@ from chiplog.architecture.r7_runtime import (
 )
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+    ConsumableReduction,
+    HeldReduction,
     PreparedLoopSemanticReduction,
     PreparedOriginalCallResolution,
 )
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 from chiplog.composition.common_cli_execution_runtime import (
     open_common_cli_execution_runtime,
+)
+from chiplog.composition.r14_accepted_open_accounting_publication import (
+    hold_if_accepted_open,
 )
 from chiplog.composition.r14_call_acceptance_port import (
     CallAcceptanceAdoption,
@@ -36,7 +41,10 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
     database = tmp_path / "r14-original-resolution.sqlite"
     custody = tmp_path / "custody"
     resources = HermeticDispatchResources(
-        scenarios=("LOST_RESPONSE_AFTER_EFFECT",), cap=1, custody_path=custody
+        scenarios=("LOST_RESPONSE_AFTER_EFFECT",),
+        late_receipt_scenarios=(("COMPATIBLE", "RIVAL"),),
+        cap=1,
+        custody_path=custody,
     )
     manifest = R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST
 
@@ -140,6 +148,45 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert reopened.read_selected_original_resolver_invocation_source()[0] == invocation
         assert reopened.read_selected_original_call_resolution() == resolution
         assert reopened.read_selected_loop_semantic_reduction().record == reduction.record
+        provider = resources.require_original_provider()
+        compatible_receipt = provider.observe_late_receipt(
+            provider.transfers[0].ticket.transmission_id
+        )
+        compatible_publication = await reopened.observe_dispatch_outcome(
+            intent_id, compatible_receipt
+        )
+        compatible = DispatchOutcomeRecordV2.model_validate_json(
+            compatible_publication.complete_records[0].canonical_bytes
+        )
+        assert compatible.snapshot.obligation.state == "CLOSED"
+        assert compatible.snapshot.conflicting_evidence is False
+        assert len(compatible.snapshot.evidence_heads) == len(closed.snapshot.evidence_heads) + 1
+        assert len(provider.transfers) == 1
+
+        # The old consumable head remains selected but cannot clear the recovery hold.
+        assert reopened.read_selected_loop_semantic_reduction().record == reduction.record
+        assert await hold_if_accepted_open(reopened, "hermetic-ingress")
+        refined_reduction = await reopened.publish_loop_semantic_reduction()
+        assert isinstance(refined_reduction.record.disposition, ConsumableReduction)
+        assert refined_reduction.record.reduction_id == reduction.record.reduction_id
+        assert refined_reduction.record.disposition.semantic_class == (
+            reduction.record.disposition.semantic_class
+        )
+        assert len(refined_reduction.record.complete_ordered_evidence) == len(
+            reduction.record.complete_ordered_evidence
+        ) + 1
+        assert not await hold_if_accepted_open(reopened, "hermetic-ingress")
+
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        responses=(native_response(),),
+        manifest=manifest,
+    ) as reopened:
+        assert reopened.read_selected_original_resolver_authority_policy() == policy
+        assert reopened.read_selected_original_resolver_invocation_source()[0] == invocation
+        assert reopened.read_selected_original_call_resolution() == resolution
+        assert reopened.read_selected_loop_semantic_reduction().record == refined_reduction.record
         resolved_frontier = reopened.read_selected_accepted_open_frontier()
         resolved_disposition = resolved_frontier.calls[0].disposition
         assert resolved_disposition.kind == "RECOVERY_REQUIRED"
@@ -150,4 +197,21 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         )
         with pytest.raises(LoopRejected, match="HOLD"):
             await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
-        assert len(resources.require_original_provider().transfers) == 1
+
+        provider = resources.require_original_provider()
+        rival_receipt = provider.observe_late_receipt(
+            provider.transfers[0].ticket.transmission_id
+        )
+        rival_publication = await reopened.observe_dispatch_outcome(intent_id, rival_receipt)
+        rival = DispatchOutcomeRecordV2.model_validate_json(
+            rival_publication.complete_records[0].canonical_bytes
+        )
+        assert rival.snapshot.obligation.state == "CLOSED"
+        assert rival.snapshot.conflicting_evidence is True
+        assert len(rival.snapshot.evidence_heads) == len(compatible.snapshot.evidence_heads) + 1
+        assert await hold_if_accepted_open(reopened, "hermetic-ingress")
+        held_reduction = await reopened.publish_loop_semantic_reduction()
+        assert isinstance(held_reduction.record.disposition, HeldReduction)
+        assert held_reduction.record.reduction_id == refined_reduction.record.reduction_id
+        assert await hold_if_accepted_open(reopened, "hermetic-ingress")
+        assert len(provider.transfers) == 1

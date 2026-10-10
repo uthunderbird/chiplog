@@ -319,6 +319,16 @@ def _startup_state(
     ):
         _validate_physical_catalog(runtime, batch)
         return
+    if state == "COMPLETE" and actual == anchored:
+        from chiplog.composition.r14_historical_suffix import (
+            authenticate_selected_r14_suffix_held,
+        )
+
+        if authenticate_selected_r14_suffix_held(
+            runtime, actual, anchored, target_commitment=resulting
+        ):
+            _validate_physical_catalog(runtime, batch)
+            return
     raise ValueError("selected original resolution has partial physical state")
 
 

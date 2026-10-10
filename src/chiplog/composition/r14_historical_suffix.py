@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 
@@ -11,58 +12,144 @@ from chiplog.platform.workspace_snapshot import read_connection
 
 _SUFFIX_OPERATIONS = frozenset(
     {
+        "agent_loop.original-resolver-authority-policy.v1",
         "agent_loop.original-resolver-invocation.v1",
         "agent_loop.original-call-resolution.v1",
+        "agent_loop.loop-semantic-reduction.v1",
     }
 )
+_APPEND_EVIDENCE = "effects.record_evidence"
+
+
+def _validate_loop_entry(runtime, entry, command) -> None:
+    operation = command.operation_kind
+    if operation == "agent_loop.original-resolver-authority-policy.v1":
+        from chiplog.composition import r14_original_resolver_policy_publication as policy
+
+        policy.validate_selected(runtime, entry, command)
+    elif operation == "agent_loop.original-resolver-invocation.v1":
+        from chiplog.composition import r14_original_resolver_invocation_publication as inv
+
+        inv.validate_selected(runtime, entry, command)
+    elif operation == "agent_loop.original-call-resolution.v1":
+        from chiplog.composition import r14_original_call_resolution_publication as resolution
+
+        resolution.validate_selected_command(runtime, entry, command)
+    elif operation == "agent_loop.loop-semantic-reduction.v1":
+        from chiplog.composition import r14_loop_semantic_reduction_publication as reduction
+
+        reduction.validate_selected_command(runtime, entry, command)
+    else:
+        raise ValueError("suffix contains an unregistered loop operation")
 
 
 def authenticate_selected_r14_suffix_held(
     runtime, actual: str, anchored: str, *, target_commitment: str
 ) -> bool:
-    """Verify every later R14 write as one exact physical chain to target."""
+    """Verify an exact mixed owner/loop physical suffix after a selected R14 cut."""
     runtime._authority_gate().require_held()
     try:
         runtime._check_database_identity()
-        if runtime._pending_owners() or runtime._pending_gate_publications():
+        if actual != anchored or runtime._pending_owners() or runtime._pending_gate_publications():
             return False
-        entries = []
-        for _, _, raw in runtime._loop_decisions().entries():
-            import json
 
+        from chiplog.composition import r14_original_call_resolution_publication as resolution
+
+        resolutions = resolution._selected_entries(runtime)
+        if len(resolutions) > 1:
+            return False
+        resolution_sequence = None
+        if resolutions:
+            _, _, resolution_entry, resolution_command = resolutions[0]
+            resolution.validate_selected_command(runtime, resolution_entry, resolution_command)
+            resolution_sequence = resolution_command.expected_head + 1
+
+        selected_entries = []
+        for identity, _, raw in runtime._loop_decisions().entries():
+            entry = json.loads(raw)
+            if (
+                entry.get("kind") == "DECIDED"
+                and entry.get("operation_kind") in _SUFFIX_OPERATIONS
+                and entry.get("resulting") == target_commitment
+            ):
+                command = runtime._publication(entry)
+                if identity != command.idempotency_key:
+                    return False
+                selected_entries.append((entry, command))
+        if len(selected_entries) != 1:
+            return False
+        target_entry, target_command = selected_entries[0]
+        _validate_loop_entry(runtime, target_entry, target_command)
+        target_sequence = target_command.expected_head + 1
+
+        reductions = runtime._loop_decisions().entries()
+        has_reduction = any(
+            json.loads(raw).get("kind") == "DECIDED"
+            and json.loads(raw).get("operation_kind") == "agent_loop.loop-semantic-reduction.v1"
+            for _, _, raw in reductions
+        )
+        if has_reduction:
+            from chiplog.composition.r14_loop_semantic_reduction_publication import (
+                validate_loop_semantic_reduction_startup,
+            )
+
+            validate_loop_semantic_reduction_startup(runtime)
+
+        # Build one sequence-indexed view. The independent owner journal and loop
+        # journal have no shared iteration order, so only persisted tenant sequence
+        # determines the chain.
+        steps = {}
+        for identity, _, raw in reductions:
             entry = json.loads(raw)
             if entry.get("kind") != "DECIDED":
                 continue
             operation = entry.get("operation_kind")
-            if operation not in _SUFFIX_OPERATIONS:
+            expected_head = entry.get("expected_head")
+            if type(expected_head) is not int:
+                return False
+            sequence = expected_head + 1
+            if sequence <= target_sequence:
                 continue
+            if operation not in _SUFFIX_OPERATIONS:
+                return False
             command = runtime._publication(entry)
             if (
-                command.operation_kind != operation
+                identity != command.idempotency_key
                 or entry.get("operation_id") != command.idempotency_key
-                or entry.get("expected_head") != command.expected_head
                 or entry.get("fingerprint") != command.request_fingerprint
+                or command.operation_kind != operation
+                or command.expected_head + 1 != sequence
             ):
                 return False
-            if operation == "agent_loop.original-resolver-invocation.v1":
-                from chiplog.composition import r14_original_resolver_invocation_publication as inv
+            _validate_loop_entry(runtime, entry, command)
+            if sequence in steps:
+                return False
+            steps[sequence] = (
+                entry,
+                command,
+                str(entry.get("predecessor")),
+                str(entry.get("resulting")),
+            )
 
-                evidence = inv.RetainedOriginalResolverInvocationPublication.model_validate_json(
-                    entry.get(inv.EVIDENCE_FIELD)
-                )
-                if inv.command(evidence) != command:
-                    return False
-                inv._validate_invocation_actor(runtime, evidence)
-            else:
-                from chiplog.composition import (
-                    r14_original_call_resolution_publication as resolution,
-                )
-
-                resolution.validate_selected_command(runtime, entry, command)
-            entries.append((entry, command))
+        owner_snapshot = runtime._owner_decisions().snapshot()
+        for decision in owner_snapshot.decisions:
+            sequence = decision.tenant_commit_sequence
+            if sequence <= target_sequence:
+                continue
+            if not has_reduction or resolution_sequence is None or sequence <= resolution_sequence:
+                return False
+            command = runtime._owner_command(decision)
+            if command.operation_kind != _APPEND_EVIDENCE or sequence in steps:
+                return False
+            steps[sequence] = (
+                decision,
+                command,
+                decision.prepared.predecessor_commitment,
+                decision.resulting_commitment,
+            )
 
         with read_connection(runtime._database) as source:
-            if actual != capture_authority_snapshot_commitment(source, runtime._tenant_id):
+            if capture_authority_snapshot_commitment(source, runtime._tenant_id) != anchored:
                 return False
             head_row = source.execute(
                 "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
@@ -70,37 +157,82 @@ def authenticate_selected_r14_suffix_held(
             if head_row is None:
                 return False
             current_head = int(head_row[0])
-            current_commitment = actual
-            visited = {actual}
+            expected_sequences = tuple(range(target_sequence + 1, current_head + 1))
+            if tuple(sorted(steps)) != expected_sequences:
+                return False
+            publications = tuple(
+                source.execute(
+                    "SELECT operation_kind,idempotency_key,request_fingerprint,"
+                    "commit_sequence,record_ids FROM publications "
+                    "WHERE tenant_id=? AND commit_sequence>? ORDER BY commit_sequence",
+                    (runtime._tenant_id, target_sequence),
+                ).fetchall()
+            )
+            if tuple(row[3] for row in publications) != expected_sequences:
+                return False
+            record_sequences = tuple(
+                row[0]
+                for row in source.execute(
+                    "SELECT DISTINCT commit_sequence FROM records "
+                    "WHERE tenant_id=? AND commit_sequence>? ORDER BY commit_sequence",
+                    (runtime._tenant_id, target_sequence),
+                ).fetchall()
+            )
+            if record_sequences != expected_sequences:
+                return False
+
             with closing(sqlite3.connect(":memory:")) as historical:
                 source.backup(historical)
-                while current_commitment != target_commitment:
-                    matches = [
-                        (entry, command)
-                        for entry, command in entries
-                        if entry.get("resulting") == current_commitment
-                        and command.expected_head + 1 == current_head
-                    ]
-                    if len(matches) != 1:
+                current_commitment = anchored
+                for sequence in reversed(expected_sequences):
+                    entry, command, predecessor, resulting = steps[sequence]
+                    publication = publications[sequence - target_sequence - 1]
+                    if (
+                        resulting != current_commitment
+                        or command.expected_head + 1 != sequence
+                        or publication
+                        != (
+                            command.operation_kind,
+                            command.idempotency_key,
+                            command.request_fingerprint,
+                            sequence,
+                            "\n".join(record.record_id for record in command.records),
+                        )
+                        or inspect_publication(source, command, sequence) != "COMPLETE"
+                    ):
                         return False
-                    entry, command = matches[0]
-                    if inspect_publication(source, command, current_head) != "COMPLETE":
+                    physical = tuple(
+                        source.execute(
+                            "SELECT record_id,owner,schema_id,canonical_bytes FROM records "
+                            "WHERE tenant_id=? AND commit_sequence=? ORDER BY rowid",
+                            (runtime._tenant_id, sequence),
+                        ).fetchall()
+                    )
+                    expected_physical = tuple(
+                        (record.record_id, record.owner, record.schema_id, record.canonical_bytes)
+                        for record in command.records
+                    )
+                    if physical != expected_physical:
                         return False
-                    predecessor = entry.get("predecessor")
-                    if not isinstance(predecessor, str):
-                        return False
+
                     historical.execute("BEGIN")
                     for record in command.records:
-                        if historical.execute(
-                            "DELETE FROM records WHERE tenant_id=? AND record_id=?",
-                            (runtime._tenant_id, record.record_id),
-                        ).rowcount != 1:
+                        if (
+                            historical.execute(
+                                "DELETE FROM records WHERE tenant_id=? AND record_id=?",
+                                (runtime._tenant_id, record.record_id),
+                            ).rowcount
+                            != 1
+                        ):
                             return False
-                    if historical.execute(
-                        "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
-                        "AND idempotency_key=?",
-                        (runtime._tenant_id, command.operation_kind, command.idempotency_key),
-                    ).rowcount != 1:
+                    if (
+                        historical.execute(
+                            "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
+                            "AND idempotency_key=?",
+                            (runtime._tenant_id, command.operation_kind, command.idempotency_key),
+                        ).rowcount
+                        != 1
+                    ):
                         return False
                     historical.execute(
                         "UPDATE tenant_heads SET head=? WHERE tenant_id=?",
@@ -111,11 +243,14 @@ def authenticate_selected_r14_suffix_held(
                         != predecessor
                     ):
                         return False
-                    current_commitment = predecessor
-                    current_head = command.expected_head
-                    visited.add(predecessor)
                     historical.commit()
-        runtime._check_database_identity()
-        return current_commitment == target_commitment and anchored in visited
-    except (ValueError, TypeError, RuntimeError, OSError, sqlite3.Error):
+                    current_commitment = predecessor
+
+            runtime._check_database_identity()
+            return (
+                current_commitment == target_commitment
+                and capture_authority_snapshot_commitment(source, runtime._tenant_id) == anchored
+                and runtime._commitment_journal.load(runtime._tenant_id) == anchored
+            )
+    except ValueError, TypeError, RuntimeError, OSError, sqlite3.Error:
         return False
