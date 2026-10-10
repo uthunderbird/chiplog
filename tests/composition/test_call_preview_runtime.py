@@ -15,6 +15,7 @@ from chiplog.capabilities.agent_loop.execution_contracts import (
     SelfEffectArguments,
 )
 from chiplog.composition import r14_call_preview as previews
+from chiplog.composition import r14_loop_history
 from chiplog.composition.r14_call_acceptance_port import (
     CallAcceptanceAdoption,
     CallAcceptanceTarget,
@@ -312,9 +313,19 @@ async def test_adopted_preview_prepares_both_real_owners_without_publication_or_
         history_read_count += 1
         return original_history_reader(*args, **kwargs)
 
+    capture_fallback_count = 0
+    original_capture_fallback = r14_loop_history.read_execution_call_history
+
+    def counted_capture_fallback(*args: object, **kwargs: object):
+        nonlocal capture_fallback_count
+        capture_fallback_count += 1
+        return original_capture_fallback(*args, **kwargs)
+
     monkeypatch.setattr(previews, "read_execution_call_history", counted_history_read)
+    monkeypatch.setattr(r14_loop_history, "read_execution_call_history", counted_capture_fallback)
     prepared = await prepare_call_exchange(runtime, "hermetic-ingress", adopted)
     assert history_read_count == 1
+    assert capture_fallback_count == 1  # Fresh post-owner live capture remains mandatory.
     assert type(prepared).model_validate_json(prepared.canonical_bytes()) == prepared
     assert prepared.captured.cut.worker is not None
     assert target.current_run.revision.head == prepared.captured.cut.worker.run.head

@@ -256,6 +256,7 @@ async def prepare_call_exchange(
             observed,
             target.current_run.subject_id,
             original_call_id=target.original_call_id,
+            execution_call_history=history,
         )
         if captured.principal != preview.captured.principal:
             raise LoopRejected("adoption principal differs from original preview")

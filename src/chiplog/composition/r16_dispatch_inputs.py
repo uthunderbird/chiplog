@@ -45,7 +45,18 @@ from chiplog.composition.r16_effects import (
 from chiplog.platform.broker import BrokerSession
 
 if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallInventorySnapshot
+    from chiplog.composition.r14_execution_fanout_contracts import (
+        RetainedExecutionFanOutPreparation,
+    )
+    from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
     from chiplog.composition.r16_dispatch_runtime import R16DispatchRuntime
+
+    ExecutionCallHistory = tuple[
+        ExecutionHistorySnapshot,
+        CallInventorySnapshot,
+        tuple[RetainedExecutionFanOutPreparation, ...],
+    ]
 
 
 @dataclass(frozen=True)
@@ -70,7 +81,10 @@ def capture_dispatch(
     *,
     original_call_id: str | None = None,
     intent_id: str | None = None,
+    execution_call_history: ExecutionCallHistory | None = None,
 ) -> DispatchCapture:
+    if execution_call_history is not None:
+        runtime._authority_gate().require_held()
     if resources is not runtime._require_dispatch_resources():
         raise LoopRejected("captured dispatch resources differ from original custody")
     runtime._require_no_pending()
@@ -115,7 +129,11 @@ def capture_dispatch(
             cut.worker.run, ExecutionRunRecord
         ):
             raise LoopRejected("initialized-call dispatch requires a registered executable Run")
-        snapshot, inventory, _ = read_execution_call_history(runtime)
+        snapshot, inventory, _ = (
+            execution_call_history
+            if execution_call_history is not None
+            else read_execution_call_history(runtime)
+        )
         originals = tuple(
             row.initialized_record
             for row in inventory.ordered_calls
