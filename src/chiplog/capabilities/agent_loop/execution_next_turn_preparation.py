@@ -24,10 +24,13 @@ from .execution_recovery_observations import (
 )
 from .native_recovery_profile_contracts import native_recovery_fingerprint
 from .recovery_contracts import NonSchedulerFence, Present
-from .recovery_domain import model_continuation_ready, sealed_call_accounting
+from .recovery_domain import RecoveredClosure, model_continuation_ready, sealed_call_accounting
 from .recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
+    ConsequentialAcceptedCall,
+    EvidenceReduction,
     InitializedCall,
+    RecoveryRequiredResult,
     TerminalCallFrontier,
 )
 from .recovery_frontier_registry_contracts import frontier_registry_reference
@@ -354,30 +357,63 @@ def _check_source(request: PrepareNextExecutionTurn) -> ExecutionRunRecord:
     )
     _require(
         len(view.ordered_calls) == 1
-        and isinstance(view.ordered_calls[0], TerminalCallFrontier)
-        and isinstance(view.ordered_calls[0].acceptance, InitializedCall)
-        and isinstance(view.ordered_calls[0].disposition, CancelledBeforeAcceptResult)
-        and not cut.original_closures
-        and not cut.current_reductions,
-        "supported next Turn requires one cancelled-before-accept terminal call",
+        and isinstance(view.ordered_calls[0], TerminalCallFrontier),
+        "supported next Turn requires one terminal call",
     )
     terminal = view.ordered_calls[0]
     assert isinstance(terminal, TerminalCallFrontier)
-    assert isinstance(terminal.acceptance, InitializedCall)
-    assert isinstance(terminal.disposition, CancelledBeforeAcceptResult)
-    _require(
-        terminal.acceptance.initialized == view.seal.complete_ordered_initialized[0].revision
-        and terminal.disposition.initialized_predecessor
-        == view.seal.complete_ordered_initialized[0].revision,
-        "terminal call substituted the sealed initialized revision",
-    )
+    closures: tuple[RecoveredClosure, ...] = ()
+    reductions: tuple[EvidenceReduction, ...] = ()
+    if isinstance(terminal.disposition, CancelledBeforeAcceptResult):
+        _require(
+            isinstance(terminal.acceptance, InitializedCall)
+            and terminal.acceptance.initialized
+            == view.seal.complete_ordered_initialized[0].revision
+            and terminal.disposition.initialized_predecessor
+            == view.seal.complete_ordered_initialized[0].revision
+            and not cut.original_closures
+            and not cut.current_reductions,
+            "cancelled next Turn substituted the sealed initialized revision or recovery evidence",
+        )
+    elif isinstance(terminal.disposition, RecoveryRequiredResult):
+        _require(
+            isinstance(terminal.acceptance, ConsequentialAcceptedCall)
+            and terminal.acceptance.initialized
+            == view.seal.complete_ordered_initialized[0].revision
+            and terminal.disposition.recovered_outcome.outcome.kind == "PRESENT"
+            and bool(cut.original_closures)
+            and bool(cut.current_reductions),
+            "accepted next Turn lacks its exact recovered closure and current reduction",
+        )
+        closures = tuple(
+            RecoveredClosure(
+                original_call_id=item.original.original_call_id,
+                obligation_id=item.original.obligation_id,
+                original_obligation_head=item.original.obligation_head,
+                terminal_disposition=item.terminal_disposition,
+                outcome=item.recovered_outcome,
+                accepted_evidence=item.accepted_evidence,
+                closure=item.closure,
+                resolver_batch=item.resolver_batch,
+                resolver_id=item.original.resolver_id,
+                resolver_version=item.original.resolver_version,
+                reducer_id=item.original.reducer_id,
+                reducer_version=item.original.reducer_version,
+                reduction_id=item.reduction_id,
+                accepted_semantic_class=item.accepted_semantic_class,
+            )
+            for item in cut.original_closures
+        )
+        reductions = cut.current_reductions
+    else:
+        raise ValueError("next Turn requires a cancellation or recovered obligation")
     recomputed = sealed_call_accounting(
         view.seal.response_seal_id,
         view.seal.digest(),
         tuple(call.subject_id for call in view.seal.complete_ordered_initialized),
         view.ordered_calls,
     )
-    model_continuation_ready(recomputed, (), ())
+    model_continuation_ready(recomputed, closures, reductions)
     _require(
         recomputed.calls == ready.accounting.complete_ordered_calls,
         "current cut no longer supports selected historical accounting",

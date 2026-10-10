@@ -25,6 +25,7 @@ from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
 from chiplog.capabilities.agent_loop.execution_recovery_observations import (
     ContinuationReadyRecord,
     ExecutionRecoveryCut,
+    OriginalRecoveredClosure,
     RecoverySourceRecord,
     SealedAccountingRecord,
     SealedResponseRecoveryView,
@@ -32,13 +33,22 @@ from chiplog.capabilities.agent_loop.execution_recovery_observations import (
 from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     native_recovery_fingerprint,
 )
-from chiplog.capabilities.agent_loop.recovery_contracts import NotApplicable, Present
+from chiplog.capabilities.agent_loop.recovery_contracts import (
+    Absent,
+    NotApplicable,
+    OriginalObligationBinding,
+    Present,
+)
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
+    ConsequentialAcceptedCall,
+    EvidenceReduction,
     FrontierMember,
     FrozenRunBindings,
     InitializedCall,
+    RecoveredOutcomeSubject,
     RecoveryFrontier,
+    RecoveryRequiredResult,
     TerminalCallFrontier,
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
@@ -63,7 +73,10 @@ def _seal_run(run: ExecutionRunRecord) -> ExecutionRunRecord:
 
 
 async def _request(
-    *, substituted_initialized: Present | None = None, mismatched_frontier_call: bool = False
+    *,
+    substituted_initialized: Present | None = None,
+    mismatched_frontier_call: bool = False,
+    recovered: bool = False,
 ) -> PrepareNextExecutionTurn:
     """Build a coherent inert shape, not a selected or physical-source witness."""
     fanout = await fixture()
@@ -119,17 +132,94 @@ async def _request(
             }
         )
     )
-    terminal = TerminalCallFrontier(
-        original_call_id=call_id,
-        response_id=seal.response_seal_id,
-        acceptance=InitializedCall(initialized=substituted_initialized or initialized.revision),
-        disposition=CancelledBeforeAcceptResult(
-            terminal=Present(head="terminal", fingerprint="b" * 64),
-            not_executed_result=Present(head="result", fingerprint="c" * 64),
-            initialized_predecessor=substituted_initialized or initialized.revision,
-            recovered_outcome=NotApplicable(),
-        ),
-    )
+    if recovered:
+        obligation = OriginalObligationBinding(
+            original_run_id=sealed.run_id,
+            original_call_id=call_id,
+            obligation_id="obligation",
+            obligation_stream_id="stream",
+            obligation_head="obligation-head",
+            closure_predicate_id="closure-predicate",
+            closure_predicate_version="v1",
+            resolver_id="resolver",
+            resolver_version="v1",
+            reducer_id="reducer",
+            reducer_version="v1",
+            evidence_stream_id="evidence-stream",
+            evidence_head=Present(head="evidence", fingerprint="7" * 64),
+        )
+        terminal_head = Present(head="terminal", fingerprint="b" * 64)
+        outcome_head = Present(head="outcome", fingerprint="c" * 64)
+        witness = Present(head="witness", fingerprint="d" * 64)
+        closure_head = Present(head="closure", fingerprint="e" * 64)
+        resolver_batch = Present(head="resolver-batch", fingerprint="f" * 64)
+        reduction_head = Present(head="reduction", fingerprint="1" * 64)
+        terminal = TerminalCallFrontier(
+            original_call_id=call_id,
+            response_id=seal.response_seal_id,
+            acceptance=ConsequentialAcceptedCall(
+                initialized=initialized.revision,
+                accepted=Present(head="accepted", fingerprint="2" * 64),
+                execution_intent=Present(head="execution-intent", fingerprint="3" * 64),
+                external_effect_intent=NotApplicable(),
+                complete_acceptance_manifest=(
+                    Present(head="accepted", fingerprint="2" * 64),
+                    Present(head="execution-intent", fingerprint="3" * 64),
+                ),
+            ),
+            disposition=RecoveryRequiredResult(
+                terminal=terminal_head,
+                obligation=obligation,
+                result=Absent(),
+                recovered_outcome=RecoveredOutcomeSubject(
+                    original_call_id=call_id,
+                    recovery_obligation_id=obligation.obligation_id,
+                    outcome=outcome_head,
+                ),
+            ),
+        )
+        closures = (
+            OriginalRecoveredClosure(
+                original=obligation,
+                terminal_disposition=terminal_head,
+                recovered_outcome=outcome_head,
+                accepted_evidence=witness,
+                closure=closure_head,
+                resolver_batch=resolver_batch,
+                reduction_id="reduction-id",
+                accepted_semantic_class="CONFIRMED",
+            ),
+        )
+        reductions = (
+            EvidenceReduction(
+                stream_id="evidence-stream",
+                reduction_id="reduction-id",
+                reducer_id="reducer",
+                reducer_version="v1",
+                current_reduction=reduction_head,
+                ordered_consumed_evidence=(witness,),
+                accepted_witness=witness,
+                accepted_outcome=outcome_head,
+                obligation_closure=closure_head,
+                resolver_batch=resolver_batch,
+                semantic_class="CONFIRMED",
+                consumability="CONSUMABLE",
+            ),
+        )
+    else:
+        terminal = TerminalCallFrontier(
+            original_call_id=call_id,
+            response_id=seal.response_seal_id,
+            acceptance=InitializedCall(initialized=substituted_initialized or initialized.revision),
+            disposition=CancelledBeforeAcceptResult(
+                terminal=Present(head="terminal", fingerprint="b" * 64),
+                not_executed_result=Present(head="result", fingerprint="c" * 64),
+                initialized_predecessor=substituted_initialized or initialized.revision,
+                recovered_outcome=NotApplicable(),
+            ),
+        )
+        closures = ()
+        reductions = ()
     registry = execution_native_one_call_cancellation_frontier_registry_v1()
     frontier = RecoveryFrontier(
         tenant_id=sealed.tenant,
@@ -189,8 +279,8 @@ async def _request(
             policy=Present(head="policy", fingerprint="a" * 64),
             no_retry_boundaries=(),
         ),
-        original_closures=(),
-        current_reductions=(),
+        original_closures=closures,
+        current_reductions=reductions,
         complete_sources=(
             RecoverySourceRecord(
                 owner="agent_loop",
@@ -225,8 +315,8 @@ async def _request(
         readiness_id="ready",
         source_cut_fingerprint=cut.digest(),
         accounting=accounting,
-        complete_original_closures=(),
-        complete_current_reductions=(),
+        complete_original_closures=closures,
+        complete_current_reductions=reductions,
     )
     decision = CallSubjectHead(
         subject_id="decision:continuation",
@@ -332,6 +422,37 @@ async def test_next_turn_preserves_sealed_original_call_lineage() -> None:
     assert result.run.turns[:-1] == request.run.turns
     assert result.run.turns[-1].turn_id == "run/turn/2"
     assert result.run.turns[-1].state == "PREPARING"
+
+
+async def test_next_turn_preserves_recovered_obligation_and_current_reduction() -> None:
+    request = await _request(recovered=True)
+    result = prepare_next_native_execution_turn(request)
+    verify_next_native_execution_turn(request, result)
+    assert result.run.turns[-1].ordinal == 2
+    assert request.run.turns[-1].response_seal == request.immediately_preceding_response
+    assert request.cut.complete_ordered_responses[0].ordered_calls[0].disposition.kind == (
+        "RECOVERY_REQUIRED"
+    )
+    assert result.continuation.complete_original_closures == request.cut.original_closures
+    assert result.continuation.complete_current_reductions == request.cut.current_reductions
+
+
+@pytest.mark.parametrize("mutation", ["missing_closure", "missing_reduction", "held_reduction"])
+async def test_next_turn_holds_recovered_call_without_current_consumable_pair(
+    mutation: str,
+) -> None:
+    request = await _request(recovered=True)
+    cut = request.cut
+    if mutation == "missing_closure":
+        cut = cut.model_copy(update={"original_closures": ()})
+    elif mutation == "missing_reduction":
+        cut = cut.model_copy(update={"current_reductions": ()})
+    else:
+        held = cut.current_reductions[0].model_copy(update={"consumability": "HOLD"})
+        cut = cut.model_copy(update={"current_reductions": (held,)})
+    request = request.model_copy(update={"cut": cut})
+    with pytest.raises(ValueError):
+        prepare_next_native_execution_turn(request)
 
 
 async def test_next_turn_compact_publication_reconstructs_exact_historical_cut() -> None:
