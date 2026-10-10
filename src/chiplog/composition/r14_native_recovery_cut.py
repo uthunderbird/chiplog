@@ -400,7 +400,33 @@ class NativeRecoveryCutSource:
         if set(selected) != {row.record_id for row in inventory.records}:
             return None
         sources: list[RecoverySourceRecord] = []
-        native_sources = {row.physical_record.subject_id: row for row in subset.execution_sources}
+        native_sources: dict[str, list[RecoverySourceRecord]] = {}
+        for source in subset.execution_sources:
+            native_sources.setdefault(source.physical_record.subject_id, []).append(source)
+        for source in subset.accepted_effect_sources:
+            identity = source.physical_record.subject_id
+            previous = native_sources.setdefault(identity, [])
+            if previous and any(
+                (
+                    item.owner,
+                    item.schema_id,
+                    item.canonical_record_bytes,
+                    item.physical_record,
+                )
+                != (
+                    source.owner,
+                    source.schema_id,
+                    source.canonical_record_bytes,
+                    source.physical_record,
+                )
+                for item in previous
+            ):
+                return None
+            if not any(item.subject == source.subject for item in previous):
+                previous.append(source)
+        physical_ids = {row.record_id for row in inventory.records}
+        if not set(native_sources).issubset(physical_ids):
+            return None
         for row in inventory.records:
             selected_record, selected_decision = selected[row.record_id]
             if (
@@ -414,7 +440,7 @@ class NativeRecoveryCutSource:
             ):
                 return None
             subject = (
-                native_sources[row.record_id].subject
+                native_sources[row.record_id][0].subject
                 if row.record_id in native_sources
                 else _ref(row.record_id, row.raw)
             )
@@ -428,13 +454,24 @@ class NativeRecoveryCutSource:
                     physical_record=_ref(row.record_id, row.raw),
                 )
             )
+            # One authenticated physical R16 row can support more than one
+            # logical head in the selected dispatch/evidence source chains.
+            # Rebind each logical preimage to the single physical selection
+            # independently established by this inventory pass.
+            for native_source in native_sources.get(row.record_id, ())[1:]:
+                sources.append(
+                    replace(
+                        native_source,
+                        selected_decision=selected_decision,
+                        physical_record=_ref(row.record_id, row.raw),
+                    )
+                )
         by_id = {row.physical_record.subject_id: row for row in sources}
         if by_id.get(profile_source.physical_record.subject_id) != profile_source:
             return None
-        known = set(native_sources) | {
-            profile_source.physical_record.subject_id,
-            subset.selected_accounting.record_id,
-        }
+        known = set(native_sources) | {profile_source.physical_record.subject_id}
+        if subset.selected_accounting is not None:
+            known.add(subset.selected_accounting.record_id)
         # These records have already crossed the mounted history decoder's
         # independent historical source/atomic-bridge authentication above.
         known.update(

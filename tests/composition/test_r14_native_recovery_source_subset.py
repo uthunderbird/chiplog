@@ -9,6 +9,7 @@ from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
 )
+from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
 from chiplog.composition.r14_call_acceptance_port import (
     CallAcceptanceAdoption,
@@ -20,6 +21,8 @@ from chiplog.composition.r14_native_recovery_source_subset import (
     R14NativeRecoverySourceSubsetReader,
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.platform._owner_publication_contracts import JournalSelectedPublication
+from chiplog.platform.workspace_snapshot import read_connection
 from tests.support.h1_cli_execution import admit_runtime_slot
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 
@@ -113,9 +116,28 @@ async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resen
             await runtime.emit_committed("hermetic-ingress", intent_id)
         await runtime.publish_accepted_open_recovery()
         await runtime.observe_dispatch_outcome(intent_id)
-        await runtime.resolve_dispatch_outcome(
+        closed_publication = await runtime.resolve_dispatch_outcome(
             "hermetic-ingress", intent_id, "close-native-recovery"
         )
+        assert isinstance(closed_publication, JournalSelectedPublication), closed_publication
+        closed = DispatchOutcomeRecordV2.model_validate_json(
+            closed_publication.complete_records[0].canonical_bytes
+        )
+        assert closed.command.operation == "RESOLVE_OBLIGATION"
+        assert closed.snapshot.state == "CONFIRMED"
+        assert closed.snapshot.obligation.state == "CLOSED"
+        with read_connection(database) as connection:
+            stored = connection.execute(
+                "SELECT p.commit_sequence, p.record_ids, r.canonical_bytes "
+                "FROM publications AS p JOIN records AS r "
+                "ON r.tenant_id=p.tenant_id AND r.record_id=? "
+                "WHERE p.tenant_id=? AND p.idempotency_key=?",
+                (closed.record.head, runtime._tenant_id, closed_publication.command_id),
+            ).fetchone()
+        assert stored is not None
+        assert stored[0] == closed_publication.tenant_commit_sequence
+        assert closed.record.head in stored[1].splitlines()
+        assert stored[2] == closed.canonical_bytes()
 
         subset = R14NativeRecoverySourceSubsetReader(runtime).collect()
         assert subset is not None
@@ -125,6 +147,28 @@ async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resen
             subset.accepted_closed_outcome.accepted.acceptance,
         )
         assert subset.accepted_closed_outcome.accepted.original_call_id == calls[0].original_call_id
+        effect_sources = subset.accepted_effect_sources
+        assert effect_sources == (
+            *subset.accepted_closed_outcome.complete_ordered_dispatch_sources,
+            *subset.accepted_closed_outcome.complete_ordered_evidence_sources,
+        )
+        assert effect_sources
+        source_by_id = {}
+        for source in effect_sources:
+            identity = source.physical_record.subject_id
+            previous = source_by_id.get(identity)
+            assert previous is None or (
+                previous.owner,
+                previous.schema_id,
+                previous.canonical_record_bytes,
+                previous.physical_record,
+            ) == (
+                source.owner,
+                source.schema_id,
+                source.canonical_record_bytes,
+                source.physical_record,
+            )
+            source_by_id[identity] = source
         assert len(resources.require_original_provider().transfers) == 1
 
     async with open_common_cli_execution_runtime(

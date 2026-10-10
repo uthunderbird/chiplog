@@ -66,6 +66,23 @@ class R14NativeRecoverySourceSubset:
     authenticated_acceptances: tuple[RetainedAcceptancePreparationV2, ...] = ()
     accepted_closed_outcome: R14NativeAcceptedOpenOutcome | None = None
 
+    @property
+    def accepted_effect_sources(self) -> tuple[RecoverySourceRecord, ...]:
+        """Exact selected R16 dispatch/evidence sources for the accepted call.
+
+        These are source references returned by the authenticated R16 history
+        reader. They do not assert that unrelated inventory families are absent;
+        the full native cut still has to reconcile that inventory independently.
+        """
+        closed = self.accepted_closed_outcome
+        if closed is None:
+            return ()
+        sources = (
+            *closed.complete_ordered_dispatch_sources,
+            *closed.complete_ordered_evidence_sources,
+        )
+        return sources
+
 
 def _source(
     member: R14NativeExecutionRecordSourceMember, subject: CallSubjectHead
