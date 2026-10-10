@@ -182,4 +182,5 @@ else
     echo "   · нет открытых   (grep '^| D' .harness/HARNESS_MODEL.md)"
 fi
 echo
-echo "Вставь этот вывод в раздел «Что перечитано» записи ретро."
+echo "Этот снимок автоматически встраивается в запись при запуске через new-retro.sh."
+echo 'RETRO_INPUTS_COMPLETE=1'

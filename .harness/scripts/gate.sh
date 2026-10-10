@@ -161,6 +161,12 @@ if [ "$SELFTEST" -eq 1 ]; then
         echo "    ✓ плохой снимок отклоняется, хороший проходит"
         SELF_FAILED=1
     fi
+    if ! sh .harness/scripts/self-tests/new-retro-generation.sh; then
+        echo "  FAIL  создание записи ретро: входы не встроены атомарно или ошибка не сохранилась"
+        echo "    → сделай: почини new-retro.sh, сохранив complete-marker и no-clobber публикацию"
+        echo "    ✓ полный снимок публикуется, partial output и коллизия отвергаются"
+        SELF_FAILED=1
+    fi
     if [ "$SELF_FAILED" -ne 0 ]; then exit 1; fi
     echo "самотест пройден: базовые пары и снимки структуры тестов"
     if ! uv run pytest -q tests/tooling/test_harness_preflight.py tests/tooling/test_checkpoint_gate.py; then
