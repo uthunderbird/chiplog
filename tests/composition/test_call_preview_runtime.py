@@ -297,13 +297,24 @@ async def test_nonempty_preview_journal_missing_key_is_typed_integrity_failure_o
 
 async def test_adopted_preview_prepares_both_real_owners_without_publication_or_send(
     initialized: tuple[ExecutionDispatchRuntime, CallAcceptanceTarget, HermeticDispatchResources],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime, target, resources = initialized
     preview = await runtime.preview_call_acceptance("hermetic-ingress", target)
     history = read_execution_call_history(runtime)
     selected = runtime._owner_decisions().snapshot()
     adopted = CallAcceptanceAdoption(act_id="accept", preview_bytes=preview.canonical_bytes())
+    history_read_count = 0
+    original_history_reader = previews.read_execution_call_history
+
+    def counted_history_read(*args: object, **kwargs: object):
+        nonlocal history_read_count
+        history_read_count += 1
+        return original_history_reader(*args, **kwargs)
+
+    monkeypatch.setattr(previews, "read_execution_call_history", counted_history_read)
     prepared = await prepare_call_exchange(runtime, "hermetic-ingress", adopted)
+    assert history_read_count == 1
     assert type(prepared).model_validate_json(prepared.canonical_bytes()) == prepared
     assert prepared.captured.cut.worker is not None
     assert target.current_run.revision.head == prepared.captured.cut.worker.run.head

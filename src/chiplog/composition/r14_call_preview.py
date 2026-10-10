@@ -8,7 +8,10 @@ import secrets
 from typing import TYPE_CHECKING, Literal
 
 from chiplog.adapters.driven.effects_broker import EffectsIntegrityError
-from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
+    CallInventorySnapshot,
+    CallSubjectHead,
+)
 from chiplog.capabilities.agent_loop.contracts import LoopRejected, RunRecord
 from chiplog.capabilities.agent_loop.execution_contracts import (
     ConsequentialToolCall,
@@ -42,6 +45,7 @@ from chiplog.composition.r14_call_acceptance_preview import (
 from chiplog.composition.r14_execution_fanout_contracts import RetainedExecutionFanOutPreparation
 from chiplog.composition.r14_execution_fanout_records import build_envelope as fanout_envelope
 from chiplog.composition.r14_execution_fanout_records import reference as call_reference
+from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
 from chiplog.composition.r14_loop_history import read_execution_call_history
 from chiplog.composition.r16_denial_inputs import _retained_trust_snapshot
 from chiplog.composition.r16_dispatch_history import normative_generation
@@ -260,11 +264,37 @@ def validate_call_preview(value: CallPreviewIssuance, runtime: ExecutionDispatch
 
 
 def read_call_previews(runtime: ExecutionDispatchRuntime) -> tuple[CallPreviewIssuance, ...]:
+    previews, _ = _read_call_previews_and_history(runtime)
+    return previews
+
+
+def _read_call_previews_and_history(
+    runtime: ExecutionDispatchRuntime, *, require_history: bool = False
+) -> tuple[
+    tuple[CallPreviewIssuance, ...],
+    tuple[
+        ExecutionHistorySnapshot,
+        CallInventorySnapshot,
+        tuple[RetainedExecutionFanOutPreparation, ...],
+    ]
+    | None,
+]:
+    """Read selected previews and their authenticated source history in one gate cut."""
     with runtime._authority_gate().hold():
-        return _read_call_previews(runtime)
+        return _read_call_previews_and_history_held(runtime, require_history=require_history)
 
 
-def _read_call_previews(runtime: ExecutionDispatchRuntime) -> tuple[CallPreviewIssuance, ...]:
+def _read_call_previews_and_history_held(
+    runtime: ExecutionDispatchRuntime, *, require_history: bool
+) -> tuple[
+    tuple[CallPreviewIssuance, ...],
+    tuple[
+        ExecutionHistorySnapshot,
+        CallInventorySnapshot,
+        tuple[RetainedExecutionFanOutPreparation, ...],
+    ]
+    | None,
+]:
     identity = "<journal>"
     try:
         journal = runtime._require_call_preview_journal()
@@ -276,8 +306,10 @@ def _read_call_previews(runtime: ExecutionDispatchRuntime) -> tuple[CallPreviewI
                 raise ValueError("noncanonical or duplicate selected call preview")
             validate_call_preview(value, runtime)
             result[identity] = value
+        history = read_execution_call_history(runtime) if result or require_history else None
         if result:
-            snapshot, _, initializations = read_execution_call_history(runtime)
+            assert history is not None
+            snapshot, _, initializations = history
             for value in result.values():
                 identity = value.preview.preview_id
                 worker = value.captured.cut.worker
@@ -291,7 +323,7 @@ def _read_call_previews(runtime: ExecutionDispatchRuntime) -> tuple[CallPreviewI
                         "preview lacks its original independently selected Run history"
                     )
         runtime._require_call_preview_journal()
-        return tuple(result.values())
+        return tuple(result.values()), history
     except (ValueError, RuntimeError, OSError, KeyError, TypeError) as error:
         raise EffectsIntegrityError(
             f"call-preview.read tenant={runtime._tenant_id} record={identity}"

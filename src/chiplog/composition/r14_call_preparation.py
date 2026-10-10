@@ -39,10 +39,9 @@ from .r14_call_dispatch_policy import loop_dispatch_semantics, policy_reference
 from .r14_call_preview import (
     CallPreviewIssuance,
     _effect_head,
+    _read_call_previews_and_history,
     execution_run_head,
-    read_call_previews,
 )
-from .r14_loop_history import read_execution_call_history
 from .r16_dispatch_inputs import (
     DispatchCapture,
     capture_dispatch,
@@ -241,9 +240,10 @@ async def prepare_call_exchange(
     observed = await authenticate(runtime, peer)
     resources = runtime._require_dispatch_resources()
     with runtime._authority_gate().hold():
+        preview_values, history = _read_call_previews_and_history(runtime, require_history=True)
         matches = tuple(
             value
-            for value in read_call_previews(runtime)
+            for value in preview_values
             if value.preview.canonical_bytes() == adoption.preview_bytes
         )
         if len(matches) != 1:
@@ -262,7 +262,8 @@ async def prepare_call_exchange(
         require_dispatch_scope(captured, resources, mandate, None, first_send=False)
         worker = captured.cut.worker
         assert worker is not None
-        _, inventory, _ = read_execution_call_history(runtime)
+        assert history is not None
+        _, inventory, _ = history
         loop_request, intent = original_call_request(
             preview, adoption, captured, observed, inventory
         )
