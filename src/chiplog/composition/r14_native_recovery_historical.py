@@ -19,8 +19,10 @@ from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunReco
 from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     SCHEMA,
     SCHEMA_V2,
+    SCHEMA_V3,
     decode_native_one_call_recovery_profile,
     decode_native_one_call_recovery_profile_v2,
+    decode_native_one_call_recovery_profile_v3,
 )
 from chiplog.composition.r14_execution_cancellation_contracts import (
     decode_execution_cancellation_preparation,
@@ -39,6 +41,107 @@ if TYPE_CHECKING:
     from .common_cli_execution_runtime import CommonCliExecutionRuntime
     from .r14_native_recovery_cut import NativeRecoveryCutSource
     from .r14_recovery_publication import RetainedRecoveryPublication
+
+
+def _authenticate_v3_accepted_cut(
+    runtime: CommonCliExecutionRuntime,
+    evidence: RetainedRecoveryPublication,
+    cut,
+    rows,
+    members,
+) -> bool:
+    """Revalidate the selected accepted cut's exact source carriers and owner join."""
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        PreparedExecutionAccounting,
+        PreparedExecutionContinuation,
+    )
+    from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+        prepare_execution_accounting,
+        prepare_execution_continuation,
+    )
+    from chiplog.capabilities.agent_loop.native_recovery_cut_validation import (
+        validate_native_recovery_cut,
+    )
+    from chiplog.composition.r14_native_scope_binding import bind_native_prepare_scope
+    from chiplog.composition.r17_native_one_call_scope import NativeOneCallScopeService
+
+    try:
+        if not cut.original_closures or not cut.current_reductions:
+            return False
+        validate_native_recovery_cut(cut)
+        rows_by_id = {row[0]: row for row in rows}
+        if len(rows_by_id) != len(rows):
+            return False
+        carriers = {}
+        for item in cut.complete_sources:
+            record_id = item.physical_record.subject_id
+            row = rows_by_id.get(record_id)
+            if row is None:
+                return False
+            selected_record, selected_decision = members[record_id]
+            if (
+                item.owner != row[1]
+                or item.physical_record.revision.fingerprint
+                != hashlib.sha256(row[3]).hexdigest()
+                or item.selected_decision != selected_decision
+                or item.subject.revision.fingerprint
+                != hashlib.sha256(item.canonical_record_bytes).hexdigest()
+                or selected_record.owner != row[1]
+                or (
+                    selected_record.owner,
+                    selected_record.schema_id,
+                    selected_record.canonical_bytes,
+                )
+                != (row[1], row[2], row[3])
+            ):
+                return False
+            carriers.setdefault(record_id, []).append(item)
+        if set(carriers) != set(rows_by_id):
+            return False
+        if any(
+            not any(
+                item.schema_id == row[2]
+                and item.canonical_record_bytes == row[3]
+                and item.subject.revision.fingerprint == hashlib.sha256(row[3]).hexdigest()
+                for item in carriers[record_id]
+            )
+            for record_id, row in rows_by_id.items()
+        ):
+            return False
+
+        scope_sources = [
+            item
+            for item in cut.complete_sources
+            if item.subject.revision == cut.current_bindings.authority_scope
+        ]
+        if len(scope_sources) != 1:
+            return False
+        scope_source = scope_sources[0]
+        service = NativeOneCallScopeService(runtime)
+        lineage = service._lineage()
+        selected = [
+            item
+            for item in lineage
+            if item.scope.canonical_bytes() == scope_source.canonical_record_bytes
+        ]
+        if len(selected) != 1:
+            return False
+        authenticated = service.read_historical(selected[0].anchor)
+        if authenticated is None:
+            return False
+        if bind_native_prepare_scope(authenticated) != bind_native_prepare_scope(selected[0]):
+            return False
+
+        accounting = prepare_execution_accounting(evidence.accounting_request)
+        continuation = prepare_execution_continuation(evidence.continuation_request)
+        return (
+            isinstance(accounting, PreparedExecutionAccounting)
+            and isinstance(continuation, PreparedExecutionContinuation)
+            and accounting == evidence.accounting_result
+            and continuation == evidence.continuation_result
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        return False
 
 
 def authenticate_native_recovery_selected(
@@ -182,6 +285,17 @@ def authenticate_native_recovery_selected(
                     "resulting"
                 ):
                     return False
+            v3_profiles = [
+                row
+                for row in rows
+                if row[2] == "chiplog.execution.native-one-call-recovery-profile.v3"
+            ]
+            if v3_profiles and cut.original_closures:
+                if len(v3_profiles) != 1:
+                    return False
+                return _authenticate_v3_accepted_cut(
+                    runtime, evidence, cut, rows, members
+                )
             accounting = [
                 (item, selected)
                 for _, _, item, selected in selections
@@ -262,12 +376,18 @@ def authenticate_native_recovery_selected(
                         physical_record=_ref(record_id, raw),
                     )
                 )
-            profiles = [row for row in physical if row.schema_id in (SCHEMA, SCHEMA_V2)]
+            profiles = [
+                row for row in physical if row.schema_id in (SCHEMA, SCHEMA_V2, SCHEMA_V3)
+            ]
             if len(profiles) != 1 or len(fanouts) != 1 or len(cancellations) != 1:
                 return False
             profile = (
                 decode_native_one_call_recovery_profile(profiles[0].canonical_record_bytes)
                 if profiles[0].schema_id == SCHEMA
+                else decode_native_one_call_recovery_profile_v3(
+                    profiles[0].canonical_record_bytes
+                )
+                if profiles[0].schema_id == SCHEMA_V3
                 else decode_native_one_call_recovery_profile_v2(
                     profiles[0].canonical_record_bytes
                 )
@@ -417,7 +537,7 @@ def authenticate_native_recovery_selected(
                 row.physical_record.subject_id
                 for row in physical
                 if row.subject in native_refs.values()
-                or row.schema_id in (SCHEMA, SCHEMA_V2)
+                or row.schema_id in (SCHEMA, SCHEMA_V2, SCHEMA_V3)
                 or row.physical_record.subject_id == bounded.record.record_id
                 or row.schema_id
                 in {

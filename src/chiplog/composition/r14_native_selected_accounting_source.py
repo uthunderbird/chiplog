@@ -509,6 +509,7 @@ class R14NativeSelectedAccountingSource:
         selected_only: bool = False,
         expected_outcome_record_id: str | None = None,
         expected_selected_decision: CallSubjectHead | None = None,
+        expected_tenant_commit_sequence: int | None = None,
         allow_authenticated_later_suffix: bool = False,
         _accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
@@ -522,6 +523,7 @@ class R14NativeSelectedAccountingSource:
             selected_only=selected_only,
             expected_outcome_record_id=expected_outcome_record_id,
             expected_selected_decision=expected_selected_decision,
+            expected_tenant_commit_sequence=expected_tenant_commit_sequence,
             current_obligation_state="CLOSED",
             allow_authenticated_later_suffix=allow_authenticated_later_suffix,
             accepted_facts=_accepted_facts,

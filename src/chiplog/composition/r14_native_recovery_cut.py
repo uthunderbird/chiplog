@@ -19,6 +19,7 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.execution_recovery_observations import (
     ExecutionRecoveryCut,
+    OriginalRecoveredClosure,
     RecoveryCausalChange,
     RecoverySourceRecord,
     SealedResponseRecoveryView,
@@ -26,10 +27,13 @@ from chiplog.capabilities.agent_loop.execution_recovery_observations import (
 from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     SCHEMA,
     SCHEMA_V2,
+    SCHEMA_V3,
     NativeOneCallRecoveryProfileV1,
     NativeOneCallRecoveryProfileV2,
+    NativeOneCallRecoveryProfileV3,
     decode_native_one_call_recovery_profile,
     decode_native_one_call_recovery_profile_v2,
+    decode_native_one_call_recovery_profile_v3,
     native_recovery_fingerprint,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import (
@@ -40,10 +44,13 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
+    ConsequentialAcceptedCall,
+    EvidenceReduction,
     FrontierMember,
     FrozenRunBindings,
     InitializedCall,
     RecoveryFrontier,
+    RecoveryRequiredResult,
     TerminalCallFrontier,
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
@@ -284,19 +291,28 @@ class NativeRecoveryCutSource:
                 read_native_recovery_profile_held,
             )
         profile_source = profile_reader(runtime)
-        if profile_source is None or profile_source.schema_id not in (SCHEMA, SCHEMA_V2):
+        if profile_source is None or profile_source.schema_id not in (SCHEMA, SCHEMA_V2, SCHEMA_V3):
             return None
         if profile_source.schema_id == SCHEMA:
             profile = decode_native_one_call_recovery_profile(
                 profile_source.canonical_record_bytes
             )
-        else:
+        elif profile_source.schema_id == SCHEMA_V2:
             profile = decode_native_one_call_recovery_profile_v2(
+                profile_source.canonical_record_bytes
+            )
+        else:
+            profile = decode_native_one_call_recovery_profile_v3(
                 profile_source.canonical_record_bytes
             )
         subset = R14NativeRecoverySourceSubsetReader(runtime).collect()
         if subset is None:
             return None
+        accepted_inputs = None
+        if subset.accepted_closed_outcome is not None:
+            accepted_inputs = self._selected_accepted_recovery_inputs(runtime, subset)
+            if accepted_inputs is None:
+                return None
         facts = subset.selected_facts
         preparation = facts.source.original_prepare
         binding = preparation.original_native_scope_binding
@@ -339,7 +355,17 @@ class NativeRecoveryCutSource:
         snapshot = subset.authenticated_execution_snapshot
         seals = subset.authenticated_seals
         cancellations = subset.authenticated_cancellations
-        if snapshot is None or len(seals) != 1 or len(cancellations) != 1:
+        if (
+            snapshot is None
+            or len(seals) != 1
+            or (
+                accepted_inputs is None and len(cancellations) != 1
+            )
+            or (
+                accepted_inputs is not None
+                and (cancellations or len(subset.authenticated_acceptances) != 1)
+            )
+        ):
             return None
         lineage = tuple(
             row
@@ -403,7 +429,10 @@ class NativeRecoveryCutSource:
         native_sources: dict[str, list[RecoverySourceRecord]] = {}
         for source in subset.execution_sources:
             native_sources.setdefault(source.physical_record.subject_id, []).append(source)
-        for source in subset.accepted_effect_sources:
+        additional_sources = list(subset.accepted_effect_sources)
+        if accepted_inputs is not None:
+            additional_sources.extend(accepted_inputs[3])
+        for source in additional_sources:
             identity = source.physical_record.subject_id
             previous = native_sources.setdefault(identity, [])
             if previous and any(
@@ -516,29 +545,159 @@ class NativeRecoveryCutSource:
             for gap in inventory.gaps
         ):
             return None
-        cut = self._assemble(
-            runtime,
-            subset,
-            profile_source,
-            profile,
-            lineage,
-            seals[0].proposal.fan_out.response_seal,
-            cancellations[0],
-            tuple(sources),
-            binding,
-            scope,
-        )
+        if accepted_inputs is None:
+            cut = self._assemble(
+                runtime,
+                subset,
+                profile_source,
+                profile,
+                lineage,
+                seals[0].proposal.fan_out.response_seal,
+                cancellations[0],
+                tuple(sources),
+                binding,
+                scope,
+            )
+        else:
+            call, closure, reduction, _ = accepted_inputs
+            cut = self._assemble_accepted(
+                runtime,
+                subset,
+                profile_source,
+                profile,
+                lineage,
+                seals[0].proposal.fan_out.response_seal,
+                call,
+                closure,
+                reduction,
+                tuple(sources),
+                binding,
+                scope,
+            )
         runtime._check_database_identity()
         if runtime._commitment_journal.load(runtime._tenant_id) != inventory.commitment:
             return None
         return cut
+
+    @staticmethod
+    def _selected_accepted_recovery_inputs(runtime, subset):
+        """Join accepted/open, resolver, reduction, and live evidence under this cut."""
+        from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+            ConsumableReduction,
+        )
+        from chiplog.composition import (
+            r14_loop_semantic_reduction_publication as reduction_publication,
+        )
+        from chiplog.composition.r14_accepted_open_accounting_publication import (
+            _reduction_matches_current_evidence,
+            _reduction_matches_resolution,
+        )
+        from chiplog.composition.r14_original_call_resolution_publication import (
+            read_selected_original_call_resolution_source_held,
+        )
+
+        try:
+            closed = subset.accepted_closed_outcome
+            if closed is None:
+                return None
+            accounting = runtime.read_selected_accepted_open_frontier()
+            resolution = read_selected_original_call_resolution_source_held(runtime)
+            selected_reduction = runtime.read_selected_loop_semantic_reduction()
+            if (
+                accounting is None
+                or len(accounting.calls) != 1
+                or resolution is None
+                or selected_reduction is None
+                or not isinstance(accounting.calls[0].acceptance, ConsequentialAcceptedCall)
+                or not isinstance(accounting.calls[0].disposition, RecoveryRequiredResult)
+            ):
+                return None
+            call = accounting.calls[0]
+            reduction_entries = reduction_publication._selected_entries(runtime)
+            if len(reduction_entries) != 1:
+                return None
+            retained_reduction = reduction_publication.validate_selected_command(
+                runtime, reduction_entries[0][2], reduction_entries[0][3]
+            )
+            current_request = reduction_publication.capture_request(runtime)
+            evidence_sources = closed.complete_ordered_evidence_sources
+            evidence_refs = tuple(source.physical_record for source in evidence_sources)
+            selected_witness = (
+                current_request.complete_anchor_sources[-1]
+                if current_request.complete_anchor_sources
+                else None
+            )
+            selected_reduction_witness = (
+                retained_reduction.request.complete_anchor_sources[-1]
+                if retained_reduction.request.complete_anchor_sources
+                else None
+            )
+            if (
+                not evidence_refs
+                or tuple(
+                    source.physical_record
+                    for source in current_request.complete_ordered_evidence
+                )
+                != evidence_refs
+                or selected_reduction.record.complete_ordered_evidence != evidence_refs
+                or not isinstance(selected_reduction.record.disposition, ConsumableReduction)
+                or selected_witness is None
+                or selected_reduction_witness is None
+                or not _reduction_matches_resolution(resolution, selected_reduction)
+                or not _reduction_matches_current_evidence(
+                    selected_reduction,
+                    evidence_sources,
+                    current_witness=selected_witness,
+                    reduction_witness=selected_reduction_witness,
+                )
+            ):
+                return None
+
+            from chiplog.composition.r14_execution_fanout_records import reference
+
+            disposition = call.disposition
+            closure = OriginalRecoveredClosure(
+                original=disposition.obligation,
+                terminal_disposition=disposition.terminal,
+                recovered_outcome=disposition.recovered_outcome.outcome,
+                accepted_evidence=resolution.closure.accepted_witness.revision,
+                closure=reference(resolution.closure.closure_id, resolution.closure).revision,
+                resolver_batch=reference(resolution.batch.batch_id, resolution.batch).revision,
+                reduction_id=selected_reduction.record.reduction_id,
+                accepted_semantic_class=selected_reduction.record.disposition.semantic_class,
+            )
+            reduction = EvidenceReduction(
+                stream_id=selected_reduction.record.stream.stream_id,
+                reduction_id=selected_reduction.record.reduction_id,
+                reducer_id=selected_reduction.record.reducer_id,
+                reducer_version=selected_reduction.record.reducer_version,
+                current_reduction=selected_reduction.source.subject.revision,
+                ordered_consumed_evidence=tuple(item.revision for item in evidence_refs),
+                accepted_witness=selected_reduction.record.anchor.accepted_witness.revision,
+                accepted_outcome=selected_reduction.record.anchor.recovered_outcome.revision,
+                obligation_closure=selected_reduction.record.anchor.closure.revision,
+                resolver_batch=selected_reduction.record.anchor.resolver_batch.revision,
+                semantic_class=selected_reduction.record.disposition.semantic_class,
+                consumability="CONSUMABLE",
+            )
+            extra_sources = (
+                *current_request.complete_ordered_evidence,
+                *current_request.complete_anchor_sources,
+                current_request.reducer_policy,
+                selected_reduction.source,
+            )
+            return call, closure, reduction, extra_sources
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+            return None
 
     def _assemble(
         self,
         runtime: CommonCliExecutionRuntime,
         subset: R14NativeRecoverySourceSubset,
         profile_source: RecoverySourceRecord,
-        profile: NativeOneCallRecoveryProfileV1 | NativeOneCallRecoveryProfileV2,
+        profile: NativeOneCallRecoveryProfileV1
+        | NativeOneCallRecoveryProfileV2
+        | NativeOneCallRecoveryProfileV3,
         lineage: tuple[ExecutionRunRecord, ...],
         seal: SealedResponseRecord,
         cancellation: RetainedExecutionCancellationPreparation,
@@ -813,6 +972,276 @@ class NativeRecoveryCutSource:
             current_reductions=(),
             complete_sources=(*physical_sources, *children),
             complete_causal_changes=tuple(changes),
+            complete_inventory_fingerprint="0" * 64,
+        )
+        value = cut.model_dump(mode="json")
+        del value["complete_inventory_fingerprint"]
+        return cut.model_copy(
+            update={"complete_inventory_fingerprint": native_recovery_fingerprint("cut", value)}
+        )
+
+    def _assemble_accepted(
+        self,
+        runtime: CommonCliExecutionRuntime,
+        subset: R14NativeRecoverySourceSubset,
+        profile_source: RecoverySourceRecord,
+        profile: NativeOneCallRecoveryProfileV1
+        | NativeOneCallRecoveryProfileV2
+        | NativeOneCallRecoveryProfileV3,
+        lineage: tuple[ExecutionRunRecord, ...],
+        seal: SealedResponseRecord,
+        call: TerminalCallFrontier,
+        closure: OriginalRecoveredClosure,
+        reduction: EvidenceReduction,
+        physical_sources: tuple[RecoverySourceRecord, ...],
+        binding: NativePrepareScopeBindingV1,
+        scope: NativeOneCallContextScopeV1,
+    ) -> ExecutionRecoveryCut:
+        """Build the typed next-turn cut for one fully recovered accepted call."""
+        if profile_source.schema_id != SCHEMA_V3:
+            raise ValueError("accepted recovery requires the selected V3 native profile")
+        run, turn = lineage[-1], lineage[-1].turns[0]
+        artifact = subset.selected_facts.source.original_prepare.artifact
+        prepared = subset.selected_facts.source.original_prepare.prepared_run
+        prepare_source = next(row for row in physical_sources if row.subject == prepared)
+        children: list[RecoverySourceRecord] = []
+
+        def child(
+            identity: str,
+            schema_id: str,
+            raw: bytes,
+            carrier: RecoverySourceRecord = prepare_source,
+            head: str | None = None,
+        ) -> CallSubjectHead:
+            source = _child(carrier, identity, schema_id, raw, head)
+            children.append(source)
+            return source.subject
+
+        prompt = child(
+            "native-prompt-artifact:" + artifact.digest(),
+            "chiplog.native-recovery.prompt-artifact.v1",
+            artifact.canonical_bytes(),
+        )
+        schema = child(
+            "native-generated-schema:" + _sha(artifact.response_schema_json.encode()),
+            "chiplog.native-recovery.generated-schema.v1",
+            artifact.response_schema_json.encode(),
+        )
+        tools = tuple(
+            child(
+                "native-tool:" + tool.digest(),
+                "chiplog.native-recovery.tool.v1",
+                tool.canonical_bytes(),
+            )
+            for tool in artifact.tools
+        )
+        policy = child(
+            "native-run-policy:" + run.policy.digest(),
+            "chiplog.native-recovery.run-policy.v1",
+            run.policy.canonical_bytes(),
+        )
+        scope_source = RecoverySourceRecord(
+            owner="deployment_trust",
+            subject=CallSubjectHead(
+                subject_id=scope.scope_id,
+                revision=Present(
+                    head=binding.scope_head.head, fingerprint=binding.scope_head.fingerprint
+                ),
+            ),
+            schema_id=scope.schema_id,
+            canonical_record_bytes=binding.scope_bytes,
+            selected_decision=CallSubjectHead(
+                subject_id=binding.anchor.decision.identity,
+                revision=Present(
+                    head=binding.anchor.decision.head,
+                    fingerprint=binding.anchor.decision.fingerprint,
+                ),
+            ),
+            physical_record=CallSubjectHead(
+                subject_id=binding.anchor.record.identity,
+                revision=Present(
+                    head=binding.anchor.record.head,
+                    fingerprint=binding.anchor.record.fingerprint,
+                ),
+            ),
+        )
+        children.append(scope_source)
+        child(
+            scope.selected_admission_ref.identity,
+            "chiplog.native-recovery.selected-admission.v1",
+            scope.selected_admission_bytes,
+            scope_source,
+            scope.selected_admission_ref.head,
+        )
+        recipient = child(
+            "native-recipient:" + _sha(scope.recipient.canonical_bytes()),
+            "chiplog.native-recovery.recipient.v1",
+            scope.recipient.canonical_bytes(),
+            scope_source,
+        )
+        semantic = child(
+            "native-context-policy:" + scope.disclosure_policy.ref.fingerprint,
+            "chiplog.native-one-call-context-policy.v1",
+            scope.disclosure_policy.canonical_source_bytes,
+            scope_source,
+            scope.disclosure_policy.ref.head,
+        )
+        child(
+            profile.registry.registry_id,
+            RECOVERY_FRONTIER_REGISTRY_SCHEMA,
+            profile.registry.canonical_bytes(),
+            profile_source,
+            frontier_registry_reference(profile.registry).revision.head,
+        )
+        bindings = FrozenRunBindings(
+            objective=run.prompt,
+            requested_work=run.turns[-1].attempts[run.turns[-1].selector].request,
+            prompt_artifact=prompt.revision,
+            ordered_tool_specs=tuple(row.revision for row in tools),
+            generated_schema=schema.revision,
+            semantic_bindings=(semantic.revision,),
+            recipient_effect_bindings=(recipient.revision,),
+            authority_scope=scope_source.subject.revision,
+            authority_mandate_heads=(),
+            policy=policy.revision,
+            no_retry_boundaries=(),
+        )
+        current_run_source = next(row for row in physical_sources if row.subject == _run_ref(run))
+        turn_ref = child(
+            turn.turn_id,
+            "chiplog.native-recovery.turn.v1",
+            turn.canonical_bytes(),
+            current_run_source,
+            turn.head,
+        )
+        captured_ref = subset.selected_facts.selected_seal.captured_run
+        captured_run = next(row for row in lineage if _run_ref(row) == captured_ref)
+        captured_turn = captured_run.turns[-1]
+        captured_turn_ref = child(
+            captured_turn.turn_id,
+            "chiplog.native-recovery.turn.v1",
+            captured_turn.canonical_bytes(),
+            next(row for row in physical_sources if row.subject == captured_ref),
+            captured_turn.head,
+        )
+
+        acceptance = call.acceptance
+        disposition = call.disposition
+        if not (
+            isinstance(acceptance, ConsequentialAcceptedCall)
+            and isinstance(disposition, RecoveryRequiredResult)
+            and closure.original == disposition.obligation
+            and closure.terminal_disposition == disposition.terminal
+            and closure.recovered_outcome == disposition.recovered_outcome.outcome
+            and reduction.reduction_id == closure.reduction_id
+        ):
+            raise ValueError("accepted next-turn frontier differs from selected closure/reduction")
+
+        resolver_sources = tuple(
+            row
+            for row in physical_sources
+            if row.schema_id.startswith("chiplog.loop.original-resolver-")
+            or row.schema_id == "chiplog.loop.semantic-reducer-policy.v1"
+        )
+        accepted_sources = tuple(subset.accepted_effect_sources)
+        heads: dict[str, tuple[HeadMarker, ...]] = {
+            "RUN": (_run_ref(run).revision,),
+            "TURN": (turn_ref.revision,),
+            "SEALED_RESPONSE": (reference(seal.response_seal_id, seal).revision,),
+            "CALL": (
+                acceptance.initialized,
+                *acceptance.complete_acceptance_manifest,
+                disposition.terminal,
+                disposition.recovered_outcome.outcome,
+            ),
+            "EFFECT": tuple(
+                row.subject.revision
+                for row in accepted_sources
+                if row.schema_id.startswith("chiplog.effects.")
+            ),
+            "EVIDENCE": tuple(reduction.ordered_consumed_evidence),
+            "AUTHORITY": tuple(row.subject.revision for row in resolver_sources),
+            "POLICY": (
+                bindings.policy,
+                semantic.revision,
+                *(row.subject.revision for row in resolver_sources),
+            ),
+            "PROMPT": (prompt.revision,),
+            "TOOL_SCHEMA": (schema.revision, *(row.revision for row in tools)),
+            "RECIPIENT": (recipient.revision,),
+            "SEMANTIC_BINDING": (semantic.revision,),
+            "OBLIGATION": (
+                disposition.terminal,
+                disposition.recovered_outcome.outcome,
+                closure.closure,
+                closure.resolver_batch,
+            ),
+            "SEMANTIC_REDUCTION": (reduction.current_reduction,),
+        }
+        absence = {"DELIVERY"}
+        not_applicable = {"MANDATE", "EXECUTION_LINEAGE"}
+        members = tuple(
+            _member(
+                row.family,
+                call.original_call_id
+                if row.family
+                in {"CALL", "EFFECT", "EVIDENCE", "OBLIGATION", "SEMANTIC_REDUCTION"}
+                else run.run_id,
+                "PRESENT"
+                if heads.get(row.family)
+                else "ABSENT"
+                if row.family in absence or row.family not in not_applicable
+                else "NOT_APPLICABLE",
+                heads.get(row.family)
+                or (
+                    (Absent(),)
+                    if row.family in absence or row.family not in not_applicable
+                    else (NotApplicable(),)
+                ),
+            )
+            for row in profile.registry.ordered_rows
+        )
+        frontier = RecoveryFrontier(
+            tenant_id=run.tenant,
+            run_id=run.run_id,
+            tenant_commit_sequence=subset.tenant_commit_sequence,
+            registry=profile.registry,
+            ordered_members=members,
+            ordered_calls=(call,),
+            canonicalization_version="chiplog.recovery.frontier.v1",
+            fingerprint="0" * 64,
+        )
+        value = frontier.model_dump(mode="json")
+        del value["fingerprint"]
+        frontier = frontier.model_copy(
+            update={"fingerprint": native_recovery_fingerprint("frontier", value)}
+        )
+        children.sort(
+            key=lambda row: (row.schema_id, row.subject.subject_id, row.subject.revision.head)
+        )
+        cut = ExecutionRecoveryCut(
+            tenant_id=run.tenant,
+            database_id=runtime._database_identity[0],
+            tenant_commit_sequence=subset.tenant_commit_sequence,
+            materialization_commitment=subset.materialization_commitment,
+            current_run=_run_ref(run),
+            complete_ordered_run_lineage=lineage,
+            complete_ordered_responses=(
+                SealedResponseRecoveryView(
+                    original_run=captured_ref,
+                    original_turn=captured_turn_ref,
+                    selected_seal=reference(seal.response_seal_id, seal),
+                    seal=seal,
+                    ordered_calls=(call,),
+                    frontier_head=reference("recovery-frontier:" + run.run_id, frontier),
+                ),
+            ),
+            frontier=frontier,
+            current_bindings=bindings,
+            original_closures=(closure,),
+            current_reductions=(reduction,),
+            complete_sources=(*physical_sources, *children),
+            complete_causal_changes=(),
             complete_inventory_fingerprint="0" * 64,
         )
         value = cut.model_dump(mode="json")

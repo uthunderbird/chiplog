@@ -105,12 +105,22 @@ def _selected_pair_held(
         entry = json.loads(raw)
         if entry.get("kind") == "DECIDED" and entry.get("operation_kind") == ACCOUNTING_OPERATION:
             selected.append((str(decision_id), raw, entry))
-    if len(selected) != 1:
-        raise LoopRejected("one selected accounting/readiness publication required")
-    decision_id, raw, entry = selected[0]
-    evidence = validate_accounting_selected(  # type: ignore[no-untyped-call]
-        runtime, entry, runtime._publication(entry)
-    )
+    current = []
+    for decision_id, raw, entry in selected:
+        evidence = validate_accounting_selected(  # type: ignore[no-untyped-call]
+            runtime, entry, runtime._publication(entry)
+        )
+        retained_cut = evidence.accounting_request.cut
+        if (
+            int(entry.get("expected_head", -1)) + 1 == cut.tenant_commit_sequence
+            and entry.get("resulting") == cut.materialization_commitment
+            and retained_cut.tenant_id == cut.tenant_id
+            and retained_cut.database_id == cut.database_id
+        ):
+            current.append((decision_id, raw, entry, evidence))
+    if len(current) != 1:
+        raise LoopRejected("one exact current-cut accounting/readiness publication required")
+    decision_id, raw, entry, evidence = current[0]
     old = evidence.accounting_request.cut
     if old.tenant_id != cut.tenant_id or old.database_id != cut.database_id:
         raise LoopRejected("foreign selected accounting/readiness cut")
@@ -244,12 +254,12 @@ async def start_next_execution_turn(
             if evidence.request.run.run_id != run_id or evidence.request.run.head != expected_head:
                 raise LoopRejected("changed replay request for selected next Turn")
             return await _finish(runtime, prior[0])
+        result, sent, reply = await _exchange_next_turn(runtime, request)
         refreshed, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)  # type: ignore[no-untyped-call]
         with runtime._authority_gate().hold():
             if not runtime._same_execution_actor_identity(observed, refreshed):
-                raise LoopRejected("next Turn actor changed before owner IPC")
+                raise LoopRejected("next Turn actor changed before publication")
             observed = refreshed
-        result, sent, reply = await _exchange_next_turn(runtime, request)
         evidence = RetainedNextTurnPublication(
             request=request,
             result=result,
@@ -258,32 +268,46 @@ async def start_next_execution_turn(
             actor_budget_v1=actor_budget,
         )
         command = next_turn_command(evidence)
+        guard_failure = None
 
         def guard() -> Literal["STALE"] | None:
+            nonlocal guard_failure
             with runtime._authority_gate().hold():
                 try:
                     runtime._check_execution_actor(observed)
                     if time.monotonic_ns() >= actor_budget.request.budget.absolute_deadline_ns:
+                        guard_failure = "recovery actor budget expired"
                         return "STALE"
-                    if (
-                        source(runtime).collect_held(runtime)  # type: ignore[no-untyped-call]
-                        != cut
-                        or _selected_pair_held(runtime, cut) != (publication, readiness)
-                        or runtime.current_worker() != worker
-                        or runtime._supervisor.runtime().session("agent_loop") != session
-                        or runtime._commitment_journal.load(runtime._tenant_id) != predecessor
-                    ):
+                    if source(runtime).collect_held(runtime) != cut:  # type: ignore[no-untyped-call]
+                        guard_failure = "recovery cut changed"
+                        return "STALE"
+                    if _selected_pair_held(runtime, cut) != (publication, readiness):
+                        guard_failure = "current readiness pair changed"
+                        return "STALE"
+                    if runtime.current_worker() != worker:
+                        guard_failure = "worker changed"
+                        return "STALE"
+                    if runtime._supervisor.runtime().session("agent_loop") != session:
+                        guard_failure = "runtime session changed"
+                        return "STALE"
+                    if runtime._commitment_journal.load(runtime._tenant_id) != predecessor:
+                        guard_failure = "recovery commitment changed"
                         return "STALE"
                     runtime._check_execution_actor(observed)
                     if time.monotonic_ns() >= actor_budget.request.budget.absolute_deadline_ns:
+                        guard_failure = "recovery actor budget expired"
                         return "STALE"
-                except ValueError, TypeError, RuntimeError, LoopRejected:
+                except (ValueError, TypeError, RuntimeError, LoopRejected) as error:
+                    guard_failure = f"fresh recovery validation failed: {error}"
                     return "STALE"
                 return None
 
         def decide(resulting: str) -> None:
             if guard() is not None:
-                raise LoopRejected("next Turn source changed at final decision")
+                raise LoopRejected(
+                    "next Turn source changed at final decision: "
+                    + str(guard_failure or "unknown stale source")
+                )
             runtime._require_no_pending()
             runtime._append_decision(
                 {

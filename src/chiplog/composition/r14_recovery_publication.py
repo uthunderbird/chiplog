@@ -399,26 +399,28 @@ async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress
             if (entry := json.loads(raw)).get("kind") == "DECIDED"
             and entry.get("operation_kind") == OPERATION
         ]
-        if len(prior) > 1:
-            raise LoopRejected("ambiguous recovery selected publication")
-        if not prior:
-            cut = source(runtime).collect_held(runtime)
-            if cut is None or cut.tenant_id != runtime._tenant_id:
-                raise LoopRejected("complete authenticated recovery cut unavailable; HOLD")
-            predecessor = runtime._commitment_journal.load(runtime._tenant_id)
-            if predecessor != cut.materialization_commitment:
-                raise LoopRejected("recovery cut predecessor differs")
-            worker = runtime.current_worker()
-            session = runtime._supervisor.runtime().session("agent_loop")
-    if prior:
-        with runtime._authority_gate().hold():
-            validate_selected(runtime, prior[0], runtime._publication(prior[0]))
-        return await _finish(runtime, prior[0])
-    observed_v26, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)
-    with runtime._authority_gate().hold():
-        if not runtime._same_execution_actor_identity(observed, observed_v26):
-            raise LoopRejected("recovery authenticated actor changed before owner IPC")
-        observed = observed_v26
+        cut = source(runtime).collect_held(runtime)
+        if cut is None or cut.tenant_id != runtime._tenant_id:
+            raise LoopRejected("complete authenticated recovery cut unavailable; HOLD")
+        current_pairs = []
+        for entry in prior:
+            selected_batch = runtime._publication(entry)
+            validate_selected(runtime, entry, selected_batch)
+            if (
+                int(entry.get("expected_head", -1)) + 1 == cut.tenant_commit_sequence
+                and entry.get("resulting") == cut.materialization_commitment
+            ):
+                current_pairs.append(entry)
+        if len(current_pairs) > 1:
+            raise LoopRejected("ambiguous readiness pair for current recovery cut")
+        replay_entry = current_pairs[0] if current_pairs else None
+        predecessor = runtime._commitment_journal.load(runtime._tenant_id)
+        if predecessor != cut.materialization_commitment:
+            raise LoopRejected("recovery cut predecessor differs")
+        worker = runtime.current_worker()
+        session = runtime._supervisor.runtime().session("agent_loop")
+    if replay_entry is not None:
+        return await _finish(runtime, replay_entry)
     identity = "execution-accounting-readiness:" + cut.digest()
     a = PrepareExecutionAccounting(command_id=identity, cut=cut)
     ar, ac, ap = await _exchange(
@@ -430,6 +432,11 @@ async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress
     cr, cc, cp = await _exchange(
         runtime, c, "agent_loop.prepare_execution_continuation.v1", PreparedExecutionContinuation
     )
+    observed_v26, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)
+    with runtime._authority_gate().hold():
+        if not runtime._same_execution_actor_identity(observed, observed_v26):
+            raise LoopRejected("recovery authenticated actor changed before publication")
+        observed = observed_v26
     evidence = RetainedRecoveryPublication(
         accounting_request=a,
         accounting_result=ar,

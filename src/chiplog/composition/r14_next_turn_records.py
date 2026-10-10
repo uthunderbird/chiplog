@@ -171,14 +171,31 @@ def validate_selected_next_turn(
         if candidate.get("kind") != "DECIDED":
             continue
         command = runtime._publication(candidate)
-        if (
-            command.operation_kind == ACCOUNTING_OPERATION
-            or candidate.get("operation_id") == publication.selected_decision.subject_id
-        ):
+        if command.operation_kind == ACCOUNTING_OPERATION:
             selected.append((str(decision_id), raw, candidate, command))
-    if len(selected) != 1:
-        raise ValueError("next Turn lacks one selected accounting/readiness decision")
-    decision_id, raw, prior, prior_batch = selected[0]
+    named = [
+        item
+        for item in selected
+        if item[2].get("operation_id") == publication.selected_decision.subject_id
+    ]
+    if len(named) != 1:
+        raise ValueError("next Turn named readiness decision is absent or ambiguous")
+    decision_id, raw, prior, prior_batch = named[0]
+    if (
+        publication.selected_decision.revision.head != decision_id
+        or publication.selected_decision.revision.fingerprint != hashlib.sha256(raw).hexdigest()
+        or int(prior.get("expected_head", -1)) + 1 != request.cut.tenant_commit_sequence
+        or prior.get("resulting") != request.cut.materialization_commitment
+    ):
+        raise ValueError("next Turn names a readiness pair for another source cut")
+    for _, _, candidate, candidate_batch in selected:
+        if int(candidate.get("expected_head", -1)) + 1 <= request.cut.tenant_commit_sequence:
+            validate_accounting_selected(  # type: ignore[no-untyped-call]
+                runtime,
+                candidate,
+                candidate_batch,
+                through_sequence=request.cut.tenant_commit_sequence,
+            )
     original = validate_accounting_selected(  # type: ignore[no-untyped-call]
         runtime, prior, prior_batch, through_sequence=request.cut.tenant_commit_sequence
     )
