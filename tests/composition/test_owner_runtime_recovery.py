@@ -11,6 +11,7 @@ from typing import Literal
 
 import pytest
 
+import chiplog.platform.owner_decision_journal as owner_decision_journal
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.capabilities.planning import CreateIntentionLine
 from chiplog.composition.r8 import R8_SURFACES, command_bytes
@@ -101,6 +102,34 @@ def _mechanical_preparation(runtime: R14PlanningRuntime) -> PreparedOwnerPublica
         }
     )
     return PreparedOwnerPublication(request, "fixture", "r6", 0, commitment)
+
+
+async def test_anchored_owner_scan_reuses_exact_bytes_and_invalidates_on_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with open_r14_runtime(tmp_path / "runtime.sqlite") as runtime:
+        journal = runtime._owner_decisions()
+        scans: list[str] = []
+        original = owner_decision_journal._scan_entries
+
+        def counted(*args: object, **kwargs: object):
+            scans.append(str(args[2]))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner_decision_journal, "_scan_entries", counted)
+        assert journal.lookup(runtime._tenant_id, "missing") is None
+        assert scans == []
+
+        prepared = _mechanical_preparation(runtime)
+        selected = journal.select(prepared, hashlib.sha256(b"after").hexdigest())
+        assert len(scans) == 1
+        assert journal.lookup(runtime._tenant_id, "mechanical-command") == selected
+        assert len(scans) == 1
+
+        journal._raw.append(b"not-json", selected.decision_head)
+        with pytest.raises(OwnerJournalIntegrityError):
+            journal.lookup(runtime._tenant_id, "mechanical-command")
+        assert len(scans) == 2
 
 
 async def test_runtime_bootstrap_and_reopen_preserve_authority_anchor(tmp_path: Path) -> None:

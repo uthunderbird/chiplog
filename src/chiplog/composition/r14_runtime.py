@@ -45,6 +45,7 @@ from chiplog.platform.owner_decision_journal import (
     IndependentOwnerDecisionJournal,
     OwnerJournalIntegrityError,
     OwnerJournalSnapshot,
+    _Scan,
 )
 from chiplog.platform.owner_publications import (
     OwnerPublicationPending,
@@ -73,22 +74,58 @@ class AnchoredOwnerDecisionJournal(IndependentOwnerDecisionJournal):
             runtime._tenant_id,
         )
 
-    def snapshot(self) -> OwnerJournalSnapshot:
-        # Reuse only immutable semantic decoding. Every call still authenticates
-        # the complete physical journal, key, chain and independent anchored head.
+    def _scan(self, operation: str, record: str) -> _Scan:
+        # Physical sources, authentication chain and the protected head are
+        # rechecked by raw.entries() on every call. Reuse only the semantic
+        # interpretation of the exact byte-for-byte image already validated.
         with self._runtime._authority_gate().hold():
             try:
                 entries = self._raw.entries()
                 cached = self._snapshot_cache
                 if cached is not None and cached[0] == entries:
-                    return cached[1]
-                snapshot = super().snapshot()
-                if self._raw.entries() != entries or snapshot.head != (
+                    snapshot = cached[1]
+                    return _Scan(
+                        snapshot.head,
+                        {
+                            decision.prepared.request.identity.command_id: decision
+                            for decision in snapshot.decisions
+                        },
+                        snapshot.materialized_command_ids,
+                    )
+                scan = self._scan_entries(entries, operation, record)
+                if self._raw.entries() != entries or scan.head != (
                     entries[-1][0] if entries else None
                 ):
-                    raise ValueError("owner journal changed across semantic snapshot")
-                self._snapshot_cache = (entries, snapshot)
-                return snapshot
+                    raise ValueError("owner journal changed across semantic scan")
+                self._snapshot_cache = (
+                    entries,
+                    OwnerJournalSnapshot(
+                        self._runtime._tenant_id,
+                        scan.head,
+                        tuple(scan.selected.values()),
+                        scan.materialized,
+                    ),
+                )
+                return scan
+            except OwnerJournalIntegrityError:
+                raise
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+                raise OwnerJournalIntegrityError(
+                    operation, self._runtime._tenant_id, record
+                ) from error
+
+    def snapshot(self) -> OwnerJournalSnapshot:
+        # Reuse only immutable semantic decoding. Every call still authenticates
+        # the complete physical journal, key, chain and independent anchored head.
+        with self._runtime._authority_gate().hold():
+            try:
+                scan = self._scan("snapshot", "journal")
+                return OwnerJournalSnapshot(
+                    self._runtime._tenant_id,
+                    scan.head,
+                    tuple(scan.selected.values()),
+                    scan.materialized,
+                )
             except OwnerJournalIntegrityError:
                 raise
             except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
