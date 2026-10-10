@@ -95,14 +95,16 @@ class CallPublicationAuthority:
         runtime = self.runtime
         resources = runtime._require_dispatch_resources()
         target = value.preview.preview.target
+        execution_call_history = read_execution_call_history(runtime)
         fresh = capture_dispatch(
             runtime,
             resources,
             value.observed,
             target.current_run.subject_id,
             original_call_id=target.original_call_id,
+            execution_call_history=execution_call_history,
         )
-        _, inventory, _ = read_execution_call_history(runtime)
+        _, inventory, _ = execution_call_history
         cut = value.retained.loop_request.binding.cut
         rows = tuple(
             row

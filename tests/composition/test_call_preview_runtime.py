@@ -403,9 +403,11 @@ async def test_adopted_preview_prepares_both_real_owners_without_publication_or_
 
 async def test_call_writer_authority_requires_exact_issued_objects_and_current_scope(
     initialized: tuple[ExecutionDispatchRuntime, CallAcceptanceTarget, HermeticDispatchResources],
+    monkeypatch,
 ) -> None:
     from dataclasses import replace
 
+    import chiplog.composition.r14_call_authority as call_authority_module
     from chiplog.composition.r14_call_authority import CallPublicationAuthority
     from chiplog.composition.r16_dispatch_publication import authenticate
     from chiplog.platform._owner_publication_contracts import PublicationRejected
@@ -421,7 +423,26 @@ async def test_call_writer_authority_requires_exact_issued_objects_and_current_s
     )
     prepared = await authority.prepare(batch)
     assert isinstance(prepared, PreparedOwnerPublication)
+    original_read_history = call_authority_module.read_execution_call_history
+    original_capture = call_authority_module.capture_dispatch
+    histories = []
+    captured_histories = []
+
+    def read_history(current_runtime: ExecutionDispatchRuntime):
+        history = original_read_history(current_runtime)
+        histories.append(history)
+        return history
+
+    def capture_with_history(*args, **kwargs):
+        captured_histories.append(kwargs.get("execution_call_history"))
+        return original_capture(*args, **kwargs)
+
+    monkeypatch.setattr(call_authority_module, "read_execution_call_history", read_history)
+    monkeypatch.setattr(call_authority_module, "capture_dispatch", capture_with_history)
     assert authority.check_prepared(prepared) is None
+    assert len(histories) == 1
+    assert len(captured_histories) == 1
+    assert captured_histories[0] is histories[0]
     assert authority.check_prepared(replace(prepared)) == "DENIED"
     copied = await authority.prepare(batch.model_copy())
     assert isinstance(copied, PublicationRejected) and copied.kind == "DENIED"
