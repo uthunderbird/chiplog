@@ -78,6 +78,32 @@ async def test_selected_profile_exact_restart_and_hold(tmp_path):
         assert await publish_native_recovery_profile(runtime) == selected
 
 
+async def test_v3_profile_selection_reopens_with_exact_version(tmp_path):
+    from chiplog.composition.r14_recovery_profile_publication import (
+        publish_native_recovery_profile,
+        read_native_recovery_profile_held,
+    )
+
+    database = tmp_path / "profile-v3.sqlite"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
+    )
+    async with open_common_cli_execution_runtime(
+        database, resources=resources, manifest=R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST
+    ) as runtime:
+        selected = await publish_native_recovery_profile(runtime, version="v3")
+        assert selected is not None
+        assert selected.schema_id.endswith(".v3")
+        with runtime._authority_gate().hold():
+            assert read_native_recovery_profile_held(runtime) == selected
+    async with open_common_cli_execution_runtime(
+        database, resources=resources, manifest=R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST
+    ) as runtime:
+        with runtime._authority_gate().hold():
+            assert read_native_recovery_profile_held(runtime) == selected
+        assert await publish_native_recovery_profile(runtime, version="v3") == selected
+
+
 async def test_profile_lost_ack_recovers_exact_selection(tmp_path):
     from unittest.mock import patch
 

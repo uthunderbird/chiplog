@@ -547,6 +547,7 @@ def _read_call_history(
                         "agent_loop.original-resolver-invocation.v1",
                         "agent_loop.native-one-call-recovery-profile.v1",
                         "agent_loop.native-one-call-recovery-profile.v2",
+                        "agent_loop.native-one-call-recovery-profile.v3",
                         EXECUTION_TRANSITION_OPERATION,
                         EXECUTION_INBOX_INITIALIZATION_OPERATION,
                         EXECUTION_FANOUT_OPERATION,
@@ -811,6 +812,7 @@ def _read_call_history(
                         in (
                             "agent_loop.native-one-call-recovery-profile.v1",
                             "agent_loop.native-one-call-recovery-profile.v2",
+                            "agent_loop.native-one-call-recovery-profile.v3",
                         )
                         or "native_recovery_profile_evidence" in entry
                     ):

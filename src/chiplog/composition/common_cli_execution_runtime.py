@@ -935,12 +935,14 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await publish_native_one_call_cancelled_accounting(self, peer)
 
-    async def publish_native_recovery_profile(self, peer: str = "hermetic-ingress"):
+    async def publish_native_recovery_profile(
+        self, peer: str = "hermetic-ingress", *, version: str = "v2"
+    ):
         from chiplog.composition.r14_recovery_profile_publication import (
             publish_native_recovery_profile,
         )
 
-        return await publish_native_recovery_profile(self, peer)
+        return await publish_native_recovery_profile(self, peer, version=version)
 
     async def publish_original_resolver_authority_policy(self, peer: str = "hermetic-ingress"):
         from chiplog.composition.r14_original_resolver_policy_publication import (

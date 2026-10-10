@@ -173,6 +173,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
         ("agent_loop", "chiplog.agent-loop.native-one-call-cancelled-accounting.v1"),
         ("agent_loop", "chiplog.execution.native-one-call-recovery-profile.v1"),
         ("agent_loop", "chiplog.execution.native-one-call-recovery-profile.v2"),
+        ("agent_loop", "chiplog.execution.native-one-call-recovery-profile.v3"),
         ("agent_loop", "chiplog.execution.sealed-accounting.v1"),
         ("agent_loop", "chiplog.execution.continuation-ready.v1"),
         ("agent_loop", "chiplog.loop.original-resolver-authority-policy.v1"),

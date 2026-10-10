@@ -6,8 +6,10 @@ import pytest
 from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     decode_native_one_call_recovery_profile,
     decode_native_one_call_recovery_profile_v2,
+    decode_native_one_call_recovery_profile_v3,
     native_one_call_recovery_profile,
     native_one_call_recovery_profile_v2,
+    native_one_call_recovery_profile_v3,
 )
 from chiplog.composition.r14_recovery_profile_publication import (
     RetainedNativeProfilePublication,
@@ -56,6 +58,32 @@ def test_profile_command_keeps_exact_v1_decoder_and_selects_v2_schema():
     assert old_command.records[0].schema_id.endswith(".v1")
     assert current_command.operation_kind == "agent_loop.native-one-call-recovery-profile.v2"
     assert current_command.records[0].schema_id.endswith(".v2")
+
+
+def test_native_recovery_profile_v3_preserves_v2_and_registers_accepted_transitions():
+    v2 = native_one_call_recovery_profile_v2()
+    v3 = native_one_call_recovery_profile_v3()
+
+    assert decode_native_one_call_recovery_profile_v2(v2.canonical_bytes()) == v2
+    assert decode_native_one_call_recovery_profile_v3(v3.canonical_bytes()) == v3
+    assert v3.schema_id.endswith(".v3")
+    assert v3.registry == v2.registry
+    assert v3.causal_transitions[: len(v2.causal_transitions)] == v2.causal_transitions
+    assert "OriginalObligationResolved" in v3.causal_transitions
+    assert "SemanticEvidenceReduced" in v3.causal_transitions
+    with pytest.raises(ValueError):
+        decode_native_one_call_recovery_profile_v2(v3.canonical_bytes())
+
+    retained = RetainedNativeProfilePublication(
+        tenant_id="tenant",
+        database_id="db",
+        record_bytes=v3.canonical_bytes(),
+        expected_head=0,
+        predecessor="0" * 64,
+    )
+    command = profile_command(retained)
+    assert command.operation_kind == "agent_loop.native-one-call-recovery-profile.v3"
+    assert command.records[0].schema_id.endswith(".v3")
 
 
 def test_v2_selection_guard_rejects_v1_rows_and_late_lineage(tmp_path):
