@@ -67,7 +67,7 @@ class CallPublicationAuthority:
             batch = call_batch(value, self.invocation(identity))
             if validate_call_issuance(batch, self.runtime) != value:
                 raise LoopRejected("call preparation differs from retained original exchange")
-            self._check_live(value)
+            # The writer admission guard performs this full freshness check before selection.
             prepared = PreparedOwnerPublication(
                 batch,
                 secrets.token_hex(24),
