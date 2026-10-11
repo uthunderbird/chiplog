@@ -262,6 +262,52 @@ def decode_native_one_call_recovery_profile_v4(raw: bytes) -> NativeOneCallRecov
     return profile
 
 
+SCHEMA_V5: Literal["chiplog.execution.native-one-call-recovery-profile.v5"] = (
+    "chiplog.execution.native-one-call-recovery-profile.v5"
+)
+PROFILE_OPERATION_V5 = "agent_loop.native-one-call-recovery-profile.v5"
+
+
+class NativeOneCallRecoveryProfileV5(NativeOneCallRecoveryProfileV4):
+    """Immutable interpretation for obligation-preserving suspension and resume."""
+
+    schema_id: Literal["chiplog.execution.native-one-call-recovery-profile.v5"] = SCHEMA_V5
+    kind: Literal["NATIVE_ONE_CALL_RECOVERY_PROFILE_V5"] = "NATIVE_ONE_CALL_RECOVERY_PROFILE_V5"
+    causal_change_set: Literal[
+        "RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_SUSPENSION_OBLIGATION_V5"
+    ] = "RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_SUSPENSION_OBLIGATION_V5"
+    fingerprint_domain: Literal[
+        "chiplog.execution.native-one-call-recovery.v5"
+    ] = "chiplog.execution.native-one-call-recovery.v5"
+
+
+def native_one_call_recovery_profile_v5() -> NativeOneCallRecoveryProfileV5:
+    v4 = native_one_call_recovery_profile_v4()
+    return NativeOneCallRecoveryProfileV5(
+        registry=v4.registry,
+        call_branches=v4.call_branches,
+        dispatch_outcomes=v4.dispatch_outcomes,
+        dispatch_record_kinds=v4.dispatch_record_kinds,
+        dispatch_outcome_record_kinds=v4.dispatch_outcome_record_kinds,
+        obligation_states=v4.obligation_states,
+        causal_transitions=(
+            *v4.causal_transitions,
+            "ExecutionSuspensionWithOriginalObligation",
+            "OriginalObligationEvidenceAppendedAfterSuspension",
+            "OriginalObligationResolvedAfterSuspension",
+            "OriginalObligationReducedAfterSuspension",
+            "ExecutionResumeAfterOriginalObligationResolution",
+        ),
+    )
+
+
+def decode_native_one_call_recovery_profile_v5(raw: bytes) -> NativeOneCallRecoveryProfileV5:
+    profile = NativeOneCallRecoveryProfileV5.model_validate_json(raw)
+    if profile.canonical_bytes() != raw or profile != native_one_call_recovery_profile_v5():
+        raise ValueError("native recovery profile V5 differs from its closed interpretation")
+    return profile
+
+
 def native_recovery_fingerprint(domain: str, value: dict[str, object]) -> str:
     """Explicit preimage for native members, frontier and complete inventory."""
     raw = json.dumps(

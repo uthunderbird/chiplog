@@ -416,6 +416,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             _V34_EXECUTION_OPERATIONS,
             _V35_EXECUTION_OPERATIONS,
             _V36_EXECUTION_OPERATIONS,
+            _V37_EXECUTION_OPERATIONS,
         )
 
         if identity.capability_ids == _V26_EXECUTION_OPERATIONS:
@@ -439,6 +440,8 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
         if identity.capability_ids == _V35_EXECUTION_OPERATIONS:
             return "chiplog.capabilities.agent_loop._original_recovery_process"
         if identity.capability_ids == _V36_EXECUTION_OPERATIONS:
+            return "chiplog.capabilities.agent_loop._original_recovery_process"
+        if identity.capability_ids == _V37_EXECUTION_OPERATIONS:
             return "chiplog.capabilities.agent_loop._original_recovery_process"
         raise OwnerProcessFailure("unknown agent-loop capability partition")
     if identity.owner_id == "projections" and identity.capability_ids == (

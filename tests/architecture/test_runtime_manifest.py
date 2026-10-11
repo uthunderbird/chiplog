@@ -17,6 +17,8 @@ from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
     R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_EVALUATION_MANIFEST,
     R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
+    R14_EXECUTION_OBLIGATION_RESUME_V37_EVALUATION_MANIFEST,
+    R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
     R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_EVALUATION_MANIFEST,
     R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_PRODUCTION_MANIFEST,
     R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_EVALUATION_MANIFEST,
@@ -83,6 +85,51 @@ def test_v36_registers_same_run_resume_without_mutating_v35() -> None:
     assert operation in owner.capability_ids
     assert operation in owner.public_operations
     assert owner.target_ids == previous_owner.target_ids
+
+
+def test_v37_selects_the_new_profile_generation_and_preserves_v36_route_graph() -> None:
+    production = R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST
+    evaluation = R14_EXECUTION_OBLIGATION_RESUME_V37_EVALUATION_MANIFEST
+    previous = R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST
+
+    assert verify_runtime_manifest(production)
+    verify_production_evaluation_equivalence(production, evaluation)
+    assert production.manifest_version == 37
+    added_operations = {
+        "agent_loop.prepare_execution_suspension_with_obligation.v1",
+        "agent_loop.prepare_execution_resume_with_obligation.v1",
+    }
+    assert {route.operation_id for route in production.routes} - {
+        route.operation_id for route in previous.routes
+    } == added_operations
+    assert {route.operation_id for route in previous.routes} <= {
+        route.operation_id for route in production.routes
+    }
+    assert production.owners != previous.owners
+    assert previous.manifest_version == 36
+    with AuthorityBrokerRuntime(
+        "tenant",
+        1,
+        "obligation-resume-v37",
+        production,
+        b"offline",
+        realized_leaves={
+            "clock": ProductionClock(),
+            "model": HermeticModel(),
+            "planning_store": ProductionPlanningStore(),
+            "effects_transport": HermeticEffectsProvider(
+                receipt_key=b"fixture", scenarios=()
+            ),
+        },
+    ) as runtime:
+        loop = next(row for row in runtime.attest() if row.identity.owner_id == "agent_loop")
+    assert {
+        "agent_loop.prepare_execution_suspension_with_obligation.v1",
+        "agent_loop.prepare_execution_resume_with_obligation.v1",
+    } <= set(loop.identity.capability_ids)
+    assert loop.target_ids == (
+        "chiplog.capabilities.agent_loop._original_recovery_process:dispatch",
+    )
 
 
 def test_v30_registers_direct_terminal_owner_and_preserves_v29_next_turn() -> None:

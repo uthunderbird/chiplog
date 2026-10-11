@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
 OPERATION = "agent_loop.execution-suspension.v1"
 OWNER_OPERATION = "agent_loop.prepare_execution_suspension.v1"
+OWNER_OBLIGATION_OPERATION = "agent_loop.prepare_execution_suspension_with_obligation.v1"
 BASELINE_SCHEMA = "chiplog.execution.suspension-baseline.v2"
 PAIR_SCHEMA = "chiplog.execution.suspension-pair.v2"
 
@@ -91,7 +92,7 @@ def _command(evidence: RetainedExecutionSuspension) -> PhysicalPublicationComman
         raise ValueError("suspension actor budget has the wrong wire variant")
     validate_recovery_actor_budget(evidence.actor_budget_v1)
     if (
-        call.operation_id != OWNER_OPERATION
+        call.operation_id not in (OWNER_OPERATION, OWNER_OBLIGATION_OPERATION)
         or call.schema_id != EXECUTION_RECOVERY_REQUEST_SCHEMA
         or call.canonical_payload != request.canonical_bytes()
         or call.caller.owner_id != "broker"
@@ -112,6 +113,11 @@ def _command(evidence: RetainedExecutionSuspension) -> PhysicalPublicationComman
         )
     ):
         raise ValueError("suspension retained owner result or non-scheduler source differs")
+    if (
+        call.operation_id == OWNER_OPERATION
+        and result.baseline.original_obligations
+    ):
+        raise ValueError("legacy suspension owner route cannot retain original obligations")
     baseline_raw = result.baseline.canonical_bytes()
     run_raw = result.run.canonical_bytes()
     pair_raw = result.pair.canonical_bytes()
@@ -374,10 +380,20 @@ async def suspend_execution(
                     runtime_generation=session.generation_id,
                 ),
             )
+        owner_capabilities = next(
+            row.capability_ids
+            for row in runtime._supervisor.runtime().graph_generation().owners
+            if row.owner_id == "agent_loop"
+        )
+        owner_operation = (
+            OWNER_OBLIGATION_OPERATION
+            if OWNER_OBLIGATION_OPERATION in owner_capabilities
+            else OWNER_OPERATION
+        )
         result, owner_call, owner_reply = await _exchange(
             runtime,
             request,
-            OWNER_OPERATION,
+            owner_operation,
             PreparedExecutionSuspension,
         )
         refreshed, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)

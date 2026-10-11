@@ -27,6 +27,8 @@ ACCOUNTING_OPERATION = "agent_loop.prepare_execution_accounting.v1"
 CONTINUATION_OPERATION = "agent_loop.prepare_execution_continuation.v1"
 SUSPENSION_OPERATION = "agent_loop.prepare_execution_suspension.v1"
 RESUME_OPERATION = "agent_loop.prepare_execution_resume.v1"
+SUSPENSION_OBLIGATION_OPERATION = "agent_loop.prepare_execution_suspension_with_obligation.v1"
+RESUME_OBLIGATION_OPERATION = "agent_loop.prepare_execution_resume_with_obligation.v1"
 REQUEST_SCHEMA = EXECUTION_RECOVERY_REQUEST_SCHEMA
 RESULT_SCHEMA = EXECUTION_RECOVERY_RESULT_SCHEMA
 ROUTES = tuple(
@@ -37,6 +39,20 @@ ROUTES = tuple(
             (CONTINUATION_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
             (RESUME_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
             (SUSPENSION_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
+            (
+                RESUME_OBLIGATION_OPERATION,
+                "broker",
+                "agent_loop",
+                REQUEST_SCHEMA,
+                RESULT_SCHEMA,
+            ),
+            (
+                SUSPENSION_OBLIGATION_OPERATION,
+                "broker",
+                "agent_loop",
+                REQUEST_SCHEMA,
+                RESULT_SCHEMA,
+            ),
         )
     )
 )
@@ -48,6 +64,8 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
         CONTINUATION_OPERATION,
         RESUME_OPERATION,
         SUSPENSION_OPERATION,
+        RESUME_OBLIGATION_OPERATION,
+        SUSPENSION_OBLIGATION_OPERATION,
     }:
         return _native_one_call_accounting_v2_process.dispatch(operation, payload)
     try:
@@ -61,14 +79,21 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
             if not isinstance(request, PrepareExecutionContinuation):
                 raise ValueError("continuation operation requires continuation request")
             result = prepare_execution_continuation(request)
-        elif operation == RESUME_OPERATION:
+        elif operation in (RESUME_OPERATION, RESUME_OBLIGATION_OPERATION):
             if not isinstance(request, PrepareExecutionResume):
                 raise ValueError("resume operation requires resume request")
+            if (
+                operation == RESUME_OPERATION
+                and request.original_suspension.baseline.original_obligations
+            ):
+                raise ValueError("legacy resume route cannot authorize original obligations")
             result = prepare_execution_resume(request)
         else:
             if not isinstance(request, PrepareExecutionSuspension):
                 raise ValueError("suspension operation requires suspension request")
             result = prepare_execution_suspension(request)
+            if operation == SUSPENSION_OPERATION and result.baseline.original_obligations:
+                raise ValueError("legacy suspension route cannot authorize original obligations")
         return {
             "payload": base64.b64encode(result.canonical_bytes()).decode(),
             "schema_id": RESULT_SCHEMA,

@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
 OPERATION = "agent_loop.execution-resume.v1"
 OWNER_OPERATION = "agent_loop.prepare_execution_resume.v1"
+OWNER_OBLIGATION_OPERATION = "agent_loop.prepare_execution_resume_with_obligation.v1"
 RUN_SCHEMA = "chiplog.agent-loop.execution-record.v2"
 EVIDENCE_FIELD = "execution_resume_evidence"
 
@@ -84,7 +85,7 @@ def _command(evidence: RetainedExecutionResume) -> PhysicalPublicationCommand:
         raise ValueError("resume owner exchange has the wrong wire variants")
     validate_recovery_actor_budget(evidence.actor_budget_v1)
     if (
-        call.operation_id != OWNER_OPERATION
+        call.operation_id not in (OWNER_OPERATION, OWNER_OBLIGATION_OPERATION)
         or call.schema_id != "chiplog.execution.recovery-request.v1"
         or call.canonical_payload != request.canonical_bytes()
         or call.caller.owner_id != "broker"
@@ -103,6 +104,11 @@ def _command(evidence: RetainedExecutionResume) -> PhysicalPublicationCommand:
         or result.original_pair != request.original_suspension.selected_pair
     ):
         raise ValueError("resume retained owner result or selected suspension differs")
+    if (
+        call.operation_id == OWNER_OPERATION
+        and request.original_suspension.baseline.original_obligations
+    ):
+        raise ValueError("legacy resume owner route cannot retain original obligations")
     run_raw = result.run.canonical_bytes()
     if result.complete_batch_fingerprint != _sha(run_raw):
         raise ValueError("resume complete batch fingerprint differs")
@@ -327,8 +333,18 @@ async def resume_execution(
                     runtime_generation=session.generation_id,
                 ),
             )
+        owner_capabilities = next(
+            row.capability_ids
+            for row in runtime._supervisor.runtime().graph_generation().owners
+            if row.owner_id == "agent_loop"
+        )
+        owner_operation = (
+            OWNER_OBLIGATION_OPERATION
+            if OWNER_OBLIGATION_OPERATION in owner_capabilities
+            else OWNER_OPERATION
+        )
         result, owner_call, owner_reply = await _exchange(
-            runtime, request, OWNER_OPERATION, PreparedExecutionResume
+            runtime, request, owner_operation, PreparedExecutionResume
         )
         refreshed, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)
         with runtime._authority_gate().hold():

@@ -7,9 +7,13 @@ from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     decode_native_one_call_recovery_profile,
     decode_native_one_call_recovery_profile_v2,
     decode_native_one_call_recovery_profile_v3,
+    decode_native_one_call_recovery_profile_v4,
+    decode_native_one_call_recovery_profile_v5,
     native_one_call_recovery_profile,
     native_one_call_recovery_profile_v2,
     native_one_call_recovery_profile_v3,
+    native_one_call_recovery_profile_v4,
+    native_one_call_recovery_profile_v5,
 )
 from chiplog.composition.r14_recovery_profile_publication import (
     RetainedNativeProfilePublication,
@@ -116,3 +120,31 @@ def test_v2_selection_guard_rejects_v1_rows_and_late_lineage(tmp_path):
         )
     with pytest.raises(ValueError, match="V1 recovery profile"):
         _assert_v2_precedes_covered_lineage(runtime, profile_sequence=1)
+
+
+def test_v5_adds_obligation_suspend_transitions_without_reinterpreting_v4():
+    v4 = native_one_call_recovery_profile_v4()
+    v5 = native_one_call_recovery_profile_v5()
+
+    assert decode_native_one_call_recovery_profile_v4(v4.canonical_bytes()) == v4
+    assert decode_native_one_call_recovery_profile_v5(v5.canonical_bytes()) == v5
+    assert v5.causal_transitions[: len(v4.causal_transitions)] == v4.causal_transitions
+    assert v5.causal_change_set != v4.causal_change_set
+    assert "ExecutionSuspensionWithOriginalObligation" in v5.causal_transitions
+    assert "ExecutionResumeAfterOriginalObligationResolution" in v5.causal_transitions
+    with pytest.raises(ValueError):
+        decode_native_one_call_recovery_profile_v4(v5.canonical_bytes())
+    with pytest.raises(ValueError):
+        decode_native_one_call_recovery_profile_v5(v4.canonical_bytes())
+
+    for profile, version in ((v4, "v4"), (v5, "v5")):
+        retained = RetainedNativeProfilePublication(
+            tenant_id="tenant",
+            database_id="db",
+            record_bytes=profile.canonical_bytes(),
+            expected_head=0,
+            predecessor="0" * 64,
+        )
+        command = profile_command(retained)
+        assert command.operation_kind.endswith(version)
+        assert command.records[0].schema_id.endswith(version)

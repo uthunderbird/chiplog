@@ -1592,6 +1592,58 @@ R14_EXECUTION_SAME_RUN_RESUME_V36_EVALUATION_MANIFEST = replace(
     environment="evaluation",
 )
 
+_V37_EXECUTION_SUSPENSION_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_execution_suspension_with_obligation.v1",
+    "broker",
+    "agent_loop",
+    "chiplog.execution.recovery-request.v1",
+    "chiplog.execution.recovery-result.v1",
+)
+_V37_EXECUTION_RESUME_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_execution_resume_with_obligation.v1",
+    "broker",
+    "agent_loop",
+    "chiplog.execution.recovery-request.v1",
+    "chiplog.execution.recovery-result.v1",
+)
+_V37_EXECUTION_OPERATIONS = tuple(
+    sorted(
+        (
+            *_V36_EXECUTION_OPERATIONS,
+            _V37_EXECUTION_SUSPENSION_ROUTE.operation_id,
+            _V37_EXECUTION_RESUME_ROUTE.operation_id,
+        )
+    )
+)
+R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST = replace(
+    R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST,
+    manifest_version=37,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_V37_EXECUTION_OPERATIONS,
+            public_operations=_V37_EXECUTION_OPERATIONS,
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST.routes,
+                _V37_EXECUTION_SUSPENSION_ROUTE,
+                _V37_EXECUTION_RESUME_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_EXECUTION_OBLIGATION_RESUME_V37_EVALUATION_MANIFEST = replace(
+    R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+    environment="evaluation",
+)
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -1649,6 +1701,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         34,
         35,
         36,
+        37,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1686,6 +1739,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         34: R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
         35: R14_EXECUTION_SUSPENSION_V35_PRODUCTION_MANIFEST,
         36: R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST,
+        37: R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     if manifest.manifest_version >= 2:
         if manifest.broker_version.startswith("r8-development-v1:"):
