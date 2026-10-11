@@ -149,6 +149,7 @@ class R14NativeAcceptedOpenOutcome:
     latest_publication_ordinal: int
     latest_batch_record_ids: tuple[str, ...]
     complete_ordered_dispatch_sources: tuple[RecoverySourceRecord, ...]
+    complete_ordered_dispatch_members: tuple[SelectedEffectHistoryMember, ...]
     complete_ordered_evidence_sources: tuple[RecoverySourceRecord, ...]
 
 
@@ -747,6 +748,13 @@ class R14NativeSelectedAccountingSource:
             dispatch_sources = complete_ordered_dispatch_sources(expected_intent, verified)
             if evidence_sources is None or dispatch_sources is None:
                 return None
+            dispatch_members = tuple(
+                member
+                for member in verified.members
+                if member.intent.subject_id == expected_intent.subject_id
+            )
+            if len(dispatch_members) != len(dispatch_sources):
+                return None
             with read_connection(runtime._database) as connection:
                 after = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
             anchored_after = runtime._commitment_journal.load(runtime._tenant_id)
@@ -788,6 +796,7 @@ class R14NativeSelectedAccountingSource:
                 latest_publication_ordinal=latest_publication.publication_ordinal,
                 latest_batch_record_ids=latest_publication.batch_record_ids,
                 complete_ordered_dispatch_sources=dispatch_sources,
+                complete_ordered_dispatch_members=dispatch_members,
                 complete_ordered_evidence_sources=evidence_sources,
             )
         except OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError:

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import hashlib
 
-from .execution_recovery_observations import ExecutionRecoveryCut
+from pydantic import ValidationError
+
+from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
+from chiplog.capabilities.effects.dispatch_outcomes import evidence_head
+
+from .execution_recovery_observations import ExecutionRecoveryCut, RecoverySourceRecord
 from .native_recovery_profile_contracts import (
     SCHEMA,
     SCHEMA_V2,
@@ -37,9 +42,7 @@ def validate_native_recovery_cut(cut: ExecutionRecoveryCut) -> None:
         raise ValueError("native cut family cardinality or ordering differs")
     for row in sources:
         if (
-            not isinstance(row.subject.revision, Present)
-            or row.subject.revision.fingerprint
-            != hashlib.sha256(row.canonical_record_bytes).hexdigest()
+            not _source_preimage_is_valid(row)
             or not isinstance(row.physical_record.revision, Present)
             or not isinstance(row.selected_decision.revision, Present)
         ):
@@ -87,3 +90,39 @@ def validate_native_recovery_cut(cut: ExecutionRecoveryCut) -> None:
     del value["complete_inventory_fingerprint"]
     if cut.complete_inventory_fingerprint != native_recovery_fingerprint("cut", value):
         raise ValueError("native complete inventory fingerprint differs")
+
+
+def _source_preimage_is_valid(source: RecoverySourceRecord) -> bool:
+    """Validate bytes for physical rows and logical R16 evidence carrier rows."""
+    if not isinstance(source.subject.revision, Present):
+        return False
+    digest = hashlib.sha256(source.canonical_record_bytes).hexdigest()
+    if source.subject.revision.fingerprint == digest:
+        return True
+    if (
+        source.owner != "effects"
+        or source.schema_id != "chiplog.effects.dispatch-outcome-record.v2"
+        or source.subject.subject_id == source.physical_record.subject_id
+        or not isinstance(source.physical_record.revision, Present)
+        or source.physical_record.revision.head != "record:" + digest
+        or source.physical_record.revision.fingerprint != digest
+    ):
+        return False
+    try:
+        record = DispatchOutcomeRecordV2.model_validate_json(source.canonical_record_bytes)
+    except (ValidationError, ValueError):
+        return False
+    evidence = record.command.evidence
+    if (
+        record.canonical_bytes() != source.canonical_record_bytes
+        or record.kind != "EVIDENCE_RECORDED"
+        or record.command.operation != "APPEND_EVIDENCE"
+        or evidence is None
+        or source.physical_record.subject_id
+        != record.record.subject_id + "/" + record.record.fingerprint
+    ):
+        return False
+    reference = evidence_head(evidence)
+    return source.subject.subject_id == reference.subject_id and source.subject.revision == Present(
+        head=reference.head, fingerprint=reference.fingerprint
+    )

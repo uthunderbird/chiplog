@@ -15,6 +15,7 @@ from chiplog.capabilities.agent_loop.direct_effect_terminal_contracts import (
     classify_direct_effect_terminal_v1,
     translate_selected_outcome_v1,
 )
+from chiplog.capabilities.effects.contracts import ExactHead
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
 
@@ -121,7 +122,12 @@ def _source(
         if item.owner == "agent_loop" and item.schema_id == schema and item.subject == expected
     ]
     if len(matches) != 1 or matches[0].canonical_record_bytes != raw:
-        raise RecoveryHold("exact selected source is missing, repeated, or differs")
+        byte_matches = sum(item.canonical_record_bytes == raw for item in matches)
+        raise RecoveryHold(
+            "exact selected source is missing, repeated, or differs: "
+            f"schema={schema} subject={expected.subject_id} "
+            f"head={expected.revision.head} matches={len(matches)} byte_matches={byte_matches}"
+        )
     source = matches[0]
 
     native_profile = any(
@@ -333,12 +339,10 @@ def _validate_direct_terminal(
     if len(accounting_rows) != 1:
         raise RecoveryHold("direct terminal accounting is missing or ambiguous")
     accounting = _record(accounting_rows[0], AcceptedDirectTerminalAccountingV1)
-    outcome_rows = tuple(
-        row
-        for row in cut.complete_sources
-        if row.physical_record.subject_id == accounting.selected_outcome_record_id
-        and row.owner == "effects"
-        and row.schema_id == "chiplog.effects.dispatch-outcome-record.v2"
+    outcome_rows = _selected_direct_outcome_sources(
+        cut.complete_sources,
+        accounting.selected_outcome_record_id,
+        accounting.selected_decision,
     )
     if len(outcome_rows) != 1:
         raise RecoveryHold("direct terminal selected R16 outcome is absent or ambiguous")
@@ -366,63 +370,131 @@ def _validate_direct_terminal(
     external_effect = acceptance.external_effect_intent
     if not isinstance(external_effect, Present):
         raise RecoveryHold("direct terminal acceptance has no external effect intent")
-    if (
-        call.original_call_id != initialized.subject_id
-        or acceptance.initialized != initialized.revision
-        or len(acceptance.complete_acceptance_manifest) != 3
-        or accounting.original_call_id != call.original_call_id
-        or accounting.response_id != call.response_id
-        or accounting.accepted.revision != acceptance.accepted
-        or accounting.execution_intent.revision != acceptance.execution_intent
-        or accounting.external_effect_intent.revision != external_effect
-        or not isinstance(accounting.terminal.revision, Present)
-        or accounting.terminal.revision != disposition.terminal
-        or not isinstance(accounting.result.revision, Present)
-        or accounting.result.revision != disposition.result
-        or acceptance.complete_acceptance_manifest
-        != (
-            acceptance.accepted,
-            acceptance.execution_intent,
-            acceptance.external_effect_intent,
-        )
-        or accounting.selected_outcome_fingerprint
-        != selected_outcome.physical_record.revision.fingerprint
-        or accounting.selected_decision != selected_outcome.selected_decision
-        or accounting.selected_outcome_record_id != outcome.record.head
-        or outcome.canonical_bytes() != selected_outcome.canonical_record_bytes
-        or outcome.snapshot.state != expected_state
-        or outcome.snapshot.obligation.state != "CLOSED"
-        or outcome.snapshot.intent.intent_id != classification.intent.subject_id
-        or terminal.kind != expected_kind
-        or terminal.original_call_id != call.original_call_id
-        or terminal.response_id != call.response_id
-        or terminal.accepted.revision != acceptance.accepted
-        or terminal.external_effect_intent.revision != external_effect
-        or terminal.mapping_id != "R14_DIRECT_EFFECT_TERMINAL_V1"
-        or terminal.mapping_version != "r14-direct-effect-terminal.v1"
-        or result.result_id != accounting.result.subject_id
-        or result.original_call_id != call.original_call_id
-        or result.terminal.revision != disposition.terminal
-        or classification.disposition != expected_kind
-        or classification.semantic_class != expected_semantic
-        or classification.mapping_id != "R14_DIRECT_EFFECT_TERMINAL_V1"
-        or classification.mapping_version != "r14-direct-effect-terminal.v1"
-        or classification != expected_classification
-        or terminal.selected_effect_terminal != classification.terminal
-        or classification.intent.subject_id != outcome.snapshot.intent.intent_id
-        or classification.intent.fingerprint != external_effect.fingerprint
-    ):
-        raise RecoveryIntegrityFault("direct terminal does not join its exact accepted R16 outcome")
+    checks = (
+        ("call_initialized", call.original_call_id == initialized.subject_id),
+        ("acceptance_initialized", acceptance.initialized == initialized.revision),
+        ("acceptance_manifest_length", len(acceptance.complete_acceptance_manifest) == 3),
+        ("accounting_call", accounting.original_call_id == call.original_call_id),
+        ("accounting_response", accounting.response_id == call.response_id),
+        ("accounting_accepted", accounting.accepted.revision == acceptance.accepted),
+        (
+            "accounting_execution_intent",
+            accounting.execution_intent.revision == acceptance.execution_intent,
+        ),
+        (
+            "accounting_external_intent",
+            accounting.external_effect_intent.revision == external_effect,
+        ),
+        ("accounting_terminal_present", isinstance(accounting.terminal.revision, Present)),
+        ("accounting_terminal", accounting.terminal.revision == disposition.terminal),
+        ("accounting_result_present", isinstance(accounting.result.revision, Present)),
+        ("accounting_result", accounting.result.revision == disposition.result),
+        (
+            "acceptance_manifest",
+            acceptance.complete_acceptance_manifest
+            == (
+                acceptance.accepted,
+                acceptance.execution_intent,
+                acceptance.external_effect_intent,
+            ),
+        ),
+        (
+            "selected_outcome_fingerprint",
+            accounting.selected_outcome_fingerprint
+            == selected_outcome.physical_record.revision.fingerprint,
+        ),
+        (
+            "selected_decision",
+            accounting.selected_decision == selected_outcome.selected_decision,
+        ),
+        (
+            "selected_outcome_record_id",
+            accounting.selected_outcome_record_id == outcome.record.head,
+        ),
+        (
+            "selected_outcome_bytes",
+            outcome.canonical_bytes() == selected_outcome.canonical_record_bytes,
+        ),
+        ("outcome_state", outcome.snapshot.state == expected_state),
+        ("obligation_closed", outcome.snapshot.obligation.state == "CLOSED"),
+        ("outcome_intent", outcome.snapshot.intent.intent_id == classification.intent.subject_id),
+        ("terminal_kind", terminal.kind == expected_kind),
+        ("terminal_call", terminal.original_call_id == call.original_call_id),
+        ("terminal_response", terminal.response_id == call.response_id),
+        ("terminal_accepted", terminal.accepted.revision == acceptance.accepted),
+        ("terminal_external_intent", terminal.external_effect_intent.revision == external_effect),
+        ("terminal_mapping_id", terminal.mapping_id == "R14_DIRECT_EFFECT_TERMINAL_V1"),
+        ("terminal_mapping_version", terminal.mapping_version == "r14-direct-effect-terminal.v1"),
+        ("result_id", result.result_id == accounting.result.subject_id),
+        ("result_call", result.original_call_id == call.original_call_id),
+        ("result_terminal", result.terminal.revision == disposition.terminal),
+        ("classification_disposition", classification.disposition == expected_kind),
+        ("classification_semantic", classification.semantic_class == expected_semantic),
+        ("classification_mapping_id", classification.mapping_id == "R14_DIRECT_EFFECT_TERMINAL_V1"),
+        (
+            "classification_mapping_version",
+            classification.mapping_version == "r14-direct-effect-terminal.v1",
+        ),
+        ("classification", classification == expected_classification),
+        ("selected_effect_terminal", terminal.selected_effect_terminal == classification.terminal),
+        (
+            "classification_intent",
+            classification.intent.subject_id == outcome.snapshot.intent.intent_id,
+        ),
+        (
+            "classification_intent_fingerprint",
+            classification.intent.fingerprint == external_effect.fingerprint,
+        ),
+    )
+    mismatches = tuple(name for name, matched in checks if not matched)
+    if mismatches:
+        raise RecoveryIntegrityFault(
+            "direct terminal does not join its exact accepted R16 outcome: "
+            + ",".join(mismatches)
+    )
     for evidence in classification.ordered_evidence:
-        refs = tuple(
-            row
-            for row in cut.complete_sources
-            if row.physical_record.subject_id == evidence.subject_id
-            and row.physical_record.revision.head == evidence.head
-            and row.physical_record.revision.fingerprint == evidence.fingerprint
-        )
+        refs = _selected_direct_evidence_sources(cut.complete_sources, evidence)
         if len(refs) != 1:
             raise RecoveryHold("direct terminal evidence source is absent or ambiguous")
+
+
+def _selected_direct_outcome_sources(
+    sources: tuple[RecoverySourceRecord, ...],
+    record_id: str,
+    selected_decision: CallSubjectHead,
+) -> tuple[RecoverySourceRecord, ...]:
+    """Find the R16 outcome bound to its selected member and physical record ID."""
+    matches = tuple(
+        row
+        for row in sources
+        if row.owner == "effects"
+        and row.schema_id == "chiplog.effects.dispatch-outcome-record.v2"
+        and row.physical_record.subject_id == record_id
+        and row.selected_decision == selected_decision
+    )
+    unique: dict[tuple[bytes, CallSubjectHead, CallSubjectHead], RecoverySourceRecord] = {}
+    for row in matches:
+        unique[(row.canonical_record_bytes, row.selected_decision, row.physical_record)] = row
+    return tuple(unique.values())
+
+
+def _selected_direct_evidence_sources(
+    sources: tuple[RecoverySourceRecord, ...], evidence: ExactHead
+) -> tuple[RecoverySourceRecord, ...]:
+    """Find the authenticated R16 carrier for an exact semantic evidence head."""
+    matches = tuple(
+        row
+        for row in sources
+        if row.owner == "effects"
+        and row.schema_id == "chiplog.effects.dispatch-outcome-record.v2"
+        and row.subject.subject_id == evidence.subject_id
+        and row.subject.revision
+        == Present(head=evidence.head, fingerprint=evidence.fingerprint)
+    )
+    unique: dict[tuple[bytes, CallSubjectHead, CallSubjectHead], RecoverySourceRecord] = {}
+    for row in matches:
+        unique[(row.canonical_record_bytes, row.selected_decision, row.physical_record)] = row
+    return tuple(unique.values())
 
 
 def _source_for_revision(
@@ -436,7 +508,10 @@ def _source_for_revision(
         and source.subject.revision == revision
     )
     if len(matches) != 1:
-        raise RecoveryHold("missing or duplicate accepted-recovery source")
+        raise RecoveryHold(
+            "missing or duplicate accepted-recovery source: "
+            f"schema={schema} head={revision.head} matches={len(matches)}"
+        )
     source = matches[0]
     _source(cut, schema, source.subject, source.canonical_record_bytes)
     return source
@@ -454,7 +529,10 @@ def _source_for_subject_head(
         and source.subject.revision.head == head
     )
     if len(matches) != 1:
-        raise RecoveryHold("missing or duplicate accepted-recovery subject")
+        raise RecoveryHold(
+            "missing or duplicate accepted-recovery subject: "
+            f"schema={schema} subject={subject_id} head={head} matches={len(matches)}"
+        )
     source = matches[0]
     _source(cut, schema, source.subject, source.canonical_record_bytes)
     return source
@@ -696,7 +774,11 @@ def _source_by_ref(
         if source.owner == "agent_loop" and source.schema_id == schema and source.subject == ref
     ]
     if len(matches) != 1:
-        raise RecoveryHold("missing or duplicate selected recovery source")
+        raise RecoveryHold(
+            "missing or duplicate selected recovery source: "
+            f"schema={schema} subject={ref.subject_id} head={ref.revision.head} "
+            f"matches={len(matches)}"
+        )
     return matches[0]
 
 

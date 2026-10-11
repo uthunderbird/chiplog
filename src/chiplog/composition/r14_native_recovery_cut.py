@@ -62,6 +62,7 @@ from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import
 from chiplog.capabilities.deployment_trust.native_one_call_scope_contracts import (
     NativeOneCallContextScopeV1,
 )
+from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEffectHistoryMember
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.h1_inventory_baseline import decode_h1_baseline_scope
 from chiplog.composition.h1_inventory_call import decode_h1_call_scope
@@ -122,10 +123,17 @@ def _physical_inventory_id(source: RecoverySourceRecord) -> str:
 
 
 def _recovery_source_subject(source: RecoverySourceRecord) -> CallSubjectHead:
-    """Keep the logical head while binding its recovery preimage to exact bytes."""
+    """Keep authenticated logical child heads distinct from their physical carrier."""
     revision = source.subject.revision
     if not isinstance(revision, Present):
         raise ValueError("selected source has no exact logical revision")
+    # R16 evidence and nested intents are logical children of an outcome or
+    # dispatch row. Their fingerprints identify the child bytes, while
+    # ``physical_record`` identifies the selected carrier bytes. The selected
+    # reader authenticates that relation; replacing the child fingerprint with
+    # the carrier digest would break the exact semantic reference.
+    if source.subject.subject_id != source.physical_record.subject_id:
+        return source.subject
     return CallSubjectHead(
         subject_id=source.subject.subject_id,
         revision=Present(
@@ -136,23 +144,127 @@ def _recovery_source_subject(source: RecoverySourceRecord) -> CallSubjectHead:
 
 
 def _selected_source_revision(
-    reference: CallSubjectHead,
+    reference: CallSubjectHead | Present,
     sources: tuple[RecoverySourceRecord, ...],
 ) -> Present | None:
     """Resolve a logical marker through its exact selected source preimage."""
-    revision = reference.revision
+    revision = reference if isinstance(reference, Present) else reference.revision
     if not isinstance(revision, Present):
+        return None
+    subject_id = reference.subject_id if isinstance(reference, CallSubjectHead) else None
+    relevant = tuple(
+        source.subject.revision
+        for source in sources
+        if (subject_id is None or source.subject.subject_id == subject_id)
+        and isinstance(source.subject.revision, Present)
+        and source.subject.revision.head == revision.head
+    )
+    if any(candidate != revision for candidate in relevant):
         return None
     matches = tuple(
         source.subject.revision
         for source in sources
-        if source.subject.subject_id == reference.subject_id
+        if (subject_id is None or source.subject.subject_id == subject_id)
         and isinstance(source.subject.revision, Present)
-        and source.subject.revision.head == revision.head
+        and source.subject.revision == revision
     )
     if not matches or any(match != matches[0] for match in matches[1:]):
         return None
     return matches[0]
+
+
+def _selected_external_intent_preimage(
+    reference: CallSubjectHead,
+    expected_dispatch: object,
+    selected_dispatch_sources: tuple[RecoverySourceRecord, ...],
+    selected_dispatch_members: tuple[object, ...],
+) -> RecoverySourceRecord | None:
+    """Project the exact nested intent from its authenticated selected carrier.
+
+    ``selected_dispatch_sources`` must come from the mounted R16 history reader.
+    The intent bytes are a logical source preimage; the dispatch row remains its
+    independently selected physical carrier.
+    """
+    from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2
+    from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
+
+    if type(expected_dispatch) is not DispatchRecordV2:
+        return None
+    raw_dispatch = expected_dispatch.canonical_bytes()
+    candidates = tuple(
+        source
+        for source in selected_dispatch_sources
+        if source.owner == "effects"
+        and source.schema_id == expected_dispatch.schema_id
+        and source.canonical_record_bytes == raw_dispatch
+    )
+    if len(candidates) != 1:
+        return None
+    carrier = candidates[0]
+    try:
+        selected = DispatchRecordV2.model_validate_json(carrier.canonical_record_bytes)
+        intent = selected.snapshot.intent
+        raw_intent = intent.canonical_bytes()
+        intent_reference = effects_reference(intent.intent_id, raw_intent)
+        selected_record = CallSubjectHead(
+            subject_id=selected.record.subject_id,
+            revision=Present(
+                head=selected.record.head,
+                fingerprint=selected.record.fingerprint,
+            ),
+        )
+    except TypeError, ValueError:
+        return None
+    expected_reference = CallSubjectHead(
+        subject_id=intent_reference.subject_id,
+        revision=Present(
+            head=intent_reference.head,
+            fingerprint=intent_reference.fingerprint,
+        ),
+    )
+    members = tuple(
+        member
+        for member in selected_dispatch_members
+        if type(member) is SelectedEffectHistoryMember
+        and member.record_bytes == raw_dispatch
+        and member.record.subject_id == selected.record.subject_id
+        and member.record.head == selected.record.head
+        and member.record.fingerprint == selected.record.fingerprint
+        and member.intent.subject_id == selected.snapshot.intent.intent_id
+        and member.intent.fingerprint == intent_reference.fingerprint
+        and member.intent.head == intent_reference.head
+        and member.selected_decision.subject_id == carrier.selected_decision.subject_id
+        and member.selected_decision.head == carrier.selected_decision.revision.head
+        and member.selected_decision.fingerprint == carrier.selected_decision.revision.fingerprint
+    )
+    if len(members) != 1:
+        return None
+    member = members[0]
+    if (
+        selected.canonical_bytes() != raw_dispatch
+        or carrier.subject != selected_record
+        or carrier.physical_record != selected_record
+        or not isinstance(carrier.selected_decision.revision, Present)
+        or reference != expected_reference
+    ):
+        return None
+    return RecoverySourceRecord(
+        owner="effects",
+        subject=reference,
+        schema_id=intent.schema_id,
+        canonical_record_bytes=raw_intent,
+        selected_decision=CallSubjectHead(
+            subject_id=member.selected_decision.subject_id,
+            revision=Present(
+                head=member.selected_decision.head,
+                fingerprint=member.selected_decision.fingerprint,
+            ),
+        ),
+        physical_record=CallSubjectHead(
+            subject_id=member.record.subject_id,
+            revision=Present(head=member.record.head, fingerprint=member.record.fingerprint),
+        ),
+    )
 
 
 def _sha(raw: bytes) -> str:
@@ -783,7 +895,11 @@ class NativeRecoveryCutSource:
                 rebound_source = native_source.model_copy(
                     update={
                         "subject": _recovery_source_subject(native_source),
-                        "selected_decision": selected_decision,
+                        "selected_decision": (
+                            native_source.selected_decision
+                            if native_source.schema_id in _R16_PHYSICAL_SOURCE_SCHEMAS
+                            else selected_decision
+                        ),
                         "physical_record": _ref(row.record_id, row.raw),
                     }
                 )
@@ -856,7 +972,7 @@ class NativeRecoveryCutSource:
                         return None
                     logical_subject = next(
                         (member for member in manifest if member.subject_id == record.record_id),
-                        manifest[2] if record.owner == "effects" else None,
+                        None,
                     )
                     native_sources.setdefault(record.record_id, []).append(
                         RecoverySourceRecord(
@@ -974,9 +1090,6 @@ class NativeRecoveryCutSource:
             AcceptedDirectTerminalResultV1,
         )
         from chiplog.capabilities.agent_loop.recovery_contracts import Present
-        from chiplog.composition.r14_accepted_direct_terminal_publication import (
-            validate_selected_accepted_direct_terminal,
-        )
         from chiplog.composition.r14_accepted_direct_terminal_records import (
             ACCEPTED_DIRECT_TERMINAL_OPERATION,
             accepted_direct_terminal_command,
@@ -1043,7 +1156,6 @@ class NativeRecoveryCutSource:
             return True, None
         try:
             decision_id, raw, entry, command = entries[0]
-            validate_selected_accepted_direct_terminal(runtime)
             evidence = retained_accepted_direct_terminal(entry)
             if runtime._publication(entry) != accepted_direct_terminal_command(evidence):
                 return True, None
@@ -1545,6 +1657,66 @@ class NativeRecoveryCutSource:
         prepared = subset.selected_facts.source.original_prepare.prepared_run
         prepare_source = next(row for row in physical_sources if row.subject == prepared)
         children: list[RecoverySourceRecord] = []
+        from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
+            InitializedCallRecord,
+        )
+        from chiplog.capabilities.agent_loop.call_acceptance_preparation import (
+            call_record_reference,
+        )
+        from chiplog.composition.r14_fanout_contracts import INITIALIZED_SCHEMA, SEAL_SCHEMA
+
+        seal_raw = seal.canonical_bytes()
+        seal_carriers = tuple(
+            source
+            for source in physical_sources
+            if source.owner == "agent_loop"
+            and source.schema_id == SEAL_SCHEMA
+            and source.canonical_record_bytes == seal_raw
+        )
+        if len(seal_carriers) != 1:
+            raise ValueError("selected response seal lacks one exact physical carrier")
+        seal_carrier = seal_carriers[0]
+        seal_reference = call_record_reference(seal.response_seal_id, seal)
+        children.append(
+            RecoverySourceRecord(
+                owner="agent_loop",
+                subject=seal_reference,
+                schema_id=SEAL_SCHEMA,
+                canonical_record_bytes=seal_raw,
+                selected_decision=seal_carrier.selected_decision,
+                physical_record=seal_carrier.physical_record,
+            )
+        )
+        for initialized_reference in seal.complete_ordered_initialized:
+            initialized_carriers: list[tuple[RecoverySourceRecord, InitializedCallRecord]] = []
+            for source in physical_sources:
+                if source.owner != "agent_loop" or source.schema_id != INITIALIZED_SCHEMA:
+                    continue
+                try:
+                    initialized = InitializedCallRecord.model_validate_json(
+                        source.canonical_record_bytes
+                    )
+                except ValueError:
+                    continue
+                if (
+                    initialized.canonical_bytes() == source.canonical_record_bytes
+                    and call_record_reference(initialized.original_call_id, initialized)
+                    == initialized_reference
+                ):
+                    initialized_carriers.append((source, initialized))
+            if len(initialized_carriers) != 1:
+                raise ValueError("selected initialized call lacks one exact physical carrier")
+            initialized_carrier, initialized = initialized_carriers[0]
+            children.append(
+                RecoverySourceRecord(
+                    owner="agent_loop",
+                    subject=initialized_reference,
+                    schema_id=INITIALIZED_SCHEMA,
+                    canonical_record_bytes=initialized.canonical_bytes(),
+                    selected_decision=initialized_carrier.selected_decision,
+                    physical_record=initialized_carrier.physical_record,
+                )
+            )
 
         def child(
             identity: str,
@@ -1736,6 +1908,25 @@ class NativeRecoveryCutSource:
                 AcceptedDirectTerminalResultV1,
             )
 
+            if len(subset.authenticated_acceptances) != 1:
+                raise ValueError("selected external intent lacks one authenticated acceptance")
+            retained_acceptance = subset.authenticated_acceptances[0]
+            manifest = retained_acceptance.loop_proposal.complete_acceptance_manifest
+            if len(manifest) != 3:
+                raise ValueError("selected external intent manifest is incomplete")
+            accepted_closed_outcome = subset.accepted_closed_outcome
+            if accepted_closed_outcome is None:
+                raise ValueError("selected external intent has no closed R16 outcome")
+            intent_source = _selected_external_intent_preimage(
+                manifest[2],
+                retained_acceptance.effects_proposal,
+                subset.accepted_effect_sources,
+                accepted_closed_outcome.complete_ordered_dispatch_members,
+            )
+            if intent_source is None:
+                raise ValueError("external intent lacks exact selected R16 carrier preimage")
+            children.append(intent_source)
+
             result_sources = tuple(
                 row
                 for row in physical_sources
@@ -1774,7 +1965,9 @@ class NativeRecoveryCutSource:
         if direct_result is not None:
             resolved_manifest: list[HeadMarker] = []
             for manifest_reference in acceptance_manifest:
-                revision = _selected_source_revision(manifest_reference, physical_sources)
+                revision = _selected_source_revision(
+                    manifest_reference, (*physical_sources, *children)
+                )
                 if revision is None:
                     raise ValueError("accepted call manifest lacks one selected source preimage")
                 resolved_manifest.append(revision)

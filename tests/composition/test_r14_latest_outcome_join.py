@@ -8,6 +8,9 @@ import pytest
 from chiplog.adapters.driven.effects_queries import StoredEffectRow
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+from chiplog.capabilities.agent_loop.native_recovery_cut_validation import (
+    _source_preimage_is_valid,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEffectHistoryMember
 from chiplog.capabilities.effects.dispatch_outcome_contracts import (
@@ -21,6 +24,7 @@ from chiplog.composition.r14_native_evidence_sources import (
 )
 from chiplog.composition.r14_native_recovery_cut import (
     _physical_inventory_id,
+    _recovery_source_subject,
     _selected_source_revision,
 )
 from chiplog.composition.r14_native_selected_accounting_source import (
@@ -423,6 +427,39 @@ def test_complete_evidence_sources_bind_ordered_items_to_unique_selected_carrier
     assert tuple(source.canonical_record_bytes for source in sources) == tuple(
         record.canonical_bytes() for record in expected_carriers
     )
+    inventory_sources = []
+    for source in sources:
+        record = DispatchOutcomeRecordV2.model_validate_json(source.canonical_record_bytes)
+        digest = hashlib.sha256(source.canonical_record_bytes).hexdigest()
+        physical_record = source.physical_record.model_copy(
+            update={
+                "subject_id": record.record.subject_id + "/" + record.record.fingerprint,
+                "revision": Present(head="record:" + digest, fingerprint=digest),
+            }
+        )
+        inventory_sources.append(source.model_copy(update={"physical_record": physical_record}))
+    inventory_sources = tuple(inventory_sources)
+    assert all(_source_preimage_is_valid(source) for source in inventory_sources)
+    changed_carrier_id = inventory_sources[0].model_copy(
+        update={
+            "physical_record": inventory_sources[0].physical_record.model_copy(
+                update={"subject_id": "foreign-carrier"}
+            )
+        }
+    )
+    assert not _source_preimage_is_valid(changed_carrier_id)
+    altered_evidence = inventory_sources[0].model_copy(
+        update={
+            "subject": CallSubjectHead(
+                subject_id=sources[0].subject.subject_id,
+                revision=Present(
+                    head=sources[0].subject.revision.head,
+                    fingerprint="f" * 64,
+                ),
+            )
+        }
+    )
+    assert not _source_preimage_is_valid(altered_evidence)
 
     duplicate_carrier = replace(
         history,
@@ -489,10 +526,18 @@ def test_selected_source_revision_rebinds_logical_marker_to_exact_preimage() -> 
     )
     original_logical_marker = CallSubjectHead(
         subject_id="accepted-intent",
-        revision=Present(head="record:logical-owner-row", fingerprint="b" * 64),
+        revision=source_revision,
     )
 
     assert _selected_source_revision(original_logical_marker, (selected_source,)) == source_revision
+    assert _selected_source_revision(source_revision, (selected_source,)) == source_revision
+    assert _selected_source_revision(
+        CallSubjectHead(
+            subject_id="accepted-intent",
+            revision=Present(head=source_revision.head, fingerprint="e" * 64),
+        ),
+        (selected_source,),
+    ) is None
     assert _selected_source_revision(original_logical_marker, ()) is None
     conflicting = selected_source.model_copy(
         update={
@@ -505,3 +550,29 @@ def test_selected_source_revision_rebinds_logical_marker_to_exact_preimage() -> 
     assert (
         _selected_source_revision(original_logical_marker, (selected_source, conflicting)) is None
     )
+
+
+def test_r16_logical_evidence_head_keeps_its_carrier_relation() -> None:
+    raw = b"selected R16 evidence carrier"
+    evidence_ref = CallSubjectHead(
+        subject_id="evidence:child",
+        revision=Present(head="evidence:head", fingerprint="e" * 64),
+    )
+    carrier_ref = CallSubjectHead(
+        subject_id="outcome:carrier",
+        revision=Present(head="record:carrier", fingerprint=hashlib.sha256(raw).hexdigest()),
+    )
+    source = RecoverySourceRecord(
+        owner="effects",
+        subject=evidence_ref,
+        schema_id="chiplog.effects.dispatch-outcome-record.v2",
+        canonical_record_bytes=raw,
+        selected_decision=CallSubjectHead(
+            subject_id="decision:carrier",
+            revision=Present(head="decision:carrier", fingerprint="d" * 64),
+        ),
+        physical_record=carrier_ref,
+    )
+
+    assert _recovery_source_subject(source) == evidence_ref
+    assert source.physical_record == carrier_ref
