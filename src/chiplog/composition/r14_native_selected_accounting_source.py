@@ -689,8 +689,18 @@ class R14NativeSelectedAccountingSource:
                     selected = [
                         item
                         for item in candidates
-                        if latest.get(item[0].snapshot.intent.intent_id, (None, None, None))[0]
-                        == item[0]
+                        if item[0].snapshot.state == "OUTCOME_UNKNOWN"
+                        and item[0].snapshot.obligation.state == "OPEN"
+                        and isinstance(
+                            latest.get(
+                                item[0].snapshot.intent.intent_id,
+                                (None, None, None),
+                            )[0],
+                            DispatchOutcomeRecordV2,
+                        )
+                        and latest[item[0].snapshot.intent.intent_id][0]
+                        .snapshot.obligation.state
+                        == "OPEN"
                     ]
                 else:
                     selected = [

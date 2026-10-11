@@ -666,17 +666,7 @@ class NativeRecoveryCutSource:
             for item in scope_lineage
             if (item.scope.database_id, item.scope.scope_id) == (scope.database_id, scope.scope_id)
         ]
-        captured = scope_service._sources.capture_selected_current(
-            scope.selected_resource_observation_ref,
-            scope.admitted_authentication,
-            scope.authenticated_cli_ref,
-        )
-        if (
-            not latest
-            or latest[-1] != current_scope
-            or captured is None
-            or captured.verified.recipient != scope.recipient
-        ):
+        if not latest or latest[-1] != current_scope:
             return None
         # Historical scope authenticates its issuance inventory; this current
         # anchored inventory independently excludes scheduler/mandate sources.
@@ -732,6 +722,23 @@ class NativeRecoveryCutSource:
                 return None
         elif run.state != "ACTIVE" or run.suspension_baseline is not None:
             return None
+        if (
+            selected_suspension is None
+            and subset.accepted_closed_outcome is None
+            and subset.accepted_open_outcome is None
+        ):
+            captured = scope_service._sources.capture_selected_current(
+                scope.selected_resource_observation_ref,
+                scope.admitted_authentication,
+                scope.authenticated_cli_ref,
+            )
+            if captured is None or captured.verified.recipient != scope.recipient:
+                return None
+        # A selected suspension or selected SEND recovery authenticates the
+        # frozen native context; it does not authorize a new external effect.
+        # Such a SEND may consume or rotate the H1 observation, so only these
+        # recovery cuts may rely on the immutable historical scope binding.
+        # The current CLI identity and no-scheduler inventory remain live.
         if (
             run.worker_session != scope.worker_session_id
             or run.root_binding != "NOT_APPLICABLE"
@@ -993,6 +1000,40 @@ class NativeRecoveryCutSource:
         if by_id.get(profile_source.physical_record.subject_id) != profile_source:
             return None
         known = set(native_sources) | {profile_source.physical_record.subject_id}
+        if subset.accepted_open_outcome is not None:
+            from chiplog.composition.r14_accepted_open_accounting_records import (
+                ACCEPTED_OPEN_RECOVERY_OPERATION,
+                accepted_open_recovery_command,
+                retained_accepted_open_recovery,
+            )
+
+            selected_open = [
+                json.loads(raw)
+                for _, _, raw in runtime._loop_decisions().entries()
+                if (entry := json.loads(raw)).get("kind") == "DECIDED"
+                and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
+            ]
+            if len(selected_open) != 1:
+                return None
+            open_entry = selected_open[0]
+            open_evidence = retained_accepted_open_recovery(open_entry)
+            open_command = accepted_open_recovery_command(open_evidence)
+            if runtime._publication(open_entry) != open_command:
+                return None
+            physical_by_id = {row.record_id: row for row in inventory.records}
+            for expected_record in open_command.records:
+                physical = physical_by_id.get(expected_record.record_id)
+                if physical is None or (
+                    physical.owner,
+                    physical.schema,
+                    physical.raw,
+                ) != (
+                    expected_record.owner,
+                    expected_record.schema_id,
+                    expected_record.canonical_bytes,
+                ):
+                    return None
+                known.add(expected_record.record_id)
         if selected_suspension is not None:
             from .r14_execution_suspension import BASELINE_SCHEMA, PAIR_SCHEMA
 
@@ -1434,7 +1475,40 @@ class NativeRecoveryCutSource:
                     or call.disposition.recovered_outcome.outcome.kind != "ABSENT"
                 ):
                     return None
-                return call, None, None, ()
+                if not isinstance(call.disposition, RecoveryRequiredResult):
+                    return None
+                if call.disposition.recovered_outcome.outcome.kind != "ABSENT":
+                    return None
+                from chiplog.composition.r14_accepted_open_accounting_records import (
+                    ACCEPTED_OPEN_RECOVERY_OPERATION,
+                    accepted_open_recovery_command,
+                    retained_accepted_open_recovery,
+                )
+                from chiplog.composition.r14_original_obligation_sources import (
+                    accepted_open_recovery_sources,
+                )
+
+                selected = [
+                    (decision_id, raw, json.loads(raw))
+                    for decision_id, _, raw in runtime._loop_decisions().entries()
+                    if (entry := json.loads(raw)).get("kind") == "DECIDED"
+                    and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
+                ]
+                if len(selected) != 1:
+                    return None
+                decision_id, decision_raw, entry = selected[0]
+                evidence = retained_accepted_open_recovery(entry)
+                if (
+                    runtime._publication(entry) != accepted_open_recovery_command(evidence)
+                    or evidence.result.opening.original != call.disposition.obligation
+                ):
+                    return None
+                opening_sources = accepted_open_recovery_sources(
+                    evidence,
+                    selected_decision_id=decision_id,
+                    selected_decision_bytes=decision_raw,
+                )
+                return call, None, None, opening_sources
             if resolution is None or selected_reduction is None:
                 return None
             reduction_entries = reduction_publication._selected_entries(runtime)
@@ -2200,6 +2274,29 @@ class NativeRecoveryCutSource:
             evidence_heads = tuple(evidence_references)
         else:
             direct_result_record = None
+            if isinstance(disposition, RecoveryRequiredResult):
+                if len(subset.authenticated_acceptances) != 1:
+                    raise ValueError("selected external intent lacks one authenticated acceptance")
+                retained_acceptance = subset.authenticated_acceptances[0]
+                manifest = retained_acceptance.loop_proposal.complete_acceptance_manifest
+                if len(manifest) != 3:
+                    raise ValueError("selected external intent manifest is incomplete")
+                accepted_outcome = (
+                    subset.accepted_closed_outcome or subset.accepted_open_outcome
+                )
+                if accepted_outcome is None:
+                    raise ValueError(
+                        "selected recovery obligation has no authenticated R16 outcome"
+                    )
+                intent_source = _selected_external_intent_preimage(
+                    manifest[2],
+                    retained_acceptance.effects_proposal,
+                    subset.accepted_effect_sources,
+                    accepted_outcome.complete_ordered_dispatch_members,
+                )
+                if intent_source is None:
+                    raise ValueError("external intent lacks exact selected R16 carrier preimage")
+                children.append(intent_source)
         acceptance_manifest = acceptance.complete_acceptance_manifest
         if direct_result is not None:
             resolved_manifest: list[HeadMarker] = []

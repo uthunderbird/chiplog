@@ -466,7 +466,9 @@ async def test_selected_native_cut_reopens_and_legacy_prepare_holds(tmp_path: Pa
             )
             assert isinstance(rejected, CallPreparationRejected)
             assert rejected.code == "HOLD"
-            assert rejected.reason == "V2 registry requires exactly one selected V2/V3 profile"
+            assert rejected.reason == (
+                "V2 registry requires exactly one selected V2/V3/V4/V5 profile"
+            )
             with pytest.raises(ValueError, match="member lacks"):
                 validate_native_recovery_cut(
                     cut.model_copy(

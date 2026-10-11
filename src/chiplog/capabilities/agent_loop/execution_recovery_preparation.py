@@ -110,6 +110,8 @@ _NOT_EXECUTED = "chiplog.call.not-executed-result.v1"
 _DIRECT_ACCOUNTING = "chiplog.execution.accepted-direct-terminal-accounting.v1"
 _DIRECT_TERMINAL = "chiplog.execution.accepted-direct-terminal-disposition.v1"
 _DIRECT_RESULT = "chiplog.execution.accepted-direct-terminal-result.v1"
+_ACCEPTED_CALL = "chiplog.call.accepted.v1"
+_EXECUTION_INTENT = "chiplog.call.execution-intent.v1"
 
 
 def _sha(raw: bytes) -> str:
@@ -301,8 +303,8 @@ def _validate_cut(cut: ExecutionRecoveryCut, *, allow_suspended: bool = False) -
     ):
         if cut.frontier.registry != recovery_registry:
             raise RecoveryHold("accepted recovery requires the V2 native recovery registry")
-        if len(profiles_v3) != 1 or profiles_v2:
-            raise RecoveryHold("accepted recovery requires the selected V3 native profile")
+        if len(profiles_v3) + len(profiles_v5) != 1 or profiles_v2 or profiles_v4:
+            raise RecoveryHold("accepted recovery requires the selected V3 or V5 native profile")
         _validate_accepted_recovery(cut, call, init, init_ref)
         return
     if isinstance(call.acceptance, ConsequentialAcceptedCall) and isinstance(
@@ -310,8 +312,8 @@ def _validate_cut(cut: ExecutionRecoveryCut, *, allow_suspended: bool = False) -
     ):
         if cut.frontier.registry != recovery_registry:
             raise RecoveryHold("direct terminal requires the V2 native recovery registry")
-        if len(profiles_v3) != 1 or profiles_v2:
-            raise RecoveryHold("direct terminal requires the selected V3 native profile")
+        if len(profiles_v3) + len(profiles_v5) != 1 or profiles_v2 or profiles_v4:
+            raise RecoveryHold("direct terminal requires the selected V3 or V5 native profile")
         _validate_direct_terminal(cut, call, init_ref)
         return
     if (
@@ -808,12 +810,22 @@ def _source_for_revision(
         and source.schema_id == schema
         and source.subject.revision == revision
     )
-    if len(matches) != 1:
+    unique = {
+        (
+            source.owner,
+            source.schema_id,
+            source.selected_decision,
+            source.physical_record,
+            source.canonical_record_bytes,
+        ): source
+        for source in matches
+    }
+    if len(unique) != 1:
         raise RecoveryHold(
             "missing or duplicate accepted-recovery source: "
-            f"schema={schema} head={revision.head} matches={len(matches)}"
+            f"schema={schema} head={revision.head} matches={len(unique)}"
         )
-    source = matches[0]
+    source = next(iter(unique.values()))
     _source(cut, schema, source.subject, source.canonical_record_bytes)
     return source
 
@@ -873,12 +885,10 @@ def _validate_accepted_recovery(
     ):
         raise RecoveryHold("accepted recovery frontier is incomplete")
 
-    from chiplog.composition.r14_acceptance_contracts import ACCEPTED_SCHEMA, EXECUTION_SCHEMA
-
-    accepted_source = _source_for_revision(cut, acceptance.accepted, ACCEPTED_SCHEMA)
+    accepted_source = _source_for_revision(cut, acceptance.accepted, _ACCEPTED_CALL)
     accepted = _record(accepted_source, ToolCallAcceptedRecord)
     accepted_ref = call_record_reference(accepted.accepted_id, accepted)
-    execution_source = _source_for_revision(cut, acceptance.execution_intent, EXECUTION_SCHEMA)
+    execution_source = _source_for_revision(cut, acceptance.execution_intent, _EXECUTION_INTENT)
     execution_intent = _record(execution_source, ToolExecutionIntentRecord)
     execution_ref = call_record_reference(execution_intent.execution_intent_id, execution_intent)
     if (

@@ -575,6 +575,23 @@ def authenticate_native_recovery_selected(
                     (ref for ref in native_refs.values() if ref.revision.fingerprint == digest),
                     _ref(record_id, raw),
                 )
+                if schema in {
+                    "chiplog.agent-loop.execution-record.v2",
+                    "chiplog.call.initialized.v1",
+                    "chiplog.call.response-seal.v1",
+                }:
+                    # These mounted sources retain both their semantic
+                    # reference and their selected physical-head reference.
+                    physical.append(
+                        RecoverySourceRecord(
+                            owner=owner,
+                            schema_id=schema,
+                            subject=_ref(record_id, raw),
+                            canonical_record_bytes=raw,
+                            selected_decision=selected_decision,
+                            physical_record=_ref(record_id, raw),
+                        )
+                    )
                 physical.append(
                     RecoverySourceRecord(
                         owner=owner,
