@@ -14,9 +14,11 @@ from .native_recovery_profile_contracts import (
     SCHEMA,
     SCHEMA_V2,
     SCHEMA_V3,
+    SCHEMA_V4,
     decode_native_one_call_recovery_profile,
     decode_native_one_call_recovery_profile_v2,
     decode_native_one_call_recovery_profile_v3,
+    decode_native_one_call_recovery_profile_v4,
     native_recovery_fingerprint,
 )
 from .recovery_contracts import Present
@@ -25,7 +27,9 @@ from .recovery_contracts import Present
 def validate_native_recovery_cut(cut: ExecutionRecoveryCut) -> None:
     """Reject altered complete DTOs without turning their construction into trust."""
     sources = cut.complete_sources
-    profiles = tuple(row for row in sources if row.schema_id in (SCHEMA, SCHEMA_V2, SCHEMA_V3))
+    profiles = tuple(
+        row for row in sources if row.schema_id in (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4)
+    )
     if len(profiles) != 1:
         raise ValueError("missing or duplicate selected native profile source")
     profile = (
@@ -33,6 +37,8 @@ def validate_native_recovery_cut(cut: ExecutionRecoveryCut) -> None:
         if profiles[0].schema_id == SCHEMA
         else decode_native_one_call_recovery_profile_v3(profiles[0].canonical_record_bytes)
         if profiles[0].schema_id == SCHEMA_V3
+        else decode_native_one_call_recovery_profile_v4(profiles[0].canonical_record_bytes)
+        if profiles[0].schema_id == SCHEMA_V4
         else decode_native_one_call_recovery_profile_v2(profiles[0].canonical_record_bytes)
     )
     if cut.frontier.registry != profile.registry:

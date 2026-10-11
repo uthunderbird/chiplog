@@ -223,6 +223,45 @@ def decode_native_one_call_recovery_profile_v3(raw: bytes) -> NativeOneCallRecov
     return profile
 
 
+SCHEMA_V4: Literal["chiplog.execution.native-one-call-recovery-profile.v4"] = (
+    "chiplog.execution.native-one-call-recovery-profile.v4"
+)
+PROFILE_OPERATION_V4 = "agent_loop.native-one-call-recovery-profile.v4"
+
+
+class NativeOneCallRecoveryProfileV4(NativeOneCallRecoveryProfileV3):
+    """New interpretation adding the authenticated same-Run suspension edge."""
+
+    schema_id: Literal["chiplog.execution.native-one-call-recovery-profile.v4"] = SCHEMA_V4
+    kind: Literal["NATIVE_ONE_CALL_RECOVERY_PROFILE_V4"] = "NATIVE_ONE_CALL_RECOVERY_PROFILE_V4"
+    causal_change_set: Literal[
+        "RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_SUSPENSION_V4"
+    ] = "RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_SUSPENSION_V4"
+    fingerprint_domain: Literal[
+        "chiplog.execution.native-one-call-recovery.v4"
+    ] = "chiplog.execution.native-one-call-recovery.v4"
+
+
+def native_one_call_recovery_profile_v4() -> NativeOneCallRecoveryProfileV4:
+    v3 = native_one_call_recovery_profile_v3()
+    return NativeOneCallRecoveryProfileV4(
+        registry=v3.registry,
+        call_branches=v3.call_branches,
+        dispatch_outcomes=v3.dispatch_outcomes,
+        dispatch_record_kinds=v3.dispatch_record_kinds,
+        dispatch_outcome_record_kinds=v3.dispatch_outcome_record_kinds,
+        obligation_states=v3.obligation_states,
+        causal_transitions=(*v3.causal_transitions, "ExecutionSuspension"),
+    )
+
+
+def decode_native_one_call_recovery_profile_v4(raw: bytes) -> NativeOneCallRecoveryProfileV4:
+    profile = NativeOneCallRecoveryProfileV4.model_validate_json(raw)
+    if profile.canonical_bytes() != raw or profile != native_one_call_recovery_profile_v4():
+        raise ValueError("native recovery profile V4 differs from its closed interpretation")
+    return profile
+
+
 def native_recovery_fingerprint(domain: str, value: dict[str, object]) -> str:
     """Explicit preimage for native members, frontier and complete inventory."""
     raw = json.dumps(

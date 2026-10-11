@@ -45,9 +45,11 @@ from .execution_recovery_contracts import (
     PreparedAcceptedOpenRecoveryV1,
     PreparedExecutionAccounting,
     PreparedExecutionContinuation,
+    PreparedExecutionResume,
     PreparedExecutionSuspension,
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
+    PrepareExecutionResume,
     PrepareExecutionSuspension,
 )
 from .execution_recovery_observations import (
@@ -60,7 +62,13 @@ from .execution_recovery_observations import (
     SealedAccountingRecord,
 )
 from .native_recovery_cut_validation import validate_native_recovery_cut
-from .native_recovery_profile_contracts import SCHEMA, SCHEMA_V2, SCHEMA_V3
+from .native_recovery_profile_contracts import (
+    SCHEMA,
+    SCHEMA_V2,
+    SCHEMA_V3,
+    SCHEMA_V4,
+    native_recovery_fingerprint,
+)
 from .recovery_contracts import (
     Absent,
     NonSchedulerFence,
@@ -82,6 +90,7 @@ from .recovery_frontier_contracts import (
     DefiniteFailureResult,
     EvidenceReduction,
     InitializedCall,
+    RecoveryFrontier,
     RecoveryRequiredResult,
     SuccessResult,
     TerminalCallFrontier,
@@ -141,7 +150,8 @@ def _source(
     source = matches[0]
 
     native_profile = any(
-        item.schema_id in (SCHEMA, SCHEMA_V2, SCHEMA_V3) for item in cut.complete_sources
+        item.schema_id in (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4)
+        for item in cut.complete_sources
     )
     if source.subject.revision.fingerprint != _sha(raw) or (
         not native_profile and source.physical_record.revision.fingerprint != _sha(raw)
@@ -152,26 +162,27 @@ def _source(
     return source
 
 
-def _validate_cut(cut: ExecutionRecoveryCut) -> None:
+def _validate_cut(cut: ExecutionRecoveryCut, *, allow_suspended: bool = False) -> None:
     """Check the bounded native one-call profile without claiming cut authenticity."""
 
     profiles_v1 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA)
     profiles_v2 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA_V2)
     profiles_v3 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA_V3)
+    profiles_v4 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA_V4)
     cancellation_registry = execution_native_one_call_cancellation_frontier_registry_v1()
     recovery_registry = execution_native_one_call_recovery_frontier_registry_v2()
     if cut.frontier.registry == recovery_registry:
-        if len(profiles_v2) + len(profiles_v3) != 1 or profiles_v1:
-            raise RecoveryHold("V2 registry requires exactly one selected V2/V3 profile")
+        if len(profiles_v2) + len(profiles_v3) + len(profiles_v4) != 1 or profiles_v1:
+            raise RecoveryHold("V2 registry requires exactly one selected V2/V3/V4 profile")
         validate_native_recovery_cut(cut)
     elif cut.frontier.registry == cancellation_registry:
-        if profiles_v2 or profiles_v3 or len(profiles_v1) > 1:
+        if profiles_v2 or profiles_v3 or profiles_v4 or len(profiles_v1) > 1:
             raise RecoveryHold("V1 registry has an incompatible selected native profile")
         if profiles_v1:
             validate_native_recovery_cut(cut)
     else:
         raise RecoveryHold("unsupported recovery registry")
-    native_profile = bool(profiles_v1 or profiles_v2 or profiles_v3)
+    native_profile = bool(profiles_v1 or profiles_v2 or profiles_v3 or profiles_v4)
     if (
         cut.frontier.tenant_id != cut.tenant_id
         or cut.frontier.run_id != cut.current_run.subject_id
@@ -192,25 +203,46 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
         _source(cut, _RUN, _run_ref(run), run.canonical_bytes())
     current = runs[-1]
     assert isinstance(current, ExecutionRunRecord)
-    if _run_ref(current) != cut.current_run or current.state != "ACTIVE":
-        raise RecoveryHold("recovery Run is not the exact current ACTIVE Run")
+    allowed_states = ("ACTIVE", "SUSPENDED") if allow_suspended else ("ACTIVE",)
+    if _run_ref(current) != cut.current_run or current.state not in allowed_states:
+        raise RecoveryHold("recovery Run is not the exact current Run for this route")
     attempt = current.turns[-1].attempts[current.turns[-1].selector]
     artifact = attempt.manifest.artifact
     bindings = cut.current_bindings
-    if (
-        bindings.objective != current.prompt
-        or bindings.requested_work != attempt.request
-        or bindings.prompt_artifact.fingerprint != artifact.digest()
-        or tuple(ref.fingerprint for ref in bindings.ordered_tool_specs)
-        != tuple(tool.digest() for tool in artifact.tools)
-        or bindings.generated_schema.fingerprint != _sha(artifact.response_schema_json.encode())
-        or bindings.policy.fingerprint != current.policy.digest()
-        or bindings.no_retry_boundaries
-        != tuple(ref.revision for ref in current.no_retry_references)
-        or bindings.authority_mandate_heads
-        or (not native_profile and bindings.recipient_effect_bindings)
-    ):
-        raise RecoveryIntegrityFault("frozen bindings differ from bounded native Run")
+    binding_mismatches = tuple(
+        name
+        for name, mismatch in (
+            ("objective", bindings.objective != current.prompt),
+            ("requested_work", bindings.requested_work != attempt.request),
+            ("prompt_artifact", bindings.prompt_artifact.fingerprint != artifact.digest()),
+            (
+                "ordered_tool_specs",
+                tuple(ref.fingerprint for ref in bindings.ordered_tool_specs)
+                != tuple(tool.digest() for tool in artifact.tools),
+            ),
+            (
+                "generated_schema",
+                bindings.generated_schema.fingerprint
+                != _sha(artifact.response_schema_json.encode()),
+            ),
+            ("policy", bindings.policy.fingerprint != current.policy.digest()),
+            (
+                "no_retry_boundaries",
+                bindings.no_retry_boundaries
+                != tuple(ref.revision for ref in current.no_retry_references),
+            ),
+            ("authority_mandate_heads", bool(bindings.authority_mandate_heads)),
+            (
+                "recipient_effect_bindings",
+                not native_profile and bool(bindings.recipient_effect_bindings),
+            ),
+        )
+        if mismatch
+    )
+    if binding_mismatches:
+        raise RecoveryIntegrityFault(
+            "frozen bindings differ from bounded native Run: " + ",".join(binding_mismatches)
+        )
     view = cut.complete_ordered_responses[0]
     seal = view.seal
     seal_ref = call_record_reference(seal.response_seal_id, seal)
@@ -319,6 +351,50 @@ def _validate_cut(cut: ExecutionRecoveryCut) -> None:
         _validate_extension_sources(cut, cut.complete_sources[len(expected_sources) :])
     if cut.original_closures or cut.current_reductions:
         raise RecoveryHold("unneeded closure or reduction in preaccept cancellation")
+
+
+def _expected_suspended_frontier(
+    baseline_frontier: RecoveryFrontier,
+    predecessor_run: CallSubjectHead,
+    suspended_run: CallSubjectHead,
+    tenant_commit_sequence: int,
+) -> RecoveryFrontier:
+    if tenant_commit_sequence != baseline_frontier.tenant_commit_sequence + 1:
+        raise RecoveryHold("resume cut is not the exact suspension publication successor")
+    matches = tuple(
+        (index, row)
+        for index, row in enumerate(baseline_frontier.ordered_members)
+        if row.family == "RUN" and row.subject == baseline_frontier.run_id
+    )
+    if len(matches) != 1:
+        raise RecoveryHold("baseline frontier has no unique Run member")
+    index, run_member = matches[0]
+    if run_member.ordered_heads != (predecessor_run.revision,):
+        raise RecoveryHold("baseline Run member differs from selected suspension predecessor")
+    updated = run_member.model_copy(
+        update={"ordered_heads": (suspended_run.revision,), "fingerprint": "0" * 64}
+    )
+    member_value = updated.model_dump(mode="json")
+    del member_value["fingerprint"]
+    updated = updated.model_copy(
+        update={"fingerprint": native_recovery_fingerprint("member", member_value)}
+    )
+    members = list(baseline_frontier.ordered_members)
+    members[index] = updated
+    expected = baseline_frontier.model_copy(
+        update={
+            "tenant_commit_sequence": tenant_commit_sequence,
+            "ordered_members": tuple(members),
+            "fingerprint": "0" * 64,
+        }
+    )
+    frontier_value = expected.model_dump(mode="json")
+    del frontier_value["fingerprint"]
+    return expected.model_copy(
+        update={
+            "fingerprint": native_recovery_fingerprint("frontier", frontier_value)
+        }
+    )
 
 
 def _validate_direct_terminal(
@@ -1121,7 +1197,7 @@ def prepare_execution_suspension(
         baseline_digest = _sha(baseline_raw)
         baseline_ref = CallSubjectHead(
             subject_id=baseline.baseline_id,
-            revision=Present(head="record:" + baseline_digest, fingerprint=baseline_digest),
+            revision=Present(head=baseline.baseline_id, fingerprint=baseline_digest),
         )
         suspended = current.model_copy(
             update={
@@ -1151,4 +1227,77 @@ def prepare_execution_suspension(
             complete_batch_fingerprint=batch_fingerprint,
         )
     except (ValueError, TypeError, AttributeError) as error:
+        return _rejected(request.command_id, error)
+
+
+def prepare_execution_resume(
+    request: PrepareExecutionResume,
+) -> PreparedExecutionResume | CallPreparationRejected:
+    """Prepare equality-only same-Run resume over the selected suspension."""
+    try:
+        request = PrepareExecutionResume.model_validate_json(request.canonical_bytes())
+        if not isinstance(request.fence, NonSchedulerFence):
+            raise RecoveryHold("scheduler execution cannot use this resume route")
+        _validate_cut(request.cut, allow_suspended=True)
+        lineage = request.cut.complete_ordered_run_lineage
+        current = lineage[-1]
+        selected = request.original_suspension
+        baseline = selected.baseline
+        pair = selected.pair
+        if not isinstance(current, ExecutionRunRecord):
+            raise RecoveryHold("same-Run resume requires the selected V2 execution record")
+        current_ref = _run_ref(current)
+        if (
+            current != request.run
+            or current_ref != request.cut.current_run
+            or current.state != "SUSPENDED"
+            or current.worker_session != request.fence.worker_session_id
+            or current.run_id != request.fence.run_id
+            or current.head != request.fence.run_head
+            or current.root_binding != "NOT_APPLICABLE"
+            or current.suspension_baseline != pair.baseline
+            or pair.suspended_run != current_ref
+            or pair.predecessor_run != baseline.predecessor_run
+            or baseline.run_id != current.run_id
+            or baseline.original_obligations
+            or baseline.activation_blocking_predicates
+            or current.original_obligations
+            or len(lineage) < 2
+            or _run_ref(lineage[-2]) != baseline.predecessor_run
+        ):
+            raise RecoveryHold("resume Run, frozen baseline, or selected suspension differs")
+        if request.disposition_version != "r14-same-run-equality.v1":
+            raise RecoveryHold("unsupported same-Run disposition version")
+        if request.command_id != f"execution-resume:{current.run_id}:{current.head}":
+            raise RecoveryHold("resume command identity differs from selected suspended Run")
+        if (
+            request.cut.frontier.registry != baseline.frontier.registry
+            or request.cut.current_bindings != baseline.bindings
+            or request.cut.frontier
+            != _expected_suspended_frontier(
+                baseline.frontier,
+                baseline.predecessor_run,
+                current_ref,
+                request.cut.tenant_commit_sequence,
+            )
+        ):
+            raise RecoveryHold("resume frontier is not the exact mandatory suspension successor")
+
+        resumed = current.model_copy(
+            update={
+                "state": "ACTIVE",
+                "predecessor": current.head,
+                "event": request.command_id,
+                "head": "pending",
+            }
+        )
+        resumed = resumed.model_copy(update={"head": "loop:" + resumed.digest()})
+        run_raw = resumed.canonical_bytes()
+        return PreparedExecutionResume(
+            source_request_fingerprint=request.digest(),
+            original_pair=selected.selected_pair,
+            run=resumed,
+            complete_batch_fingerprint=_sha(run_raw),
+        )
+    except (ValueError, TypeError, AttributeError, IndexError) as error:
         return _rejected(request.command_id, error)

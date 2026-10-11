@@ -8,11 +8,13 @@ from . import _native_one_call_accounting_v2_process
 from .execution_recovery_contracts import (
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
+    PrepareExecutionResume,
     PrepareExecutionSuspension,
 )
 from .execution_recovery_preparation import (
     prepare_execution_accounting,
     prepare_execution_continuation,
+    prepare_execution_resume,
     prepare_execution_suspension,
 )
 from .recovery_wire_contracts import (
@@ -24,6 +26,7 @@ from .recovery_wire_contracts import (
 ACCOUNTING_OPERATION = "agent_loop.prepare_execution_accounting.v1"
 CONTINUATION_OPERATION = "agent_loop.prepare_execution_continuation.v1"
 SUSPENSION_OPERATION = "agent_loop.prepare_execution_suspension.v1"
+RESUME_OPERATION = "agent_loop.prepare_execution_resume.v1"
 REQUEST_SCHEMA = EXECUTION_RECOVERY_REQUEST_SCHEMA
 RESULT_SCHEMA = EXECUTION_RECOVERY_RESULT_SCHEMA
 ROUTES = tuple(
@@ -32,6 +35,7 @@ ROUTES = tuple(
             *_native_one_call_accounting_v2_process.ROUTES,
             (ACCOUNTING_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
             (CONTINUATION_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
+            (RESUME_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
             (SUSPENSION_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
         )
     )
@@ -42,6 +46,7 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
     if operation not in {
         ACCOUNTING_OPERATION,
         CONTINUATION_OPERATION,
+        RESUME_OPERATION,
         SUSPENSION_OPERATION,
     }:
         return _native_one_call_accounting_v2_process.dispatch(operation, payload)
@@ -56,6 +61,10 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
             if not isinstance(request, PrepareExecutionContinuation):
                 raise ValueError("continuation operation requires continuation request")
             result = prepare_execution_continuation(request)
+        elif operation == RESUME_OPERATION:
+            if not isinstance(request, PrepareExecutionResume):
+                raise ValueError("resume operation requires resume request")
+            result = prepare_execution_resume(request)
         else:
             if not isinstance(request, PrepareExecutionSuspension):
                 raise ValueError("suspension operation requires suspension request")

@@ -18,16 +18,20 @@ from chiplog.capabilities.agent_loop.call_acceptance_preparation import call_rec
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
+    PrepareExecutionResume,
     PrepareExecutionSuspension,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_observations import (
     ExecutionRecoveryCut,
     RecoverySourceRecord,
     SealedResponseRecoveryView,
+    SelectedExecutionSuspension,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+    _expected_suspended_frontier,
     prepare_execution_accounting,
     prepare_execution_continuation,
+    prepare_execution_resume,
     prepare_execution_suspension,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import (
@@ -289,6 +293,106 @@ async def test_first_suspension_profile_holds_with_activation_blocker():
     result = prepare_execution_suspension(request)
 
     assert result.kind == "CALL_PREPARATION_REJECTED_V1"
+
+
+async def test_owner_prepares_same_run_resume_only_for_exact_suspension_frontier():
+    cut = await _cut()
+    run = cut.complete_ordered_run_lineage[-1]
+    suspension = prepare_execution_suspension(
+        PrepareExecutionSuspension(
+            command_id="suspend-for-resume",
+            run=run,
+            cut=cut,
+            activation_blocking_predicates=(),
+            fence=NonSchedulerFence(
+                lineage=NotApplicable(),
+                physical_root=NotApplicable(),
+                lease=NotApplicable(),
+                clock_proof=NotApplicable(),
+                run_id=run.run_id,
+                run_head=run.head,
+                worker_session_id=run.worker_session,
+                runtime_generation="test-generation",
+            ),
+        )
+    )
+    assert suspension.kind == "PREPARED_EXECUTION_SUSPENSION_V2"
+    suspended = suspension.run
+    suspended_ref = _run_ref(suspended)
+    suspended_source = _source(
+        "chiplog.agent-loop.execution-record.v2", suspended_ref, suspended
+    )
+    current_cut = cut.model_copy(
+        update={
+            "tenant_commit_sequence": cut.tenant_commit_sequence + 1,
+            "current_run": suspended_ref,
+            "complete_ordered_run_lineage": (*cut.complete_ordered_run_lineage, suspended),
+            "frontier": _expected_suspended_frontier(
+                suspension.baseline.frontier,
+                suspension.pair.predecessor_run,
+                suspended_ref,
+                cut.tenant_commit_sequence + 1,
+            ),
+            "complete_sources": (
+                *cut.complete_sources[:-4],
+                suspended_source,
+                *cut.complete_sources[-4:],
+            ),
+        }
+    )
+    pair_raw = suspension.pair.canonical_bytes()
+    pair_digest = hashlib.sha256(pair_raw).hexdigest()
+    pair_id = "chiplog.execution.suspension-pair.v2:" + pair_digest
+    selected_pair = CallSubjectHead(
+        subject_id=pair_id,
+        revision=Present(head=pair_id, fingerprint=pair_digest),
+    )
+    selected = SelectedExecutionSuspension(
+        baseline=suspension.baseline,
+        pair=suspension.pair,
+        selected_pair=selected_pair,
+        selected_decision=CallSubjectHead(
+            subject_id=suspension.pair.suspension_command_id,
+            revision=Present(head="decision:1", fingerprint="e" * 64),
+        ),
+        canonical_pair_bytes=pair_raw,
+    )
+    request = PrepareExecutionResume(
+        command_id=f"execution-resume:{suspended.run_id}:{suspended.head}",
+        run=suspended,
+        original_suspension=selected,
+        cut=current_cut,
+        disposition_version="r14-same-run-equality.v1",
+        activation_payload=b"activate-same-run",
+        fence=NonSchedulerFence(
+            lineage=NotApplicable(),
+            physical_root=NotApplicable(),
+            lease=NotApplicable(),
+            clock_proof=NotApplicable(),
+            run_id=suspended.run_id,
+            run_head=suspended.head,
+            worker_session_id=suspended.worker_session,
+            runtime_generation="test-generation",
+        ),
+    )
+
+    result = prepare_execution_resume(request)
+
+    assert result.kind == "PREPARED_EXECUTION_RESUME_V2"
+    assert result.run.state == "ACTIVE"
+    assert result.run.predecessor == suspended.head
+    assert result.run.suspension_baseline == suspended.suspension_baseline
+    assert result.run.turns == suspended.turns
+    assert result.run.no_retry_references == suspended.no_retry_references
+    assert result.original_pair == selected_pair
+    reply = process.dispatch(process.RESUME_OPERATION, request.canonical_bytes())
+    assert reply["schema_id"] == process.RESULT_SCHEMA
+    assert base64.b64decode(reply["payload"]) == result.canonical_bytes()
+
+    changed = request.model_copy(
+        update={"cut": current_cut.model_copy(update={"tenant_commit_sequence": 3})}
+    )
+    assert prepare_execution_resume(changed).kind == "CALL_PREPARATION_REJECTED_V1"
 
 
 async def test_readiness_rejects_missing_extra_and_changed_accounting():
