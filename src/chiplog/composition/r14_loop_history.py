@@ -541,6 +541,7 @@ def _read_call_history(
                         "agent_loop.execution-next-turn.v1",
                         "agent_loop.accepted-open-accounting.v1",
                         "agent_loop.accepted-open-recovery.v1",
+                        "agent_loop.accepted-direct-terminal.v1",
                         "agent_loop.original-call-resolution.v1",
                         "agent_loop.loop-semantic-reduction.v1",
                         "agent_loop.original-resolver-authority-policy.v1",
@@ -634,21 +635,15 @@ def _read_call_history(
                                 original_resolution_evidence.request.cut.tenant_commit_sequence + 1
                             )
                             base_commitment = original_resolution_resulting
-                            base_witness = (
-                                original_resolution_evidence.request.cut.selected_witness
-                            )
+                            base_witness = original_resolution_evidence.request.cut.selected_witness
                         else:
                             previous_reduction = current_semantic_reduction_evidence
                             previous_reduction_batch = runtime._publication(
                                 current_semantic_reduction_entry
                             )
                             base_sequence = previous_reduction_batch.expected_head + 1
-                            base_commitment = str(
-                                current_semantic_reduction_entry.get("resulting")
-                            )
-                            base_witness = (
-                                previous_reduction.request.complete_anchor_sources[-1]
-                            )
+                            base_commitment = str(current_semantic_reduction_entry.get("resulting"))
+                            base_witness = previous_reduction.request.complete_anchor_sources[-1]
                         _authenticate_append_evidence_suffix(
                             runtime,
                             base_sequence=base_sequence,
@@ -993,6 +988,54 @@ def _read_call_history(
                             else raw_decision,
                         )
                         expected_ids.update(record.record_id for record in command.records)
+                        expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if (
+                        command.operation_kind == "agent_loop.accepted-direct-terminal.v1"
+                        or "accepted_direct_terminal_evidence" in entry
+                        or any(
+                            item.schema_id.startswith("chiplog.execution.accepted-direct-terminal-")
+                            for item in command.records
+                        )
+                    ):
+                        from chiplog.composition.r14_accepted_direct_terminal_records import (
+                            ACCEPTED_DIRECT_TERMINAL_ACCOUNTING_SCHEMA,
+                            ACCEPTED_DIRECT_TERMINAL_OPERATION,
+                            ACCEPTED_DIRECT_TERMINAL_RESULT_SCHEMA,
+                            ACCEPTED_DIRECT_TERMINAL_SCHEMA,
+                            accepted_direct_terminal_command,
+                            retained_accepted_direct_terminal,
+                        )
+
+                        evidence = retained_accepted_direct_terminal(entry)
+                        expected = accepted_direct_terminal_command(evidence)
+                        if (
+                            command.operation_kind != ACCEPTED_DIRECT_TERMINAL_OPERATION
+                            or entry.get("operation_kind") != ACCEPTED_DIRECT_TERMINAL_OPERATION
+                            or entry.get("operation_id") != identity
+                            or identity != command.idempotency_key
+                            or command != expected
+                            or entry.get("predecessor")
+                            != evidence.request.cut.materialization_commitment
+                            or entry.get("fingerprint") != command.request_fingerprint
+                            or entry.get("expected_head") != command.expected_head
+                            or tuple(record.schema_id for record in command.records)
+                            != (
+                                ACCEPTED_DIRECT_TERMINAL_ACCOUNTING_SCHEMA,
+                                ACCEPTED_DIRECT_TERMINAL_SCHEMA,
+                                ACCEPTED_DIRECT_TERMINAL_RESULT_SCHEMA,
+                            )
+                            or tuple(record.canonical_bytes for record in command.records)
+                            != (
+                                evidence.result.accounting.canonical_bytes(),
+                                evidence.result.terminal.canonical_bytes(),
+                                evidence.result.result.canonical_bytes(),
+                            )
+                        ):
+                            raise ValueError("selected accepted/direct terminal differs")
+                        expected_ids.update(
+                            record.record_id for record in command.records if record.owner == OWNER
+                        )
                         expected_publications.add((command.operation_kind, identity))
                         continue
                     if (

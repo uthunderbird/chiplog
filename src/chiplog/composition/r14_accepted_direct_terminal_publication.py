@@ -14,6 +14,7 @@ from chiplog.capabilities.agent_loop.direct_terminal_contracts import (
     PrepareAcceptedDirectTerminalV1,
     PreparedAcceptedDirectTerminalV1,
 )
+from chiplog.capabilities.agent_loop.direct_terminal_wire_contracts import REQUEST_SCHEMA
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition.r14_accepted_direct_terminal_records import (
     ACCEPTED_DIRECT_TERMINAL_OPERATION,
@@ -45,9 +46,7 @@ if TYPE_CHECKING:
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 
 
-def _selected(
-    runtime: CommonCliExecutionRuntime, identity: str
-) -> dict[str, object] | None:
+def _selected(runtime: CommonCliExecutionRuntime, identity: str) -> dict[str, object] | None:
     runtime._pending()
     entries = [
         cast(dict[str, object], json.loads(raw))
@@ -120,9 +119,7 @@ async def _finish(
         command,
         str(entry["predecessor"]),
         str(entry["resulting"]),
-        is_materialized=lambda: runtime._loop_decision_materialized(
-            command.idempotency_key, entry
-        ),
+        is_materialized=lambda: runtime._loop_decision_materialized(command.idempotency_key, entry),
     )
     runtime._finish_decision(command.idempotency_key, expected=entry)
     selected = read_selected_accepted_direct_terminal(runtime)
@@ -182,6 +179,7 @@ async def publish_accepted_direct_terminal(
         request,
         "agent_loop.prepare_accepted_direct_terminal.v1",
         PreparedAcceptedDirectTerminalV1,
+        request_schema=REQUEST_SCHEMA,
     )
     evidence = RetainedAcceptedDirectTerminalPublication(
         request=request,
@@ -209,7 +207,7 @@ async def publish_accepted_direct_terminal(
                     or _selected_competing_open(runtime, cut.original_call_id)
                 ):
                     return "STALE"
-            except (LoopRejected, ValueError, TypeError, RuntimeError):
+            except LoopRejected, ValueError, TypeError, RuntimeError:
                 return "STALE"
         return None
 
@@ -256,9 +254,7 @@ async def publish_accepted_direct_terminal(
     return await _finish(runtime, entry)
 
 
-def _selected_competing_open(
-    runtime: CommonCliExecutionRuntime, original_call_id: str
-) -> bool:
+def _selected_competing_open(runtime: CommonCliExecutionRuntime, original_call_id: str) -> bool:
     from chiplog.composition.r14_accepted_open_accounting_records import (
         ACCEPTED_OPEN_ACCOUNTING_OPERATION,
         ACCEPTED_OPEN_RECOVERY_OPERATION,
@@ -295,13 +291,11 @@ def selected_direct_terminal_for_call(
         if entry.get("kind") != "DECIDED":
             continue
         if (
-            (
-                entry.get("operation_kind") == ACCEPTED_DIRECT_TERMINAL_OPERATION
-                or "accepted_direct_terminal_evidence" in entry
-            )
-            and retained_accepted_direct_terminal(entry).result.accounting.original_call_id
-            == original_call_id
-        ):
+            entry.get("operation_kind") == ACCEPTED_DIRECT_TERMINAL_OPERATION
+            or "accepted_direct_terminal_evidence" in entry
+        ) and retained_accepted_direct_terminal(
+            entry
+        ).result.accounting.original_call_id == original_call_id:
             return True
     return False
 

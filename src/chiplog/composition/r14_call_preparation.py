@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import secrets
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
 from chiplog.capabilities.agent_loop import call_acceptance_contracts as call
@@ -250,6 +251,7 @@ async def prepare_call_exchange(
             raise LoopRejected("adoption has no exact independently selected preview")
         preview = matches[0]
         target, mandate = preview.preview.target, preview.request.mandate
+        observed = replace(observed, admission_valid_until_ns=mandate.horizon.expires_at_ns)
         captured = capture_dispatch(
             runtime,
             resources,

@@ -9,11 +9,13 @@ from chiplog.capabilities.agent_loop.direct_terminal_contracts import (
     PrepareAcceptedDirectTerminalV1,
     PreparedAcceptedDirectTerminalV1,
 )
-from chiplog.capabilities.agent_loop.recovery_contracts import RecoveryDTO
-from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
-    EXECUTION_RECOVERY_REQUEST_SCHEMA,
-    EXECUTION_RECOVERY_RESULT_SCHEMA,
+from chiplog.capabilities.agent_loop.direct_terminal_wire_contracts import (
+    REQUEST_SCHEMA as DIRECT_TERMINAL_REQUEST_SCHEMA,
 )
+from chiplog.capabilities.agent_loop.direct_terminal_wire_contracts import (
+    RESULT_SCHEMA as DIRECT_TERMINAL_RESULT_SCHEMA,
+)
+from chiplog.capabilities.agent_loop.recovery_contracts import RecoveryDTO
 from chiplog.composition.r14_recovery_publication import RecoveryActorBudgetV1
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.broker import PublicPortCall, PublicPortSuccess
@@ -63,7 +65,7 @@ def accepted_direct_terminal_command(
     sent, reply = evidence.owner_call, evidence.owner_reply
     if (
         sent.operation_id != ACCEPTED_DIRECT_TERMINAL_OWNER_OPERATION
-        or sent.schema_id != EXECUTION_RECOVERY_REQUEST_SCHEMA
+        or sent.schema_id != DIRECT_TERMINAL_REQUEST_SCHEMA
         or sent.canonical_payload != request.canonical_bytes()
         or sent.caller.owner_id != "broker"
         or sent.callee.owner_id != "agent_loop"
@@ -71,7 +73,7 @@ def accepted_direct_terminal_command(
         or sent.callee.tenant_id != request.cut.tenant_id
         or reply.responder != sent.callee
         or reply.request_id != sent.request_id
-        or reply.schema_id != EXECUTION_RECOVERY_RESULT_SCHEMA
+        or reply.schema_id != DIRECT_TERMINAL_RESULT_SCHEMA
         or reply.canonical_payload != result.canonical_bytes()
     ):
         raise ValueError("accepted/direct terminal retained owner exchange differs")

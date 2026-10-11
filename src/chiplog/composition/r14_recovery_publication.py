@@ -337,7 +337,14 @@ def validate_selected(runtime, entry, physical_command, *, through_sequence=None
     return evidence
 
 
-async def _exchange(runtime, request, operation, result_type):
+async def _exchange(
+    runtime,
+    request,
+    operation,
+    result_type,
+    *,
+    request_schema=EXECUTION_RECOVERY_REQUEST_SCHEMA,
+):
     engine = runtime._supervisor.runtime()
     callee = engine.session("agent_loop")
     caller = BrokerSession(
@@ -352,7 +359,7 @@ async def _exchange(runtime, request, operation, result_type):
         request_id="execution-recovery:" + secrets.token_hex(16),
         caller=caller,
         callee=callee,
-        schema_id=EXECUTION_RECOVERY_REQUEST_SCHEMA,
+        schema_id=request_schema,
         canonical_payload=request.canonical_bytes(),
         budget=CallBudget(
             remaining_calls=1,
@@ -557,16 +564,14 @@ def authenticate_selected_recovery_prefix_held(runtime, actual, anchored) -> boo
             return authenticate_selected_next_turn_prefix_held(runtime, actual, anchored)
         if (
             len(pending) == 1
-            and pending[0].get("operation_kind")
-            == "agent_loop.original-resolver-invocation.v1"
+            and pending[0].get("operation_kind") == "agent_loop.original-resolver-invocation.v1"
         ):
             from .r14_invocation_pending import authenticate_selected_invocation_prefix_held
 
             return authenticate_selected_invocation_prefix_held(runtime, actual, anchored)
         if (
             len(pending) == 1
-            and pending[0].get("operation_kind")
-            == "agent_loop.original-call-resolution.v1"
+            and pending[0].get("operation_kind") == "agent_loop.original-call-resolution.v1"
         ):
             from .r14_original_call_resolution_source import (
                 authenticate_selected_resolution_prefix_held,

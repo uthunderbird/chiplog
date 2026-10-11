@@ -19,6 +19,10 @@ from chiplog.capabilities.agent_loop.direct_terminal_contracts import (
     AcceptedDirectTerminalResultV1,
     PreparedAcceptedDirectTerminalV1,
 )
+from chiplog.capabilities.agent_loop.direct_terminal_wire_contracts import (
+    REQUEST_SCHEMA,
+    RESULT_SCHEMA,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     ConsequentialAcceptedCall,
@@ -28,6 +32,8 @@ from chiplog.composition.r14_accepted_direct_terminal_frontier import (
     accepted_direct_terminal_sealed_accounting,
     require_complete_direct_terminal_publication,
 )
+from chiplog.composition.r14_recovery_publication import _exchange
+from chiplog.platform.broker import BrokerSession, PublicPortSuccess
 
 _FINGERPRINT = "a" * 64
 
@@ -203,7 +209,6 @@ def test_selected_direct_terminal_rejects_manifest_subset_and_changed_record_ref
             (cut.original_call_id,),
             _FINGERPRINT,
         )
-
     changed_acceptance = acceptance.model_copy(
         update={"accepted": _head("foreign-acceptance").revision}
     )
@@ -215,6 +220,49 @@ def test_selected_direct_terminal_rejects_manifest_subset_and_changed_record_ref
             (cut.original_call_id,),
             _FINGERPRINT,
         )
+
+
+@pytest.mark.asyncio
+async def test_direct_terminal_exchange_uses_its_registered_wire_schema() -> None:
+    _, prepared, _ = _frontier_fixture("SUCCEEDED")
+    request = SimpleNamespace(canonical_bytes=lambda: b"{}")
+
+    class Engine:
+        sent = None
+
+        def session(self, owner_id: str) -> BrokerSession:
+            return BrokerSession(
+                tenant_id="tenant",
+                broker_epoch=1,
+                generation_id="generation",
+                owner_id=owner_id,
+                session_id=owner_id + ":session",
+            )
+
+        async def call(self, sent):
+            self.sent = sent
+            return PublicPortSuccess(
+                request_id=sent.request_id,
+                responder=sent.callee,
+                schema_id=RESULT_SCHEMA,
+                canonical_payload=prepared.canonical_bytes(),
+            )
+
+    engine = Engine()
+    runtime = SimpleNamespace(
+        _supervisor=SimpleNamespace(runtime=lambda: engine), _tenant_id="tenant"
+    )
+    result, sent, _ = await _exchange(
+        runtime,
+        request,
+        "agent_loop.prepare_accepted_direct_terminal.v1",
+        PreparedAcceptedDirectTerminalV1,
+        request_schema=REQUEST_SCHEMA,
+    )
+
+    assert engine.sent is sent
+    assert sent.schema_id == REQUEST_SCHEMA
+    assert result == prepared
 
 
 @pytest.mark.parametrize(

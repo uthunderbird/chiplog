@@ -7,6 +7,7 @@ import pytest
 
 from chiplog.adapters.driven.effects_queries import StoredEffectRow
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEffectHistoryMember
 from chiplog.capabilities.effects.dispatch_outcome_contracts import (
@@ -17,6 +18,10 @@ from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2, reference
 from chiplog.composition.r14_native_evidence_sources import (
     complete_ordered_dispatch_sources,
     complete_ordered_evidence_sources,
+)
+from chiplog.composition.r14_native_recovery_cut import (
+    _physical_inventory_id,
+    _selected_source_revision,
 )
 from chiplog.composition.r14_native_selected_accounting_source import (
     _closed_outcome_join_is_valid,
@@ -377,20 +382,24 @@ def test_complete_evidence_sources_bind_ordered_items_to_unique_selected_carrier
         subject_id=intent.subject_id,
         revision=Present(head=intent.head, fingerprint=intent.fingerprint),
     )
-    dispatch_sources = complete_ordered_dispatch_sources(
-        call_intent, history
-    )
+    dispatch_sources = complete_ordered_dispatch_sources(call_intent, history)
     assert dispatch_sources is not None
     assert tuple(source.physical_record.subject_id for source in dispatch_sources) == tuple(
         item.record.subject_id for item in history.members
     )
+    assert tuple(_physical_inventory_id(source) for source in dispatch_sources) == tuple(
+        item.record.head for item in history.members
+    )
     assert tuple(source.canonical_record_bytes for source in dispatch_sources) == tuple(
         item.record_bytes for item in history.members
     )
-    assert complete_ordered_dispatch_sources(
-        call_intent,
-        replace(history, members=history.members[:-1]),
-    ) is None
+    assert (
+        complete_ordered_dispatch_sources(
+            call_intent,
+            replace(history, members=history.members[:-1]),
+        )
+        is None
+    )
 
     sources = complete_ordered_evidence_sources(terminal, history)
 
@@ -460,3 +469,39 @@ def test_complete_evidence_sources_bind_ordered_items_to_unique_selected_carrier
         members=(history.members[0], malformed_member, *history.members[2:]),
     )
     assert complete_ordered_evidence_sources(terminal, malformed_history) is None
+
+
+def test_selected_source_revision_rebinds_logical_marker_to_exact_preimage() -> None:
+    raw = b"selected physical owner record"
+    source_revision = Present(
+        head="record:logical-owner-row", fingerprint=hashlib.sha256(raw).hexdigest()
+    )
+    selected_source = RecoverySourceRecord(
+        owner="agent_loop",
+        subject=CallSubjectHead(subject_id="accepted-intent", revision=source_revision),
+        schema_id="chiplog.execution.accepted.v1",
+        canonical_record_bytes=raw,
+        selected_decision=CallSubjectHead(
+            subject_id="selected-decision",
+            revision=Present(head="decision:one", fingerprint="d" * 64),
+        ),
+        physical_record=CallSubjectHead(subject_id="physical-row", revision=source_revision),
+    )
+    original_logical_marker = CallSubjectHead(
+        subject_id="accepted-intent",
+        revision=Present(head="record:logical-owner-row", fingerprint="b" * 64),
+    )
+
+    assert _selected_source_revision(original_logical_marker, (selected_source,)) == source_revision
+    assert _selected_source_revision(original_logical_marker, ()) is None
+    conflicting = selected_source.model_copy(
+        update={
+            "subject": CallSubjectHead(
+                subject_id="accepted-intent",
+                revision=Present(head="record:logical-owner-row", fingerprint="c" * 64),
+            )
+        }
+    )
+    assert (
+        _selected_source_revision(original_logical_marker, (selected_source, conflicting)) is None
+    )

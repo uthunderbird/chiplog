@@ -99,6 +99,62 @@ if TYPE_CHECKING:
     from .r14_recovery_publication import RetainedRecoveryPublication
 
 
+_R16_PHYSICAL_SOURCE_SCHEMAS = frozenset(
+    {
+        "chiplog.effects.dispatch-record.v2",
+        "chiplog.effects.dispatch-outcome-record.v2",
+    }
+)
+
+
+def _physical_inventory_id(source: RecoverySourceRecord) -> str:
+    """Return the inventory row ID under either source-reference convention.
+
+    Native execution records put the physical row ID in ``subject_id``. R16
+    effect records preserve their logical subject there and put the selected
+    physical row ID in ``revision.head``.
+    """
+    if source.schema_id in _R16_PHYSICAL_SOURCE_SCHEMAS:
+        if not isinstance(source.physical_record.revision, Present):
+            raise ValueError("selected R16 source has no exact physical revision")
+        return source.physical_record.revision.head
+    return source.physical_record.subject_id
+
+
+def _recovery_source_subject(source: RecoverySourceRecord) -> CallSubjectHead:
+    """Keep the logical head while binding its recovery preimage to exact bytes."""
+    revision = source.subject.revision
+    if not isinstance(revision, Present):
+        raise ValueError("selected source has no exact logical revision")
+    return CallSubjectHead(
+        subject_id=source.subject.subject_id,
+        revision=Present(
+            head=revision.head,
+            fingerprint=_sha(source.canonical_record_bytes),
+        ),
+    )
+
+
+def _selected_source_revision(
+    reference: CallSubjectHead,
+    sources: tuple[RecoverySourceRecord, ...],
+) -> Present | None:
+    """Resolve a logical marker through its exact selected source preimage."""
+    revision = reference.revision
+    if not isinstance(revision, Present):
+        return None
+    matches = tuple(
+        source.subject.revision
+        for source in sources
+        if source.subject.subject_id == reference.subject_id
+        and isinstance(source.subject.revision, Present)
+        and source.subject.revision.head == revision.head
+    )
+    if not matches or any(match != matches[0] for match in matches[1:]):
+        return None
+    return matches[0]
+
+
 def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -134,6 +190,7 @@ def classify_native_occurrences(
     decoded: dict[str, H1DecodedInventoryItem],
     known_sources: dict[str, RecoverySourceRecord],
     scope: NativeOneCallContextScopeV1,
+    authenticated_commands: dict[str, tuple[str, str, bytes]] | None = None,
 ) -> bool:
     """Decode first; only the independently reopened original custody is context.
 
@@ -141,6 +198,17 @@ def classify_native_occurrences(
     CLI custody evidence is explicitly excluded by exact token/profile equality;
     arbitrary source identity or an empty inbox cannot prove that exclusion.
     """
+    from chiplog.capabilities.effects.dispatch_outcome_contracts import (
+        DispatchOutcomePreparationV2,
+        DispatchOutcomeRecordV2,
+    )
+    from chiplog.capabilities.effects.dispatch_v2 import DispatchPreparationV2, DispatchRecordV2
+    from chiplog.composition.r16_dispatch_outbox import (
+        CONSUME_SCHEMA,
+        CONSUMPTION_SCHEMA,
+        ConsumeRequest,
+        ConsumptionRecord,
+    )
     from chiplog.composition.r16_native_inventory import _decode
     from chiplog.platform.ingress_authenticated_contracts import AuthenticatedCustodyCommand
     from chiplog.platform.ingress_custody_records import CustodyCommand
@@ -157,6 +225,11 @@ def classify_native_occurrences(
         "OUTCOME",
     }
     for occurrence in occurrences:
+        authenticated_command = (authenticated_commands or {}).get(occurrence.locator)
+        if authenticated_command is not None:
+            if authenticated_command != (occurrence.owner, occurrence.schema, occurrence.raw):
+                return False
+            continue
         if occurrence.record_id in known_sources:
             if occurrence.raw != known_sources[occurrence.record_id].canonical_record_bytes:
                 return False
@@ -205,8 +278,87 @@ def classify_native_occurrences(
                         raise
             if decoded_row is None:
                 return False
-        if forbidden.intersection(decoded_row.families):
-            return False
+            if forbidden.intersection(decoded_row.families):
+                # R16's independently authenticated selected history carries
+                # its owner command as well as the physical result. Admit only
+                # that exact command/result pair under the same decision.
+                parts = occurrence.locator.split("/")
+                selected_id = parts[1] if len(parts) == 4 and parts[0] == "selected" else None
+                if (
+                    occurrence.surface == "OWNER_COMMAND"
+                    and occurrence.owner == "effects"
+                    and selected_id is not None
+                    and parts[2:] in (["command", "0"], ["command", "1"])
+                    and occurrence.schema
+                    in {
+                        "chiplog.effects.dispatch-preparation.v2",
+                        "chiplog.effects.dispatch-outcome-preparation.v2",
+                    }
+                ):
+                    matches = [
+                        source
+                        for source in known_sources.values()
+                        if source.owner == "effects"
+                        and source.schema_id in _R16_PHYSICAL_SOURCE_SCHEMAS
+                        and isinstance(source.selected_decision.revision, Present)
+                        and source.selected_decision.revision.head == selected_id
+                    ]
+                    try:
+                        if occurrence.schema == "chiplog.effects.dispatch-preparation.v2":
+                            preparation = DispatchPreparationV2.model_validate_json(occurrence.raw)
+                            matched = any(
+                                source.schema_id == "chiplog.effects.dispatch-record.v2"
+                                and preparation.command.canonical_bytes()
+                                == DispatchRecordV2.model_validate_json(
+                                    source.canonical_record_bytes
+                                ).command.canonical_bytes()
+                                for source in matches
+                            )
+                        else:
+                            preparation = DispatchOutcomePreparationV2.model_validate_json(
+                                occurrence.raw
+                            )
+                            matched = any(
+                                source.schema_id == "chiplog.effects.dispatch-outcome-record.v2"
+                                and preparation.command.canonical_bytes()
+                                == DispatchOutcomeRecordV2.model_validate_json(
+                                    source.canonical_record_bytes
+                                ).command.canonical_bytes()
+                                for source in matches
+                            )
+                    except TypeError, ValueError:
+                        matched = False
+                    if matched:
+                        continue
+                if (
+                    occurrence.surface == "OWNER_COMMAND"
+                    and occurrence.owner == "broker_dispatch"
+                    and occurrence.schema == CONSUME_SCHEMA
+                    and selected_id is not None
+                    and parts[2:] == ["command", "0"]
+                ):
+                    try:
+                        request = ConsumeRequest.model_validate_json(occurrence.raw)
+                        matched = False
+                        for source in known_sources.values():
+                            if (
+                                source.owner != "broker_dispatch"
+                                or source.schema_id != CONSUMPTION_SCHEMA
+                                or not isinstance(source.selected_decision.revision, Present)
+                                or source.selected_decision.revision.head != selected_id
+                            ):
+                                continue
+                            source_record = ConsumptionRecord.model_validate_json(
+                                source.canonical_record_bytes
+                            )
+                            if request.canonical_bytes() == source_record.request.canonical_bytes():
+                                matched = True
+                                break
+                    except TypeError, ValueError:
+                        matched = False
+                if matched:
+                    continue
+                return False
         if "EVIDENCE" in decoded_row.families:
             types: dict[
                 str,
@@ -277,7 +429,7 @@ class NativeRecoveryCutSource:
         try:
             with join_workspace_snapshot(runtime._database):
                 return self._collect_held(runtime)
-        except (OSError, RuntimeError, TypeError, ValueError, R16InventoryIntegrityError):
+        except OSError, RuntimeError, TypeError, ValueError, R16InventoryIntegrityError:
             return None
 
     def _collect_held(self, runtime: CommonCliExecutionRuntime) -> ExecutionRecoveryCut | None:
@@ -422,6 +574,7 @@ class NativeRecoveryCutSource:
         # Reconcile every publication and every physical record against both
         # journals. Membership is exact before any relevance classification.
         selected: dict[str, tuple[PhysicalRecord | OwnerRecordBytes, CallSubjectHead]] = {}
+        owner_journal = runtime._owner_decisions().snapshot()
         with read_connection(runtime._database) as connection:
             for decision_id, _, raw in runtime._loop_decisions().entries():
                 entry = json.loads(raw)
@@ -438,7 +591,7 @@ class NativeRecoveryCutSource:
                     if record.record_id in selected:
                         return None
                     selected[record.record_id] = (record, decision_ref)
-            for decision in runtime._owner_decisions().snapshot().decisions:
+            for decision in owner_journal.decisions:
                 raw = next(
                     raw for key, _, raw in inventory.owner_entries if key == decision.decision_id
                 )
@@ -454,14 +607,129 @@ class NativeRecoveryCutSource:
         sources: list[RecoverySourceRecord] = []
         native_sources: dict[str, list[RecoverySourceRecord]] = {}
         for source in subset.execution_sources:
-            native_sources.setdefault(source.physical_record.subject_id, []).append(source)
+            native_sources.setdefault(_physical_inventory_id(source), []).append(source)
         additional_sources = list(subset.accepted_effect_sources)
         if accepted_inputs is not None:
             additional_sources.extend(accepted_inputs[3])
         if direct_terminal_inputs is not None:
             additional_sources.extend(direct_terminal_inputs[1])
+        if subset.accepted_closed_outcome is not None and snapshot is not None:
+            # The accepted execution history reader authenticated these exact
+            # run preimages. Bind them to the selected owner decision already
+            # reconciled with the physical inventory before classifying them.
+            for record in snapshot.records:
+                if not isinstance(record, ExecutionRunRecord):
+                    continue
+                selection = selected.get(record.head)
+                raw = record.canonical_bytes()
+                if selection is None or (
+                    selection[0].owner,
+                    selection[0].schema_id,
+                    selection[0].canonical_bytes,
+                ) != ("agent_loop", record.schema_id, raw):
+                    return None
+                additional_sources.append(
+                    RecoverySourceRecord(
+                        owner="agent_loop",
+                        subject=_ref(record.run_id, raw, record.head),
+                        schema_id=record.schema_id,
+                        canonical_record_bytes=raw,
+                        selected_decision=selection[1],
+                        physical_record=_ref(record.head, raw),
+                    )
+                )
+        if subset.accepted_closed_outcome is not None:
+            from chiplog.composition.r14_fanout_contracts import INITIALIZED_SCHEMA, SEAL_SCHEMA
+
+            for retained_seal in subset.authenticated_seals:
+                fanout = retained_seal.proposal.fan_out
+                seal = fanout.response_seal
+                seal_raw = seal.canonical_bytes()
+                physical_members = [
+                    ("record:" + hashlib.sha256(seal_raw).hexdigest(), SEAL_SCHEMA, seal_raw)
+                ]
+                physical_members.extend(
+                    (
+                        "record:" + hashlib.sha256(record.canonical_bytes()).hexdigest(),
+                        INITIALIZED_SCHEMA,
+                        record.canonical_bytes(),
+                    )
+                    for record in fanout.initialized_records
+                )
+                for record_id, schema_id, raw in physical_members:
+                    selection = selected.get(record_id)
+                    if selection is None or (
+                        selection[0].owner,
+                        selection[0].schema_id,
+                        selection[0].canonical_bytes,
+                    ) != ("agent_loop", schema_id, raw):
+                        return None
+                    additional_sources.append(
+                        RecoverySourceRecord(
+                            owner="agent_loop",
+                            subject=_ref(record_id, raw),
+                            schema_id=schema_id,
+                            canonical_record_bytes=raw,
+                            selected_decision=selection[1],
+                            physical_record=_ref(record_id, raw),
+                        )
+                    )
+        if subset.accepted_closed_outcome is not None:
+            # validate_consumptions authenticates the whole owner snapshot,
+            # including the exact SEND child and retained ticket. Retain only
+            # the consumption for this accepted intent as a recovery source.
+            from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
+            from chiplog.composition.r16_dispatch_outbox import (
+                CONSUME_SCHEMA,
+                CONSUMPTION_SCHEMA,
+                ConsumeRequest,
+                ConsumptionRecord,
+                validate_consumptions,
+            )
+
+            validate_consumptions(runtime, owner_journal)
+            accepted_intent = subset.accepted_closed_outcome.latest_outcome.snapshot.intent
+            accepted_intent_ref = effects_reference(
+                accepted_intent.intent_id, accepted_intent.canonical_bytes()
+            )
+            owner_raw = {key: raw for key, _, raw in inventory.owner_entries}
+            for decision in owner_journal.decisions:
+                batch = decision.prepared.request
+                if batch.operation != "dispatch.consume_effect_send":
+                    continue
+                request = ConsumeRequest.model_validate_json(batch.command.canonical_bytes)
+                if request.intent != accepted_intent_ref:
+                    continue
+                if (
+                    batch.command.schema_id != CONSUME_SCHEMA
+                    or len(batch.complete_records) != 1
+                    or batch.complete_records[0].schema_id != CONSUMPTION_SCHEMA
+                ):
+                    return None
+                row = batch.complete_records[0]
+                record = ConsumptionRecord.model_validate_json(row.canonical_bytes)
+                if record.request != request or record.canonical_bytes() != row.canonical_bytes:
+                    return None
+                raw_decision = owner_raw.get(decision.decision_id)
+                if raw_decision is None:
+                    return None
+                selected_ref = _ref(
+                    decision.prepared.request.identity.command_id,
+                    raw_decision,
+                    decision.decision_id,
+                )
+                additional_sources.append(
+                    RecoverySourceRecord(
+                        owner="broker_dispatch",
+                        subject=_ref(row.record_id, row.canonical_bytes),
+                        schema_id=CONSUMPTION_SCHEMA,
+                        canonical_record_bytes=row.canonical_bytes,
+                        selected_decision=selected_ref,
+                        physical_record=_ref(row.record_id, row.canonical_bytes),
+                    )
+                )
         for source in additional_sources:
-            identity = source.physical_record.subject_id
+            identity = _physical_inventory_id(source)
             previous = native_sources.setdefault(identity, [])
             if previous and any(
                 (
@@ -496,11 +764,7 @@ class NativeRecoveryCutSource:
                 row.raw,
             ):
                 return None
-            subject = (
-                native_sources[row.record_id][0].subject
-                if row.record_id in native_sources
-                else _ref(row.record_id, row.raw)
-            )
+            subject = _ref(row.record_id, row.raw)
             sources.append(
                 RecoverySourceRecord(
                     owner=row.owner,
@@ -515,14 +779,16 @@ class NativeRecoveryCutSource:
             # logical head in the selected dispatch/evidence source chains.
             # Rebind each logical preimage to the single physical selection
             # independently established by this inventory pass.
-            for native_source in native_sources.get(row.record_id, ())[1:]:
-                sources.append(
-                    replace(
-                        native_source,
-                        selected_decision=selected_decision,
-                        physical_record=_ref(row.record_id, row.raw),
-                    )
+            for native_source in native_sources.get(row.record_id, ()):
+                rebound_source = native_source.model_copy(
+                    update={
+                        "subject": _recovery_source_subject(native_source),
+                        "selected_decision": selected_decision,
+                        "physical_record": _ref(row.record_id, row.raw),
+                    }
                 )
+                if rebound_source not in sources:
+                    sources.append(rebound_source)
         by_id = {row.physical_record.subject_id: row for row in sources}
         if by_id.get(profile_source.physical_record.subject_id) != profile_source:
             return None
@@ -540,6 +806,70 @@ class NativeRecoveryCutSource:
                 "chiplog.execution.continuation-ready.v1",
             }
         )
+        authenticated_commands: dict[str, tuple[str, str, bytes]] = {}
+        authenticated_call_publication_ids: set[str] = set()
+        if subset.authenticated_acceptances:
+            from chiplog.composition.r14_call_batch import (
+                LOOP_PREPARATION_SCHEMA,
+                verify_call_batch,
+            )
+
+            for retained in subset.authenticated_acceptances:
+                matching = [
+                    decision
+                    for decision in owner_journal.decisions
+                    if decision.prepared.request.identity.command_id
+                    == retained.loop_request.command_id
+                ]
+                if len(matching) != 1:
+                    return None
+                decision = matching[0]
+                batch = decision.prepared.request
+                try:
+                    verify_call_batch(batch, retained)
+                except TypeError, ValueError:
+                    return None
+                authenticated_call_publication_ids.add(batch.identity.command_id)
+                authenticated_commands[f"selected/{decision.decision_id}/command/0"] = (
+                    "agent_loop",
+                    LOOP_PREPARATION_SCHEMA,
+                    batch.loop_command.canonical_bytes,
+                )
+                decision_raw = next(
+                    (raw for key, _, raw in inventory.owner_entries if key == decision.decision_id),
+                    None,
+                )
+                if decision_raw is None:
+                    return None
+                selected_ref = _ref(batch.identity.command_id, decision_raw, decision.decision_id)
+                manifest = retained.loop_proposal.complete_acceptance_manifest
+                for record in batch.complete_records:
+                    physical = next(
+                        (row for row in inventory.records if row.record_id == record.record_id),
+                        None,
+                    )
+                    if physical is None or (physical.owner, physical.schema, physical.raw) != (
+                        record.owner,
+                        record.schema_id,
+                        record.canonical_bytes,
+                    ):
+                        return None
+                    logical_subject = next(
+                        (member for member in manifest if member.subject_id == record.record_id),
+                        manifest[2] if record.owner == "effects" else None,
+                    )
+                    native_sources.setdefault(record.record_id, []).append(
+                        RecoverySourceRecord(
+                            owner=record.owner,
+                            subject=logical_subject
+                            or _ref(record.record_id, record.canonical_bytes),
+                            schema_id=record.schema_id,
+                            canonical_record_bytes=record.canonical_bytes,
+                            selected_decision=selected_ref,
+                            physical_record=_ref(record.record_id, record.canonical_bytes),
+                        )
+                    )
+                    known.add(record.record_id)
         # R16 selected/physical occurrences are decoded before they can be
         # dismissed. The native source/history reader authenticates its closed
         # native members. Other registered leaves use their existing pure codecs.
@@ -548,6 +878,7 @@ class NativeRecoveryCutSource:
             {row.locator: row for row in inventory.decoded},
             {identity: by_id[identity] for identity in known},
             scope,
+            authenticated_commands,
         ):
             return None
         if inventory.evidence_rows:
@@ -563,12 +894,15 @@ class NativeRecoveryCutSource:
             gap.code == "PENDING"
             or (
                 gap.code == "UNSUPPORTED_PUBLICATION"
-                and next(
-                    row.operation
-                    for row in inventory.publications
-                    if "publications/" + row.command_id == gap.locator
-                )
+                and (
+                    publication := next(
+                        row
+                        for row in inventory.publications
+                        if "publications/" + row.command_id == gap.locator
+                    )
+                ).operation
                 not in operations
+                and publication.command_id not in authenticated_call_publication_ids
             )
             for gap in inventory.gaps
         ):
@@ -633,6 +967,12 @@ class NativeRecoveryCutSource:
         tuple[TerminalCallFrontier, tuple[RecoverySourceRecord, ...]] | None,
     ]:
         """Select one exact direct terminal, without falling through on a rival claim."""
+        from chiplog.capabilities.agent_loop.call_acceptance_preparation import (
+            call_record_reference,
+        )
+        from chiplog.capabilities.agent_loop.direct_terminal_contracts import (
+            AcceptedDirectTerminalResultV1,
+        )
         from chiplog.capabilities.agent_loop.recovery_contracts import Present
         from chiplog.composition.r14_accepted_direct_terminal_publication import (
             validate_selected_accepted_direct_terminal,
@@ -735,9 +1075,16 @@ class NativeRecoveryCutSource:
             sources: list[RecoverySourceRecord] = []
             for record in command.records:
                 digest = hashlib.sha256(record.canonical_bytes).hexdigest()
-                subject = CallSubjectHead(
-                    subject_id=record.record_id,
-                    revision=Present(head="record:" + digest, fingerprint=digest),
+                subject = (
+                    call_record_reference(
+                        record.record_id,
+                        AcceptedDirectTerminalResultV1.model_validate_json(record.canonical_bytes),
+                    )
+                    if record.schema_id == "chiplog.execution.accepted-direct-terminal-result.v1"
+                    else CallSubjectHead(
+                        subject_id=record.record_id,
+                        revision=Present(head="record:" + digest, fingerprint=digest),
+                    )
                 )
                 sources.append(
                     RecoverySourceRecord(
@@ -746,7 +1093,7 @@ class NativeRecoveryCutSource:
                         schema_id=record.schema_id,
                         canonical_record_bytes=record.canonical_bytes,
                         selected_decision=selected_decision,
-                        physical_record=subject,
+                        physical_record=_ref(record.record_id, record.canonical_bytes),
                     )
                 )
             # The accepted source reader independently proves the selected R16
@@ -754,12 +1101,12 @@ class NativeRecoveryCutSource:
             # be present before allowing the direct terminal into this cut.
             outcome_id = subset.accepted_closed_outcome.latest_outcome_record_id
             if not any(
-                source.physical_record.subject_id == outcome_id
+                _physical_inventory_id(source) == outcome_id
                 for source in subset.accepted_effect_sources
             ):
                 return True, None
             return True, (call, tuple(sources))
-        except (OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError):
+        except OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError:
             return True, None
 
     @staticmethod
@@ -880,7 +1227,7 @@ class NativeRecoveryCutSource:
                 selected_reduction.source,
             )
             return call, closure, reduction, extra_sources
-        except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        except OSError, RuntimeError, TypeError, ValueError, KeyError:
             return None
 
     def _assemble(
@@ -1367,7 +1714,23 @@ class NativeRecoveryCutSource:
             )
         else:
             raise ValueError("accepted next-turn frontier has an unsupported terminal")
-        accepted_sources = tuple(subset.accepted_effect_sources)
+        accepted_source_rows: list[RecoverySourceRecord] = []
+        for selected_source in subset.accepted_effect_sources:
+            matches = tuple(
+                source
+                for source in physical_sources
+                if source.owner == selected_source.owner
+                and source.schema_id == selected_source.schema_id
+                and source.canonical_record_bytes == selected_source.canonical_record_bytes
+                and source.subject.subject_id == selected_source.subject.subject_id
+                and isinstance(source.subject.revision, Present)
+                and isinstance(selected_source.subject.revision, Present)
+                and source.subject.revision.head == selected_source.subject.revision.head
+            )
+            if len(matches) != 1:
+                raise ValueError("selected effects source lacks one exact recovery preimage")
+            accepted_source_rows.append(matches[0])
+        accepted_sources = tuple(accepted_source_rows)
         if direct_result is not None:
             from chiplog.capabilities.agent_loop.direct_terminal_contracts import (
                 AcceptedDirectTerminalResultV1,
@@ -1377,26 +1740,52 @@ class NativeRecoveryCutSource:
                 row
                 for row in physical_sources
                 if row.schema_id == "chiplog.execution.accepted-direct-terminal-result.v1"
-                and row.subject.revision == direct_result.result
+                and isinstance(row.subject.revision, Present)
+                and row.subject.revision.head == direct_result.result.head
             )
             if len(result_sources) != 1:
                 raise ValueError("direct terminal result source is missing or ambiguous")
             direct_result_record = AcceptedDirectTerminalResultV1.model_validate_json(
                 result_sources[0].canonical_record_bytes
             )
-            evidence_heads = tuple(
-                Present(head=item.head, fingerprint=item.fingerprint)
-                for item in direct_result_record.classification.ordered_evidence
-            )
+            if (
+                direct_result_record.digest() != direct_result.result.fingerprint
+                or not isinstance(result_sources[0].subject.revision, Present)
+                or result_sources[0].subject.revision.fingerprint
+                != _sha(result_sources[0].canonical_record_bytes)
+            ):
+                raise ValueError("direct terminal result digest/preimage differs")
+            evidence_references: list[HeadMarker] = []
+            for evidence in direct_result_record.classification.ordered_evidence:
+                matches = tuple(
+                    source
+                    for source in accepted_sources
+                    if source.subject.subject_id == evidence.subject_id
+                    and isinstance(source.subject.revision, Present)
+                    and source.subject.revision.head == evidence.head
+                )
+                if len(matches) != 1 or not isinstance(matches[0].subject.revision, Present):
+                    raise ValueError("direct terminal evidence lacks one exact recovery source")
+                evidence_references.append(matches[0].subject.revision)
+            evidence_heads = tuple(evidence_references)
         else:
             direct_result_record = None
+        acceptance_manifest = acceptance.complete_acceptance_manifest
+        if direct_result is not None:
+            resolved_manifest: list[HeadMarker] = []
+            for manifest_reference in acceptance_manifest:
+                revision = _selected_source_revision(manifest_reference, physical_sources)
+                if revision is None:
+                    raise ValueError("accepted call manifest lacks one selected source preimage")
+                resolved_manifest.append(revision)
+            acceptance_manifest = tuple(resolved_manifest)
         heads: dict[str, tuple[HeadMarker, ...]] = {
             "RUN": (_run_ref(run).revision,),
             "TURN": (turn_ref.revision,),
             "SEALED_RESPONSE": (reference(seal.response_seal_id, seal).revision,),
             "CALL": (
                 acceptance.initialized,
-                *acceptance.complete_acceptance_manifest,
+                *acceptance_manifest,
                 disposition.terminal,
                 call_result_ref,
             ),

@@ -455,7 +455,11 @@ async def test_call_writer_authority_requires_exact_issued_objects_and_current_s
 
 async def test_actual_atomic_call_acceptance_joins_both_owner_records_and_reopens(
     initialized: tuple[ExecutionDispatchRuntime, CallAcceptanceTarget, HermeticDispatchResources],
+    monkeypatch,
 ) -> None:
+    from dataclasses import replace
+
+    import chiplog.composition.r14_call_preparation as call_preparation_module
     from chiplog.composition.r14_call_authority import CallPublicationAuthority
     from chiplog.composition.r16_dispatch_publication import authenticate
     from chiplog.platform._owner_publication_contracts import JournalSelectedPublication
@@ -465,9 +469,23 @@ async def test_actual_atomic_call_acceptance_joins_both_owner_records_and_reopen
     preview = await runtime.preview_call_acceptance("hermetic-ingress", target)
     before = read_execution_call_history(runtime)
     authority = CallPublicationAuthority(runtime, await authenticate(runtime, "hermetic-ingress"))
+    original_authenticate = call_preparation_module.authenticate
+
+    async def expired_authentication_rpc(current_runtime, peer):
+        observed = await original_authenticate(current_runtime, peer)
+        expired_budget = observed.request.budget.model_copy(update={"absolute_deadline_ns": 1})
+        expired_request = observed.request.model_copy(update={"budget": expired_budget})
+        return replace(observed, request=expired_request)
+
+    monkeypatch.setattr(call_preparation_module, "authenticate", expired_authentication_rpc)
     batch = await authority.prepare_fresh(
         "hermetic-ingress",
         CallAcceptanceAdoption(act_id="atomic", preview_bytes=preview.canonical_bytes()),
+    )
+    issued = authority._issued[-1][1]
+    assert issued.observed.request.budget.absolute_deadline_ns == 1
+    assert issued.observed.admission_valid_until_ns == (
+        issued.preview.request.mandate.horizon.expires_at_ns
     )
     coordinator = BrokerPublicationCoordinator(
         runtime._appender, authority, runtime._owner_decisions()
