@@ -45,19 +45,29 @@ from .execution_recovery_contracts import (
     PreparedAcceptedOpenRecoveryV1,
     PreparedExecutionAccounting,
     PreparedExecutionContinuation,
+    PreparedExecutionSuspension,
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
+    PrepareExecutionSuspension,
 )
 from .execution_recovery_observations import (
     ContinuationReadyRecord,
     ExecutionRecoveryCut,
+    ExecutionSuspensionBaseline,
+    ExecutionSuspensionPair,
     OriginalRecoveredClosure,
     RecoverySourceRecord,
     SealedAccountingRecord,
 )
 from .native_recovery_cut_validation import validate_native_recovery_cut
 from .native_recovery_profile_contracts import SCHEMA, SCHEMA_V2, SCHEMA_V3
-from .recovery_contracts import Absent, OriginalObligationBinding, Present, RecoveryDTO
+from .recovery_contracts import (
+    Absent,
+    NonSchedulerFence,
+    OriginalObligationBinding,
+    Present,
+    RecoveryDTO,
+)
 from .recovery_domain import (
     RecoveredClosure,
     RecoveryHold,
@@ -1056,4 +1066,90 @@ def prepare_execution_continuation(
             complete_continuations=tuple(continuations),
         )
     except (ValueError, TypeError) as error:
+        return _rejected(request.command_id, error)
+
+
+def prepare_execution_suspension(
+    request: PrepareExecutionSuspension,
+) -> PreparedExecutionSuspension | CallPreparationRejected:
+    """Prepare the acyclic baseline → suspended Run → pair publication batch."""
+    try:
+        request = PrepareExecutionSuspension.model_validate_json(request.canonical_bytes())
+        if not isinstance(request.fence, NonSchedulerFence):
+            raise RecoveryHold("scheduler execution cannot use this suspension route")
+        _validate_cut(request.cut)
+        lineage = request.cut.complete_ordered_run_lineage
+        if not lineage or any(run.root_binding != "NOT_APPLICABLE" for run in lineage):
+            raise RecoveryHold("suspension requires an authenticated non-scheduler Run lineage")
+        current = lineage[-1]
+        if (
+            current != request.run
+            or _run_ref(current) != request.cut.current_run
+            or current.state != "ACTIVE"
+            or current.worker_session != request.fence.worker_session_id
+            or current.run_id != request.fence.run_id
+            or current.head != request.fence.run_head
+        ):
+            raise RecoveryHold("suspension Run or non-scheduler fence is stale")
+        if any(
+            predicate.revision.kind != "PRESENT"
+            for predicate in request.activation_blocking_predicates
+        ):
+            raise RecoveryHold("suspension blockers must be exact selected heads")
+
+        cut_fingerprint = request.cut.digest()
+        baseline_preimage = (
+            b"chiplog.execution.suspension-baseline.v2\0"
+            + request.command_id.encode()
+            + b"\0"
+            + cut_fingerprint.encode()
+        )
+        baseline = ExecutionSuspensionBaseline(
+            baseline_id="suspension-baseline:" + _sha(baseline_preimage),
+            suspension_command_id=request.command_id,
+            run_id=current.run_id,
+            predecessor_run=_run_ref(current),
+            source_cut_fingerprint=cut_fingerprint,
+            frontier=request.cut.frontier,
+            bindings=request.cut.current_bindings,
+            original_obligations=current.original_obligations,
+            activation_blocking_predicates=tuple(
+                predicate.revision
+                for predicate in request.activation_blocking_predicates
+            ),
+        )
+        baseline_raw = baseline.canonical_bytes()
+        baseline_digest = _sha(baseline_raw)
+        baseline_ref = CallSubjectHead(
+            subject_id=baseline.baseline_id,
+            revision=Present(head="record:" + baseline_digest, fingerprint=baseline_digest),
+        )
+        suspended = current.model_copy(
+            update={
+                "state": "SUSPENDED",
+                "predecessor": current.head,
+                "suspension_baseline": baseline_ref,
+                "event": request.command_id,
+                "head": "pending",
+            }
+        )
+        suspended = suspended.model_copy(update={"head": "loop:" + suspended.digest()})
+        suspended_ref = _run_ref(suspended)
+        pair = ExecutionSuspensionPair(
+            suspension_command_id=request.command_id,
+            source_cut_fingerprint=cut_fingerprint,
+            predecessor_run=_run_ref(current),
+            baseline=baseline_ref,
+            suspended_run=suspended_ref,
+        )
+        records = (baseline_raw, suspended.canonical_bytes(), pair.canonical_bytes())
+        batch_fingerprint = _sha(b"\0".join(records))
+        return PreparedExecutionSuspension(
+            source_request_fingerprint=request.digest(),
+            baseline=baseline,
+            run=suspended,
+            pair=pair,
+            complete_batch_fingerprint=batch_fingerprint,
+        )
+    except (ValueError, TypeError, AttributeError) as error:
         return _rejected(request.command_id, error)

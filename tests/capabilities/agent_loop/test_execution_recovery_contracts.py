@@ -17,8 +17,14 @@ from chiplog.capabilities.agent_loop.execution_transition_contracts import Creat
 from chiplog.capabilities.agent_loop.post_terminal_contracts import PreparedPostTerminalWork
 from chiplog.capabilities.agent_loop.recovery_contracts import (
     Absent,
+    CoalescedSubject,
+    ExecutionLineageBinding,
+    LeaseBinding,
     OriginalObligationBinding,
+    PhysicalRootBinding,
     Present,
+    SchedulerExecutionFence,
+    TrustedClockProofRef,
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     EvidenceReduction,
@@ -197,6 +203,70 @@ async def test_suspension_hash_dag_has_no_new_run_back_reference_in_baseline() -
     del wire["pair"]
     with pytest.raises(ValidationError):
         adapter.validate_python(wire)
+
+
+async def test_scheduler_fence_is_rejected_before_suspension_cut_preparation() -> None:
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        PrepareExecutionSuspension,
+    )
+    from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+        prepare_execution_suspension,
+    )
+
+    observed = await cut()
+    run = observed.complete_ordered_run_lineage[-1]
+    scheduler_fence = SchedulerExecutionFence(
+        run_head=run.head,
+        lineage=ExecutionLineageBinding(
+            root_id="root",
+            subject=CoalescedSubject(aggregate_id="aggregate", manifest_fingerprint="a" * 64),
+            root_fingerprint="b" * 64,
+            lineage_head="lineage-head",
+            initial_run_id=run.run_id,
+            current_run_id=run.run_id,
+            schedule_id="schedule",
+            schedule_revision="schedule-revision",
+            policy_revision="policy-revision",
+        ),
+        physical_root=PhysicalRootBinding(
+            selector_id="selector",
+            selector_head="selector-head",
+            selector_version=1,
+            current_epoch_id="epoch",
+            current_epoch_head="epoch-head",
+        ),
+        lease=LeaseBinding(
+            lease_head="lease-head",
+            holder_id="holder",
+            holder_session_id="holder-session",
+            lease_id="lease",
+            generation=1,
+            trusted_expiry=1,
+            clock_contract_version="clock-v1",
+        ),
+        clock_proof=TrustedClockProofRef(
+            proof_id="proof",
+            proof_fingerprint="c" * 64,
+            proof_version="proof-v1",
+            clock_contract_version="clock-v1",
+            fence_fingerprint="d" * 64,
+            command_id="command",
+            command_payload_fingerprint="e" * 64,
+            submission_id="submission",
+        ),
+    )
+    request = PrepareExecutionSuspension(
+        command_id="suspend-scheduler-run",
+        run=run,
+        cut=observed,
+        activation_blocking_predicates=(),
+        fence=scheduler_fence,
+    )
+
+    result = prepare_execution_suspension(request)
+
+    assert result.kind == "CALL_PREPARATION_REJECTED_V1"
+    assert "scheduler execution" in result.reason
 
 
 @pytest.mark.parametrize(
