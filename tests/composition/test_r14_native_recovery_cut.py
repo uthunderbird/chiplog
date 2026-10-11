@@ -1,5 +1,6 @@
 """Mounted selected native full-cut boundary; inert DTOs never grant authority."""
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,14 @@ from chiplog.capabilities.agent_loop.native_recovery_cut_validation import (
     validate_native_recovery_cut,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+    CancelledBeforeAcceptResult,
+    ConsequentialAcceptedCall,
+    InitializedCall,
+    RecoveryRequiredResult,
+    SuccessResult,
+    UnknownResult,
+)
 from chiplog.capabilities.effects.contracts import ExactHead
 from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEffectHistoryMember
 from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
@@ -30,11 +39,129 @@ from chiplog.composition.r14_native_recovery_cut import (
     NativeRecoveryCutSource,
     _selected_external_intent_preimage,
 )
+from chiplog.composition.r14_native_recovery_historical import (
+    _authenticated_scope_sources,
+    _external_intent_matches_dispatch_carrier,
+    _selected_decision_matches_source,
+    _selected_source_carrier_id,
+    _v3_accepted_cut_route,
+)
 from chiplog.composition.r14_recovery_profile_publication import publish_native_recovery_profile
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.capabilities.effects.support.dispatch_outcomes import original_intent, original_send
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 from tests.support.recovery_candidate import inert_recovery_candidate
+
+
+def _v3_route_cut(acceptance_type, disposition_type, *, closures=(), reductions=()):
+    call = SimpleNamespace(
+        acceptance=acceptance_type.model_construct(),
+        disposition=disposition_type.model_construct(),
+    )
+    return SimpleNamespace(
+        frontier=SimpleNamespace(ordered_calls=(call,)),
+        original_closures=closures,
+        current_reductions=reductions,
+    )
+
+
+def test_v3_readback_routes_only_complete_direct_or_accepted_open_cuts():
+    proof = (object(),)
+    assert (
+        _v3_accepted_cut_route(
+            _v3_route_cut(ConsequentialAcceptedCall, SuccessResult)
+        )
+        == "direct-terminal"
+    )
+    assert (
+        _v3_accepted_cut_route(
+            _v3_route_cut(
+                ConsequentialAcceptedCall,
+                RecoveryRequiredResult,
+                closures=proof,
+                reductions=proof,
+            )
+        )
+        == "accepted-open"
+    )
+    assert (
+        _v3_accepted_cut_route(
+            _v3_route_cut(InitializedCall, CancelledBeforeAcceptResult)
+        )
+        == "legacy-cancellation"
+    )
+    assert (
+        _v3_accepted_cut_route(
+            _v3_route_cut(ConsequentialAcceptedCall, RecoveryRequiredResult)
+        )
+        is None
+    )
+    assert (
+        _v3_accepted_cut_route(
+            _v3_route_cut(
+                ConsequentialAcceptedCall,
+                RecoveryRequiredResult,
+                closures=proof,
+            )
+        )
+        is None
+    )
+    assert (
+        _v3_accepted_cut_route(
+            _v3_route_cut(
+                ConsequentialAcceptedCall,
+                RecoveryRequiredResult,
+                reductions=proof,
+            )
+        )
+        is None
+    )
+    assert (
+        _v3_accepted_cut_route(
+            _v3_route_cut(ConsequentialAcceptedCall, UnknownResult)
+        )
+        is None
+    )
+
+
+def test_r16_effect_source_joins_selected_decision_by_exact_head():
+    journal_decision = CallSubjectHead(
+        subject_id="dispatch-command",
+        revision=Present(head="owner-decision", fingerprint="a" * 64),
+    )
+    semantic_decision = CallSubjectHead(
+        subject_id="owner-decision",
+        revision=Present(head="owner-decision", fingerprint="a" * 64),
+    )
+    source = SimpleNamespace(
+        schema_id="chiplog.effects.dispatch-record.v2",
+        selected_decision=semantic_decision,
+    )
+
+    assert _selected_decision_matches_source(source, journal_decision)
+    assert _selected_decision_matches_source(
+        SimpleNamespace(
+            schema_id="chiplog.effects.external-action-intent.v2",
+            selected_decision=semantic_decision,
+        ),
+        journal_decision,
+    )
+    assert not _selected_decision_matches_source(
+        SimpleNamespace(
+            schema_id="chiplog.effects.dispatch-record.v2",
+            selected_decision=semantic_decision.model_copy(
+                update={"revision": Present(head="other", fingerprint="a" * 64)}
+            ),
+        ),
+        journal_decision,
+    )
+    assert not _selected_decision_matches_source(
+        SimpleNamespace(
+            schema_id="chiplog.other.record.v1",
+            selected_decision=semantic_decision,
+        ),
+        journal_decision,
+    )
 
 
 def test_external_intent_preimage_binds_nested_bytes_to_selected_dispatch_carrier():
@@ -96,6 +223,9 @@ def test_external_intent_preimage_binds_nested_bytes_to_selected_dispatch_carrie
     assert source.canonical_record_bytes == intent.canonical_bytes()
     assert source.selected_decision == selected_decision
     assert source.physical_record == physical
+    row = (dispatch.record.head, "effects", dispatch.schema_id, raw, 3)
+    assert _selected_source_carrier_id(source) == dispatch.record.head
+    assert _external_intent_matches_dispatch_carrier(source, row)
 
     wrong_reference = reference.model_copy(
         update={"revision": Present(head=reference.revision.head, fingerprint="b" * 64)}
@@ -118,6 +248,28 @@ def test_external_intent_preimage_binds_nested_bytes_to_selected_dispatch_carrie
     assert _selected_external_intent_preimage(
         reference, altered_dispatch, (carrier,), (member,)
     ) is None
+    assert not _external_intent_matches_dispatch_carrier(
+        source.model_copy(update={"canonical_record_bytes": b"different intent"}), row
+    )
+    assert not _external_intent_matches_dispatch_carrier(
+        source.model_copy(
+            update={
+                "subject": reference.model_copy(
+                    update={
+                        "revision": Present(
+                            head=reference.revision.head,
+                            fingerprint="b" * 64,
+                        )
+                    }
+                )
+            }
+        ),
+        row,
+    )
+    assert not _external_intent_matches_dispatch_carrier(
+        source,
+        ("another-inventory-row", *row[1:]),
+    )
     substituted_carrier = carrier.model_copy(
         update={
             "physical_record": CallSubjectHead(
@@ -139,6 +291,93 @@ def test_external_intent_preimage_binds_nested_bytes_to_selected_dispatch_carrie
     assert _selected_external_intent_preimage(
         reference, dispatch, (carrier,), (substituted_member,)
     ) is None
+
+
+def test_r17_scope_children_are_exactly_bound_to_authenticated_trust_carrier():
+    from chiplog.composition.r14_native_recovery_cut import _ref
+
+    scope_bytes = b"authenticated scope"
+    admission_bytes = b"admission"
+    recipient_bytes = b"recipient"
+    policy_bytes = b"policy"
+    scope_id = "scope-1"
+    scope_head = "scope-head"
+    decision = _ref("trust-decision", b"decision", "decision-head")
+    physical = _ref("trust-record", b"scope physical", "physical-head")
+    admission_ref = SimpleNamespace(
+        identity="selected-admission",
+        head="admission-head",
+        fingerprint=hashlib.sha256(admission_bytes).hexdigest(),
+    )
+    policy_revision = Present(
+        head="policy-head", fingerprint=hashlib.sha256(policy_bytes).hexdigest()
+    )
+    policy_ref = CallSubjectHead(
+        subject_id="native-one-call-context-policy", revision=policy_revision
+    )
+    recipient = SimpleNamespace(canonical_bytes=lambda: recipient_bytes)
+    scope = SimpleNamespace(
+        schema_id="chiplog.native-one-call-context-scope.v1",
+        scope_id=scope_id,
+        canonical_bytes=lambda: scope_bytes,
+        selected_admission_bytes=admission_bytes,
+        selected_admission_ref=admission_ref,
+        recipient=recipient,
+        disclosure_policy=SimpleNamespace(
+            canonical_source_bytes=policy_bytes, ref=policy_ref
+        ),
+    )
+    scope_source = RecoverySourceRecord(
+        owner="deployment_trust",
+        subject=_ref(scope_id, scope_bytes, scope_head),
+        schema_id=scope.schema_id,
+        canonical_record_bytes=scope_bytes,
+        selected_decision=decision,
+        physical_record=physical,
+    )
+    children = (
+        RecoverySourceRecord(
+            owner="deployment_trust",
+            subject=_ref("selected-admission", admission_bytes, admission_ref.head),
+            schema_id="chiplog.native-recovery.selected-admission.v1",
+            canonical_record_bytes=admission_bytes,
+            selected_decision=decision,
+            physical_record=physical,
+        ),
+        RecoverySourceRecord(
+            owner="deployment_trust",
+            subject=_ref(
+                "native-recipient:"
+                + hashlib.sha256(recipient_bytes).hexdigest(),
+                recipient_bytes,
+            ),
+            schema_id="chiplog.native-recovery.recipient.v1",
+            canonical_record_bytes=recipient_bytes,
+            selected_decision=decision,
+            physical_record=physical,
+        ),
+        RecoverySourceRecord(
+            owner="deployment_trust",
+            subject=_ref(
+                "native-context-policy:"
+                + hashlib.sha256(policy_bytes).hexdigest(),
+                policy_bytes,
+                policy_revision.head,
+            ),
+            schema_id="chiplog.native-one-call-context-policy.v1",
+            canonical_record_bytes=policy_bytes,
+            selected_decision=decision,
+            physical_record=physical,
+        ),
+    )
+    cut = SimpleNamespace(complete_sources=(scope_source, *children))
+
+    assert _authenticated_scope_sources(cut, scope_source, SimpleNamespace(scope=scope))
+    tampered = children[-1].model_copy(update={"canonical_record_bytes": b"altered"})
+    tampered_cut = SimpleNamespace(complete_sources=(scope_source, *children[:-1], tampered))
+    assert not _authenticated_scope_sources(
+        tampered_cut, scope_source, SimpleNamespace(scope=scope)
+    )
 
 
 @pytest.mark.parametrize(

@@ -43,12 +43,186 @@ if TYPE_CHECKING:
     from .r14_recovery_publication import RetainedRecoveryPublication
 
 
+def _v3_accepted_cut_route(cut) -> str | None:
+    """Select the V3 semantic validator from the exact one-call terminal shape."""
+    from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+        CancelledBeforeAcceptResult,
+        ConsequentialAcceptedCall,
+        DefiniteFailureResult,
+        InitializedCall,
+        RecoveryRequiredResult,
+        SuccessResult,
+    )
+
+    if len(cut.frontier.ordered_calls) != 1:
+        return None
+    call = cut.frontier.ordered_calls[0]
+    if isinstance(call.acceptance, ConsequentialAcceptedCall):
+        if isinstance(call.disposition, (SuccessResult, DefiniteFailureResult)):
+            return (
+                "direct-terminal"
+                if not cut.original_closures and not cut.current_reductions
+                else None
+            )
+        if isinstance(call.disposition, RecoveryRequiredResult):
+            return (
+                "accepted-open"
+                if cut.original_closures and cut.current_reductions
+                else None
+            )
+        return None
+    if isinstance(call.acceptance, InitializedCall) and isinstance(
+        call.disposition, CancelledBeforeAcceptResult
+    ):
+        return (
+            "legacy-cancellation"
+            if not cut.original_closures and not cut.current_reductions
+            else None
+        )
+    return None
+
+
+def _selected_decision_matches_source(item, selected_decision: CallSubjectHead) -> bool:
+    """Join R16 effect sources by decision head while preserving their semantic ID."""
+    if item.selected_decision == selected_decision:
+        return True
+    if item.schema_id not in {
+        "chiplog.effects.dispatch-record.v2",
+        "chiplog.effects.dispatch-outcome-record.v2",
+        "chiplog.effects.external-action-intent.v2",
+    }:
+        return False
+    revision = item.selected_decision.revision
+    return (
+        revision == selected_decision.revision
+        and item.selected_decision.subject_id == revision.head
+    )
+
+
+def _selected_source_carrier_id(item) -> str:
+    """Resolve nested R16 intent children through their selected dispatch carrier."""
+    if item.schema_id == "chiplog.effects.external-action-intent.v2":
+        revision = item.physical_record.revision
+        if revision.kind != "PRESENT":
+            raise ValueError("selected external intent has no physical carrier revision")
+        return revision.head
+    return item.physical_record.subject_id
+
+
+def _external_intent_matches_dispatch_carrier(item, row) -> bool:
+    """Authenticate the nested intent bytes and reference against its dispatch row."""
+    from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2
+    from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
+
+    try:
+        dispatch = DispatchRecordV2.model_validate_json(row[3])
+        intent = dispatch.snapshot.intent
+        intent_bytes = intent.canonical_bytes()
+        expected = effects_reference(intent.intent_id, intent_bytes)
+        physical = item.physical_record
+        return (
+            row[1] == "effects"
+            and row[2] == "chiplog.effects.dispatch-record.v2"
+            and dispatch.canonical_bytes() == row[3]
+            and row[0] == dispatch.record.head
+            and item.owner == row[1]
+            and item.canonical_record_bytes == intent_bytes
+            and item.subject.subject_id == expected.subject_id
+            and item.subject.revision.kind == "PRESENT"
+            and item.subject.revision.head == expected.head
+            and item.subject.revision.fingerprint == expected.fingerprint
+            and physical.subject_id == dispatch.record.subject_id
+            and physical.revision.kind == "PRESENT"
+            and physical.revision.head == dispatch.record.head
+            and physical.revision.fingerprint == dispatch.record.fingerprint
+        )
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _authenticated_scope_sources(cut, scope_source, authenticated) -> bool:
+    """Bind trust-journal child DTOs to the exact R17 historical scope."""
+    from types import SimpleNamespace
+
+    scope = authenticated.scope
+    trust_items = [
+        item
+        for item in cut.complete_sources
+        if item.owner == "deployment_trust"
+        and item.physical_record == scope_source.physical_record
+    ]
+    if len(trust_items) != 4:
+        return False
+    # Child DTOs share the scope's physical trust anchor but have their own
+    # semantic reference and bytes. Reconstruct each from authenticated scope.
+    children = (
+        (
+            "chiplog.native-recovery.selected-admission.v1",
+            scope.selected_admission_bytes,
+            scope.selected_admission_ref,
+        ),
+        (
+            "chiplog.native-recovery.recipient.v1",
+            scope.recipient.canonical_bytes(),
+            SimpleNamespace(
+                subject_id=(
+                    "native-recipient:"
+                    + hashlib.sha256(scope.recipient.canonical_bytes()).hexdigest()
+                ),
+                head="record:" + hashlib.sha256(scope.recipient.canonical_bytes()).hexdigest(),
+                fingerprint=hashlib.sha256(scope.recipient.canonical_bytes()).hexdigest(),
+            ),
+        ),
+        (
+            "chiplog.native-one-call-context-policy.v1",
+            scope.disclosure_policy.canonical_source_bytes,
+            scope.disclosure_policy.ref,
+        ),
+    )
+    if (
+        scope_source.schema_id != scope.schema_id
+        or scope_source.canonical_record_bytes != scope.canonical_bytes()
+        or scope_source.subject.subject_id != scope.scope_id
+    ):
+        return False
+    for schema, raw, reference in children:
+        matches = [item for item in trust_items if item.schema_id == schema]
+        if len(matches) != 1:
+            return False
+        item = matches[0]
+        reference_identity = getattr(reference, "subject_id", None) or getattr(
+            reference, "identity", None
+        )
+        reference_revision = getattr(reference, "revision", None)
+        reference_head = getattr(reference, "head", None) or getattr(
+            reference_revision, "head", None
+        )
+        reference_fingerprint = getattr(reference, "fingerprint", None) or getattr(
+            reference_revision, "fingerprint", None
+        )
+        if schema == "chiplog.native-one-call-context-policy.v1":
+            reference_identity = "native-context-policy:" + reference_fingerprint
+        if (
+            item.canonical_record_bytes != raw
+            or item.subject.subject_id != reference_identity
+            or item.subject.revision.kind != "PRESENT"
+            or item.subject.revision.head != reference_head
+            or item.subject.revision.fingerprint != reference_fingerprint
+            or item.selected_decision != scope_source.selected_decision
+            or item.physical_record != scope_source.physical_record
+        ):
+            return False
+    return True
+
+
 def _authenticate_v3_accepted_cut(
     runtime: CommonCliExecutionRuntime,
     evidence: RetainedRecoveryPublication,
     cut,
     rows,
     members,
+    *,
+    direct_terminal: bool,
 ) -> bool:
     """Revalidate the selected accepted cut's exact source carriers and owner join."""
     from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
@@ -66,7 +240,8 @@ def _authenticate_v3_accepted_cut(
     from chiplog.composition.r17_native_one_call_scope import NativeOneCallScopeService
 
     try:
-        if not cut.original_closures or not cut.current_reductions:
+        expected_route = "direct-terminal" if direct_terminal else "accepted-open"
+        if _v3_accepted_cut_route(cut) != expected_route:
             return False
         validate_native_recovery_cut(cut)
         rows_by_id = {row[0]: row for row in rows}
@@ -74,18 +249,24 @@ def _authenticate_v3_accepted_cut(
             return False
         carriers = {}
         for item in cut.complete_sources:
-            record_id = item.physical_record.subject_id
+            if item.owner == "deployment_trust":
+                continue
+            record_id = _selected_source_carrier_id(item)
             row = rows_by_id.get(record_id)
             if row is None:
                 return False
             selected_record, selected_decision = members[record_id]
             if (
                 item.owner != row[1]
-                or item.physical_record.revision.fingerprint
-                != hashlib.sha256(row[3]).hexdigest()
-                or item.selected_decision != selected_decision
-                or item.subject.revision.fingerprint
-                != hashlib.sha256(item.canonical_record_bytes).hexdigest()
+                or (
+                    not _external_intent_matches_dispatch_carrier(item, row)
+                    if item.schema_id == "chiplog.effects.external-action-intent.v2"
+                    else (
+                        item.physical_record.revision.fingerprint
+                        != hashlib.sha256(row[3]).hexdigest()
+                    )
+                )
+                or not _selected_decision_matches_source(item, selected_decision)
                 or selected_record.owner != row[1]
                 or (
                     selected_record.owner,
@@ -130,6 +311,18 @@ def _authenticate_v3_accepted_cut(
         if authenticated is None:
             return False
         if bind_native_prepare_scope(authenticated) != bind_native_prepare_scope(selected[0]):
+            return False
+        anchor = selected[0].anchor
+        if (
+            scope_source.selected_decision.subject_id != anchor.decision.identity
+            or scope_source.selected_decision.revision.head != anchor.decision.head
+            or scope_source.selected_decision.revision.fingerprint != anchor.decision.fingerprint
+            or scope_source.physical_record.subject_id != anchor.record.identity
+            or scope_source.physical_record.revision.head != anchor.record.head
+            or scope_source.physical_record.revision.fingerprint != anchor.record.fingerprint
+        ):
+            return False
+        if not _authenticated_scope_sources(cut, scope_source, authenticated):
             return False
 
         accounting = prepare_execution_accounting(evidence.accounting_request)
@@ -290,12 +483,20 @@ def authenticate_native_recovery_selected(
                 for row in rows
                 if row[2] == "chiplog.execution.native-one-call-recovery-profile.v3"
             ]
-            if v3_profiles and cut.original_closures:
+            if v3_profiles:
                 if len(v3_profiles) != 1:
                     return False
-                return _authenticate_v3_accepted_cut(
-                    runtime, evidence, cut, rows, members
-                )
+                route = _v3_accepted_cut_route(cut)
+                if route == "direct-terminal":
+                    return _authenticate_v3_accepted_cut(
+                        runtime, evidence, cut, rows, members, direct_terminal=True
+                    )
+                if route == "accepted-open":
+                    return _authenticate_v3_accepted_cut(
+                        runtime, evidence, cut, rows, members, direct_terminal=False
+                    )
+                if route != "legacy-cancellation":
+                    return False
             accounting = [
                 (item, selected)
                 for _, _, item, selected in selections
