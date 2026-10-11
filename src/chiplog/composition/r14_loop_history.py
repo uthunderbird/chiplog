@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import sqlite3
+from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, cast
 
 from chiplog.adapters.driven.loop_sqlite import OWNER, LoopIntegrityError
@@ -540,6 +541,7 @@ def _read_call_history(
                         "agent_loop.execution-accounting-readiness.v1",
                         "agent_loop.execution-next-turn.v1",
                         "agent_loop.execution-suspension.v1",
+                        "agent_loop.execution-resume.v1",
                         "agent_loop.accepted-open-accounting.v1",
                         "agent_loop.accepted-open-recovery.v1",
                         "agent_loop.accepted-direct-terminal.v1",
@@ -550,6 +552,7 @@ def _read_call_history(
                         "agent_loop.native-one-call-recovery-profile.v1",
                         "agent_loop.native-one-call-recovery-profile.v2",
                         "agent_loop.native-one-call-recovery-profile.v3",
+                        "agent_loop.native-one-call-recovery-profile.v4",
                         EXECUTION_TRANSITION_OPERATION,
                         EXECUTION_INBOX_INITIALIZATION_OPERATION,
                         EXECUTION_FANOUT_OPERATION,
@@ -690,6 +693,76 @@ def _read_call_history(
                         expected_publications.add((command.operation_kind, identity))
                         continue
                     if (
+                        command.operation_kind == "agent_loop.execution-resume.v1"
+                        or "execution_resume_evidence" in entry
+                    ):
+                        from chiplog.composition.r14_execution_resume import (
+                            OPERATION as RESUME_OPERATION,
+                        )
+                        from chiplog.composition.r14_execution_resume import (
+                            _command as resume_command,
+                        )
+                        from chiplog.composition.r14_execution_resume import (
+                            _entry_for as resume_entry_for,
+                        )
+                        from chiplog.composition.r14_execution_resume import (
+                            _retained as retained_resume,
+                        )
+                        from chiplog.composition.r14_execution_resume import (
+                            _run_ref as resume_run_ref,
+                        )
+                        from chiplog.composition.r14_execution_resume import (
+                            _validate_selected as validate_resume,
+                        )
+
+                        if command.operation_kind != RESUME_OPERATION:
+                            raise ValueError("execution resume has a substituted operation")
+                        retained_entry = resume_entry_for(runtime, identity)
+                        if retained_entry is None:
+                            raise ValueError("selected execution resume entry is absent")
+                        retained = retained_resume(retained_entry[2])
+                        request = retained.request
+                        before = request.run
+                        proposed = retained.result.run
+                        previous = latest.get(before.run_id)
+                        prior_lineage = tuple(
+                            row
+                            for row in mixed_records
+                            if isinstance(row, ExecutionRunRecord) and row.run_id == before.run_id
+                        )
+                        if (
+                            replace(
+                                resume_command(retained), expected_preimage_commitment=None
+                            )
+                            != command
+                            or request.cut.tenant_id != tenant
+                            or request.cut.tenant_commit_sequence != command.expected_head
+                            or request.cut.materialization_commitment != entry.get("predecessor")
+                            or request.cut.current_run != resume_run_ref(before)
+                            or request.cut.complete_ordered_run_lineage != prior_lineage
+                            or before != previous
+                            or before.state != "SUSPENDED"
+                            or proposed.state != "ACTIVE"
+                            or proposed.run_id != before.run_id
+                            or proposed.predecessor != before.head
+                            or proposed.turns != before.turns
+                            or proposed.original_obligations != before.original_obligations
+                            or proposed.no_retry_references != before.no_retry_references
+                            or proposed.suspension_baseline != before.suspension_baseline
+                            or proposed.root_binding != "NOT_APPLICABLE"
+                        ):
+                            raise ValueError(
+                                "selected execution resume differs from exact Run history"
+                            )
+                        validate_resume(runtime, retained_entry[2], command, check_history=False)
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        latest[proposed.run_id] = proposed
+                        mixed_records.append(proposed)
+                        continue
+                    if (
                         command.operation_kind == "agent_loop.execution-suspension.v1"
                         or "execution_suspension_evidence" in entry
                     ):
@@ -726,21 +799,40 @@ def _read_call_history(
                             for row in mixed_records
                             if isinstance(row, ExecutionRunRecord) and row.run_id == proposed.run_id
                         )
-                        if (
-                            suspension_command(retained) != command
-                            or evidence.cut.tenant_id != tenant
-                            or evidence.cut.tenant_commit_sequence != command.expected_head
-                            or evidence.cut.materialization_commitment != entry.get("predecessor")
-                            or evidence.run != previous
-                            or not isinstance(previous, ExecutionRunRecord)
-                            or evidence.cut.current_run != suspension_run_ref(previous)
-                            or evidence.cut.complete_ordered_run_lineage != prior_lineage
-                            or proposed.state != "SUSPENDED"
-                            or proposed.predecessor != previous.head
-                            or proposed.root_binding != "NOT_APPLICABLE"
-                            or any(row.root_binding != "NOT_APPLICABLE" for row in prior_lineage)
-                        ):
-                            raise ValueError("selected execution suspension source lineage differs")
+                        previous_run_ref = (
+                            suspension_run_ref(previous)
+                            if isinstance(previous, ExecutionRunRecord)
+                            else None
+                        )
+                        suspension_checks = {
+                            "command": replace(
+                                suspension_command(retained),
+                                expected_preimage_commitment=None,
+                            )
+                            == command,
+                            "tenant": evidence.cut.tenant_id == tenant,
+                            "sequence": evidence.cut.tenant_commit_sequence
+                            == command.expected_head,
+                            "predecessor": evidence.cut.materialization_commitment
+                            == entry.get("predecessor"),
+                            "run": evidence.run == previous,
+                            "previous_type": isinstance(previous, ExecutionRunRecord),
+                            "current_ref": evidence.cut.current_run == previous_run_ref,
+                            "lineage": evidence.cut.complete_ordered_run_lineage == prior_lineage,
+                            "suspended": proposed.state == "SUSPENDED",
+                            "run_predecessor": proposed.predecessor == previous.head,
+                            "root": proposed.root_binding == "NOT_APPLICABLE",
+                            "lineage_root": all(
+                                row.root_binding == "NOT_APPLICABLE" for row in prior_lineage
+                            ),
+                        }
+                        if not all(suspension_checks.values()):
+                            failed = ",".join(
+                                name for name, passed in suspension_checks.items() if not passed
+                            )
+                            raise ValueError(
+                                "selected execution suspension source lineage differs: " + failed
+                            )
                         validate_suspension(
                             runtime,
                             retained_entry[2],
@@ -874,6 +966,7 @@ def _read_call_history(
                             "agent_loop.native-one-call-recovery-profile.v1",
                             "agent_loop.native-one-call-recovery-profile.v2",
                             "agent_loop.native-one-call-recovery-profile.v3",
+                            "agent_loop.native-one-call-recovery-profile.v4",
                         )
                         or "native_recovery_profile_evidence" in entry
                     ):
@@ -1999,6 +2092,8 @@ def validate_selected_executions(runtime: R14PlanningRuntime) -> None:
                 EXECUTION_COMPLETE_SEAL_OPERATION,
                 EXECUTION_INBOX_INITIALIZATION_OPERATION,
                 "agent_loop.execution-next-turn.v1",
+                "agent_loop.execution-suspension.v1",
+                "agent_loop.execution-resume.v1",
             )
             or "execution_transition" in entry
             or "execution_fanout" in entry
@@ -2014,6 +2109,8 @@ def validate_selected_executions(runtime: R14PlanningRuntime) -> None:
                 EXECUTION_COMPLETE_SEAL_OPERATION,
                 EXECUTION_INBOX_INITIALIZATION_OPERATION,
                 "agent_loop.execution-next-turn.v1",
+                "agent_loop.execution-suspension.v1",
+                "agent_loop.execution-resume.v1",
             ):
                 raise LoopIntegrityError(
                     f"operation=startup_execution tenant={runtime._tenant_id} "

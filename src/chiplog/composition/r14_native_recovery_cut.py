@@ -23,17 +23,21 @@ from chiplog.capabilities.agent_loop.execution_recovery_observations import (
     RecoveryCausalChange,
     RecoverySourceRecord,
     SealedResponseRecoveryView,
+    SelectedExecutionSuspension,
 )
 from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     SCHEMA,
     SCHEMA_V2,
     SCHEMA_V3,
+    SCHEMA_V4,
     NativeOneCallRecoveryProfileV1,
     NativeOneCallRecoveryProfileV2,
     NativeOneCallRecoveryProfileV3,
+    NativeOneCallRecoveryProfileV4,
     decode_native_one_call_recovery_profile,
     decode_native_one_call_recovery_profile_v2,
     decode_native_one_call_recovery_profile_v3,
+    decode_native_one_call_recovery_profile_v4,
     native_recovery_fingerprint,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import (
@@ -540,11 +544,33 @@ class NativeRecoveryCutSource:
         runtime._authority_gate().require_held()
         try:
             with join_workspace_snapshot(runtime._database):
-                return self._collect_held(runtime)
+                result = self._collect_held(runtime)
+                return result if isinstance(result, ExecutionRecoveryCut) else None
         except OSError, RuntimeError, TypeError, ValueError, R16InventoryIntegrityError:
             return None
 
-    def _collect_held(self, runtime: CommonCliExecutionRuntime) -> ExecutionRecoveryCut | None:
+    def collect_for_resume_held(
+        self, runtime: CommonCliExecutionRuntime
+    ) -> tuple[ExecutionRecoveryCut, SelectedExecutionSuspension] | None:
+        if type(runtime) is not CommonCliExecutionRuntime:
+            raise TypeError("native recovery cut requires the mounted CLI runtime")
+        runtime._authority_gate().require_held()
+        try:
+            with join_workspace_snapshot(runtime._database):
+                result = self._collect_held(runtime, allow_suspended=True)
+            if (
+                isinstance(result, tuple)
+                and len(result) == 2
+                and isinstance(result[1], SelectedExecutionSuspension)
+            ):
+                return result
+        except OSError, RuntimeError, TypeError, ValueError, R16InventoryIntegrityError:
+            return None
+        return None
+
+    def _collect_held(
+        self, runtime: CommonCliExecutionRuntime, *, allow_suspended: bool = False
+    ) -> ExecutionRecoveryCut | tuple[ExecutionRecoveryCut, SelectedExecutionSuspension] | None:
         runtime._check_database_identity()
         if runtime._pending() or runtime._pending_gate_publications():
             return None
@@ -557,12 +583,15 @@ class NativeRecoveryCutSource:
                 read_native_recovery_profile_held,
             )
         profile_source = profile_reader(runtime)
-        if profile_source is None or profile_source.schema_id not in (SCHEMA, SCHEMA_V2, SCHEMA_V3):
+        if profile_source is None or profile_source.schema_id not in (
+            SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4
+        ):
             return None
         profile: (
             NativeOneCallRecoveryProfileV1
             | NativeOneCallRecoveryProfileV2
             | NativeOneCallRecoveryProfileV3
+            | NativeOneCallRecoveryProfileV4
         )
         if profile_source.schema_id == SCHEMA:
             profile = decode_native_one_call_recovery_profile(profile_source.canonical_record_bytes)
@@ -570,8 +599,12 @@ class NativeRecoveryCutSource:
             profile = decode_native_one_call_recovery_profile_v2(
                 profile_source.canonical_record_bytes
             )
-        else:
+        elif profile_source.schema_id == SCHEMA_V3:
             profile = decode_native_one_call_recovery_profile_v3(
+                profile_source.canonical_record_bytes
+            )
+        else:
+            profile = decode_native_one_call_recovery_profile_v4(
                 profile_source.canonical_record_bytes
             )
         subset = R14NativeRecoverySourceSubsetReader(runtime).collect()
@@ -662,17 +695,36 @@ class NativeRecoveryCutSource:
             for row in snapshot.records
             if isinstance(row, ExecutionRunRecord) and row.run_id == scope.planned_run_id
         )
+        suspension_suffix = (
+            lineage[-1].state == "SUSPENDED"
+            if lineage
+            else False
+        )
+        authenticated_lineage = lineage[:-1] if suspension_suffix else lineage
         if (
             not lineage
-            or tuple(_run_ref(row) for row in lineage) != facts.source.target_run_lineage
+            or tuple(_run_ref(row) for row in authenticated_lineage)
+            != facts.source.target_run_lineage
         ):
             return None
         run = lineage[-1]
+        selected_suspension = None
+        if run.state == "SUSPENDED":
+            if not allow_suspended:
+                return None
+            selected_suspension = self._selected_suspension_for_run(runtime, run)
+            if selected_suspension is None or (
+                selected_suspension.pair.suspended_run != _run_ref(run)
+                or run.suspension_baseline != selected_suspension.pair.baseline
+                or selected_suspension.baseline.original_obligations
+                or selected_suspension.baseline.activation_blocking_predicates
+            ):
+                return None
+        elif run.state != "ACTIVE" or run.suspension_baseline is not None:
+            return None
         if (
-            run.state != "ACTIVE"
-            or run.worker_session != scope.worker_session_id
+            run.worker_session != scope.worker_session_id
             or run.root_binding != "NOT_APPLICABLE"
-            or run.suspension_baseline is not None
             or run.original_obligations
             or run.no_retry_references
             or run.delivery_acceptance is not None
@@ -720,6 +772,26 @@ class NativeRecoveryCutSource:
         native_sources: dict[str, list[RecoverySourceRecord]] = {}
         for source in subset.execution_sources:
             native_sources.setdefault(_physical_inventory_id(source), []).append(source)
+        if suspension_suffix:
+            suspended_record = lineage[-1]
+            selection = selected.get(suspended_record.head)
+            raw = suspended_record.canonical_bytes()
+            if selection is None or (
+                selection[0].owner,
+                selection[0].schema_id,
+                selection[0].canonical_bytes,
+            ) != ("agent_loop", suspended_record.schema_id, raw):
+                return None
+            native_sources.setdefault(suspended_record.head, []).append(
+                RecoverySourceRecord(
+                    owner="agent_loop",
+                    subject=_ref(suspended_record.run_id, raw, suspended_record.head),
+                    schema_id=suspended_record.schema_id,
+                    canonical_record_bytes=raw,
+                    selected_decision=selection[1],
+                    physical_record=_ref(suspended_record.head, raw),
+                )
+            )
         additional_sources = list(subset.accepted_effect_sources)
         if accepted_inputs is not None:
             additional_sources.extend(accepted_inputs[3])
@@ -909,6 +981,40 @@ class NativeRecoveryCutSource:
         if by_id.get(profile_source.physical_record.subject_id) != profile_source:
             return None
         known = set(native_sources) | {profile_source.physical_record.subject_id}
+        if selected_suspension is not None:
+            from .r14_execution_suspension import BASELINE_SCHEMA, PAIR_SCHEMA
+
+            selected_members = (
+                (
+                    selected_suspension.baseline.baseline_id,
+                    BASELINE_SCHEMA,
+                    selected_suspension.baseline.canonical_bytes(),
+                ),
+                (
+                    selected_suspension.selected_pair.subject_id,
+                    PAIR_SCHEMA,
+                    selected_suspension.canonical_pair_bytes,
+                ),
+            )
+            for record_id, schema_id, raw in selected_members:
+                selection = selected.get(record_id)
+                if selection is None or (
+                    selection[0].owner,
+                    selection[0].schema_id,
+                    selection[0].canonical_bytes,
+                ) != ("agent_loop", schema_id, raw):
+                    return None
+                native_sources.setdefault(record_id, []).append(
+                    RecoverySourceRecord(
+                        owner="agent_loop",
+                        subject=_ref(record_id, raw),
+                        schema_id=schema_id,
+                        canonical_record_bytes=raw,
+                        selected_decision=selected_suspension.selected_decision,
+                        physical_record=_ref(record_id, raw),
+                    )
+                )
+                known.add(record_id)
         if subset.selected_accounting is not None:
             known.add(subset.selected_accounting.record_id)
         # These records have already crossed the mounted history decoder's
@@ -924,6 +1030,33 @@ class NativeRecoveryCutSource:
         )
         authenticated_commands: dict[str, tuple[str, str, bytes]] = {}
         authenticated_call_publication_ids: set[str] = set()
+        if selected_suspension is not None:
+            suspension_entry = next(
+                (
+                    json.loads(raw)
+                    for _, _, raw in runtime._loop_decisions().entries()
+                    if json.loads(raw).get("kind") == "DECIDED"
+                    and json.loads(raw).get("operation_kind")
+                    == "agent_loop.execution-suspension.v1"
+                    and json.loads(raw).get("operation_id")
+                    == selected_suspension.pair.suspension_command_id
+                ),
+                None,
+            )
+            if suspension_entry is None:
+                return None
+            from .r14_execution_suspension import _retained as retained_suspension
+
+            suspension_evidence = retained_suspension(suspension_entry)
+            selected_suspension_command = suspension_evidence.owner_call
+            selected_decision_id = selected_suspension.selected_decision.revision.head
+            authenticated_commands[
+                f"selected/{selected_decision_id}/command/0"
+            ] = (
+                selected_suspension_command.callee.owner_id,
+                selected_suspension_command.schema_id,
+                selected_suspension_command.canonical_payload,
+            )
         if subset.authenticated_acceptances:
             from chiplog.composition.r14_call_batch import (
                 LOOP_PREPARATION_SCHEMA,
@@ -1072,6 +1205,8 @@ class NativeRecoveryCutSource:
         runtime._check_database_identity()
         if runtime._commitment_journal.load(runtime._tenant_id) != inventory.commitment:
             return None
+        if selected_suspension is not None:
+            return cut, selected_suspension
         return cut
 
     @staticmethod
@@ -1543,7 +1678,8 @@ class NativeRecoveryCutSource:
         source_by_subject = {row.subject.revision.head: row for row in physical_sources}
         prior = None
         for row in lineage:
-            if row.event not in profile.causal_transitions:
+            transition = "ExecutionSuspension" if row.state == "SUSPENDED" else row.event
+            if transition not in profile.causal_transitions:
                 raise ValueError(f"unregistered native causal Run transition: {row.event}")
             successor = _run_ref(row)
             source = source_by_subject[successor.revision.head]
@@ -1555,7 +1691,7 @@ class NativeRecoveryCutSource:
                     successor=successor,
                     causal_parents=(admitted,) if prior is None else (prior,),
                     transition_registry=profile_source.subject,
-                    transition_id=row.event,
+                    transition_id=transition,
                     source=source,
                 )
             )
@@ -1628,9 +1764,37 @@ class NativeRecoveryCutSource:
         )
         value = cut.model_dump(mode="json")
         del value["complete_inventory_fingerprint"]
-        return cut.model_copy(
+        cut = cut.model_copy(
             update={"complete_inventory_fingerprint": native_recovery_fingerprint("cut", value)}
         )
+        return cut
+
+    @staticmethod
+    def _selected_suspension_for_run(
+        runtime: CommonCliExecutionRuntime, run: ExecutionRunRecord
+    ) -> SelectedExecutionSuspension | None:
+        from .r14_execution_suspension import (
+            OPERATION,
+            _command,
+            _retained,
+            _validate_selected,
+        )
+
+        selected = []
+        for decision_id, _, raw in runtime._loop_decisions().entries():
+            entry = json.loads(raw)
+            if entry.get("kind") != "DECIDED" or entry.get("operation_kind") != OPERATION:
+                continue
+            entry["decision_id"] = str(decision_id)
+            entry["decision_bytes"] = raw
+            evidence = _retained(entry)
+            if evidence.result.run != run:
+                continue
+            _, suspension = _validate_selected(
+                runtime, entry, _command(evidence), check_history=False
+            )
+            selected.append(suspension)
+        return selected[0] if len(selected) == 1 else None
 
     def _assemble_accepted(
         self,

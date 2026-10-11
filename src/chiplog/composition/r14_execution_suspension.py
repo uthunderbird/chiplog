@@ -166,9 +166,9 @@ def _command(evidence: RetainedExecutionSuspension) -> PhysicalPublicationComman
 def _selected_decision(entry: dict[str, object]) -> CallSubjectHead:
     decision_id = entry.get("decision_id")
     decision_bytes = entry.get("decision_bytes")
-    if not isinstance(decision_id, str) or not isinstance(decision_bytes, str):
+    if not isinstance(decision_id, str) or not isinstance(decision_bytes, (str, bytes)):
         raise ValueError("suspension selected decision reference absent")
-    raw = decision_bytes.encode()
+    raw = decision_bytes.encode() if isinstance(decision_bytes, str) else decision_bytes
     return CallSubjectHead(
         subject_id=str(entry["operation_id"]),
         revision=Present(head=decision_id, fingerprint=_sha(raw)),
@@ -217,7 +217,8 @@ def _validate_selected(
     evidence = _retained(entry)
     command = _command(evidence)
     if (
-        command != physical_command
+        replace(command, expected_preimage_commitment=None)
+        != replace(physical_command, expected_preimage_commitment=None)
         or entry.get("fingerprint") != command.request_fingerprint
         or int(entry.get("expected_head", -1)) != command.expected_head
         or entry.get("predecessor") != evidence.request.cut.materialization_commitment
@@ -278,7 +279,7 @@ def _validate_selected(
         selected_pair=CallSubjectHead(
             subject_id=pair_record.record_id,
             revision=Present(
-                head="record:" + pair_record.fingerprint,
+                head=pair_record.record_id,
                 fingerprint=pair_record.fingerprint,
             ),
         ),

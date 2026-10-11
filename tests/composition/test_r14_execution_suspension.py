@@ -2,10 +2,18 @@
 
 import pytest
 
-from chiplog.architecture.r7_runtime import R14_EXECUTION_SUSPENSION_V35_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import (
+    R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST,
+    R14_EXECUTION_SUSPENSION_V35_PRODUCTION_MANIFEST,
+)
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
+from chiplog.composition.r14_loop_history import read_execution_history
+from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
+from chiplog.composition.r14_recovery_profile_publication import publish_native_recovery_profile
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from tests.support.native_cancelled import native_response, selected_native_cancelled
 
 
 async def test_mounted_suspension_holds_without_authenticated_active_run(tmp_path):
@@ -22,3 +30,50 @@ async def test_mounted_suspension_holds_without_authenticated_active_run(tmp_pat
             await runtime.suspend_execution("missing-run", "missing-head", ())
         assert runtime._commitment_journal.load(runtime._tenant_id) == before
         assert runtime.read_selected_execution_suspension() is None
+
+
+async def test_mounted_same_run_resume_reopens_the_selected_suspension(tmp_path):
+    database = tmp_path / "resume.sqlite"
+    custody = tmp_path / "custody"
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=custody
+    )
+    source = NativeRecoveryCutSource()
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        responses=(native_response(),),
+        manifest=R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST,
+        recovery_cut_source=source,
+    ) as runtime:
+        await publish_native_recovery_profile(runtime, version="v4")
+        await selected_native_cancelled(runtime)
+        await runtime.publish_native_one_call_cancelled_accounting()
+        history = read_execution_history(runtime)
+        run = next(
+            row for row in reversed(history.records) if isinstance(row, ExecutionRunRecord)
+        )
+        suspension = await runtime.suspend_execution(run.run_id, run.head, ())
+        suspended_head = suspension.pair.suspended_run.revision.head
+
+        resumed = await runtime.resume_execution(
+            run.run_id, suspended_head, b"resume-the-same-run"
+        )
+
+        assert resumed.run_id == run.run_id
+        assert resumed.state == "ACTIVE"
+        assert resumed.predecessor == suspended_head
+        assert resumed.turns == run.turns
+        assert runtime.read_selected_execution_resume() == resumed
+
+    resources_after_reopen = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=custody
+    )
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources_after_reopen,
+        manifest=R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST,
+        recovery_cut_source=source,
+    ) as reopened:
+        assert reopened.read_selected_execution_resume() == resumed
+        assert reopened.read_selected_execution_suspension() == suspension

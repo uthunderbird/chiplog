@@ -300,6 +300,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 (AGENT_LOOP_OWNER, "chiplog.execution.accepted-direct-terminal-accounting.v1"),
                 (AGENT_LOOP_OWNER, "chiplog.execution.accepted-direct-terminal-disposition.v1"),
                 (AGENT_LOOP_OWNER, "chiplog.execution.accepted-direct-terminal-result.v1"),
+                (AGENT_LOOP_OWNER, "chiplog.execution.suspension-baseline.v2"),
+                (AGENT_LOOP_OWNER, "chiplog.execution.suspension-pair.v2"),
             )
         )
     )
@@ -1112,6 +1114,27 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         return await suspend_execution(
             self, peer, run_id, expected_head, activation_blocking_predicates
         )
+
+    async def resume_execution(
+        self,
+        run_id: str,
+        expected_head: str,
+        activation_payload: bytes,
+        peer: str = "hermetic-ingress",
+    ):
+        from chiplog.composition.r14_execution_resume import resume_execution
+
+        return await resume_execution(
+            self, peer, run_id, expected_head, activation_payload
+        )
+
+    def read_selected_execution_resume(self):
+        from chiplog.composition.r14_execution_resume import (
+            read_selected_execution_resume_held,
+        )
+
+        with self._authority_gate().hold():
+            return read_selected_execution_resume_held(self)
 
     def read_selected_execution_suspension(self):
         from chiplog.composition.r14_execution_suspension import (
