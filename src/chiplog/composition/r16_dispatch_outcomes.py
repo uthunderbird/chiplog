@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 from typing import TYPE_CHECKING, Literal
 
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.effects.contracts import CommandIdentity, ExactHead
 from chiplog.capabilities.effects.dispatch_authority_contracts import DispatchObservationDTO
 from chiplog.capabilities.effects.dispatch_outcome_contracts import (
@@ -15,10 +16,13 @@ from chiplog.capabilities.effects.dispatch_outcome_contracts import (
 )
 from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
 from chiplog.capabilities.effects.dispatch_v2 import canonical, digest, reference
-from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.composition.r16_denial_inputs import require_invocation
-from chiplog.composition.r16_dispatch_history import verify_dispatch_history
-from chiplog.composition.r16_dispatch_outbox import _request, _send, validate_consumptions
+from chiplog.composition.r16_dispatch_outbox import (
+    _capture_sources,
+    _request,
+    _send,
+    validate_consumptions,
+)
 from chiplog.composition.r16_dispatch_publication import authenticate, owner_call
 from chiplog.composition.r16_effects import MaterializedEffectsCut, read_materialized_effects
 from chiplog.composition.r16_effects_authority import effect_materialization_state
@@ -285,9 +289,7 @@ class OutcomeAuthority:
                 if self.runtime._supervisor.runtime().session("effects") != self.owner_session:
                     return "STALE"
                 validate_consumptions(self.runtime)
-                current = read_materialized_effects(
-                    self.runtime, self.runtime._owner_decisions()
-                )
+                current = read_materialized_effects(self.runtime, self.runtime._owner_decisions())
                 if current != self.cut:
                     return "STALE"
                 self.preflighted = prepared
@@ -315,7 +317,7 @@ class OutcomeAuthority:
             return None
         except LoopRejected:
             return "STALE"
-        except (ValueError, RuntimeError, OSError, KeyError):
+        except ValueError, RuntimeError, OSError, KeyError:
             return "INDETERMINATE"
 
     def materialization_state(
@@ -377,10 +379,11 @@ async def publish_outcome(
                 tenant_commit_sequence=existing.tenant_commit_sequence,
                 complete_records=existing.prepared.request.complete_records,
             )
-        validate_consumptions(runtime)
-        _, send = _send(runtime, intent_id)
-        cut = read_materialized_effects(runtime, runtime._owner_decisions())
-        history = verify_dispatch_history(cut, runtime._owner_decisions().snapshot())
+        sources = _capture_sources(runtime)
+        validate_consumptions(runtime, sources.journal)
+        _, send = _send(runtime, intent_id, sources)
+        cut = sources.cut
+        history = sources.dispatch
         latest = next(
             record
             for record in reversed(history.v2_records)
