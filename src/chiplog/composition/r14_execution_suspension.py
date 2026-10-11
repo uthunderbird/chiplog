@@ -411,14 +411,23 @@ async def suspend_execution(
             actor_budget_v1=actor_budget,
         )
         batch = _command(evidence)
+        source_cut_validated = False
 
         def guard():
+            nonlocal source_cut_validated
             with runtime._authority_gate().hold():
                 try:
                     runtime._check_execution_actor(actor)
-                    current = source(runtime).collect_held(runtime)
-                    if current != cut:
-                        return "STALE"
+                    if not source_cut_validated:
+                        current = source(runtime).collect_held(runtime)
+                        if current != cut:
+                            return "STALE"
+                        # SQLiteMaterializer holds this same authority gate
+                        # continuously from admission through decision and
+                        # commit. Reuse the authenticated pre-publication cut
+                        # within this one submit, while retaining the live
+                        # actor and runtime fences below at both callbacks.
+                        source_cut_validated = True
                     if runtime.current_worker() != worker:
                         return "STALE"
                     if runtime._supervisor.runtime().session("agent_loop") != session:

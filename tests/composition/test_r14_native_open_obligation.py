@@ -8,21 +8,24 @@ from pathlib import Path
 import pytest
 
 from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
-from chiplog.architecture.r7_runtime import R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST
+from chiplog.architecture.r7_runtime import (
+    R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
+    R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+)
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallPreparationRejected
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.direct_terminal_contracts import (
     AcceptedDirectTerminalCutV1,
     PrepareAcceptedDirectTerminalV1,
 )
+from chiplog.capabilities.agent_loop.direct_terminal_preparation import (
+    prepare_accepted_direct_terminal_v1,
+)
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PrepareAcceptedOpenAccounting,
     PrepareAcceptedOpenRecoveryV1,
     PreparedAcceptedOpenAccounting,
     PreparedAcceptedOpenRecoveryV1,
-)
-from chiplog.capabilities.agent_loop.direct_terminal_preparation import (
-    prepare_accepted_direct_terminal_v1,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
     prepare_accepted_open_accounting,
@@ -51,6 +54,7 @@ from chiplog.composition.r14_native_accepted_open_cut import (
 from chiplog.composition.r14_native_preparation_bindings import (
     bind_native_execution_preparation_v2,
 )
+from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
 from chiplog.composition.r14_native_selected_accounting_source import (
     R14NativeSelectedAccountingSource,
 )
@@ -90,8 +94,10 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         database,
         resources=resources,
         responses=(native_response(),),
-        manifest=R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
+        manifest=R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+        recovery_cut_source=NativeRecoveryCutSource(),
     ) as runtime:
+        await runtime.publish_native_recovery_profile(version="v5")
         wire = await admit_runtime_slot(runtime, "native-open-obligation")
         receipt = await runtime.drive_input(wire)
         started = await runtime.begin_execution(
@@ -273,6 +279,13 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         with pytest.raises(LoopRejected, match="OUTCOME_UNKNOWN/OPEN"):
             await runtime.start_next_execution_turn(sealed.run_id, sealed.head)
         assert len(resources.require_original_provider().transfers) == 1
+        with runtime._authority_gate().hold():
+            authenticated_cut = NativeRecoveryCutSource()._collect_held(runtime)
+        assert authenticated_cut is not None
+        assert len(authenticated_cut.frontier.ordered_calls) == 1
+        assert authenticated_cut.frontier.ordered_calls[0].disposition.obligation == (
+            joined.calls[0].disposition.obligation
+        )
         evidence_append = await runtime.observe_dispatch_outcome(intent_id)
         assert evidence_append.complete_records
         updated_outcomes = [
@@ -285,18 +298,43 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert updated_outcomes[-1].snapshot.state == "CONFIRMED"
         assert updated_outcomes[-1].snapshot.obligation.state == "OPEN"
         assert updated_outcomes[-1].snapshot.evidence[-1].observation == "PROVIDER_RECEIPT"
+        projection = R14OriginalNativePrepareSource(runtime).collect(seal_ref)
+        assert projection is not None
+        source = R14NativeSelectedAccountingSource(
+            runtime,
+            projection,
+            bind_native_execution_preparation_v2(projection),
+        )
         reopened_facts = source.collect_one_accepted_open_outcome(
             execution_run_head(sealed),
             expected_outcome_record_id=exact_open.outcome_record_id,
-            expected_selected_decision=exact_open.selected_member.selected_decision,
+            expected_selected_decision=CallSubjectHead(
+                subject_id=exact_open.selected_member.selected_decision.subject_id,
+                revision=Present(
+                    head=exact_open.selected_member.selected_decision.head,
+                    fingerprint=exact_open.selected_member.selected_decision.fingerprint,
+                ),
+            ),
+            expected_tenant_commit_sequence=exact_open.commit_sequence,
         )
         assert reopened_facts is not None
         assert reopened_facts.outcome == exact_open.outcome
-        assert reopened_facts.latest_outcome == updated_outcomes[-1]
-        assert reopened_facts.latest_outcome.snapshot.state == "CONFIRMED"
-        assert reopened_facts.latest_outcome.snapshot.obligation.state == "OPEN"
         assert (
-            reopened_facts.latest_selected_member.record_bytes
+            reopened_facts.latest_outcome.canonical_bytes()
+            == reopened_facts.latest_selected_member.record_bytes
+        )
+        assert reopened_facts.latest_outcome == exact_open.outcome
+        current_facts = source.collect_one_accepted_open_outcome(execution_run_head(sealed))
+        assert current_facts is not None
+        assert current_facts.outcome == exact_open.outcome
+        assert current_facts.latest_outcome.snapshot.state == "CONFIRMED"
+        assert current_facts.latest_outcome.snapshot.obligation.state == "OPEN"
+        assert (
+            current_facts.latest_outcome.canonical_bytes()
+            == updated_outcomes[-1].canonical_bytes()
+        )
+        assert (
+            current_facts.latest_selected_member.record_bytes
             == updated_outcomes[-1].canonical_bytes()
         )
         assert (
@@ -313,21 +351,23 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
             exact_open.selected_member.selected_decision.fingerprint
         )
         assert selected_recovery.accounting.batch_record_ids == exact_open.batch_record_ids
-        assert runtime.read_selected_accepted_open_frontier() == joined
-        assert joined.calls[0].disposition.recovered_outcome.outcome.kind == "ABSENT"
-        with pytest.raises(LoopRejected, match="HOLD"):
+        with pytest.raises(LoopRejected, match="OUTCOME_UNKNOWN/OPEN"):
             await runtime.start_next_execution_turn(sealed.run_id, sealed.head)
+        suspension = await runtime.suspend_execution(sealed.run_id, sealed.head, ())
+        assert suspension.pair.suspended_run.subject_id == sealed.run_id
+        assert suspension.baseline.original_obligations == (joined.calls[0].disposition.obligation,)
+        assert suspension.pair.suspended_run.revision.head
         assert len(resources.require_original_provider().transfers) == 1
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
-        manifest=R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
+        manifest=R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+        recovery_cut_source=NativeRecoveryCutSource(),
     ) as reopened:
-        assert reopened.read_selected_accepted_open_recovery() == selected_recovery
-        assert reopened.read_selected_accepted_open_frontier() == joined
-        assert joined.calls[0].disposition.recovered_outcome.outcome.kind == "ABSENT"
-        with pytest.raises(LoopRejected, match="HOLD"):
-            await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
+        assert reopened.read_selected_execution_suspension() == suspension
+        assert reopened.read_selected_execution_suspension().baseline.original_obligations == (
+            joined.calls[0].disposition.obligation,
+        )
         assert len(resources.require_original_provider().transfers) == 1
     with sqlite3.connect(database) as connection:
         record_id, canonical = connection.execute(

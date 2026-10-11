@@ -291,6 +291,36 @@ def _current_cut(
     return facts, cut
 
 
+def _cut_is_preserved_by_selected_suspension(
+    runtime,
+    retained: AcceptedOpenRecoveryCutV1,
+    current: AcceptedOpenRecoveryCutV1,
+    original_obligation,
+) -> bool:
+    """Accept only the selected suspension that carries this exact open obligation."""
+    retained_fields = retained.model_dump(mode="json")
+    current_fields = current.model_dump(mode="json")
+    suspension_fields = {"current_run", "current_run_bytes", "cut_fingerprint"}
+    if any(
+        retained_fields[key] != current_fields.get(key)
+        for key in retained_fields
+        if key not in suspension_fields
+    ):
+        return False
+    from chiplog.composition.r14_execution_suspension import (
+        read_selected_execution_suspension_held,
+    )
+
+    with runtime._authority_gate().hold():
+        suspension = read_selected_execution_suspension_held(runtime)
+    return bool(
+        suspension is not None
+        and suspension.pair.predecessor_run == retained.current_run
+        and suspension.pair.suspended_run == current.current_run
+        and original_obligation in suspension.baseline.original_obligations
+    )
+
+
 async def _finish(runtime, entry: dict[str, object]):
     from chiplog.composition.r14_loop_history import read_selected_accepted_open_accounting
 
@@ -769,8 +799,8 @@ async def publish_accepted_open_recovery(runtime, peer: str = "hermetic-ingress"
     return await _finish_recovery(runtime, entry)
 
 
-def validate_selected_accepted_open_recovery(runtime) -> None:
-    """Recompute every selected recovery publication before startup replay."""
+def _validated_selected_accepted_open_recovery(runtime):
+    """Validate each selected recovery publication and retain its exact frontier."""
     claimed = False
     selected = []
     for _, _, raw in runtime._loop_decisions().entries():
@@ -838,50 +868,48 @@ def validate_selected_accepted_open_recovery(runtime) -> None:
         )
         if current is None:
             raise LoopRejected("accepted/open recovery selected source cut differs")
+        accounting_cut = current[1]
         if current[1] != evidence.request.cut:
-            observed = current[1].model_dump(mode="json")
-            retained = evidence.request.cut.model_dump(mode="json")
-            differing = tuple(key for key in retained if retained[key] != observed.get(key))
-            raise LoopRejected(
-                "accepted/open recovery selected source cut differs: " + ",".join(differing)
-            )
-        _accepted_open_sealed_accounting(current[0], current[1], evidence.result)
-        selected.append(entry)
+            if not _cut_is_preserved_by_selected_suspension(
+                runtime,
+                evidence.request.cut,
+                current[1],
+                evidence.result.opening.original,
+            ):
+                observed = current[1].model_dump(mode="json")
+                retained = evidence.request.cut.model_dump(mode="json")
+                differing = tuple(key for key in retained if retained[key] != observed.get(key))
+                raise LoopRejected(
+                    "accepted/open recovery selected source cut differs: " + ",".join(differing)
+                )
+            accounting_cut = evidence.request.cut
+        accounting = _accepted_open_sealed_accounting(current[0], accounting_cut, evidence.result)
+        selected.append((entry, evidence, accounting))
     if claimed and len(selected) != 1:
         raise LoopRejected("ambiguous accepted/open recovery selection")
+    return selected[0] if selected else None
+
+
+def validate_selected_accepted_open_recovery(runtime) -> None:
+    """Recompute every selected recovery publication before startup replay."""
+    _validated_selected_accepted_open_recovery(runtime)
 
 
 def read_selected_accepted_open_frontier(runtime):
     """Return selected recovery accounting, with an exact outcome when resolved."""
-    from chiplog.composition.r14_loop_history import read_execution_recovery_history
     from chiplog.composition.r14_original_call_resolution_publication import (
         read_selected_original_call_resolution_source_held,
     )
 
     with runtime._authority_gate().hold():
-        read_execution_recovery_history(runtime)
-        validate_selected_accepted_open_recovery(runtime)
-        entries = [
-            json.loads(raw)
-            for _, _, raw in runtime._loop_decisions().entries()
-            if (entry := json.loads(raw)).get("kind") == "DECIDED"
-            and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
-        ]
-        if not entries:
+        runtime._require_no_pending()
+        validated = _validated_selected_accepted_open_recovery(runtime)
+        if validated is None:
+            # With no selected recovery record, retain the original reader's
+            # full selected execution-history validation before returning None.
+            read_execution_recovery_history(runtime)
             return None
-        evidence = retained_accepted_open_recovery(entries[0])
-        current = _current_cut(
-            runtime,
-            selected_only=True,
-            expected_source_cut=evidence.request.cut,
-            source_materialization_commitment=evidence.request.cut.materialization_commitment,
-            source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
-        )
-        if current is None:
-            raise LoopRejected("selected accepted/open frontier source is unavailable")
-        accounting = _accepted_open_sealed_accounting(
-            current[0], evidence.request.cut, evidence.result
-        )
+        _, evidence, accounting = validated
         resolution = read_selected_original_call_resolution_source_held(runtime)
         if resolution is None:
             return accounting
