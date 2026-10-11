@@ -492,6 +492,7 @@ class R14NativeSelectedAccountingSource:
         expected_outcome_record_id: str | None = None,
         expected_selected_decision: CallSubjectHead | None = None,
         expected_tenant_commit_sequence: int | None = None,
+        _accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join the retained OPEN cause to a still-open current R16 outcome."""
         return self._collect_one_accepted_outcome(
@@ -501,6 +502,7 @@ class R14NativeSelectedAccountingSource:
             expected_selected_decision=expected_selected_decision,
             expected_tenant_commit_sequence=expected_tenant_commit_sequence,
             current_obligation_state="OPEN",
+            accepted_facts=_accepted_facts,
         )
 
     def collect_one_accepted_closed_outcome(

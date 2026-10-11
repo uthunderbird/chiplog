@@ -30,14 +30,17 @@ from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     SCHEMA_V2,
     SCHEMA_V3,
     SCHEMA_V4,
+    SCHEMA_V5,
     NativeOneCallRecoveryProfileV1,
     NativeOneCallRecoveryProfileV2,
     NativeOneCallRecoveryProfileV3,
     NativeOneCallRecoveryProfileV4,
+    NativeOneCallRecoveryProfileV5,
     decode_native_one_call_recovery_profile,
     decode_native_one_call_recovery_profile_v2,
     decode_native_one_call_recovery_profile_v3,
     decode_native_one_call_recovery_profile_v4,
+    decode_native_one_call_recovery_profile_v5,
     native_recovery_fingerprint,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import (
@@ -584,7 +587,7 @@ class NativeRecoveryCutSource:
             )
         profile_source = profile_reader(runtime)
         if profile_source is None or profile_source.schema_id not in (
-            SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4
+            SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5
         ):
             return None
         profile: (
@@ -592,6 +595,7 @@ class NativeRecoveryCutSource:
             | NativeOneCallRecoveryProfileV2
             | NativeOneCallRecoveryProfileV3
             | NativeOneCallRecoveryProfileV4
+            | NativeOneCallRecoveryProfileV5
         )
         if profile_source.schema_id == SCHEMA:
             profile = decode_native_one_call_recovery_profile(profile_source.canonical_record_bytes)
@@ -603,8 +607,12 @@ class NativeRecoveryCutSource:
             profile = decode_native_one_call_recovery_profile_v3(
                 profile_source.canonical_record_bytes
             )
-        else:
+        elif profile_source.schema_id == SCHEMA_V4:
             profile = decode_native_one_call_recovery_profile_v4(
+                profile_source.canonical_record_bytes
+            )
+        else:
+            profile = decode_native_one_call_recovery_profile_v5(
                 profile_source.canonical_record_bytes
             )
         subset = R14NativeRecoverySourceSubsetReader(runtime).collect()
@@ -613,8 +621,8 @@ class NativeRecoveryCutSource:
         accepted_inputs: (
             tuple[
                 TerminalCallFrontier,
-                OriginalRecoveredClosure,
-                EvidenceReduction,
+                OriginalRecoveredClosure | None,
+                EvidenceReduction | None,
                 tuple[RecoverySourceRecord, ...],
             ]
             | None
@@ -627,13 +635,14 @@ class NativeRecoveryCutSource:
             direct_terminal_claimed, direct_terminal_inputs = (
                 self._selected_accepted_direct_terminal_inputs(runtime, subset)
             )
-            if direct_terminal_claimed:
-                if direct_terminal_inputs is None:
-                    return None
-            else:
-                accepted_inputs = self._selected_accepted_recovery_inputs(runtime, subset)
-                if accepted_inputs is None:
-                    return None
+            if direct_terminal_claimed and direct_terminal_inputs is None:
+                return None
+        if not direct_terminal_claimed and (
+            subset.accepted_closed_outcome is not None or subset.accepted_open_outcome is not None
+        ):
+            accepted_inputs = self._selected_accepted_recovery_inputs(runtime, subset)
+            if accepted_inputs is None:
+                return None
         facts = subset.selected_facts
         preparation = facts.source.original_prepare
         binding = preparation.original_native_scope_binding
@@ -716,8 +725,9 @@ class NativeRecoveryCutSource:
             if selected_suspension is None or (
                 selected_suspension.pair.suspended_run != _run_ref(run)
                 or run.suspension_baseline != selected_suspension.pair.baseline
-                or selected_suspension.baseline.original_obligations
                 or selected_suspension.baseline.activation_blocking_predicates
+                or selected_suspension.baseline.original_obligations
+                != run.original_obligations
             ):
                 return None
         elif run.state != "ACTIVE" or run.suspension_baseline is not None:
@@ -725,7 +735,7 @@ class NativeRecoveryCutSource:
         if (
             run.worker_session != scope.worker_session_id
             or run.root_binding != "NOT_APPLICABLE"
-            or run.original_obligations
+            or (selected_suspension is None and run.original_obligations)
             or run.no_retry_references
             or run.delivery_acceptance is not None
             or len(run.turns) != 1
@@ -797,7 +807,9 @@ class NativeRecoveryCutSource:
             additional_sources.extend(accepted_inputs[3])
         if direct_terminal_inputs is not None:
             additional_sources.extend(direct_terminal_inputs[1])
-        if subset.accepted_closed_outcome is not None and snapshot is not None:
+        if (
+            subset.accepted_closed_outcome is not None or subset.accepted_open_outcome is not None
+        ) and snapshot is not None:
             # The accepted execution history reader authenticated these exact
             # run preimages. Bind them to the selected owner decision already
             # reconciled with the physical inventory before classifying them.
@@ -822,7 +834,7 @@ class NativeRecoveryCutSource:
                         physical_record=_ref(record.head, raw),
                     )
                 )
-        if subset.accepted_closed_outcome is not None:
+        if subset.accepted_closed_outcome is not None or subset.accepted_open_outcome is not None:
             from chiplog.composition.r14_fanout_contracts import INITIALIZED_SCHEMA, SEAL_SCHEMA
 
             for retained_seal in subset.authenticated_seals:
@@ -1206,6 +1218,17 @@ class NativeRecoveryCutSource:
         if runtime._commitment_journal.load(runtime._tenant_id) != inventory.commitment:
             return None
         if selected_suspension is not None:
+            selected_calls = cut.frontier.ordered_calls
+            if len(selected_calls) != 1:
+                return None
+            disposition = selected_calls[0].disposition
+            current_obligations = (
+                (disposition.obligation,)
+                if isinstance(disposition, RecoveryRequiredResult)
+                else ()
+            )
+            if current_obligations != selected_suspension.baseline.original_obligations:
+                return None
             return cut, selected_suspension
         return cut
 
@@ -1363,8 +1386,8 @@ class NativeRecoveryCutSource:
     ) -> (
         tuple[
             TerminalCallFrontier,
-            OriginalRecoveredClosure,
-            EvidenceReduction,
+            OriginalRecoveredClosure | None,
+            EvidenceReduction | None,
             tuple[RecoverySourceRecord, ...],
         ]
         | None
@@ -1386,7 +1409,9 @@ class NativeRecoveryCutSource:
 
         try:
             closed = subset.accepted_closed_outcome
-            if closed is None:
+            opened = subset.accepted_open_outcome
+            selected_outcome = closed or opened
+            if selected_outcome is None:
                 return None
             accounting = runtime.read_selected_accepted_open_frontier()  # type: ignore[no-untyped-call]
             resolution = read_selected_original_call_resolution_source_held(runtime)
@@ -1394,13 +1419,24 @@ class NativeRecoveryCutSource:
             if (
                 accounting is None
                 or len(accounting.calls) != 1
-                or resolution is None
-                or selected_reduction is None
                 or not isinstance(accounting.calls[0].acceptance, ConsequentialAcceptedCall)
                 or not isinstance(accounting.calls[0].disposition, RecoveryRequiredResult)
             ):
                 return None
             call = accounting.calls[0]
+            if closed is None:
+                if (
+                    opened is None
+                    or resolution is not None
+                    or selected_reduction is not None
+                    or call.original_call_id != opened.accepted.original_call_id
+                    or not isinstance(call.disposition, RecoveryRequiredResult)
+                    or call.disposition.recovered_outcome.outcome.kind != "ABSENT"
+                ):
+                    return None
+                return call, None, None, ()
+            if resolution is None or selected_reduction is None:
+                return None
             reduction_entries = reduction_publication._selected_entries(runtime)
             if len(reduction_entries) != 1:
                 return None
@@ -1484,7 +1520,9 @@ class NativeRecoveryCutSource:
         profile_source: RecoverySourceRecord,
         profile: NativeOneCallRecoveryProfileV1
         | NativeOneCallRecoveryProfileV2
-        | NativeOneCallRecoveryProfileV3,
+        | NativeOneCallRecoveryProfileV3
+        | NativeOneCallRecoveryProfileV4
+        | NativeOneCallRecoveryProfileV5,
         lineage: tuple[ExecutionRunRecord, ...],
         seal: SealedResponseRecord,
         cancellation: RetainedExecutionCancellationPreparation,
@@ -1814,8 +1852,8 @@ class NativeRecoveryCutSource:
         scope: NativeOneCallContextScopeV1,
     ) -> ExecutionRecoveryCut:
         """Build the typed next-turn cut for one fully recovered accepted call."""
-        if profile_source.schema_id != SCHEMA_V3:
-            raise ValueError("accepted recovery requires the selected V3 native profile")
+        if profile_source.schema_id not in (SCHEMA_V3, SCHEMA_V5):
+            raise ValueError("accepted recovery requires selected V3 or V5 native profile")
         run, turn = lineage[-1], lineage[-1].turns[0]
         artifact = subset.selected_facts.source.original_prepare.artifact
         prepared = subset.selected_facts.source.original_prepare.prepared_run
@@ -2018,9 +2056,44 @@ class NativeRecoveryCutSource:
             reduction_records: tuple[EvidenceReduction, ...] = ()
         elif isinstance(disposition, RecoveryRequiredResult):
             direct_result = None
-            if (
+            if closure is None and reduction is None:
+                if (
+                    profile_source.schema_id != SCHEMA_V5
+                    or disposition.recovered_outcome.outcome.kind != "ABSENT"
+                ):
+                    raise ValueError("open accepted recovery requires the selected V5 profile")
+                from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+                    AcceptedOpenRecoveryOpeningV1,
+                )
+
+                opening_matches = tuple(
+                    source
+                    for source in physical_sources
+                    if source.owner == "agent_loop"
+                    and source.schema_id
+                    == "chiplog.execution.accepted-open-recovery-opening.v1"
+                    and source.subject.subject_id == disposition.obligation.obligation_id
+                    and source.subject.revision.head == disposition.obligation.obligation_head
+                )
+                if len(opening_matches) != 1:
+                    raise ValueError("open accepted recovery opening is missing or ambiguous")
+                opening_source = opening_matches[0]
+                opening = AcceptedOpenRecoveryOpeningV1.model_validate_json(
+                    opening_source.canonical_record_bytes
+                )
+                if opening.original != disposition.obligation:
+                    raise ValueError("open accepted recovery opening differs from obligation")
+                call_result_ref = disposition.recovered_outcome.outcome
+                obligation_heads = (disposition.terminal, opening_source.subject.revision)
+                reduction_heads = ()
+                evidence_heads = ()
+                closure_records = ()
+                reduction_records = ()
+                resolver_sources = ()
+            elif (
                 closure is None
                 or reduction is None
+                or disposition.recovered_outcome.outcome.kind != "PRESENT"
                 or not (
                     closure.original == disposition.obligation
                     and closure.terminal_disposition == disposition.terminal
@@ -2031,23 +2104,25 @@ class NativeRecoveryCutSource:
                 raise ValueError(
                     "accepted next-turn frontier differs from selected closure/reduction"
                 )
-            call_result_ref = disposition.recovered_outcome.outcome
-            obligation_heads = (
-                disposition.terminal,
-                disposition.recovered_outcome.outcome,
-                closure.closure,
-                closure.resolver_batch,
-            )
-            reduction_heads = (reduction.current_reduction,)
-            evidence_heads = tuple(reduction.ordered_consumed_evidence)
-            closure_records = (closure,)
-            reduction_records = (reduction,)
-            resolver_sources = tuple(
-                row
-                for row in physical_sources
-                if row.schema_id.startswith("chiplog.loop.original-resolver-")
-                or row.schema_id == "chiplog.loop.semantic-reducer-policy.v1"
-            )
+            else:
+                call_result_ref = disposition.recovered_outcome.outcome
+                obligation_heads = (
+                    disposition.terminal,
+                    disposition.recovered_outcome.outcome,
+                    closure.closure,
+                    closure.resolver_batch,
+                )
+                reduction_heads = (reduction.current_reduction,)
+                evidence_heads = tuple(reduction.ordered_consumed_evidence)
+                closure_records = (closure,)
+                reduction_records = (reduction,)
+                resolver_sources = tuple(
+                    row
+                    for row in physical_sources
+                    if row.schema_id.startswith("chiplog.loop.original-resolver-")
+                    or row.schema_id
+                    == "chiplog.loop.original-effect-evidence-reducer-policy.v1"
+                )
         else:
             raise ValueError("accepted next-turn frontier has an unsupported terminal")
         accepted_source_rows: list[RecoverySourceRecord] = []
@@ -2150,6 +2225,11 @@ class NativeRecoveryCutSource:
                 row.subject.revision
                 for row in accepted_sources
                 if row.schema_id.startswith("chiplog.effects.")
+                and not (
+                    profile_source.schema_id == SCHEMA_V5
+                    and isinstance(disposition, RecoveryRequiredResult)
+                    and row.schema_id != "chiplog.effects.dispatch-record.v2"
+                )
             ),
             "EVIDENCE": evidence_heads,
             "AUTHORITY": tuple(row.subject.revision for row in resolver_sources),

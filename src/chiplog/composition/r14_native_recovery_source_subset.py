@@ -64,6 +64,7 @@ class R14NativeRecoverySourceSubset:
     authenticated_seals: tuple[RetainedExecutionFanOutPreparation, ...] = ()
     authenticated_cancellations: tuple[RetainedExecutionCancellationPreparation, ...] = ()
     authenticated_acceptances: tuple[RetainedAcceptancePreparationV2, ...] = ()
+    accepted_open_outcome: R14NativeAcceptedOpenOutcome | None = None
     accepted_closed_outcome: R14NativeAcceptedOpenOutcome | None = None
 
     @property
@@ -74,12 +75,12 @@ class R14NativeRecoverySourceSubset:
         reader. They do not assert that unrelated inventory families are absent;
         the full native cut still has to reconcile that inventory independently.
         """
-        closed = self.accepted_closed_outcome
-        if closed is None:
+        accepted = self.accepted_closed_outcome or self.accepted_open_outcome
+        if accepted is None:
             return ()
         sources = (
-            *closed.complete_ordered_dispatch_sources,
-            *closed.complete_ordered_evidence_sources,
+            *accepted.complete_ordered_dispatch_sources,
+            *accepted.complete_ordered_evidence_sources,
         )
         return sources
 
@@ -256,6 +257,12 @@ class R14NativeRecoverySourceSubsetReader:
             runtime, projection, bind_native_execution_preparation_v2(projection)
         )
         run = execution_snapshot.records[-1]
+        if isinstance(run, ExecutionRunRecord) and run.state == "SUSPENDED":
+            if len(execution_snapshot.records) < 2 or not isinstance(
+                execution_snapshot.records[-2], ExecutionRunRecord
+            ):
+                return None
+            run = execution_snapshot.records[-2]
         run_ref = CallSubjectHead(
             subject_id=run.run_id,
             revision=Present(head=run.head, fingerprint=run.digest()),
@@ -289,13 +296,23 @@ class R14NativeRecoverySourceSubsetReader:
             allow_authenticated_later_suffix=allow_resolution_suffix,
             _accepted_facts=accepted,
         )
+        opened = (
+            None
+            if closed is not None
+            else source.collect_one_accepted_open_outcome(
+                run_ref,
+                selected_only=True,
+                _accepted_facts=accepted,
+            )
+        )
+        selected_outcome = closed or opened
         if (
-            closed is None
-            or closed.accepted.source.target_run_lineage[-1] != run_ref
-            or closed.accepted.acceptance != acceptances[0]
-            or closed.database_identity != identity
-            or closed.tenant_id != runtime._tenant_id
-            or closed.materialization_commitment != before
+            selected_outcome is None
+            or selected_outcome.accepted.source.target_run_lineage[-1] != run_ref
+            or selected_outcome.accepted.acceptance != acceptances[0]
+            or selected_outcome.database_identity != identity
+            or selected_outcome.tenant_id != runtime._tenant_id
+            or selected_outcome.materialization_commitment != before
         ):
             return None
         with read_connection(runtime._database) as connection:
@@ -316,12 +333,13 @@ class R14NativeRecoverySourceSubsetReader:
             tenant_commit_sequence=int(row[0]),
             materialization_commitment=commitment,
             selected_accounting=None,
-            selected_facts=closed.accepted,
+            selected_facts=selected_outcome.accepted,
             execution_sources=(),
             authenticated_execution_snapshot=execution_snapshot,
             authenticated_seals=seals,
             authenticated_cancellations=(),
             authenticated_acceptances=acceptances,
+            accepted_open_outcome=opened,
             accepted_closed_outcome=closed,
         )
 

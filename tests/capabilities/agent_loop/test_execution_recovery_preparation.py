@@ -16,6 +16,7 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
 )
 from chiplog.capabilities.agent_loop.call_acceptance_preparation import call_record_reference
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+    PreparedExecutionSuspension,
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
     PrepareExecutionResume,
@@ -268,6 +269,65 @@ async def test_owner_prepares_acyclic_non_scheduler_suspension_batch():
     assert result.baseline.frontier == cut.frontier
     assert result.baseline.bindings == cut.current_bindings
     assert result.baseline.activation_blocking_predicates == ()
+
+
+async def test_legacy_suspension_owner_route_cannot_return_an_open_obligation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cut = await _cut()
+    run = cut.complete_ordered_run_lineage[-1]
+    request = PrepareExecutionSuspension(
+        command_id="suspend-route-version-check",
+        run=run,
+        cut=cut,
+        activation_blocking_predicates=(),
+        fence=NonSchedulerFence(
+            lineage=NotApplicable(),
+            physical_root=NotApplicable(),
+            lease=NotApplicable(),
+            clock_proof=NotApplicable(),
+            run_id=run.run_id,
+            run_head=run.head,
+            worker_session_id=run.worker_session,
+            runtime_generation="test-generation",
+        ),
+    )
+    prepared = prepare_execution_suspension(request)
+    assert isinstance(prepared, PreparedExecutionSuspension)
+    obligation = OriginalObligationBinding(
+        original_run_id=run.run_id,
+        original_call_id="call:open",
+        obligation_id="obligation:open",
+        obligation_stream_id="stream:open",
+        obligation_head="head:open",
+        closure_predicate_id="predicate:close",
+        closure_predicate_version="v1",
+        resolver_id="R14_AUTHENTICATED_ORIGINAL_PRINCIPAL_RESOLVER",
+        resolver_version="r14-original-resolver.v1",
+        reducer_id="R14_ORIGINAL_EFFECT_EVIDENCE_REDUCER",
+        reducer_version="r14-effect-evidence.v1",
+        evidence_stream_id="evidence:open",
+        evidence_head=Absent(),
+    )
+    prepared_with_obligation = prepared.model_copy(
+        update={
+            "baseline": prepared.baseline.model_copy(
+                update={"original_obligations": (obligation,)}
+            )
+        }
+    )
+    monkeypatch.setattr(
+        process, "prepare_execution_suspension", lambda _request: prepared_with_obligation
+    )
+
+    legacy = process.dispatch(process.SUSPENSION_OPERATION, request.canonical_bytes())
+    v37 = process.dispatch(
+        process.SUSPENSION_OBLIGATION_OPERATION, request.canonical_bytes()
+    )
+
+    assert legacy["failure"] == "PROTOCOL_REJECTED"
+    assert "legacy suspension route" in legacy["reason"]
+    assert base64.b64decode(v37["payload"]) == prepared_with_obligation.canonical_bytes()
 
 
 async def test_first_suspension_profile_holds_with_activation_blocker():

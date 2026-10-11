@@ -67,6 +67,7 @@ from .native_recovery_profile_contracts import (
     SCHEMA_V2,
     SCHEMA_V3,
     SCHEMA_V4,
+    SCHEMA_V5,
     native_recovery_fingerprint,
 )
 from .recovery_contracts import (
@@ -150,7 +151,7 @@ def _source(
     source = matches[0]
 
     native_profile = any(
-        item.schema_id in (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4)
+        item.schema_id in (SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5)
         for item in cut.complete_sources
     )
     if source.subject.revision.fingerprint != _sha(raw) or (
@@ -169,20 +170,24 @@ def _validate_cut(cut: ExecutionRecoveryCut, *, allow_suspended: bool = False) -
     profiles_v2 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA_V2)
     profiles_v3 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA_V3)
     profiles_v4 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA_V4)
+    profiles_v5 = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA_V5)
     cancellation_registry = execution_native_one_call_cancellation_frontier_registry_v1()
     recovery_registry = execution_native_one_call_recovery_frontier_registry_v2()
     if cut.frontier.registry == recovery_registry:
-        if len(profiles_v2) + len(profiles_v3) + len(profiles_v4) != 1 or profiles_v1:
-            raise RecoveryHold("V2 registry requires exactly one selected V2/V3/V4 profile")
+        if (
+            len(profiles_v2) + len(profiles_v3) + len(profiles_v4) + len(profiles_v5) != 1
+            or profiles_v1
+        ):
+            raise RecoveryHold("V2 registry requires exactly one selected V2/V3/V4/V5 profile")
         validate_native_recovery_cut(cut)
     elif cut.frontier.registry == cancellation_registry:
-        if profiles_v2 or profiles_v3 or profiles_v4 or len(profiles_v1) > 1:
+        if profiles_v2 or profiles_v3 or profiles_v4 or profiles_v5 or len(profiles_v1) > 1:
             raise RecoveryHold("V1 registry has an incompatible selected native profile")
         if profiles_v1:
             validate_native_recovery_cut(cut)
     else:
         raise RecoveryHold("unsupported recovery registry")
-    native_profile = bool(profiles_v1 or profiles_v2 or profiles_v3 or profiles_v4)
+    native_profile = bool(profiles_v1 or profiles_v2 or profiles_v3 or profiles_v4 or profiles_v5)
     if (
         cut.frontier.tenant_id != cut.tenant_id
         or cut.frontier.run_id != cut.current_run.subject_id
@@ -395,6 +400,216 @@ def _expected_suspended_frontier(
             "fingerprint": native_recovery_fingerprint("frontier", frontier_value)
         }
     )
+
+
+def _validate_obligation_resume_successor(
+    cut: ExecutionRecoveryCut,
+    baseline: ExecutionSuspensionBaseline,
+    suspended_run: ExecutionRunRecord,
+) -> None:
+    """Prove the one registered open-obligation → closed-resume frontier path."""
+    from .execution_recovery_contracts import AcceptedOpenRecoveryOpeningV1
+
+    profiles = tuple(
+        source for source in cut.complete_sources if source.schema_id == SCHEMA_V5
+    )
+    if len(profiles) != 1 or len(baseline.original_obligations) != 1:
+        raise RecoveryHold("obligation resume requires one V5 profile and one frozen obligation")
+    if len(baseline.frontier.ordered_calls) != 1 or len(cut.frontier.ordered_calls) != 1:
+        raise RecoveryHold("obligation resume requires one source and one current call")
+    original_call = baseline.frontier.ordered_calls[0]
+    current_call = cut.frontier.ordered_calls[0]
+    original_disposition = original_call.disposition
+    current_disposition = current_call.disposition
+    binding = baseline.original_obligations[0]
+    if (
+        not isinstance(original_disposition, RecoveryRequiredResult)
+        or not isinstance(current_disposition, RecoveryRequiredResult)
+        or original_disposition.recovered_outcome.outcome.kind != "ABSENT"
+        or current_disposition.recovered_outcome.outcome.kind != "PRESENT"
+        or original_disposition.obligation != binding
+        or current_disposition.obligation != binding
+        or original_call.original_call_id != current_call.original_call_id
+        or original_call.acceptance != current_call.acceptance
+        or original_disposition.terminal != current_disposition.terminal
+    ):
+        raise RecoveryHold("current recovery is not the exact closure of the frozen obligation")
+    if len(cut.original_closures) != 1 or len(cut.current_reductions) != 1:
+        raise RecoveryHold("obligation resume requires one closure and one current reduction")
+    closure = cut.original_closures[0]
+    reduction = cut.current_reductions[0]
+    current_evidence_members = tuple(
+        member for member in cut.frontier.ordered_members if member.family == "EVIDENCE"
+    )
+    current_call_members = tuple(
+        member for member in cut.frontier.ordered_members if member.family == "CALL"
+    )
+    if (
+        closure.original != binding
+        or closure.terminal_disposition != current_disposition.terminal
+        or closure.recovered_outcome != current_disposition.recovered_outcome.outcome
+        or reduction.reduction_id != closure.reduction_id
+        or reduction.obligation_closure != closure.closure
+        or reduction.accepted_outcome != closure.recovered_outcome
+        or reduction.consumability != "CONSUMABLE"
+        or len(current_evidence_members) != 1
+        or current_evidence_members[0].ordered_heads != reduction.ordered_consumed_evidence
+        or len(current_call_members) != 1
+        or current_call_members[0].ordered_heads[-2:]
+        != (
+            current_disposition.terminal,
+            current_disposition.recovered_outcome.outcome,
+        )
+    ):
+        raise RecoveryHold("closure and consumable reduction do not cover the frozen obligation")
+
+    expected = _expected_suspended_frontier(
+        baseline.frontier,
+        baseline.predecessor_run,
+        _run_ref(suspended_run),
+        baseline.frontier.tenant_commit_sequence + 1,
+    )
+    if cut.frontier.tenant_commit_sequence <= expected.tenant_commit_sequence:
+        raise RecoveryHold("obligation closure did not advance beyond suspension publication")
+    allowed = {
+        "CALL",
+        "EVIDENCE",
+        "AUTHORITY",
+        "POLICY",
+        "OBLIGATION",
+        "SEMANTIC_REDUCTION",
+    }
+    before_by_family = {row.family: row for row in expected.ordered_members}
+    current_by_family = {row.family: row for row in cut.frontier.ordered_members}
+    if tuple(before_by_family) != tuple(current_by_family):
+        raise RecoveryHold("obligation resume changed native frontier family inventory")
+    for family, before in before_by_family.items():
+        after = current_by_family[family]
+        if family not in allowed:
+            if after != before:
+                raise RecoveryHold(f"obligation resume changed unrelated frontier family {family}")
+            continue
+        if family in {"EVIDENCE", "POLICY"}:
+            if after.ordered_heads[: len(before.ordered_heads)] != before.ordered_heads:
+                raise RecoveryHold(f"obligation resume rewrote existing {family} heads")
+        elif family == "OBLIGATION":
+            if (
+                len(before.ordered_heads) != 2
+                or len(after.ordered_heads) != 4
+                or after.ordered_heads[0] != before.ordered_heads[0]
+                or after.ordered_heads[1] != current_disposition.recovered_outcome.outcome
+                or after.ordered_heads[2] != closure.closure
+                or after.ordered_heads[3] != closure.resolver_batch
+            ):
+                raise RecoveryHold("obligation resume changed the opening or closure shape")
+            opening_sources = tuple(
+                source
+                for source in cut.complete_sources
+                if source.schema_id == "chiplog.execution.accepted-open-recovery-opening.v1"
+                and source.subject.subject_id == binding.obligation_id
+                and source.subject.revision.head == binding.obligation_head
+            )
+            if len(opening_sources) != 1:
+                raise RecoveryHold("obligation resume lost or duplicated its original opening")
+            opening = _record(opening_sources[0], AcceptedOpenRecoveryOpeningV1)
+            if opening.original != binding:
+                raise RecoveryHold("obligation resume opening no longer binds the frozen cause")
+        elif family == "SEMANTIC_REDUCTION":
+            if (
+                before.ordered_heads
+                or after.ordered_heads != (reduction.current_reduction,)
+            ):
+                raise RecoveryHold("obligation resume has an unexpected reduction transition")
+        elif family == "AUTHORITY":
+            resolver_policies = tuple(
+                source
+                for source in cut.complete_sources
+                if source.schema_id == "chiplog.loop.original-resolver-authority-policy.v1"
+            )
+            invocations = tuple(
+                source
+                for source in cut.complete_sources
+                if source.schema_id == "chiplog.loop.original-resolver-invocation.v1"
+            )
+            reducer_policies = tuple(
+                source
+                for source in cut.complete_sources
+                if source.schema_id
+                == "chiplog.loop.original-effect-evidence-reducer-policy.v1"
+            )
+            if len(resolver_policies) != 1 or len(invocations) != 1 or len(reducer_policies) != 1:
+                raise RecoveryHold(
+                    "obligation resume lacks one exact resolver authority and invocation"
+                )
+            from .original_recovery_contracts import (
+                OriginalEffectEvidenceReducerPolicyV1,
+                OriginalResolverAuthorityPolicyV1,
+                OriginalResolverInvocationV1,
+            )
+
+            policy = _record(resolver_policies[0], OriginalResolverAuthorityPolicyV1)
+            invocation = _record(invocations[0], OriginalResolverInvocationV1)
+            reducer_policy = _record(reducer_policies[0], OriginalEffectEvidenceReducerPolicyV1)
+            if (
+                policy.tenant_id != cut.tenant_id
+                or policy.principal_id != "hermetic-principal"
+                or policy.resolver_id != binding.resolver_id
+                or policy.resolver_version != binding.resolver_version
+                or invocation.original != binding
+                or invocation.tenant_id != cut.tenant_id
+                or invocation.principal_id != policy.principal_id
+                or reducer_policy.tenant_id != cut.tenant_id
+                or reducer_policy.reducer_id != binding.reducer_id
+                or reducer_policy.reducer_version != binding.reducer_version
+            ):
+                raise RecoveryHold("obligation resume resolver policy or invocation is foreign")
+            from .execution_recovery_contracts import AcceptedOpenTerminalDispositionV1
+            from .original_recovery_contracts import original_resolver_authority_policy_v1
+
+            terminal_sources = tuple(
+                source
+                for source in cut.complete_sources
+                if source.schema_id
+                == "chiplog.execution.accepted-open-terminal-disposition.v1"
+                and source.subject.revision == current_disposition.terminal
+            )
+            if len(terminal_sources) != 1:
+                raise RecoveryHold("obligation resume lost or duplicated its selected terminal")
+            terminal = _record(terminal_sources[0], AcceptedOpenTerminalDispositionV1)
+            expected_policy = original_resolver_authority_policy_v1(cut.tenant_id)
+            if (
+                policy != expected_policy
+                or invocation.accepted_opening_source != opening_sources[0]
+                or invocation.accepted_terminal_source != terminal_sources[0]
+                or invocation.resolver_policy_source != resolver_policies[0]
+                or invocation.reducer_policy_source != reducer_policies[0]
+                or terminal.obligation_opening.subject_id != opening.opening_id
+                or terminal.original_call_id != current_call.original_call_id
+                or terminal.external_effect_intent
+                != current_call.acceptance.external_effect_intent
+            ):
+                raise RecoveryHold(
+                    "resolver invocation does not bind the exact opening and terminal"
+                )
+            selected_resolver_sources = tuple(
+                source
+                for source in cut.complete_sources
+                if source.schema_id.startswith("chiplog.loop.original-resolver-")
+                or source.schema_id
+                == "chiplog.loop.original-effect-evidence-reducer-policy.v1"
+            )
+            if after.ordered_heads != tuple(
+                source.subject.revision for source in selected_resolver_sources
+            ):
+                raise RecoveryHold(
+                    "obligation resume authority family has extra or missing sources"
+                )
+            policy_member = current_by_family["POLICY"]
+            if policy_member.ordered_heads != (
+                *before_by_family["POLICY"].ordered_heads,
+                *(source.subject.revision for source in selected_resolver_sources),
+            ):
+                raise RecoveryHold("obligation resume policy family has extra or missing sources")
 
 
 def _validate_direct_terminal(
@@ -652,7 +867,6 @@ def _validate_accepted_recovery(
         acceptance.initialized != initialized_ref.revision
         or acceptance.external_effect_intent.kind != "PRESENT"
         or disposition.result.kind != "ABSENT"
-        or disposition.recovered_outcome.outcome.kind != "PRESENT"
         or disposition.recovered_outcome.original_call_id != call.original_call_id
         or disposition.recovered_outcome.recovery_obligation_id
         != disposition.obligation.obligation_id
@@ -709,6 +923,12 @@ def _validate_accepted_recovery(
         raise RecoveryIntegrityFault("accepted recovery opening or immutable terminal differs")
 
     recovered = disposition.recovered_outcome.outcome
+    if recovered.kind == "ABSENT":
+        if cut.original_closures or cut.current_reductions:
+            raise RecoveryHold("open accepted recovery carries a closure or reduction")
+        return
+    if recovered.kind != "PRESENT":
+        raise RecoveryHold("accepted recovery outcome marker is invalid")
     outcome_source = _source_for_revision(cut, recovered, "chiplog.loop.recovered-call-outcome.v1")
     outcome = _record(outcome_source, RecoveredCallOutcomeRecord)
     if len(cut.original_closures) != 1 or len(cut.current_reductions) != 1:
@@ -1168,9 +1388,25 @@ def prepare_execution_suspension(
         ):
             raise RecoveryHold("suspension Run or non-scheduler fence is stale")
         if current.original_obligations:
-            raise RecoveryHold("first suspension profile requires no open original obligations")
+            raise RecoveryHold("suspension predecessor already carries original obligations")
         if request.activation_blocking_predicates:
             raise RecoveryHold("first suspension profile requires no activation blockers")
+
+        suspension_obligations: tuple[OriginalObligationBinding, ...] = ()
+        if len(request.cut.frontier.ordered_calls) != 1:
+            raise RecoveryHold("suspension requires one exact selected call frontier")
+        selected_call = request.cut.frontier.ordered_calls[0]
+        if isinstance(selected_call.disposition, RecoveryRequiredResult):
+            profiles_v5 = tuple(
+                source
+                for source in request.cut.complete_sources
+                if source.schema_id == SCHEMA_V5
+            )
+            if len(profiles_v5) != 1:
+                raise RecoveryHold("open-obligation suspension requires native profile V5")
+            if selected_call.disposition.recovered_outcome.outcome.kind != "ABSENT":
+                raise RecoveryHold("only an open original obligation can enter this suspension")
+            suspension_obligations = (selected_call.disposition.obligation,)
 
         cut_fingerprint = request.cut.digest()
         baseline_preimage = (
@@ -1187,7 +1423,7 @@ def prepare_execution_suspension(
             source_cut_fingerprint=cut_fingerprint,
             frontier=request.cut.frontier,
             bindings=request.cut.current_bindings,
-            original_obligations=current.original_obligations,
+            original_obligations=suspension_obligations,
             activation_blocking_predicates=tuple(
                 predicate.revision
                 for predicate in request.activation_blocking_predicates
@@ -1202,6 +1438,7 @@ def prepare_execution_suspension(
         suspended = current.model_copy(
             update={
                 "state": "SUSPENDED",
+                "original_obligations": suspension_obligations,
                 "predecessor": current.head,
                 "suspension_baseline": baseline_ref,
                 "event": request.command_id,
@@ -1259,9 +1496,8 @@ def prepare_execution_resume(
             or pair.suspended_run != current_ref
             or pair.predecessor_run != baseline.predecessor_run
             or baseline.run_id != current.run_id
-            or baseline.original_obligations
             or baseline.activation_blocking_predicates
-            or current.original_obligations
+            or current.original_obligations != baseline.original_obligations
             or len(lineage) < 2
             or _run_ref(lineage[-2]) != baseline.predecessor_run
         ):
@@ -1273,13 +1509,15 @@ def prepare_execution_resume(
         if (
             request.cut.frontier.registry != baseline.frontier.registry
             or request.cut.current_bindings != baseline.bindings
-            or request.cut.frontier
-            != _expected_suspended_frontier(
-                baseline.frontier,
-                baseline.predecessor_run,
-                current_ref,
-                request.cut.tenant_commit_sequence,
-            )
+        ):
+            raise RecoveryHold("resume frontier registry or frozen bindings differ")
+        if baseline.original_obligations:
+            _validate_obligation_resume_successor(request.cut, baseline, current)
+        elif request.cut.frontier != _expected_suspended_frontier(
+            baseline.frontier,
+            baseline.predecessor_run,
+            current_ref,
+            request.cut.tenant_commit_sequence,
         ):
             raise RecoveryHold("resume frontier is not the exact mandatory suspension successor")
 
