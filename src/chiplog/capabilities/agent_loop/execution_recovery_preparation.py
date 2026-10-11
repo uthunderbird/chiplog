@@ -1091,11 +1091,10 @@ def prepare_execution_suspension(
             or current.head != request.fence.run_head
         ):
             raise RecoveryHold("suspension Run or non-scheduler fence is stale")
-        if any(
-            predicate.revision.kind != "PRESENT"
-            for predicate in request.activation_blocking_predicates
-        ):
-            raise RecoveryHold("suspension blockers must be exact selected heads")
+        if current.original_obligations:
+            raise RecoveryHold("first suspension profile requires no open original obligations")
+        if request.activation_blocking_predicates:
+            raise RecoveryHold("first suspension profile requires no activation blockers")
 
         cut_fingerprint = request.cut.digest()
         baseline_preimage = (

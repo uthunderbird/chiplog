@@ -240,7 +240,7 @@ async def test_owner_prepares_acyclic_non_scheduler_suspension_batch():
         command_id="suspend-selected-run",
         run=run,
         cut=cut,
-        activation_blocking_predicates=(cut.complete_sources[3].subject,),
+        activation_blocking_predicates=(),
         fence=NonSchedulerFence(
             lineage=NotApplicable(),
             physical_root=NotApplicable(),
@@ -263,9 +263,32 @@ async def test_owner_prepares_acyclic_non_scheduler_suspension_batch():
     assert result.pair.suspended_run.revision.fingerprint == result.run.digest()
     assert result.baseline.frontier == cut.frontier
     assert result.baseline.bindings == cut.current_bindings
-    assert result.baseline.activation_blocking_predicates == (
-        request.activation_blocking_predicates[0].revision,
+    assert result.baseline.activation_blocking_predicates == ()
+
+
+async def test_first_suspension_profile_holds_with_activation_blocker():
+    cut = await _cut()
+    run = cut.complete_ordered_run_lineage[-1]
+    request = PrepareExecutionSuspension(
+        command_id="suspend-selected-run-with-blocker",
+        run=run,
+        cut=cut,
+        activation_blocking_predicates=(cut.complete_sources[3].subject,),
+        fence=NonSchedulerFence(
+            lineage=NotApplicable(),
+            physical_root=NotApplicable(),
+            lease=NotApplicable(),
+            clock_proof=NotApplicable(),
+            run_id=run.run_id,
+            run_head=run.head,
+            worker_session_id=run.worker_session,
+            runtime_generation="test-generation",
+        ),
     )
+
+    result = prepare_execution_suspension(request)
+
+    assert result.kind == "CALL_PREPARATION_REJECTED_V1"
 
 
 async def test_readiness_rejects_missing_extra_and_changed_accounting():
