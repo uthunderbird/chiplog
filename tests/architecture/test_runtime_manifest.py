@@ -23,6 +23,8 @@ from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST,
     R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_EVALUATION_MANIFEST,
     R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST,
+    R14_EXECUTION_SUSPENSION_V35_EVALUATION_MANIFEST,
+    R14_EXECUTION_SUSPENSION_V35_PRODUCTION_MANIFEST,
     R14_PRODUCTION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_EVALUATION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
@@ -36,6 +38,29 @@ from chiplog.architecture.r7_runtime import (
 )
 from chiplog.platform.r7_leaves import ProductionClock, ProductionPlanningStore
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+
+
+def test_v35_registers_execution_suspension_without_mutating_v34() -> None:
+    production = R14_EXECUTION_SUSPENSION_V35_PRODUCTION_MANIFEST
+    evaluation = R14_EXECUTION_SUSPENSION_V35_EVALUATION_MANIFEST
+    previous = R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST
+    operation = "agent_loop.prepare_execution_suspension.v1"
+
+    assert verify_runtime_manifest(production)
+    verify_production_evaluation_equivalence(production, evaluation)
+    assert production.manifest_version == 35
+    assert operation not in {
+        item.operation_id for item in previous.routes
+    }
+    route = next(item for item in production.routes if item.operation_id == operation)
+    assert route.request_schema_id == "chiplog.execution.recovery-request.v1"
+    assert route.result_schema_id == "chiplog.execution.recovery-result.v1"
+    owner = next(item for item in production.owners if item.owner_id == "agent_loop")
+    assert operation in owner.capability_ids
+    assert operation in owner.public_operations
+    old_owner = next(item for item in previous.owners if item.owner_id == "agent_loop")
+    assert operation not in old_owner.public_operations
+    assert owner.target_ids == old_owner.target_ids
 
 
 def test_v30_registers_direct_terminal_owner_and_preserves_v29_next_turn() -> None:

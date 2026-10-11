@@ -268,6 +268,23 @@ async def test_scheduler_fence_is_rejected_before_suspension_cut_preparation() -
     assert result.kind == "CALL_PREPARATION_REJECTED_V1"
     assert "scheduler execution" in result.reason
 
+    from chiplog.capabilities.agent_loop._execution_recovery_process import (
+        SUSPENSION_OPERATION,
+        dispatch,
+    )
+    from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
+        EXECUTION_RECOVERY_RESULT_SCHEMA,
+        decode_execution_recovery_result,
+    )
+
+    response = dispatch(SUSPENSION_OPERATION, request.canonical_bytes())
+    assert response["schema_id"] == EXECUTION_RECOVERY_RESULT_SCHEMA
+    routed = decode_execution_recovery_result(
+        EXECUTION_RECOVERY_RESULT_SCHEMA,
+        base64.b64decode(response["payload"]),
+    ).value
+    assert routed == result
+
 
 @pytest.mark.parametrize(
     "field", ["pair", "selected_pair", "selected_decision", "canonical_pair_bytes"]

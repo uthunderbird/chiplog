@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 
-from . import _execution_direct_terminal_process
+from . import _execution_direct_terminal_process, _execution_recovery_process
 from .original_call_resolution_preparation import prepare_original_call_resolution
 from .original_recovery_contracts import (
     AdoptOriginalResolverAuthorityPolicyV1,
@@ -29,6 +29,7 @@ ADOPT_POLICY_OPERATION = "agent_loop.adopt_original_resolver_authority_policy.v1
 PREPARE_INVOCATION_OPERATION = "agent_loop.prepare_original_resolver_invocation.v1"
 PREPARE_RESOLUTION_OPERATION = "agent_loop.prepare_original_call_resolution.v1"
 PREPARE_SEMANTIC_REDUCTION_OPERATION = "agent_loop.prepare_loop_semantic_reduction.v1"
+PREPARE_SUSPENSION_OPERATION = "agent_loop.prepare_execution_suspension.v1"
 REQUEST_SCHEMA = ORIGINAL_RECOVERY_REQUEST_SCHEMA
 RESULT_SCHEMA = ORIGINAL_RECOVERY_RESULT_SCHEMA
 ROUTES = tuple(
@@ -45,12 +46,21 @@ ROUTES = tuple(
                 REQUEST_SCHEMA,
                 RESULT_SCHEMA,
             ),
+            (
+                PREPARE_SUSPENSION_OPERATION,
+                "broker",
+                "agent_loop",
+                "chiplog.execution.recovery-request.v1",
+                "chiplog.execution.recovery-result.v1",
+            ),
         )
     )
 )
 
 
 def dispatch(operation: str, payload: bytes) -> dict[str, object]:
+    if operation == PREPARE_SUSPENSION_OPERATION:
+        return _execution_recovery_process.dispatch(operation, payload)
     if operation not in (
         ADOPT_POLICY_OPERATION,
         PREPARE_INVOCATION_OPERATION,
