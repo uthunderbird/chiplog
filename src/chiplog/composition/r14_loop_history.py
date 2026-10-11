@@ -1814,7 +1814,6 @@ def read_selected_accepted_direct_terminal_frontier(
         require_complete_direct_terminal_publication,
     )
     from chiplog.composition.r14_accepted_direct_terminal_publication import (
-        _current_cut,
         validate_selected_accepted_direct_terminal,
     )
     from chiplog.composition.r14_accepted_direct_terminal_records import (
@@ -1827,7 +1826,6 @@ def read_selected_accepted_direct_terminal_frontier(
 
     with runtime._authority_gate().hold():
         _read_call_history(runtime)
-        validate_selected_accepted_direct_terminal(runtime)
         entries = [
             _strict_json(raw)
             for _, _, raw in runtime._loop_decisions().entries()
@@ -1839,6 +1837,9 @@ def read_selected_accepted_direct_terminal_frontier(
         if len(entries) != 1:
             raise LoopRejected("ambiguous selected accepted/direct terminal frontier")
         entry = entries[0]
+        current = validate_selected_accepted_direct_terminal(runtime)
+        if current is None:
+            raise LoopRejected("selected accepted/direct terminal source cut is unavailable")
         evidence = retained_accepted_direct_terminal(entry)
         command = accepted_direct_terminal_command(evidence)
         if runtime._publication(entry) != command:
@@ -1857,14 +1858,6 @@ def read_selected_accepted_direct_terminal_frontier(
             selected_anchor,
         )
 
-        current = _current_cut(
-            runtime,
-            selected_only=True,
-            source_materialization_commitment=(evidence.request.cut.materialization_commitment),
-            source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
-        )
-        if current is None or current[1] != evidence.request.cut:
-            raise LoopRejected("selected accepted/direct terminal source cut differs")
         facts, cut = current
         seal = facts.accepted.selected_seal
         ordered_call_ids = tuple(item.original_call_id for item in seal.initialized_records)

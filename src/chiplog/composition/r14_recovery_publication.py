@@ -14,6 +14,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallPreparationRejected
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PreparedExecutionAccounting,
@@ -374,7 +375,12 @@ async def _exchange(
     try:
         result = result_type.model_validate_json(reply.canonical_payload)
     except ValueError as error:
-        raise LoopRejected("recovery owner preparation HOLD") from error
+        try:
+            rejected = CallPreparationRejected.model_validate_json(reply.canonical_payload)
+        except ValueError:
+            raise LoopRejected("recovery owner preparation HOLD") from error
+        detail = f"recovery owner preparation {rejected.code}: {rejected.reason}"
+        raise LoopRejected(detail) from error
     return result, sent, reply
 
 
@@ -461,21 +467,42 @@ async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(observed)
-                if (
-                    source(runtime).collect_held(runtime) != cut
-                    or runtime.current_worker() != worker
-                    or runtime._supervisor.runtime().session("agent_loop") != session
-                    or runtime._commitment_journal.load(runtime._tenant_id) != predecessor
-                ):
-                    return "STALE"
+            except (ValueError, TypeError, RuntimeError):
+                return "STALE:authority-before-cut"
+            try:
+                current_cut = source(runtime).collect_held(runtime)
+            except (ValueError, TypeError, RuntimeError):
+                return "STALE:recovery-cut-read"
+            if current_cut != cut:
+                return "STALE:recovery-cut-changed"
+            try:
+                current_worker = runtime.current_worker()
+            except (ValueError, TypeError, RuntimeError):
+                return "STALE:worker-read"
+            if current_worker != worker:
+                return "STALE:worker-generation"
+            try:
+                current_session = runtime._supervisor.runtime().session("agent_loop")
+            except (ValueError, TypeError, RuntimeError):
+                return "STALE:owner-session-read"
+            if current_session != session:
+                return "STALE:owner-session"
+            try:
+                current_predecessor = runtime._commitment_journal.load(runtime._tenant_id)
+            except (ValueError, TypeError, RuntimeError):
+                return "STALE:commitment-journal-read"
+            if current_predecessor != predecessor:
+                return "STALE:commitment-journal"
+            try:
                 runtime._check_execution_actor(observed)
-            except ValueError, TypeError, RuntimeError:
-                return "STALE"
+            except (ValueError, TypeError, RuntimeError):
+                return "STALE:authority-after-cut"
         return None
 
     def decide(resulting):
-        if guard() is not None:
-            raise LoopRejected("recovery source changed at final decision")
+        reason = guard()
+        if reason is not None:
+            raise LoopRejected("recovery source changed at final decision: " + reason)
         runtime._require_no_pending()
         runtime._check_execution_actor(observed)
         runtime._append_decision(

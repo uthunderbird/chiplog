@@ -23,6 +23,11 @@ from chiplog.capabilities.agent_loop.direct_terminal_wire_contracts import (
     REQUEST_SCHEMA,
     RESULT_SCHEMA,
 )
+from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+    _selected_direct_evidence_sources,
+    _selected_direct_outcome_sources,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     ConsequentialAcceptedCall,
@@ -199,7 +204,6 @@ def test_selected_direct_terminal_rejects_manifest_subset_and_changed_record_ref
             (cut.original_call_id, "call:omitted"),
             _FINGERPRINT,
         )
-
     changed_accounting = prepared.accounting.model_copy(update={"result": _head("foreign-result")})
     with pytest.raises(ValueError, match="does not join"):
         accepted_direct_terminal_sealed_accounting(
@@ -220,6 +224,70 @@ def test_selected_direct_terminal_rejects_manifest_subset_and_changed_record_ref
             (cut.original_call_id,),
             _FINGERPRINT,
         )
+
+
+def test_direct_outcome_lookup_uses_physical_inventory_record_id() -> None:
+    source = RecoverySourceRecord(
+        owner="effects",
+        subject=_head("effect-intent:one"),
+        schema_id="chiplog.effects.dispatch-outcome-record.v2",
+        canonical_record_bytes=b"selected outcome bytes",
+        selected_decision=_head("selected-decision:one"),
+        physical_record=CallSubjectHead(
+            subject_id="outcome-record:one",
+            revision=Present(head="record:outcome-bytes", fingerprint=_FINGERPRINT),
+        ),
+    )
+    logical = source.model_copy(
+        update={"subject": _head("effect-record:logical-view")}
+    )
+
+    decision = source.selected_decision
+    assert _selected_direct_outcome_sources((source,), "outcome-record:one", decision) == (source,)
+    deduplicated = _selected_direct_outcome_sources(
+        (source, logical), "outcome-record:one", decision
+    )
+    assert len(deduplicated) == 1
+    assert deduplicated[0].physical_record == source.physical_record
+    assert deduplicated[0].canonical_record_bytes == source.canonical_record_bytes
+    assert _selected_direct_outcome_sources((source,), "effect-intent:one", decision) == ()
+    foreign_decision = logical.model_copy(
+        update={"selected_decision": _head("foreign-decision")}
+    )
+    assert _selected_direct_outcome_sources(
+        (source, foreign_decision), "outcome-record:one", decision
+    ) == (source,)
+    conflict = logical.model_copy(update={"canonical_record_bytes": b"different bytes"})
+    assert (
+        len(_selected_direct_outcome_sources((source, conflict), "outcome-record:one", decision))
+        == 2
+    )
+
+
+def test_direct_evidence_lookup_uses_semantic_head_and_keeps_physical_carrier() -> None:
+    evidence = ExactHead(
+        subject_id="evidence:one", head="evidence-head", fingerprint=_FINGERPRINT
+    )
+    carrier = RecoverySourceRecord(
+        owner="effects",
+        subject=CallSubjectHead(
+            subject_id=evidence.subject_id,
+            revision=Present(head=evidence.head, fingerprint=evidence.fingerprint),
+        ),
+        schema_id="chiplog.effects.dispatch-outcome-record.v2",
+        canonical_record_bytes=b"selected evidence carrier bytes",
+        selected_decision=_head("selected-evidence-decision:one"),
+        physical_record=CallSubjectHead(
+            subject_id="evidence-carrier-record:one",
+            revision=Present(head="record:carrier", fingerprint=_FINGERPRINT),
+        ),
+    )
+
+    assert _selected_direct_evidence_sources((carrier,), evidence) == (carrier,)
+    assert carrier.physical_record.subject_id != evidence.subject_id
+    assert _selected_direct_evidence_sources(
+        (carrier,), evidence.model_copy(update={"fingerprint": "b" * 64})
+    ) == ()
 
 
 @pytest.mark.asyncio

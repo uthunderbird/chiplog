@@ -300,11 +300,14 @@ def selected_direct_terminal_for_call(
     return False
 
 
-def validate_selected_accepted_direct_terminal(runtime: CommonCliExecutionRuntime) -> None:
-    """Verify the retained owner exchange, source, and exact physical three-record batch."""
+def validate_selected_accepted_direct_terminal(
+    runtime: CommonCliExecutionRuntime,
+) -> tuple[R14NativeAcceptedOpenOutcome, AcceptedDirectTerminalCutV1] | None:
+    """Verify the selected batch and return its authenticated current source cut."""
     runtime._pending()
     claimed = False
     selected: list[dict[str, object]] = []
+    current_cut = None
     for _, _, raw in runtime._loop_decisions().entries():
         entry = json.loads(raw)
         if entry.get("kind") != "DECIDED":
@@ -355,11 +358,13 @@ def validate_selected_accepted_direct_terminal(runtime: CommonCliExecutionRuntim
         )
         if current is None or current[1] != evidence.request.cut:
             raise LoopRejected("accepted/direct terminal retained source cut differs")
+        current_cut = current
         if _selected_competing_open(runtime, evidence.result.accounting.original_call_id):
             raise LoopRejected("accepted/direct terminal conflicts with selected RECOVERY_REQUIRED")
         selected.append(entry)
     if claimed and len(selected) != 1:
         raise LoopRejected("ambiguous accepted/direct terminal selection")
+    return current_cut
 
 
 __all__ = [
