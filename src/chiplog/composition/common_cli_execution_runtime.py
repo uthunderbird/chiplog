@@ -1100,6 +1100,27 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await start_next_execution_turn(self, peer, run_id, expected_head)
 
+    async def suspend_execution(
+        self,
+        run_id: str,
+        expected_head: str,
+        activation_blocking_predicates,
+        peer: str = "hermetic-ingress",
+    ):
+        from chiplog.composition.r14_execution_suspension import suspend_execution
+
+        return await suspend_execution(
+            self, peer, run_id, expected_head, activation_blocking_predicates
+        )
+
+    def read_selected_execution_suspension(self):
+        from chiplog.composition.r14_execution_suspension import (
+            read_selected_execution_suspension_held,
+        )
+
+        with self._authority_gate().hold():
+            return read_selected_execution_suspension_held(self)
+
     def read_native_one_call_cancelled_accounting(self):
         """Canonical read-only accounting observation after selected-history validation."""
         from chiplog.composition.r14_loop_history import read_selected_native_accounting

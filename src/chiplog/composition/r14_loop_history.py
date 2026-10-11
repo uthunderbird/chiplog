@@ -539,6 +539,7 @@ def _read_call_history(
                         "agent_loop.native-one-call-cancelled-accounting.v1",
                         "agent_loop.execution-accounting-readiness.v1",
                         "agent_loop.execution-next-turn.v1",
+                        "agent_loop.execution-suspension.v1",
                         "agent_loop.accepted-open-accounting.v1",
                         "agent_loop.accepted-open-recovery.v1",
                         "agent_loop.accepted-direct-terminal.v1",
@@ -687,6 +688,71 @@ def _read_call_history(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
                         expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if (
+                        command.operation_kind == "agent_loop.execution-suspension.v1"
+                        or "execution_suspension_evidence" in entry
+                    ):
+                        from chiplog.composition.r14_execution_suspension import (
+                            OPERATION as SUSPENSION_OPERATION,
+                        )
+                        from chiplog.composition.r14_execution_suspension import (
+                            _command as suspension_command,
+                        )
+                        from chiplog.composition.r14_execution_suspension import (
+                            _entry_for as suspension_entry_for,
+                        )
+                        from chiplog.composition.r14_execution_suspension import (
+                            _retained as retained_suspension,
+                        )
+                        from chiplog.composition.r14_execution_suspension import (
+                            _run_ref as suspension_run_ref,
+                        )
+                        from chiplog.composition.r14_execution_suspension import (
+                            _validate_selected as validate_suspension,
+                        )
+
+                        if command.operation_kind != SUSPENSION_OPERATION:
+                            raise ValueError("execution suspension has a substituted operation")
+                        retained_entry = suspension_entry_for(runtime, identity)
+                        if retained_entry is None:
+                            raise ValueError("selected execution suspension entry is absent")
+                        retained = retained_suspension(retained_entry[2])
+                        evidence = retained.request
+                        proposed = retained.result.run
+                        previous = latest.get(proposed.run_id)
+                        prior_lineage = tuple(
+                            row
+                            for row in mixed_records
+                            if isinstance(row, ExecutionRunRecord) and row.run_id == proposed.run_id
+                        )
+                        if (
+                            suspension_command(retained) != command
+                            or evidence.cut.tenant_id != tenant
+                            or evidence.cut.tenant_commit_sequence != command.expected_head
+                            or evidence.cut.materialization_commitment != entry.get("predecessor")
+                            or evidence.run != previous
+                            or not isinstance(previous, ExecutionRunRecord)
+                            or evidence.cut.current_run != suspension_run_ref(previous)
+                            or evidence.cut.complete_ordered_run_lineage != prior_lineage
+                            or proposed.state != "SUSPENDED"
+                            or proposed.predecessor != previous.head
+                            or proposed.root_binding != "NOT_APPLICABLE"
+                            or any(row.root_binding != "NOT_APPLICABLE" for row in prior_lineage)
+                        ):
+                            raise ValueError("selected execution suspension source lineage differs")
+                        validate_suspension(
+                            runtime,
+                            retained_entry[2],
+                            command,
+                            check_history=False,
+                        )
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        latest[proposed.run_id] = proposed
+                        mixed_records.append(proposed)
                         continue
                     if command.operation_kind == "agent_loop.original-resolver-authority-policy.v1":
                         from chiplog.capabilities.agent_loop import execution_recovery_observations

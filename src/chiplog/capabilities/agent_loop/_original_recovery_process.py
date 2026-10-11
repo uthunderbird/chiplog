@@ -46,13 +46,6 @@ ROUTES = tuple(
                 REQUEST_SCHEMA,
                 RESULT_SCHEMA,
             ),
-            (
-                PREPARE_SUSPENSION_OPERATION,
-                "broker",
-                "agent_loop",
-                "chiplog.execution.recovery-request.v1",
-                "chiplog.execution.recovery-result.v1",
-            ),
         )
     )
 )
