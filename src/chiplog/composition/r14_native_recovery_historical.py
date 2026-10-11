@@ -488,6 +488,7 @@ def authenticate_native_recovery_selected(
                 if row[2] in (
                     "chiplog.execution.native-one-call-recovery-profile.v3",
                     "chiplog.execution.native-one-call-recovery-profile.v4",
+                    "chiplog.execution.native-one-call-recovery-profile.v5",
                 )
             ]
             if v3_profiles:
