@@ -463,18 +463,19 @@ async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress
     )
     batch = command(evidence)
 
-    def guard():
+    def guard(*, check_cut: bool = True):
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(observed)
             except (ValueError, TypeError, RuntimeError):
                 return "STALE:authority-before-cut"
-            try:
-                current_cut = source(runtime).collect_held(runtime)
-            except (ValueError, TypeError, RuntimeError):
-                return "STALE:recovery-cut-read"
-            if current_cut != cut:
-                return "STALE:recovery-cut-changed"
+            if check_cut:
+                try:
+                    current_cut = source(runtime).collect_held(runtime)
+                except (ValueError, TypeError, RuntimeError):
+                    return "STALE:recovery-cut-read"
+                if current_cut != cut:
+                    return "STALE:recovery-cut-changed"
             try:
                 current_worker = runtime.current_worker()
             except (ValueError, TypeError, RuntimeError):
@@ -530,7 +531,11 @@ async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress
         )
 
     result = await runtime._appender.submit(
-        replace(batch, admission_guard=guard, decision_guard=decide)
+        replace(
+            batch,
+            admission_guard=lambda: guard(check_cut=False),
+            decision_guard=decide,
+        )
     )
     if result.disposition not in ("COMMITTED", "REPLAY"):
         raise LoopRejected("recovery atomic publication " + result.disposition)

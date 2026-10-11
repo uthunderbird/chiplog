@@ -1628,6 +1628,16 @@ def read_execution_call_history(
     )
 
 
+ExecutionRecoveryHistory = tuple[
+    ExecutionHistorySnapshot,
+    CallInventorySnapshot,
+    tuple[RetainedFanOutPreparation, ...],
+    tuple[RetainedExecutionFanOutPreparation, ...],
+    tuple[RetainedExecutionCancellationPreparation, ...],
+    tuple[RetainedAcceptancePreparationV2, ...],
+]
+
+
 def read_execution_recovery_history(
     runtime: R14PlanningRuntime,
     *,
@@ -1825,7 +1835,7 @@ def read_selected_accepted_direct_terminal_frontier(
     from chiplog.platform.workspace_snapshot import read_connection
 
     with runtime._authority_gate().hold():
-        _read_call_history(runtime)
+        authenticated_history = read_execution_recovery_history(runtime)
         entries = [
             _strict_json(raw)
             for _, _, raw in runtime._loop_decisions().entries()
@@ -1837,7 +1847,9 @@ def read_selected_accepted_direct_terminal_frontier(
         if len(entries) != 1:
             raise LoopRejected("ambiguous selected accepted/direct terminal frontier")
         entry = entries[0]
-        current = validate_selected_accepted_direct_terminal(runtime)
+        current = validate_selected_accepted_direct_terminal(
+            runtime, authenticated_history=authenticated_history
+        )
         if current is None:
             raise LoopRejected("selected accepted/direct terminal source cut is unavailable")
         evidence = retained_accepted_direct_terminal(entry)
