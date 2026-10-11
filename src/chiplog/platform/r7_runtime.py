@@ -38,7 +38,7 @@ from chiplog.platform.broker import (
 from chiplog.platform.operator_grant_key_pin import PinnedOperatorGrantKey
 from chiplog.platform.operator_policy_key_pin import PinnedOperatorPolicyKey
 
-_MAX_FRAME_BYTES = 16 * 1024 * 1024
+_MAX_FRAME_BYTES = 64 * 1024 * 1024
 
 
 class OwnerProcessFailure(RuntimeError):
@@ -488,16 +488,15 @@ def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
 
         return tuple(
             sorted(
-                (
+                name
+                for name in (
                     *_owner_module_closure(
                         replace(identity, capability_ids=_V29_EXECUTION_OPERATIONS)
                     ),
                     module,
-                    "chiplog.capabilities.agent_loop.direct_terminal_contracts",
-                    "chiplog.capabilities.agent_loop.direct_terminal_preparation",
-                    "chiplog.capabilities.agent_loop.direct_terminal_wire_contracts",
-                    "chiplog.capabilities.agent_loop.direct_effect_terminal_contracts",
                 )
+                if name.rsplit(".", 1)[-1].startswith("_")
+                and name.rsplit(".", 1)[-1].endswith("_process")
             )
         )
     if module == "chiplog.capabilities.agent_loop._execution_accepted_open_process":

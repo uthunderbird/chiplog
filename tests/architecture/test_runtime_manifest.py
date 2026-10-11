@@ -4,6 +4,8 @@ from dataclasses import replace
 
 import pytest
 
+from chiplog.adapters.driven.effects_hermetic import HermeticEffectsProvider
+from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import (
     CODEX_CLI_MANIFEST,
     R7_EVALUATION_MANIFEST,
@@ -11,6 +13,8 @@ from chiplog.architecture.r7_runtime import (
     R13_EVALUATION_MANIFEST,
     R13_PRODUCTION_MANIFEST,
     R14_EVALUATION_MANIFEST,
+    R14_EXECUTION_ACCEPTED_DIRECT_TERMINAL_V30_PRODUCTION_MANIFEST,
+    R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
     R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_EVALUATION_MANIFEST,
     R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
     R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_EVALUATION_MANIFEST,
@@ -30,7 +34,55 @@ from chiplog.architecture.r7_runtime import (
     verify_production_evaluation_equivalence,
     verify_runtime_manifest,
 )
+from chiplog.platform.r7_leaves import ProductionClock, ProductionPlanningStore
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+
+
+def test_v30_registers_direct_terminal_owner_and_preserves_v29_next_turn() -> None:
+    production = R14_EXECUTION_ACCEPTED_DIRECT_TERMINAL_V30_PRODUCTION_MANIFEST
+    assert verify_runtime_manifest(production)
+    assert production.manifest_version == 30
+    operation = "agent_loop.prepare_accepted_direct_terminal.v1"
+    route = next(item for item in production.routes if item.operation_id == operation)
+    assert route.request_schema_id == "chiplog.execution.direct-terminal-request.v1"
+    assert route.result_schema_id == "chiplog.execution.direct-terminal-result.v1"
+    loop = next(owner for owner in production.owners if owner.owner_id == "agent_loop")
+    assert operation in loop.capability_ids
+    assert operation in loop.public_operations
+    assert loop.target_ids == (
+        "chiplog.capabilities.agent_loop._execution_direct_terminal_process:dispatch",
+    )
+    assert "agent_loop.prepare_next_execution_turn.v1" in loop.public_operations
+    v29 = R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST
+    assert v29.manifest_version == 29
+    v29_loop = next(owner for owner in v29.owners if owner.owner_id == "agent_loop")
+    assert operation not in v29_loop.public_operations
+    assert v29_loop.target_ids == (
+        "chiplog.capabilities.agent_loop._execution_accepted_open_process:dispatch",
+    )
+
+    with AuthorityBrokerRuntime(
+        "tenant",
+        1,
+        "direct-terminal-v30",
+        production,
+        b"offline",
+        realized_leaves={
+            "clock": ProductionClock(),
+            "model": HermeticModel(),
+            "planning_store": ProductionPlanningStore(),
+            "effects_transport": HermeticEffectsProvider(receipt_key=b"fixture", scenarios=()),
+        },
+    ) as runtime:
+        attestation = next(
+            item for item in runtime.attest() if item.identity.owner_id == "agent_loop"
+        )
+    assert "chiplog.capabilities.agent_loop._execution_direct_terminal_process" in (
+        attestation.loaded_policy_modules
+    )
+    assert "chiplog.capabilities.agent_loop._execution_next_turn_process" in (
+        attestation.loaded_policy_modules
+    )
 
 
 def test_v31_registers_the_original_resolver_policy_owner_route() -> None:

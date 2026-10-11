@@ -118,7 +118,7 @@ def test_guarded_broker_call_admits_the_exact_request_once_immediately_before_se
 
 
 def test_owner_ipc_frame_bound_is_finite_and_exact(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert r7_runtime._MAX_FRAME_BYTES == 16 * 1024 * 1024
+    assert r7_runtime._MAX_FRAME_BYTES == 64 * 1024 * 1024
 
     class Sink:
         sent: bytes | None = None

@@ -1344,6 +1344,9 @@ R14_EXECUTION_ACCEPTED_DIRECT_TERMINAL_V30_PRODUCTION_MANIFEST = replace(
             owner,
             capability_ids=_V30_EXECUTION_OPERATIONS,
             public_operations=_V30_EXECUTION_OPERATIONS,
+            target_ids=(
+                "chiplog.capabilities.agent_loop._execution_direct_terminal_process:dispatch",
+            ),
         )
         if owner.owner_id == "agent_loop"
         else owner
