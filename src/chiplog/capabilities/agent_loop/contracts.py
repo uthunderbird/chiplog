@@ -29,6 +29,10 @@ class LoopRejected(ValueError):
     """An exact precondition is absent, stale, unsupported or invalid."""
 
 
+class LoopHold(LoopRejected):
+    """A valid transition is intentionally held pending recovery or authority."""
+
+
 RunState = Literal[
     "CREATED", "ACTIVE", "SUCCEEDED", "SUSPENDED", "SUPERSEDED", "ABORTED", "CANCELLED"
 ]

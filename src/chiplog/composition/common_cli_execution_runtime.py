@@ -36,7 +36,7 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
 from chiplog.capabilities.agent_loop.completion_owner_record_contracts import (
     DELIVERY_ACCEPTANCE_SCHEMA,
 )
-from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopRejected
+from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopHold, LoopRejected
 from chiplog.capabilities.agent_loop.delivery_contracts import (
     ExactHead,
     OriginSelection,
@@ -305,6 +305,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 (AGENT_LOOP_OWNER, "chiplog.execution.accepted-direct-terminal-result.v1"),
                 (AGENT_LOOP_OWNER, "chiplog.execution.suspension-baseline.v2"),
                 (AGENT_LOOP_OWNER, "chiplog.execution.suspension-pair.v2"),
+                (AGENT_LOOP_OWNER, "chiplog.execution.successor-edge.v1"),
+                (AGENT_LOOP_OWNER, "chiplog.execution.successor-initialization.v1"),
             )
         )
     )
@@ -2005,6 +2007,8 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             return self._receipt(*retained, "COMMITTED")
         except UnicodeDecodeError:
             return self._reject(request, "INVALID_INPUT", "selected CLI prompt is not UTF-8")
+        except LoopHold as error:
+            return self._reject(request, "HOLD", str(error))
         except LoopRejected as error:
             return self._reject(request, "STALE", str(error))
         except ValueError as error:

@@ -15,7 +15,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallPreparationRejected
-from chiplog.capabilities.agent_loop.contracts import LoopRejected
+from chiplog.capabilities.agent_loop.contracts import LoopHold, LoopRejected
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PreparedExecutionAccounting,
     PreparedExecutionContinuation,
@@ -395,6 +395,8 @@ async def _exchange(
                 f"{classified.disposition}: {classified.reason}"
             ) from error
         detail = f"recovery owner preparation {rejected.code}: {rejected.reason}"
+        if rejected.code == "HOLD":
+            raise LoopHold(detail) from error
         raise LoopRejected(detail) from error
     return result, sent, reply
 

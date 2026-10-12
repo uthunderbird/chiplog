@@ -36,6 +36,7 @@ from chiplog.composition.common_cli_execution_runtime import (
     CommonCliExecutionRuntime,
     open_common_cli_execution_runtime,
 )
+from chiplog.composition.common_execution_driver_contracts import ExecutionDriverRejectedV1
 from chiplog.composition.r14_accepted_open_accounting_publication import (
     _accepted_open_publication_state_is_valid,
 )
@@ -366,6 +367,21 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert recovered_frontier.calls[0].disposition.recovered_outcome.outcome.kind == "ABSENT"
         with pytest.raises(LoopRejected, match="OUTCOME_UNKNOWN/OPEN"):
             await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
+        history_before_successor = read_execution_call_history(reopened)
+        new_request = await admit_runtime_slot(
+            reopened,
+            "open-obligation-successor",
+            b"start a different follow-up task",
+        )
+        held = await reopened.drive_input(new_request)
+        assert isinstance(held, ExecutionDriverRejectedV1)
+        assert held.code == "HOLD"
+        assert "recovery of original obligations" in held.reason
+        assert read_execution_call_history(reopened) == history_before_successor
+        assert not any(
+            json.loads(raw).get("operation_kind") == "agent_loop.execution-successor.v1"
+            for _, _, raw in reopened._loop_decisions().entries()
+        )
         assert len(resources.require_original_provider().transfers) == 1
     with sqlite3.connect(database) as connection:
         record_id, canonical = connection.execute(

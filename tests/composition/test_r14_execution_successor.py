@@ -9,8 +9,12 @@ from chiplog.composition.common_cli_execution_runtime import (
     open_common_cli_execution_runtime,
 )
 from chiplog.composition.r14_loop_history import read_execution_history
-from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
+from chiplog.composition.r14_native_recovery_cut import (
+    NativeRecoveryCutSource,
+    _current_successor_ingress_occurrences,
+)
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.composition.r16_native_inventory import collect_r16_native_inventory
 from tests.support.h1_cli_execution import admit_runtime_slot
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 
@@ -52,13 +56,31 @@ async def test_new_authenticated_ingress_selects_and_replays_suspended_run_succe
         manifest=manifest,
         recovery_cut_source=source,
     ) as runtime:
-        print(
-            "SUCCESSOR_CUSTODY_FRAME_INPUT",
-            len(runtime._trust.capture_verified_observation().snapshot_bytes),
-        )
         request = await admit_runtime_slot(
             runtime, "successor-ingress", b"continue with the follow-up task"
         )
+        admitted = runtime._selected_input(request, successor_resources.observe())
+        with runtime._authority_gate().hold():
+            inventory = collect_r16_native_inventory(runtime)
+            selected_commands, selected_records = _current_successor_ingress_occurrences(
+                runtime, inventory, request, admitted
+            )
+            assert len(selected_commands) == 3
+            assert len(selected_records) >= 3
+            assert _current_successor_ingress_occurrences(
+                runtime,
+                inventory,
+                request.model_copy(update={"identity": request.identity.model_copy(
+                    update={"original_ingress_request_fingerprint": "0" * 64}
+                )}),
+                admitted,
+            ) is None
+            assert _current_successor_ingress_occurrences(
+                runtime,
+                inventory,
+                request,
+                admitted.model_copy(update={"raw_input_bytes": b"forged input"}),
+            ) is None
         receipt = await runtime.drive_input(request)
         assert isinstance(receipt, SelectedExecutionReceiptV1)
         assert receipt.selected_run_state == "ACTIVE"

@@ -343,6 +343,7 @@ def classify_native_occurrences(
     known_sources: dict[str, RecoverySourceRecord],
     scope: NativeOneCallContextScopeV1,
     authenticated_commands: dict[str, tuple[str, str, bytes]] | None = None,
+    selected_admission_records: dict[str, tuple[str, str, bytes]] | None = None,
 ) -> bool:
     """Decode first; only the independently reopened original custody is context.
 
@@ -380,6 +381,13 @@ def classify_native_occurrences(
         authenticated_command = (authenticated_commands or {}).get(occurrence.locator)
         if authenticated_command is not None:
             if authenticated_command != (occurrence.owner, occurrence.schema, occurrence.raw):
+                return False
+            continue
+        selected_admission_record = (selected_admission_records or {}).get(
+            occurrence.record_id or ""
+        )
+        if selected_admission_record is not None and occurrence.surface == "PHYSICAL":
+            if selected_admission_record != (occurrence.owner, occurrence.schema, occurrence.raw):
                 return False
             continue
         if occurrence.record_id in known_sources:
@@ -546,6 +554,113 @@ def classify_native_occurrences(
     return True
 
 
+def _current_successor_ingress_occurrences(
+    runtime: CommonCliExecutionRuntime,
+    inventory: R16NativeInventory,
+    driver_request,
+    admitted,
+) -> tuple[dict[str, tuple[str, str, bytes]], dict[str, tuple[str, str, bytes]]] | None:
+    """Return only the exact selected R17 chain for this current CLI request.
+
+    The owner and physical views come from the same captured inventory. The
+    selected ingress reducer is replayed over that captured owner prefix, and
+    runtime selection is repeated against the supplied request before any
+    matching ingress occurrence is exempted from historical-scope comparison.
+    """
+    from chiplog.composition.r17_ingress_history import (
+        is_custody_ingress,
+        validate_selected_ingress,
+    )
+    from chiplog.platform._owner_publication_contracts import SingleOwnerBatch
+    from chiplog.platform.ingress_authenticated_contracts import AuthenticatedCustodyRecord
+    from chiplog.platform.ingress_custody_records import canonical
+    from chiplog.platform.owner_decision_journal import snapshot_from_captured_entries
+
+    try:
+        runtime._authority_gate().require_held()
+        runtime._check_database_identity()
+        current = runtime._selected_input(
+            driver_request, runtime._require_dispatch_resources().observe()
+        )
+        if current != admitted:
+            return None
+        owner_snapshot = snapshot_from_captured_entries(inventory.owner_entries, inventory.tenant)
+        if owner_snapshot != runtime._owner_decisions().snapshot():
+            return None
+        records, _ = validate_selected_ingress(owner_snapshot)
+        decisions = tuple(
+            decision for decision in owner_snapshot.decisions if is_custody_ingress(decision)
+        )
+        if len(records) != len(decisions):
+            return None
+
+        admitted_record = AuthenticatedCustodyRecord.model_validate_json(
+            current.canonical_custody_record
+        )
+        selected_custody_bytes = json.dumps(
+            admitted_record.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        ).encode()
+        if (
+            current.tenant_id != inventory.tenant
+            or selected_custody_bytes != current.canonical_custody_record
+            or admitted_record.command.token.token_id
+            != driver_request.identity.original_ingress_identity.command_id
+            or admitted_record.command.profile.tenant_id != driver_request.identity.tenant_id
+            or admitted_record.command.profile.database_id != driver_request.identity.database_id
+            or admitted_record.inbox.authentication_request_fingerprint
+            != driver_request.identity.original_ingress_request_fingerprint
+            or admitted_record.inbox.raw_bytes != current.raw_input_bytes
+        ):
+            return None
+
+        matching: list[tuple[object, object]] = []
+        for decision, record in zip(decisions, records, strict=True):
+            if record.command.token.token_id == admitted_record.command.token.token_id:
+                matching.append((decision, record))
+        final = [
+            (decision, record)
+            for decision, record in matching
+            if isinstance(record, AuthenticatedCustodyRecord)
+            and canonical(record) == current.canonical_custody_record
+            and decision.decision_id == current.selected_decision.subject_id
+        ]
+        if len(final) != 1 or len(matching) != 3:
+            return None
+        if tuple(record.command.operation for _, record in matching) != (
+            "ingress.allocate_receipt_token",
+            "ingress.stage_raw_bytes",
+            "ingress.publish_custody_successor",
+        ):
+            return None
+        physical_by_id = {row.record_id: row for row in inventory.records}
+        commands: dict[str, tuple[str, str, bytes]] = {}
+        physical: dict[str, tuple[str, str, bytes]] = {}
+        for decision, _record in matching:
+            batch = decision.prepared.request
+            if not isinstance(batch, SingleOwnerBatch) or not batch.complete_records:
+                return None
+            commands[f"selected/{decision.decision_id}/command/0"] = (
+                batch.command.owner,
+                batch.command.schema_id,
+                batch.command.canonical_bytes,
+            )
+            for member in batch.complete_records:
+                selected_row = physical_by_id.get(member.record_id)
+                expected = (member.owner, member.schema_id, member.canonical_bytes)
+                if selected_row is None or (
+                    selected_row.owner,
+                    selected_row.schema,
+                    selected_row.raw,
+                ) != expected:
+                    return None
+                previous = physical.setdefault(member.record_id, expected)
+                if previous != expected:
+                    return None
+        return commands, physical
+    except OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError:
+        return None
+
+
 def _selected_accepted_open_recovery_preimages(
     runtime: CommonCliExecutionRuntime,
     inventory: R16NativeInventory,
@@ -667,8 +782,39 @@ class NativeRecoveryCutSource:
             return None
         return None
 
+    def collect_for_successor_held(
+        self,
+        runtime: CommonCliExecutionRuntime,
+        driver_request,
+        admitted,
+    ) -> tuple[ExecutionRecoveryCut, SelectedExecutionSuspension] | None:
+        """Collect a suspended cut with the exact current selected CLI admission."""
+        if type(runtime) is not CommonCliExecutionRuntime:
+            raise TypeError("native recovery cut requires the mounted CLI runtime")
+        runtime._authority_gate().require_held()
+        try:
+            with join_workspace_snapshot(runtime._database):
+                result = self._collect_held(
+                    runtime,
+                    allow_suspended=True,
+                    successor_input=(driver_request, admitted),
+                )
+            if (
+                isinstance(result, tuple)
+                and len(result) == 2
+                and isinstance(result[1], SelectedExecutionSuspension)
+            ):
+                return result
+        except OSError, RuntimeError, TypeError, ValueError, R16InventoryIntegrityError:
+            return None
+        return None
+
     def _collect_held(
-        self, runtime: CommonCliExecutionRuntime, *, allow_suspended: bool = False
+        self,
+        runtime: CommonCliExecutionRuntime,
+        *,
+        allow_suspended: bool = False,
+        successor_input=None,
     ) -> ExecutionRecoveryCut | tuple[ExecutionRecoveryCut, SelectedExecutionSuspension] | None:
         runtime._check_database_identity()
         if runtime._pending() or runtime._pending_gate_publications():
@@ -1255,6 +1401,17 @@ class NativeRecoveryCutSource:
                         )
                     )
                     known.add(record.record_id)
+        if successor_input is not None:
+            selected_ingress = _current_successor_ingress_occurrences(
+                runtime, inventory, *successor_input
+            )
+            if selected_ingress is None:
+                return None
+            selected_commands, selected_records = selected_ingress
+            for locator, expected in selected_commands.items():
+                previous = authenticated_commands.setdefault(locator, expected)
+                if previous != expected:
+                    return None
         # R16 selected/physical occurrences are decoded before they can be
         # dismissed. The native source/history reader authenticates its closed
         # native members. Other registered leaves use their existing pure codecs.
@@ -1264,6 +1421,7 @@ class NativeRecoveryCutSource:
             {identity: by_id[identity] for identity in known},
             scope,
             authenticated_commands,
+            selected_records if successor_input is not None else None,
         ):
             return None
         if inventory.evidence_rows:

@@ -416,10 +416,15 @@ def find_started_by_driver_request(runtime, driver_request: DriveInputRequestV1)
         return evidence, selected[0], command
 
 
-def _source_for(runtime, principal: str):
+def _source_for(
+    runtime,
+    principal: str,
+    driver_request: DriveInputRequestV1,
+    admitted: SelectedAdmittedRunInput,
+):
     port = source(runtime)
-    collect = getattr(port, "collect_for_resume_held", None)
-    observation = collect(runtime) if callable(collect) else None
+    collect = getattr(port, "collect_for_successor_held", None)
+    observation = collect(runtime, driver_request, admitted) if callable(collect) else None
     if observation is not None:
         cut, suspension = observation
         run = cut.complete_ordered_run_lineage[-1]
@@ -474,7 +479,9 @@ async def drive_successor(
             if not admitted.principal_id:
                 raise LoopRejected("selected admitted principal is absent")
             _assert_ingress_unclaimed(runtime, driver_request)
-            observation = _source_for(runtime, admitted.principal_id)
+            observation = _source_for(
+                runtime, admitted.principal_id, driver_request, admitted
+            )
             if observation is None:
                 return None
             cut, suspension, current = observation
@@ -517,7 +524,7 @@ async def drive_successor(
                     clock_proof=NotApplicable(),
                     run_id=current.run_id,
                     run_head=current.head,
-                    worker_session_id=worker,
+                    worker_session_id=current.worker_session,
                     runtime_generation=session.generation_id,
                 ),
                 admitted_input=admitted,
@@ -537,6 +544,7 @@ async def drive_successor(
                 raise LoopRejected(
                     "successor actor or trust source changed during owner preparation"
                 )
+            actor = refreshed
         evidence = RetainedExecutionSuccessor(
             driver_request_bytes=driver_request.canonical_bytes(),
             driver_request_fingerprint=fingerprint,
@@ -622,11 +630,18 @@ async def replay_successor(runtime, peer: str, driver_request: DriveInputRequest
 async def _publish_batch(
     runtime, actor, worker, session, cut, suspension, predecessor, decision_head, evidence, batch
 ):
+    driver_request = DriveInputRequestV1.model_validate_json(evidence.driver_request_bytes)
+
     def guard():
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(actor)
-                current = _source_for(runtime, evidence.admitted.principal_id)
+                current = _source_for(
+                    runtime,
+                    evidence.admitted.principal_id,
+                    driver_request,
+                    evidence.admitted,
+                )
                 if current != (cut, suspension, evidence.request.run):
                     return "STALE"
                 if (
@@ -647,13 +662,14 @@ async def _publish_batch(
                     >= evidence.actor_budget_v1.request.budget.absolute_deadline_ns
                 ):
                     return "STALE"
-            except ValueError, TypeError, RuntimeError, LoopRejected:
+            except (ValueError, TypeError, RuntimeError, LoopRejected):
                 return "STALE"
         return None
 
     def decide(resulting):
         with runtime._authority_gate().hold():
-            if guard() is not None or not resulting:
+            guard_result = guard()
+            if guard_result is not None or not resulting:
                 raise LoopRejected("successor cut changed at final transaction guard")
             runtime._append_decision(
                 {

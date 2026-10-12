@@ -18,6 +18,7 @@ from .cli_custody_contracts import (
 )
 
 MAX_AGE_NS = 5_000_000_000
+MAX_CLI_CUSTODY_OWNER_PAYLOAD_BYTES = 1_048_576
 
 
 def digest(raw: bytes) -> str:

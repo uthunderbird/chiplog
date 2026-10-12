@@ -3,7 +3,11 @@
 import base64
 
 from . import _r17_process
-from .cli_custody_validation import CliCustodyOwnerCall, evaluate_cli_custody
+from .cli_custody_validation import (
+    MAX_CLI_CUSTODY_OWNER_PAYLOAD_BYTES,
+    CliCustodyOwnerCall,
+    evaluate_cli_custody,
+)
 
 ROUTE = (
     "deployment_trust.authenticate_cli_custody",
@@ -19,7 +23,7 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
     if operation != ROUTE[0]:
         return _r17_process.dispatch(operation, payload)
     try:
-        if len(payload) > 262144:
+        if len(payload) > MAX_CLI_CUSTODY_OWNER_PAYLOAD_BYTES:
             raise ValueError("custody owner request exceeds bound")
         call = CliCustodyOwnerCall.model_validate_json(payload)
         if call.canonical_bytes() != payload:

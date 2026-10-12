@@ -11,6 +11,7 @@ from chiplog.platform._ingress_contracts import CliAuthentication, Head, Unknown
 from chiplog.platform._ingress_domain import CustodySnapshot, publish_custody
 from chiplog.platform.broker import PublicPortCall, PublicPortSuccess
 from chiplog.platform.ingress_authenticated_contracts import (
+    MAX_CLI_CUSTODY_OWNER_FRAME_BYTES,
     AuthenticatedCliCustody,
     AuthenticatedCustodyCommand,
     AuthenticatedCustodyRecord,
@@ -33,7 +34,7 @@ def decode_authentication(
     command: AuthenticatedCustodyCommand,
 ) -> tuple[CliCustodyOwnerCall, CliCustodyAuthenticated]:
     if (
-        len(command.authentication_request_bytes) > 262144
+        len(command.authentication_request_bytes) > MAX_CLI_CUSTODY_OWNER_FRAME_BYTES
         or len(command.authentication_result_bytes) > 65536
     ):
         raise ValueError("authenticated custody owner wire exceeds bound")

@@ -18,7 +18,10 @@ from tests.support.successor_records import (
 
 from chiplog.capabilities.agent_loop import execution_recovery_preparation as recovery_preparation
 from chiplog.capabilities.agent_loop import recovery_wire_contracts as recovery_wire
-from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
+    CallPreparationRejected,
+    CallSubjectHead,
+)
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     ExecutionSuccessorEdge,
     PreparedExecutionSuccessor,
@@ -1389,7 +1392,6 @@ async def test_native_non_scheduler_successor_owner_preparation_and_start(
         (),
         None,
     )
-
     start_request = PrepareExecutionSuccessorStart(
         command_id=(
             f"execution-successor-start:{prepared.successor_run.run_id}:"
@@ -1415,3 +1417,22 @@ async def test_native_non_scheduler_successor_owner_preparation_and_start(
         start.canonical_bytes(),
     )
     recovery_wire.validate_execution_recovery_exchange(wire_request, wire_result)
+
+
+@pytest.mark.asyncio
+async def test_native_successor_owner_holds_for_open_original_obligations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = await non_scheduler_successor()
+    baseline = fixture.request.original_suspension.baseline.model_copy(
+        update={"original_obligations": (obligation().original,)}
+    )
+    selected = fixture.request.original_suspension.model_copy(update={"baseline": baseline})
+    request = fixture.request.model_copy(update={"original_suspension": selected})
+    monkeypatch.setattr(recovery_preparation, "_validate_cut", lambda *_a, **_k: None)
+
+    result = recovery_preparation.prepare_execution_successor(request)
+
+    assert isinstance(result, CallPreparationRejected)
+    assert result.code == "HOLD"
+    assert result.reason == "successor requires recovery of original obligations"

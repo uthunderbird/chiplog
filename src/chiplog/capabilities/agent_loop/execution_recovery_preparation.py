@@ -1209,6 +1209,8 @@ def prepare_execution_successor(
         baseline, pair = selected.baseline, selected.pair
         if not isinstance(current, ExecutionRunRecord):
             raise RecoveryHold("successor requires the native v2 execution Run")
+        if baseline.original_obligations:
+            raise RecoveryHold("successor requires recovery of original obligations")
         if (
             current != request.run
             or _run_ref(current) != request.cut.current_run

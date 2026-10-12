@@ -23,6 +23,8 @@ from chiplog.platform._ingress_contracts import (
 from chiplog.platform.broker import BrokerSession
 from chiplog.platform.ingress_custody_records import CustodyProfile, RetentionClaim
 
+MAX_CLI_CUSTODY_OWNER_FRAME_BYTES = 1_048_576
+
 
 class AuthenticatedCustodyCommand(IngressDTO):
     schema_id: Literal["chiplog.ingress.authenticated-command.v2"] = (
@@ -38,7 +40,9 @@ class AuthenticatedCustodyCommand(IngressDTO):
     retention: RetentionClaim
     raw_bytes: bytes = Field(max_length=65536)
     # Owner-local public wire crosses mechanically as exact original bytes.
-    authentication_request_bytes: bytes = Field(min_length=1, max_length=262144)
+    authentication_request_bytes: bytes = Field(
+        min_length=1, max_length=MAX_CLI_CUSTODY_OWNER_FRAME_BYTES
+    )
     authentication_result_bytes: bytes = Field(min_length=1, max_length=65536)
     broker_session: BrokerSession
     read_state_bytes: bytes = Field(min_length=1)

@@ -43,7 +43,10 @@ from chiplog.platform._owner_publication_contracts import (
     SingleOwnerBatch,
 )
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
-from chiplog.platform.ingress_authenticated_contracts import AuthenticatedCustodyCommand
+from chiplog.platform.ingress_authenticated_contracts import (
+    MAX_CLI_CUSTODY_OWNER_FRAME_BYTES,
+    AuthenticatedCustodyCommand,
+)
 from chiplog.platform.ingress_custody_records import canonical, digest, subject_id
 from chiplog.platform.owner_publications import (
     BrokerPublicationCoordinator,
@@ -127,7 +130,7 @@ class AuthenticatedIngressAuthority(IngressAuthority):
                 absolute_deadline_ns=request.socket.valid_until_ns,
             ),
         )
-        if len(frame(sent)) > 262144:
+        if len(frame(sent)) > MAX_CLI_CUSTODY_OWNER_FRAME_BYTES:
             raise ValueError("CLI owner call frame exceeds bound")
         returned = await self.runtime._supervisor.runtime().call(sent)
         if (
