@@ -1911,14 +1911,21 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             observation = self._require_dispatch_resources().observe()
             admitted = self._selected_input(request, observation)
             run_id = self._run_id(admitted)
+            selected_claim = self._selected_ingress_claim(request)
             for _, _, raw in self._loop_decisions().entries():
                 entry = json.loads(raw)
                 value = entry.get("inbox_initialization")
                 if isinstance(value, str):
                     evidence = RetainedInboxExecutionInitialization.model_validate_json(value)
-                    if evidence.proposal.run.run_id == run_id:
+                    retained_request = DriveInputRequestV1.model_validate_json(
+                        evidence.driver_request_bytes
+                    )
+                    if (
+                        evidence.proposal.run.run_id == run_id
+                        or self._selected_ingress_claim(retained_request) == selected_claim
+                    ):
                         raise _DriverConflict(
-                            "selected inbox already belongs to another driver command"
+                            "selected ingress is already claimed by another driver command"
                         )
             snapshot = read_execution_history(self)
             create = CreateExecutionRun(
@@ -1974,14 +1981,30 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             return self._receipt(*retained, "COMMITTED")
         except UnicodeDecodeError:
             return self._reject(request, "INVALID_INPUT", "selected CLI prompt is not UTF-8")
+        except LoopRejected as error:
+            return self._reject(request, "STALE", str(error))
         except ValueError as error:
             return self._reject(request, "INVALID_INPUT", str(error))
         except PermissionError as error:
             return self._reject(request, "DENIED", str(error))
         except _DriverConflict as error:
             return self._reject(request, "CONFLICT", str(error))
-        except LoopRejected as error:
-            return self._reject(request, "STALE", str(error))
+
+    @staticmethod
+    def _selected_ingress_claim(request: DriveInputRequestV1) -> str:
+        """Identify one authenticated ingress independently of its driver command."""
+        source = request.selected_source
+        canonical = json.dumps(
+            {
+                "tenant_id": request.identity.tenant_id,
+                "database_id": request.identity.database_id,
+                "original_ingress_request_fingerprint": request.identity.original_ingress_request_fingerprint,
+                "selected_source": source.model_dump(mode="json"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return hashlib.sha256(b"chiplog.selected-ingress-claim.v1\x00" + canonical).hexdigest()
 
     async def lookup_execution(self, request: LookupExecutionRequestV1) -> CommonExecutionResultV1:
         try:

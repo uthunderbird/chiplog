@@ -649,6 +649,10 @@ class R14ExecutionRuntime(R14PlanningRuntime):
         published = await self._appender.submit(
             replace(command, admission_guard=guard, decision_guard=decide)
         )
+        if published.disposition == "CONFLICT":
+            raise LoopRejected(
+                "selected ingress was claimed by a competing driver command"
+            )
         if published.disposition not in ("COMMITTED", "REPLAY"):
             raise LoopRejected("inbox initialization publication " + published.disposition)
         self._finish_decision(command.idempotency_key)

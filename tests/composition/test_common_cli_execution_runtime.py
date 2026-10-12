@@ -276,6 +276,24 @@ async def test_socket_selected_inbox_creates_native_run_and_reopens(tmp_path: Pa
                 if entry.get("operation_kind") == EXECUTION_INBOX_INITIALIZATION_OPERATION
             ]
         )
+        conflicting_request = request.model_copy(
+            update={
+                "identity": request.identity.model_copy(
+                    update={"driver_command_id": "driver:second-claim-attempt"}
+                )
+            }
+        )
+        conflicting = await runtime.drive_input(conflicting_request)
+        assert conflicting.kind == "EXECUTION_DRIVER_REJECTED_V1"
+        assert conflicting.code == "CONFLICT"
+        assert len(
+            [
+                entry
+                for _, _, raw in runtime._loop_decisions().entries()
+                if (entry := json.loads(raw)).get("operation_kind")
+                == EXECUTION_INBOX_INITIALIZATION_OPERATION
+            ]
+        ) == before_count
     reopened_resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=custody
     )
@@ -310,6 +328,48 @@ async def test_socket_selected_inbox_creates_native_run_and_reopens(tmp_path: Pa
             ]
         )
         assert after_count == before_count == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_driver_commands_cannot_claim_one_selected_ingress_twice(
+    tmp_path: Path,
+) -> None:
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
+    )
+    async with open_common_cli_execution_runtime(
+        tmp_path / "state.sqlite", resources=resources
+    ) as runtime:
+        _, request = await _admit(runtime)
+        competing = request.model_copy(
+            update={
+                "identity": request.identity.model_copy(
+                    update={"driver_command_id": "driver:concurrent-claim-attempt"}
+                )
+            }
+        )
+        results = await asyncio.gather(
+            runtime.drive_input(request), runtime.drive_input(competing)
+        )
+        committed = [
+            result
+            for result in results
+            if result.kind == "SELECTED_EXECUTION_RECEIPT_V1"
+            and result.disposition == "COMMITTED"
+        ]
+        rejected = [
+            result
+            for result in results
+            if result.kind == "EXECUTION_DRIVER_REJECTED_V1"
+        ]
+        assert len(committed) == 1
+        assert len(rejected) == 1
+        assert rejected[0].code in {"CONFLICT", "STALE"}
+        assert sum(
+            1
+            for _, _, raw in runtime._loop_decisions().entries()
+            if json.loads(raw).get("operation_kind") == EXECUTION_INBOX_INITIALIZATION_OPERATION
+        ) == 1
 
 
 @pytest.mark.asyncio
