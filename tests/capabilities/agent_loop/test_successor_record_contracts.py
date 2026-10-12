@@ -428,6 +428,35 @@ async def test_non_scheduler_successor_validates_real_request_result_and_members
     )
 
 
+@pytest.mark.parametrize("identity_field", ["tenant", "principal", "recipient"])
+async def test_successor_join_rejects_predecessor_identity_substitution(
+    identity_field: str,
+) -> None:
+    value = await non_scheduler_successor()
+    successor_run = value.result.successor_run
+    if identity_field == "recipient":
+        recipient = successor_run.origin.recipient.model_copy(
+            update={"recipient_id": "different-recipient"}
+        )
+        origin = successor_run.origin.model_copy(update={"recipient": recipient})
+        successor_run = successor_run.model_copy(update={"origin": origin})
+    else:
+        successor_run = successor_run.model_copy(update={identity_field: "different-identity"})
+    result = value.result.model_copy(update={"successor_run": successor_run})
+
+    with pytest.raises(RecoveryRecordIntegrityError):
+        validate_execution_successor_records(
+            value.request,
+            result,
+            value.edge_member,
+            value.baseline_member,
+            value.pair_member,
+            (value.initialization_member,),
+            (),
+            None,
+        )
+
+
 @pytest.mark.parametrize("inheritance", ["obligation", "no_retry", "observation_frontier"])
 async def test_successor_join_rejects_matching_but_uninherited_references(
     inheritance: str,

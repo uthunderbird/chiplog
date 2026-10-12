@@ -701,6 +701,21 @@ def validate_execution_successor_records(
         request.run.head,
         "successor Run predecessor differs",
     )
+    _require(
+        result.successor_run.tenant,
+        request.run.tenant,
+        "successor tenant differs from predecessor",
+    )
+    _require(
+        result.successor_run.principal,
+        request.run.principal,
+        "successor principal differs from predecessor",
+    )
+    _require(
+        result.successor_run.origin.recipient,
+        request.run.origin.recipient,
+        "successor origin recipient differs from predecessor",
+    )
     _require(init.command_id, request.command_id, "initialization command differs")
     _require(init.predecessor_run, predecessor, "initialization predecessor differs")
     _require(init.successor_run, successor, "initialization successor differs")
