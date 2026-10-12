@@ -3,6 +3,7 @@
 import pytest
 
 from chiplog.architecture.r7_runtime import R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.composition.common_cli_execution_runtime import (
     SelectedExecutionReceiptV1,
@@ -15,8 +16,29 @@ from chiplog.composition.r14_native_recovery_cut import (
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.composition.r16_native_inventory import collect_r16_native_inventory
+from chiplog.platform.workspace_snapshot import read_connection
 from tests.support.h1_cli_execution import admit_runtime_slot
 from tests.support.native_cancelled import native_response, selected_native_cancelled
+
+
+def _durable_state(runtime):
+    with read_connection(runtime._database) as connection:
+        head = connection.execute(
+            "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+        ).fetchone()
+        records = tuple(
+            connection.execute(
+                "SELECT record_id,owner,schema_id,canonical_bytes,commit_sequence "
+                "FROM records WHERE tenant_id=? ORDER BY commit_sequence,record_id",
+                (runtime._tenant_id,),
+            )
+        )
+    return (
+        runtime._loop_decisions().entries(),
+        runtime._commitment_journal.load(runtime._tenant_id),
+        head,
+        records,
+    )
 
 
 @pytest.mark.asyncio
@@ -53,6 +75,7 @@ async def test_new_authenticated_ingress_selects_and_replays_suspended_run_succe
     async with open_common_cli_execution_runtime(
         database,
         resources=successor_resources,
+        responses=(native_response(),),
         manifest=manifest,
         recovery_cut_source=source,
     ) as runtime:
@@ -92,10 +115,29 @@ async def test_new_authenticated_ingress_selects_and_replays_suspended_run_succe
             if isinstance(row, ExecutionRunRecord)
         )
         assert successor.run_id == receipt.stable_run_lineage_id
+        assert successor.head == receipt.selected_run_head.head
         assert successor.state == "ACTIVE"
         assert len(successor.turns) == 1
         assert successor.turns[0].state == "PREPARING"
+        assert successor.original_obligations == previous.original_obligations
+        assert successor.no_retry_references == previous.no_retry_references
+
+        current_predecessor = next(
+            row
+            for row in reversed(read_execution_history(runtime).records)
+            if isinstance(row, ExecutionRunRecord) and row.run_id == previous.run_id
+        )
+        before_stale_capture = _durable_state(runtime)
+        with pytest.raises(LoopRejected):
+            await runtime.capture_execution(
+                "hermetic-ingress", current_predecessor.run_id, current_predecessor.head
+            )
+        assert runtime._execution_model.requests == []
+        assert _durable_state(runtime) == before_stale_capture
+        assert successor_resources.require_original_provider().transfers == ()
+        history_after_successor = read_execution_history(runtime)
         decisions = runtime._loop_decisions().entries()
+        durable_after_successor = _durable_state(runtime)
 
     reopened_resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=custody
@@ -111,4 +153,9 @@ async def test_new_authenticated_ingress_selects_and_replays_suspended_run_succe
         assert replay.disposition == "EXACT_REPLAY"
         assert replay.stable_run_lineage_id == receipt.stable_run_lineage_id
         assert replay.selected_run_head == receipt.selected_run_head
+        assert replay.selected_run_state == "ACTIVE"
         assert reopened._loop_decisions().entries() == decisions
+        assert read_execution_history(reopened) == history_after_successor
+        assert _durable_state(reopened) == durable_after_successor
+        assert reopened._execution_model.requests == []
+        assert not reopened_resources.require_original_provider().transfers

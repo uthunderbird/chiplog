@@ -9,10 +9,12 @@ from pathlib import Path
 
 from chiplog.adapters.driven.calendar_reads import decode_h1_original_calendar_read
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
+from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER
 from chiplog.adapters.driven.workspace_issuance import WorkspaceIssuanceJournal
 from chiplog.capabilities.agent_loop.contracts import VisibilityMember
 from chiplog.capabilities.evidence_journal.commands import TrustedIngress
 from chiplog.capabilities.projections.batch_boundary import ProposalContext
+from chiplog.capabilities.projections.provenance import ProvenanceBinding
 from chiplog.capabilities.projections.r9_boundary import WorkspaceRejected
 from chiplog.capabilities.projections.workspace_boundary import SourceReference
 from chiplog.platform.authority_gate import AuthorityGate
@@ -47,6 +49,7 @@ class H1WorkspaceIssuanceJournal:
         if not tenant or journal.authority_gate is None:
             raise ValueError("H1 workspace issuance requires tenant-bound authority")
         self._journal, self._tenant, self._gate = journal, tenant, journal.authority_gate
+        self._validated_raw_entries: tuple[tuple[str, str | None, bytes], ...] | None = None
         self._scan()
 
     @staticmethod
@@ -73,15 +76,21 @@ class H1WorkspaceIssuanceJournal:
             )
         raise ValueError("H1 original workspace issuance schema differs")
 
-    def _scan(self) -> dict[str, H1OriginalWorkspaceIssuance]:
+    def _scan(
+        self,
+        raw_entries: tuple[tuple[str, str | None, bytes], ...] | None = None,
+    ) -> dict[str, H1OriginalWorkspaceIssuance]:
         result: dict[str, H1OriginalWorkspaceIssuance] = {}
-        for entry_id, _, payload in self._journal.entries():
+        if raw_entries is None:
+            raw_entries = self._journal.entries()
+        for entry_id, _, payload in raw_entries:
             issued = self._decode(payload)
             if issued.canonical_bytes() != payload or issued.tenant != self._tenant:
                 raise WorkspaceRejected("invalid original workspace issuance")
             if entry_id in result:
                 raise WorkspaceRejected("duplicate original workspace issuance")
             result[entry_id] = issued
+        self._validated_raw_entries = raw_entries
         return result
 
     def append(self, issuance: H1OriginalWorkspaceIssuance) -> H1WorkspaceIssuanceRefV1:
@@ -118,10 +127,22 @@ class H1WorkspaceIssuanceJournal:
         if ref.tenant != self._tenant:
             raise WorkspaceRejected("foreign original workspace issuance reference")
         with self._gate.hold():
-            try:
-                issued = self._scan()[ref.entry_id]
-            except KeyError as error:
-                raise WorkspaceRejected("missing original workspace issuance") from error
+            raw_entries = self._journal.entries()
+            if raw_entries is self._validated_raw_entries:
+                payload = next(
+                    (payload for entry_id, _, payload in raw_entries if entry_id == ref.entry_id),
+                    None,
+                )
+                if payload is None:
+                    raise WorkspaceRejected("missing original workspace issuance")
+                issued = self._decode(payload)
+                if issued.canonical_bytes() != payload or issued.tenant != self._tenant:
+                    raise WorkspaceRejected("invalid original workspace issuance")
+            else:
+                try:
+                    issued = self._scan(raw_entries)[ref.entry_id]
+                except KeyError as error:
+                    raise WorkspaceRejected("missing original workspace issuance") from error
             if (
                 _batch_id(issued) != ref.batch_id
                 or _digest(issued.canonical_bytes()) != ref.payload_digest
@@ -159,12 +180,36 @@ def verify_h1_original_workspace(
 ) -> H1VerifiedWorkspaceClosure:
     try:
         issued = journal.load(ref)
+    except ValueError as error:
+        raise WorkspaceRejected("invalid original workspace issuance") from error
+    return _verify_loaded_h1_original_workspace(
+        ref, workspace_member_bytes, proposal_context_bytes, issued, dashboard_issuance
+    )
+
+
+def _verify_loaded_h1_original_workspace(
+    ref: H1WorkspaceIssuanceRefV1,
+    workspace_member_bytes: bytes,
+    proposal_context_bytes: bytes,
+    issued: H1OriginalWorkspaceIssuance,
+    dashboard_issuance: WorkspaceIssuanceJournal,
+) -> H1VerifiedWorkspaceClosure:
+    """Verify an issuance already loaded from this exact durable reference."""
+    try:
+        payload = issued.canonical_bytes()
+        if (
+            issued.tenant != ref.tenant
+            or _batch_id(issued) != ref.batch_id
+            or _digest(payload) != ref.payload_digest
+        ):
+            raise WorkspaceRejected("original workspace issuance reference differs")
         if isinstance(issued, H1OriginalWorkspaceIssuanceV2):
-            # `load` establishes the durable journal entry.  Re-decode with
+            # `journal.load` establishes durable membership. Re-decode with
             # that exact reference so V2's physical workspace-policy member
-            # and its reference/payload joins cannot be bypassed by the
-            # journal's admission-time synthetic reference.
-            issued = decode_h1_original_workspace_issuance_v2(issued.canonical_bytes(), ref)
+            # joins cannot be bypassed by the journal's admission-time ref.
+            issued = decode_h1_original_workspace_issuance_v2(payload, ref)
+    except WorkspaceRejected:
+        raise
     except ValueError as error:
         raise WorkspaceRejected("invalid original workspace issuance") from error
     if (
@@ -240,9 +285,37 @@ def _validate_retained_original(issued: H1OriginalWorkspaceIssuance) -> None:
         or issued.sources.policy_payload_base64 == ""
     ):
         raise WorkspaceRejected("original workspace source identity differs")
-    if issued.sources.conversation_bindings_json and not issued.sources.selected_loop_decisions:
-        raise WorkspaceRejected("original conversation decision proof is missing")
     records = {row.record_id: row for row in issued.snapshot.records}
+    physical_conversation_ids = {
+        row.record_id for row in issued.snapshot.records if row.owner == CONVERSATION_OWNER
+    }
+    try:
+        bindings = tuple(
+            ProvenanceBinding.model_validate_json(raw)
+            for raw in issued.sources.conversation_bindings_json
+        )
+    except ValueError as error:
+        raise WorkspaceRejected("invalid original conversation binding") from error
+    binding_ids = tuple(binding.subject.record_id for binding in bindings)
+    if len(binding_ids) != len(set(binding_ids)) or not physical_conversation_ids <= set(
+        binding_ids
+    ):
+        raise WorkspaceRejected("original conversation bindings differ")
+    ingress_sources = {
+        (source.owner, source.record_id, source.content_digest)
+        for source in ingress.sources
+    }
+    for binding in bindings:
+        if binding.subject.record_id in physical_conversation_ids:
+            continue
+        if not any(
+            source.owner == "principal_ingress"
+            and source.record_id == binding.subject.record_id
+            and (source.owner, source.record_id, source.content_digest) in ingress_sources
+            for source in binding.sources
+        ):
+            raise WorkspaceRejected("original pending conversation binding differs")
+    decision_conversation_ids: list[str] = []
     for decision in issued.sources.selected_loop_decisions:
         try:
             decoded = base64.b64decode(decision.payload_base64.encode("ascii"), validate=True)
@@ -250,6 +323,9 @@ def _validate_retained_original(issued: H1OriginalWorkspaceIssuance) -> None:
             if entry.get("kind") != "DECIDED" or not isinstance(entry.get("records"), list):
                 raise ValueError("not selected")
             for row in entry["records"]:
+                if row["owner"] != CONVERSATION_OWNER:
+                    continue
+                decision_conversation_ids.append(row["record_id"])
                 record = records.get(row["record_id"])
                 payload = base64.b64decode(row["payload"], validate=True)
                 if (
@@ -262,6 +338,10 @@ def _validate_retained_original(issued: H1OriginalWorkspaceIssuance) -> None:
                     raise ValueError("selected decision physical record differs")
         except (KeyError, TypeError, ValueError) as error:
             raise WorkspaceRejected("invalid original conversation decision") from error
+    if len(decision_conversation_ids) != len(set(decision_conversation_ids)) or set(
+        decision_conversation_ids
+    ) != physical_conversation_ids:
+        raise WorkspaceRejected("original conversation decision proof differs")
     policy = records.get(issued.sources.policy_record_id)
     if policy is None or policy.canonical_record_bytes() != base64.b64decode(
         issued.sources.policy_payload_base64.encode("ascii"), validate=True

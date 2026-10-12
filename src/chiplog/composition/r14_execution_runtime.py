@@ -60,7 +60,13 @@ from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import
     RECOVERY_FRONTIER_REGISTRY_SCHEMA,
 )
 from chiplog.composition.r16_dispatch_registry import ResourceObservation
-from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
+from chiplog.platform.broker import (
+    BrokerSession,
+    CallBudget,
+    PublicPortCall,
+    PublicPortRejected,
+    PublicPortSuccess,
+)
 
 from .r7_planning import ObservedTrustCall, _open_runtime
 from .r13_workspace import R13Workspace, _history
@@ -272,9 +278,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
         h1_workspace_port: R13Workspace | None = None,
         native_scope_binding: NativePrepareScopeBindingV1 | None = None,
     ) -> ExecutionRunRecord:
-        observed = await self._execution_actor(peer)
         with self._authority_gate().hold():
-            self._check_execution_actor(observed)
             snapshot = read_execution_history(self)
             if expected_snapshot is not None and snapshot != expected_snapshot:
                 raise LoopRejected("execution visibility source cut changed")
@@ -337,7 +341,11 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 owner_id="broker",
                 session_id=f"broker:{callee.generation_id}",
             )
-            deadline = observed.request.budget.absolute_deadline_ns
+        # Public entrypoints authenticate before reaching this proposal path.
+        # Start the fixed actor/owner deadline after local source preparation;
+        # the proposal is inert and the writer guard rechecks actor and sources.
+        observed = await self._execution_actor(peer)
+        deadline = observed.request.budget.absolute_deadline_ns
         sent = PublicPortCall(
             operation_id="agent_loop.prepare_execution_transition",
             request_id="execution:" + secrets.token_hex(16),
@@ -353,6 +361,13 @@ class R14ExecutionRuntime(R14PlanningRuntime):
             ),
         )
         returned = await engine.call(sent)
+        if isinstance(returned, PublicPortRejected):
+            raise LoopRejected(
+                "execution owner exchange rejected: "
+                + returned.failure.kind
+                + ": "
+                + returned.failure.reason
+            )
         if (
             not isinstance(returned, PublicPortSuccess)
             or returned.request_id != sent.request_id
@@ -431,8 +446,9 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                         verify_native_prepare_scope(
                             self, request, native_scope_binding, historical=False
                         )
+                    current_snapshot = read_execution_history(self)
                     if (
-                        read_execution_history(self) != snapshot
+                        current_snapshot != snapshot
                         or self.current_worker() != worker
                         or engine.session("agent_loop") != callee
                         or time.monotonic_ns() >= deadline
@@ -683,7 +699,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                     raise LoopRejected("missing exact execution Run")
                 started = lineage[-1]
                 if (
-                    started.event != "TurnStarted"
+                    started.event not in ("TurnStarted", "SuccessorTurnStarted")
                     or len(started.turns) != 1
                     or started.turns[-1].state != "PREPARING"
                     or started.turns[-1].attempts

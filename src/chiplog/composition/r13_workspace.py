@@ -257,9 +257,11 @@ class R13Workspace:
                     key=lambda source: source.record_id,
                 )
             )
+        conversation_entries = _history(runtime, tenant)
         bindings = conversation_bindings(
-            runtime, _history(runtime, tenant), extra, channel=channel, contour=contour
+            runtime, conversation_entries, extra, channel=channel, contour=contour
         )
+        conversation_entry_ids = {entry.entry_id for entry in conversation_entries}
         selected_decisions = tuple(
             H1RetainedDecisionV1(
                 entry_id=entry_id,
@@ -267,7 +269,14 @@ class R13Workspace:
                 payload_base64=base64.b64encode(payload).decode("ascii"),
             )
             for entry_id, predecessor, payload in runtime._loop_decisions().entries()
-            if json.loads(payload).get("kind") == "DECIDED"
+            if (
+                (decision := json.loads(payload)).get("kind") == "DECIDED"
+                and any(
+                    row.get("owner") == CONVERSATION_OWNER
+                    and row.get("record_id") in conversation_entry_ids
+                    for row in decision.get("records", ())
+                )
+            )
         )
         all_sources = (
             *(source for binding in bindings for source in binding.sources),

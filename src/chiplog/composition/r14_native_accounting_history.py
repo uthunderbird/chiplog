@@ -17,6 +17,8 @@ from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_execution_inventory import execution_inventory
 from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
 from chiplog.composition.r14_fanout_contracts import INITIALIZED_SCHEMA, SEAL_SCHEMA
+from chiplog.composition.r14_h1_workspace_issuance import H1OriginalWorkspaceIssuance
+from chiplog.composition.r14_h1_workspace_issuance_contracts import H1VerifiedWorkspaceClosure
 from chiplog.composition.r14_native_accounting_records import (
     NATIVE_ACCOUNTING_OPERATION,
     NATIVE_ACCOUNTING_SCHEMA,
@@ -28,6 +30,7 @@ from chiplog.composition.r14_native_execution_record_source import (
     R14NativeExecutionRecordSourceManifest,
     _fingerprint,
 )
+from chiplog.composition.r14_native_scope_binding import NativePrepareScopeBindingV1
 from chiplog.composition.r14_native_selected_accounting_source import (
     R14NativeOneCallCancelledFacts,
     _run_reference,
@@ -66,6 +69,12 @@ def _verify_original_prepare_projection(
     fanout: RetainedExecutionFanOutPreparation,
     run_records: list[RunRecord | ExecutionRunRecord],
     request_bindings: object,
+    verified_h1_prepare: tuple[
+        H1OriginalWorkspaceIssuance,
+        H1VerifiedWorkspaceClosure,
+        NativePrepareScopeBindingV1 | None,
+    ]
+    | None,
 ) -> None:
     """Rebuild every retained Prepare projection field from selected owner sources."""
     from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
@@ -78,7 +87,9 @@ def _verify_original_prepare_projection(
         RetainedExecutionTransitionV3,
         RetainedExecutionTransitionV4,
     )
-    from chiplog.composition.r14_h1_workspace_issuance import verify_h1_original_workspace
+    from chiplog.composition.r14_h1_workspace_issuance import (
+        _verify_loaded_h1_original_workspace,
+    )
     from chiplog.composition.r14_native_preparation_bindings import (
         bind_native_execution_preparation_v2,
     )
@@ -98,11 +109,14 @@ def _verify_original_prepare_projection(
     if not isinstance(retained.request, PrepareExecutionRequest):
         raise ValueError("native accounting original Prepare has another transition role")
     if isinstance(retained, RetainedExecutionTransitionV4):
-        from .r14_native_scope_binding import verify_native_prepare_scope
+        if verified_h1_prepare is None:
+            from .r14_native_scope_binding import verify_native_prepare_scope
 
-        verify_native_prepare_scope(
-            runtime, retained.request, retained.native_scope_binding, historical=True
-        )
+            verify_native_prepare_scope(
+                runtime, retained.request, retained.native_scope_binding, historical=True
+            )
+        elif verified_h1_prepare[2] != retained.native_scope_binding:
+            raise ValueError("native accounting cached Prepare scope differs")
         if prepare.original_native_scope_binding != retained.native_scope_binding:
             raise ValueError("native accounting original scope differs")
     elif prepare.original_native_scope_binding is not None:
@@ -138,19 +152,29 @@ def _verify_original_prepare_projection(
         != ("workspace", "context", "prompt", "schema")
     ):
         raise ValueError("native accounting original Prepare manifest differs")
-    workspace = R13Workspace(runtime)
-    journal = workspace.open_h1_workspace_issuance()
-    issuance = journal.load(retained.workspace_issuance)
     workspace_bytes = manifest.members[0].model_dump_json().encode()
-    if issuance.workspace_member_json.encode() != workspace_bytes:
-        raise ValueError("native accounting original Prepare workspace member differs")
-    verify_h1_original_workspace(
-        retained.workspace_issuance,
-        workspace_bytes,
-        issuance.proposal_context_json.encode(),
-        journal,
-        workspace.open_dashboard_issuance(),
-    )
+    if verified_h1_prepare is None:
+        workspace = R13Workspace(runtime)
+        journal = workspace.open_h1_workspace_issuance()
+        issuance = journal.load(retained.workspace_issuance)
+        if issuance.workspace_member_json.encode() != workspace_bytes:
+            raise ValueError("native accounting original Prepare workspace member differs")
+        _verify_loaded_h1_original_workspace(
+            retained.workspace_issuance,
+            workspace_bytes,
+            issuance.proposal_context_json.encode(),
+            issuance,
+            workspace.open_dashboard_issuance(),
+        )
+    else:
+        issuance, closure, _ = verified_h1_prepare
+        if (
+            issuance.workspace_member_json.encode() != workspace_bytes
+            or closure.issuance != retained.workspace_issuance
+            or closure.workspace_member_bytes != workspace_bytes
+            or closure.proposal_context_bytes != issuance.proposal_context_json.encode()
+        ):
+            raise ValueError("native accounting cached Prepare closure differs")
     issuance_bytes = issuance.canonical_bytes()
     scope = R14OriginalNativePrepareSource(runtime)._descriptive_scope_held(
         issuance=issuance,
@@ -203,6 +227,16 @@ def decode_selected_native_accounting(
     fanouts: list[RetainedExecutionFanOutPreparation],
     cancellations: list[RetainedExecutionCancellationPreparation],
     run_records: list[RunRecord | ExecutionRunRecord],
+    *,
+    verified_h1_prepares: dict[
+        tuple[bytes, str],
+        tuple[
+            H1OriginalWorkspaceIssuance,
+            H1VerifiedWorkspaceClosure,
+            NativePrepareScopeBindingV1 | None,
+        ],
+    ]
+    | None = None,
 ) -> RetainedNativeOneCallAccountingPublication:
     """Verify selected source, exact prior physical rows and one new member."""
     if command.operation_kind != NATIVE_ACCOUNTING_OPERATION:
@@ -318,6 +352,16 @@ def decode_selected_native_accounting(
         )
     ):
         raise ValueError("native accounting original Prepare locator differs")
+    verified_h1_prepare = (
+        None
+        if verified_h1_prepares is None
+        else verified_h1_prepares.get(
+            (
+                prepare.retained_prepare_bytes,
+                prepare.workspace_issuance.model_dump_json(),
+            )
+        )
+    )
     _verify_original_prepare_projection(
         runtime,
         prepare,
@@ -328,6 +372,7 @@ def decode_selected_native_accounting(
         fanouts[0],
         run_records,
         evidence.request.preparation_bindings,
+        verified_h1_prepare,
     )
     if len(source.ordered_members) != len({item.record_id for item in source.ordered_members}):
         raise ValueError("native accounting source has duplicate physical members")

@@ -6,20 +6,24 @@ from pathlib import Path
 
 import pytest
 
+from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy
 from chiplog.capabilities.projections.r9_boundary import WorkspaceRejected
 from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_execution_runtime import open_execution_runtime
 from chiplog.composition.r14_h1_workspace_issuance import (
+    H1WorkspaceIssuanceJournal,
     _validate_dashboard,
     _validate_retained_original,
     _validate_snapshot,
+    _verify_loaded_h1_original_workspace,
     verify_h1_original_workspace,
 )
 from chiplog.composition.r14_h1_workspace_issuance_contracts import (
     H1OriginalWorkspaceIssuanceV1,
     H1PublicationRowV1,
     H1RecordRowV1,
+    H1RetainedDecisionV1,
     H1WorkspaceSnapshotV1,
 )
 
@@ -85,7 +89,9 @@ def test_h1_snapshot_requires_contiguous_original_publication_frontier() -> None
         _validate_snapshot(_issuance(snapshot))
 
 
-async def test_h1_original_workspace_reopens_exact_native_issuance(tmp_path: Path) -> None:
+async def test_h1_original_workspace_reopens_exact_native_issuance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database = tmp_path / "execution.sqlite"
     async with open_execution_runtime(database) as runtime:
         created = await runtime.create_execution("hermetic-ingress", "run", "Plan", BudgetPolicy())
@@ -94,6 +100,43 @@ async def test_h1_original_workspace_reopens_exact_native_issuance(tmp_path: Pat
         member = await workspace.context(started)
         ref = workspace._last_h1_workspace_issuance
         assert ref is not None
+        decoded: list[bytes] = []
+        original_decode = H1WorkspaceIssuanceJournal._decode
+
+        def count_decode(payload: bytes):
+            decoded.append(payload)
+            return original_decode(payload)
+
+        monkeypatch.setattr(H1WorkspaceIssuanceJournal, "_decode", staticmethod(count_decode))
+        journal = workspace.open_h1_workspace_issuance()
+        decoded.clear()
+        issued = journal.load(ref)
+        assert len(decoded) == 1
+        raw_entries = journal._journal.entries()
+        monkeypatch.setattr(
+            journal._journal,
+            "entries",
+            lambda: tuple(entry for entry in raw_entries),
+        )
+        decoded.clear()
+        journal.load(ref)
+        assert len(decoded) == len(raw_entries)
+        loaded_closure = _verify_loaded_h1_original_workspace(
+            ref,
+            member.model_dump_json().encode(),
+            member.content.encode(),
+            issued,
+            workspace.open_dashboard_issuance(),
+        )
+        assert loaded_closure.proposal_context_bytes == member.content.encode()
+        with pytest.raises(WorkspaceRejected, match="reference differs"):
+            _verify_loaded_h1_original_workspace(
+                ref.model_copy(update={"payload_digest": "0" * 64}),
+                member.model_dump_json().encode(),
+                member.content.encode(),
+                issued,
+                workspace.open_dashboard_issuance(),
+            )
         verified = verify_h1_original_workspace(
             ref,
             member.model_dump_json().encode(),
@@ -127,6 +170,39 @@ async def test_h1_original_workspace_reopens_exact_native_issuance(tmp_path: Pat
             )
 
         issued = workspace.open_h1_workspace_issuance().load(ref)
+        conversation_ids = {
+            row.record_id for row in issued.snapshot.records if row.owner == CONVERSATION_OWNER
+        }
+        assert conversation_ids
+        assert len(issued.sources.selected_loop_decisions) == len(conversation_ids)
+        wide_decisions = tuple(
+            H1RetainedDecisionV1(
+                entry_id=entry_id,
+                predecessor=predecessor,
+                payload_base64=base64.b64encode(payload).decode("ascii"),
+            )
+            for entry_id, predecessor, payload in runtime._loop_decisions().entries()
+            if json.loads(payload).get("kind") == "DECIDED"
+        )
+        _validate_retained_original(
+            issued.model_copy(
+                update={
+                    "sources": issued.sources.model_copy(
+                        update={"selected_loop_decisions": wide_decisions}
+                    )
+                }
+            )
+        )
+        with pytest.raises(WorkspaceRejected, match="decision proof differs"):
+            _validate_retained_original(
+                issued.model_copy(
+                    update={
+                        "sources": issued.sources.model_copy(
+                            update={"selected_loop_decisions": ()}
+                        )
+                    }
+                )
+            )
         changed_query = issued.queries[0].model_copy(update={"result_json": "{}"})
         with pytest.raises(WorkspaceRejected, match="query result"):
             _validate_retained_original(

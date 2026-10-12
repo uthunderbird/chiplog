@@ -103,7 +103,12 @@ from chiplog.composition.r14_fanout_records import (
     build_envelope,
     physical_command,
 )
-from chiplog.composition.r14_h1_workspace_issuance import verify_h1_original_workspace
+from chiplog.composition.r14_h1_workspace_issuance import (
+    H1OriginalWorkspaceIssuance,
+    _verify_loaded_h1_original_workspace,
+)
+from chiplog.composition.r14_h1_workspace_issuance_contracts import H1VerifiedWorkspaceClosure
+from chiplog.composition.r14_native_scope_binding import NativePrepareScopeBindingV1
 from chiplog.platform._owner_publication_contracts import (
     CompleteDeliveryBatchV2,
     DeliveryWorkClaimBatchV1,
@@ -559,6 +564,14 @@ def _read_call_history(
                 native_accounting_count = 0
                 captured_heads: set[str] = set()
                 native_prepares: dict[tuple[str, str], str] = {}
+                verified_h1_prepares: dict[
+                    tuple[bytes, str],
+                    tuple[
+                        H1OriginalWorkspaceIssuance,
+                        H1VerifiedWorkspaceClosure,
+                        NativePrepareScopeBindingV1 | None,
+                    ],
+                ] = {}
                 original_sources = None
                 original_resolution_evidence = None
                 original_resolution_resulting = None
@@ -1247,6 +1260,7 @@ def _read_call_history(
                             execution_preparations,
                             execution_cancellations,
                             mixed_records,
+                            verified_h1_prepares=verified_h1_prepares,
                         )
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
@@ -1626,14 +1640,13 @@ def _read_call_history(
                                 raise ValueError("H1 retained transition lacks unique workspace")
                             workspace = workspace_members[0]
                             workspace_port = R13Workspace(runtime)
-                            original = workspace_port.open_h1_workspace_issuance().load(
-                                retained_transition.workspace_issuance
-                            )
-                            verify_h1_original_workspace(
+                            issuance_journal = workspace_port.open_h1_workspace_issuance()
+                            original = issuance_journal.load(retained_transition.workspace_issuance)
+                            verified_workspace = _verify_loaded_h1_original_workspace(
                                 retained_transition.workspace_issuance,
                                 workspace.model_dump_json().encode(),
                                 workspace.content.encode(),
-                                workspace_port.open_h1_workspace_issuance(),
+                                original,
                                 workspace_port.open_dashboard_issuance(),
                             )
                             started = next(
@@ -1700,6 +1713,22 @@ def _read_call_history(
                             )
                         ):
                             raise ValueError("selected execution differs from original history")
+                        if isinstance(
+                            retained_transition,
+                            (RetainedExecutionTransitionV3, RetainedExecutionTransitionV4),
+                        ):
+                            verified_h1_prepares[
+                                (
+                                    retained_raw.encode(),
+                                    retained_transition.workspace_issuance.model_dump_json(),
+                                )
+                            ] = (
+                                original,
+                                verified_workspace,
+                                retained_transition.native_scope_binding
+                                if isinstance(retained_transition, RetainedExecutionTransitionV4)
+                                else None,
+                            )
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
                         )

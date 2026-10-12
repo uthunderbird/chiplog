@@ -31,6 +31,7 @@ from chiplog.composition.r13_workspace import R13Workspace
 from chiplog.composition.r14_execution_runtime import open_execution_runtime
 from chiplog.composition.r14_h1_workspace_issuance import (
     H1WorkspaceIssuanceJournal,
+    _verify_loaded_h1_original_workspace,
     verify_h1_original_workspace,
 )
 from chiplog.composition.r14_h1_workspace_issuance_contracts import (
@@ -198,6 +199,23 @@ async def test_v2_verifier_reopens_physical_policy_and_v1_closure(
     tmp_path: Path,
 ) -> None:
     async for issued, ref, journal, dashboard in _issued_v2(tmp_path):
+        loaded = journal.load(ref)
+        loaded_verified = _verify_loaded_h1_original_workspace(
+            ref,
+            issued.workspace_member_json.encode(),
+            issued.proposal_context_json.encode(),
+            loaded,
+            dashboard,
+        )
+        assert loaded_verified.sources.policy_payload_base64 == issued.sources.policy_payload_base64
+        with pytest.raises(WorkspaceRejected, match="reference differs"):
+            _verify_loaded_h1_original_workspace(
+                ref.model_copy(update={"payload_digest": "0" * 64}),
+                issued.workspace_member_json.encode(),
+                issued.proposal_context_json.encode(),
+                loaded,
+                dashboard,
+            )
         verified = verify_h1_original_workspace(
             ref,
             issued.workspace_member_json.encode(),
