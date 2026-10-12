@@ -1375,12 +1375,6 @@ class NativeRecoveryCutSource:
                 )
                 for record in command.records
             )
-            if command.operation_kind in recovery_operations:
-                recovery_route_present = True
-                continue
-            if competing_schema or any(field in entry for field in competing_evidence_fields):
-                claimed = True
-                return True, None
             marker = (
                 command.operation_kind == ACCEPTED_DIRECT_TERMINAL_OPERATION
                 or "accepted_direct_terminal_evidence" in entry
@@ -1392,6 +1386,12 @@ class NativeRecoveryCutSource:
             if marker:
                 claimed = True
                 entries.append((decision_id, raw, entry, command))
+            if command.operation_kind in recovery_operations:
+                recovery_route_present = True
+                continue
+            if competing_schema or any(field in entry for field in competing_evidence_fields):
+                claimed = True
+                return True, None
         if not claimed:
             return False, None
         if recovery_route_present or len(entries) != 1 or subset.accepted_closed_outcome is None:

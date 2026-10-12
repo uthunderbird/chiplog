@@ -592,6 +592,27 @@ def test_direct_selector_holds_recovery_route_competing_with_direct_terminal_mar
     assert selected is None
 
 
+def test_direct_selector_holds_terminal_marker_embedded_in_recovery_operation():
+    raw = json.dumps(
+        {"kind": "DECIDED", "accepted_direct_terminal_evidence": "retained"}
+    ).encode()
+    command = SimpleNamespace(
+        operation_kind="agent_loop.original-resolver-authority-policy.v1",
+        records=(
+            SimpleNamespace(schema_id="chiplog.loop.original-resolver-authority-policy.v1"),
+        ),
+    )
+    log = SimpleNamespace(entries=lambda: (("decision", "unused", raw),))
+    runtime = SimpleNamespace(_loop_decisions=lambda: log, _publication=lambda entry: command)
+
+    claimed, selected = NativeRecoveryCutSource._selected_accepted_direct_terminal_inputs(
+        runtime, None
+    )
+
+    assert claimed
+    assert selected is None
+
+
 def test_direct_selector_holds_retained_rival_marker_under_foreign_operation():
     raw = json.dumps({"kind": "DECIDED", "original_call_resolution_evidence": "retained"}).encode()
     command = SimpleNamespace(operation_kind="custom.foreign-operation.v1", records=())
