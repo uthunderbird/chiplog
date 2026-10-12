@@ -504,17 +504,42 @@ def test_direct_selector_holds_rival_r14_schema_under_foreign_operation(schema_i
 
 
 @pytest.mark.parametrize(
-    "operation",
+    ("operation", "schema_id"),
     (
-        "agent_loop.accepted-open-accounting.v1",
-        "agent_loop.accepted-open-recovery.v1",
-        "agent_loop.original-call-resolution.v1",
-        "agent_loop.loop-semantic-reduction.v1",
+        (
+            "agent_loop.accepted-open-accounting.v1",
+            "chiplog.execution.accepted-open-accounting.v1",
+        ),
+        (
+            "agent_loop.accepted-open-recovery.v1",
+            "chiplog.execution.accepted-open-recovery-opening.v1",
+        ),
+        (
+            "agent_loop.original-call-resolution.v1",
+            "chiplog.loop.original-resolver-resolution.v1",
+        ),
+        (
+            "agent_loop.loop-semantic-reduction.v1",
+            "chiplog.loop.semantic-reduction.v1",
+        ),
+        (
+            "agent_loop.original-resolver-authority-policy.v1",
+            "chiplog.loop.original-resolver-authority-policy.v1",
+        ),
+        (
+            "agent_loop.original-resolver-invocation.v1",
+            "chiplog.loop.original-resolver-invocation.v1",
+        ),
     ),
 )
-def test_direct_selector_routes_selected_recovery_operations_to_recovery_path(operation: str):
+def test_direct_selector_routes_selected_recovery_operations_to_recovery_path(
+    operation: str, schema_id: str
+):
     raw = json.dumps({"kind": "DECIDED"}).encode()
-    command = SimpleNamespace(operation_kind=operation, records=())
+    command = SimpleNamespace(
+        operation_kind=operation,
+        records=(SimpleNamespace(schema_id=schema_id),),
+    )
     log = SimpleNamespace(entries=lambda: (("decision", "unused", raw),))
     runtime = SimpleNamespace(_loop_decisions=lambda: log, _publication=lambda entry: command)
 
@@ -523,6 +548,47 @@ def test_direct_selector_routes_selected_recovery_operations_to_recovery_path(op
     )
 
     assert not claimed
+    assert selected is None
+
+
+def test_direct_selector_holds_recovery_route_competing_with_direct_terminal_marker():
+    recovery_raw = json.dumps({"kind": "DECIDED", "route": "recovery"}).encode()
+    terminal_raw = json.dumps(
+        {
+            "kind": "DECIDED",
+            "route": "terminal",
+            "accepted_direct_terminal_evidence": "retained",
+        }
+    ).encode()
+    commands = {
+        "recovery": SimpleNamespace(
+            operation_kind="agent_loop.original-resolver-authority-policy.v1",
+            records=(
+                SimpleNamespace(
+                    schema_id="chiplog.loop.original-resolver-authority-policy.v1"
+                ),
+            ),
+        ),
+        "terminal": SimpleNamespace(
+            operation_kind="custom.foreign-operation.v1",
+            records=(),
+        ),
+    }
+    entries = (
+        ("recovery", "unused", recovery_raw),
+        ("terminal", "unused", terminal_raw),
+    )
+    log = SimpleNamespace(entries=lambda: entries)
+    runtime = SimpleNamespace(
+        _loop_decisions=lambda: log,
+        _publication=lambda entry: commands[entry["route"]],
+    )
+
+    claimed, selected = NativeRecoveryCutSource._selected_accepted_direct_terminal_inputs(
+        runtime, None
+    )
+
+    assert claimed
     assert selected is None
 
 

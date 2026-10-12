@@ -1346,6 +1346,8 @@ class NativeRecoveryCutSource:
         recovery_operations = {
             ACCEPTED_OPEN_ACCOUNTING_OPERATION,
             ACCEPTED_OPEN_RECOVERY_OPERATION,
+            "agent_loop.original-resolver-authority-policy.v1",
+            "agent_loop.original-resolver-invocation.v1",
             "agent_loop.original-call-resolution.v1",
             "agent_loop.loop-semantic-reduction.v1",
         }
