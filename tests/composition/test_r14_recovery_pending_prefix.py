@@ -204,7 +204,8 @@ async def test_pending_prefix_rejects_every_extra_or_incomplete_delta(tmp_path, 
         assert not authenticate_selected_recovery_prefix_held(runtime, actual, predecessor)
 
 
-async def test_expiry_during_final_complete_scan_prevents_decision(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stale_source", ("expired_actor", "changed_cut"))
+async def test_stale_final_complete_scan_prevents_decision(tmp_path, monkeypatch, stale_source):
     """Synthetic port remains untrusted; exercise refusal before any selection."""
     from chiplog.capabilities.agent_loop.contracts import LoopRejected
     from chiplog.composition import r14_recovery_publication as publication
@@ -237,7 +238,9 @@ async def test_expiry_during_final_complete_scan_prevents_decision(tmp_path, mon
     class UnauthenticatedSyntheticPort:
         def collect_held(self, runtime):
             clock["scans"] += 1
-            if clock["scans"] == 3:
+            if stale_source == "changed_cut" and clock["scans"] == 2:
+                return cut.model_copy(update={"complete_inventory_fingerprint": "f" * 64})
+            if stale_source == "expired_actor" and clock["scans"] == 2:
                 clock["now"] = deadline
             return cut
 
@@ -268,6 +271,6 @@ async def test_expiry_during_final_complete_scan_prevents_decision(tmp_path, mon
     monkeypatch.setattr(publication, "_exchange", exchange)
     with pytest.raises(LoopRejected, match="source changed at final decision"):
         await publication.publish_execution_accounting_readiness(runtime)
-    assert clock["scans"] == 3
+    assert clock["scans"] == 2
     assert decisions == []
     assert _hash(runtime._database) == original_hash
