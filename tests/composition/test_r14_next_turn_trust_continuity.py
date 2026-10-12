@@ -124,6 +124,7 @@ async def test_next_turn_holds_if_trust_changes_during_owner_exchange(
         run = ExecutionRunRecord.model_construct(
             run_id="run-owner-race",
             head="run-head",
+            worker_session="historical-worker-session",
             turns=(SimpleNamespace(ordinal=1, response_seal=object()),),
         )
         cut = SimpleNamespace(
@@ -192,6 +193,7 @@ async def test_unchanged_trust_reaches_next_turn_writer_admission(
         run = ExecutionRunRecord.model_construct(
             run_id="run-stable",
             head="run-head",
+            worker_session="historical-worker-session",
             turns=(SimpleNamespace(ordinal=1, response_seal=object()),),
         )
         cut = SimpleNamespace(
@@ -226,6 +228,8 @@ async def test_unchanged_trust_reaches_next_turn_writer_admission(
         monkeypatch.setattr(runtime, "_check_execution_actor", lambda _: None)
         monkeypatch.setattr(runtime, "_require_no_pending", lambda: None)
         monkeypatch.setattr(runtime, "_same_execution_actor_identity", lambda _old, _new: True)
+        current_worker = "current-worker-generation"
+        monkeypatch.setattr(runtime, "current_worker", lambda: current_worker)
         monkeypatch.setattr(runtime, "_append_decision", lambda entry: journal_rows.append(
             (entry["operation_id"], None, json.dumps(entry, sort_keys=True).encode())
         ))
@@ -242,11 +246,14 @@ async def test_unchanged_trust_reaches_next_turn_writer_admission(
             next_turn_publication, "_selected_pair_held", lambda *_args: (None, None)
         )
         monkeypatch.setattr(next_turn_publication, "_turn_ref", lambda _turn: None)
-        monkeypatch.setattr(
-            next_turn_publication,
-            "PrepareNextExecutionTurn",
-            lambda **values: SimpleNamespace(**values),
-        )
+        prepared_requests: list[SimpleNamespace] = []
+
+        def prepare_next_turn(**values):
+            request = SimpleNamespace(**values)
+            prepared_requests.append(request)
+            return request
+
+        monkeypatch.setattr(next_turn_publication, "PrepareNextExecutionTurn", prepare_next_turn)
         monkeypatch.setattr(
             next_turn_publication,
             "_exchange_next_turn",
@@ -279,6 +286,10 @@ async def test_unchanged_trust_reaches_next_turn_writer_admission(
         monkeypatch.setattr(runtime._appender, "submit", submit)
         monkeypatch.setattr(next_turn_publication, "_finish", lambda *_args: _resolved(run))
         assert await runtime.start_next_execution_turn(run.run_id, run.head) is run
+        assert prepared_requests[0].fence.worker_session_id == run.worker_session
+        assert prepared_requests[0].fence.worker_session_id != runtime.current_worker()
+        current_generation = runtime._supervisor.runtime().session("agent_loop").generation_id
+        assert prepared_requests[0].fence.runtime_generation == current_generation
         assert len(journal_rows) == 1
 
 

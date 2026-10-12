@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
@@ -31,11 +32,15 @@ def authenticate_selected_next_turn_prefix_held(
             return False
         evidence = retained_next_turn(entry)
         batch = next_turn_command(evidence)
+        predecessor = evidence.request.cut.materialization_commitment
         if (
-            runtime._publication(entry) != batch
+            replace(
+                runtime._publication(entry), expected_preimage_commitment=predecessor
+            )
+            != batch
             or batch.tenant_id != runtime._tenant_id
             or evidence.request.cut.database_id != runtime._database_identity[0]
-            or entry.get("predecessor") != evidence.request.cut.materialization_commitment
+            or entry.get("predecessor") != predecessor
             or batch.expected_head != evidence.request.cut.tenant_commit_sequence
             or anchored != runtime._commitment_journal.load(runtime._tenant_id)
         ):

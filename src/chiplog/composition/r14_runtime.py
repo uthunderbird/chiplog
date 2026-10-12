@@ -66,6 +66,14 @@ class AnchoredOwnerDecisionJournal(IndependentOwnerDecisionJournal):
         self._snapshot_cache: (
             tuple[tuple[tuple[str, str | None, bytes], ...], OwnerJournalSnapshot] | None
         ) = None
+        self._snapshot_at_cache: (
+            tuple[
+                tuple[tuple[str, str | None, bytes], ...],
+                str | None,
+                OwnerJournalSnapshot,
+            ]
+            | None
+        ) = None
         super().__init__(
             IndependentTenantDecisionJournal.for_authority_bundle(
                 runtime._database.with_suffix(runtime._database.suffix + ".owners-journal"),
@@ -131,6 +139,39 @@ class AnchoredOwnerDecisionJournal(IndependentOwnerDecisionJournal):
             except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
                 raise OwnerJournalIntegrityError(
                     "snapshot_anchored", self._runtime._tenant_id, "journal"
+                ) from error
+
+    def snapshot_at(self, head: str | None) -> OwnerJournalSnapshot:
+        """Reuse an exact historical cut after rechecking the raw journal image."""
+        record = head if head is not None else "empty"
+        with self._runtime._authority_gate().hold():
+            try:
+                entries = self._raw.entries()
+                cached = self._snapshot_at_cache
+                if cached is not None and cached[0] is entries and cached[1] == head:
+                    return cached[2]
+                if cached is not None and cached[0] is not entries:
+                    self._snapshot_at_cache = None
+                if head is None:
+                    self._scan_entries(entries, "snapshot_at", record)
+                    scan = _Scan(None, {}, frozenset())
+                else:
+                    scan = self._scan_entries(
+                        entries, "snapshot_at", record, capture_head=head
+                    )
+                snapshot = OwnerJournalSnapshot(
+                    self._runtime._tenant_id,
+                    scan.head,
+                    tuple(scan.selected.values()),
+                    scan.materialized,
+                )
+                self._snapshot_at_cache = (entries, head, snapshot)
+                return snapshot
+            except OwnerJournalIntegrityError:
+                raise
+            except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+                raise OwnerJournalIntegrityError(
+                    "snapshot_at", self._runtime._tenant_id, record
                 ) from error
 
     def select(

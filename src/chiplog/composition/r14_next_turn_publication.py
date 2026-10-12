@@ -268,7 +268,7 @@ async def start_next_execution_turn(
                         clock_proof=NotApplicable(),
                         run_id=run_id,
                         run_head=run.head,
-                        worker_session_id=worker,
+                        worker_session_id=run.worker_session,
                         runtime_generation=session.generation_id,
                     ),
                 )

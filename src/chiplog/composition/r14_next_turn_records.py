@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
@@ -155,10 +156,15 @@ def validate_selected_next_turn(
     batch = next_turn_command(evidence)
     request = evidence.request
     publication = request.selected_publication
+    predecessor = entry.get("predecessor")
     if (
         publication is None
-        or batch != physical_command
-        or entry.get("predecessor") != request.cut.materialization_commitment
+        or predecessor != request.cut.materialization_commitment
+        or batch
+        != replace(
+            physical_command,
+            expected_preimage_commitment=request.cut.materialization_commitment,
+        )
     ):
         raise ValueError("next Turn selected command or predecessor differs")
     if (
