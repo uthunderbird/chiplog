@@ -1908,6 +1908,17 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             existing = self._find(request.identity, request.original_driver_command_fingerprint())
             if existing is not None:
                 return self._receipt(*existing, "EXACT_REPLAY")
+            from chiplog.composition.r14_execution_successor import (
+                find_started_by_driver_request,
+                replay_successor,
+            )
+
+            replayed = await replay_successor(self, "hermetic-ingress", request)
+            if replayed is not None:
+                selected = find_started_by_driver_request(self, request)
+                if selected is None:
+                    raise LoopRejected("exact successor replay did not select its first Turn")
+                return self._successor_receipt(request, selected, "EXACT_REPLAY")
             observation = self._require_dispatch_resources().observe()
             admitted = self._selected_input(request, observation)
             run_id = self._run_id(admitted)
@@ -1927,6 +1938,19 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                         raise _DriverConflict(
                             "selected ingress is already claimed by another driver command"
                         )
+            from chiplog.composition.r14_execution_successor import (
+                assert_ingress_unclaimed_by_successor,
+                drive_successor,
+                find_started_by_driver_request,
+            )
+
+            assert_ingress_unclaimed_by_successor(self, request, selected_claim)
+            successor = await drive_successor(self, "hermetic-ingress", request, admitted)
+            if successor is not None:
+                selected = find_started_by_driver_request(self, request)
+                if selected is None:
+                    raise LoopRejected("successor publication did not select its first Turn")
+                return self._successor_receipt(request, selected, "COMMITTED")
             snapshot = read_execution_history(self)
             create = CreateExecutionRun(
                 command_id="create:inbox:" + run_id.rsplit(":", 1)[-1],
@@ -1998,7 +2022,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             {
                 "tenant_id": request.identity.tenant_id,
                 "database_id": request.identity.database_id,
-                "original_ingress_request_fingerprint": request.identity.original_ingress_request_fingerprint,
+                "original_ingress_request_fingerprint": (
+                    request.identity.original_ingress_request_fingerprint
+                ),
                 "selected_source": source.model_dump(mode="json"),
             },
             sort_keys=True,
@@ -2568,6 +2594,77 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             ),
             commit_sequence=command.expected_head + 1,
             phase="INITIALIZED",
+        )
+
+    def _successor_receipt(
+        self,
+        request: DriveInputRequestV1,
+        selected: tuple[object, str, object],
+        disposition: Literal["COMMITTED", "EXACT_REPLAY"],
+    ) -> SelectedExecutionReceiptV1:
+        """Return the exact selected ACTIVE successor and its first-Turn decision."""
+        from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+        from chiplog.composition.r14_execution_successor import RetainedExecutionSuccessorStart
+        from chiplog.platform._sqlite import PhysicalPublicationCommand
+
+        evidence, decision_id, command = selected
+        if type(evidence) is not RetainedExecutionSuccessorStart:
+            raise LoopRejected("selected successor start evidence has the wrong type")
+        stored_request = DriveInputRequestV1.model_validate_json(
+            evidence.source.driver_request_bytes
+        )
+        run = evidence.result.run
+        admitted = evidence.source.admitted
+        if (
+            stored_request != request
+            or stored_request.canonical_bytes() != evidence.source.driver_request_bytes
+            or evidence.source.driver_request_fingerprint
+            != request.original_driver_command_fingerprint()
+            or not isinstance(run, ExecutionRunRecord)
+            or run.state != "ACTIVE"
+            or not isinstance(decision_id, str)
+            or not isinstance(command, PhysicalPublicationCommand)
+        ):
+            raise LoopRejected("selected successor first-Turn receipt differs from ingress")
+
+        def ingress_head(value: CallSubjectHead) -> Head:
+            if type(value) is not CallSubjectHead or type(value.revision) is not Present:
+                raise LoopRejected("successor retained ingress head is incomplete")
+            return Head(
+                identity=value.subject_id,
+                head=value.revision.head,
+                fingerprint=value.revision.fingerprint,
+            )
+
+        rows = [
+            raw
+            for key, _, raw in self._loop_decisions().entries()
+            if key == decision_id
+        ]
+        if len(rows) != 1:
+            raise LoopRejected("selected successor first-Turn decision disappeared")
+        raw = rows[0].encode() if isinstance(rows[0], str) else rows[0]
+        return SelectedExecutionReceiptV1(
+            disposition=disposition,
+            identity=request.identity,
+            original_driver_command_fingerprint=request.original_driver_command_fingerprint(),
+            selected_ingress_decision=ingress_head(admitted.selected_decision),
+            selected_custody=ingress_head(admitted.custody),
+            selected_admitted_input=ingress_head(admitted.inbox),
+            stable_run_lineage_id=run.run_id,
+            selected_run_head=Head(
+                identity=run.head,
+                head=run.head,
+                fingerprint=hashlib.sha256(run.canonical_bytes()).hexdigest(),
+            ),
+            selected_run_state=run.state,
+            selected_journal_decision=Head(
+                identity=command.idempotency_key,
+                head=decision_id,
+                fingerprint=hashlib.sha256(raw).hexdigest(),
+            ),
+            commit_sequence=command.expected_head + 1,
+            phase="RUNNING",
         )
 
     def _reject(

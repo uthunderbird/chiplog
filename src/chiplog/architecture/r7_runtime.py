@@ -1644,6 +1644,50 @@ R14_EXECUTION_OBLIGATION_RESUME_V37_EVALUATION_MANIFEST = replace(
     environment="evaluation",
 )
 
+_EXECUTION_SUCCESSOR_ROUTE = RoutedCallDecl(
+    "agent_loop.prepare_execution_successor.v1",
+    "broker",
+    "agent_loop",
+    "chiplog.execution.recovery-request.v1",
+    "chiplog.execution.recovery-result.v1",
+)
+_EXECUTION_SUCCESSOR_OPERATIONS = tuple(
+    sorted(
+        (
+            *R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST.owners[0].public_operations,
+            _EXECUTION_SUCCESSOR_ROUTE.operation_id,
+        )
+    )
+)
+_V38_EXECUTION_OPERATIONS = _EXECUTION_SUCCESSOR_OPERATIONS
+R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST = replace(
+    R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+    manifest_version=38,
+    owners=tuple(
+        replace(
+            owner,
+            capability_ids=_EXECUTION_SUCCESSOR_OPERATIONS,
+            public_operations=_EXECUTION_SUCCESSOR_OPERATIONS,
+        )
+        if owner.owner_id == "agent_loop"
+        else owner
+        for owner in R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST.owners
+    ),
+    routes=tuple(
+        sorted(
+            (
+                *R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST.routes,
+                _EXECUTION_SUCCESSOR_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
+)
+R14_EXECUTION_SUCCESSOR_V38_EVALUATION_MANIFEST = replace(
+    R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST,
+    environment="evaluation",
+)
+
 
 class RuntimeManifestViolation(ValueError):
     pass
@@ -1702,6 +1746,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         35,
         36,
         37,
+        38,
     ):
         raise RuntimeManifestViolation("unknown runtime manifest version")
     expected_manifest = {
@@ -1740,6 +1785,7 @@ def verify_runtime_manifest(manifest: RuntimeAssemblyManifest) -> str:
         35: R14_EXECUTION_SUSPENSION_V35_PRODUCTION_MANIFEST,
         36: R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST,
         37: R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+        38: R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST,
     }[manifest.manifest_version]
     if manifest.manifest_version >= 2:
         if manifest.broker_version.startswith("r8-development-v1:"):
@@ -1835,6 +1881,8 @@ __all__ = [
     "R7_PRODUCTION_MANIFEST",
     "R8_EVALUATION_MANIFEST",
     "R8_PRODUCTION_MANIFEST",
+    "R14_EXECUTION_SUCCESSOR_V38_EVALUATION_MANIFEST",
+    "R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST",
     "R14_R17_H1_LOCAL_EFFECTS_J7_EVALUATION_MANIFEST",
     "R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST",
     "R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_EVALUATION_MANIFEST",

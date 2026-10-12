@@ -19,6 +19,7 @@ from chiplog.capabilities.agent_loop.domain import validate_record
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.execution_history_contracts import ExecutionRunRecordV3
 from chiplog.capabilities.agent_loop.execution_run_record_contracts import (
+    EXECUTION_RUN_V2_SCHEMA,
     EXECUTION_RUN_V3_SCHEMA,
     ExecutionRunCanonicalMember,
     decode_execution_run_member,
@@ -287,6 +288,40 @@ def completion_v2_terminal_run(
     return decoded.run
 
 
+def _successor_run_pair(
+    command: PhysicalPublicationCommand,
+    expected_superseded: ExecutionRunRecord,
+    expected_created: ExecutionRunRecord,
+) -> tuple[ExecutionRunRecord, ExecutionRunRecord]:
+    """Decode the exact ordered V2 Run pair in one selected successor batch."""
+    members = tuple(
+        record
+        for record in command.records
+        if record.owner == OWNER
+        and record.schema_id in (EXECUTION_RUN_V2_SCHEMA, EXECUTION_RUN_V3_SCHEMA)
+    )
+    if len(members) != 2 or any(row.schema_id != EXECUTION_RUN_SCHEMA for row in members):
+        raise ValueError("selected successor must contain exactly two native V2 Run rows")
+    decoded = tuple(
+        decode_execution_run_member(
+            ExecutionRunCanonicalMember(
+                record_id=record.record_id,
+                schema_id=cast(
+                    "Literal['chiplog.agent-loop.execution-record.v2', "
+                    "'chiplog.agent-loop.execution-record.v3']",
+                    record.schema_id,
+                ),
+                canonical_record_bytes=record.canonical_bytes,
+                fingerprint=record.fingerprint,
+            )
+        ).run
+        for record in members
+    )
+    if decoded != (expected_superseded, expected_created):
+        raise ValueError("selected successor Run pair is missing, reversed, or substituted")
+    return cast("tuple[ExecutionRunRecord, ExecutionRunRecord]", decoded)
+
+
 def _completion_v2_schema_dispatch(batch: CompleteDeliveryBatchV2) -> Literal["H1"]:
     """Route selected H1 V1/V2/V3/V4 applicability without granting authority."""
     from chiplog.composition.h1_completion_issuance import dispatch_h1_completion_issuance_schema
@@ -515,6 +550,7 @@ def _read_call_history(
                 records: list[RunRecord] = []
                 mixed_records: list[RunRecord | ExecutionRunRecord] = []
                 latest: dict[str, RunRecord | ExecutionRunRecord] = {}
+                successor_publications = {}
                 preparations: list[RetainedFanOutPreparation] = []
                 execution_preparations: list[RetainedExecutionFanOutPreparation] = []
                 execution_cancellations: list[RetainedExecutionCancellationPreparation] = []
@@ -542,6 +578,8 @@ def _read_call_history(
                         "agent_loop.execution-next-turn.v1",
                         "agent_loop.execution-suspension.v1",
                         "agent_loop.execution-resume.v1",
+                        "agent_loop.execution-successor.v1",
+                        "agent_loop.execution-successor-start.v1",
                         "agent_loop.accepted-open-accounting.v1",
                         "agent_loop.accepted-open-recovery.v1",
                         "agent_loop.accepted-direct-terminal.v1",
@@ -695,6 +733,140 @@ def _read_call_history(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
                         expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if (
+                        command.operation_kind == "agent_loop.execution-successor.v1"
+                        or "execution_successor_evidence" in entry
+                    ):
+                        from chiplog.composition import r14_execution_successor as successor
+
+                        if command.operation_kind != successor.OPERATION:
+                            raise ValueError("execution successor has a substituted operation")
+                        retained_entry = successor._entry_for(runtime, identity)
+                        if retained_entry is None:
+                            raise ValueError("selected execution successor entry is absent")
+                        retained = successor._retained(retained_entry[2])
+                        request = retained.request
+                        result = retained.result
+                        predecessor = request.run
+                        superseded = result.superseded_run
+                        created = result.successor_run
+                        prior_lineage = tuple(
+                            row
+                            for row in mixed_records
+                            if isinstance(row, ExecutionRunRecord)
+                            and row.run_id == predecessor.run_id
+                        )
+                        if (
+                            replace(successor._command(retained), expected_preimage_commitment=None)
+                            != command
+                            or request.cut.tenant_id != tenant
+                            or request.cut.tenant_commit_sequence != command.expected_head
+                            or request.cut.materialization_commitment != entry.get("predecessor")
+                            or request.cut.complete_ordered_run_lineage != prior_lineage
+                            or predecessor != latest.get(predecessor.run_id)
+                            or predecessor.state != "SUSPENDED"
+                            or superseded.state != "SUPERSEDED"
+                            or superseded.run_id != predecessor.run_id
+                            or superseded.predecessor != predecessor.head
+                            or created.state != "CREATED"
+                            or created.run_id == predecessor.run_id
+                            or created.predecessor != predecessor.head
+                            or created.tenant != predecessor.tenant
+                            or created.principal != predecessor.principal
+                        ):
+                            raise ValueError(
+                                "selected execution successor differs from exact Run history"
+                            )
+                        _successor_run_pair(command, superseded, created)
+                        from chiplog.composition import r14_execution_suspension as suspension
+
+                        selected_suspension = request.original_suspension
+                        suspension_entry = suspension._entry_for(
+                            runtime, selected_suspension.selected_decision.subject_id
+                        )
+                        if suspension_entry is None:
+                            raise ValueError("successor selected suspension evidence is absent")
+                        suspension_evidence = suspension._retained(suspension_entry[2])
+                        _, authenticated_suspension = suspension._validate_selected(
+                            runtime,
+                            suspension_entry[2],
+                            suspension._command(suspension_evidence),
+                            check_history=False,
+                        )
+                        if authenticated_suspension != selected_suspension:
+                            raise ValueError(
+                                "successor does not reference the selected suspension evidence"
+                            )
+                        successor._selected_matches(runtime, retained_entry[2], command, retained)
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        latest[predecessor.run_id] = superseded
+                        latest[created.run_id] = created
+                        successor_publications[created.run_id] = (retained, entry.get("resulting"))
+                        mixed_records.extend((superseded, created))
+                        continue
+                    if (
+                        command.operation_kind == "agent_loop.execution-successor-start.v1"
+                        or "execution_successor_start_evidence" in entry
+                    ):
+                        from chiplog.composition import r14_execution_successor as successor
+
+                        if command.operation_kind != successor.START_OPERATION:
+                            raise ValueError(
+                                "execution successor start has a substituted operation"
+                            )
+                        retained_entry = successor._entry_for(
+                            runtime, identity, successor.START_OPERATION
+                        )
+                        if retained_entry is None:
+                            raise ValueError("selected execution successor start entry is absent")
+                        retained = successor._retained(
+                            retained_entry[2],
+                            successor.START_EVIDENCE_FIELD,
+                            successor.RetainedExecutionSuccessorStart,
+                        )
+                        request = retained.request
+                        created = request.created_run
+                        active = retained.result.run
+                        selected_source = successor_publications.get(created.run_id)
+                        if (
+                            replace(
+                                successor._start_command(retained),
+                                expected_preimage_commitment=None,
+                            )
+                            != command
+                            or selected_source is None
+                            or retained.source != selected_source[0]
+                            or retained.source_resulting_commitment != selected_source[1]
+                            or created != latest.get(created.run_id)
+                            or created.state != "CREATED"
+                            or active.state != "ACTIVE"
+                            or active.run_id != created.run_id
+                            or active.predecessor != created.head
+                            or active.tenant != created.tenant
+                            or active.principal != created.principal
+                            or active.prompt != created.prompt
+                            or active.policy != created.policy
+                            or active.origin != created.origin
+                            or active.original_obligations != created.original_obligations
+                            or active.no_retry_references != created.no_retry_references
+                            or active.suspension_baseline is not None
+                        ):
+                            raise ValueError(
+                                "selected execution successor start differs from exact CREATED Run"
+                            )
+                        successor._selected_matches(
+                            runtime, retained_entry[2], command, retained, start=True
+                        )
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        latest[active.run_id] = active
+                        mixed_records.append(active)
                         continue
                     if (
                         command.operation_kind == "agent_loop.execution-resume.v1"
@@ -2102,12 +2274,16 @@ def validate_selected_executions(runtime: R14PlanningRuntime) -> None:
                 "agent_loop.execution-next-turn.v1",
                 "agent_loop.execution-suspension.v1",
                 "agent_loop.execution-resume.v1",
+                "agent_loop.execution-successor.v1",
+                "agent_loop.execution-successor-start.v1",
             )
             or "execution_transition" in entry
             or "execution_fanout" in entry
             or "execution_complete_seal" in entry
             or "execution_next_turn_evidence" in entry
             or "inbox_initialization" in entry
+            or "execution_successor_evidence" in entry
+            or "execution_successor_start_evidence" in entry
             or any(record.schema_id == EXECUTION_RUN_SCHEMA for record in command.records)
         )
         if claimed:
@@ -2119,6 +2295,8 @@ def validate_selected_executions(runtime: R14PlanningRuntime) -> None:
                 "agent_loop.execution-next-turn.v1",
                 "agent_loop.execution-suspension.v1",
                 "agent_loop.execution-resume.v1",
+                "agent_loop.execution-successor.v1",
+                "agent_loop.execution-successor-start.v1",
             ):
                 raise LoopIntegrityError(
                     f"operation=startup_execution tenant={runtime._tenant_id} "

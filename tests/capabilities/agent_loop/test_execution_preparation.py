@@ -6,6 +6,7 @@ import pytest
 from tests.support.execution_fan_out import fixture
 
 from chiplog.adapters.driven.execution_prompts import render_execution_prompt
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.contracts import (
     DisclosureLabel,
     LoopRejected,
@@ -24,11 +25,13 @@ from chiplog.capabilities.agent_loop.execution_lifecycle import (
     activate_execution_run,
     create_ingress_execution_run,
     start_initial_execution_turn,
+    start_successor_execution_turn,
 )
 from chiplog.capabilities.agent_loop.execution_preparation import (
     execution_context_label,
     prepare_execution_request,
 )
+from chiplog.capabilities.agent_loop.recovery_contracts import Present
 
 
 @pytest.fixture
@@ -127,6 +130,37 @@ def test_initialization_cannot_be_reused_for_continuation_or_unknown_attempt(
     changed = manifest.members[0].model_copy(update={"content": "rebound"})
     with pytest.raises(LoopRejected, match="rebound"):
         accumulate_execution_visibility(run, (changed,))
+
+
+def test_successor_start_preserves_inherited_no_retry_and_starts_one_empty_turn(
+    inputs: tuple[ExecutionRunRecord, ExecutionVisibilityManifest],
+) -> None:
+    run, _ = inputs
+    created = run.model_copy(
+        update={
+            "state": "CREATED",
+            "head": "pending",
+            "predecessor": "suspended-predecessor",
+            "event": "successor-command:created",
+            "turns": (),
+            "no_retry_references": (
+                CallSubjectHead(
+                    subject_id="original-call",
+                    revision=Present(head="no-retry", fingerprint="a" * 64),
+                ),
+            ),
+        }
+    )
+    created = created.model_copy(update={"head": "loop:" + created.digest()})
+
+    started = start_successor_execution_turn(created)
+
+    assert started.state == "ACTIVE"
+    assert started.no_retry_references == created.no_retry_references
+    assert len(started.turns) == 1
+    assert started.turns[0].ordinal == 1
+    assert started.turns[0].state == "PREPARING"
+    assert not started.turns[0].attempts
 
 
 @pytest.mark.parametrize(

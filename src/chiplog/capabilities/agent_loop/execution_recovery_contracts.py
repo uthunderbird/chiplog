@@ -188,6 +188,19 @@ class PrepareExecutionSuccessor(ExecutionRecoveryDTO):
     admitted_input: SelectedAdmittedRunInput | None = None
 
 
+class PrepareExecutionSuccessorStart(ExecutionRecoveryDTO):
+    """Evidence-bound first Turn transition for one selected CREATED successor."""
+
+    kind: Literal["PREPARE_EXECUTION_SUCCESSOR_START_V1"] = (
+        "PREPARE_EXECUTION_SUCCESSOR_START_V1"
+    )
+    command_id: Identity
+    source_request: PrepareExecutionSuccessor
+    created_run: ExecutionRun
+    edge_bytes: bytes = Field(min_length=1)
+    initialization_bytes: tuple[bytes, ...] = Field(min_length=1)
+
+
 class SelectedContinuationResultStamp(ExecutionRecoveryDTO):
     """Inert claimed result of one selected accounting/readiness publication."""
 
@@ -248,6 +261,7 @@ ExecutionRecoveryRequest = Annotated[
     | PrepareExecutionSuspension
     | PrepareExecutionResume
     | PrepareExecutionSuccessor
+    | PrepareExecutionSuccessorStart
     | PrepareNextExecutionTurn
     | PrepareAbortCancelExecution,
     Field(discriminator="kind"),
@@ -330,6 +344,15 @@ class PreparedExecutionSuccessor(ExecutionRecoveryDTO):
     complete_batch_fingerprint: Digest
 
 
+class PreparedExecutionSuccessorStart(ExecutionRecoveryDTO):
+    kind: Literal["PREPARED_EXECUTION_SUCCESSOR_START_V1"] = (
+        "PREPARED_EXECUTION_SUCCESSOR_START_V1"
+    )
+    source_request_fingerprint: Digest
+    run: ExecutionRun
+    complete_batch_fingerprint: Digest
+
+
 class PreparedNextExecutionTurn(ExecutionRecoveryDTO):
     kind: Literal["PREPARED_NEXT_EXECUTION_TURN_V1"] = "PREPARED_NEXT_EXECUTION_TURN_V1"
     source_request_fingerprint: Digest
@@ -364,6 +387,7 @@ ExecutionRecoveryResult = Annotated[
     | PreparedExecutionSuspension
     | PreparedExecutionResume
     | PreparedExecutionSuccessor
+    | PreparedExecutionSuccessorStart
     | PreparedNextExecutionTurn
     | PreparedExecutionTerminal
     | ExecutionRecoveryClassified

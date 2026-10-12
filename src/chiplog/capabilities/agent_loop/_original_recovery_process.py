@@ -31,6 +31,7 @@ PREPARE_RESOLUTION_OPERATION = "agent_loop.prepare_original_call_resolution.v1"
 PREPARE_SEMANTIC_REDUCTION_OPERATION = "agent_loop.prepare_loop_semantic_reduction.v1"
 PREPARE_SUSPENSION_OPERATION = "agent_loop.prepare_execution_suspension.v1"
 PREPARE_RESUME_OPERATION = "agent_loop.prepare_execution_resume.v1"
+PREPARE_SUCCESSOR_OPERATION = "agent_loop.prepare_execution_successor.v1"
 REQUEST_SCHEMA = ORIGINAL_RECOVERY_REQUEST_SCHEMA
 RESULT_SCHEMA = ORIGINAL_RECOVERY_RESULT_SCHEMA
 ROUTES = tuple(
@@ -53,7 +54,11 @@ ROUTES = tuple(
 
 
 def dispatch(operation: str, payload: bytes) -> dict[str, object]:
-    if operation in (PREPARE_SUSPENSION_OPERATION, PREPARE_RESUME_OPERATION):
+    if operation in (
+        PREPARE_SUSPENSION_OPERATION,
+        PREPARE_RESUME_OPERATION,
+        PREPARE_SUCCESSOR_OPERATION,
+    ):
         return _execution_recovery_process.dispatch(operation, payload)
     if operation not in (
         ADOPT_POLICY_OPERATION,

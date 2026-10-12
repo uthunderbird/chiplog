@@ -106,6 +106,34 @@ def start_initial_execution_turn(run: ExecutionRunRecord) -> ExecutionRunRecord:
     return _next(run, "TurnStarted", turns=(turn,))
 
 
+def start_successor_execution_turn(run: ExecutionRunRecord) -> ExecutionRunRecord:
+    """Start the first Turn on a selected successor without clearing inherited fences."""
+    run = _current(run)
+    if (
+        run.state != "CREATED"
+        or not run.event.endswith(":created")
+        or run.predecessor is None
+        or run.turns
+        or run.delivery_acceptance is not None
+        or run.suspension_baseline is not None
+        or run.root_binding != "NOT_APPLICABLE"
+    ):
+        raise LoopRejected("successor Turn requires an empty selected CREATED Run")
+    turn = ExecutionTurn(
+        turn_id=run.run_id + "/turn/1",
+        ordinal=1,
+        head="pending",
+        state="PREPARING",
+        accumulator=(),
+        attempts=(),
+        selector=0,
+        response_seal=None,
+        initialized_calls=None,
+    )
+    turn = turn.model_copy(update={"head": "execution-turn:" + turn.digest()})
+    return _next(run, "SuccessorTurnStarted", state="ACTIVE", turns=(turn,))
+
+
 def accumulate_execution_visibility(
     run: ExecutionRunRecord, members: tuple[VisibilityMember, ...]
 ) -> ExecutionRunRecord:

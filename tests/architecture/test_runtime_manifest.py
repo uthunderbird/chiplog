@@ -29,6 +29,8 @@ from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST,
     R14_EXECUTION_SUSPENSION_V35_EVALUATION_MANIFEST,
     R14_EXECUTION_SUSPENSION_V35_PRODUCTION_MANIFEST,
+    R14_EXECUTION_SUCCESSOR_V38_EVALUATION_MANIFEST,
+    R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST,
     R14_PRODUCTION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_EVALUATION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
@@ -130,6 +132,30 @@ def test_v37_selects_the_new_profile_generation_and_preserves_v36_route_graph() 
     assert loop.target_ids == (
         "chiplog.capabilities.agent_loop._original_recovery_process:dispatch",
     )
+
+
+def test_v38_registers_execution_successor_without_mutating_v37() -> None:
+    production = R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST
+    evaluation = R14_EXECUTION_SUCCESSOR_V38_EVALUATION_MANIFEST
+    previous = R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST
+    operation = "agent_loop.prepare_execution_successor.v1"
+
+    assert verify_runtime_manifest(production)
+    verify_production_evaluation_equivalence(production, evaluation)
+    assert production.manifest_version == 38
+    assert previous.manifest_version == 37
+    assert {route.operation_id for route in production.routes} - {
+        route.operation_id for route in previous.routes
+    } == {operation}
+    route = next(route for route in production.routes if route.operation_id == operation)
+    assert route.request_schema_id == "chiplog.execution.recovery-request.v1"
+    assert route.result_schema_id == "chiplog.execution.recovery-result.v1"
+    loop = next(owner for owner in production.owners if owner.owner_id == "agent_loop")
+    previous_loop = next(owner for owner in previous.owners if owner.owner_id == "agent_loop")
+    assert operation in loop.capability_ids
+    assert operation in loop.public_operations
+    assert loop.target_ids == previous_loop.target_ids
+    assert operation not in previous_loop.public_operations
 
 
 def test_v30_registers_direct_terminal_owner_and_preserves_v29_next_turn() -> None:

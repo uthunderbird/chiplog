@@ -1,5 +1,7 @@
 """Canonical R14 history reads authenticate selected bytes, not a storage marker."""
 
+import hashlib
+import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import replace
@@ -12,6 +14,7 @@ import pytest
 from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
 from chiplog.capabilities.agent_loop.application import AgentLoop
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopRejected, RunRecord
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.composition.h1_completion_issuance import SCHEMA as H1_ISSUANCE_SCHEMA
 from chiplog.composition.h1_completion_issuance import V2_SCHEMA as H1_ISSUANCE_V2_SCHEMA
 from chiplog.composition.r14 import open_r14_loop
@@ -21,13 +24,16 @@ from chiplog.composition.r14_execution_completion_records import (
 )
 from chiplog.composition.r14_loop_history import (
     _completion_v2_schema_dispatch,
+    _successor_run_pair,
     completion_v2_terminal_run,
     read_selected_accepted_direct_terminal_frontier,
+    validate_selected_executions,
 )
 from chiplog.composition.r14_runtime import R14PlanningRuntime
 from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.workspace_snapshot import workspace_snapshot
 from tests.support.completion_assembly import accepted_completion_fixture
+from tests.support.execution_fan_out import fixture as execution_fixture
 
 _CONTINUE = (
     b'{"kind":"Continue","tool_calls":[{"call_id":"plan",'
@@ -35,6 +41,105 @@ _CONTINUE = (
 )
 _COMPLETE = b'{"kind":"Complete","deliveries":[{"kind":"NonAuthoritativeText","text":"Ready"}]}'
 _PROPOSAL = "run/turn/1/proposal/plan"
+
+
+async def test_selected_successor_history_requires_exact_ordered_two_run_pair() -> None:
+    template = (await execution_fixture()).captured_run
+
+    def native_run(run_id: str, state: str, predecessor: str) -> ExecutionRunRecord:
+        pending = template.model_copy(
+            update={
+                "run_id": run_id,
+                "state": state,
+                "predecessor": predecessor,
+                "event": f"successor-test:{state}",
+                "head": "pending",
+            }
+        )
+        return pending.model_copy(update={"head": "loop:" + pending.digest()})
+
+    suspended = native_run("source", "SUSPENDED", "prior-head")
+    superseded = native_run("source", "SUPERSEDED", suspended.head)
+    created = native_run("successor", "CREATED", suspended.head)
+    extra = native_run("extra", "CREATED", "other-head")
+
+    def member(run: ExecutionRunRecord):
+        raw = run.canonical_bytes()
+        return SimpleNamespace(
+            owner="agent_loop",
+            schema_id="chiplog.agent-loop.execution-record.v2",
+            record_id=run.head,
+            canonical_bytes=raw,
+            fingerprint=hashlib.sha256(raw).hexdigest(),
+        )
+
+    expected = (superseded, created)
+    command = SimpleNamespace(records=(member(superseded), member(created)))
+    assert _successor_run_pair(command, *expected) == expected
+
+    with pytest.raises(ValueError, match="missing, reversed, or substituted"):
+        _successor_run_pair(
+            SimpleNamespace(records=(member(created), member(superseded))), *expected
+        )
+    with pytest.raises(ValueError, match="exactly two"):
+        _successor_run_pair(
+            SimpleNamespace(records=(member(superseded), member(created), member(extra))),
+            *expected,
+        )
+    malformed = member(superseded)
+    malformed.canonical_bytes = b"{}"
+    malformed.fingerprint = hashlib.sha256(malformed.canonical_bytes).hexdigest()
+    with pytest.raises(ValueError):
+        _successor_run_pair(
+            SimpleNamespace(records=(malformed, member(created))), *expected
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "evidence_field"),
+    (
+        ("agent_loop.execution-successor.v1", "execution_successor_evidence"),
+        ("agent_loop.execution-successor-start.v1", "execution_successor_start_evidence"),
+    ),
+)
+def test_startup_execution_allowlist_routes_successor_evidence(
+    monkeypatch: pytest.MonkeyPatch, operation: str, evidence_field: str
+) -> None:
+    from chiplog.composition import r14_loop_history
+
+    entry = {
+        "kind": "DECIDED",
+        "operation_id": "successor-operation",
+        "operation_kind": operation,
+        evidence_field: "retained",
+    }
+    run_member = SimpleNamespace(schema_id="chiplog.agent-loop.execution-record.v2")
+    command = SimpleNamespace(
+        operation_kind=operation,
+        idempotency_key="successor-operation",
+        records=(run_member,),
+    )
+
+    class Decisions:
+        def entries(self):
+            return (("decision", None, json.dumps(entry)),)
+
+    runtime = SimpleNamespace(
+        _tenant_id="tenant",
+        _pending=lambda: None,
+        _loop_decisions=lambda: Decisions(),
+        _publication=lambda _entry: command,
+    )
+    read = []
+    monkeypatch.setattr(
+        r14_loop_history,
+        "_read_call_history",
+        lambda *args, **kwargs: read.append((args, kwargs)),
+    )
+
+    validate_selected_executions(runtime)
+
+    assert read == [((runtime,), {"selected_only": True})]
 
 
 def test_direct_terminal_frontier_without_history_keeps_fresh_read(monkeypatch):

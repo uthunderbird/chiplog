@@ -52,10 +52,12 @@ async def _client(path: Path) -> None:
 
 
 async def admit_runtime_slot(
-    runtime: CommonCliExecutionRuntime, slot: str
+    runtime: CommonCliExecutionRuntime,
+    slot: str,
+    prompt: bytes = b"make a native run",
 ) -> DriveInputRequestV1:
     """Admit one retained input under the caller's isolated test slot."""
-    runtime.provision_retained(slot, b"make a native run")
+    runtime.provision_retained(slot, prompt)
     await runtime.allocate_receipt(slot)
     await runtime.stage_receipt(slot)
     entries = tuple(

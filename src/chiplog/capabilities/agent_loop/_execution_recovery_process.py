@@ -11,6 +11,8 @@ from .execution_recovery_contracts import (
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
     PrepareExecutionResume,
+    PrepareExecutionSuccessor,
+    PrepareExecutionSuccessorStart,
     PrepareExecutionSuspension,
 )
 from .execution_recovery_preparation import (
@@ -18,6 +20,8 @@ from .execution_recovery_preparation import (
     prepare_execution_accounting,
     prepare_execution_continuation,
     prepare_execution_resume,
+    prepare_execution_successor,
+    prepare_execution_successor_start,
     prepare_execution_suspension,
 )
 from .recovery_wire_contracts import (
@@ -32,6 +36,7 @@ SUSPENSION_OPERATION = "agent_loop.prepare_execution_suspension.v1"
 RESUME_OPERATION = "agent_loop.prepare_execution_resume.v1"
 SUSPENSION_OBLIGATION_OPERATION = "agent_loop.prepare_execution_suspension_with_obligation.v1"
 RESUME_OBLIGATION_OPERATION = "agent_loop.prepare_execution_resume_with_obligation.v1"
+SUCCESSOR_OPERATION = "agent_loop.prepare_execution_successor.v1"
 REQUEST_SCHEMA = EXECUTION_RECOVERY_REQUEST_SCHEMA
 RESULT_SCHEMA = EXECUTION_RECOVERY_RESULT_SCHEMA
 ROUTES = tuple(
@@ -42,6 +47,7 @@ ROUTES = tuple(
             (CONTINUATION_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
             (RESUME_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
             (SUSPENSION_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
+            (SUCCESSOR_OPERATION, "broker", "agent_loop", REQUEST_SCHEMA, RESULT_SCHEMA),
             (
                 RESUME_OBLIGATION_OPERATION,
                 "broker",
@@ -69,6 +75,7 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
         SUSPENSION_OPERATION,
         RESUME_OBLIGATION_OPERATION,
         SUSPENSION_OBLIGATION_OPERATION,
+        SUCCESSOR_OPERATION,
     }:
         return _native_one_call_accounting_v2_process.dispatch(operation, payload)
     try:
@@ -93,6 +100,13 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
             result = prepare_execution_resume(request)
             if isinstance(result, CallPreparationRejected):
                 result = classify_execution_resume_rejection(request, result)
+        elif operation == SUCCESSOR_OPERATION:
+            if isinstance(request, PrepareExecutionSuccessor):
+                result = prepare_execution_successor(request)
+            elif isinstance(request, PrepareExecutionSuccessorStart):
+                result = prepare_execution_successor_start(request)
+            else:
+                raise ValueError("successor operation requires a successor request")
         else:
             if not isinstance(request, PrepareExecutionSuspension):
                 raise ValueError("suspension operation requires suspension request")

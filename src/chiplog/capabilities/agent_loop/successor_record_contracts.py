@@ -220,7 +220,10 @@ def _validate_admitted_successor_source(
     successor = request.successor
     _require(admitted.source_class, "CLI", "successor ingress is not the mounted CLI source")
     _require(admitted.tenant_id, request.run.tenant, "successor ingress tenant differs")
-    _require(admitted.database_id, request.cut.database_id, "successor ingress database differs")
+    # These IDs name different boundaries: the ingress profile has a logical
+    # database ID, while the recovery cut binds the physical SQLite file.
+    # The broker checks each against its own authenticated source.
+    _require(bool(admitted.database_id), True, "successor ingress database is absent")
     _require(admitted.principal_id, request.run.principal, "successor ingress principal differs")
     _require(
         successor.contour_head,
@@ -268,6 +271,11 @@ def _validate_admitted_successor_source(
         raise RecoveryRecordIntegrityError("successor ingress is not valid UTF-8") from error
     _require(admitted.normalized_prompt, prompt, "successor prompt differs from ingress bytes")
     _require(successor.prompt, prompt, "successor Create prompt differs from ingress")
+    _require(
+        successor.prompt != request.run.prompt,
+        True,
+        "successor ingress must change the suspended Run prompt",
+    )
 
 
 def _validate_successor_matches_proposal(request: PrepareExecutionSuccessor, run: object) -> None:

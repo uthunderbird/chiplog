@@ -40,6 +40,8 @@ from .execution_recovery_contracts import (
     AcceptedOpenRecoveryOpeningV1,
     AcceptedOpenTerminalDispositionV1,
     ExecutionRecoveryClassified,
+    ExecutionSuccessorEdge,
+    NonSchedulerSuccessor,
     PrepareAcceptedOpenAccounting,
     PrepareAcceptedOpenRecoveryV1,
     PreparedAcceptedOpenAccounting,
@@ -47,10 +49,14 @@ from .execution_recovery_contracts import (
     PreparedExecutionAccounting,
     PreparedExecutionContinuation,
     PreparedExecutionResume,
+    PreparedExecutionSuccessor,
+    PreparedExecutionSuccessorStart,
     PreparedExecutionSuspension,
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
     PrepareExecutionResume,
+    PrepareExecutionSuccessor,
+    PrepareExecutionSuccessorStart,
     PrepareExecutionSuspension,
 )
 from .execution_recovery_observations import (
@@ -101,6 +107,14 @@ from .recovery_frontier_registry_contracts import (
     execution_native_one_call_cancellation_frontier_registry_v1,
     execution_native_one_call_recovery_frontier_registry_v2,
     frontier_registry_reference,
+)
+from .recovery_record_contracts import AGENT_LOOP_OWNER, RecoveryRecordMember
+from .successor_record_contracts import (
+    SUCCESSOR_INITIALIZATION_SCHEMA,
+    ExecutionSuccessorInitializationRecord,
+    _expected_successor_inheritance,
+    _pending_head,
+    _validate_admitted_successor_source,
 )
 
 _RUN = "chiplog.agent-loop.execution-record.v2"
@@ -1165,6 +1179,216 @@ def _rejected(command_id: str, error: Exception) -> CallPreparationRejected:
         code="HOLD" if isinstance(error, RecoveryHold) else "INTEGRITY_FAULT",
         reason=str(error),
     )
+
+
+def _successor_member(record_kind: str, schema_id: str, value: RecoveryDTO) -> RecoveryRecordMember:
+    raw = value.canonical_bytes()
+    digest = _sha(raw)
+    return RecoveryRecordMember(
+        owner=AGENT_LOOP_OWNER,
+        record_kind=record_kind,
+        schema_id=schema_id,
+        record_id=schema_id + ":" + digest,
+        canonical_record_bytes=raw,
+        fingerprint=digest,
+    )
+
+
+def prepare_execution_successor(
+    request: PrepareExecutionSuccessor,
+) -> PreparedExecutionSuccessor | CallPreparationRejected:
+    """Prepare one CLI successor batch; broker selection/authentication remains external."""
+    try:
+        request = PrepareExecutionSuccessor.model_validate_json(request.canonical_bytes())
+        if not isinstance(request.fence, NonSchedulerFence):
+            raise RecoveryHold("scheduler successor is outside the native CLI profile")
+        _validate_cut(request.cut, allow_suspended=True)
+        lineage = request.cut.complete_ordered_run_lineage
+        current = lineage[-1]
+        selected = request.original_suspension
+        baseline, pair = selected.baseline, selected.pair
+        if not isinstance(current, ExecutionRunRecord):
+            raise RecoveryHold("successor requires the native v2 execution Run")
+        if (
+            current != request.run
+            or _run_ref(current) != request.cut.current_run
+            or current.state != "SUSPENDED"
+            or current.worker_session != request.fence.worker_session_id
+            or current.run_id != request.fence.run_id
+            or current.head != request.fence.run_head
+            or current.suspension_baseline != selected.pair.baseline
+            or pair.suspended_run != _run_ref(current)
+            or pair.baseline.subject_id != baseline.baseline_id
+            or pair.predecessor_run != baseline.predecessor_run
+            or baseline.run_id != current.run_id
+            or baseline.activation_blocking_predicates
+            or current.original_obligations != baseline.original_obligations
+            or len(lineage) < 2
+            or _run_ref(lineage[-2]) != baseline.predecessor_run
+        ):
+            raise RecoveryHold("successor source Run or frozen suspension differs")
+        if selected.canonical_pair_bytes != pair.canonical_bytes():
+            raise RecoveryIntegrityFault("selected suspension pair bytes differ")
+        if request.command_id != f"execution-successor:{current.run_id}:{current.head}":
+            raise RecoveryHold("successor command identity differs from suspended Run")
+        if request.disposition_version != "1":
+            raise RecoveryHold("unsupported native successor disposition")
+        _validate_admitted_successor_source(request, scheduler_successor=False)
+        expected_obligations, expected_no_retry = _expected_successor_inheritance(request)
+        pending = tuple(
+            value
+            for value in request.cut.frontier.ordered_calls
+            if value.kind == "READ_ONLY_RETRY_PENDING"
+        )
+
+        superseded_pending = current.model_copy(
+            update={
+                "state": "SUPERSEDED",
+                "predecessor": current.head,
+                "event": request.command_id,
+                "head": "pending",
+            }
+        )
+        superseded = superseded_pending.model_copy(
+            update={"head": "loop:" + superseded_pending.digest()}
+        )
+        proposal = request.successor
+        successor_pending = ExecutionRunRecord(
+            tenant=proposal.tenant,
+            principal=proposal.principal,
+            run_id=proposal.run_id,
+            state="CREATED",
+            head="pending",
+            predecessor=current.head,
+            prompt=proposal.prompt,
+            policy=proposal.policy,
+            origin=proposal.origin,
+            contour_head=proposal.contour_head,
+            policy_head=proposal.policy_head,
+            worker_session=proposal.worker_session,
+            root_binding="NOT_APPLICABLE",
+            turns=(),
+            delivery_acceptance=None,
+            suspension_baseline=None,
+            original_obligations=current.original_obligations,
+            no_retry_references=current.no_retry_references,
+            event=request.command_id + ":created",
+        )
+        successor = successor_pending.model_copy(
+            update={"head": "loop:" + successor_pending.digest()}
+        )
+        predecessor_ref = _run_ref(current)
+        superseded_ref = _run_ref(superseded)
+        successor_ref = _run_ref(successor)
+        admitted = request.admitted_input
+        assert admitted is not None
+        changed = tuple(
+            value
+            for value in (
+                admitted.custody,
+                admitted.inbox,
+                admitted.selected_decision,
+                admitted.source_authentication,
+            )
+        )
+        initialization = ExecutionSuccessorInitializationRecord(
+            command_id=request.command_id,
+            predecessor_run=predecessor_ref,
+            successor_run=successor_ref,
+            source_cut_fingerprint=request.cut.digest(),
+            disposition_version=request.disposition_version,
+            observation_frontier=request.cut.tenant_commit_sequence,
+            current_bindings=request.cut.current_bindings,
+            execution_fence=request.fence,
+            original_obligations=expected_obligations,
+            inherited_no_retry_boundaries=expected_no_retry,
+            inherited_pending_branches=pending,
+        )
+        init_member = _successor_member(
+            "SUCCESSOR_INITIALIZATION", SUCCESSOR_INITIALIZATION_SCHEMA, initialization
+        )
+        init_ref = CallSubjectHead(
+            subject_id=successor.run_id,
+            revision=Present(head=init_member.record_id, fingerprint=init_member.fingerprint),
+        )
+        edge = ExecutionSuccessorEdge(
+            command_id=request.command_id,
+            original_pair=selected.selected_pair,
+            predecessor_before=predecessor_ref,
+            predecessor_superseded=superseded_ref,
+            successor_created=successor_ref,
+            source_cut_fingerprint=request.cut.digest(),
+            disposition_version=request.disposition_version,
+            changed_binding_manifest=changed,
+            complete_initialization=(init_ref,),
+            original_obligations=expected_obligations,
+            inherited_no_retry_boundaries=expected_no_retry,
+            inherited_pending_branches=tuple(_pending_head(value) for value in pending),
+            observation_frontier=request.cut.tenant_commit_sequence,
+            fence=request.fence,
+        )
+        outputs = (
+            superseded.canonical_bytes(),
+            successor.canonical_bytes(),
+            edge.canonical_bytes(),
+            init_member.canonical_record_bytes,
+        )
+        return PreparedExecutionSuccessor(
+            source_request_fingerprint=request.digest(),
+            superseded_run=superseded,
+            successor_run=successor,
+            edge=edge,
+            lineage_advance=NonSchedulerSuccessor(),
+            complete_initialization_bytes=(init_member.canonical_record_bytes,),
+            complete_batch_fingerprint=_sha(b"\0".join(outputs)),
+        )
+    except (ValueError, TypeError, AttributeError, IndexError) as error:
+        return _rejected(request.command_id, error)
+
+
+def prepare_execution_successor_start(
+    request: PrepareExecutionSuccessorStart,
+) -> PreparedExecutionSuccessorStart | CallPreparationRejected:
+    """Start exactly one successor Turn while preserving predecessor obligations."""
+    try:
+        request = PrepareExecutionSuccessorStart.model_validate_json(request.canonical_bytes())
+        source = request.source_request
+        created = request.created_run
+        edge = ExecutionSuccessorEdge.model_validate_json(request.edge_bytes)
+        if edge.canonical_bytes() != request.edge_bytes:
+            raise RecoveryIntegrityFault("successor edge bytes are not canonical")
+        if len(request.initialization_bytes) != 1:
+            raise RecoveryHold("native successor start requires one initialization record")
+        initialization = ExecutionSuccessorInitializationRecord.model_validate_json(
+            request.initialization_bytes[0]
+        )
+        if initialization.canonical_bytes() != request.initialization_bytes[0]:
+            raise RecoveryIntegrityFault("successor initialization bytes are not canonical")
+        if (
+            created.state != "CREATED"
+            or created.predecessor != source.run.head
+            or edge.successor_created != _run_ref(created)
+            or edge.original_pair != source.original_suspension.selected_pair
+            or edge.source_cut_fingerprint != source.cut.digest()
+            or initialization.successor_run != _run_ref(created)
+            or initialization.predecessor_run != edge.predecessor_before
+            or initialization.command_id != source.command_id
+            or initialization.execution_fence != source.fence
+            or request.command_id
+            != f"execution-successor-start:{created.run_id}:{created.head}"
+        ):
+            raise RecoveryHold("successor start does not select the exact CREATED successor")
+        from .execution_lifecycle import start_successor_execution_turn
+
+        started = start_successor_execution_turn(created)
+        raw = started.canonical_bytes()
+        return PreparedExecutionSuccessorStart(
+            source_request_fingerprint=request.digest(),
+            run=started,
+            complete_batch_fingerprint=_sha(raw),
+        )
+    except (ValueError, TypeError, AttributeError) as error:
+        return _rejected(request.command_id, error)
 
 
 def prepare_execution_accounting(
