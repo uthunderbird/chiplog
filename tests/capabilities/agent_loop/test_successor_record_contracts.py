@@ -428,6 +428,117 @@ async def test_non_scheduler_successor_validates_real_request_result_and_members
     )
 
 
+async def test_non_scheduler_successor_output_prompt_must_match_admitted_proposal() -> None:
+    value = await non_scheduler_successor()
+    rival_run = value.result.successor_run.model_copy(update={"prompt": "unselected prompt"})
+    result = value.result.model_copy(update={"successor_run": rival_run})
+
+    with pytest.raises(RecoveryRecordIntegrityError, match="successor Run prompt differs"):
+        validate_execution_successor_records(
+            value.request,
+            result,
+            value.edge_member,
+            value.baseline_member,
+            value.pair_member,
+            (value.initialization_member,),
+            (),
+            None,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "tenant",
+        "principal",
+        "contour",
+        "inbox",
+        "prompt",
+        "recipient",
+        "same_ingress",
+        "scheduler_fence",
+    ],
+)
+async def test_non_scheduler_successor_requires_consistent_new_selected_cli_input(
+    mutation: str,
+) -> None:
+    value = await non_scheduler_successor()
+    request = value.request
+    admitted = request.admitted_input
+    assert admitted is not None
+    if mutation == "missing":
+        request = request.model_copy(update={"admitted_input": None})
+    elif mutation == "tenant":
+        request = request.model_copy(
+            update={"admitted_input": admitted.model_copy(update={"tenant_id": "rival"})}
+        )
+    elif mutation == "principal":
+        request = request.model_copy(
+            update={"admitted_input": admitted.model_copy(update={"principal_id": "rival"})}
+        )
+    elif mutation == "contour":
+        request = request.model_copy(
+            update={"admitted_input": admitted.model_copy(update={"contour_head": "rival"})}
+        )
+    elif mutation == "inbox":
+        request = request.model_copy(
+            update={"admitted_input": admitted.model_copy(update={"inbox": _head("rival")})}
+        )
+    elif mutation == "prompt":
+        request = request.model_copy(
+            update={
+                "admitted_input": admitted.model_copy(
+                    update={"raw_input_bytes": b"different prompt"}
+                )
+            }
+        )
+    elif mutation == "recipient":
+        recipient = admitted.origin.recipient.model_copy(update={"recipient_id": "rival"})
+        origin = admitted.origin.model_copy(update={"recipient": recipient})
+        request = request.model_copy(
+            update={"admitted_input": admitted.model_copy(update={"origin": origin})}
+        )
+    elif mutation == "same_ingress":
+        predecessor_origin = request.run.origin
+        predecessor_binding = predecessor_origin.ingress_binding
+        predecessor_inbox = CallSubjectHead(
+            subject_id=predecessor_binding.identity,
+            revision=Present(
+                head=predecessor_binding.head,
+                fingerprint=predecessor_binding.fingerprint,
+            ),
+        )
+        admitted = admitted.model_copy(
+            update={
+                "origin": predecessor_origin,
+                "inbox": predecessor_inbox,
+                "normalization": predecessor_inbox,
+            }
+        )
+        request = request.model_copy(
+            update={
+                "admitted_input": admitted,
+                "successor": request.successor.model_copy(update={"origin": predecessor_origin}),
+            }
+        )
+    else:
+        scheduler = await scheduler_successor("v3")
+        request = request.model_copy(update={"fence": scheduler.request.fence})
+
+    with pytest.raises(RecoveryRecordIntegrityError):
+        validate_execution_successor_records(
+            request,
+            value.result,
+            value.edge_member,
+            value.baseline_member,
+            value.pair_member,
+            (value.initialization_member,),
+            (),
+            None,
+        )
+
+
 @pytest.mark.parametrize("identity_field", ["tenant", "principal", "recipient"])
 async def test_successor_join_rejects_predecessor_identity_substitution(
     identity_field: str,
@@ -776,7 +887,7 @@ async def test_scheduler_successor_rejects_actual_other_run_version() -> None:
     value = await scheduler_successor("v3")
     v2 = await scheduler_successor("v2")
     altered_result = value.result.model_copy(update={"successor_run": v2.result.successor_run})
-    with pytest.raises(RecoveryRecordIntegrityError, match="successor Run predecessor"):
+    with pytest.raises(RecoveryRecordIntegrityError, match="successor Run"):
         validate_execution_successor_records(
             value.request,
             altered_result,

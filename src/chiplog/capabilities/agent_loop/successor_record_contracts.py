@@ -203,6 +203,94 @@ def _expected_successor_inheritance(
     return expected_obligations, expected_no_retry
 
 
+def _validate_admitted_successor_source(
+    request: PrepareExecutionSuccessor, *, scheduler_successor: bool
+) -> None:
+    """Join a non-scheduler successor proposal to its selected new CLI inbox."""
+    admitted = request.admitted_input
+    if scheduler_successor:
+        if not isinstance(request.fence, SchedulerExecutionFence):
+            raise RecoveryRecordIntegrityError("scheduler successor lacks scheduler fence")
+        _require(admitted, None, "scheduler successor carries an admitted CLI input")
+        return
+    if isinstance(request.fence, SchedulerExecutionFence):
+        raise RecoveryRecordIntegrityError("non-scheduler successor carries scheduler fence")
+    if admitted is None:
+        raise RecoveryRecordIntegrityError("non-scheduler successor lacks selected ingress")
+
+    successor = request.successor
+    _require(admitted.source_class, "CLI", "successor ingress is not the mounted CLI source")
+    _require(admitted.tenant_id, request.run.tenant, "successor ingress tenant differs")
+    _require(admitted.database_id, request.cut.database_id, "successor ingress database differs")
+    _require(admitted.principal_id, request.run.principal, "successor ingress principal differs")
+    _require(
+        successor.contour_head,
+        admitted.contour_head,
+        "successor ingress contour differs from proposal",
+    )
+    _require(successor.tenant, admitted.tenant_id, "successor Create tenant differs from ingress")
+    _require(
+        successor.principal,
+        admitted.principal_id,
+        "successor Create principal differs from ingress",
+    )
+    _require(successor.origin, admitted.origin, "successor Create origin differs from ingress")
+    _require(
+        admitted.origin.recipient,
+        request.run.origin.recipient,
+        "successor ingress recipient differs from predecessor",
+    )
+    ingress = successor.origin.ingress_binding
+    expected_inbox = CallSubjectHead(
+        subject_id=ingress.identity,
+        revision=Present(head=ingress.head, fingerprint=ingress.fingerprint),
+    )
+    _require(admitted.inbox, expected_inbox, "successor origin differs from selected inbox")
+    previous_ingress = request.run.origin.ingress_binding
+    if admitted.inbox == CallSubjectHead(
+        subject_id=previous_ingress.identity,
+        revision=Present(head=previous_ingress.head, fingerprint=previous_ingress.fingerprint),
+    ):
+        raise RecoveryRecordIntegrityError("successor requires a new ingress source")
+    _require(admitted.normalization, admitted.inbox, "successor ingress normalization differs")
+    _require(
+        admitted.normalization_schema,
+        admitted.inbox_schema,
+        "successor ingress normalization schema differs",
+    )
+    _require(
+        admitted.canonical_normalization_record,
+        admitted.canonical_inbox_record,
+        "successor ingress normalization record differs",
+    )
+    try:
+        prompt = admitted.raw_input_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RecoveryRecordIntegrityError("successor ingress is not valid UTF-8") from error
+    _require(admitted.normalized_prompt, prompt, "successor prompt differs from ingress bytes")
+    _require(successor.prompt, prompt, "successor Create prompt differs from ingress")
+
+
+def _validate_successor_matches_proposal(request: PrepareExecutionSuccessor, run: object) -> None:
+    proposal = request.successor
+    for field in (
+        "tenant",
+        "principal",
+        "run_id",
+        "prompt",
+        "policy",
+        "origin",
+        "contour_head",
+        "policy_head",
+        "worker_session",
+    ):
+        _require(
+            getattr(run, field),
+            getattr(proposal, field),
+            f"successor Run {field} differs from proposal",
+        )
+
+
 def _reference(member: RecoveryRecordMember) -> Present:
     return Present(head=member.record_id, fingerprint=member.fingerprint)
 
@@ -582,6 +670,10 @@ def validate_execution_successor_records(
         result = PreparedExecutionSuccessor.model_validate_json(result.canonical_bytes())
     except ValidationError as error:
         raise RecoveryRecordIntegrityError("invalid successor request or result") from error
+    _validate_successor_matches_proposal(request, result.successor_run)
+    _validate_admitted_successor_source(
+        request, scheduler_successor=isinstance(result.lineage_advance, SchedulerSuccessorAdvance)
+    )
     edge = decode_successor_edge(edge_member)
     if not isinstance(edge.record, ExecutionSuccessorEdge):
         raise RecoveryRecordIntegrityError("successor edge row mismatch")

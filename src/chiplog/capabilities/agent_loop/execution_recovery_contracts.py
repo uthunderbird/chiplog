@@ -5,6 +5,7 @@ from typing import Annotated, Literal, Protocol
 from pydantic import Field
 
 from .call_acceptance_contracts import CallPreparationRejected, CallSubjectHead
+from .execution_initialization_contracts import SelectedAdmittedRunInput
 from .execution_recovery_observations import (
     ContinuationReadyRecord,
     ExecutionRecoveryCut,
@@ -170,6 +171,12 @@ class PrepareExecutionResume(ExecutionRecoveryDTO):
 
 
 class PrepareExecutionSuccessor(ExecutionRecoveryDTO):
+    """Inert successor proposal; admitted_input is a consistency hint only.
+
+    The owner must independently reselect and authenticate the ingress and must
+    derive the scheduler branch from trusted predecessor/job state before publish.
+    """
+
     kind: Literal["PREPARE_EXECUTION_SUCCESSOR_V2"] = "PREPARE_EXECUTION_SUCCESSOR_V2"
     command_id: Identity
     run: ExecutionRun
@@ -178,6 +185,7 @@ class PrepareExecutionSuccessor(ExecutionRecoveryDTO):
     disposition_version: Identity
     successor: CreateExecutionRunVersion
     fence: RunExecutionFence
+    admitted_input: SelectedAdmittedRunInput | None = None
 
 
 class SelectedContinuationResultStamp(ExecutionRecoveryDTO):

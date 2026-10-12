@@ -11,10 +11,14 @@ from pydantic import TypeAdapter
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy
+from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.execution_history_contracts import ExecutionRunRecordV3
 from chiplog.capabilities.agent_loop.execution_history_transition_contracts import (
     CreateExecutionRunV3,
+)
+from chiplog.capabilities.agent_loop.execution_initialization_contracts import (
+    SelectedAdmittedRunInput,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     ExecutionSuccessorEdge,
@@ -383,11 +387,60 @@ async def non_scheduler_successor() -> NonSchedulerSuccessorFixture:
             ),
         }
     )
+    successor_origin = active.origin.model_copy(
+        update={"ingress_binding": ExactHead(
+            identity="successor-cli-inbox",
+            head="successor-cli-inbox-head",
+            fingerprint=hashlib.sha256(b"successor-cli-inbox").hexdigest(),
+        )}
+    )
+    successor_prompt = "successor prompt"
+    admitted_input = SelectedAdmittedRunInput(
+        tenant_id=active.tenant,
+        database_id="database",
+        source_class="CLI",
+        source_contract=head("cli-source-contract"),
+        token=head("cli-token"),
+        custody=head("cli-custody"),
+        inbox=CallSubjectHead(
+            subject_id=successor_origin.ingress_binding.identity,
+            revision=Present(
+                head=successor_origin.ingress_binding.head,
+                fingerprint=successor_origin.ingress_binding.fingerprint,
+            ),
+        ),
+        selected_decision=head("cli-decision"),
+        physical_record=head("cli-physical-record"),
+        commit_sequence=2,
+        raw_input_bytes=successor_prompt.encode(),
+        custody_schema="chiplog.cli.custody.v1",
+        canonical_custody_record=b"custody",
+        inbox_schema="chiplog.cli.inbox.v1",
+        canonical_inbox_record=b"inbox",
+        source_authentication=head("cli-authentication"),
+        authentication_schema="chiplog.cli.authentication.v1",
+        canonical_authentication=b"authentication",
+        normalization=CallSubjectHead(
+            subject_id=successor_origin.ingress_binding.identity,
+            revision=Present(
+                head=successor_origin.ingress_binding.head,
+                fingerprint=successor_origin.ingress_binding.fingerprint,
+            ),
+        ),
+        normalization_schema="chiplog.cli.inbox.v1",
+        canonical_normalization_record=b"inbox",
+        normalized_prompt=successor_prompt,
+        principal_id=active.principal,
+        contour_head="contour",
+        origin=successor_origin,
+    )
     successor = _native_scheduler_run(
         active,
         run_id="successor",
         state="CREATED",
         predecessor=suspended.head,
+        prompt=successor_prompt,
+        origin=successor_origin,
         turns=(),
         event="Created",
     )
@@ -406,14 +459,15 @@ async def non_scheduler_successor() -> NonSchedulerSuccessorFixture:
             tenant=successor.tenant,
             principal=successor.principal,
             run_id=successor.run_id,
-            prompt=successor.prompt,
+            prompt=successor_prompt,
             policy=successor.policy,
-            origin=successor.origin,
+            origin=successor_origin,
             contour_head=successor.contour_head,
             policy_head=successor.policy_head,
             worker_session=successor.worker_session,
         ),
         fence=fence,
+        admitted_input=admitted_input,
     )
     initialization = ExecutionSuccessorInitializationRecord(
         command_id=request.command_id,
