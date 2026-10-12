@@ -22,6 +22,9 @@ from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
 from chiplog.capabilities.agent_loop.native_recovery_cut_validation import (
     validate_native_recovery_cut,
 )
+from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
+    native_recovery_fingerprint,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
@@ -686,6 +689,28 @@ async def test_selected_native_cut_reopens_and_legacy_prepare_holds(tmp_path: Pa
         if bound:
             assert cut is not None
             validate_native_recovery_cut(cut)
+            omitted_family_frontier = cut.frontier.model_copy(
+                update={"ordered_members": cut.frontier.ordered_members[:-1]}
+            )
+            frontier_value = omitted_family_frontier.model_dump(mode="json")
+            del frontier_value["fingerprint"]
+            omitted_family_frontier = omitted_family_frontier.model_copy(
+                update={
+                    "fingerprint": native_recovery_fingerprint("frontier", frontier_value)
+                }
+            )
+            omitted_family_cut = cut.model_copy(update={"frontier": omitted_family_frontier})
+            cut_value = omitted_family_cut.model_dump(mode="json")
+            del cut_value["complete_inventory_fingerprint"]
+            omitted_family_cut = omitted_family_cut.model_copy(
+                update={
+                    "complete_inventory_fingerprint": native_recovery_fingerprint("cut", cut_value)
+                }
+            )
+            with pytest.raises(
+                ValueError, match="native cut family cardinality or ordering differs"
+            ):
+                validate_native_recovery_cut(omitted_family_cut)
             profileless_v2_cut = cut.model_copy(
                 update={
                     "complete_sources": tuple(
