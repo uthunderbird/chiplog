@@ -69,6 +69,7 @@ def validate_native_recovery_cut(cut: ExecutionRecoveryCut) -> None:
         del value["fingerprint"]
         if member.fingerprint != native_recovery_fingerprint("member", value):
             raise ValueError("native member fingerprint differs")
+    _validate_frozen_binding_frontier_membership(cut)
     value = cut.frontier.model_dump(mode="json")
     del value["fingerprint"]
     if cut.frontier.fingerprint != native_recovery_fingerprint("frontier", value):
@@ -99,6 +100,54 @@ def validate_native_recovery_cut(cut: ExecutionRecoveryCut) -> None:
     del value["complete_inventory_fingerprint"]
     if cut.complete_inventory_fingerprint != native_recovery_fingerprint("cut", value):
         raise ValueError("native complete inventory fingerprint differs")
+
+
+def _validate_frozen_binding_frontier_membership(cut: ExecutionRecoveryCut) -> None:
+    """Require supported frozen references to occur in their registered family.
+
+    Source authentication alone proves that bytes exist.  This cross-link also
+    requires the selected recovery registry to classify each supported binding
+    reference in the family that owns it, so a valid source from another family
+    cannot be substituted into a frozen binding.
+    """
+
+    family_heads = {
+        member.family: frozenset(member.ordered_heads)
+        for member in cut.frontier.ordered_members
+    }
+    bindings = cut.current_bindings
+    exact_families = (
+        ("prompt_artifact", (bindings.prompt_artifact,), ("PROMPT",)),
+        (
+            "tool_schema",
+            (*bindings.ordered_tool_specs, bindings.generated_schema),
+            ("TOOL_SCHEMA",),
+        ),
+        ("semantic_bindings", bindings.semantic_bindings, ("SEMANTIC_BINDING",)),
+        ("authority_scope", (bindings.authority_scope,), ("AUTHORITY",)),
+        ("policy", (bindings.policy,), ("POLICY",)),
+    )
+    for name, references, families in exact_families:
+        allowed = frozenset(
+            head for family in families for head in family_heads.get(family, ())
+        )
+        if any(reference not in allowed for reference in references):
+            raise ValueError(f"native frozen binding is outside its registered family: {name}")
+
+    recipient_or_effect = family_heads.get("RECIPIENT", frozenset()) | family_heads.get(
+        "EFFECT", frozenset()
+    )
+    if any(
+        reference not in recipient_or_effect
+        for reference in bindings.recipient_effect_bindings
+    ):
+        raise ValueError(
+            "native frozen binding is outside RECIPIENT/EFFECT registered families"
+        )
+
+    mandate_heads = family_heads.get("MANDATE", frozenset())
+    if any(reference not in mandate_heads for reference in bindings.authority_mandate_heads):
+        raise ValueError("native frozen mandate is outside its registered family")
 
 
 def _source_preimage_is_valid(source: RecoverySourceRecord) -> bool:

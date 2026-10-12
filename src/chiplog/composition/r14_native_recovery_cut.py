@@ -2380,7 +2380,10 @@ class NativeRecoveryCutSource:
                 )
             ),
             "EVIDENCE": evidence_heads,
-            "AUTHORITY": tuple(row.subject.revision for row in resolver_sources),
+            "AUTHORITY": (
+                bindings.authority_scope,
+                *(row.subject.revision for row in resolver_sources),
+            ),
             "POLICY": (
                 bindings.policy,
                 semantic.revision,

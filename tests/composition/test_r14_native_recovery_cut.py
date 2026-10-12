@@ -689,6 +689,24 @@ async def test_selected_native_cut_reopens_and_legacy_prepare_holds(tmp_path: Pa
         if bound:
             assert cut is not None
             validate_native_recovery_cut(cut)
+            cross_family_bindings = cut.current_bindings.model_copy(
+                update={"semantic_bindings": (cut.current_bindings.policy,)}
+            )
+            cross_family_cut = cut.model_copy(update={"current_bindings": cross_family_bindings})
+            cross_family_value = cross_family_cut.model_dump(mode="json")
+            del cross_family_value["complete_inventory_fingerprint"]
+            cross_family_cut = cross_family_cut.model_copy(
+                update={
+                    "complete_inventory_fingerprint": native_recovery_fingerprint(
+                        "cut", cross_family_value
+                    )
+                }
+            )
+            with pytest.raises(
+                ValueError,
+                match="native frozen binding is outside its registered family: semantic_bindings",
+            ):
+                validate_native_recovery_cut(cross_family_cut)
             omitted_family_frontier = cut.frontier.model_copy(
                 update={"ordered_members": cut.frontier.ordered_members[:-1]}
             )
