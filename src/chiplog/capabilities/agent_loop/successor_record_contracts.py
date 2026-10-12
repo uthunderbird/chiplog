@@ -193,12 +193,11 @@ def _expected_successor_inheritance(
     _require(
         request.cut.current_bindings.model_copy(
             update={
-                "objective": baseline.bindings.objective,
                 "requested_work": baseline.bindings.requested_work,
             }
         ),
         baseline.bindings,
-        "successor changes a frozen binding outside objective or requested work",
+        "successor changes a frozen binding outside requested work",
     )
     return expected_obligations, expected_no_retry
 

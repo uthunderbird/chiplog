@@ -428,6 +428,63 @@ async def test_non_scheduler_successor_validates_real_request_result_and_members
     )
 
 
+async def test_non_scheduler_successor_rejects_changed_predecessor_objective() -> None:
+    value = await non_scheduler_successor()
+    cut = value.request.cut
+    bindings = cut.current_bindings.model_copy(update={"objective": "rival objective"})
+    request = value.request.model_copy(
+        update={"cut": cut.model_copy(update={"current_bindings": bindings})}
+    )
+    decoded_initialization = decode_successor_record_member(value.initialization_member).record
+    assert isinstance(decoded_initialization, ExecutionSuccessorInitializationRecord)
+    initialization_member = _member(
+        decoded_initialization.model_copy(
+            update={
+                "source_cut_fingerprint": request.cut.digest(),
+                "current_bindings": bindings,
+            }
+        )
+    )
+    initialization_ref = CallSubjectHead(
+        subject_id=value.result.successor_run.run_id,
+        revision=Present(
+            head=initialization_member.record_id,
+            fingerprint=initialization_member.fingerprint,
+        ),
+    )
+    edge = value.result.edge.model_copy(
+        update={
+            "source_cut_fingerprint": request.cut.digest(),
+            "complete_initialization": (initialization_ref,),
+        }
+    )
+    edge_member = _content_member(
+        "SUCCESSOR_EDGE", "chiplog.execution.successor-edge.v1", edge
+    )
+    result = value.result.model_copy(
+        update={
+            "edge": edge,
+            "source_request_fingerprint": hashlib.sha256(request.canonical_bytes()).hexdigest(),
+            "complete_initialization_bytes": (initialization_member.canonical_record_bytes,),
+        }
+    )
+
+    with pytest.raises(
+        RecoveryRecordIntegrityError,
+        match="successor changes a frozen binding outside requested work",
+    ):
+        validate_execution_successor_records(
+            request,
+            result,
+            edge_member,
+            value.baseline_member,
+            value.pair_member,
+            (initialization_member,),
+            (),
+            None,
+        )
+
+
 async def test_non_scheduler_successor_output_prompt_must_match_admitted_proposal() -> None:
     value = await non_scheduler_successor()
     rival_run = value.result.successor_run.model_copy(update={"prompt": "unselected prompt"})
