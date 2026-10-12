@@ -32,6 +32,7 @@ def build_accepted_direct_terminal_cut(
     runtime: CommonCliExecutionRuntime,
     closed: R14NativeAcceptedOpenOutcome,
     *,
+    source_run: CallSubjectHead | None = None,
     source_materialization_commitment: str | None = None,
     source_tenant_commit_sequence: int | None = None,
 ) -> AcceptedDirectTerminalCutV1 | None:
@@ -50,12 +51,15 @@ def build_accepted_direct_terminal_cut(
                 return None
             snapshot = read_execution_history(runtime)
             lineage = closed.accepted.source.target_run_lineage
+            selected_run = lineage[-1] if source_run is None else source_run
+            if selected_run not in lineage:
+                return None
             matches = [
                 item
                 for item in snapshot.records
                 if isinstance(item, ExecutionRunRecord)
-                and item.run_id == lineage[-1].subject_id
-                and item.head == lineage[-1].revision.head
+                and item.run_id == selected_run.subject_id
+                and item.head == selected_run.revision.head
             ]
             if len(matches) != 1:
                 return None

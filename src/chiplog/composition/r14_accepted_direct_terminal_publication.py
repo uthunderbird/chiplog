@@ -71,6 +71,7 @@ def _current_cut(
     runtime: CommonCliExecutionRuntime,
     *,
     selected_only: bool = False,
+    expected_source_cut: AcceptedDirectTerminalCutV1 | None = None,
     source_materialization_commitment: str | None = None,
     source_tenant_commit_sequence: int | None = None,
     authenticated_history: ExecutionRecoveryHistory | None = None,
@@ -95,8 +96,13 @@ def _current_cut(
         projection,
         bind_native_execution_preparation_v2(projection),
     )
+    source_run = (
+        execution_run_head(snapshot.records[-1])
+        if expected_source_cut is None
+        else expected_source_cut.current_run
+    )
     closed = source.collect_one_accepted_closed_outcome(
-        execution_run_head(snapshot.records[-1]),
+        source_run,
         selected_only=selected_only,
     )
     if closed is None:
@@ -104,6 +110,7 @@ def _current_cut(
     cut = build_accepted_direct_terminal_cut(
         runtime,
         closed,
+        source_run=None if expected_source_cut is None else expected_source_cut.current_run,
         source_materialization_commitment=source_materialization_commitment,
         source_tenant_commit_sequence=source_tenant_commit_sequence,
     )
@@ -361,6 +368,7 @@ def validate_selected_accepted_direct_terminal(
         current = _current_cut(
             runtime,
             selected_only=True,
+            expected_source_cut=evidence.request.cut,
             source_materialization_commitment=evidence.request.cut.materialization_commitment,
             source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
             authenticated_history=authenticated_history,
