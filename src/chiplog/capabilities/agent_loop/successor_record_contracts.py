@@ -41,6 +41,7 @@ from .recovery_frontier_contracts import (
     FrozenRunBindings,
     ObligationObservation,
     PendingCallFrontier,
+    ReferenceExternalObligation,
 )
 from .recovery_record_contracts import (
     AGENT_LOOP_OWNER,
@@ -153,6 +154,53 @@ class DecodedSuccessorRecordMember:
 def _require(actual: object, expected: object, reason: str) -> None:
     if actual != expected:
         raise RecoveryRecordIntegrityError(reason)
+
+
+def _expected_successor_inheritance(
+    request: PrepareExecutionSuccessor,
+) -> tuple[tuple[ObligationObservation, ...], tuple[CallSubjectHead, ...]]:
+    """Derive the represented inheritance set; this is structural, not source authority."""
+    baseline = request.original_suspension.baseline
+    current_run = request.cut.complete_ordered_run_lineage[-1]
+    _require(request.run.original_obligations, baseline.original_obligations,
+             "suspended Run obligations differ from baseline")
+    _require(current_run.original_obligations, request.run.original_obligations,
+             "current Run obligations differ from predecessor")
+    if request.cut.original_closures:
+        raise RecoveryRecordIntegrityError(
+            "successor closure observations require source-backed closure validation"
+        )
+
+    expected_obligations = tuple(
+        ReferenceExternalObligation(
+            original=original,
+            observation_frontier=request.cut.tenant_commit_sequence,
+        )
+        for original in request.run.original_obligations
+    )
+    expected_no_retry = tuple(request.run.no_retry_references)
+    expected_boundary_heads = tuple(reference.revision for reference in expected_no_retry)
+    _require(
+        baseline.bindings.no_retry_boundaries,
+        expected_boundary_heads,
+        "baseline no-retry bindings differ from predecessor references",
+    )
+    _require(
+        request.cut.current_bindings.no_retry_boundaries,
+        expected_boundary_heads,
+        "current no-retry bindings differ from predecessor references",
+    )
+    _require(
+        request.cut.current_bindings.model_copy(
+            update={
+                "objective": baseline.bindings.objective,
+                "requested_work": baseline.bindings.requested_work,
+            }
+        ),
+        baseline.bindings,
+        "successor changes a frozen binding outside objective or requested work",
+    )
+    return expected_obligations, expected_no_retry
 
 
 def _reference(member: RecoveryRecordMember) -> Present:
@@ -565,6 +613,7 @@ def validate_execution_successor_records(
     )
     init = initialization.record
     assert isinstance(init, ExecutionSuccessorInitializationRecord)
+    expected_obligations, expected_no_retry = _expected_successor_inheritance(request)
 
     _require(
         request.original_suspension.canonical_pair_bytes,
@@ -665,14 +714,18 @@ def validate_execution_successor_records(
     _require(init.execution_fence, request.fence, "initialization fence differs")
     _require(
         init.original_obligations,
-        edge.record.original_obligations,
-        "initialization obligations differ",
+        expected_obligations,
+        "initialization obligations differ from predecessor",
     )
+    _require(edge.record.original_obligations, expected_obligations,
+             "successor edge obligations differ from predecessor")
     _require(
         init.inherited_no_retry_boundaries,
-        edge.record.inherited_no_retry_boundaries,
-        "initialization no-retry boundaries differ",
+        expected_no_retry,
+        "initialization no-retry references differ from predecessor",
     )
+    _require(edge.record.inherited_no_retry_boundaries, expected_no_retry,
+             "successor edge no-retry references differ from predecessor")
     _require(
         tuple(_pending_head(value) for value in init.inherited_pending_branches),
         edge.record.inherited_pending_branches,
@@ -682,6 +735,11 @@ def validate_execution_successor_records(
         init.observation_frontier,
         edge.record.observation_frontier,
         "initialization frontier differs",
+    )
+    _require(
+        init.observation_frontier,
+        request.cut.tenant_commit_sequence,
+        "successor observation frontier differs from current cut",
     )
     _require(edge.record.command_id, request.command_id, "edge command differs")
     _require(edge.record.predecessor_before, predecessor, "edge predecessor differs")

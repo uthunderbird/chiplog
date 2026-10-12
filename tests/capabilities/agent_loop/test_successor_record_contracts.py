@@ -11,12 +11,19 @@ from tests.support.successor_records import (
     RepeatedSchedulerSuccessorFixture,
     content_member,
     non_scheduler_successor,
+    obligation,
     repeated_scheduler_successors,
     scheduler_successor,
 )
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
-from chiplog.capabilities.agent_loop.execution_recovery_contracts import PreparedExecutionSuccessor
+from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+    ExecutionSuccessorEdge,
+    PreparedExecutionSuccessor,
+)
+from chiplog.capabilities.agent_loop.execution_recovery_observations import (
+    OriginalRecoveredClosure,
+)
 from chiplog.capabilities.agent_loop.execution_run_record_contracts import (
     ExecutionRunCanonicalMember,
     decode_execution_run_member,
@@ -419,6 +426,113 @@ async def test_non_scheduler_successor_validates_real_request_result_and_members
         (),
         None,
     )
+
+
+@pytest.mark.parametrize("inheritance", ["obligation", "no_retry", "observation_frontier"])
+async def test_successor_join_rejects_matching_but_uninherited_references(
+    inheritance: str,
+) -> None:
+    value = await non_scheduler_successor()
+    initialization = ExecutionSuccessorInitializationRecord.model_validate_json(
+        value.initialization_member.canonical_record_bytes
+    )
+    edge = ExecutionSuccessorEdge.model_validate_json(value.edge_member.canonical_record_bytes)
+    if inheritance == "obligation":
+        fabricated = obligation()
+        initialization = initialization.model_copy(update={"original_obligations": (fabricated,)})
+        edge = edge.model_copy(update={"original_obligations": (fabricated,)})
+    elif inheritance == "no_retry":
+        fabricated = _head("unregistered-no-retry-boundary")
+        initialization = initialization.model_copy(
+            update={"inherited_no_retry_boundaries": (fabricated,)}
+        )
+        edge = edge.model_copy(update={"inherited_no_retry_boundaries": (fabricated,)})
+    else:
+        initialization = initialization.model_copy(update={"observation_frontier": 2})
+        edge = edge.model_copy(update={"observation_frontier": 2})
+
+    initialization_member = content_member(
+        "SUCCESSOR_INITIALIZATION", SUCCESSOR_INITIALIZATION_SCHEMA, initialization
+    )
+    initialization_ref = CallSubjectHead(
+        subject_id=value.result.successor_run.run_id,
+        revision=Present(
+            head=initialization_member.record_id,
+            fingerprint=initialization_member.fingerprint,
+        ),
+    )
+    edge = edge.model_copy(update={"complete_initialization": (initialization_ref,)})
+    edge_member = content_member("SUCCESSOR_EDGE", value.edge_member.schema_id, edge)
+    result = value.result.model_copy(
+        update={
+            "edge": edge,
+            "complete_initialization_bytes": (initialization.canonical_bytes(),),
+        }
+    )
+
+    with pytest.raises(RecoveryRecordIntegrityError):
+        validate_execution_successor_records(
+            value.request,
+            result,
+            edge_member,
+            value.baseline_member,
+            value.pair_member,
+            (initialization_member,),
+            (),
+            None,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["current_no_retry", "tool_schema", "closure"])
+async def test_successor_join_holds_unproven_current_inheritance(mutation: str) -> None:
+    value = await non_scheduler_successor()
+    cut = value.request.cut
+    if mutation == "current_no_retry":
+        cut = cut.model_copy(
+            update={
+                "current_bindings": cut.current_bindings.model_copy(
+                    update={"no_retry_boundaries": (_present("new-boundary"),)}
+                )
+            }
+        )
+    elif mutation == "tool_schema":
+        cut = cut.model_copy(
+            update={
+                "current_bindings": cut.current_bindings.model_copy(
+                    update={"ordered_tool_specs": (_present("new-tool"),)}
+                )
+            }
+        )
+    else:
+        cut = cut.model_copy(
+            update={
+                "original_closures": (
+                    OriginalRecoveredClosure(
+                        original=obligation().original,
+                        terminal_disposition=_present("terminal-disposition"),
+                        recovered_outcome=_present("recovered-outcome"),
+                        accepted_evidence=_present("accepted-evidence"),
+                        closure=_present("closure"),
+                        resolver_batch=_present("resolver-batch"),
+                        reduction_id="reduction",
+                        accepted_semantic_class="semantic-class",
+                    ),
+                )
+            }
+        )
+    request = value.request.model_copy(update={"cut": cut})
+
+    with pytest.raises(RecoveryRecordIntegrityError):
+        validate_execution_successor_records(
+            request,
+            value.result,
+            value.edge_member,
+            value.baseline_member,
+            value.pair_member,
+            (value.initialization_member,),
+            (),
+            None,
+        )
 
 
 @pytest.mark.parametrize("initializations", [(), ("one", "two")])

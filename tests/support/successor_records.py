@@ -424,8 +424,8 @@ async def non_scheduler_successor() -> NonSchedulerSuccessorFixture:
         observation_frontier=1,
         current_bindings=cut.current_bindings,
         execution_fence=request.fence,
-        original_obligations=(obligation(),),
-        inherited_no_retry_boundaries=(head("boundary"),),
+        original_obligations=(),
+        inherited_no_retry_boundaries=(),
         inherited_pending_branches=(pending(),),
     )
     initialization_member = content_member(
@@ -447,8 +447,8 @@ async def non_scheduler_successor() -> NonSchedulerSuccessorFixture:
         disposition_version=request.disposition_version,
         changed_binding_manifest=(head("changed"),),
         complete_initialization=(initialization_ref,),
-        original_obligations=(obligation(),),
-        inherited_no_retry_boundaries=(head("boundary"),),
+        original_obligations=(),
+        inherited_no_retry_boundaries=(),
         inherited_pending_branches=(
             CallSubjectHead(subject_id="call", revision=pending().pending),
         ),
@@ -897,8 +897,8 @@ async def scheduler_successor(
         observation_frontier=1,
         current_bindings=cut.current_bindings,
         execution_fence=fence,
-        original_obligations=(obligation(),),
-        inherited_no_retry_boundaries=(head("boundary"),),
+        original_obligations=(),
+        inherited_no_retry_boundaries=(),
         inherited_pending_branches=(pending(),),
     )
     initialization_member = content_member(
@@ -959,8 +959,8 @@ async def scheduler_successor(
         disposition_version=request.disposition_version,
         changed_binding_manifest=(head("scheduler-changed"),),
         complete_initialization=(initialization_ref,),
-        original_obligations=(obligation(),),
-        inherited_no_retry_boundaries=(head("boundary"),),
+        original_obligations=(),
+        inherited_no_retry_boundaries=(),
         inherited_pending_branches=(
             CallSubjectHead(subject_id="call", revision=pending().pending),
         ),
@@ -1018,8 +1018,8 @@ async def repeated_scheduler_successors(
         observation_frontier=1,
         current_bindings=first.request.cut.current_bindings,
         execution_fence=first.request.fence,
-        original_obligations=(obligation(),),
-        inherited_no_retry_boundaries=(head("boundary"),),
+        original_obligations=(),
+        inherited_no_retry_boundaries=(),
         inherited_pending_branches=(pending(),),
     )
     first_initialization_member = content_member(
@@ -1267,11 +1267,11 @@ async def repeated_scheduler_successors(
         successor_run=run_head(successor),
         source_cut_fingerprint=recovery_cut.digest(),
         disposition_version=request.disposition_version,
-        observation_frontier=1,
+        observation_frontier=recovery_cut.tenant_commit_sequence,
         current_bindings=recovery_cut.current_bindings,
         execution_fence=fence,
-        original_obligations=(obligation(),),
-        inherited_no_retry_boundaries=(head("boundary"),),
+        original_obligations=(),
+        inherited_no_retry_boundaries=(),
         inherited_pending_branches=(pending(),),
     )
     initialization_member = content_member(
@@ -1383,12 +1383,12 @@ async def repeated_scheduler_successors(
         disposition_version=request.disposition_version,
         changed_binding_manifest=(head("second-scheduler-changed"),),
         complete_initialization=(initialization_ref,),
-        original_obligations=(obligation(),),
-        inherited_no_retry_boundaries=(head("boundary"),),
+        original_obligations=(),
+        inherited_no_retry_boundaries=(),
         inherited_pending_branches=(
             CallSubjectHead(subject_id="call", revision=pending().pending),
         ),
-        observation_frontier=1,
+        observation_frontier=recovery_cut.tenant_commit_sequence,
         fence=fence,
     )
     edge_member = content_member("SUCCESSOR_EDGE", "chiplog.execution.successor-edge.v1", edge)
