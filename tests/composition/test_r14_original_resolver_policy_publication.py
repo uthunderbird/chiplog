@@ -203,8 +203,9 @@ async def test_selected_policy_catalog_rejects_extra_reducer_record(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("decision_case", ["commit", "source_changed", "expired"])
 async def test_invocation_publication_replays_exact_lost_ack_without_new_auth(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decision_case: str
 ) -> None:
     import hashlib
     from unittest.mock import patch
@@ -332,7 +333,14 @@ async def test_invocation_publication_replays_exact_lost_ack_without_new_auth(
         "chiplog.loop.original-effect-evidence-reducer-policy.v1",
     )
     sources = (opening_source, terminal_source, resolver_source, reducer_source)
-    monkeypatch.setattr(publication, "_current_sources", lambda _runtime: sources)
+    current_source_reads = 0
+
+    def current_sources(_runtime):
+        nonlocal current_source_reads
+        current_source_reads += 1
+        return sources
+
+    monkeypatch.setattr(publication, "_current_sources", current_sources)
 
     database = tmp_path / "resolver-invocation.sqlite"
     resources = HermeticDispatchResources(
@@ -345,15 +353,57 @@ async def test_invocation_publication_replays_exact_lost_ack_without_new_auth(
     ) as runtime:
         submit = runtime._appender.submit
 
-        async def commit_then_lose_ack(batch):
-            await submit(batch)
-            raise LostCommitAcknowledgement("invocation acknowledgement lost")
+        if decision_case == "commit":
+            async def commit_then_lose_ack(batch):
+                await submit(batch)
+                raise LostCommitAcknowledgement("invocation acknowledgement lost")
 
-        with (
-            patch.object(runtime._appender, "submit", side_effect=commit_then_lose_ack),
-            pytest.raises(LostCommitAcknowledgement),
-        ):
-            await runtime.publish_original_resolver_invocation()
+            with (
+                patch.object(runtime._appender, "submit", side_effect=commit_then_lose_ack),
+                pytest.raises(LostCommitAcknowledgement),
+            ):
+                await runtime.publish_original_resolver_invocation()
+        elif decision_case == "source_changed":
+            owner_exchange = publication._owner_exchange
+
+            async def change_source_during_owner(runtime, request):
+                nonlocal sources
+                result = await owner_exchange(runtime, request)
+                sources = (terminal_source, opening_source, resolver_source, reducer_source)
+                return result
+
+            with (
+                patch.object(
+                    publication, "_owner_exchange", side_effect=change_source_during_owner
+                ),
+                pytest.raises(LoopRejected, match="publication STALE"),
+            ):
+                await runtime.publish_original_resolver_invocation()
+        else:
+            from dataclasses import replace
+
+            async def expire_before_decision(batch):
+                decision_guard = batch.decision_guard
+
+                def expired_decision(resulting):
+                    monotonic_ns = publication.time.monotonic_ns
+                    publication.time.monotonic_ns = lambda: 2**63 - 1
+                    try:
+                        return decision_guard(resulting)
+                    finally:
+                        publication.time.monotonic_ns = monotonic_ns
+
+                return await submit(replace(batch, decision_guard=expired_decision))
+
+            with (
+                patch.object(runtime._appender, "submit", side_effect=expire_before_decision),
+                pytest.raises(LoopRejected, match="sources changed at selection"),
+            ):
+                await runtime.publish_original_resolver_invocation()
+        assert current_source_reads == 2  # preflight plus one post-owner admission scan
+        if decision_case != "commit":
+            assert runtime.read_selected_original_resolver_invocation_source() is None
+            return
 
     async with open_common_cli_execution_runtime(
         database,

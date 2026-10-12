@@ -620,7 +620,10 @@ async def publish_original_resolver_invocation(runtime, peer="hermetic-ingress")
     except (TypeError, ValueError) as error:
         raise LoopRejected("original resolver invocation evidence failed validation") from error
 
+    admission_passed = False
+
     def guard():
+        nonlocal admission_passed
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(observed)
@@ -640,35 +643,56 @@ async def publish_original_resolver_invocation(runtime, peer="hermetic-ingress")
                     return "STALE"
             except ValueError, TypeError, RuntimeError:
                 return "STALE"
+            admission_passed = True
         return None
 
     def decide(resulting):
-        if guard() is not None:
-            raise LoopRejected("original resolver invocation sources changed at selection")
-        runtime._require_no_pending()
-        runtime._append_decision(
-            {
-                "version": 1,
-                "kind": "DECIDED",
-                "operation_id": command_value.idempotency_key,
-                "operation_kind": OPERATION,
-                "expected_head": command_value.expected_head,
-                "fingerprint": command_value.request_fingerprint,
-                "predecessor": predecessor,
-                "resulting": resulting,
-                "records": [
-                    {
-                        "record_id": record.record_id,
-                        "owner": record.owner,
-                        "schema": record.schema_id,
-                        "payload": base64.b64encode(record.canonical_bytes).decode(),
-                        "digest": record.fingerprint,
-                    }
-                    for record in command_value.records
-                ],
-                EVIDENCE_FIELD: evidence.canonical_bytes().decode(),
-            }
-        )
+        with runtime._authority_gate().hold():
+            # _publish keeps this gate and transaction from admission through commit:
+            # source/trust journals cannot change here, so only monotonic expiry and
+            # supervisor identity need a final check after the full admission scan.
+            deadline = (
+                observed.request.budget.absolute_deadline_ns
+                if observed.admission_valid_until_ns is None
+                else observed.admission_valid_until_ns
+            )
+            current_trust_session = runtime._supervisor.runtime().session("deployment_trust")
+            trust_state = runtime._read_ledger.current_state(runtime._tenant_id)
+            if (
+                not admission_passed
+                or time.monotonic_ns() >= deadline
+                or current_trust_session != observed.request.callee
+                or trust_state.owner_draining
+                or trust_state.broker_epoch != current_trust_session.broker_epoch
+                or trust_state.owner_generation != current_trust_session.generation_id
+                or runtime.current_worker() != worker
+                or runtime._supervisor.runtime().session("agent_loop") != session
+            ):
+                raise LoopRejected("original resolver invocation sources changed at selection")
+            runtime._require_no_pending()
+            runtime._append_decision(
+                {
+                    "version": 1,
+                    "kind": "DECIDED",
+                    "operation_id": command_value.idempotency_key,
+                    "operation_kind": OPERATION,
+                    "expected_head": command_value.expected_head,
+                    "fingerprint": command_value.request_fingerprint,
+                    "predecessor": predecessor,
+                    "resulting": resulting,
+                    "records": [
+                        {
+                            "record_id": record.record_id,
+                            "owner": record.owner,
+                            "schema": record.schema_id,
+                            "payload": base64.b64encode(record.canonical_bytes).decode(),
+                            "digest": record.fingerprint,
+                        }
+                        for record in command_value.records
+                    ],
+                    EVIDENCE_FIELD: evidence.canonical_bytes().decode(),
+                }
+            )
 
     result = await runtime._appender.submit(
         replace(command_value, admission_guard=guard, decision_guard=decide)
