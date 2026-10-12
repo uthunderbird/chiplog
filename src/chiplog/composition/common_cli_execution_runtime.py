@@ -11,9 +11,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from pydantic import TypeAdapter
+
+if TYPE_CHECKING:
+    from chiplog.composition.r14_loop_history import ExecutionRecoveryHistory
 
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import (
@@ -1088,12 +1091,18 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return read_selected_accepted_direct_terminal(self)
 
-    def read_selected_accepted_direct_terminal_frontier(self) -> SealedAccounting | None:
+    def read_selected_accepted_direct_terminal_frontier(
+        self,
+        *,
+        authenticated_history: ExecutionRecoveryHistory | None = None,
+    ) -> SealedAccounting | None:
         from chiplog.composition.r14_loop_history import (
             read_selected_accepted_direct_terminal_frontier,
         )
 
-        return read_selected_accepted_direct_terminal_frontier(self)
+        return read_selected_accepted_direct_terminal_frontier(
+            self, authenticated_history=authenticated_history
+        )
 
     async def start_next_execution_turn(
         self, run_id: str, expected_head: str, peer: str = "hermetic-ingress"

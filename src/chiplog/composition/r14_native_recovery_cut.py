@@ -1401,7 +1401,12 @@ class NativeRecoveryCutSource:
             evidence = retained_accepted_direct_terminal(entry)
             if runtime._publication(entry) != accepted_direct_terminal_command(evidence):
                 return True, None
-            accounting = runtime.read_selected_accepted_direct_terminal_frontier()
+            authenticated_history = subset.authenticated_execution_history
+            if authenticated_history is None:
+                return True, None
+            accounting = runtime.read_selected_accepted_direct_terminal_frontier(
+                authenticated_history=authenticated_history
+            )
             if (
                 accounting is None
                 or len(accounting.calls) != 1

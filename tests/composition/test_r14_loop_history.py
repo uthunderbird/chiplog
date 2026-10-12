@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -21,6 +22,7 @@ from chiplog.composition.r14_execution_completion_records import (
 from chiplog.composition.r14_loop_history import (
     _completion_v2_schema_dispatch,
     completion_v2_terminal_run,
+    read_selected_accepted_direct_terminal_frontier,
 )
 from chiplog.composition.r14_runtime import R14PlanningRuntime
 from chiplog.platform.authority_reads import capture_authority_storage_state
@@ -33,6 +35,30 @@ _CONTINUE = (
 )
 _COMPLETE = b'{"kind":"Complete","deliveries":[{"kind":"NonAuthoritativeText","text":"Ready"}]}'
 _PROPOSAL = "run/turn/1/proposal/plan"
+
+
+def test_direct_terminal_frontier_without_history_keeps_fresh_read(monkeypatch):
+    from chiplog.composition import r14_loop_history
+
+    class Gate:
+        @contextmanager
+        def hold(self):
+            yield
+
+    runtime = SimpleNamespace(
+        _authority_gate=lambda: Gate(),
+        _loop_decisions=lambda: SimpleNamespace(entries=lambda: ()),
+    )
+    observed = []
+    history = (object(), object(), (), (), (), ())
+    monkeypatch.setattr(
+        r14_loop_history,
+        "read_execution_recovery_history",
+        lambda current: observed.append(current) or history,
+    )
+
+    assert read_selected_accepted_direct_terminal_frontier(runtime) is None
+    assert observed == [runtime]
 
 
 async def test_selected_complete_delivery_v2_projects_its_native_terminal_run() -> None:

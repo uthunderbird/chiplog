@@ -46,6 +46,10 @@ async def test_source_subset_requires_selected_accounting_and_reopens(tmp_path: 
         subset = R14NativeRecoverySourceSubsetReader(runtime).collect()
         assert subset is not None
         assert subset.selected_accounting == accounting
+        assert subset.authenticated_execution_history is not None
+        assert subset.authenticated_execution_history[0] is subset.authenticated_execution_snapshot
+        assert subset.authenticated_execution_history[3] == subset.authenticated_seals
+        assert subset.authenticated_execution_history[4] == subset.authenticated_cancellations
         assert tuple(source.schema_id for source in subset.execution_sources)[-4:] == (
             "chiplog.call.response-seal.v1",
             "chiplog.call.initialized.v1",
@@ -148,6 +152,12 @@ async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resen
         assert subset is not None
         assert subset.selected_accounting is None
         assert subset.accepted_closed_outcome is not None
+        history = subset.authenticated_execution_history
+        assert history is not None
+        assert history[0] is subset.authenticated_execution_snapshot
+        assert history[3] == subset.authenticated_seals
+        assert history[4] == subset.authenticated_cancellations
+        assert history[5] == subset.authenticated_acceptances
         selected_suspended_run = subset.authenticated_execution_snapshot.records[-1]
         assert selected_suspended_run.state == "SUSPENDED"
         assert execution_run_head(selected_suspended_run) == suspended_run_head

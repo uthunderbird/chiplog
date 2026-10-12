@@ -627,6 +627,38 @@ def test_direct_selector_holds_retained_rival_marker_under_foreign_operation():
     assert selected is None
 
 
+def test_direct_selector_forwards_exact_authenticated_history_from_subset(monkeypatch):
+    from chiplog.composition import r14_accepted_direct_terminal_records as records
+
+    operation = records.ACCEPTED_DIRECT_TERMINAL_OPERATION
+    command = SimpleNamespace(operation_kind=operation, records=())
+    raw = json.dumps({"kind": "DECIDED"}).encode()
+    log = SimpleNamespace(entries=lambda: (("terminal", "unused", raw),))
+    history = (object(), object(), (), (), (), ())
+    captured = []
+    runtime = SimpleNamespace(
+        _loop_decisions=lambda: log,
+        _publication=lambda entry: command,
+        read_selected_accepted_direct_terminal_frontier=lambda **kwargs: (
+            captured.append(kwargs["authenticated_history"]) or None
+        ),
+    )
+    subset = SimpleNamespace(
+        accepted_closed_outcome=object(), authenticated_execution_history=history
+    )
+    evidence = object()
+    monkeypatch.setattr(records, "retained_accepted_direct_terminal", lambda entry: evidence)
+    monkeypatch.setattr(records, "accepted_direct_terminal_command", lambda retained: command)
+
+    claimed, selected = NativeRecoveryCutSource._selected_accepted_direct_terminal_inputs(
+        runtime, subset
+    )
+
+    assert (claimed, selected) == (True, None)
+    assert len(captured) == 1
+    assert captured[0] is history
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bound", (True, False))
 async def test_selected_native_cut_reopens_and_legacy_prepare_holds(tmp_path: Path, bound: bool):

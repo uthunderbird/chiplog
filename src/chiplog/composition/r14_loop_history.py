@@ -1981,6 +1981,8 @@ def read_selected_accepted_direct_terminal(runtime: R14PlanningRuntime):
 
 def read_selected_accepted_direct_terminal_frontier(
     runtime: CommonCliExecutionRuntime,
+    *,
+    authenticated_history: ExecutionRecoveryHistory | None = None,
 ) -> SealedAccounting | None:
     """Return sealed accounting only after the selected terminal batch is COMPLETE."""
     from chiplog.composition.r14_accepted_direct_terminal_frontier import (
@@ -1999,7 +2001,8 @@ def read_selected_accepted_direct_terminal_frontier(
     from chiplog.platform.workspace_snapshot import read_connection
 
     with runtime._authority_gate().hold():
-        authenticated_history = read_execution_recovery_history(runtime)
+        if authenticated_history is None:
+            authenticated_history = read_execution_recovery_history(runtime)
         entries = [
             _strict_json(raw)
             for _, _, raw in runtime._loop_decisions().entries()

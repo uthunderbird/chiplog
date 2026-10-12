@@ -24,7 +24,10 @@ from chiplog.composition.r14_execution_cancellation_contracts import (
 )
 from chiplog.composition.r14_execution_fanout_contracts import RetainedExecutionFanOutPreparation
 from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
-from chiplog.composition.r14_loop_history import read_execution_recovery_history
+from chiplog.composition.r14_loop_history import (
+    ExecutionRecoveryHistory,
+    read_execution_recovery_history,
+)
 from chiplog.composition.r14_native_accounting_history import retained_selected_native_accounting
 from chiplog.composition.r14_native_accounting_records import (
     NATIVE_ACCOUNTING_OPERATION,
@@ -66,6 +69,7 @@ class R14NativeRecoverySourceSubset:
     authenticated_acceptances: tuple[RetainedAcceptancePreparationV2, ...] = ()
     accepted_open_outcome: R14NativeAcceptedOpenOutcome | None = None
     accepted_closed_outcome: R14NativeAcceptedOpenOutcome | None = None
+    authenticated_execution_history: ExecutionRecoveryHistory | None = None
 
     @property
     def accepted_effect_sources(self) -> tuple[RecoverySourceRecord, ...]:
@@ -124,10 +128,11 @@ class R14NativeRecoverySourceSubsetReader:
                 before = runtime._commitment_journal.load(runtime._tenant_id)
                 # This selected-history reader validates the retained V24 source
                 # against every selected decision and physical execution row.
-                execution_snapshot, call_inventory, legacy, seals, cancellations, acceptances = (
-                    read_execution_recovery_history(
-                        runtime, selected_only=True, exact_historical_sources=True
-                    )
+                authenticated_history = read_execution_recovery_history(
+                    runtime, selected_only=True, exact_historical_sources=True
+                )
+                execution_snapshot, _, legacy, seals, cancellations, acceptances = (
+                    authenticated_history
                 )
                 if legacy or len(seals) != 1:
                     return None
@@ -137,10 +142,10 @@ class R14NativeRecoverySourceSubsetReader:
                         identity,
                         before,
                         execution_snapshot,
-                        call_inventory,
                         seals,
                         cancellations,
                         acceptances,
+                        authenticated_history,
                     )
                 if len(cancellations) != 1:
                     return None
@@ -223,6 +228,7 @@ class R14NativeRecoverySourceSubsetReader:
                     execution_snapshot,
                     seals,
                     cancellations,
+                    authenticated_execution_history=authenticated_history,
                 )
         except OSError, RuntimeError, TypeError, ValueError:
             return None
@@ -233,10 +239,10 @@ class R14NativeRecoverySourceSubsetReader:
         identity,
         before,
         execution_snapshot,
-        call_inventory,
         seals,
         cancellations,
         acceptances,
+        authenticated_history: ExecutionRecoveryHistory,
     ) -> R14NativeRecoverySourceSubset | None:
         if (
             cancellations
@@ -261,19 +267,11 @@ class R14NativeRecoverySourceSubsetReader:
             subject_id=run.run_id,
             revision=Present(head=run.head, fingerprint=run.digest()),
         )
-        history = (
-            execution_snapshot,
-            call_inventory,
-            (),
-            seals,
-            cancellations,
-            acceptances,
-        )
         selected = source._collect_held(
             run_ref,
             identity,
             selected_only=True,
-            authenticated_history=history,
+            authenticated_history=authenticated_history,
             authenticated_projection=True,
         )
         accepted = source._accepted_facts(selected)
@@ -335,6 +333,7 @@ class R14NativeRecoverySourceSubsetReader:
             authenticated_acceptances=acceptances,
             accepted_open_outcome=opened,
             accepted_closed_outcome=closed,
+            authenticated_execution_history=authenticated_history,
         )
 
 
