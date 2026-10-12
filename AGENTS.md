@@ -85,3 +85,9 @@
 Это один компонент харнесса; состав — в `README.md`, модель — в `.harness/HARNESS_MODEL.md`. Раздел без проверки честно помечается `[без гейта]`; расхождения и долги ревизуются на ретро.
 
 `[без гейта]` Раздел описывает границы, а не действие.
+
+## 11. Piecemeal Growth
+
+Design from executable requirements, current workflows, and failures that have actually occurred. Keep the implementation as narrow as the present contract. Do not add configurability, concurrency, fallback paths, validation, or abstractions for possible future uses. Make assumptions explicit and let violations fail loudly, so new pressure is visible. When a new requirement or repeated failure appears, repair the design locally; generalize only after reality shows what it must support. Protect durable data, external callers, security, and failures with demonstrated likelihood or cost.
+
+`[без гейта]` This is a design judgment; apply it during implementation and review it against concrete failures in cold review and retro.
