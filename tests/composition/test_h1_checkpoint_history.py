@@ -183,7 +183,7 @@ def test_verified_rows_admit_an_exact_ancestor_under_the_selected_head() -> None
 
 @pytest.mark.asyncio
 async def test_v3_historical_raw_cut_survives_later_valid_same_tenant_publication(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database = tmp_path / "historical-v3.sqlite"
     custody = tmp_path / "dispatch-custody"
@@ -222,7 +222,19 @@ async def test_v3_historical_raw_cut_survives_later_valid_same_tenant_publicatio
         )
 
         await runtime.create_execution("hermetic-ingress", "later-run", "Plan", BudgetPolicy())
+        from chiplog.composition.r14_runtime import AnchoredOwnerDecisionJournal
+
+        owner_snapshot_calls = 0
+        original_snapshot = AnchoredOwnerDecisionJournal.snapshot
+
+        def counted_snapshot(journal):
+            nonlocal owner_snapshot_calls
+            owner_snapshot_calls += 1
+            return original_snapshot(journal)
+
+        monkeypatch.setattr(AnchoredOwnerDecisionJournal, "snapshot", counted_snapshot)
         selected_loop, *_rest = _read_call_history(runtime, selected_only=True)
+        assert owner_snapshot_calls == 1
 
         reader = H1FirstPathSources(runtime)
         raw = reader._read_selected_cut(

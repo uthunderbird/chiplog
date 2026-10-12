@@ -493,7 +493,7 @@ def _read_call_history(
                 )
                 expected_ids: set[str] = set()
                 expected_publications: set[tuple[str, str]] = set()
-                for owner_decision in runtime._owner_decisions().snapshot().decisions:
+                for owner_decision in owner_snapshot.decisions:
                     owner_request = owner_decision.prepared.request
                     if not isinstance(
                         owner_request, (DeliveryWorkGenesisBatchV1, DeliveryWorkClaimBatchV1)
