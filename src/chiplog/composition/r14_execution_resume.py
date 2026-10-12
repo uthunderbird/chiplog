@@ -392,6 +392,9 @@ async def resume_execution(
             runtime._check_execution_actor(actor)
             prior = _entry_for(runtime, command_id)
         if prior is not None:
+            retained = _retained(prior[2])
+            if retained.request.activation_payload != activation_payload:
+                raise LoopRejected("resume changed replay request")
             return await _finish(runtime, prior[2])
         with runtime._authority_gate().hold():
             runtime._require_no_pending()
