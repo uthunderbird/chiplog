@@ -306,6 +306,37 @@ def _run_ref(run: ExecutionRunRecord) -> CallSubjectHead:
     return _ref(run.run_id, run.canonical_bytes(), run.head)
 
 
+def _selected_no_retry_sources(
+    references: tuple[CallSubjectHead, ...],
+    sources: tuple[RecoverySourceRecord, ...] | list[RecoverySourceRecord],
+    active_run_references: tuple[CallSubjectHead, ...],
+) -> bool:
+    """Require each inherited no-retry boundary to name one selected source.
+
+    ``sources`` must already have passed mounted physical inventory and
+    selected-decision reconciliation in ``_collect_held``. This helper adds no
+    authority; it rejects missing, duplicated, or still-active references.
+    """
+    encoded_references = tuple(item.canonical_bytes() for item in references)
+    if len(set(encoded_references)) != len(encoded_references):
+        return False
+    active = {item.canonical_bytes() for item in active_run_references}
+    for no_retry_ref in references:
+        if no_retry_ref.canonical_bytes() in active:
+            return False
+        matches = [source for source in sources if source.subject == no_retry_ref]
+        if len(matches) != 1:
+            return False
+        source = matches[0]
+        if (
+            not isinstance(source.subject.revision, Present)
+            or not isinstance(source.physical_record.revision, Present)
+            or not source.canonical_record_bytes
+        ):
+            return False
+    return True
+
+
 def classify_native_occurrences(
     occurrences: tuple[H1RawInventoryItem, ...] | list[H1RawInventoryItem],
     decoded: dict[str, H1DecodedInventoryItem],
@@ -808,7 +839,7 @@ class NativeRecoveryCutSource:
             run.worker_session != scope.worker_session_id
             or run.root_binding != "NOT_APPLICABLE"
             or (selected_suspension is None and run.original_obligations)
-            or run.no_retry_references
+            or (selected_suspension is None and run.no_retry_references)
             or run.delivery_acceptance is not None
             or len(run.turns) != 1
             or run.turns[0].ordinal != 1
@@ -1077,6 +1108,17 @@ class NativeRecoveryCutSource:
         known.update(accepted_open_ids)
         if selected_suspension is not None:
             from .r14_execution_suspension import BASELINE_SCHEMA, PAIR_SCHEMA
+
+            if (
+                selected_suspension.baseline.bindings.no_retry_boundaries
+                != tuple(reference.revision for reference in run.no_retry_references)
+                or not _selected_no_retry_sources(
+                    run.no_retry_references,
+                    sources,
+                    tuple(_run_ref(item) for item in lineage if item.state == "ACTIVE"),
+                )
+            ):
+                return None
 
             selected_members = (
                 (

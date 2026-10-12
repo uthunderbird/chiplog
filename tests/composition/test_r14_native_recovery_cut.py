@@ -42,6 +42,7 @@ from chiplog.composition.r14_native_recovery_cut import (
     NativeRecoveryCutSource,
     _selected_accepted_open_recovery_preimages,
     _selected_external_intent_preimage,
+    _selected_no_retry_sources,
     _selected_reduction_sources,
 )
 from chiplog.composition.r14_native_recovery_historical import (
@@ -56,6 +57,31 @@ from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.capabilities.effects.support.dispatch_outcomes import original_intent, original_send
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 from tests.support.recovery_candidate import inert_recovery_candidate
+
+
+def test_inherited_no_retry_references_require_one_exact_inactive_source() -> None:
+    reference = CallSubjectHead(
+        subject_id="effect:original",
+        revision=Present(head="record:original", fingerprint="a" * 64),
+    )
+    selected_decision = CallSubjectHead(
+        subject_id="publication:source",
+        revision=Present(head="decision:source", fingerprint="b" * 64),
+    )
+    source = RecoverySourceRecord(
+        owner="effects",
+        subject=reference,
+        schema_id="chiplog.effects.original-effect.v1",
+        canonical_record_bytes=b"selected original effect",
+        selected_decision=selected_decision,
+        physical_record=reference,
+    )
+
+    assert _selected_no_retry_sources((reference,), (source,), ())
+    assert not _selected_no_retry_sources((reference,), (), ())
+    assert not _selected_no_retry_sources((reference,), (source, source), ())
+    assert not _selected_no_retry_sources((reference, reference), (source,), ())
+    assert not _selected_no_retry_sources((reference,), (source,), (reference,))
 
 
 def test_selected_reduction_source_projection_keeps_the_complete_chain(monkeypatch):
