@@ -4,11 +4,15 @@ Status: PLANNED, implementation and final evidence OPEN. Replanned 2026-09-24
 at the user's request: **all remaining contracts → tests → implementation of
 one joint mechanism → detailed verification and extensions**. No retrospective.
 
-This is the current execution order. It supersedes the incremental implementation
-order in R14-R17-COMPLETION.md and R14-R17-COORDINATION.md, not the requirements in
-IMPLEMENTATION-ROADMAP.md or project-architecture/NORMATIVE.md. The completion
-ledger retains the requirement-to-evidence map. Its old baseline/progress entries
-are historical, not a description of the current tree.
+This document records the integrated workflow proposed on 2026-09-24. On
+2026-10-12, the user set the execution order to complete and verify R14, then R15,
+then R16, then R17, allowing parallel work only within the active roadmap item.
+This document no longer sets the execution order or requires one joint
+implementation phase. IMPLEMENTATION-ROADMAP.md, project-architecture/NORMATIVE.md,
+and the completion ledger remain the sources for requirements and evidence; retain
+their full DoD while following the user's current "horizontal working slice, then
+extensions" approach. The baseline/progress entries below describe recorded cuts,
+not the current tree.
 
 ## Objective and completion boundary
 

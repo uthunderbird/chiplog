@@ -25,14 +25,15 @@ reconstructing owner outputs. Existing journal/appender mechanisms are reused.
 
 ## Current execution order
 
-The 2026-09-24 user-directed [integrated plan](R14-R17-INTEGRATED-PLAN.md)
-supersedes the incremental order below: freeze all remaining contracts, write
-behavioral tests, implement one joint mechanism, then expand detailed coverage.
-Its COMMON-MECHANISM READY boundary does not close the full requirement ledger.
-The baseline column and chronological notes below describe their recorded cuts;
-in particular executable fanout, call acceptance and original-stream effect
-outcomes have since gained bounded implementations. Current reuse and remaining
-joins are identified in the integrated plan and R14-CALL-ACCEPTANCE-RUNTIME.md.
+Per the user's instruction on 2026-10-12, finish and verify one roadmap item at a
+time: R14 → R15 → R16 → R17. Parallel work is allowed within the active item
+when ownership and interfaces permit. This execution order supersedes the
+2026-09-24 integrated-plan workflow; that document is historical design context,
+not authority to require one joint R14–R17 implementation phase. The full
+requirements in IMPLEMENTATION-ROADMAP.md, normative architecture, and this
+ledger remain in scope. The baseline column and chronological notes below
+describe their recorded cuts; current reuse and remaining joins are identified
+in the relevant contracts and runtime notes.
 
 ## Historical incremental plan (superseded)
 

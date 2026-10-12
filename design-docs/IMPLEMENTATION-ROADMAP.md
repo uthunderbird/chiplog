@@ -385,17 +385,18 @@ success. Covers A09, A13, A16, A20, A34 and owns A105.
 
 ### R14–R17 implementation coordination
 
-For the remaining work, the user-directed
-[integrated plan](R14-R17-INTEGRATED-PLAN.md) defines the execution order:
-all remaining shared contracts → behavioral tests → one common executable mechanism
-→ detailed verification and extensions. The sections below retain their ownership,
-dependencies and full DoD; they are not separate sequential implementation releases.
-The common-mechanism checkpoint is earlier than full R14–R17 completion and does
-not waive any counterhistory or downstream registry convergence requirement.
+The user's current execution order (2026-10-12) is serial by roadmap item:
+complete and verify R14, then R15, then R16, then R17. Work may be parallelized
+within the active item where interfaces and ownership permit; the dependency graph
+below does not authorize starting a later roadmap item early. The integrated plan
+records a prior implementation strategy and is not the current execution order.
+The sections below retain their full ownership, dependency, and DoD requirements.
+No intermediate item completion waives a required counterhistory or registry
+convergence check for that item.
 
 ### R14 — Recovery frontier and call accounting
 
-**Depends on:** R3, R7, R13. **Parallel contract work with:** R15–R17 after identities freeze.
+**Depends on:** R3, R7, R13. Work on R15–R17 begins only after R14 is complete and verified.
 
 Implement closed recovery-frontier membership, immutable suspension baselines, `TERMINAL | READ_ONLY_RETRY_PENDING`, sealed fan-out, acceptance branches, terminal accounting versus continuation-ready joins, recovered outcomes, successor classification/publication, original-stream obligations and post-terminal recovery work.
 
@@ -410,7 +411,8 @@ Implement closed recovery-frontier membership, immutable suspension baselines, `
 4. **R14.4 — worker and post-terminal fencing:** exact writer applicability registry, original
    recovery streams and post-terminal work; freeze the R15–R17 seam before their recovery integration.
 5. **R14.5 — model-attempt recovery:** five-state lineage, lost response and proof-gated
-   no-exposure replacement, then the complete R14 convergence suite. Contracts may freeze early;
+   no-exposure replacement, then the complete R14 convergence suite. Later-item contracts are
+   handled when that item becomes active;
    partial recovery evidence never closes R14.
 
 **DoD:** V5/V6 execute omission/addition/duplication/reordering/branch-mixing mutants; partial/rival
@@ -425,7 +427,7 @@ A15, A38–A47, A49–A52, A54–A57, A59 and owns A99 and A108.
 
 ### R15 — Scheduler occurrence and lease lineage
 
-**Depends on:** R13; R14 contracts frozen before takeover/recovery. **Parallel with:** R16, R17.
+**Depends on:** R13; R14 complete before R15 takeover/recovery work begins.
 
 Implement revision-bound occurrence identity, `INDIVIDUAL | COALESCED | SKIPPED` disposition, canonical aggregate manifests, tagged lineage roots, leases/generations, takeover and exact scheduler successor fencing.
 
@@ -447,7 +449,7 @@ A17, A18, A40, A43, A47, A51, A53, A58 and owns A98; specializes the scheduler r
 
 ### R16 — Effects, outbox, dispatch binding, and reconciliation
 
-**Depends on:** R5, R8, R13; R14 before any retry/recovery. **Parallel with:** R15, R17.
+**Depends on:** R5, R8, R13; R14 and R15 complete before R16 work begins.
 
 Implement owner-produced effect intents, Plan/effect atomic publication, full version-bound `SEND_COMMITTED` reducer, immutable `DispatchSemanticBinding`, provider attempt/transmission/outcome, stable idempotency, outbox, ambiguity, reconciliation and separately authorized compensation.
 
@@ -460,7 +462,7 @@ R18 integrates its owner contracts with the complete loop.
 
 ### R17 — Durable inbox, delivery, and channel parity
 
-**Depends on:** R8, R13. **Parallel with:** R15, R16.
+**Depends on:** R8, R13; R14–R16 complete before R17 work begins.
 
 Specialize the R3/R4 authenticated durable inbox for Telegram witness/replay identity, then implement CLI/Telegram response delivery, outbox workers and evidence-bound deterministic consequential rendering. The common acknowledgement contract is reused, not reimplemented.
 
