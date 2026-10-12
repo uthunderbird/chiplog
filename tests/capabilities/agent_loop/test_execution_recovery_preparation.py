@@ -224,6 +224,7 @@ async def test_owner_accounting_and_continuation_are_separate_exact_proposals():
     )
     ready = prepare_execution_continuation(continuation_request)
     assert ready.kind == "PREPARED_EXECUTION_CONTINUATION_V1"
+    assert ready.source_request_fingerprint == continuation_request.digest()
     assert ready.complete_continuations[0].accounting == accounting.complete_accounting[0]
     for operation, request in (
         (process.ACCOUNTING_OPERATION, accounting_request),

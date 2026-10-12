@@ -1339,7 +1339,8 @@ def prepare_execution_continuation(
     request: PrepareExecutionContinuation,
 ) -> PreparedExecutionContinuation | CallPreparationRejected:
     try:
-        request = PrepareExecutionContinuation.model_validate_json(request.canonical_bytes())
+        request_bytes = request.canonical_bytes()
+        request = PrepareExecutionContinuation.model_validate_json(request_bytes)
         _validate_cut(request.cut)
         expected = _accounting(request.cut)
         if request.complete_accounting != expected:
@@ -1368,7 +1369,7 @@ def prepare_execution_continuation(
                 )
             )
         return PreparedExecutionContinuation(
-            source_request_fingerprint=request.digest(),
+            source_request_fingerprint=hashlib.sha256(request_bytes).hexdigest(),
             complete_continuations=tuple(continuations),
         )
     except (ValueError, TypeError) as error:
