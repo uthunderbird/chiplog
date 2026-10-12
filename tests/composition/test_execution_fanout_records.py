@@ -7,6 +7,7 @@ import json
 import pytest
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallAuthorityObservation
+from chiplog.capabilities.agent_loop.contracts import ToolCall
 from chiplog.capabilities.agent_loop.execution_fan_out_contracts import (
     ExecutionCapturedFanOutProposal,
 )
@@ -145,7 +146,9 @@ async def test_resigned_owner_run_mutations_reject(mutation: str, complete: bool
         build_envelope(evidence.model_copy(update={"proposal": proposal}))
 
 
-@pytest.mark.parametrize("mutation", ["omit", "duplicate", "reorder", "manifest", "classification"])
+@pytest.mark.parametrize(
+    "mutation", ["omit", "add", "duplicate", "reorder", "manifest", "classification"]
+)
 async def test_resigned_initialized_set_mutations_reject(mutation: str) -> None:
     evidence = await _evidence()
     build_envelope(evidence)
@@ -153,6 +156,45 @@ async def test_resigned_initialized_set_mutations_reject(mutation: str) -> None:
     records = fanout.initialized_records
     if mutation == "omit":
         fanout = fanout.model_copy(update={"initialized_records": records[:-1]})
+    elif mutation == "add":
+        original_record = records[0]
+        original = original_record.call.original.model_copy(
+            update={"ordinal": len(records), "model_call_label": "unobserved-extra"}
+        )
+        parsed_call = ToolCall.model_validate_json(
+            base64.b64decode(original_record.call.canonical_call_base64)
+        ).model_copy(update={"call_id": original.model_call_label})
+        extra_call = original_record.call.model_copy(
+            update={
+                "original": original,
+                "canonical_call_base64": base64.b64encode(parsed_call.canonical_bytes()).decode(),
+            }
+        )
+        extra_id = "call:" + original.digest()
+        extra_record = original_record.model_copy(
+            update={"original_call_id": extra_id, "call": extra_call}
+        )
+        extra_head = reference(extra_id, extra_record)
+        seal = fanout.response_seal.model_copy(
+            update={
+                "complete_ordered_initialized": (
+                    *fanout.response_seal.complete_ordered_initialized,
+                    extra_head,
+                )
+            }
+        )
+        manifest = (
+            reference(seal.response_seal_id, seal),
+            *fanout.response_seal.complete_ordered_initialized,
+            extra_head,
+        )
+        fanout = fanout.model_copy(
+            update={
+                "response_seal": seal,
+                "initialized_records": (*records, extra_record),
+                "complete_ordered_record_manifest": manifest,
+            }
+        )
     elif mutation == "duplicate":
         fanout = fanout.model_copy(update={"initialized_records": (*records, records[-1])})
     elif mutation == "reorder":
@@ -171,7 +213,12 @@ async def test_resigned_initialized_set_mutations_reject(mutation: str) -> None:
     fanout = fanout.model_copy(update={"proposal_fingerprint": _digest(fanout)})
     proposal = evidence.proposal.model_copy(update={"fan_out": fanout})
     proposal = proposal.model_copy(update={"proposal_fingerprint": _digest(proposal)})
-    with pytest.raises(ValueError, match="captured semantics"):
+    expected_reason = (
+        "retained owner proposal differs from exact captured semantics"
+        if mutation == "add"
+        else "captured semantics"
+    )
+    with pytest.raises(ValueError, match=expected_reason):
         build_envelope(evidence.model_copy(update={"proposal": proposal}))
 
 

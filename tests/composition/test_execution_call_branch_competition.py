@@ -133,7 +133,9 @@ class _Branch:
 
 
 @asynccontextmanager
-async def _initialized_branch(tmp_path: Path) -> AsyncIterator[_Branch]:
+async def _initialized_branch(
+    tmp_path: Path, *, with_sibling_effect: bool = False
+) -> AsyncIterator[_Branch]:
     """Use the installed CLI assembly through selected ingress and native fanout."""
     database = tmp_path / "branch-competition.sqlite"
     resources = HermeticDispatchResources(
@@ -142,6 +144,19 @@ async def _initialized_branch(tmp_path: Path) -> AsyncIterator[_Branch]:
     response = ExecutionContinue(
         kind="Continue",
         tool_calls=(
+            (
+                ConsequentialToolCall(
+                    call_id="sibling",
+                    tool="request_self_effect",
+                    arguments=SelfEffectArguments(
+                        payload=b"sibling", bundle_members=("sibling-member",)
+                    ),
+                ),
+            )
+            if with_sibling_effect
+            else ()
+        )
+        + (
             ConsequentialToolCall(
                 call_id="effect",
                 tool="request_self_effect",
@@ -165,9 +180,16 @@ async def _initialized_branch(tmp_path: Path) -> AsyncIterator[_Branch]:
         )
         _, inventory, preparations = read_execution_call_history(runtime)
         assert preparations and preparations[-1].proposal.sealed_run == sealed
-        assert len(inventory.ordered_calls) == 1
-        row = inventory.ordered_calls[0]
-        assert row.acceptance.kind == "INITIALIZED" and isinstance(row.terminal, Absent)
+        assert len(inventory.ordered_calls) == (2 if with_sibling_effect else 1)
+        assert all(
+            row.acceptance.kind == "INITIALIZED" and isinstance(row.terminal, Absent)
+            for row in inventory.ordered_calls
+        )
+        row = next(
+            row
+            for row in inventory.ordered_calls
+            if row.initialized_record.call.original.model_call_label == "effect"
+        )
         current_run = CallSubjectHead(
             subject_id=sealed.run_id,
             revision=Present(head=sealed.head, fingerprint=sealed.digest()),
@@ -372,11 +394,27 @@ async def test_selected_unmaterialized_cross_family_winner_recovers_before_rival
 async def test_selected_acceptance_and_native_cancellation_compete_on_one_initialized_cut(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winner: str
 ) -> None:
-    async with _initialized_branch(tmp_path) as branch:
+    async with _initialized_branch(tmp_path, with_sibling_effect=True) as branch:
         runtime = branch.runtime
         preview = await runtime.preview_call_acceptance("hermetic-ingress", branch.target)
         adoption = branch.adoption.model_copy(update={"preview_bytes": preview.canonical_bytes()})
         before_history = read_execution_call_history(runtime)
+        before_inventory = before_history[1]
+        before_rows = {row.original_call_id: row for row in before_inventory.ordered_calls}
+        assert len(before_rows) == 2
+        assert tuple(
+            sorted(
+                row.initialized_record.call.original.ordinal
+                for row in before_inventory.ordered_calls
+            )
+        ) == (0, 1)
+        target_before = before_rows[branch.target.original_call_id]
+        sibling_id = next(
+            identity for identity in before_rows if identity != branch.target.original_call_id
+        )
+        sibling_before = before_rows[sibling_id]
+        assert target_before.initialized_record.call.original.model_call_label == "effect"
+        assert sibling_before.initialized_record.call.original.model_call_label == "sibling"
         before_owner = runtime._owner_decisions().snapshot()
         before_loop = _decision_entries(runtime)
         acceptance_at_commit = asyncio.Event()
@@ -425,7 +463,12 @@ async def test_selected_acceptance_and_native_cancellation_compete_on_one_initia
             acceptance_result = await _rejected_by_winner(acceptance_task)
 
         history, inventory, preparations = read_execution_call_history(runtime)
-        row = inventory.ordered_calls[0]
+        rows = {row.original_call_id: row for row in inventory.ordered_calls}
+        row = rows[branch.target.original_call_id]
+        assert tuple(item.original_call_id for item in inventory.ordered_calls) == tuple(
+            item.original_call_id for item in before_inventory.ordered_calls
+        )
+        assert rows[sibling_id] == sibling_before
         assert history.tenant_head == before_history[0].tenant_head + 1
         await asyncio.sleep(0)
         assert branch.resources.require_original_provider().transfers == ()
@@ -482,7 +525,6 @@ async def test_selected_acceptance_and_native_cancellation_compete_on_one_initia
             )
             replay = await runtime.cancel_execution_call("hermetic-ingress", branch.cancellation)
             assert replay == cancellation_result
-        assert len(inventory.ordered_calls) == 1
         assert read_execution_call_history(runtime) == (history, inventory, preparations)
         assert runtime._owner_decisions().snapshot() == owner_after
         assert _decision_entries(runtime) == loop_after
