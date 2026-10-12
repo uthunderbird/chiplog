@@ -472,3 +472,49 @@ def test_retro_status_keeps_committed_skip_streak_during_new_draft(tmp_path: Pat
     subprocess.run(["git", "add", "."], cwd=project, check=True)
     subprocess.run(["git", "commit", "-qm", "committed change"], cwd=project, check=True)
     assert "retro_skips=0" in status()
+
+
+def test_retro_skip_threshold_allows_fourth_and_blocks_fifth(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    checks = project / ".harness/scripts/checks"
+    retro = project / ".harness/retro"
+    checks.mkdir(parents=True)
+    retro.mkdir(parents=True)
+    checker = checks / "retro_due.py"
+    shutil.copy2(ROOT / ".harness/scripts/checks/retro_due.py", checker)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "retro@example.invalid"], cwd=project, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Retro"], cwd=project, check=True)
+
+    def add_skip(index: int) -> None:
+        path = retro / f"2026-09-{index:02}.md"
+        path.write_text(
+            f"---\ndate: 2026-09-{index:02}\noutcome: skip\nreason: no harness change\n---\n"
+        )
+        subprocess.run(["git", "add", "."], cwd=project, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", f"retro skip {index}"], cwd=project, check=True
+        )
+
+    for index in range(1, 5):
+        add_skip(index)
+
+    fourth = subprocess.run(
+        ["python3", str(checker), "--root", str(project)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert fourth.returncode == 0, fourth.stderr
+
+    add_skip(5)
+    fifth = subprocess.run(
+        ["python3", str(checker), "--root", str(project)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert fifth.returncode != 0
+    assert "5 отказа подряд при пороге 4" in fifth.stderr

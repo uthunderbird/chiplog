@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 RETRO_EVERY = 5
-MAX_CONSECUTIVE_SKIPS = 3  # Human-approved third skip, 2026-10-01.
+MAX_CONSECUTIVE_SKIPS = 4  # Human-approved fourth skip, 2026-10-12.
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 
 
