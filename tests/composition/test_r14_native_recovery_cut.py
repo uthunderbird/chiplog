@@ -37,7 +37,9 @@ from chiplog.capabilities.effects.dispatch_v2 import reference as effects_refere
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
 from chiplog.composition.r14_native_recovery_cut import (
     NativeRecoveryCutSource,
+    _selected_accepted_open_recovery_preimages,
     _selected_external_intent_preimage,
+    _selected_reduction_sources,
 )
 from chiplog.composition.r14_native_recovery_historical import (
     _authenticated_scope_sources,
@@ -51,6 +53,100 @@ from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.capabilities.effects.support.dispatch_outcomes import original_intent, original_send
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 from tests.support.recovery_candidate import inert_recovery_candidate
+
+
+def test_selected_reduction_source_projection_keeps_the_complete_chain(monkeypatch):
+    from chiplog.composition import r14_loop_semantic_reduction_publication as publication
+
+    sources = {"opening": object(), "successor": object()}
+    selected_entries = ("opening", "successor")
+    monkeypatch.setattr(
+        publication,
+        "_selected_value",
+        lambda runtime, entry: (None, SimpleNamespace(source=sources[entry])),
+    )
+
+    assert _selected_reduction_sources(object(), selected_entries) == (
+        sources["opening"],
+        sources["successor"],
+    )
+
+
+def test_closed_accepted_recovery_retains_only_exact_selected_open_preimages(monkeypatch):
+    from chiplog.composition import r14_accepted_open_accounting_records as records
+    from chiplog.composition import r14_original_obligation_sources as sources_module
+
+    obligation = object()
+    selected_command = SimpleNamespace()
+    physical = tuple(
+        SimpleNamespace(
+            record_id=f"member-{index}",
+            owner="agent_loop",
+            schema=f"schema-{index}",
+            raw=f"bytes-{index}".encode(),
+        )
+        for index in range(3)
+    )
+    evidence = SimpleNamespace(result=SimpleNamespace(opening=SimpleNamespace(original=obligation)))
+    source_rows = (object(), object())
+    monkeypatch.setattr(records, "ACCEPTED_OPEN_RECOVERY_OPERATION", "accepted-open-recovery")
+    monkeypatch.setattr(
+        records, "accepted_open_recovery_command", lambda _evidence: selected_command
+    )
+    monkeypatch.setattr(records, "retained_accepted_open_recovery", lambda _entry: evidence)
+    monkeypatch.setattr(
+        sources_module,
+        "accepted_open_recovery_sources",
+        lambda _evidence, **_kwargs: source_rows,
+    )
+
+    class Decisions:
+        def entries(self):
+            return (
+                (
+                    "decision-1",
+                    "unused",
+                    b'{"kind":"DECIDED","operation_kind":"accepted-open-recovery"}',
+                ),
+            )
+
+    class Runtime:
+        def _loop_decisions(self):
+            return Decisions()
+
+        def _publication(self, _entry):
+            return selected_command
+
+    selected_command.records = tuple(
+        SimpleNamespace(
+            record_id=row.record_id,
+            owner=row.owner,
+            schema_id=row.schema,
+            canonical_bytes=row.raw,
+        )
+        for row in physical
+    )
+    inventory = SimpleNamespace(records=physical)
+
+    result = _selected_accepted_open_recovery_preimages(Runtime(), inventory, obligation)
+
+    assert result == (source_rows, frozenset({"member-0", "member-1", "member-2"}))
+    tampered_row = SimpleNamespace(**(vars(physical[2]) | {"raw": b"tampered"}))
+    tampered = SimpleNamespace(records=(physical[0], physical[1], tampered_row))
+    assert _selected_accepted_open_recovery_preimages(Runtime(), tampered, obligation) is None
+
+    class DuplicateDecisions(Decisions):
+        def entries(self):
+            return super().entries() * 2
+
+    class DuplicateRuntime(Runtime):
+        def _loop_decisions(self):
+            return DuplicateDecisions()
+
+    assert (
+        _selected_accepted_open_recovery_preimages(DuplicateRuntime(), inventory, obligation)
+        is None
+    )
 
 
 def _v3_route_cut(acceptance_type, disposition_type, *, closures=(), reductions=()):
@@ -404,6 +500,29 @@ def test_direct_selector_holds_rival_r14_schema_under_foreign_operation(schema_i
     )
 
     assert claimed
+    assert selected is None
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "agent_loop.accepted-open-accounting.v1",
+        "agent_loop.accepted-open-recovery.v1",
+        "agent_loop.original-call-resolution.v1",
+        "agent_loop.loop-semantic-reduction.v1",
+    ),
+)
+def test_direct_selector_routes_selected_recovery_operations_to_recovery_path(operation: str):
+    raw = json.dumps({"kind": "DECIDED"}).encode()
+    command = SimpleNamespace(operation_kind=operation, records=())
+    log = SimpleNamespace(entries=lambda: (("decision", "unused", raw),))
+    runtime = SimpleNamespace(_loop_decisions=lambda: log, _publication=lambda entry: command)
+
+    claimed, selected = NativeRecoveryCutSource._selected_accepted_direct_terminal_inputs(
+        runtime, None
+    )
+
+    assert not claimed
     assert selected is None
 
 

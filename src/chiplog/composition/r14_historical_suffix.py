@@ -18,6 +18,8 @@ _SUFFIX_OPERATIONS = frozenset(
         "agent_loop.loop-semantic-reduction.v1",
         "agent_loop.execution-accounting-readiness.v1",
         "agent_loop.execution-next-turn.v1",
+        "agent_loop.execution-suspension.v1",
+        "agent_loop.execution-resume.v1",
     }
 )
 _APPEND_EVIDENCE = "effects.record_evidence"
@@ -49,6 +51,15 @@ def _validate_loop_entry(runtime, entry, command) -> None:
         from chiplog.composition.r14_next_turn_records import validate_selected_next_turn
 
         validate_selected_next_turn(runtime, entry, command)
+    elif operation == "agent_loop.execution-suspension.v1":
+        from chiplog.composition import r14_execution_suspension as suspension
+
+        suspension._validate_selected(runtime, entry, command, check_history=False)
+    elif operation == "agent_loop.execution-resume.v1":
+        from chiplog.composition import r14_execution_resume as resume
+
+        evidence = resume._retained(entry)
+        resume._validate_selected(runtime, entry, resume._command(evidence), check_history=False)
     else:
         raise ValueError("suffix contains an unregistered loop operation")
 
@@ -75,7 +86,7 @@ def authenticate_selected_r14_suffix_held(
             resolution_sequence = resolution_command.expected_head + 1
 
         selected_entries = []
-        for identity, _, raw in runtime._loop_decisions().entries():
+        for _, _, raw in runtime._loop_decisions().entries():
             entry = json.loads(raw)
             if (
                 entry.get("kind") == "DECIDED"
@@ -83,7 +94,13 @@ def authenticate_selected_r14_suffix_held(
                 and entry.get("resulting") == target_commitment
             ):
                 command = runtime._publication(entry)
-                if identity != command.idempotency_key:
+                if (
+                    entry.get("operation_id") != command.idempotency_key
+                    or entry.get("operation_kind") != command.operation_kind
+                    or entry.get("fingerprint") != command.request_fingerprint
+                    or type(entry.get("expected_head")) is not int
+                    or entry.get("expected_head") != command.expected_head
+                ):
                     return False
                 selected_entries.append((entry, command))
         if len(selected_entries) != 1:
@@ -109,7 +126,7 @@ def authenticate_selected_r14_suffix_held(
         # journal have no shared iteration order, so only persisted tenant sequence
         # determines the chain.
         steps = {}
-        for identity, _, raw in reductions:
+        for _, _, raw in reductions:
             entry = json.loads(raw)
             if entry.get("kind") != "DECIDED":
                 continue
@@ -124,8 +141,7 @@ def authenticate_selected_r14_suffix_held(
                 return False
             command = runtime._publication(entry)
             if (
-                identity != command.idempotency_key
-                or entry.get("operation_id") != command.idempotency_key
+                entry.get("operation_id") != command.idempotency_key
                 or entry.get("fingerprint") != command.request_fingerprint
                 or command.operation_kind != operation
                 or command.expected_head + 1 != sequence

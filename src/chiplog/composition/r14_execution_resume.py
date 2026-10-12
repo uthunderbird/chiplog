@@ -25,6 +25,9 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
     Present,
     RecoveryDTO,
 )
+from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+    RecoveryRequiredResult,
+)
 from chiplog.composition.r14_execution_suspension import (
     _command as suspension_command,
 )
@@ -181,6 +184,105 @@ def _stored_entry(entry: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in entry.items() if key not in internal}
 
 
+def _validate_obligation_transition_publications(
+    runtime, evidence: RetainedExecutionResume
+) -> None:
+    """Bind the exact closure transition sources to publications after suspension."""
+    from chiplog.composition.r14_native_recovery_cut import _physical_inventory_id
+
+    request = evidence.request
+    cut = request.cut
+    baseline = request.original_suspension.baseline
+    if len(baseline.original_obligations) != 1:
+        raise ValueError("obligation resume requires one frozen original obligation")
+    if (
+        len(cut.frontier.ordered_calls) != 1
+        or not isinstance(cut.frontier.ordered_calls[0].disposition, RecoveryRequiredResult)
+        or len(cut.original_closures) != 1
+        or len(cut.current_reductions) != 1
+    ):
+        raise ValueError("obligation resume transition sources are incomplete")
+
+    disposition = cut.frontier.ordered_calls[0].disposition
+    closure = cut.original_closures[0]
+    reduction = cut.current_reductions[0]
+    required = (
+        (
+            disposition.recovered_outcome.outcome,
+            "chiplog.loop.recovered-call-outcome.v1",
+        ),
+        (closure.closure, "chiplog.loop.original-obligation-closure.v1"),
+        (closure.resolver_batch, "chiplog.loop.original-resolver-batch.v1"),
+        (reduction.current_reduction, "chiplog.loop.semantic-reduction.v1"),
+    )
+    carriers = {}
+    for revision, schema_id in required:
+        if not isinstance(revision, Present):
+            raise ValueError("obligation resume transition reference is not present")
+        matches = tuple(
+            source_record
+            for source_record in cut.complete_sources
+            if source_record.owner == "agent_loop"
+            and source_record.schema_id == schema_id
+            and source_record.subject.revision == revision
+        )
+        unique = {
+            (
+                source_record.owner,
+                source_record.schema_id,
+                source_record.selected_decision,
+                source_record.physical_record,
+                source_record.canonical_record_bytes,
+            ): source_record
+            for source_record in matches
+        }
+        if len(unique) != 1:
+            raise ValueError("obligation resume transition source is absent or ambiguous")
+        source_record = next(iter(unique.values()))
+        physical_id = _physical_inventory_id(source_record)
+        existing = carriers.get(physical_id)
+        value = (
+            source_record.owner,
+            source_record.schema_id,
+            source_record.canonical_record_bytes,
+            source_record.selected_decision,
+        )
+        if existing is not None and existing != value:
+            raise ValueError("obligation resume physical carrier has conflicting sources")
+        carriers[physical_id] = value
+
+    # The physical suspension sequence is the publication immediately following
+    # the selected suspension's retained expected head.
+    suspension_entry = suspension_entry_for(runtime, baseline.suspension_command_id)
+    if suspension_entry is None:
+        raise ValueError("resume source suspension decision is absent")
+    suspension_batch = suspension_command(retained_suspension(suspension_entry[2]))
+    suspension_sequence = suspension_batch.expected_head + 1
+    with read_connection(runtime._database) as connection:
+        for physical_id, (owner, schema_id, raw, _) in carriers.items():
+            records = connection.execute(
+                "SELECT owner,schema_id,canonical_bytes,commit_sequence FROM records "
+                "WHERE tenant_id=? AND record_id=?",
+                (cut.tenant_id, physical_id),
+            ).fetchall()
+            if len(records) != 1:
+                raise ValueError("obligation resume physical source record is absent or ambiguous")
+            record_owner, record_schema, record_raw, sequence = records[0]
+            sequence = int(sequence)
+            if (str(record_owner), str(record_schema), bytes(record_raw)) != (
+                owner,
+                schema_id,
+                raw,
+            ) or not suspension_sequence < sequence <= cut.tenant_commit_sequence:
+                raise ValueError("obligation resume source was not published after suspension")
+            publications = connection.execute(
+                "SELECT record_ids FROM publications WHERE tenant_id=? AND commit_sequence=?",
+                (cut.tenant_id, sequence),
+            ).fetchall()
+            if len(publications) != 1 or physical_id not in str(publications[0][0]).splitlines():
+                raise ValueError("obligation resume source is outside its selected publication")
+
+
 def _validate_selected(
     runtime,
     entry: dict[str, object],
@@ -209,13 +311,18 @@ def _validate_selected(
     if (
         evidence.request.cut.tenant_id != runtime._tenant_id
         or evidence.request.cut.database_id != runtime._database_identity[0]
-        or int(suspension_entry[2].get("expected_head", -1)) + 1
-        != evidence.request.cut.tenant_commit_sequence
-        or suspension_entry[2].get("resulting")
-        != evidence.request.cut.materialization_commitment
-        or suspension_batch.expected_head + 1 != evidence.request.cut.tenant_commit_sequence
+        or (
+            not evidence.request.original_suspension.baseline.original_obligations
+            and (
+                int(suspension_entry[2].get("expected_head", -1)) + 1
+                != evidence.request.cut.tenant_commit_sequence
+                or suspension_entry[2].get("resulting")
+                != evidence.request.cut.materialization_commitment
+                or suspension_batch.expected_head + 1 != evidence.request.cut.tenant_commit_sequence
+            )
+        )
     ):
-        raise ValueError("resume cut is not the exact selected suspension snapshot")
+        raise ValueError("resume cut tenant, database, or suspension snapshot differs")
     selected_suspension = validate_suspension(
         runtime,
         suspension_entry[2],
@@ -224,6 +331,8 @@ def _validate_selected(
     )[1]
     if selected_suspension != evidence.request.original_suspension:
         raise ValueError("resume source differs from selected suspension")
+    if evidence.request.original_suspension.baseline.original_obligations:
+        _validate_obligation_transition_publications(runtime, evidence)
     with read_connection(runtime._database) as connection:
         if inspect_publication(connection, command, command.expected_head + 1) != "COMPLETE":
             raise ValueError("selected resume physical publication is incomplete")
@@ -382,7 +491,7 @@ async def resume_execution(
                         return "STALE"
                     if time.monotonic_ns() >= actor_budget.request.budget.absolute_deadline_ns:
                         return "STALE"
-                except (ValueError, TypeError, RuntimeError, LoopRejected):
+                except ValueError, TypeError, RuntimeError, LoopRejected:
                     return "STALE"
             return None
 

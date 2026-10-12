@@ -6,7 +6,7 @@ import pytest
 
 from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
 from chiplog.architecture.r7_runtime import (
-    R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
+    R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
 )
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
@@ -17,6 +17,7 @@ from chiplog.composition.r14_call_acceptance_port import (
 )
 from chiplog.composition.r14_call_preview import execution_run_head
 from chiplog.composition.r14_loop_history import read_execution_call_history
+from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
 from chiplog.composition.r14_native_recovery_source_subset import (
     R14NativeRecoverySourceSubsetReader,
 )
@@ -73,8 +74,10 @@ async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resen
         database,
         resources=resources,
         responses=(native_response(),),
-        manifest=R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
+        manifest=R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+        recovery_cut_source=NativeRecoveryCutSource(),
     ) as runtime:
+        await runtime.publish_native_recovery_profile(version="v5")
         wire = await admit_runtime_slot(runtime, "native-accepted-recovery")
         receipt = await runtime.drive_input(wire)
         started = await runtime.begin_execution(
@@ -115,6 +118,8 @@ async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resen
         with pytest.raises(HermeticResponseLost):
             await runtime.emit_committed("hermetic-ingress", intent_id)
         await runtime.publish_accepted_open_recovery()
+        suspension = await runtime.suspend_execution(sealed.run_id, sealed.head, ())
+        suspended_run_head = suspension.pair.suspended_run
         await runtime.observe_dispatch_outcome(intent_id)
         closed_publication = await runtime.resolve_dispatch_outcome(
             "hermetic-ingress", intent_id, "close-native-recovery"
@@ -143,6 +148,13 @@ async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resen
         assert subset is not None
         assert subset.selected_accounting is None
         assert subset.accepted_closed_outcome is not None
+        selected_suspended_run = subset.authenticated_execution_snapshot.records[-1]
+        assert selected_suspended_run.state == "SUSPENDED"
+        assert execution_run_head(selected_suspended_run) == suspended_run_head
+        assert (
+            subset.accepted_closed_outcome.accepted.source.target_run_lineage[-1]
+            == suspended_run_head
+        )
         assert subset.authenticated_acceptances == (
             subset.accepted_closed_outcome.accepted.acceptance,
         )
@@ -175,7 +187,8 @@ async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resen
         database,
         resources=resources,
         responses=(native_response(),),
-        manifest=R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
+        manifest=R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+        recovery_cut_source=NativeRecoveryCutSource(),
     ) as reopened:
         assert R14NativeRecoverySourceSubsetReader(reopened).collect() == subset
         assert len(resources.require_original_provider().transfers) == 1

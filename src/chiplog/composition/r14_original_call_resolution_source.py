@@ -211,7 +211,7 @@ def _authenticate_append_evidence_suffix(
                 "owner",
             )
 
-    for identity, _, raw in loop_before:
+    for _, _, raw in loop_before:
         entry = json.loads(raw)
         if entry.get("kind") != "DECIDED":
             continue
@@ -221,10 +221,7 @@ def _authenticate_append_evidence_suffix(
         sequence = expected_head + 1
         if base_sequence < sequence <= end_sequence:
             batch = runtime._publication(entry)
-            if (
-                entry.get("operation_id") != batch.idempotency_key
-                or identity != batch.idempotency_key
-            ):
+            if entry.get("operation_id") != batch.idempotency_key:
                 raise LoopRejected("R14 evidence interval loop identity differs")
             add_step(
                 sequence,

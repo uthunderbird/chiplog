@@ -7,7 +7,7 @@ import pytest
 
 from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
 from chiplog.architecture.r7_runtime import (
-    R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
+    R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
 )
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.original_recovery_contracts import (
@@ -29,6 +29,7 @@ from chiplog.composition.r14_call_acceptance_port import (
 )
 from chiplog.composition.r14_call_preview import execution_run_head
 from chiplog.composition.r14_loop_history import read_execution_call_history
+from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
 from chiplog.composition.r14_next_turn_records import NEXT_TURN_PUBLICATION
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._owner_publication_contracts import JournalSelectedPublication
@@ -48,14 +49,16 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         cap=1,
         custody_path=custody,
     )
-    manifest = R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST
+    manifest = R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST
 
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
         responses=(native_response(),),
         manifest=manifest,
+        recovery_cut_source=NativeRecoveryCutSource(),
     ) as runtime:
+        await runtime.publish_native_recovery_profile(version="v5")
         wire = await admit_runtime_slot(runtime, "r14-original-resolution")
         receipt = await runtime.drive_input(wire)
         started = await runtime.begin_execution(
@@ -105,6 +108,8 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         open_recovery = await runtime.publish_accepted_open_recovery()
         assert open_recovery.accounting.kind == "RECOVERY_REQUIRED"
         assert open_recovery.opening.original.original_call_id == calls[0].original_call_id
+        suspension = await runtime.suspend_execution(sealed.run_id, sealed.head, ())
+        suspended_head = suspension.pair.suspended_run.revision.head
 
         await runtime.observe_dispatch_outcome(intent_id)
         closed_publication = await runtime.resolve_dispatch_outcome(
@@ -125,6 +130,13 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert isinstance(resolution, PreparedOriginalCallResolution)
         assert resolution.closure.original == open_recovery.opening.original
         assert resolution.recovered_outcome.original == open_recovery.opening.original
+        commitment_before_resume_hold = runtime._commitment_journal.load(runtime._tenant_id)
+        with pytest.raises(LoopRejected, match="HOLD"):
+            await runtime.resume_execution(
+                sealed.run_id, suspended_head, b"resume-obligation-without-reduction"
+            )
+        assert runtime.read_selected_execution_resume() is None
+        assert runtime._commitment_journal.load(runtime._tenant_id) == commitment_before_resume_hold
         reduction = await runtime.publish_loop_semantic_reduction()
         assert isinstance(reduction, PreparedLoopSemanticReduction)
         assert reduction.record.disposition.kind == "CONSUMABLE"
@@ -145,6 +157,7 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         resources=resources,
         responses=(native_response(),),
         manifest=manifest,
+        recovery_cut_source=NativeRecoveryCutSource(),
     ) as reopened:
         assert reopened.read_selected_original_resolver_authority_policy() == policy
         assert reopened.read_selected_original_resolver_invocation_source()[0] == invocation
@@ -174,9 +187,10 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert refined_reduction.record.disposition.semantic_class == (
             reduction.record.disposition.semantic_class
         )
-        assert len(refined_reduction.record.complete_ordered_evidence) == len(
-            reduction.record.complete_ordered_evidence
-        ) + 1
+        assert (
+            len(refined_reduction.record.complete_ordered_evidence)
+            == len(reduction.record.complete_ordered_evidence) + 1
+        )
         assert not await hold_if_accepted_open(reopened, "hermetic-ingress")
 
     async with open_common_cli_execution_runtime(
@@ -184,6 +198,7 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         resources=resources,
         responses=(native_response(),),
         manifest=manifest,
+        recovery_cut_source=NativeRecoveryCutSource(),
     ) as reopened:
         assert reopened.read_selected_original_resolver_authority_policy() == policy
         assert reopened.read_selected_original_resolver_invocation_source()[0] == invocation
@@ -204,21 +219,29 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
             for _, _, raw in reopened._loop_decisions().entries()
         )
 
+        resumed = await reopened.resume_execution(
+            sealed.run_id, suspended_head, b"resume-closed-obligation"
+        )
+        assert resumed.run_id == sealed.run_id
+        assert resumed.state == "ACTIVE"
+        assert resumed.predecessor == suspended_head
+        assert reopened.read_selected_execution_resume() == resumed
         await reopened.publish_execution_accounting_readiness()
-        next_run = await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
+        next_run = await reopened.start_next_execution_turn(resumed.run_id, resumed.head)
         assert next_run.event == "TurnStarted"
         assert tuple(turn.ordinal for turn in next_run.turns) == (1, 2)
         assert next_run.turns[-1].state == "PREPARING"
-        assert await reopened.start_next_execution_turn(sealed.run_id, sealed.head) == next_run
-        assert sum(
-            json.loads(raw).get("operation_kind") == NEXT_TURN_PUBLICATION
-            for _, _, raw in reopened._loop_decisions().entries()
-        ) == 1
+        assert await reopened.start_next_execution_turn(resumed.run_id, resumed.head) == next_run
+        assert (
+            sum(
+                json.loads(raw).get("operation_kind") == NEXT_TURN_PUBLICATION
+                for _, _, raw in reopened._loop_decisions().entries()
+            )
+            == 1
+        )
 
         provider = resources.require_original_provider()
-        rival_receipt = provider.observe_late_receipt(
-            provider.transfers[0].ticket.transmission_id
-        )
+        rival_receipt = provider.observe_late_receipt(provider.transfers[0].ticket.transmission_id)
         rival_publication = await reopened.observe_dispatch_outcome(intent_id, rival_receipt)
         rival = DispatchOutcomeRecordV2.model_validate_json(
             rival_publication.complete_records[0].canonical_bytes
@@ -233,8 +256,11 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert await hold_if_accepted_open(reopened, "hermetic-ingress")
         with pytest.raises(LoopRejected, match="HOLD"):
             await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
-        assert sum(
-            json.loads(raw).get("operation_kind") == NEXT_TURN_PUBLICATION
-            for _, _, raw in reopened._loop_decisions().entries()
-        ) == 1
+        assert (
+            sum(
+                json.loads(raw).get("operation_kind") == NEXT_TURN_PUBLICATION
+                for _, _, raw in reopened._loop_decisions().entries()
+            )
+            == 1
+        )
         assert len(provider.transfers) == 1

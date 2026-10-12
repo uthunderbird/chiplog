@@ -223,7 +223,6 @@ def _selected_open_sources_for_historical_suffix(runtime):
         or entry.get("operation_id") != batch.idempotency_key
         or entry.get("expected_head") != batch.expected_head
         or entry.get("fingerprint") != batch.request_fingerprint
-        or decision_id != batch.idempotency_key
     ):
         raise ValueError("selected accepted/open sources differ from exact publication")
     state, _, _ = runtime._selected_physical_state(batch)

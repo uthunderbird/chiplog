@@ -579,10 +579,10 @@ def _hold_if_resolved_reduction_stale(runtime) -> bool:
         )
         reduction = runtime.read_selected_loop_semantic_reduction()
         selected_reductions = reduction_publication._selected_entries(runtime)
-        if reduction is None or len(selected_reductions) != 1:
+        if reduction is None or not selected_reductions:
             return True
         retained_reduction = reduction_publication.validate_selected_command(
-            runtime, selected_reductions[0][2], selected_reductions[0][3]
+            runtime, selected_reductions[-1][2], selected_reductions[-1][3]
         )
         return not (
             resolution is not None

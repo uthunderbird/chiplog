@@ -257,12 +257,6 @@ class R14NativeRecoverySourceSubsetReader:
             runtime, projection, bind_native_execution_preparation_v2(projection)
         )
         run = execution_snapshot.records[-1]
-        if isinstance(run, ExecutionRunRecord) and run.state == "SUSPENDED":
-            if len(execution_snapshot.records) < 2 or not isinstance(
-                execution_snapshot.records[-2], ExecutionRunRecord
-            ):
-                return None
-            run = execution_snapshot.records[-2]
         run_ref = CallSubjectHead(
             subject_id=run.run_id,
             revision=Present(head=run.head, fingerprint=run.digest()),

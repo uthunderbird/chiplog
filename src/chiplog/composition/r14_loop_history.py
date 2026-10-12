@@ -683,8 +683,11 @@ def _read_call_history(
                         )
                         if evidence.request.expected != expected_reduction:
                             raise ValueError("semantic reduction selected predecessor differs")
+                        selected_decision_id, selected_decision_raw = selected_decision_envelopes[
+                            identity
+                        ]
                         _, current_semantic_reduction = reduction_publication._selected_value(
-                            runtime, (identity, b"", entry, command)
+                            runtime, (selected_decision_id, selected_decision_raw, entry, command)
                         )
                         current_semantic_reduction_evidence = evidence
                         current_semantic_reduction_entry = entry

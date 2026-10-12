@@ -47,6 +47,7 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
     Absent,
     HeadMarker,
     NotApplicable,
+    OriginalObligationBinding,
     Present,
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
@@ -94,6 +95,7 @@ from chiplog.composition.r14_native_scope_binding import (
 )
 from chiplog.composition.r16_native_inventory import (
     R16InventoryIntegrityError,
+    R16NativeInventory,
     collect_r16_native_inventory,
 )
 from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
@@ -513,6 +515,61 @@ def classify_native_occurrences(
     return True
 
 
+def _selected_accepted_open_recovery_preimages(
+    runtime: CommonCliExecutionRuntime,
+    inventory: R16NativeInventory,
+    expected_obligation: OriginalObligationBinding,
+) -> tuple[tuple[RecoverySourceRecord, ...], frozenset[str]] | None:
+    """Retain authenticated opening sources across the obligation's closure."""
+    from chiplog.composition.r14_accepted_open_accounting_records import (
+        ACCEPTED_OPEN_RECOVERY_OPERATION,
+        accepted_open_recovery_command,
+        retained_accepted_open_recovery,
+    )
+    from chiplog.composition.r14_original_obligation_sources import (
+        accepted_open_recovery_sources,
+    )
+
+    try:
+        selected = [
+            (decision_id, raw, json.loads(raw))
+            for decision_id, _, raw in runtime._loop_decisions().entries()
+            if (entry := json.loads(raw)).get("kind") == "DECIDED"
+            and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
+        ]
+        if len(selected) != 1:
+            return None
+        decision_id, decision_raw, entry = selected[0]
+        evidence = retained_accepted_open_recovery(entry)
+        command = accepted_open_recovery_command(evidence)
+        if (
+            evidence.result.opening.original != expected_obligation
+            or runtime._publication(entry) != command
+        ):
+            return None
+        sources = accepted_open_recovery_sources(
+            evidence,
+            selected_decision_id=decision_id,
+            selected_decision_bytes=decision_raw,
+        )
+        physical_by_id = {row.record_id: row for row in inventory.records}
+        for expected_record in command.records:
+            physical = physical_by_id.get(expected_record.record_id)
+            if physical is None or (
+                physical.owner,
+                physical.schema,
+                physical.raw,
+            ) != (
+                expected_record.owner,
+                expected_record.schema_id,
+                expected_record.canonical_bytes,
+            ):
+                return None
+        return sources, frozenset(record.record_id for record in command.records)
+    except OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError:
+        return None
+
+
 def _child(
     carrier: RecoverySourceRecord, identity: str, schema: str, raw: bytes, head: str | None = None
 ) -> RecoverySourceRecord:
@@ -524,6 +581,14 @@ def _child(
         canonical_record_bytes=raw,
         selected_decision=carrier.selected_decision,
         physical_record=carrier.physical_record,
+    )
+
+
+def _selected_reduction_sources(runtime, selected_entries) -> tuple[RecoverySourceRecord, ...]:
+    from chiplog.composition import r14_loop_semantic_reduction_publication as publication
+
+    return tuple(
+        publication._selected_value(runtime, entry)[1].source for entry in selected_entries
     )
 
 
@@ -812,6 +877,15 @@ class NativeRecoveryCutSource:
         additional_sources = list(subset.accepted_effect_sources)
         if accepted_inputs is not None:
             additional_sources.extend(accepted_inputs[3])
+            selected_open_sources = _selected_accepted_open_recovery_preimages(
+                runtime, inventory, accepted_inputs[0].disposition.obligation
+            )
+            if selected_open_sources is None:
+                return None
+            opening_sources, accepted_open_ids = selected_open_sources
+            additional_sources.extend(opening_sources)
+        else:
+            accepted_open_ids = frozenset()
         if direct_terminal_inputs is not None:
             additional_sources.extend(direct_terminal_inputs[1])
         if (
@@ -1000,40 +1074,7 @@ class NativeRecoveryCutSource:
         if by_id.get(profile_source.physical_record.subject_id) != profile_source:
             return None
         known = set(native_sources) | {profile_source.physical_record.subject_id}
-        if subset.accepted_open_outcome is not None:
-            from chiplog.composition.r14_accepted_open_accounting_records import (
-                ACCEPTED_OPEN_RECOVERY_OPERATION,
-                accepted_open_recovery_command,
-                retained_accepted_open_recovery,
-            )
-
-            selected_open = [
-                json.loads(raw)
-                for _, _, raw in runtime._loop_decisions().entries()
-                if (entry := json.loads(raw)).get("kind") == "DECIDED"
-                and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
-            ]
-            if len(selected_open) != 1:
-                return None
-            open_entry = selected_open[0]
-            open_evidence = retained_accepted_open_recovery(open_entry)
-            open_command = accepted_open_recovery_command(open_evidence)
-            if runtime._publication(open_entry) != open_command:
-                return None
-            physical_by_id = {row.record_id: row for row in inventory.records}
-            for expected_record in open_command.records:
-                physical = physical_by_id.get(expected_record.record_id)
-                if physical is None or (
-                    physical.owner,
-                    physical.schema,
-                    physical.raw,
-                ) != (
-                    expected_record.owner,
-                    expected_record.schema_id,
-                    expected_record.canonical_bytes,
-                ):
-                    return None
-                known.add(expected_record.record_id)
+        known.update(accepted_open_ids)
         if selected_suspension is not None:
             from .r14_execution_suspension import BASELINE_SCHEMA, PAIR_SCHEMA
 
@@ -1301,6 +1342,13 @@ class NativeRecoveryCutSource:
 
         entries: list[tuple[str, bytes, dict[str, object], PhysicalPublicationCommand]] = []
         claimed = False
+        recovery_route_present = False
+        recovery_operations = {
+            ACCEPTED_OPEN_ACCOUNTING_OPERATION,
+            ACCEPTED_OPEN_RECOVERY_OPERATION,
+            "agent_loop.original-call-resolution.v1",
+            "agent_loop.loop-semantic-reduction.v1",
+        }
         competing_evidence_fields = {
             "accepted_open_accounting_evidence",
             "accepted_open_recovery_evidence",
@@ -1325,17 +1373,10 @@ class NativeRecoveryCutSource:
                 )
                 for record in command.records
             )
-            if (
-                command.operation_kind
-                in {
-                    ACCEPTED_OPEN_ACCOUNTING_OPERATION,
-                    ACCEPTED_OPEN_RECOVERY_OPERATION,
-                    "agent_loop.original-call-resolution.v1",
-                    "agent_loop.loop-semantic-reduction.v1",
-                }
-                or competing_schema
-                or any(field in entry for field in competing_evidence_fields)
-            ):
+            if command.operation_kind in recovery_operations:
+                recovery_route_present = True
+                continue
+            if competing_schema or any(field in entry for field in competing_evidence_fields):
                 claimed = True
                 return True, None
             marker = (
@@ -1351,7 +1392,7 @@ class NativeRecoveryCutSource:
                 entries.append((decision_id, raw, entry, command))
         if not claimed:
             return False, None
-        if len(entries) != 1 or subset.accepted_closed_outcome is None:
+        if recovery_route_present or len(entries) != 1 or subset.accepted_closed_outcome is None:
             return True, None
         try:
             decision_id, raw, entry, command = entries[0]
@@ -1512,11 +1553,12 @@ class NativeRecoveryCutSource:
             if resolution is None or selected_reduction is None:
                 return None
             reduction_entries = reduction_publication._selected_entries(runtime)
-            if len(reduction_entries) != 1:
+            if not reduction_entries:
                 return None
             retained_reduction = reduction_publication.validate_selected_command(
-                runtime, reduction_entries[0][2], reduction_entries[0][3]
+                runtime, reduction_entries[-1][2], reduction_entries[-1][3]
             )  # type: ignore[no-untyped-call]
+            reduction_sources = _selected_reduction_sources(runtime, reduction_entries)
             current_request = reduction_publication.capture_request(runtime)
             evidence_sources = closed.complete_ordered_evidence_sources
             evidence_refs = tuple(source.physical_record for source in evidence_sources)
@@ -1547,6 +1589,8 @@ class NativeRecoveryCutSource:
                     current_witness=selected_witness,
                     reduction_witness=selected_reduction_witness,
                 )
+                or not reduction_sources
+                or reduction_sources[-1] != selected_reduction.source
             ):
                 return None
 
@@ -1581,7 +1625,7 @@ class NativeRecoveryCutSource:
                 *current_request.complete_ordered_evidence,
                 *current_request.complete_anchor_sources,
                 current_request.reducer_policy,
-                selected_reduction.source,
+                *reduction_sources,
             )
             return call, closure, reduction, extra_sources
         except OSError, RuntimeError, TypeError, ValueError, KeyError:
