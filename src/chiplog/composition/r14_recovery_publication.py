@@ -378,7 +378,22 @@ async def _exchange(
         try:
             rejected = CallPreparationRejected.model_validate_json(reply.canonical_payload)
         except ValueError:
-            raise LoopRejected("recovery owner preparation HOLD") from error
+            from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+                ExecutionRecoveryClassified,
+            )
+
+            try:
+                classified = ExecutionRecoveryClassified.model_validate_json(
+                    reply.canonical_payload
+                )
+            except ValueError:
+                raise LoopRejected("recovery owner preparation HOLD") from error
+            if classified.source_request_fingerprint != request.digest():
+                raise LoopRejected("recovery owner classification request differs") from error
+            raise LoopRejected(
+                "recovery owner classified "
+                f"{classified.disposition}: {classified.reason}"
+            ) from error
         detail = f"recovery owner preparation {rejected.code}: {rejected.reason}"
         raise LoopRejected(detail) from error
     return result, sent, reply

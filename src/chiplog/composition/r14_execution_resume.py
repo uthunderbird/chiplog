@@ -17,6 +17,7 @@ from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PrepareExecutionResume,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+    classify_execution_resume,
     prepare_execution_resume,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import (
@@ -480,6 +481,21 @@ async def resume_execution(
                     runtime._check_execution_actor(actor)
                     current_observation = source(runtime).collect_for_resume_held(runtime)
                     if current_observation != (cut, suspension):
+                        return "STALE"
+                    current_request = request.model_copy(
+                        update={
+                            "cut": current_observation[0],
+                            "original_suspension": current_observation[1],
+                        }
+                    )
+                    current_preparation = prepare_execution_resume(current_request)
+                    classification = classify_execution_resume(
+                        current_request, current_preparation
+                    )
+                    if (
+                        classification.disposition != "SAME_RUN"
+                        or current_preparation != result
+                    ):
                         return "STALE"
                     if runtime.current_worker() != worker:
                         return "STALE"

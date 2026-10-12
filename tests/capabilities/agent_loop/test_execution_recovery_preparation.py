@@ -30,6 +30,7 @@ from chiplog.capabilities.agent_loop.execution_recovery_observations import (
 )
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
     _expected_suspended_frontier,
+    classify_execution_resume,
     prepare_execution_accounting,
     prepare_execution_continuation,
     prepare_execution_resume,
@@ -440,6 +441,7 @@ async def test_owner_prepares_same_run_resume_only_for_exact_suspension_frontier
     result = prepare_execution_resume(request)
 
     assert result.kind == "PREPARED_EXECUTION_RESUME_V2"
+    assert classify_execution_resume(request, result).disposition == "SAME_RUN"
     assert result.run.state == "ACTIVE"
     assert result.run.predecessor == suspended.head
     assert result.run.suspension_baseline == suspended.suspension_baseline
@@ -454,6 +456,17 @@ async def test_owner_prepares_same_run_resume_only_for_exact_suspension_frontier
         update={"cut": current_cut.model_copy(update={"tenant_commit_sequence": 3})}
     )
     assert prepare_execution_resume(changed).kind == "CALL_PREPARATION_REJECTED_V1"
+    classified_reply = process.dispatch(process.RESUME_OPERATION, changed.canonical_bytes())
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        ExecutionRecoveryClassified,
+    )
+
+    observation = ExecutionRecoveryClassified.model_validate_json(
+        base64.b64decode(classified_reply["payload"])
+    )
+    assert observation.source_request_fingerprint == changed.digest()
+    assert observation.disposition in ("RECOVERY_HOLD", "TERMINAL_RECOVERY_FAULT")
+    assert observation.kind == "EXECUTION_RECOVERY_CLASSIFIED_V1"
 
 
 async def test_readiness_rejects_missing_extra_and_changed_accounting():

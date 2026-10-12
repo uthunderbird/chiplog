@@ -39,6 +39,7 @@ from .execution_recovery_contracts import (
     AcceptedOpenAccountingRecordV1,
     AcceptedOpenRecoveryOpeningV1,
     AcceptedOpenTerminalDispositionV1,
+    ExecutionRecoveryClassified,
     PrepareAcceptedOpenAccounting,
     PrepareAcceptedOpenRecoveryV1,
     PreparedAcceptedOpenAccounting,
@@ -1550,3 +1551,41 @@ def prepare_execution_resume(
         )
     except (ValueError, TypeError, AttributeError, IndexError) as error:
         return _rejected(request.command_id, error)
+
+
+def classify_execution_resume_rejection(
+    request: PrepareExecutionResume,
+    rejected: CallPreparationRejected,
+) -> ExecutionRecoveryClassified:
+    """Describe a failed resume preparation without authorizing a transition."""
+    if rejected.command_id != request.command_id:
+        raise ValueError("resume rejection belongs to another command")
+    if rejected.code == "HOLD":
+        disposition = "RECOVERY_HOLD"
+        reason = "RESUME_FRONTIER_UNSUPPORTED_OR_INCOMPLETE"
+    else:
+        disposition = "TERMINAL_RECOVERY_FAULT"
+        reason = "RESUME_INTEGRITY_FAULT_OBSERVED"
+    return ExecutionRecoveryClassified(
+        source_request_fingerprint=request.digest(),
+        disposition=disposition,
+        reason=reason,
+    )
+
+
+def classify_execution_resume(
+    request: PrepareExecutionResume,
+    result: PreparedExecutionResume | CallPreparationRejected,
+) -> ExecutionRecoveryClassified:
+    """Classify the observed preparation outcome; never authorize its writer."""
+    if isinstance(result, PreparedExecutionResume):
+        if result.source_request_fingerprint != request.digest():
+            raise ValueError("prepared resume belongs to another request")
+        disposition = "SAME_RUN"
+        reason = "EXACT_SAME_RUN_FRONTIER_PREPARED"
+        return ExecutionRecoveryClassified(
+            source_request_fingerprint=request.digest(),
+            disposition=disposition,
+            reason=reason,
+        )
+    return classify_execution_resume_rejection(request, result)

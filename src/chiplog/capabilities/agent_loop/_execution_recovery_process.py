@@ -6,12 +6,15 @@ import base64
 
 from . import _native_one_call_accounting_v2_process
 from .execution_recovery_contracts import (
+    CallPreparationRejected,
+    PreparedExecutionSuspension,
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
     PrepareExecutionResume,
     PrepareExecutionSuspension,
 )
 from .execution_recovery_preparation import (
+    classify_execution_resume_rejection,
     prepare_execution_accounting,
     prepare_execution_continuation,
     prepare_execution_resume,
@@ -88,11 +91,17 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
             ):
                 raise ValueError("legacy resume route cannot authorize original obligations")
             result = prepare_execution_resume(request)
+            if isinstance(result, CallPreparationRejected):
+                result = classify_execution_resume_rejection(request, result)
         else:
             if not isinstance(request, PrepareExecutionSuspension):
                 raise ValueError("suspension operation requires suspension request")
             result = prepare_execution_suspension(request)
-            if operation == SUSPENSION_OPERATION and result.baseline.original_obligations:
+            if (
+                operation == SUSPENSION_OPERATION
+                and isinstance(result, PreparedExecutionSuspension)
+                and result.baseline.original_obligations
+            ):
                 raise ValueError("legacy suspension route cannot authorize original obligations")
         return {
             "payload": base64.b64encode(result.canonical_bytes()).decode(),
