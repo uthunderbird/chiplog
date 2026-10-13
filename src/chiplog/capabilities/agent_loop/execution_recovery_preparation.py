@@ -1348,6 +1348,42 @@ def prepare_execution_successor(
         return _rejected(request.command_id, error)
 
 
+def classify_execution_successor(
+    request: PrepareExecutionSuccessor,
+    prepared: PreparedExecutionSuccessor,
+) -> ExecutionRecoveryClassified:
+    """Recompute the one registered CLI successor disposition from its full request."""
+    request = PrepareExecutionSuccessor.model_validate_json(request.canonical_bytes())
+    current = request.cut.complete_ordered_run_lineage[-1]
+    baseline = request.original_suspension.baseline
+    admitted = request.admitted_input
+    if not isinstance(request.fence, NonSchedulerFence) or admitted is None:
+        raise ValueError("successor classification requires the selected native CLI route")
+    if prepare_execution_successor(request) != prepared:
+        raise ValueError("successor classification differs from prepared owner result")
+    if (
+        baseline.bindings.objective != current.prompt
+        or request.cut.current_bindings.objective != baseline.bindings.objective
+        or admitted.normalized_prompt == baseline.bindings.objective
+        or admitted.normalized_prompt != admitted.raw_input_bytes.decode("utf-8")
+        or request.successor.prompt != admitted.normalized_prompt
+    ):
+        raise ValueError("selected CLI ingress does not prove a changed registered objective")
+    expected_manifest = (
+        admitted.custody,
+        admitted.inbox,
+        admitted.selected_decision,
+        admitted.source_authentication,
+    )
+    if prepared.edge.changed_binding_manifest != expected_manifest:
+        raise ValueError("successor changed-binding manifest differs from selected CLI ingress")
+    return ExecutionRecoveryClassified(
+        source_request_fingerprint=request.digest(),
+        disposition="SUCCESSOR_REQUIRED",
+        reason="AUTHENTICATED_CLI_OBJECTIVE_CHANGED",
+    )
+
+
 def prepare_execution_successor_start(
     request: PrepareExecutionSuccessorStart,
 ) -> PreparedExecutionSuccessorStart | CallPreparationRejected:

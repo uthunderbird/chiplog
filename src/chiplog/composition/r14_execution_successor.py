@@ -27,6 +27,7 @@ from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PrepareExecutionSuccessorStart,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+    classify_execution_successor,
     prepare_execution_successor,
     prepare_execution_successor_start,
 )
@@ -645,6 +646,14 @@ async def _publish_batch(
                     evidence.admitted,
                 )
                 if current != (cut, suspension, evidence.request.run):
+                    return "STALE"
+                classification = classify_execution_successor(
+                    evidence.request, evidence.result
+                )
+                if (
+                    classification.disposition != "SUCCESSOR_REQUIRED"
+                    or classification.source_request_fingerprint != evidence.request.digest()
+                ):
                     return "STALE"
                 if (
                     runtime.current_worker() != worker

@@ -1471,6 +1471,48 @@ async def test_native_non_scheduler_successor_owner_preparation_and_start(
 
 
 @pytest.mark.asyncio
+async def test_successor_classification_requires_changed_authenticated_objective(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = await non_scheduler_successor()
+    request = fixture.request.model_copy(
+        update={
+            "command_id": (
+                f"execution-successor:{fixture.request.run.run_id}:"
+                f"{fixture.request.run.head}"
+            ),
+            "admitted_input": fixture.request.admitted_input.model_copy(
+                update={"database_id": "logical-ingress-database"}
+            ),
+        }
+    )
+    current = request.cut.complete_ordered_run_lineage[-1]
+    bindings = request.cut.current_bindings.model_copy(update={"objective": current.prompt})
+    baseline = request.original_suspension.baseline.model_copy(update={"bindings": bindings})
+    request = request.model_copy(
+        update={
+            "cut": request.cut.model_copy(update={"current_bindings": bindings}),
+            "original_suspension": request.original_suspension.model_copy(
+                update={"baseline": baseline}
+            ),
+        }
+    )
+    monkeypatch.setattr(recovery_preparation, "_validate_cut", lambda *_a, **_k: None)
+    prepared = recovery_preparation.prepare_execution_successor(request)
+    assert isinstance(prepared, PreparedExecutionSuccessor)
+    classified = recovery_preparation.classify_execution_successor(request, prepared)
+    assert classified.disposition == "SUCCESSOR_REQUIRED"
+    assert classified.reason == "AUTHENTICATED_CLI_OBJECTIVE_CHANGED"
+    assert classified.source_request_fingerprint == request.digest()
+
+    forged = request.model_copy(
+        update={"successor": request.successor.model_copy(update={"prompt": "proposal only"})}
+    )
+    with pytest.raises(ValueError, match="prepared owner result"):
+        recovery_preparation.classify_execution_successor(forged, prepared)
+
+
+@pytest.mark.asyncio
 async def test_native_successor_owner_holds_for_open_original_obligations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
