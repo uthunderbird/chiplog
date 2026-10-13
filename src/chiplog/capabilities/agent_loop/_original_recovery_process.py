@@ -5,6 +5,12 @@ from __future__ import annotations
 import base64
 
 from . import _execution_direct_terminal_process, _execution_recovery_process
+from .native_sealed_accounting_v3_contracts import (
+    NATIVE_SEALED_ACCOUNTING_V3_REQUEST_SCHEMA,
+    NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA,
+    PrepareNativeSealedAccountingV3,
+)
+from .native_sealed_accounting_v3_preparation import prepare_native_sealed_accounting_v3
 from .original_call_resolution_preparation import prepare_original_call_resolution
 from .original_recovery_contracts import (
     AdoptOriginalResolverAuthorityPolicyV1,
@@ -32,6 +38,7 @@ PREPARE_SEMANTIC_REDUCTION_OPERATION = "agent_loop.prepare_loop_semantic_reducti
 PREPARE_SUSPENSION_OPERATION = "agent_loop.prepare_execution_suspension.v1"
 PREPARE_RESUME_OPERATION = "agent_loop.prepare_execution_resume.v1"
 PREPARE_SUCCESSOR_OPERATION = "agent_loop.prepare_execution_successor.v1"
+PREPARE_SEALED_ACCOUNTING_V3_OPERATION = "agent_loop.prepare_native_sealed_accounting.v3"
 REQUEST_SCHEMA = ORIGINAL_RECOVERY_REQUEST_SCHEMA
 RESULT_SCHEMA = ORIGINAL_RECOVERY_RESULT_SCHEMA
 ROUTES = tuple(
@@ -48,6 +55,13 @@ ROUTES = tuple(
                 REQUEST_SCHEMA,
                 RESULT_SCHEMA,
             ),
+            (
+                PREPARE_SEALED_ACCOUNTING_V3_OPERATION,
+                "broker",
+                "agent_loop",
+                NATIVE_SEALED_ACCOUNTING_V3_REQUEST_SCHEMA,
+                NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA,
+            ),
         )
     )
 )
@@ -60,6 +74,18 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
         PREPARE_SUCCESSOR_OPERATION,
     ):
         return _execution_recovery_process.dispatch(operation, payload)
+    if operation == PREPARE_SEALED_ACCOUNTING_V3_OPERATION:
+        try:
+            request = PrepareNativeSealedAccountingV3.model_validate_json(payload)
+            if request.canonical_bytes() != payload:
+                raise ValueError("noncanonical native sealed accounting V3 request")
+            result = prepare_native_sealed_accounting_v3(request)
+            return {
+                "payload": base64.b64encode(result.canonical_bytes()).decode(),
+                "schema_id": NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA,
+            }
+        except (TypeError, ValueError) as error:
+            return {"failure": "PROTOCOL_REJECTED", "reason": str(error)}
     if operation not in (
         ADOPT_POLICY_OPERATION,
         PREPARE_INVOCATION_OPERATION,

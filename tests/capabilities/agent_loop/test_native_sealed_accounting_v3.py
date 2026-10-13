@@ -1,5 +1,14 @@
 import pytest
 
+from chiplog.capabilities.agent_loop._original_recovery_process import (
+    PREPARE_SEALED_ACCOUNTING_V3_OPERATION,
+)
+from chiplog.capabilities.agent_loop._original_recovery_process import (
+    ROUTES as ORIGINAL_RECOVERY_ROUTES,
+)
+from chiplog.capabilities.agent_loop._original_recovery_process import (
+    dispatch as dispatch_original_recovery,
+)
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_contracts import (
     PrepareNativeSealedAccountingV3,
@@ -111,3 +120,19 @@ def test_v3_rejects_duplicate_members_and_cross_seal_substitution():
         prepare_native_sealed_accounting_v3(
             _request((first, second.model_copy(update={"response_id": "other-response"})))
         )
+
+
+def test_v3_static_owner_route_uses_its_versioned_wire_schemas():
+    first, second = _two_frontiers()
+    request = _request((first, second))
+    route = next(
+        row for row in ORIGINAL_RECOVERY_ROUTES
+        if row[0] == PREPARE_SEALED_ACCOUNTING_V3_OPERATION
+    )
+
+    response = dispatch_original_recovery(
+        PREPARE_SEALED_ACCOUNTING_V3_OPERATION, request.canonical_bytes()
+    )
+
+    assert route[3] == "chiplog.agent-loop.prepare-native-sealed-accounting.v3"
+    assert response["schema_id"] == "chiplog.agent-loop.prepared-native-sealed-accounting.v3"

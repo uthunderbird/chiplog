@@ -17,6 +17,8 @@ from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
     R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_EVALUATION_MANIFEST,
     R14_EXECUTION_LOOP_SEMANTIC_REDUCTION_V34_PRODUCTION_MANIFEST,
+    R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_EVALUATION_MANIFEST,
+    R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
     R14_EXECUTION_OBLIGATION_RESUME_V37_EVALUATION_MANIFEST,
     R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
     R14_EXECUTION_ORIGINAL_CALL_RESOLUTION_V33_EVALUATION_MANIFEST,
@@ -27,10 +29,10 @@ from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST,
     R14_EXECUTION_SAME_RUN_RESUME_V36_EVALUATION_MANIFEST,
     R14_EXECUTION_SAME_RUN_RESUME_V36_PRODUCTION_MANIFEST,
-    R14_EXECUTION_SUSPENSION_V35_EVALUATION_MANIFEST,
-    R14_EXECUTION_SUSPENSION_V35_PRODUCTION_MANIFEST,
     R14_EXECUTION_SUCCESSOR_V38_EVALUATION_MANIFEST,
     R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST,
+    R14_EXECUTION_SUSPENSION_V35_EVALUATION_MANIFEST,
+    R14_EXECUTION_SUSPENSION_V35_PRODUCTION_MANIFEST,
     R14_PRODUCTION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_EVALUATION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
@@ -221,6 +223,24 @@ def test_v31_registers_the_original_resolver_policy_owner_route() -> None:
     assert loop.target_ids == (
         "chiplog.capabilities.agent_loop._original_recovery_process:dispatch",
     )
+
+
+def test_v39_registers_additive_native_sealed_accounting_route() -> None:
+    production = R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST
+    evaluation = R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_EVALUATION_MANIFEST
+    previous = R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST
+    operation = "agent_loop.prepare_native_sealed_accounting.v3"
+
+    assert verify_runtime_manifest(production)
+    verify_production_evaluation_equivalence(production, evaluation)
+    assert production.manifest_version == 39
+    assert previous.manifest_version == 38
+    assert {route.operation_id for route in production.routes} - {
+        route.operation_id for route in previous.routes
+    } == {operation}
+    route = next(route for route in production.routes if route.operation_id == operation)
+    assert route.request_schema_id == "chiplog.agent-loop.prepare-native-sealed-accounting.v3"
+    assert route.result_schema_id == "chiplog.agent-loop.prepared-native-sealed-accounting.v3"
 
 
 def test_v32_adds_invocation_route_without_mutating_v31() -> None:
