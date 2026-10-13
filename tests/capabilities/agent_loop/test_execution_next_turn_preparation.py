@@ -493,6 +493,38 @@ async def test_next_turn_preserves_sealed_original_call_lineage() -> None:
     assert result.run.turns[-1].state == "PREPARING"
 
 
+async def test_next_turn_rebinds_fresh_turn_to_authenticated_worker_generation() -> None:
+    request = await _request()
+    request = request.model_copy(
+        update={
+            "fence": request.fence.model_copy(
+                update={"worker_session_id": "reopened-worker", "runtime_generation": "r7:2"}
+            )
+        }
+    )
+    result = prepare_next_native_execution_turn(request)
+    verify_next_native_execution_turn(request, result)
+    assert result.run.worker_session == "reopened-worker"
+    assert result.run.turns[:-1] == request.run.turns
+
+
+async def test_next_turn_verifier_rejects_worker_not_bound_to_fence() -> None:
+    request = await _request()
+    result = prepare_next_native_execution_turn(request)
+    forged_run = result.run.model_copy(update={"worker_session": "substituted-worker"})
+    forged_run = forged_run.model_copy(
+        update={"head": "loop:" + forged_run.model_copy(update={"head": "pending"}).digest()}
+    )
+    forged = result.model_copy(
+        update={
+            "run": forged_run,
+            "complete_batch_fingerprint": _batch_fingerprint(forged_run, result.continuation),
+        }
+    )
+    with pytest.raises(ValueError, match="proposal changed frozen Run"):
+        verify_next_native_execution_turn(request, forged)
+
+
 async def test_next_turn_preserves_recovered_obligation_and_current_reduction() -> None:
     request = await _request(recovered=True)
     result = prepare_next_native_execution_turn(request)

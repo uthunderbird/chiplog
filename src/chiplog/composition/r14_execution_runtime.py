@@ -373,6 +373,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
             or returned.request_id != sent.request_id
             or returned.responder != callee
             or returned.schema_id != "chiplog.execution.transition-result.v2"
+            or time.monotonic_ns() >= deadline
         ):
             raise LoopRejected("execution owner exchange rejected or changed identity")
         adapter: TypeAdapter[ExecutionTransitionResult] = TypeAdapter(ExecutionTransitionResult)
@@ -451,7 +452,6 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                         current_snapshot != snapshot
                         or self.current_worker() != worker
                         or engine.session("agent_loop") != callee
-                        or time.monotonic_ns() >= deadline
                         or self._commitment_journal.load(self._tenant_id) != predecessor
                         or transition_command(evidence) != command
                     ):
@@ -698,14 +698,35 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 ):
                     raise LoopRejected("missing exact execution Run")
                 started = lineage[-1]
+                prior_turns: list[dict[str, object]] = []
                 if (
                     started.event not in ("TurnStarted", "SuccessorTurnStarted")
-                    or len(started.turns) != 1
+                    or len(started.turns) not in (1, 2)
                     or started.turns[-1].state != "PREPARING"
                     or started.turns[-1].attempts
                     or started.worker_session != self.current_worker()
                 ):
                     raise LoopRejected("capture requires fresh initial Turn; unknown cannot retry")
+                if len(started.turns) == 2:
+                    if (
+                        started.event != "TurnStarted"
+                        or started.turns[0].state not in ("ACCEPTED", "REJECTED")
+                        or started.turns[0].response_seal is None
+                        or not started.turns[0].attempts
+                        or started.turns[0].selector >= len(started.turns[0].attempts)
+                        or started.turns[-1].ordinal != 2
+                    ):
+                        raise LoopRejected("capture requires exact fresh same-Run Turn 2")
+                    from chiplog.composition.r14_next_turn_records import (
+                        selected_prior_turn_context,
+                    )
+
+                    try:
+                        prior_turns = selected_prior_turn_context(self, started)
+                    except (TypeError, ValueError, KeyError) as exc:
+                        raise LoopRejected(
+                            "Turn 2 prior response or result cut is invalid"
+                        ) from exc
             workspace_port = R13Workspace(self)
             h1_preissuance_selection = None
             h1_original_deadline: int | None = None
@@ -754,7 +775,11 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 ):
                     raise LoopRejected("execution workspace or Run cut changed")
             content = json.dumps(
-                {"prompt": started.prompt, "workspace": workspace.content, "prior_turns": []},
+                {
+                    "prompt": started.prompt,
+                    "workspace": workspace.content,
+                    "prior_turns": prior_turns,
+                },
                 sort_keys=True,
                 separators=(",", ":"),
             )

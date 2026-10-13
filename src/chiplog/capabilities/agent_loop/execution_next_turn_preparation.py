@@ -433,8 +433,9 @@ def _check_source(request: PrepareNextExecutionTurn) -> ExecutionRunRecord:
         isinstance(request.fence, NonSchedulerFence)
         and request.fence.run_id == run.run_id
         and request.fence.run_head == run.head
-        and request.fence.worker_session_id == run.worker_session,
-        "native next Turn fence differs from current Run",
+        and bool(request.fence.worker_session_id)
+        and bool(request.fence.runtime_generation),
+        "native next Turn fence differs from current Run or live worker",
     )
     return run
 
@@ -461,6 +462,7 @@ def prepare_next_native_execution_turn(
         update={
             "head": "pending",
             "predecessor": run.head,
+            "worker_session": request.fence.worker_session_id,
             "turns": (*run.turns, turn),
             "event": "TurnStarted",
         }
@@ -494,8 +496,13 @@ def verify_next_native_execution_turn(
         after.head == "loop:" + after.model_copy(update={"head": "pending"}).digest()
         and after.predecessor == before.head
         and after.event == "TurnStarted"
-        and after.model_dump(exclude={"head", "predecessor", "event", "turns"})
-        == before.model_dump(exclude={"head", "predecessor", "event", "turns"})
+        and after.worker_session == request.fence.worker_session_id
+        and after.model_dump(
+            exclude={"head", "predecessor", "event", "turns", "worker_session"}
+        )
+        == before.model_dump(
+            exclude={"head", "predecessor", "event", "turns", "worker_session"}
+        )
         and after.turns[:-1] == before.turns
         and len(after.turns) == len(before.turns) + 1,
         "next Turn proposal changed frozen Run or historical Turn fields",

@@ -313,6 +313,7 @@ async def publish_execution_fanout(
         or reply.request_id != sent.request_id
         or reply.responder != callee
         or reply.schema_id != "chiplog.call.execution-captured-fanout-result.v2"
+        or time.monotonic_ns() >= deadline
     ):
         raise LoopRejected("execution fanout owner exchange rejected")
     adapter: TypeAdapter[ExecutionCapturedFanOutResult] = TypeAdapter(ExecutionCapturedFanOutResult)
@@ -438,7 +439,6 @@ async def publish_execution_fanout(
                 read_execution_call_history(runtime) != (snapshot, inventory, previous)
                 or runtime.current_worker() != captured.worker_session
                 or engine.session("agent_loop") != callee
-                or time.monotonic_ns() >= deadline
                 or execution_registry(captured) != (registry, bound)
                 or runtime._commitment_journal.load(runtime._tenant_id) != predecessor
                 or (complete_retained is None and build_envelope(evidence) != envelope)

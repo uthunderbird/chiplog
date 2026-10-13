@@ -286,8 +286,8 @@ async def test_unchanged_trust_reaches_next_turn_writer_admission(
         monkeypatch.setattr(runtime._appender, "submit", submit)
         monkeypatch.setattr(next_turn_publication, "_finish", lambda *_args: _resolved(run))
         assert await runtime.start_next_execution_turn(run.run_id, run.head) is run
-        assert prepared_requests[0].fence.worker_session_id == run.worker_session
-        assert prepared_requests[0].fence.worker_session_id != runtime.current_worker()
+        assert prepared_requests[0].fence.worker_session_id == runtime.current_worker()
+        assert prepared_requests[0].fence.worker_session_id != run.worker_session
         current_generation = runtime._supervisor.runtime().session("agent_loop").generation_id
         assert prepared_requests[0].fence.runtime_generation == current_generation
         assert len(journal_rows) == 1

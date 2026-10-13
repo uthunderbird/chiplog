@@ -633,11 +633,45 @@ class _H1RuntimePreissuancePort:
         if len(runs) != 1 or lineage[-1] is not runs[0]:
             raise H1PreissuanceSourceViolation("H1 preissuance native Run is absent or ambiguous")
         run = runs[0]
+        fresh_initial = (
+            run.event == "TurnStarted"
+            and len(run.turns) == 1
+            and run.turns[0].state == "PREPARING"
+            and not run.turns[0].attempts
+        )
+        fresh_same_run_turn_two = False
         if (
-            run.event != "TurnStarted"
-            or len(run.turns) != 1
-            or run.turns[0].state != "PREPARING"
-            or run.turns[0].attempts
+            run.event == "TurnStarted"
+            and len(run.turns) == 2
+            and run.turns[0].state in ("ACCEPTED", "REJECTED")
+            and run.turns[0].response_seal is not None
+            and run.turns[0].attempts
+            and run.turns[0].selector < len(run.turns[0].attempts)
+            and run.turns[1].ordinal == 2
+            and run.turns[1].state == "PREPARING"
+            and not run.turns[1].attempts
+        ):
+            from chiplog.composition.r14_next_turn_records import retained_next_turn
+
+            selected = []
+            for _, _, raw in self._runtime._loop_decisions().entries():
+                entry = json.loads(raw)
+                if entry.get("kind") != "DECIDED" or "execution_next_turn_evidence" not in entry:
+                    continue
+                evidence = retained_next_turn(entry)
+                if evidence.result.run == run:
+                    selected.append(evidence)
+            if len(selected) == 1:
+                predecessor = selected[0].request.run
+                fresh_same_run_turn_two = (
+                    len(lineage) >= 2
+                    and lineage[-2] == predecessor
+                    and predecessor.run_id == run.run_id
+                    and predecessor.turns == run.turns[:-1]
+                    and predecessor.head == run.predecessor
+                )
+        if (
+            not (fresh_initial or fresh_same_run_turn_two)
             or run.worker_session != self._runtime.current_worker()
         ):
             raise H1PreissuanceSourceViolation("H1 preissuance native Run is not fresh")

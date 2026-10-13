@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.execution_next_turn_preparation import (
     reconstruct_prior_continuation_cut,
     verify_next_native_execution_turn,
@@ -110,6 +111,143 @@ def retained_next_turn(entry: dict[str, object]) -> RetainedNextTurnPublication:
     if evidence.canonical_bytes().decode() != raw:
         raise ValueError("next Turn selected evidence noncanonical")
     return evidence
+
+
+def selected_prior_turn_context(
+    runtime: CommonCliExecutionRuntime, run: object
+) -> list[dict[str, object]]:
+    """Build the prior-turn model envelope from one authenticated same-Run publication."""
+    from chiplog.capabilities.agent_loop.direct_terminal_contracts import (
+        AcceptedDirectTerminalDispositionV1,
+        AcceptedDirectTerminalResultV1,
+    )
+
+    candidates: list[RetainedNextTurnPublication] = []
+    for _, _, raw in runtime._loop_decisions().entries():
+        entry = json.loads(raw)
+        if entry.get("kind") != "DECIDED" or "execution_next_turn_evidence" not in entry:
+            continue
+        evidence = retained_next_turn(entry)
+        if evidence.result.run == run:
+            candidates.append(evidence)
+    if len(candidates) != 1:
+        raise ValueError("same-Run Turn 2 lacks one selected next-Turn publication")
+    evidence = candidates[0]
+    before, after = evidence.request.run, evidence.result.run
+    if (
+        not isinstance(run, ExecutionRunRecord)
+        or before.run_id != after.run_id
+        or before.turns != after.turns[:-1]
+        or len(before.turns) != 1
+        or len(after.turns) != 2
+        or after.turns[-1].ordinal != 2
+        or after.turns[-1].state != "PREPARING"
+        or after.turns[-1].attempts
+        or before.turns[0].response_seal is None
+        or before.turns[0].selector >= len(before.turns[0].attempts)
+    ):
+        raise ValueError("selected same-Run continuation is not a fresh Turn 2")
+    cut = evidence.request.cut
+    responses = [
+        view
+        for view in cut.complete_ordered_responses
+        if view.original_run.subject_id == before.run_id
+        and view.original_turn.subject_id == before.turns[0].turn_id
+    ]
+    if len(responses) != 1 or responses[0].selected_seal != before.turns[0].response_seal:
+        raise ValueError("Turn 2 selected recovery cut lacks the exact prior response seal")
+    response = responses[0]
+    attempt = before.turns[0].attempts[before.turns[0].selector]
+    if (
+        response.seal.original_run_id != before.run_id
+        or response.seal.original_turn_id != before.turns[0].turn_id
+    ):
+        raise ValueError("Turn 2 selected response identifies another Run or Turn")
+    if response.seal.complete_ordered_initialized != before.turns[0].initialized_calls:
+        raise ValueError("Turn 2 selected response has another initialized-call set")
+    sources = {
+        (source.schema_id, source.subject.subject_id): source
+        for source in cut.complete_sources
+    }
+
+    def selected_record(schema: str, ref: object, model: type) -> object:
+        source = sources.get((schema, ref.subject_id))
+        if (
+            source is None
+            or source.subject != ref
+            or source.physical_record != ref
+            or hashlib.sha256(source.canonical_record_bytes).hexdigest()
+            != source.physical_record.revision.fingerprint
+        ):
+            raise ValueError("prior-turn result is not bound to its selected canonical source")
+        value = model.model_validate_json(source.canonical_record_bytes)
+        if value.canonical_bytes() != source.canonical_record_bytes:
+            raise ValueError("prior-turn selected result is noncanonical")
+        return value
+
+    results: list[dict[str, object]] = []
+    for call in response.ordered_calls:
+        terminal_sources = [
+            source
+            for source in cut.complete_sources
+            if source.schema_id == "chiplog.execution.accepted-direct-terminal-disposition.v1"
+        ]
+        matched = []
+        for terminal_source in terminal_sources:
+            terminal = AcceptedDirectTerminalDispositionV1.model_validate_json(
+                terminal_source.canonical_record_bytes
+            )
+            if terminal.original_call_id == call.original_call_id:
+                matched.append((terminal_source, terminal))
+        if len(matched) != 1:
+            raise ValueError("prior-turn call lacks one selected direct-terminal disposition")
+        terminal_source, terminal = matched[0]
+        terminal_ref = terminal_source.subject
+        result_source_candidates = [
+            source
+            for source in cut.complete_sources
+            if source.schema_id == "chiplog.execution.accepted-direct-terminal-result.v1"
+        ]
+        result_matches = []
+        for source in result_source_candidates:
+            result = AcceptedDirectTerminalResultV1.model_validate_json(
+                source.canonical_record_bytes
+            )
+            if result.original_call_id == call.original_call_id:
+                result_matches.append((source, result))
+        if len(result_matches) != 1:
+            raise ValueError("prior-turn call lacks one selected direct-terminal result")
+        result_source, result = result_matches[0]
+        if terminal.response_id != response.selected_seal.subject_id:
+            raise ValueError("prior-turn disposition names another response")
+        if result.terminal != terminal_ref:
+            raise ValueError("prior-turn result names another disposition")
+        selected_record(
+            "chiplog.execution.accepted-direct-terminal-disposition.v1",
+            terminal_ref,
+            AcceptedDirectTerminalDispositionV1,
+        )
+        selected_record(
+            "chiplog.execution.accepted-direct-terminal-result.v1",
+            result_source.subject,
+            AcceptedDirectTerminalResultV1,
+        )
+        results.append(
+            {
+                "original_call_id": call.original_call_id,
+                "terminal": terminal.model_dump(mode="json"),
+                "result": result.model_dump(mode="json"),
+            }
+        )
+    return [
+        {
+            "turn_id": before.turns[0].turn_id,
+            "response_base64": attempt.response_base64,
+            "rejection": attempt.rejection,
+            "visibility": attempt.manifest.digest(),
+            "results": results,
+        }
+    ]
 
 
 def _decision_ref(identity: str, decision_id: str, raw: bytes) -> CallSubjectHead:
