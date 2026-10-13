@@ -14,6 +14,12 @@ from chiplog.capabilities.agent_loop.native_one_call_accounting_contracts import
     PreparedNativeOneCallCancelledAccountingV2,
     PrepareNativeOneCallCancelledAccountingV2,
 )
+from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_contracts import (
+    NATIVE_SEALED_ACCOUNTING_V3_REQUEST_SCHEMA,
+    NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA,
+    PreparedNativeSealedAccountingV3,
+    PrepareNativeSealedAccountingV3,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import Digest, Identity, RecoveryDTO
 from chiplog.composition.r14_fanout_contracts import FanOutPhysicalMember
 from chiplog.composition.r14_native_execution_record_source import (
@@ -24,6 +30,10 @@ from chiplog.platform.broker import PublicPortCall, PublicPortSuccess
 
 NATIVE_ACCOUNTING_OPERATION = "agent_loop.native-one-call-cancelled-accounting.v1"
 NATIVE_ACCOUNTING_SCHEMA = "chiplog.agent-loop.native-one-call-cancelled-accounting.v1"
+NATIVE_SEALED_ACCOUNTING_V3_OPERATION = "agent_loop.prepare_native_sealed_accounting.v3"
+NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA = (
+    "chiplog.agent-loop.native-sealed-accounting.v3"
+)
 MAX_NATIVE_ACCOUNTING_RECORD_BYTES = 1_048_576
 
 
@@ -74,6 +84,117 @@ class NativeOneCallAccountingPhysicalEnvelope(RecoveryDTO):
     retained_fingerprint: Digest
     records: tuple[FanOutPhysicalMember, ...] = Field(min_length=1, max_length=1)
     request_fingerprint: Digest
+
+
+class NativeSealedAccountingSourceStampV3(RecoveryDTO):
+    """Writer-owned authority snapshot retained outside the inert owner request."""
+
+    tenant_id: Identity
+    database_identity: tuple[Identity, int, int]
+    tenant_commit_sequence: int = Field(ge=0)
+    authority_materialization_commitment: Digest
+
+
+class NativeSealedAccountingV3Record(RecoveryDTO):
+    """Complete inert per-seal accounting result plus the writer's source stamp."""
+
+    kind: Literal["NATIVE_SEALED_ACCOUNTING_V3"] = "NATIVE_SEALED_ACCOUNTING_V3"
+    record_id: Identity
+    source_request_fingerprint: Digest
+    selected_response_fingerprint: Digest
+    sealed_manifest_fingerprint: Digest
+    ordered_sealed_call_ids: tuple[Identity, ...] = Field(min_length=1)
+    source_stamp: NativeSealedAccountingSourceStampV3
+    result: PreparedNativeSealedAccountingV3
+
+
+class RetainedNativeSealedAccountingV3Publication(RecoveryDTO):
+    """Exact owner exchange and source snapshots awaiting sole-writer publication."""
+
+    kind: Literal["R14_SELECTED_NATIVE_SEALED_ACCOUNTING_V3"] = (
+        "R14_SELECTED_NATIVE_SEALED_ACCOUNTING_V3"
+    )
+    request: PrepareNativeSealedAccountingV3
+    response: PreparedNativeSealedAccountingV3
+    owner_request: PublicPortCall
+    owner_response: PublicPortSuccess
+    selected_source_bytes: bytes = Field(min_length=1)
+    physical_source_bytes: bytes = Field(min_length=1)
+    source_stamp: NativeSealedAccountingSourceStampV3
+    record: NativeSealedAccountingV3Record
+
+
+def sealed_accounting_v3_record(
+    request: PrepareNativeSealedAccountingV3,
+    response: PreparedNativeSealedAccountingV3,
+    source_stamp: NativeSealedAccountingSourceStampV3,
+) -> NativeSealedAccountingV3Record:
+    """Build the exact inert per-seal record from the owner result and stamp."""
+    from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_preparation import (
+        prepare_native_sealed_accounting_v3,
+    )
+
+    if (
+        response.source_request_fingerprint
+        != hashlib.sha256(request.canonical_bytes()).hexdigest()
+        or response.selected_response != request.selected_response
+        or response.sealed_manifest_fingerprint != request.sealed_manifest_fingerprint
+        or tuple(call.original_call_id for call in response.complete_ordered_calls)
+        != request.ordered_sealed_call_ids
+        or prepare_native_sealed_accounting_v3(request) != response
+    ):
+        raise ValueError("native sealed accounting V3 owner result differs from exact request")
+
+    record = _build_sealed_accounting_v3_record(request, response, source_stamp)
+    return record
+
+
+def validate_retained_sealed_accounting_v3_publication(
+    evidence: RetainedNativeSealedAccountingV3Publication,
+) -> NativeSealedAccountingV3Record:
+    """Rebuild one per-seal record from an exact retained owner exchange."""
+    sent, returned = evidence.owner_request, evidence.owner_response
+    if (
+        sent.operation_id != NATIVE_SEALED_ACCOUNTING_V3_OPERATION
+        or sent.schema_id != NATIVE_SEALED_ACCOUNTING_V3_REQUEST_SCHEMA
+        or sent.canonical_payload != evidence.request.canonical_bytes()
+        or sent.caller.owner_id != "broker"
+        or sent.callee.owner_id != "agent_loop"
+        or not (
+            sent.caller.tenant_id
+            == sent.callee.tenant_id
+            == evidence.source_stamp.tenant_id
+        )
+        or returned.request_id != sent.request_id
+        or returned.responder != sent.callee
+        or returned.schema_id != NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA
+        or returned.canonical_payload != evidence.response.canonical_bytes()
+        or evidence.record
+        != sealed_accounting_v3_record(
+            evidence.request, evidence.response, evidence.source_stamp
+        )
+    ):
+        raise ValueError("native sealed accounting V3 retained exchange differs")
+    return evidence.record
+
+
+def _build_sealed_accounting_v3_record(
+    request: PrepareNativeSealedAccountingV3,
+    response: PreparedNativeSealedAccountingV3,
+    source_stamp: NativeSealedAccountingSourceStampV3,
+) -> NativeSealedAccountingV3Record:
+    record = NativeSealedAccountingV3Record(
+        record_id="native-sealed-accounting:" + request.selected_response.revision.fingerprint,
+        source_request_fingerprint=response.source_request_fingerprint,
+        selected_response_fingerprint=request.selected_response.revision.fingerprint,
+        sealed_manifest_fingerprint=request.sealed_manifest_fingerprint,
+        ordered_sealed_call_ids=request.ordered_sealed_call_ids,
+        source_stamp=source_stamp,
+        result=response,
+    )
+    if len(record.canonical_bytes()) > MAX_NATIVE_ACCOUNTING_RECORD_BYTES:
+        raise ValueError("native sealed accounting V3 record exceeds physical bound")
+    return record
 
 
 def accounting_record(
