@@ -96,6 +96,17 @@ Also cover two distinct seals in one Run, exact per-seal replay, two accepted ca
 with distinct outcomes, a cross-seal accepted-evidence substitution, and full
 physical orphan detection after reopen.
 
+**Reader/writer constraints from the cold implementation review:** reconstruct the
+V3 member frontier from the authenticated history cut already supplied to the
+outer reader. Do not invoke the ordinary selected-accounting collector from inside
+`_read_call_history`, because its history lookup re-enters that reader. Preserve
+the source stamp outside the V3 owner request, then reacquire history after owner
+IPC and apply the same actor, worker/session, commitment, and authenticated-source
+admission/CAS checks used by the V2 writer before selecting the physical command.
+These checks are required for V3 publication and canonical reopen, not optional
+hardening. This is the cold review's required implementation guard, not evidence
+that the V3 persistence path is already implemented.
+
 ### R14.7 — Executable read-only lineage (original R14.3; accounting completion for R14.1)
 
 Depends on R14.6 and the user's frozen retry-bound decision. Reuse
