@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+from typing import TYPE_CHECKING
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
@@ -19,6 +21,9 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     SuccessResult,
     TerminalCallFrontier,
 )
+
+if TYPE_CHECKING:
+    from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 
 _MAPPING_ID = "R14_DIRECT_EFFECT_TERMINAL_V1"
 _MAPPING_VERSION = "r14-direct-effect-terminal.v1"
@@ -153,6 +158,85 @@ def accepted_direct_terminal_call_frontier(
     return call
 
 
+def selected_accepted_direct_terminal_call_frontier(
+    runtime: CommonCliExecutionRuntime,
+    *,
+    response_id: str,
+    original_call_id: str,
+    ordered_initialized_call_ids: tuple[str, ...],
+    sealed_manifest_fingerprint: str,
+    acceptance: ConsequentialAcceptedCall,
+) -> TerminalCallFrontier | None:
+    """Read one exact, physically materialized direct-terminal member frontier."""
+    from chiplog.composition.r14_accepted_direct_terminal_publication import (
+        validate_selected_accepted_direct_terminal,
+    )
+    from chiplog.composition.r14_accepted_direct_terminal_records import (
+        ACCEPTED_DIRECT_TERMINAL_OPERATION,
+        accepted_direct_terminal_command,
+        retained_accepted_direct_terminal,
+    )
+    from chiplog.composition.r14_loop_history import read_selected_accepted_direct_terminal
+    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+    from chiplog.platform.workspace_snapshot import read_connection
+
+    try:
+        current = validate_selected_accepted_direct_terminal(runtime)
+        if current is None:
+            return None
+        closed, cut = current
+        if (
+            cut.response_id != response_id
+            or cut.original_call_id != original_call_id
+            or closed.accepted.original_call_id != original_call_id
+            or closed.accepted.selected_seal.response_seal.subject_id != response_id
+            or closed.latest_outcome.snapshot.state not in ("CONFIRMED", "FAILED_NO_EFFECT")
+            or closed.latest_outcome.snapshot.obligation.state != "CLOSED"
+        ):
+            return None
+        entries = [
+            json.loads(raw)
+            for _, _, raw in runtime._loop_decisions().entries()
+            if (entry := json.loads(raw)).get("kind") == "DECIDED"
+            and entry.get("operation_kind") == ACCEPTED_DIRECT_TERMINAL_OPERATION
+        ]
+        if len(entries) != 1:
+            return None
+        evidence = retained_accepted_direct_terminal(entries[0])
+        command = accepted_direct_terminal_command(evidence)
+        if (
+            runtime._publication(entries[0]) != command
+            or evidence.request.cut != cut
+            or evidence.result.accounting.original_call_id != original_call_id
+            or evidence.result.accounting.response_id != response_id
+            or read_selected_accepted_direct_terminal(runtime) != evidence.result
+        ):
+            return None
+        runtime._check_database_identity()
+        with read_connection(runtime._database) as connection:
+            current_snapshot = capture_authority_snapshot_commitment(
+                connection, runtime._tenant_id
+            )
+        journal_anchor = runtime._commitment_journal.load(runtime._tenant_id)
+        state, selected_snapshot, selected_anchor = runtime._selected_physical_state(command)
+        require_complete_direct_terminal_publication(
+            state,
+            current_snapshot,
+            journal_anchor,
+            selected_snapshot,
+            selected_anchor,
+        )
+        return accepted_direct_terminal_call_frontier(
+            cut,
+            evidence.result,
+            acceptance,
+            ordered_initialized_call_ids,
+            sealed_manifest_fingerprint,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError):
+        return None
+
+
 def require_complete_direct_terminal_publication(
     state: str,
     current_snapshot: str,
@@ -174,4 +258,5 @@ __all__ = [
     "accepted_direct_terminal_call_frontier",
     "accepted_direct_terminal_sealed_accounting",
     "require_complete_direct_terminal_publication",
+    "selected_accepted_direct_terminal_call_frontier",
 ]

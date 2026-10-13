@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import secrets
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -15,6 +17,7 @@ import pytest
 import chiplog.composition.r14_native_selected_accounting_source as selected_source
 import chiplog.composition.r14_original_prepare_source as original_source
 from chiplog.architecture.r7_runtime import (
+    R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
 )
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
@@ -23,7 +26,13 @@ from chiplog.capabilities.agent_loop.execution_contracts import (
     ExecutionContinue,
     SelfEffectArguments,
 )
+from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_contracts import (
+    NATIVE_SEALED_ACCOUNTING_V3_REQUEST_SCHEMA,
+    NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA,
+    PreparedNativeSealedAccountingV3,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 from chiplog.composition.common_cli_execution_runtime import (
     CommonCliExecutionRuntime,
     open_common_cli_execution_runtime,
@@ -45,6 +54,13 @@ from chiplog.composition.r14_native_preparation_bindings import (
 )
 from chiplog.composition.r14_original_prepare_source import R14OriginalNativePrepareSource
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.platform.broker import (
+    BrokerSession,
+    CallBudget,
+    PublicPortCall,
+    PublicPortRejected,
+    PublicPortSuccess,
+)
 from tests.support.h1_cli_execution import admit_complete_script, admit_runtime_slot
 
 
@@ -120,6 +136,9 @@ async def _selected_v23_native_fanout(
     tool_calls: tuple[ConsequentialToolCall, ...] | None = None,
     accepted_call_id: str | None = None,
     cancelled_call_id: str = "effect",
+    manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+    native_one_call_context: bool = False,
+    terminalize_accepted: bool = False,
 ) -> AsyncIterator[tuple[CommonCliExecutionRuntime, CallSubjectHead]]:
     database = tmp_path / "native-v23-prepare.sqlite"
     custody = tmp_path / "dispatch-custody"
@@ -139,7 +158,7 @@ async def _selected_v23_native_fanout(
         database,
         resources=resources,
         responses=(response,),
-        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+        manifest=manifest,
     ) as runtime:
         request = await admit_runtime_slot(runtime, "native-v23")
         initial = await runtime.drive_input(request)
@@ -148,7 +167,10 @@ async def _selected_v23_native_fanout(
             "hermetic-ingress", initial.stable_run_lineage_id, initial.selected_run_head.head
         )
         captured = await runtime.capture_execution(
-            "hermetic-ingress", initial.stable_run_lineage_id, started.head
+            "hermetic-ingress",
+            initial.stable_run_lineage_id,
+            started.head,
+            native_one_call_context=native_one_call_context,
         )
         await runtime.seal_execution(
             "hermetic-ingress", initial.stable_run_lineage_id, captured.head
@@ -176,7 +198,7 @@ async def _selected_v23_native_fanout(
                     ),
                 ),
             )
-            await runtime.accept_call(
+            accepted = await runtime.accept_call(
                 "hermetic-ingress",
                 CallAcceptanceAdoption(
                     act_id="accept-native-member", preview_bytes=accepted_preview.canonical_bytes()
@@ -206,6 +228,25 @@ async def _selected_v23_native_fanout(
                 ),
             ),
         )
+        if terminalize_accepted:
+            assert accepted_call_id is not None
+            intent_id = accepted.external_intent.subject_id
+            await runtime.authorize_dispatch(
+                "hermetic-ingress", intent_id, "authorize-native-member", sealed.run_id
+            )
+            await runtime.commit_first_send(
+                "hermetic-ingress", intent_id, "send-native-member", sealed.run_id
+            )
+            await runtime.emit_committed("hermetic-ingress", intent_id)
+            outcome_publication = await runtime.resolve_dispatch_outcome(
+                "hermetic-ingress", intent_id, "close-native-member"
+            )
+            outcome = DispatchOutcomeRecordV2.model_validate_json(
+                outcome_publication.complete_records[0].canonical_bytes
+            )
+            assert outcome.snapshot.state == "CONFIRMED"
+            assert outcome.snapshot.obligation.state == "CLOSED"
+            await runtime.publish_accepted_direct_terminal()
         seal = seals[0].proposal.fan_out.response_seal
         yield cast(CommonCliExecutionRuntime, runtime), CallSubjectHead(
             subject_id=seal.response_seal_id,
@@ -295,6 +336,122 @@ async def test_cancelled_member_projection_uses_call_identity_in_multi_call_seal
         assert reopened_cancelled is not None
         assert reopened_accepted is not None
         assert reopened_accepted.acceptance == accepted.acceptance
+
+
+@pytest.mark.asyncio
+async def test_v3_source_projects_mixed_terminal_members_in_seal_order(
+    tmp_path: Path,
+) -> None:
+    calls = (
+        ConsequentialToolCall(
+            call_id="first-effect",
+            tool="request_self_effect",
+            arguments=SelfEffectArguments(payload=b"first", bundle_members=("first",)),
+        ),
+        ConsequentialToolCall(
+            call_id="second-effect",
+            tool="request_self_effect",
+            arguments=SelfEffectArguments(payload=b"second", bundle_members=("second",)),
+        ),
+    )
+    async with _selected_v23_native_fanout(
+        tmp_path,
+        tool_calls=calls,
+        accepted_call_id="first-effect",
+        cancelled_call_id="second-effect",
+        manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
+        terminalize_accepted=True,
+    ) as (runtime, seal):
+        projection = R14OriginalNativePrepareSource(runtime).collect(seal)
+        assert projection is not None
+        source = selected_source.R14NativeSelectedAccountingSource(
+            runtime, projection, bind_native_execution_preparation_v2(projection)
+        )
+        source_facts = source.collect(projection.prepared_run)
+        assert source_facts is not None
+        labels_by_id = {
+            item.original_call_id: item.call.original.model_call_label
+            for item in source_facts.selected_native_seals[0].initialized_records
+        }
+        request = source.prepare_sealed_accounting_v3(seal)
+        assert request is not None
+        assert tuple(
+            labels_by_id[item.original_call_id]
+            for item in request.complete_ordered_frontiers
+        ) == ("first-effect", "second-effect")
+        assert source.prepare_sealed_accounting_v3(
+            CallSubjectHead(
+                subject_id="unselected-response",
+                revision=Present(head="record:" + "0" * 64, fingerprint="0" * 64),
+            )
+        ) is None
+        engine = runtime._supervisor.runtime()
+        callee = engine.session("agent_loop")
+        caller = BrokerSession(
+            tenant_id=runtime._tenant_id,
+            broker_epoch=callee.broker_epoch,
+            generation_id=callee.generation_id,
+            owner_id="broker",
+            session_id=f"broker:{callee.generation_id}",
+        )
+        owner_call = PublicPortCall(
+            operation_id="agent_loop.prepare_native_sealed_accounting.v3",
+            request_id="native-sealed-accounting-test:" + secrets.token_hex(8),
+            caller=caller,
+            callee=callee,
+            schema_id=NATIVE_SEALED_ACCOUNTING_V3_REQUEST_SCHEMA,
+            canonical_payload=request.canonical_bytes(),
+            budget=CallBudget(
+                remaining_calls=1,
+                remaining_depth=1,
+                policy_version=1,
+                absolute_deadline_ns=time.monotonic_ns() + 5_000_000_000,
+            ),
+        )
+        result = await engine.call(owner_call)
+        assert isinstance(result, PublicPortSuccess), (
+            result.failure.reason if isinstance(result, PublicPortRejected) else result
+        )
+        assert result.request_id == owner_call.request_id
+        assert result.responder == callee
+        assert result.schema_id == NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA
+        prepared = PreparedNativeSealedAccountingV3.model_validate_json(
+            result.canonical_payload
+        )
+        assert prepared.selected_response == request.selected_response
+        assert prepared.sealed_manifest_fingerprint == request.sealed_manifest_fingerprint
+        assert prepared.complete_ordered_calls == request.complete_ordered_frontiers
+
+
+@pytest.mark.asyncio
+async def test_v3_source_holds_when_one_member_is_not_terminal(
+    tmp_path: Path,
+) -> None:
+    calls = (
+        ConsequentialToolCall(
+            call_id="first-effect",
+            tool="request_self_effect",
+            arguments=SelfEffectArguments(payload=b"first", bundle_members=("first",)),
+        ),
+        ConsequentialToolCall(
+            call_id="second-effect",
+            tool="request_self_effect",
+            arguments=SelfEffectArguments(payload=b"second", bundle_members=("second",)),
+        ),
+    )
+    async with _selected_v23_native_fanout(
+        tmp_path,
+        tool_calls=calls,
+        accepted_call_id="first-effect",
+        cancelled_call_id="second-effect",
+        manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
+    ) as (runtime, seal):
+        projection = R14OriginalNativePrepareSource(runtime).collect(seal)
+        assert projection is not None
+        source = selected_source.R14NativeSelectedAccountingSource(
+            runtime, projection, bind_native_execution_preparation_v2(projection)
+        )
+        assert source.prepare_sealed_accounting_v3(seal) is None
 
 
 @pytest.mark.asyncio

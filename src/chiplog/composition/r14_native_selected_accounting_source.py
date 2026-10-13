@@ -28,10 +28,15 @@ from chiplog.capabilities.agent_loop.execution_preparation_bindings_contracts im
     decode_native_execution_preparation_bindings_v2,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
-from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_contracts import (
+    PrepareNativeSealedAccountingV3,
+)
+from chiplog.capabilities.agent_loop.recovery_contracts import NotApplicable, Present
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+    CancelledBeforeAcceptResult,
     ConsequentialAcceptedCall,
     InitializedCall,
+    TerminalCallFrontier,
 )
 from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEffectHistoryMember
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
@@ -438,6 +443,208 @@ class R14NativeSelectedAccountingSource:
             selected_seal=seal,
             original_call_id=record.original_call_id,
             initialized=initialized,
+        )
+
+    def prepare_sealed_accounting_v3(
+        self, selected_response: CallSubjectHead
+    ) -> PrepareNativeSealedAccountingV3 | None:
+        """Build exact ordered terminal frontiers for one authenticated native seal."""
+        if type(selected_response) is not CallSubjectHead:
+            raise TypeError("selected response must be an exact CallSubjectHead")
+        facts = self.collect(self._original_prepare.prepared_run)
+        if facts is None or facts.target_legacy_seals:
+            return None
+        selected_seals = tuple(
+            seal
+            for seal in facts.selected_native_seals
+            if seal.response_seal == selected_response
+        )
+        if len(selected_seals) != 1:
+            return None
+        seal = selected_seals[0]
+        ordered_call_ids = tuple(
+            record.original_call_id for record in seal.initialized_records
+        )
+        if (
+            not ordered_call_ids
+            or len(set(ordered_call_ids)) != len(ordered_call_ids)
+            or len(seal.inventory_rows) != len(ordered_call_ids)
+            or tuple(row.original_call_id for row in seal.inventory_rows) != ordered_call_ids
+            or tuple(row.initialized_record for row in seal.inventory_rows)
+            != seal.initialized_records
+        ):
+            return None
+        frontiers: list[TerminalCallFrontier] = []
+        for row in seal.inventory_rows:
+            if isinstance(row.acceptance, InitializedCall):
+                if row.terminal.kind != "PRESENT":
+                    return None
+                cancellation = self._cancelled_frontier_for_member(
+                    facts, seal, row.original_call_id
+                )
+                if cancellation is None:
+                    return None
+                frontiers.append(cancellation)
+                continue
+            if (
+                not isinstance(row.acceptance, ConsequentialAcceptedCall)
+                or row.terminal.kind != "ABSENT"
+            ):
+                return None
+            accepted = self._accepted_member_facts(
+                facts, seal, row.original_call_id
+            )
+            if accepted is None:
+                return None
+            from chiplog.composition.r14_accepted_direct_terminal_frontier import (
+                selected_accepted_direct_terminal_call_frontier,
+            )
+
+            frontier = selected_accepted_direct_terminal_call_frontier(
+                self._runtime,
+                response_id=selected_response.subject_id,
+                original_call_id=row.original_call_id,
+                ordered_initialized_call_ids=ordered_call_ids,
+                sealed_manifest_fingerprint=selected_response.revision.fingerprint,
+                acceptance=row.acceptance,
+            )
+            if frontier is None:
+                return None
+            frontiers.append(frontier)
+        if len(frontiers) != len(ordered_call_ids) or tuple(
+            item.original_call_id for item in frontiers
+        ) != ordered_call_ids:
+            return None
+        try:
+            return PrepareNativeSealedAccountingV3(
+                command_id="native-sealed-accounting:" + selected_response.revision.fingerprint,
+                selected_response=selected_response,
+                sealed_manifest_fingerprint=selected_response.revision.fingerprint,
+                ordered_sealed_call_ids=ordered_call_ids,
+                complete_ordered_frontiers=tuple(frontiers),
+            )
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _cancelled_frontier_for_member(
+        facts: R14NativeSelectedAccountingSourceFacts,
+        seal: R14NativeSelectedResponseSealFacts,
+        original_call_id: str,
+    ) -> TerminalCallFrontier | None:
+        records = tuple(
+            record
+            for record in seal.initialized_records
+            if record.original_call_id == original_call_id
+        )
+        rows = tuple(
+            row
+            for row in seal.inventory_rows
+            if row.original_call_id == original_call_id
+        )
+        cancellations = tuple(
+            item
+            for item in facts.target_cancellations
+            if item.request.original_call_id == original_call_id
+        )
+        if len(records) != 1 or len(rows) != 1 or len(cancellations) != 1:
+            return None
+        record, row, cancellation = records[0], rows[0], cancellations[0]
+        initialized = reference(record.original_call_id, record)
+        terminal = cancellation.proposal.terminal
+        result = cancellation.proposal.result
+        terminal_ref = reference(terminal.terminal_id, terminal)
+        result_ref = reference(result.result_id, result)
+        if (
+            row.initialized != initialized
+            or row.initialized_record != record
+            or row.acceptance != InitializedCall(initialized=initialized.revision)
+            or row.terminal != terminal_ref.revision
+            or cancellation.request.initialized != initialized
+            or cancellation.request.initialized_record != record
+            or cancellation.proposal.complete_ordered_record_manifest
+            != (terminal_ref, result_ref)
+            or terminal.original_call_id != original_call_id
+            or terminal.initialized != initialized
+            or result.original_call_id != original_call_id
+            or result.initialized != initialized
+            or result.terminal != terminal_ref
+            or result.outcome != "NOT_EXECUTED"
+        ):
+            return None
+        return TerminalCallFrontier(
+            original_call_id=original_call_id,
+            response_id=seal.response_seal.subject_id,
+            acceptance=InitializedCall(initialized=initialized.revision),
+            disposition=CancelledBeforeAcceptResult(
+                terminal=terminal_ref.revision,
+                not_executed_result=result_ref.revision,
+                initialized_predecessor=initialized.revision,
+                recovered_outcome=NotApplicable(),
+            ),
+        )
+
+    @staticmethod
+    def _accepted_member_facts(
+        facts: R14NativeSelectedAccountingSourceFacts,
+        seal: R14NativeSelectedResponseSealFacts,
+        original_call_id: str,
+    ) -> R14NativeOneCallAcceptedFacts | None:
+        if facts.target_legacy_seals:
+            return None
+        acceptances = tuple(
+            item
+            for item in facts.target_acceptances
+            if item.loop_request.binding.original_call_id == original_call_id
+        )
+        records = tuple(
+            item for item in seal.initialized_records if item.original_call_id == original_call_id
+        )
+        rows = tuple(
+            item for item in seal.inventory_rows if item.original_call_id == original_call_id
+        )
+        if len(acceptances) != 1 or len(records) != 1 or len(rows) != 1:
+            return None
+        acceptance, record, row = acceptances[0], records[0], rows[0]
+        initialized = reference(record.original_call_id, record)
+        try:
+            raw = base64.b64decode(record.call.canonical_call_base64, validate=True)
+            tool = ConsequentialToolCall.model_validate_json(raw)
+        except ValueError, binascii.Error:
+            return None
+        binding = acceptance.loop_request.binding
+        branch = row.acceptance
+        manifest = tuple(
+            member.revision for member in acceptance.loop_proposal.complete_acceptance_manifest
+        )
+        if (
+            len(manifest) != 3
+            or tool.canonical_bytes() != raw
+            or tool.tool != "request_self_effect"
+            or row.initialized != initialized
+            or row.initialized_record != record
+            or not isinstance(branch, ConsequentialAcceptedCall)
+            or branch.initialized != initialized.revision
+            or branch.accepted != manifest[0]
+            or branch.execution_intent != manifest[1]
+            or branch.external_effect_intent != manifest[2]
+            or branch.complete_acceptance_manifest != manifest
+            or row.terminal.kind != "ABSENT"
+            or binding.original_call_id != original_call_id
+            or binding.initialized != initialized
+            or acceptance.loop_request.initialized_record != record
+            or binding.original != record.call.original
+            or acceptance.loop_proposal.accepted.binding != binding
+            or acceptance.loop_proposal.execution_intent.original_call_id != original_call_id
+            or acceptance.loop_proposal.execution_intent.initialized != initialized
+        ):
+            return None
+        return R14NativeOneCallAcceptedFacts(
+            source=facts,
+            selected_seal=seal,
+            original_call_id=original_call_id,
+            initialized=initialized,
+            acceptance=acceptance,
         )
 
     def collect_one_accepted(
