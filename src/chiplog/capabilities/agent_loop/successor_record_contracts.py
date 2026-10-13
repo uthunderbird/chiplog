@@ -685,6 +685,20 @@ def validate_execution_successor_records(
     if not isinstance(edge.record, ExecutionSuccessorEdge):
         raise RecoveryRecordIntegrityError("successor edge row mismatch")
     _require(result.edge, edge.record, "result successor edge differs")
+    if isinstance(result.lineage_advance, NonSchedulerSuccessor):
+        admitted = request.admitted_input
+        if admitted is None:
+            raise RecoveryRecordIntegrityError("non-scheduler successor lacks selected ingress")
+        _require(
+            edge.record.changed_binding_manifest,
+            (
+                admitted.custody,
+                admitted.inbox,
+                admitted.selected_decision,
+                admitted.source_authentication,
+            ),
+            "successor changed binding manifest differs from selected ingress",
+        )
     _require(
         result.source_request_fingerprint,
         hashlib.sha256(request.canonical_bytes()).hexdigest(),

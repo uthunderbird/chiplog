@@ -499,7 +499,12 @@ async def non_scheduler_successor() -> NonSchedulerSuccessorFixture:
         successor_created=run_head(successor),
         source_cut_fingerprint=cut.digest(),
         disposition_version=request.disposition_version,
-        changed_binding_manifest=(head("changed"),),
+        changed_binding_manifest=(
+            admitted_input.custody,
+            admitted_input.inbox,
+            admitted_input.selected_decision,
+            admitted_input.source_authentication,
+        ),
         complete_initialization=(initialization_ref,),
         original_obligations=(),
         inherited_no_retry_boundaries=(),

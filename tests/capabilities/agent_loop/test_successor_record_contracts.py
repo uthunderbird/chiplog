@@ -422,6 +422,16 @@ async def test_successor_validator_rejects_mutated_native_selected_source(mutati
 
 async def test_non_scheduler_successor_validates_real_request_result_and_members() -> None:
     value = await non_scheduler_successor()
+    admitted = value.request.admitted_input
+    assert admitted is not None
+    assert admitted.normalization == admitted.inbox
+    assert admitted.canonical_normalization_record == admitted.canonical_inbox_record
+    assert value.result.edge.changed_binding_manifest == (
+        admitted.custody,
+        admitted.inbox,
+        admitted.selected_decision,
+        admitted.source_authentication,
+    )
     validate_execution_successor_records(
         value.request,
         value.result,
@@ -432,6 +442,47 @@ async def test_non_scheduler_successor_validates_real_request_result_and_members
         (),
         None,
     )
+
+
+@pytest.mark.parametrize("mutation", ["omitted", "substituted", "reordered"])
+async def test_non_scheduler_successor_rejects_changed_binding_manifest_mutation(
+    mutation: str,
+) -> None:
+    value = await non_scheduler_successor()
+    admitted = value.request.admitted_input
+    assert admitted is not None
+    expected = (
+        admitted.custody,
+        admitted.inbox,
+        admitted.selected_decision,
+        admitted.source_authentication,
+    )
+    if mutation == "omitted":
+        changed = expected[:-1]
+    elif mutation == "substituted":
+        changed = (*expected[:-1], _head("unselected-authentication"))
+    else:
+        changed = (expected[1], expected[0], *expected[2:])
+    edge = value.result.edge.model_copy(update={"changed_binding_manifest": changed})
+    edge_member = _content_member(
+        "SUCCESSOR_EDGE", "chiplog.execution.successor-edge.v1", edge
+    )
+    result = value.result.model_copy(update={"edge": edge})
+
+    with pytest.raises(
+        RecoveryRecordIntegrityError,
+        match="successor changed binding manifest differs from selected ingress",
+    ):
+        validate_execution_successor_records(
+            value.request,
+            result,
+            edge_member,
+            value.baseline_member,
+            value.pair_member,
+            (value.initialization_member,),
+            (),
+            None,
+        )
 
 
 async def test_non_scheduler_successor_rejects_changed_predecessor_objective() -> None:
