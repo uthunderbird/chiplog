@@ -277,7 +277,9 @@ def _retained(entry, field=EVIDENCE_FIELD, cls=RetainedExecutionSuccessor):
     return value
 
 
-def _selected_matches(runtime, entry, command, evidence, *, start=False):
+def _selected_matches(
+    runtime, entry, command, evidence, *, start=False, source_validated=False
+):
     expected = _start_command(evidence) if start else _command(evidence)
     selected_predecessor = (
         evidence.source_resulting_commitment
@@ -292,7 +294,7 @@ def _selected_matches(runtime, entry, command, evidence, *, start=False):
         or entry.get("predecessor") != selected_predecessor
     ):
         raise ValueError("selected successor decision differs from retained batch")
-    if start:
+    if start and not source_validated:
         source_entry = _entry_for(runtime, evidence.source.request.command_id, OPERATION)
         if source_entry is None:
             raise ValueError("successor start lacks selected source batch")

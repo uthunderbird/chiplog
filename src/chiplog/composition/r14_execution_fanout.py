@@ -109,14 +109,14 @@ async def publish_execution_fanout(
     complete_registry: bool = False,
     complete_profile: CompleteSealProfile = "V1",
 ) -> ExecutionRunRecord:
-    observed = await runtime._execution_actor(peer)
+    access_actor = await runtime._execution_actor(peer)
     h1_preflight: H1V2SealPreflight | None = None
     h1_runtime: CommonCliExecutionRuntime | None = None
     h1_owner_asof: H1OwnerAsOfV1 | None = None
     h1_preseal_pe_owner: H1PresealPEDecisionOwner | None = None
     h1_preseal_pe_capture: H1PresealPEDecisionCapture | None = None
     with runtime._authority_gate().hold():
-        runtime._check_execution_actor(observed)
+        runtime._check_execution_actor(access_actor)
         if complete_profile not in ("V1", "H1_V2", "H1_V3"):
             raise LoopRejected("unregistered execution complete seal profile")
         snapshot, inventory, previous = read_execution_call_history(runtime)
@@ -167,9 +167,18 @@ async def publish_execution_fanout(
             ) as error:
                 raise LoopRejected("H1 V2 preflight is unproven") from error
 
-    # P capture may make an owner IPC call.  It must finish before any actor
-    # deadline is copied into the fanout request, its retained evidence, or
-    # the eventual physical command.
+    # Keep an early access check above, then issue a fresh actor after the
+    # selected source cut and optional H1 preflight are prepared. Local reads
+    # do not consume the fixed owner-call deadline; the writer admission guard
+    # rechecks the fresh actor and exact cut.
+    observed = await runtime._execution_actor(peer)
+    with runtime._authority_gate().hold():
+        runtime._check_execution_actor(observed)
+        if not runtime._same_execution_actor_identity(access_actor, observed):
+            raise LoopRejected("execution fanout actor changed during source preparation")
+
+    # P capture may make an owner IPC call. It must finish before any refreshed
+    # actor deadline is copied into retained evidence or the physical command.
     h1_v2_pe_capture_route = (
         complete_profile == "H1_V2"
         and complete_registry

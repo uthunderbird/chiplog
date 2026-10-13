@@ -3,8 +3,11 @@
 import pytest
 
 from chiplog.architecture.r7_runtime import R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST
-from chiplog.capabilities.agent_loop.contracts import LoopRejected
-from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+from chiplog.capabilities.agent_loop.contracts import LoopRejected, ToolCall
+from chiplog.capabilities.agent_loop.execution_contracts import (
+    ExecutionContinue,
+    ExecutionRunRecord,
+)
 from chiplog.composition.common_cli_execution_runtime import (
     SelectedExecutionReceiptV1,
     open_common_cli_execution_runtime,
@@ -72,10 +75,14 @@ async def test_new_authenticated_ingress_selects_and_replays_suspended_run_succe
     successor_resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=custody
     )
+    successor_response = ExecutionContinue(
+        kind="Continue",
+        tool_calls=(ToolCall(call_id="plan", tool="propose_planning", text="Next"),),
+    ).canonical_bytes()
     async with open_common_cli_execution_runtime(
         database,
         resources=successor_resources,
-        responses=(native_response(),),
+        responses=(successor_response,),
         manifest=manifest,
         recovery_cut_source=source,
     ) as runtime:
@@ -134,10 +141,26 @@ async def test_new_authenticated_ingress_selects_and_replays_suspended_run_succe
             )
         assert runtime._execution_model.requests == []
         assert _durable_state(runtime) == before_stale_capture
+
+        captured = await runtime.capture_execution(
+            "hermetic-ingress",
+            successor.run_id,
+            successor.head,
+            native_one_call_context=False,
+        )
+        assert captured.run_id == successor.run_id
+        assert captured.head != successor.head
+        assert captured.turns[-1].attempts
+        assert len(runtime._execution_model.requests) == 1
+        sealed = await runtime.seal_execution(
+            "hermetic-ingress", captured.run_id, captured.head
+        )
+        assert sealed.run_id == successor.run_id
+        assert len(runtime._execution_model.requests) == 1
         assert successor_resources.require_original_provider().transfers == ()
-        history_after_successor = read_execution_history(runtime)
+        history_after_capture = read_execution_history(runtime)
         decisions = runtime._loop_decisions().entries()
-        durable_after_successor = _durable_state(runtime)
+        durable_after_capture = _durable_state(runtime)
 
     reopened_resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=custody
@@ -155,7 +178,7 @@ async def test_new_authenticated_ingress_selects_and_replays_suspended_run_succe
         assert replay.selected_run_head == receipt.selected_run_head
         assert replay.selected_run_state == "ACTIVE"
         assert reopened._loop_decisions().entries() == decisions
-        assert read_execution_history(reopened) == history_after_successor
-        assert _durable_state(reopened) == durable_after_successor
+        assert read_execution_history(reopened) == history_after_capture
+        assert _durable_state(reopened) == durable_after_capture
         assert reopened._execution_model.requests == []
         assert not reopened_resources.require_original_provider().transfers

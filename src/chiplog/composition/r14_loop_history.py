@@ -872,7 +872,12 @@ def _read_call_history(
                                 "selected execution successor start differs from exact CREATED Run"
                             )
                         successor._selected_matches(
-                            runtime, retained_entry[2], command, retained, start=True
+                            runtime,
+                            retained_entry[2],
+                            command,
+                            retained,
+                            start=True,
+                            source_validated=True,
                         )
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
