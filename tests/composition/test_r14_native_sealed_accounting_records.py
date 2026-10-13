@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 from pydantic import TypeAdapter
 
@@ -15,8 +17,11 @@ from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_preparation imp
 )
 from chiplog.composition.r14_native_accounting_records import (
     NativeSealedAccountingSourceStampV3,
+    NativeSealedAccountingV3PhysicalEnvelope,
     NativeSealedAccountingV3Record,
     RetainedNativeSealedAccountingV3Publication,
+    sealed_accounting_v3_command,
+    sealed_accounting_v3_envelope,
     sealed_accounting_v3_record,
     validate_retained_sealed_accounting_v3_publication,
 )
@@ -104,6 +109,28 @@ def test_v3_record_retains_mixed_per_seal_result_and_external_source_stamp():
     ) == selected.ordered_sealed_call_ids
     assert selected.source_stamp == evidence.source_stamp
     assert "source_stamp" not in evidence.request.model_dump()
+
+
+def test_v3_candidate_command_is_one_seal_scoped_atomic_physical_row():
+    evidence = _retained()
+
+    command = sealed_accounting_v3_command(evidence)
+    envelope = sealed_accounting_v3_envelope(evidence)
+    reopened = TypeAdapter(NativeSealedAccountingV3PhysicalEnvelope).validate_json(
+        envelope.canonical_bytes()
+    )
+
+    assert reopened == envelope
+    assert command.tenant_id == "tenant"
+    assert command.expected_head == 12
+    assert command.idempotency_key == evidence.record.record_id
+    assert command.operation_kind == "agent_loop.native-sealed-accounting.v3"
+    assert len(command.records) == len(envelope.records) == 1
+    assert command.records[0].record_id == evidence.record.record_id
+    assert command.records[0].canonical_bytes == evidence.record.canonical_bytes()
+    assert command.records[0].fingerprint == hashlib.sha256(
+        evidence.record.canonical_bytes()
+    ).hexdigest()
 
 
 @pytest.mark.parametrize(

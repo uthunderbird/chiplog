@@ -34,6 +34,9 @@ NATIVE_SEALED_ACCOUNTING_V3_OPERATION = "agent_loop.prepare_native_sealed_accoun
 NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA = (
     "chiplog.agent-loop.native-sealed-accounting.v3"
 )
+NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION = (
+    "agent_loop.native-sealed-accounting.v3"
+)
 MAX_NATIVE_ACCOUNTING_RECORD_BYTES = 1_048_576
 
 
@@ -124,6 +127,26 @@ class RetainedNativeSealedAccountingV3Publication(RecoveryDTO):
     record: NativeSealedAccountingV3Record
 
 
+class NativeSealedAccountingV3PhysicalEnvelope(RecoveryDTO):
+    """One per-seal atomic write, separate from its retained owner exchange."""
+
+    kind: Literal["R14_NATIVE_SEALED_ACCOUNTING_PHYSICAL_V3"] = (
+        "R14_NATIVE_SEALED_ACCOUNTING_PHYSICAL_V3"
+    )
+    tenant_id: Identity
+    operation_kind: Literal["agent_loop.native-sealed-accounting.v3"] = (
+        NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION
+    )
+    idempotency_key: Identity
+    expected_head: int = Field(ge=0)
+    fence_generation: Literal["r6"] = "r6"
+    expected_fence_frontier: Literal[0] = 0
+    minimum_fence_frontier: Literal[0] = 0
+    retained_fingerprint: Digest
+    records: tuple[FanOutPhysicalMember, ...] = Field(min_length=1, max_length=1)
+    request_fingerprint: Digest
+
+
 def sealed_accounting_v3_record(
     request: PrepareNativeSealedAccountingV3,
     response: PreparedNativeSealedAccountingV3,
@@ -176,6 +199,81 @@ def validate_retained_sealed_accounting_v3_publication(
     ):
         raise ValueError("native sealed accounting V3 retained exchange differs")
     return evidence.record
+
+
+def sealed_accounting_v3_command(
+    evidence: RetainedNativeSealedAccountingV3Publication,
+) -> PhysicalPublicationCommand:
+    """Build the candidate single-row command for one exact response seal."""
+    record = validate_retained_sealed_accounting_v3_publication(evidence)
+    raw = record.canonical_bytes()
+    fingerprint = hashlib.sha256(raw).hexdigest()
+    member = FanOutPhysicalMember(
+        record_id=record.record_id,
+        owner=OWNER,
+        schema_id=NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA,
+        canonical_payload_base64=base64.b64encode(raw).decode(),
+        fingerprint=fingerprint,
+    )
+    envelope = NativeSealedAccountingV3PhysicalEnvelope(
+        tenant_id=record.source_stamp.tenant_id,
+        idempotency_key=record.record_id,
+        expected_head=record.source_stamp.tenant_commit_sequence,
+        retained_fingerprint=evidence.digest(),
+        records=(member,),
+        request_fingerprint="0" * 64,
+    )
+    header = json.loads(envelope.canonical_bytes())
+    del header["request_fingerprint"]
+    request_fingerprint = hashlib.sha256(
+        json.dumps(header, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    envelope = envelope.model_copy(update={"request_fingerprint": request_fingerprint})
+    if len(envelope.canonical_bytes()) > MAX_NATIVE_ACCOUNTING_RECORD_BYTES:
+        raise ValueError("native sealed accounting V3 envelope exceeds physical bound")
+    return PhysicalPublicationCommand(
+        tenant_id=envelope.tenant_id,
+        operation_kind=envelope.operation_kind,
+        idempotency_key=envelope.idempotency_key,
+        request_fingerprint=envelope.request_fingerprint,
+        expected_head=envelope.expected_head,
+        fence_generation=envelope.fence_generation,
+        expected_fence_frontier=envelope.expected_fence_frontier,
+        minimum_fence_frontier=envelope.minimum_fence_frontier,
+        records=(
+            PhysicalRecord(
+                member.record_id,
+                member.owner,
+                member.schema_id,
+                raw,
+                member.fingerprint,
+            ),
+        ),
+    )
+
+
+def sealed_accounting_v3_envelope(
+    evidence: RetainedNativeSealedAccountingV3Publication,
+) -> NativeSealedAccountingV3PhysicalEnvelope:
+    """Reconstruct the registered V3 candidate envelope for selected history."""
+    command = sealed_accounting_v3_command(evidence)
+    record = command.records[0]
+    return NativeSealedAccountingV3PhysicalEnvelope(
+        tenant_id=command.tenant_id,
+        idempotency_key=command.idempotency_key,
+        expected_head=command.expected_head,
+        retained_fingerprint=evidence.digest(),
+        records=(
+            FanOutPhysicalMember(
+                record_id=record.record_id,
+                owner=record.owner,
+                schema_id=record.schema_id,
+                canonical_payload_base64=base64.b64encode(record.canonical_bytes).decode(),
+                fingerprint=record.fingerprint,
+            ),
+        ),
+        request_fingerprint=command.request_fingerprint,
+    )
 
 
 def _build_sealed_accounting_v3_record(
