@@ -64,13 +64,25 @@ The present one-call preparation is a reuse boundary, not full-fanout accounting
 
 Enumerate every original initialized member from the selected seal; retain exact
 ordered bytes and exactly one admissible branch for the currently executable
-accepted/cancelled paths. Preserve a read-only member as an unselected subject in
-the owner-side accounting proposal; do not publish a durable read-only pending
-record before R14.7 can allocate its required lineage. Join all earlier-call terminal/result/obligation
+accepted/cancelled paths. Do not publish a durable read-only pending record
+before R14.7 can allocate its required lineage. **Clarification:** a
+read-only call may be omitted before fanout selection only where the existing
+policy already omits it. Once a selected seal contains a read-only member, hold
+the entire accounting projection/publication; never filter that member or publish
+partial accounting. Do not initialize it or allocate its lineage/pending record
+while `max_attempts` is unset. Join all earlier-call terminal/result/obligation
 records. Do not turn a recovered outcome into a rewritten terminal disposition.
 Observe actual selected and physical members after reopen, not only proposed DTOs.
-Keep the three A54 limits distinct and versioned: call count, complete manifest
-bytes, and total batch bytes. Check each independently at N and N+1.
+Publish one new-version accounting record per selected seal, with an idempotency
+identity bound to that seal. A Run may have multiple seals; replay and history
+selection must be scoped to the requested seal rather than requiring or returning
+one global accounting record. Bind every accepted terminal, obligation and
+recovered outcome to that member's exact selected acceptance/effect source and
+seal; cross-seal substitution holds. After materialization, the canonical reader
+must prove exact full physical membership, including absence of orphan rows; the
+selected-only startup pass alone is not completion evidence. Keep the three A54
+limits distinct and versioned: call count, complete manifest bytes, and total
+batch bytes. Check each independently at N and N+1.
 
 Checks: extend `test_execution_call_branch_competition.py`,
 `test_r14_native_open_obligation.py` and `test_r14_original_resolution_mounted.py`
@@ -80,6 +92,9 @@ histories select zero partial companions and emit zero pre-accept external calls
 Read-only members remain unselected, not falsely accounted as terminal outcomes;
 without the registered lineage bound, no read-only initialization or durable
 pending record is allowed. The complete serialized envelope has explicit N/N+1 bounds.
+Also cover two distinct seals in one Run, exact per-seal replay, two accepted calls
+with distinct outcomes, a cross-seal accepted-evidence substitution, and full
+physical orphan detection after reopen.
 
 ### R14.7 — Executable read-only lineage (original R14.3; accounting completion for R14.1)
 

@@ -30,6 +30,10 @@ from chiplog.composition.common_cli_execution_runtime import (
 )
 from chiplog.composition.common_execution_driver_contracts import SelectedExecutionReceiptV1
 from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_native_fanout
+from chiplog.composition.r14_call_acceptance_port import (
+    CallAcceptanceAdoption,
+    CallAcceptanceTarget,
+)
 from chiplog.composition.r14_cancellation_contracts import CancelCallSubmission
 from chiplog.composition.r14_execution_complete_seal_records import (
     RetainedExecutionCompleteSealV3,
@@ -112,13 +116,18 @@ async def _seal_other_native(runtime: CommonCliExecutionRuntime) -> None:
 @asynccontextmanager
 async def _selected_v23_native_fanout(
     tmp_path: Path,
+    *,
+    tool_calls: tuple[ConsequentialToolCall, ...] | None = None,
+    accepted_call_id: str | None = None,
+    cancelled_call_id: str = "effect",
 ) -> AsyncIterator[tuple[CommonCliExecutionRuntime, CallSubjectHead]]:
     database = tmp_path / "native-v23-prepare.sqlite"
     custody = tmp_path / "dispatch-custody"
     resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
     response = ExecutionContinue(
         kind="Continue",
-        tool_calls=(
+        tool_calls=tool_calls
+        or (
             ConsequentialToolCall(
                 call_id="effect",
                 tool="request_self_effect",
@@ -147,7 +156,41 @@ async def _selected_v23_native_fanout(
         _snapshot, inventory, _legacy, seals, _cancellations, _acceptances = (
             read_execution_recovery_history(runtime)
         )
-        row = inventory.ordered_calls[0]
+        if accepted_call_id is not None:
+            accepted_row = next(
+                item
+                for item in inventory.ordered_calls
+                if item.initialized_record.call.original.model_call_label == accepted_call_id
+            )
+            accepted_preview = await runtime.preview_call_acceptance(
+                "hermetic-ingress",
+                CallAcceptanceTarget(
+                    original_call_id=accepted_row.original_call_id,
+                    initialized=accepted_row.initialized,
+                    current_run=CallSubjectHead(
+                        subject_id=seals[0].proposal.sealed_run.run_id,
+                        revision=Present(
+                            head=seals[0].proposal.sealed_run.head,
+                            fingerprint=seals[0].proposal.sealed_run.digest(),
+                        ),
+                    ),
+                ),
+            )
+            await runtime.accept_call(
+                "hermetic-ingress",
+                CallAcceptanceAdoption(
+                    act_id="accept-native-member", preview_bytes=accepted_preview.canonical_bytes()
+                ),
+            )
+        row = next(
+            (
+                item
+                for item in inventory.ordered_calls
+                if item.initialized_record.call.original.model_call_label == cancelled_call_id
+            ),
+            None,
+        )
+        assert row is not None
         sealed = seals[0].proposal.sealed_run
         await runtime.cancel_execution_call(
             "hermetic-ingress",
@@ -168,6 +211,90 @@ async def _selected_v23_native_fanout(
             subject_id=seal.response_seal_id,
             revision=Present(head="record:" + seal.digest(), fingerprint=seal.digest()),
         )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_member_projection_uses_call_identity_in_multi_call_seal(
+    tmp_path: Path,
+) -> None:
+    calls = (
+        ConsequentialToolCall(
+            call_id="first-effect",
+            tool="request_self_effect",
+            arguments=SelfEffectArguments(payload=b"first", bundle_members=("first",)),
+        ),
+        ConsequentialToolCall(
+            call_id="second-effect",
+            tool="request_self_effect",
+            arguments=SelfEffectArguments(payload=b"second", bundle_members=("second",)),
+        ),
+    )
+    async with _selected_v23_native_fanout(
+        tmp_path,
+        tool_calls=calls,
+        accepted_call_id="first-effect",
+        cancelled_call_id="second-effect",
+    ) as (runtime, seal):
+        projection = R14OriginalNativePrepareSource(runtime).collect(seal)
+        assert projection is not None
+        source = selected_source.R14NativeSelectedAccountingSource(
+            runtime, projection, bind_native_execution_preparation_v2(projection)
+        )
+        source_facts = source.collect(projection.prepared_run)
+        assert source_facts is not None
+        second_original_id = next(
+            row.original_call_id
+            for row in source_facts.target_inventory_rows
+            if row.initialized_record.call.original.model_call_label == "second-effect"
+        )
+        facts = source.collect_one_cancelled(
+            projection.prepared_run, original_call_id=second_original_id
+        )
+        assert facts is not None
+        assert tuple(
+            item.call.original.model_call_label
+            for item in facts.selected_seal.initialized_records
+        ) == ("first-effect", "second-effect")
+        assert facts.original_call_id == second_original_id
+        assert source.collect_one_cancelled(
+            projection.prepared_run,
+            original_call_id=next(
+                row.original_call_id
+                for row in source_facts.target_inventory_rows
+                if row.initialized_record.call.original.model_call_label == "first-effect"
+            ),
+        ) is None
+        first_original_id = next(
+            row.original_call_id
+            for row in source_facts.target_inventory_rows
+            if row.initialized_record.call.original.model_call_label == "first-effect"
+        )
+        accepted = source.collect_one_accepted(
+            projection.prepared_run, original_call_id=first_original_id
+        )
+        assert accepted is not None
+        assert accepted.original_call_id == first_original_id
+
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
+    )
+    async with open_common_cli_execution_runtime(
+        tmp_path / "native-v23-prepare.sqlite",
+        resources=resources,
+        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
+    ) as reopened:
+        reopened_source = selected_source.R14NativeSelectedAccountingSource(
+            reopened, projection, bind_native_execution_preparation_v2(projection)
+        )
+        reopened_cancelled = reopened_source.collect_one_cancelled(
+            projection.prepared_run, original_call_id=second_original_id
+        )
+        reopened_accepted = reopened_source.collect_one_accepted(
+            projection.prepared_run, original_call_id=first_original_id
+        )
+        assert reopened_cancelled is not None
+        assert reopened_accepted is not None
+        assert reopened_accepted.acceptance == accepted.acceptance
 
 
 @pytest.mark.asyncio

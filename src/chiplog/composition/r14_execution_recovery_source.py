@@ -16,7 +16,10 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CancelledBeforeAcceptRecord,
     NotExecutedCallResultRecord,
 )
-from chiplog.capabilities.agent_loop.execution_contracts import ConsequentialToolCall
+from chiplog.capabilities.agent_loop.execution_contracts import (
+    ConsequentialToolCall,
+    ExecutionRunRecord,
+)
 from chiplog.capabilities.agent_loop.recovery_contracts import NotApplicable, Present
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import InitializedCall
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
@@ -75,7 +78,7 @@ class R14NativeCancelledCallSource:
             return None
 
     def _collect_held(self) -> R14NativeCancelledCallSourceFacts | None:
-        snapshot, inventory, legacy_seals, seals, cancellations, acceptances = (
+        snapshot, inventory, legacy_seals, seals, cancellations, _acceptances = (
             read_execution_recovery_history(self._runtime)
         )
         # This is a full enumeration predicate, including the one-seal case.
@@ -90,8 +93,19 @@ class R14NativeCancelledCallSource:
             return None
         seal = seals[0]
         initialized_records = seal.proposal.fan_out.initialized_records
-        if len(initialized_records) != 1 or len(inventory.ordered_calls) != 1:
+        if not initialized_records or not inventory.ordered_calls or len(cancellations) != 1:
             return None
+        cancellation = cancellations[0]
+        original_call_id = cancellation.request.original_call_id
+        matching_records = tuple(
+            item for item in initialized_records if item.original_call_id == original_call_id
+        )
+        matching_rows = tuple(
+            item for item in inventory.ordered_calls if item.original_call_id == original_call_id
+        )
+        if len(matching_records) != 1 or len(matching_rows) != 1:
+            return None
+        initialized_record, row = matching_records[0], matching_rows[0]
         # The registry is a fixed profile, rather than a registry shaped by this
         # selected history.  Decode it anyway so this seam never turns a local
         # factory call into an unverified profile assertion.
@@ -110,7 +124,6 @@ class R14NativeCancelledCallSource:
                 return None
         except ValueError:
             return None
-        initialized_record = initialized_records[0]
         try:
             tool = ConsequentialToolCall.model_validate_json(
                 b64decode(initialized_record.call.canonical_call_base64, validate=True)
@@ -125,7 +138,6 @@ class R14NativeCancelledCallSource:
             or not isinstance(initialized_record.call.retry_lineage, NotApplicable)
         ):
             return None
-        row = inventory.ordered_calls[0]
         initialized = reference(initialized_record.original_call_id, initialized_record)
         selected_response_seal = ordered_seals[0]
         selected_sealed_run = reference(seal.proposal.sealed_run.run_id, seal.proposal.sealed_run)
@@ -137,7 +149,7 @@ class R14NativeCancelledCallSource:
             ),
             None,
         )
-        if physical_run is None:
+        if not isinstance(physical_run, ExecutionRunRecord):
             return None
         physical_sealed_run = reference(physical_run.run_id, physical_run)
         physical_turn = physical_run.turns[-1] if physical_run.turns else None
@@ -145,21 +157,21 @@ class R14NativeCancelledCallSource:
         physical_initialized_calls = (
             physical_turn.initialized_calls if physical_turn is not None else None
         )
+        ordered_initialized = tuple(
+            reference(item.original_call_id, item) for item in initialized_records
+        )
         if (
             row.original_call_id != initialized_record.original_call_id
             or row.initialized != initialized
             or row.initialized_record != initialized_record
             or not isinstance(row.acceptance, InitializedCall)
             or row.acceptance.initialized != initialized.revision
-            or len(acceptances) != 0
-            or len(cancellations) != 1
             or not isinstance(row.terminal, Present)
             or selected_sealed_run != physical_sealed_run
             or physical_response_seal != selected_response_seal
-            or physical_initialized_calls != (initialized,)
+            or physical_initialized_calls != ordered_initialized
         ):
             return None
-        cancellation = cancellations[0]
         terminal, result = cancellation.proposal.terminal, cancellation.proposal.result
         terminal_ref = reference(terminal.terminal_id, terminal)
         if (
@@ -187,7 +199,9 @@ class R14NativeCancelledCallSource:
             selected_response_seal=selected_response_seal,
             physical_response_seal=physical_response_seal,
             selected_initialized=initialized,
-            physical_initialized=physical_initialized_calls[0],
+            physical_initialized=next(
+                item for item in physical_initialized_calls if item.subject_id == original_call_id
+            ),
             selected_sealed_run=selected_sealed_run,
             physical_sealed_run=physical_sealed_run,
             original_call_id=initialized_record.original_call_id,

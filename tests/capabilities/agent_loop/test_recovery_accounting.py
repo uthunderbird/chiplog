@@ -17,8 +17,10 @@ from chiplog.capabilities.agent_loop.recovery_domain import (
     sealed_call_accounting,
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+    CancelledBeforeAcceptResult,
     ConsequentialAcceptedCall,
     EvidenceReduction,
+    InitializedCall,
     ReadOnlyAcceptedCall,
     ReadOnlyAttemptMember,
     ReadOnlyRetryLineage,
@@ -118,6 +120,48 @@ def test_open_recovery_is_terminal_accountable_but_not_model_consumable() -> Non
     # original resolver outcome at the earlier immutable frontier.
     with pytest.raises(RecoveryHold):
         model_continuation_ready(accounted, (closure(),), (reduction(),))
+
+
+def test_sealed_accounting_accepts_exact_ordered_mixed_terminal_members() -> None:
+    accepted = TerminalCallFrontier(
+        original_call_id="accepted-call",
+        response_id="response",
+        acceptance=ConsequentialAcceptedCall(
+            initialized=head("accepted-initialized"),
+            accepted=head("accepted-head"),
+            execution_intent=head("accepted-intent"),
+            external_effect_intent=NotApplicable(),
+            complete_acceptance_manifest=(head("accepted-head"), head("accepted-intent")),
+        ),
+        disposition=SuccessResult(
+            terminal=head("accepted-terminal"),
+            result=head("accepted-result"),
+            recovered_outcome=NotApplicable(),
+        ),
+    )
+    cancelled = TerminalCallFrontier(
+        original_call_id="cancelled-call",
+        response_id="response",
+        acceptance=InitializedCall(initialized=head("cancelled-initialized")),
+        disposition=CancelledBeforeAcceptResult(
+            terminal=head("cancelled-terminal"),
+            not_executed_result=head("cancelled-result"),
+            initialized_predecessor=head("cancelled-initialized"),
+            recovered_outcome=NotApplicable(),
+        ),
+    )
+
+    accounted = sealed_call_accounting(
+        "response",
+        "manifest",
+        ("accepted-call", "cancelled-call"),
+        (accepted, cancelled),
+    )
+
+    assert tuple(call.original_call_id for call in accounted.calls) == (
+        "accepted-call",
+        "cancelled-call",
+    )
 
 
 def test_recovered_pair_requires_exact_closure_and_current_reduction() -> None:

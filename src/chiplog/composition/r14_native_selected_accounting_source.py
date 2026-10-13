@@ -362,22 +362,42 @@ class R14NativeSelectedAccountingSource:
             return None
 
     def collect_one_cancelled(
-        self, target_run: CallSubjectHead | None = None
+        self,
+        target_run: CallSubjectHead | None = None,
+        *,
+        original_call_id: str | None = None,
     ) -> R14NativeOneCallCancelledFacts | None:
-        """Hold unless the complete target facts prove one unaccepted self-effect call."""
+        """Project one exact cancelled member from the complete selected Run facts."""
         facts = self.collect(target_run)
         if facts is None:
             return None
         if (
             facts.target_legacy_seals
-            or facts.target_acceptances
             or len(facts.selected_native_seals) != 1
         ):
             return None
         seal = facts.selected_native_seals[0]
-        if len(seal.initialized_records) != 1 or len(seal.inventory_rows) != 1:
+        if not seal.initialized_records or not seal.inventory_rows:
             return None
-        record, row = seal.initialized_records[0], seal.inventory_rows[0]
+        cancellations = facts.target_cancellations
+        if original_call_id is None:
+            if len(cancellations) != 1:
+                return None
+            original_call_id = cancellations[0].request.original_call_id
+        matching_cancellations = tuple(
+            item for item in cancellations if item.request.original_call_id == original_call_id
+        )
+        if len(matching_cancellations) != 1:
+            return None
+        records = tuple(
+            item for item in seal.initialized_records if item.original_call_id == original_call_id
+        )
+        rows = tuple(
+            item for item in seal.inventory_rows if item.original_call_id == original_call_id
+        )
+        if len(records) != 1 or len(rows) != 1:
+            return None
+        record, row = records[0], rows[0]
         initialized = reference(record.original_call_id, record)
         try:
             raw = base64.b64decode(record.call.canonical_call_base64, validate=True)
@@ -393,10 +413,9 @@ class R14NativeSelectedAccountingSource:
             or not isinstance(row.acceptance, InitializedCall)
             or row.acceptance.initialized != initialized.revision
             or not isinstance(row.terminal, Present)
-            or len(facts.target_cancellations) != 1
         ):
             return None
-        cancellation = facts.target_cancellations[0]
+        cancellation = matching_cancellations[0]
         terminal, result = cancellation.proposal.terminal, cancellation.proposal.result
         terminal_ref = reference(terminal.terminal_id, terminal)
         if (
@@ -422,32 +441,56 @@ class R14NativeSelectedAccountingSource:
         )
 
     def collect_one_accepted(
-        self, target_run: CallSubjectHead | None = None, *, selected_only: bool = False
+        self,
+        target_run: CallSubjectHead | None = None,
+        *,
+        selected_only: bool = False,
+        original_call_id: str | None = None,
     ) -> R14NativeOneCallAcceptedFacts | None:
-        """Hold unless selected history proves one accepted self-effect call."""
+        """Project one exact accepted member from the complete selected Run facts."""
         facts = self.collect(target_run, selected_only=selected_only)
-        return self._accepted_facts(facts)
+        return self._accepted_facts(facts, original_call_id=original_call_id)
 
     @staticmethod
     def _accepted_facts(
         facts: R14NativeSelectedAccountingSourceFacts | None,
+        *,
+        original_call_id: str | None = None,
     ) -> R14NativeOneCallAcceptedFacts | None:
         """Project already-authenticated selected history to one exact acceptance."""
-        if facts is None or facts.target_legacy_seals or facts.target_cancellations:
+        if facts is None or facts.target_legacy_seals:
             return None
-        if len(facts.selected_native_seals) != 1 or len(facts.target_acceptances) != 1:
+        if len(facts.selected_native_seals) != 1:
             return None
         seal = facts.selected_native_seals[0]
-        if len(seal.initialized_records) != 1 or len(seal.inventory_rows) != 1:
+        if not seal.initialized_records or not seal.inventory_rows:
             return None
-        record, row = seal.initialized_records[0], seal.inventory_rows[0]
+        acceptances = facts.target_acceptances
+        if original_call_id is None:
+            if len(acceptances) != 1:
+                return None
+            original_call_id = acceptances[0].loop_request.binding.original_call_id
+        matching_acceptances = tuple(
+            item
+            for item in acceptances
+            if item.loop_request.binding.original_call_id == original_call_id
+        )
+        records = tuple(
+            item for item in seal.initialized_records if item.original_call_id == original_call_id
+        )
+        rows = tuple(
+            item for item in seal.inventory_rows if item.original_call_id == original_call_id
+        )
+        if len(matching_acceptances) != 1 or len(records) != 1 or len(rows) != 1:
+            return None
+        acceptance = matching_acceptances[0]
+        record, row = records[0], rows[0]
         initialized = reference(record.original_call_id, record)
         try:
             raw = base64.b64decode(record.call.canonical_call_base64, validate=True)
             tool = ConsequentialToolCall.model_validate_json(raw)
         except ValueError, binascii.Error:
             return None
-        acceptance = facts.target_acceptances[0]
         binding = acceptance.loop_request.binding
         branch = row.acceptance
         manifest = tuple(
@@ -492,6 +535,7 @@ class R14NativeSelectedAccountingSource:
         expected_outcome_record_id: str | None = None,
         expected_selected_decision: CallSubjectHead | None = None,
         expected_tenant_commit_sequence: int | None = None,
+        original_call_id: str | None = None,
         _accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join the retained OPEN cause to a still-open current R16 outcome."""
@@ -503,6 +547,7 @@ class R14NativeSelectedAccountingSource:
             expected_tenant_commit_sequence=expected_tenant_commit_sequence,
             current_obligation_state="OPEN",
             accepted_facts=_accepted_facts,
+            original_call_id=original_call_id,
         )
 
     def collect_one_accepted_closed_outcome(
@@ -514,6 +559,7 @@ class R14NativeSelectedAccountingSource:
         expected_selected_decision: CallSubjectHead | None = None,
         expected_tenant_commit_sequence: int | None = None,
         allow_authenticated_later_suffix: bool = False,
+        original_call_id: str | None = None,
         _accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Read a closed current outcome while retaining its original OPEN cause.
@@ -530,6 +576,7 @@ class R14NativeSelectedAccountingSource:
             current_obligation_state="CLOSED",
             allow_authenticated_later_suffix=allow_authenticated_later_suffix,
             accepted_facts=_accepted_facts,
+            original_call_id=original_call_id,
         )
 
     def _collect_one_accepted_outcome(
@@ -543,6 +590,7 @@ class R14NativeSelectedAccountingSource:
         current_obligation_state: Literal["OPEN", "CLOSED"],
         allow_authenticated_later_suffix: bool = False,
         accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
+        original_call_id: str | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join one accepted call's retained OPEN cause to its current outcome.
 
@@ -580,11 +628,20 @@ class R14NativeSelectedAccountingSource:
                 # remains fixed through the R16 history read below. Recollecting
                 # it under the same gate added a second complete R14 replay.
                 accepted = accepted_facts or self.collect_one_accepted(
-                    target_run, selected_only=selected_only
+                    target_run,
+                    selected_only=selected_only,
+                    original_call_id=original_call_id,
                 )
                 if accepted is None:
                     return None
-                branch = accepted.source.target_inventory_rows[0].acceptance
+                matching_rows = tuple(
+                    row
+                    for row in accepted.source.target_inventory_rows
+                    if row.original_call_id == accepted.original_call_id
+                )
+                if len(matching_rows) != 1:
+                    return None
+                branch = matching_rows[0].acceptance
                 if not isinstance(branch, ConsequentialAcceptedCall) or not isinstance(
                     branch.external_effect_intent, Present
                 ):
