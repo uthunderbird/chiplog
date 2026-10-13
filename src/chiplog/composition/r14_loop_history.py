@@ -2246,7 +2246,14 @@ def read_selected_accepted_direct_terminal_frontier(
         facts, cut = current
         seal = facts.accepted.selected_seal
         ordered_call_ids = tuple(item.original_call_id for item in seal.initialized_records)
-        acceptance = facts.accepted.source.target_inventory_rows[0].acceptance
+        matching_rows = tuple(
+            row
+            for row in facts.accepted.source.target_inventory_rows
+            if row.original_call_id == facts.accepted.original_call_id
+        )
+        if len(matching_rows) != 1:
+            raise LoopRejected("selected direct terminal call inventory member is ambiguous")
+        acceptance = matching_rows[0].acceptance
         if (
             facts.accepted.original_call_id != cut.original_call_id
             or seal.response_seal.subject_id != cut.response_id

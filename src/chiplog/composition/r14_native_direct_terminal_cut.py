@@ -65,7 +65,14 @@ def build_accepted_direct_terminal_cut(
                 return None
             run = matches[0]
             acceptance = closed.accepted.acceptance
-            branch = closed.accepted.source.target_inventory_rows[0].acceptance
+            matching_rows = tuple(
+                row
+                for row in closed.accepted.source.target_inventory_rows
+                if row.original_call_id == closed.accepted.original_call_id
+            )
+            if len(matching_rows) != 1:
+                return None
+            branch = matching_rows[0].acceptance
             member = closed.latest_selected_member
             outcome = closed.latest_outcome
             if (

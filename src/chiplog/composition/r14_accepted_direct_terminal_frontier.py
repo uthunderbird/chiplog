@@ -40,6 +40,31 @@ def accepted_direct_terminal_sealed_accounting(
     sealed_manifest_fingerprint: str,
 ) -> SealedAccounting:
     """Join one exact selected terminal to its complete one-call seal manifest."""
+    if ordered_initialized_call_ids != (cut.original_call_id,):
+        raise LoopRejected("selected direct terminal does not join complete one-call seal")
+    call = accepted_direct_terminal_call_frontier(
+        cut,
+        prepared,
+        acceptance,
+        ordered_initialized_call_ids,
+        sealed_manifest_fingerprint,
+    )
+    return sealed_call_accounting(
+        cut.response_id,
+        sealed_manifest_fingerprint,
+        ordered_initialized_call_ids,
+        (call,),
+    )
+
+
+def accepted_direct_terminal_call_frontier(
+    cut: AcceptedDirectTerminalCutV1,
+    prepared: PreparedAcceptedDirectTerminalV1,
+    acceptance: ConsequentialAcceptedCall,
+    ordered_initialized_call_ids: tuple[str, ...],
+    sealed_manifest_fingerprint: str,
+) -> TerminalCallFrontier:
+    """Return one member frontier; it does not assert that the whole seal is accounted."""
     accounting = prepared.accounting
     terminal = prepared.terminal
     result = prepared.result
@@ -51,7 +76,8 @@ def accepted_direct_terminal_sealed_accounting(
         cut.external_effect_intent.revision,
     )
     if (
-        ordered_initialized_call_ids != (cut.original_call_id,)
+        cut.original_call_id not in ordered_initialized_call_ids
+        or len(set(ordered_initialized_call_ids)) != len(ordered_initialized_call_ids)
         or not re.fullmatch(r"[0-9a-f]{64}", sealed_manifest_fingerprint)
         or cut.initialized.subject_id != cut.original_call_id
         or acceptance.initialized != cut.initialized.revision
@@ -124,12 +150,7 @@ def accepted_direct_terminal_sealed_accounting(
         acceptance=acceptance,
         disposition=disposition,
     )
-    return sealed_call_accounting(
-        cut.response_id,
-        sealed_manifest_fingerprint,
-        ordered_initialized_call_ids,
-        (call,),
-    )
+    return call
 
 
 def require_complete_direct_terminal_publication(
@@ -150,6 +171,7 @@ def require_complete_direct_terminal_publication(
 
 
 __all__ = [
+    "accepted_direct_terminal_call_frontier",
     "accepted_direct_terminal_sealed_accounting",
     "require_complete_direct_terminal_publication",
 ]

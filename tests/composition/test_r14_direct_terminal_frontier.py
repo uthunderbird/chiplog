@@ -9,6 +9,7 @@ from typing import cast
 import pytest
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.direct_effect_terminal_contracts import (
     DirectEffectTerminalClassificationV1,
 )
@@ -34,6 +35,7 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
 )
 from chiplog.capabilities.effects.contracts import DispatchSemanticBinding, ExactHead
 from chiplog.composition.r14_accepted_direct_terminal_frontier import (
+    accepted_direct_terminal_call_frontier,
     accepted_direct_terminal_sealed_accounting,
     require_complete_direct_terminal_publication,
 )
@@ -192,6 +194,28 @@ def test_selected_direct_terminal_builds_exact_single_call_frontier(kind: str) -
     assert accounting.sealed_manifest_fingerprint == _FINGERPRINT
     assert tuple(call.original_call_id for call in accounting.calls) == (cut.original_call_id,)
     assert accounting.calls[0].disposition.kind == kind
+
+
+def test_direct_terminal_member_frontier_does_not_claim_whole_multicall_seal() -> None:
+    cut, prepared, acceptance = _frontier_fixture("SUCCEEDED")
+
+    member = accepted_direct_terminal_call_frontier(
+        cut,
+        prepared,
+        acceptance,
+        ("call:other", cut.original_call_id),
+        _FINGERPRINT,
+    )
+
+    assert member.original_call_id == cut.original_call_id
+    with pytest.raises(LoopRejected, match="one-call seal"):
+        accepted_direct_terminal_sealed_accounting(
+            cut,
+            prepared,
+            acceptance,
+            ("call:other", cut.original_call_id),
+            _FINGERPRINT,
+        )
 
 
 def test_selected_direct_terminal_rejects_manifest_subset_and_changed_record_ref() -> None:
