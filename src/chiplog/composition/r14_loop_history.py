@@ -562,6 +562,10 @@ def _read_call_history(
                 cancellations: list[RetainedCancellationPreparation] = []
                 acceptances: list[RetainedAcceptancePreparationV2] = []
                 native_accounting_count = 0
+                native_sealed_accounting_seals: set[str] = set()
+                deferred_native_sealed_accounting: list[
+                    tuple[PhysicalPublicationCommand, dict[str, object], ExecutionRecoveryHistory]
+                ] = []
                 captured_heads: set[str] = set()
                 native_prepares: dict[tuple[str, str], str] = {}
                 verified_h1_prepares: dict[
@@ -587,6 +591,7 @@ def _read_call_history(
                         CANCELLATION_OPERATION,
                         EXECUTION_CANCELLATION_OPERATION,
                         "agent_loop.native-one-call-cancelled-accounting.v1",
+                        "agent_loop.native-sealed-accounting.v3",
                         "agent_loop.execution-accounting-readiness.v1",
                         "agent_loop.execution-next-turn.v1",
                         "agent_loop.execution-suspension.v1",
@@ -1244,6 +1249,53 @@ def _read_call_history(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
                         expected_publications.add((command.operation_kind, identity))
+                        continue
+                    if (
+                        command.operation_kind
+                        == "agent_loop.native-sealed-accounting.v3"
+                        or "native_sealed_accounting_v3_evidence" in entry
+                        or "native_sealed_accounting_v3_envelope" in entry
+                    ):
+                        from chiplog.composition.r14_native_sealed_accounting_v3_history import (
+                            decode_selected_native_sealed_accounting_v3,
+                            retained_selected_native_sealed_accounting_v3,
+                        )
+
+                        evidence = retained_selected_native_sealed_accounting_v3(entry)
+                        seal_fingerprint = evidence.request.selected_response.revision.fingerprint
+                        if seal_fingerprint in native_sealed_accounting_seals:
+                            raise ValueError(
+                                "duplicate V3 native accounting for selected response seal"
+                            )
+                        snapshot = ExecutionHistorySnapshot(
+                            tenant_head=command.expected_head,
+                            records=tuple(mixed_records),
+                        )
+                        current_inventory = execution_inventory(
+                            tenant,
+                            snapshot,
+                            tuple(preparations),
+                            tuple(cancellations),
+                            tuple(execution_preparations),
+                            tuple(execution_cancellations),
+                            tuple(acceptances),
+                        )
+                        authenticated_history: ExecutionRecoveryHistory = (
+                            snapshot,
+                            current_inventory,
+                            tuple(preparations),
+                            tuple(execution_preparations),
+                            tuple(execution_cancellations),
+                            tuple(acceptances),
+                        )
+                        deferred_native_sealed_accounting.append(
+                            (command, entry, authenticated_history)
+                        )
+                        expected_ids.update(
+                            row.record_id for row in command.records if row.owner == OWNER
+                        )
+                        expected_publications.add((command.operation_kind, identity))
+                        native_sealed_accounting_seals.add(seal_fingerprint)
                         continue
                     if (
                         command.operation_kind
@@ -1940,6 +1992,47 @@ def _read_call_history(
                     physical_ids != expected_ids or physical_publications != expected_publications
                 ):
                     raise ValueError("orphaned, missing or unknown loop publication members")
+                if deferred_native_sealed_accounting:
+                    current_snapshot = ExecutionHistorySnapshot(
+                        tenant_head=0 if head is None else head[0],
+                        records=tuple(mixed_records),
+                    )
+                    current_inventory = execution_inventory(
+                        tenant,
+                        current_snapshot,
+                        tuple(preparations),
+                        tuple(cancellations),
+                        tuple(execution_preparations),
+                        tuple(execution_cancellations),
+                        tuple(acceptances),
+                    )
+                    current_history: ExecutionRecoveryHistory = (
+                        current_snapshot,
+                        current_inventory,
+                        tuple(preparations),
+                        tuple(execution_preparations),
+                        tuple(execution_cancellations),
+                        tuple(acceptances),
+                    )
+                    from chiplog.composition.r14_native_sealed_accounting_v3_history import (
+                        decode_selected_native_sealed_accounting_v3,
+                    )
+
+                    for command, entry, authenticated_history in (
+                        deferred_native_sealed_accounting
+                    ):
+                        decode_selected_native_sealed_accounting_v3(
+                            runtime,
+                            connection,
+                            command,
+                            entry,
+                            authenticated_history,
+                            current_history,
+                            execution_preparations,
+                            execution_cancellations,
+                            mixed_records,
+                            verified_h1_prepares=verified_h1_prepares,
+                        )
                 runtime._check_database_identity()
                 return (
                     LoopSnapshot(
@@ -2072,6 +2165,28 @@ def read_selected_native_accounting(runtime: R14PlanningRuntime):
             )
         ]
         return found[0].record if len(found) == 1 else None
+
+
+def read_selected_native_sealed_accounting_v3(
+    runtime: R14PlanningRuntime, selected_response_fingerprint: str
+):
+    """Read one exact V3 per-seal record after full selected-history validation."""
+    from chiplog.composition.r14_native_sealed_accounting_v3_history import (
+        retained_selected_native_sealed_accounting_v3,
+    )
+
+    with runtime._authority_gate().hold():
+        _read_call_history(runtime)
+        found = [
+            retained_selected_native_sealed_accounting_v3(entry).record
+            for _, _, raw in runtime._loop_decisions().entries()
+            if (entry := _strict_json(raw)).get("kind") == "DECIDED"
+            and entry.get("operation_kind") == "agent_loop.native-sealed-accounting.v3"
+            and retained_selected_native_sealed_accounting_v3(entry)
+            .request.selected_response.revision.fingerprint
+            == selected_response_fingerprint
+        ]
+        return found[0] if len(found) == 1 else None
 
 
 def read_selected_accepted_open_accounting(runtime: R14PlanningRuntime):

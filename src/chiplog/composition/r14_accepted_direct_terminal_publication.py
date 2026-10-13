@@ -24,6 +24,7 @@ from chiplog.composition.r14_accepted_direct_terminal_records import (
 )
 from chiplog.composition.r14_call_preview import execution_run_head
 from chiplog.composition.r14_loop_history import (
+    ExecutionHistorySnapshot,
     ExecutionRecoveryHistory,
     read_execution_recovery_history,
 )
@@ -75,6 +76,8 @@ def _current_cut(
     source_materialization_commitment: str | None = None,
     source_tenant_commit_sequence: int | None = None,
     authenticated_history: ExecutionRecoveryHistory | None = None,
+    authenticated_effects_history: ExecutionHistorySnapshot | None = None,
+    authenticated_projection=None,
 ) -> tuple[R14NativeAcceptedOpenOutcome, AcceptedDirectTerminalCutV1] | None:
     history = authenticated_history or read_execution_recovery_history(
         runtime, selected_only=selected_only
@@ -88,7 +91,9 @@ def _current_cut(
         subject_id=seal.response_seal_id,
         revision=Present(head="record:" + seal_digest, fingerprint=seal_digest),
     )
-    projection = R14OriginalNativePrepareSource(runtime).collect(seal_ref)
+    projection = authenticated_projection or R14OriginalNativePrepareSource(runtime).collect(
+        seal_ref
+    )
     if projection is None:
         raise LoopRejected("accepted/direct terminal original Prepare source unavailable")
     source = R14NativeSelectedAccountingSource(
@@ -101,9 +106,30 @@ def _current_cut(
         if expected_source_cut is None
         else expected_source_cut.current_run
     )
+    selected_source = source.collect(
+        source_run,
+        selected_only=selected_only,
+        authenticated_history=authenticated_history,
+        authenticated_projection=authenticated_projection is not None,
+    )
+    if selected_source is None:
+        return None
+    accepted = source.collect_one_accepted(
+        source_run,
+        selected_only=selected_only,
+        original_call_id=(
+            None if expected_source_cut is None else expected_source_cut.original_call_id
+        ),
+        _source_facts=selected_source,
+    )
+    if accepted is None:
+        return None
     closed = source.collect_one_accepted_closed_outcome(
         source_run,
         selected_only=selected_only,
+        original_call_id=accepted.original_call_id,
+        _accepted_facts=accepted,
+        authenticated_effects_history=authenticated_effects_history,
     )
     if closed is None:
         return None
@@ -113,6 +139,11 @@ def _current_cut(
         source_run=None if expected_source_cut is None else expected_source_cut.current_run,
         source_materialization_commitment=source_materialization_commitment,
         source_tenant_commit_sequence=source_tenant_commit_sequence,
+        authenticated_snapshot=(
+            authenticated_effects_history
+            if authenticated_effects_history is not None
+            else (None if authenticated_history is None else history[0])
+        ),
     )
     if cut is None:
         return None
@@ -317,6 +348,8 @@ def validate_selected_accepted_direct_terminal(
     runtime: CommonCliExecutionRuntime,
     *,
     authenticated_history: ExecutionRecoveryHistory | None = None,
+    authenticated_effects_history: ExecutionHistorySnapshot | None = None,
+    authenticated_projection=None,
 ) -> tuple[R14NativeAcceptedOpenOutcome, AcceptedDirectTerminalCutV1] | None:
     """Verify the selected batch and return its authenticated current source cut."""
     runtime._pending()
@@ -372,6 +405,8 @@ def validate_selected_accepted_direct_terminal(
             source_materialization_commitment=evidence.request.cut.materialization_commitment,
             source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
             authenticated_history=authenticated_history,
+            authenticated_effects_history=authenticated_effects_history,
+            authenticated_projection=authenticated_projection,
         )
         if current is None or current[1] != evidence.request.cut:
             raise LoopRejected("accepted/direct terminal retained source cut differs")

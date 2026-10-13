@@ -54,7 +54,10 @@ from chiplog.composition.r14_execution_cancellation_contracts import (
 )
 from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_fanout_contracts import RetainedFanOutPreparation
-from chiplog.composition.r14_loop_history import read_execution_recovery_history
+from chiplog.composition.r14_loop_history import (
+    ExecutionHistorySnapshot,
+    read_execution_recovery_history,
+)
 from chiplog.composition.r14_native_evidence_sources import (
     complete_ordered_dispatch_sources,
     complete_ordered_evidence_sources,
@@ -347,6 +350,8 @@ class R14NativeSelectedAccountingSource:
         target_run: CallSubjectHead | None = None,
         *,
         selected_only: bool = False,
+        authenticated_history=None,
+        authenticated_projection: bool = False,
     ) -> R14NativeSelectedAccountingSourceFacts | None:
         """Collect one complete Run lineage; ``target_run`` can only anchor it exactly."""
         if target_run is not None and type(target_run) is not CallSubjectHead:
@@ -357,7 +362,11 @@ class R14NativeSelectedAccountingSource:
                 self._runtime._check_database_identity()
                 database_identity = self._runtime._database_identity
                 facts = self._collect_held(
-                    target_run, database_identity, selected_only=selected_only
+                    target_run,
+                    database_identity,
+                    selected_only=selected_only,
+                    authenticated_history=authenticated_history,
+                    authenticated_projection=authenticated_projection,
                 )
                 self._runtime._check_database_identity()
                 if self._runtime._database_identity != database_identity:
@@ -446,12 +455,22 @@ class R14NativeSelectedAccountingSource:
         )
 
     def prepare_sealed_accounting_v3(
-        self, selected_response: CallSubjectHead
+        self,
+        selected_response: CallSubjectHead,
+        *,
+        authenticated_history=None,
+        authenticated_effects_history: ExecutionHistorySnapshot | None = None,
+        authenticated_projection: bool = False,
     ) -> PrepareNativeSealedAccountingV3 | None:
         """Build exact ordered terminal frontiers for one authenticated native seal."""
         if type(selected_response) is not CallSubjectHead:
             raise TypeError("selected response must be an exact CallSubjectHead")
-        facts = self.collect(self._original_prepare.prepared_run)
+        facts = self.collect(
+            self._original_prepare.prepared_run,
+            selected_only=authenticated_history is not None,
+            authenticated_history=authenticated_history,
+            authenticated_projection=authenticated_projection,
+        )
         if facts is None or facts.target_legacy_seals:
             return None
         selected_seals = tuple(
@@ -507,6 +526,11 @@ class R14NativeSelectedAccountingSource:
                 ordered_initialized_call_ids=ordered_call_ids,
                 sealed_manifest_fingerprint=selected_response.revision.fingerprint,
                 acceptance=row.acceptance,
+                authenticated_history=authenticated_history,
+                authenticated_effects_history=authenticated_effects_history,
+                authenticated_projection=(
+                    self._original_prepare if authenticated_projection else None
+                ),
             )
             if frontier is None:
                 return None
@@ -653,9 +677,14 @@ class R14NativeSelectedAccountingSource:
         *,
         selected_only: bool = False,
         original_call_id: str | None = None,
+        _source_facts: R14NativeSelectedAccountingSourceFacts | None = None,
     ) -> R14NativeOneCallAcceptedFacts | None:
         """Project one exact accepted member from the complete selected Run facts."""
-        facts = self.collect(target_run, selected_only=selected_only)
+        facts = (
+            _source_facts
+            if _source_facts is not None
+            else self.collect(target_run, selected_only=selected_only)
+        )
         return self._accepted_facts(facts, original_call_id=original_call_id)
 
     @staticmethod
@@ -768,6 +797,7 @@ class R14NativeSelectedAccountingSource:
         allow_authenticated_later_suffix: bool = False,
         original_call_id: str | None = None,
         _accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
+        authenticated_effects_history: ExecutionHistorySnapshot | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Read a closed current outcome while retaining its original OPEN cause.
 
@@ -784,6 +814,7 @@ class R14NativeSelectedAccountingSource:
             allow_authenticated_later_suffix=allow_authenticated_later_suffix,
             accepted_facts=_accepted_facts,
             original_call_id=original_call_id,
+            authenticated_effects_history=authenticated_effects_history,
         )
 
     def _collect_one_accepted_outcome(
@@ -798,6 +829,7 @@ class R14NativeSelectedAccountingSource:
         allow_authenticated_later_suffix: bool = False,
         accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
         original_call_id: str | None = None,
+        authenticated_effects_history: ExecutionHistorySnapshot | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join one accepted call's retained OPEN cause to its current outcome.
 
@@ -867,6 +899,7 @@ class R14NativeSelectedAccountingSource:
                     runtime,
                     runtime._owner_decisions(),
                     authenticate_later_suffix=suffix_verifier,
+                    authenticated_execution_history=authenticated_effects_history,
                 )
                 verified = verify_dispatch_history(cut, retained_journal)
                 authenticated_suffix = False

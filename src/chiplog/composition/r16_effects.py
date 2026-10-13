@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,6 +44,9 @@ from chiplog.platform.owner_decision_journal import (
     OwnerJournalSnapshot,
 )
 from chiplog.platform.workspace_snapshot import join_workspace_snapshot
+
+if TYPE_CHECKING:
+    from chiplog.composition.r14_loop_history import ExecutionHistorySnapshot
 
 
 def _canonical(value: object) -> bytes:
@@ -467,6 +470,7 @@ def _read_materialized_effects_with_history(
     *,
     run_id: str | None = None,
     authenticate_later_suffix: Callable[[R13PlanningRuntime, str, str], bool] | None = None,
+    authenticated_execution_history: ExecutionHistorySnapshot | None = None,
 ) -> tuple[MaterializedEffectsCut, OwnerJournalSnapshot]:
     """Prove complete effects membership against independently selected decisions."""
     tenant = runtime._tenant_id
@@ -572,6 +576,7 @@ def _read_materialized_effects_with_history(
                 before,
                 frontier,
                 historical=suffix_authenticated,
+                authenticated_execution_history=authenticated_execution_history,
             )
             if (
                 journal.snapshot() != before
@@ -629,11 +634,13 @@ def _reconstruct_registered_runs(
     frontier: int,
     *,
     historical: bool = False,
+    authenticated_execution_history: ExecutionHistorySnapshot | None = None,
 ) -> tuple[RunRecord | ExecutionRunRecord, ...]:
     """Explicit selected-history reader for executable Runs; legacy proof is preserved."""
     legacy = _reconstruct_runs(connection, tenant, journal)
     from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCHEMA
     from chiplog.composition.r14_loop_history import (
+        ExecutionHistorySnapshot,
         read_execution_history,
         read_execution_recovery_history,
     )
@@ -653,7 +660,11 @@ def _reconstruct_registered_runs(
         or ("agent_loop", EXECUTION_RUN_SCHEMA) not in runtime._record_schema_variants
     ):
         raise ValueError("execution Run history has no registered effects worker reader")
-    if historical:
+    if authenticated_execution_history is not None:
+        if type(authenticated_execution_history) is not ExecutionHistorySnapshot:
+            raise TypeError("authenticated execution history must be the exact snapshot type")
+        snapshot = authenticated_execution_history
+    elif historical:
         snapshot, _, _, _, _, _ = read_execution_recovery_history(
             runtime, selected_only=True, exact_historical_sources=True
         )

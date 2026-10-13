@@ -14,8 +14,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import chiplog.composition.r14_loop_history as loop_history
 import chiplog.composition.r14_native_selected_accounting_source as selected_source
 import chiplog.composition.r14_original_prepare_source as original_source
+import chiplog.composition.r16_effects as effects
 from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
@@ -24,6 +26,7 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjec
 from chiplog.capabilities.agent_loop.execution_contracts import (
     ConsequentialToolCall,
     ExecutionContinue,
+    ExecutionRunRecord,
     SelfEffectArguments,
 )
 from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_contracts import (
@@ -48,9 +51,15 @@ from chiplog.composition.r14_execution_complete_seal_records import (
     RetainedExecutionCompleteSealV3,
 )
 from chiplog.composition.r14_execution_fanout_records import reference
-from chiplog.composition.r14_loop_history import read_execution_recovery_history
+from chiplog.composition.r14_loop_history import (
+    read_execution_recovery_history,
+    read_selected_native_sealed_accounting_v3,
+)
 from chiplog.composition.r14_native_preparation_bindings import (
     bind_native_execution_preparation_v2,
+)
+from chiplog.composition.r14_native_sealed_accounting_v3_publication import (
+    publish_native_sealed_accounting_v3,
 )
 from chiplog.composition.r14_original_prepare_source import R14OriginalNativePrepareSource
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
@@ -61,6 +70,7 @@ from chiplog.platform.broker import (
     PublicPortRejected,
     PublicPortSuccess,
 )
+from chiplog.platform.workspace_snapshot import read_connection
 from tests.support.h1_cli_execution import admit_complete_script, admit_runtime_slot
 
 
@@ -452,6 +462,105 @@ async def test_v3_source_holds_when_one_member_is_not_terminal(
             runtime, projection, bind_native_execution_preparation_v2(projection)
         )
         assert source.prepare_sealed_accounting_v3(seal) is None
+
+
+@pytest.mark.asyncio
+async def test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = (
+        ConsequentialToolCall(
+            call_id="first-effect",
+            tool="request_self_effect",
+            arguments=SelfEffectArguments(payload=b"first", bundle_members=("first",)),
+        ),
+        ConsequentialToolCall(
+            call_id="second-effect",
+            tool="request_self_effect",
+            arguments=SelfEffectArguments(payload=b"second", bundle_members=("second",)),
+        ),
+    )
+    database = tmp_path / "native-v23-prepare.sqlite"
+    custody = tmp_path / "dispatch-custody"
+    async with _selected_v23_native_fanout(
+        tmp_path,
+        tool_calls=calls,
+        accepted_call_id="first-effect",
+        cancelled_call_id="second-effect",
+        manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
+        terminalize_accepted=True,
+    ) as (runtime, seal):
+        record = await publish_native_sealed_accounting_v3(runtime, seal)
+        assert record.selected_response_fingerprint == seal.revision.fingerprint
+        assert record.ordered_sealed_call_ids == tuple(
+            item.original_call_id for item in record.result.complete_ordered_calls
+        )
+        assert tuple(
+            item.disposition.kind for item in record.result.complete_ordered_calls
+        ) == ("SUCCEEDED", "CANCELLED_BEFORE_ACCEPT")
+        assert read_selected_native_sealed_accounting_v3(
+            runtime, seal.revision.fingerprint
+        ) == record
+
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=custody
+    )
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
+    ) as reopened:
+        original_reader = loop_history._read_call_history
+        reader_depth = 0
+
+        def reject_nested_history_read(*args, **kwargs):
+            nonlocal reader_depth
+            if reader_depth:
+                raise AssertionError("V3 validation recursively reopened execution history")
+            reader_depth += 1
+            try:
+                return original_reader(*args, **kwargs)
+            finally:
+                reader_depth -= 1
+
+        monkeypatch.setattr(loop_history, "_read_call_history", reject_nested_history_read)
+        assert read_selected_native_sealed_accounting_v3(
+            reopened, seal.revision.fingerprint
+        ) == record
+        current_history = loop_history.read_execution_recovery_history(reopened)[0]
+        with read_connection(reopened._database) as connection:
+            frontier = connection.execute(
+                "SELECT head FROM tenant_heads WHERE tenant_id=?", (reopened._tenant_id,)
+            ).fetchone()[0]
+            with pytest.raises(
+                ValueError, match="execution selected history and effects physical cut differ"
+            ):
+                effects._reconstruct_registered_runs(
+                    reopened,
+                    connection,
+                    reopened._tenant_id,
+                    reopened._owner_decisions().snapshot(),
+                    frontier,
+                    authenticated_execution_history=current_history.model_copy(
+                        update={
+                            "records": tuple(
+                                item
+                                for item in current_history.records
+                                if not isinstance(item, ExecutionRunRecord)
+                            )
+                        }
+                    ),
+                )
+        before = len(reopened._loop_decisions().entries())
+        assert await publish_native_sealed_accounting_v3(reopened, seal) == record
+        assert len(reopened._loop_decisions().entries()) == before
+        with read_connection(reopened._database) as connection:
+            count = connection.execute(
+                "SELECT count(*) FROM publications WHERE tenant_id=? "
+                "AND operation_kind='agent_loop.native-sealed-accounting.v3'",
+                (reopened._tenant_id,),
+            ).fetchone()
+        assert count == (1,)
 
 
 @pytest.mark.asyncio

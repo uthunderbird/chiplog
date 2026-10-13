@@ -166,6 +166,9 @@ def selected_accepted_direct_terminal_call_frontier(
     ordered_initialized_call_ids: tuple[str, ...],
     sealed_manifest_fingerprint: str,
     acceptance: ConsequentialAcceptedCall,
+    authenticated_history=None,
+    authenticated_effects_history=None,
+    authenticated_projection=None,
 ) -> TerminalCallFrontier | None:
     """Read one exact, physically materialized direct-terminal member frontier."""
     from chiplog.composition.r14_accepted_direct_terminal_publication import (
@@ -176,12 +179,16 @@ def selected_accepted_direct_terminal_call_frontier(
         accepted_direct_terminal_command,
         retained_accepted_direct_terminal,
     )
-    from chiplog.composition.r14_loop_history import read_selected_accepted_direct_terminal
     from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
     from chiplog.platform.workspace_snapshot import read_connection
 
     try:
-        current = validate_selected_accepted_direct_terminal(runtime)
+        current = validate_selected_accepted_direct_terminal(
+            runtime,
+            authenticated_history=authenticated_history,
+            authenticated_effects_history=authenticated_effects_history,
+            authenticated_projection=authenticated_projection,
+        )
         if current is None:
             return None
         closed, cut = current
@@ -209,7 +216,8 @@ def selected_accepted_direct_terminal_call_frontier(
             or evidence.request.cut != cut
             or evidence.result.accounting.original_call_id != original_call_id
             or evidence.result.accounting.response_id != response_id
-            or read_selected_accepted_direct_terminal(runtime) != evidence.result
+            or evidence.result.accounting.accepted != cut.accepted
+            or evidence.result.accounting.source_cut_fingerprint != cut.cut_fingerprint
         ):
             return None
         runtime._check_database_identity()
@@ -219,6 +227,8 @@ def selected_accepted_direct_terminal_call_frontier(
             )
         journal_anchor = runtime._commitment_journal.load(runtime._tenant_id)
         state, selected_snapshot, selected_anchor = runtime._selected_physical_state(command)
+        if state != "COMPLETE":
+            return None
         require_complete_direct_terminal_publication(
             state,
             current_snapshot,
@@ -234,6 +244,8 @@ def selected_accepted_direct_terminal_call_frontier(
             sealed_manifest_fingerprint,
         )
     except (OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError):
+        if authenticated_history is not None:
+            raise
         return None
 
 

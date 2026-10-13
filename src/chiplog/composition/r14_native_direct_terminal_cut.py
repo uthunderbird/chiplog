@@ -13,7 +13,7 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     ConsequentialAcceptedCall,
 )
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
-from chiplog.composition.r14_loop_history import read_execution_history
+from chiplog.composition.r14_loop_history import ExecutionHistorySnapshot, read_execution_history
 from chiplog.composition.r14_native_selected_accounting_source import (
     R14NativeAcceptedOpenOutcome,
 )
@@ -35,6 +35,7 @@ def build_accepted_direct_terminal_cut(
     source_run: CallSubjectHead | None = None,
     source_materialization_commitment: str | None = None,
     source_tenant_commit_sequence: int | None = None,
+    authenticated_snapshot: ExecutionHistorySnapshot | None = None,
 ) -> AcceptedDirectTerminalCutV1 | None:
     """Bind accepted-call lineage to the exact selected physical R16 closure."""
     if type(runtime) is not CommonCliExecutionRuntime:
@@ -45,11 +46,18 @@ def build_accepted_direct_terminal_cut(
             if (
                 runtime._database_identity != closed.database_identity
                 or runtime._tenant_id != closed.tenant_id
-                or runtime._commitment_journal.load(runtime._tenant_id)
-                != closed.materialization_commitment
+                or (
+                    authenticated_snapshot is None
+                    and runtime._commitment_journal.load(runtime._tenant_id)
+                    != closed.materialization_commitment
+                )
             ):
                 return None
-            snapshot = read_execution_history(runtime)
+            snapshot = (
+                authenticated_snapshot
+                if authenticated_snapshot is not None
+                else read_execution_history(runtime)
+            )
             lineage = closed.accepted.source.target_run_lineage
             selected_run = lineage[-1] if source_run is None else source_run
             if selected_run not in lineage:
