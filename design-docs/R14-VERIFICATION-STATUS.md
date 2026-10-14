@@ -225,3 +225,81 @@ ABSENT/COMPLETE pending boundaries and callback recursion. Same-model independen
 limits remain. Some component acquisition/retained inputs are inert, as marked in tests.
 This is focused component/boundary evidence, not mounted pending recovery, cross-seal
 interrupted recovery, multi-resolver convergence or production-clock completion.
+
+## Per-call OPEN API and current-source follow-up (2026-10-15, in progress)
+
+Public accounting/recovery writers and readers now accept `original_call_id`.
+Replay validates all marked OPEN envelopes before choosing that call; startup
+accounting uniqueness is per `(response_id, original_call_id)`. Both source
+validators reconstruct the retained historical cut and bind acquired facts to
+the full current physical commitment, with before/after physical and anchor checks.
+Pending admission adds only OPEN accounting/recovery to suspension/successor.
+Direct-terminal remains excluded: cold plan review found that the common pending
+callback would bypass its separate CLOSED-source semantic check.
+
+Command in the main tree:
+`./.venv/bin/python -m pytest -q --tb=short tests/composition/test_r14_historical_suffix.py tests/composition/test_r14_native_selected_accounting_fast_path.py`
+returned `139 passed in 2.32s`; Ruff passed. The mounted
+`test_selected_native_open_obligation_remains_outcome_unknown` run is still in
+progress under the diagnostic clock, log
+`/private/tmp/chiplog-r14-open-per-call-source.log`. Its source hashes are frozen
+in `/private/tmp/chiplog-r14-open-per-call-source-hashes.json`.
+
+Cold implementation review then found a P1 missed by inert acquisition probes:
+the real cut builder admitted anchor lag only through resolution-prefix proof,
+so COMPLETE pending OPEN would still reject before replay. In the isolated
+`/private/tmp/chiplog-r14-debug-checkpoint`, the real-builder regression returned
+`None` for the valid case before repair. Historical construction now obtains
+the canonical exact history proof before admitting an anchor lag; fresh cuts
+still require equality. It requires facts' commitment equal current physical
+commitment and rechecks both physical commitment and captured anchor afterward.
+The same two-file command with isolated `src` PYTHONPATH returned
+`143 passed in 2.36s`; cold re-review independently obtained 143 passed and closed
+the P1 with no new P0/P1. The four builder probes retain inert source facts and
+outer history acquisition, so they do not establish mounted recovery.
+
+A new isolated mounted test injects the materializer's real `after_commit` fault
+for OPEN accounting, checks COMPLETE pending with predecessor anchor through
+the actual outer reader, then reopens and checks exact replay and one external
+transfer. It is running; no passing outcome is claimed. ABSENT, recovery-family,
+lifecycle, multi-call and cross-seal interruption coverage remain required.
+
+Both initial mounted fault probes returned real red results:
+`after_commit-accounting` failed in 90.33s at native scope historical initialization;
+`before_commit-recovery` failed in 92.26s at historical ingress materialization.
+Both paths used the historical-prefix verifier, which had no OPEN delegation.
+The isolated repair delegates only the two OPEN families after canonical command,
+header, tenant/database and source-stamp checks. Its physical proof uses the exact
+final batch or exact ABSENT physical head/hash/anchor; it grants historical reads
+only. The existing canonical outer causal fold remains mandatory before replay.
+The three-file focused suite including `test_r14_recovery_pending_prefix.py`
+returned `153 passed in 3.41s`. The two mounted red selectors are rerunning in
+`/private/tmp/chiplog-r14-open-pending-prefix-fixed.log`.
+
+Cold review found another concrete pending window: `_finish_decision` advances
+the independent anchor before appending MATERIALIZED. A crash between them leaves
+COMPLETE with anchor==result, while the current final-batch helper requires
+anchor==predecessor. This remains a P1 to repair and verify. Historical ingress
+always requests the prefix proof, even when actual==anchor, so equality alone
+does not bypass that pending check. No startup-recovery completion is claimed.
+
+The frozen main-tree mounted OPEN run finished successfully:
+`1 passed in 1407.81s (0:23:27)`. Its five recorded source hashes were verified
+unchanged afterward. This is the per-call/source candidate before the later
+isolated pending-cut builder, prefix and effects-callback repairs; it does not
+validate those later changes or production-clock performance.
+
+After the historical-prefix repair, the mounted COMPLETE accounting case got
+past its initial outer read but failed reopening in 142.40s: selected source
+facts were unavailable. MCP debugger confirmed exact startup stack, `facts=None`,
+head 19/source sequence 18, stable physical commitment and stable predecessor
+anchor. The next probe disproved an acceptance acquisition failure: accepted
+facts were present for the exact call. The outcome collector caught
+`EffectsIntegrityError`, caused by `physical authority differs from independent
+commitment`; its suffix callback knew resolution/direct-terminal but not OPEN.
+There were zero direct terminals in this fixture. The isolated callback now
+tries the exact OPEN historical-prefix proof; the boundary regression first
+returned false before repair. The proposed extra accepted-history reuse was
+therefore not implemented. With the anchor-position physical repair, the focused
+three-file suite returned `159 passed in 3.48s`. Further mounted fault results
+are pending and remain required before startup recovery is declared verified.

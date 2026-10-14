@@ -180,3 +180,65 @@ failed with that same assertion on checkpoint `98027ea` in the isolated
 worktree (`1 failed in 14.00s`). This establishes a baseline failure, not a
 passing H1 mounted regression. The separate H1 single-Turn candidate gate and
 its fast negative test remain unchanged.
+
+## Probe 5 — pending OPEN accounting source at startup
+
+Recorded before breakpoint observations. The real mounted after-COMMIT fault
+passed the initial exact outer read, then failed during reopen at
+`_authenticate_selected_open_source`; the preceding two failures were historical
+scope/ingress prefix gates and have their own narrow repair in the isolated tree.
+
+Ideal behavior: startup reconstructs the exact selected call's historical OPEN
+cut while source facts carry the current full physical commitment. Independent
+anchor may still equal the predecessor; source/history proof must justify the
+pending suffix before replay. No second external emission is allowed.
+
+Session `1df5f33e-3a3a-4661-afd6-52f242318b51` launches the fresh mounted
+`test_selected_open_pending_batch_recovers_after_reopen[after_commit-accounting]`
+in `/private/tmp/chiplog-r14-debug-checkpoint`, with diagnostic clock and owners
+excluded from subprocess debugging. No target execution deadline is introduced.
+
+- Breakpoint 1: `_current_cut`, `if facts is None`, condition
+  `expected_source_cut is not None`. Expected reached during startup, facts
+  present and carrying current physical commitment; next builds the cut.
+  Expected stack: startup → OPEN validator → source helper → `_current_cut`.
+  Missing facts falsifies the expectation and localizes the earlier acquisition.
+- Breakpoint 2: `_current_cut`, `if cut is None`, same condition. Expected
+  reached, cut present with retained historical source stamp and requested call;
+  next returns `(facts, cut)`. Same expected stack. Missing cut localizes its
+  builder rather than facts acquisition.
+- Breakpoint 3: helper's `accepted/open selected source does not authenticate
+  current cut` raise. Expected unreached in ideal behavior. If reached, inspect
+  current presence, captured/final physical commitment and captured/current
+  independent anchor before raising. Expected stack: startup → validator → helper.
+  A present current with unchanged matching commitments falsifies the simple
+  source-unavailable hypothesis.
+
+Observations follow separately after these expectations.
+
+Observed at breakpoint 1: exact expected stack reached during startup accounting
+validation, `facts is None`, source sequence 18 and current snapshot head 19;
+sole pending operation is accepted-open-accounting. Breakpoint 2 was not reached.
+Breakpoint 3 then confirmed `current is None`, unchanged physical commitment and
+unchanged independent anchor, with physical commitment ahead of anchor. This
+localizes failure before cut construction rather than a moving-cut race.
+
+Before restart, the next three conditional breakpoints were recorded in commentary:
+after acceptance acquisition (expected present, then effects read; stack includes
+outcome collector → acceptance collector), base collector exception return
+(expected unreached, otherwise inspect current exception and acceptance stack),
+and outcome collector exception return (expected unreached, otherwise inspect
+effects/suffix failure and outcome stack). Conditions restrict them to selected
+historical reads. Sources remain unchanged during the debugger run.
+
+Observed on restart: acceptance breakpoint reached with nonempty accepted facts
+for the exact call and physical commitment ahead of anchor. Base collector's
+exception breakpoint was not reached. Outcome exception breakpoint then reached
+with `EffectsIntegrityError` caused by `ValueError("physical authority differs
+from independent commitment")`, from the effects reader. Callback was set,
+`native_suffix_authenticated=False`, the only pending operation was OPEN
+accounting, and the fixture contained zero direct terminals. This disproved the
+acceptance-history hypothesis and isolated missing OPEN prefix support in the
+effects suffix callback. Session was closed after observations. The isolated
+repair adds only that existing prefix proof; no accepted-facts/history reuse was
+added. The pending-OPEN boundary test failed false before the callback repair.
