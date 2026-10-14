@@ -131,7 +131,12 @@ member whose dispatch starts only after another member has terminalized. Admit
 only explicitly registered existing operation families needed by the bounded
 accepted/cancelled member histories: per-call terminal publications, V3
 accounting, and accepted-member `effects.authorize`, `effects.commit_send`,
-`effects.record_evidence` and `effects.reconcile`. Validate each publication's
+`effects.record_evidence` and `effects.reconcile`, plus the existing
+`dispatch.consume_effect_send` companion emitted by a member's selected SEND.
+Consumption must bind the exact prior selected SEND, ticket, intent and child;
+missing/duplicate/substituted consumption holds. This explicit family was added
+on 2026-10-15 after the mounted lifecycle and red tests exposed its omission;
+it introduces no new send authority. Validate each publication's
 exact original-call, effect and seal bindings and its family-specific causal
 prerequisites; allow repeated selected evidence while a member remains open and
 interleaving across members/seals. Do not require one global A/B order. For each
@@ -490,12 +495,16 @@ commits remains in force.
 
 ## Open user-owned decision and limits
 
-**OPEN: read-only retry `max_attempts`.** The immutable lineage needs a registered
-frozen bound/version, but this roadmap supplies no number or default. Owner:
-user. R14.7 lineage allocation and read-only initialization, R14.8 read-only joins,
-R14.9 read-only frontier evidence and corresponding full-convergence checks cannot
-close until that decision is explicit. Preserve the question during handoff; such
-requests remain HOLD before allocation in the meantime.
+**DECIDED 2026-10-15: read-only retry `max_attempts = 3`, including the initial
+attempt.** The user explicitly delegated the choice. This permits two retries
+only for registered retryable definite failure below the bound; success,
+unknown/open obligation, final failure and exhaustion forbid retry. One attempt
+would exclude recovery from a temporary definite failure; a larger bound has no
+demonstrated need. The immutable lineage must retain this frozen bound and its
+registered budget version. Policy registration and executable R14.7 allocation
+remain unimplemented/unverified; requests remain HOLD before allocation until
+that registration is mounted. R14.8 read-only joins, R14.9 read-only frontier
+evidence and corresponding full-convergence checks remain open.
 
 This planning run executed no runtime suites and claims no newly proven behavior.
 It inspected files and local history; it did not inspect unfetched history or
@@ -536,5 +545,6 @@ H readiness/pre-mortem: contract coverage could omit a consumer (both named);
 lineage could reset across successor (nonempty observer required); slice design
 could redo mounted work (reuse boundaries named); green shapes could be mistaken
 for runtime proof (actual selection/emission observers required). No new route
-was opened. Finalization is bounded: the roadmap is usable, while max_attempts
-and actual R14 completion remain open.
+was opened. At planning finalization, max_attempts and actual R14 completion
+remained open. The 2026-10-15 decision above fixes the bound; actual R14
+completion remains open.
