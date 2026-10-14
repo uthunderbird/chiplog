@@ -1128,3 +1128,123 @@ was `83368366…` for `r14_loop_history.py`, `5483aeca…` for
 `r14_native_selected_accounting_source.py`, and `dc771b0e…` for the target test.
 The temporary timer hash was `cd5ca5cf…`; it lived under `/private/tmp` and was
 not added to the repository.
+
+### Differential correction: exact two-seal writer read (2026-10-14)
+
+The next mounted execution of
+`test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay`
+failed at second-turn `accept_call` with `writer STALE` after 416.00 s. A
+temporary in-memory timer measured 105 `_read_call_history` calls at 356.418 s
+wall / 356.059 s thread CPU, 216 `execution_inventory` calls at 1.680 s total,
+and one writer `read_execution_call_history` call at 13.062 s. The test reached
+the same explicit source-horizon rejection described above. The mounted result
+is a failure, not a completed R14.6 witness.
+
+This directly **eliminates inventory reconstruction as the dominant cost in
+this run**; the earlier candidate ranking based on source call sites was not
+enough. It also lowers the priority of GIL and generic journal-parser
+hypotheses: thread CPU nearly equals wall CPU, while an earlier parse-only pass
+over the exact 209 MB loop journal took under 0.24 s. Neither result proves the
+absence of lock contention elsewhere, and neither accounts for semantic
+decoding or repeated canonical serialization.
+
+The strongest remaining class is repeated semantic validation during
+`_read_call_history`. Plausible sub-hypotheses are (a) dispatch/effects
+history reconstruction and canonical serialization, (b) native/V3 accounting
+decoding plus original-Prepare projection, and (c) repeated H1 workspace
+issuance journal scans. Existing code inspection confirms these operations
+occur, but the exact 13.062 s interval has not split them. A separate short
+profile confirms that accepted-terminal reads repeat full dispatch/effects
+verification, but that is a different path and cannot assign this writer
+interval.
+
+The 105-call aggregate also mixes different moments and history sizes; it is
+not a scaling curve. The evidence supports repeated full-history work and
+deadline crossing, not exponential growth. Do not infer that the 13.062 s
+writer check alone consumed all available source slack: its entry slack was not
+captured in this execution. Do not widen the five-second source horizon or
+reuse pre-owner authority. The next bounded discriminator is a low-overhead
+mounted profile of the existing short mixed-V3 witness, timing these exact
+helpers separately: native-accounting decoder/original-Prepare projection,
+V3 decoder, `verify_native_prepare_scope`, and H1 issuance journal `_scan`.
+Record counts and bytes per helper. Use the result only to rank local work; a
+short one-seal profile cannot establish the two-seal writer's complete cost.
+
+### Short mounted helper discriminator (2026-10-14)
+
+The existing short selector
+`test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once` was run
+twice with in-memory timers around history, accounting, dispatch/effects and H1
+helpers; both runs passed (32.66 s and 33.24 s). In the second run, 93
+`_read_call_history` calls took 16.646 s total, the 12 V3 decodes took 5.981 s,
+and `_read_materialized_effects_with_history` plus `verify_dispatch_history`
+took 0.332 s and 0.108 s across eight calls each. Twelve original-Prepare
+projections took 0.048 s. All 112 H1 workspace journal scans took 0.079 s.
+The V3 decode interval is nested in history validation; do not add it to
+`_read_call_history`.
+
+For this small one-seal shape, these measurements eliminate H1 issuance scans,
+original-Prepare projection, and dispatch/effects reconstruction as dominant
+costs. V3 decoding is a measurable part, but leaves most history-reader time
+unattributed. This is not the same history shape or the failing writer check;
+none of these short-profile exclusions can be generalized to the 40-entry,
+209 MB two-seal cut. Combined with the 13.062 s exact writer read and the 1.680
+s total inventory time, the evidence now points to authenticated loop-history
+semantic validation outside inventory/dispatch/V3/Prepare-specific helpers.
+The remaining targeted comparison should count and time per-selected-command
+retained decoding/canonicalization in `_read_call_history`, recording payload
+size once per operation family. Repeating mounted scenarios without that
+specific boundary data would not further discriminate the candidates.
+
+A follow-up `cProfile` wrapped only `_read_call_history` in the same short
+mounted witness (`1 passed in 34.56 s`). Across 93 history reads, the profile
+captured 18.165 s and attributed 6.643 s exclusive to JSON `iterencode`, 2.793
+s to JSON `raw_decode`, 1.373 s to Pydantic `validate_json`, and 0.823 s to
+SHA-256. It counted 10,158 `canonical_bytes` calls, 450
+`transition_command` calls, 450 `verify_execution_transition` calls, 68
+`decode_call_issuance` calls and 1,116 journal `entries()` calls. The V3
+decoder's 6.002 s cumulative is nested within this profile. These totals span
+93 reads and overlap by call-tree nesting; they are not the cost of one writer
+admission.
+
+This makes repeated canonical JSON serialization and retained transition
+verification the strongest short-history mechanism candidate. The profile
+does not show which `canonical_bytes` payloads repeat byte-for-byte, so it does
+not justify caching across history reads. It also does not assign the exact
+13.062 s two-seal writer interval: the larger history has two seals and a much
+larger journal. A future fix should first identify duplicate serialization
+within one immutable authenticated snapshot, then demonstrate byte-identical
+results and fewer encodes at that local boundary. Cross-call reuse and
+deadline changes remain unsupported.
+
+The same short mounted selector was then timed at the actual writer boundary:
+one `_check_live` took 0.085 s and its `read_execution_call_history` took 0.070
+s; the test passed in 32.52 s. Compared with the 13.062 s writer read in the
+failed two-seal history, the reader cost differs by about 186x across these
+two workloads. This rejects “writer admission is intrinsically slow” and
+supports history shape/size as a necessary discriminator. The comparison is
+not controlled for exact row count or bytes, so it does not establish a growth
+law. The short profile also shows that the same writer freshness path fits its
+five-second horizon on its smaller mounted cut.
+
+### Reuse the authenticated outer loop-journal cut for V3 Prepare lookup
+
+Source inspection found one exact duplicate scan within a single
+`_read_call_history`: the outer reader already enumerates and authenticates all
+loop-journal entries under `AuthorityGate`, while each deferred V3 decoder
+enumerated the same journal again only to locate the original Prepare decision
+bytes. The decoder now receives a map of **all** journal decision IDs to their
+original raw bytes from that outer enumeration. It still compares the exact
+Prepare bytes, verifies the retained SHA-256, rebuilds the original Prepare
+projection, validates the V3 source and request, and checks the selected
+physical publication. No value is reused across calls.
+
+Cold review confirmed the lookup key is the same string journal decision ID,
+and required retaining all entries rather than only selected `DECIDED`
+envelopes. The enclosing authority gate excludes admitted concurrent journal
+writes for the duration of this read; this change reuses that authenticated
+read cut. The existing mounted mixed-V3 test passed after the change in 32.69
+s, including reopen, exact replay, wrong-cut and orphan checks. Ruff passed.
+This verifies the positive mounted path and its existing negatives; it does not
+measure a material runtime gain or prove the two-seal five-second writer now
+passes. R14.6 remains open.

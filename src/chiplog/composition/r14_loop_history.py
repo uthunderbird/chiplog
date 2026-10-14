@@ -415,7 +415,9 @@ def _read_call_history(
             entries = []
             loop_journal_entries = runtime._loop_decisions().entries()
             selected_decision_envelopes = {}
+            loop_decision_bytes_by_id = {}
             for decision_id, _, raw in loop_journal_entries:
+                loop_decision_bytes_by_id[str(decision_id)] = raw
                 entry = _strict_json(raw)
                 entries.append(entry)
                 if entry.get("kind") == "DECIDED":
@@ -2020,6 +2022,7 @@ def _read_call_history(
                             connection,
                             command,
                             entry,
+                            loop_decision_bytes_by_id,
                             authenticated_history,
                             current_snapshot,
                             execution_preparations,

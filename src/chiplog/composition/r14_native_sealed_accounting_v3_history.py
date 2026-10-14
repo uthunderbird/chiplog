@@ -47,6 +47,7 @@ def decode_selected_native_sealed_accounting_v3(
     connection: sqlite3.Connection,
     command: PhysicalPublicationCommand,
     entry: dict[str, object],
+    loop_decision_bytes_by_id: dict[str, bytes],
     history: ExecutionRecoveryHistory,
     current_history: ExecutionHistorySnapshot,
     fanouts: list,
@@ -76,12 +77,8 @@ def decode_selected_native_sealed_accounting_v3(
         raise ValueError("native sealed accounting V3 seal has no unique authenticated fanout")
     fanout = matching_fanouts[0]
     seal = fanout.proposal.fan_out.response_seal
-    prepare_rows = {
-        str(decision_id): raw
-        for decision_id, _predecessor, raw in runtime._loop_decisions().entries()
-    }
     prepare = projection
-    prepare_bytes = prepare_rows.get(prepare.selected_prepare_decision_id)
+    prepare_bytes = loop_decision_bytes_by_id.get(prepare.selected_prepare_decision_id)
     if (
         prepare_bytes != prepare.selected_prepare_decision_bytes
         or prepare_bytes is None
