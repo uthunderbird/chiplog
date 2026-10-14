@@ -1,6 +1,7 @@
 """Actual isolated precursor and independently selected original preview custody."""
 
 import json
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -123,6 +124,47 @@ async def test_preview_selects_original_owner_result_without_changing_its_source
         assert read_call_previews(reopened) == retained
         assert read_call_previews(runtime) == retained
         assert reopened_resources.require_original_provider().transfers == ()
+
+
+async def test_preview_authenticates_after_history_read_and_reuses_current_history(
+    initialized: tuple[ExecutionDispatchRuntime, CallAcceptanceTarget, HermeticDispatchResources],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, target, _ = initialized
+    phases: list[str] = []
+    histories: list[object] = []
+    captured_histories: list[object] = []
+    original_history = previews.read_execution_call_history
+    original_authenticate = previews.authenticate
+    original_capture = previews.capture_dispatch
+
+    def slow_history(*args: object, **kwargs: object):
+        history = original_history(*args, **kwargs)
+        histories.append(history)
+        phases.append("history")
+        if len(histories) == 1:
+            time.sleep(5.1)  # Longer than the fixed AUTHENTICATE admission budget.
+        return history
+
+    async def tracked_authenticate(runtime, peer):
+        phases.append("authenticate")
+        return await original_authenticate(runtime, peer)
+
+    def tracked_capture(*args: object, **kwargs: object):
+        captured_histories.append(kwargs.get("execution_call_history"))
+        return original_capture(*args, **kwargs)
+
+    monkeypatch.setattr(previews, "read_execution_call_history", slow_history)
+    monkeypatch.setattr(previews, "authenticate", tracked_authenticate)
+    monkeypatch.setattr(previews, "capture_dispatch", tracked_capture)
+
+    await runtime.preview_call_acceptance("hermetic-ingress", target)
+
+    assert phases[:3] == ["history", "authenticate", "authenticate"]
+    assert len(histories) >= 1
+    assert len(captured_histories) == 2
+    assert captured_histories[0] is histories[0]
+    assert captured_histories[1] is histories[0]
 
 
 @pytest.mark.parametrize(

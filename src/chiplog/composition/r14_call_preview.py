@@ -333,9 +333,12 @@ def _read_call_previews_and_history_held(
 async def preview_call_acceptance(
     runtime: ExecutionDispatchRuntime, peer: str, target: CallAcceptanceTarget
 ) -> CallAcceptancePreview:
-    observed = await authenticate(runtime, peer)
     with runtime._authority_gate().hold():
         execution_call_history = read_execution_call_history(runtime)
+        loop_entries = runtime._loop_decisions().entries()
+        loop_head = loop_entries[-1][0] if loop_entries else None
+    observed = await authenticate(runtime, peer)
+    with runtime._authority_gate().hold():
         captured = capture_dispatch(
             runtime,
             runtime._require_dispatch_resources(),
@@ -344,6 +347,8 @@ async def preview_call_acceptance(
             original_call_id=target.original_call_id,
             execution_call_history=execution_call_history,
         )
+        if captured.loop_head != loop_head:
+            raise LoopRejected("call preview loop history changed during authentication")
         worker = captured.cut.worker
         assert worker is not None
         _, inventory, preparations = execution_call_history
@@ -445,6 +450,18 @@ async def preview_call_acceptance(
         request.schema_id,
         request.canonical_bytes(),
     )
+    refreshed = await authenticate(runtime, peer)
+    if (
+        refreshed.observation != observed.observation
+        or refreshed.request.operation_id != observed.request.operation_id
+        or refreshed.request.schema_id != observed.request.schema_id
+        or refreshed.request.callee != observed.request.callee
+        or refreshed.request.canonical_payload != observed.request.canonical_payload
+        or refreshed.result.disposition != "VALID"
+        or refreshed.result.reference_bytes != captured.principal
+    ):
+        raise LoopRejected("call preview trust observation changed during precursor evaluation")
+    observed = refreshed
     with runtime._authority_gate().hold():
         current = capture_dispatch(
             runtime,
@@ -452,6 +469,7 @@ async def preview_call_acceptance(
             observed,
             worker.run.run_id,
             original_call_id=target.original_call_id,
+            execution_call_history=execution_call_history,
         )
         if current != captured:
             raise LoopRejected("call preview sources changed during precursor evaluation")

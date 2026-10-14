@@ -1163,7 +1163,7 @@ async def test_v3_reads_three_accepted_members_across_delayed_dispatch_and_repla
 async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay(
     tmp_path: Path,
 ) -> None:
-    database = tmp_path / "native-two-turn-seals.sqlite"
+    database = tmp_path / "native-v23-prepare.sqlite"
     custody = tmp_path / "dispatch-custody"
     followup = ExecutionContinue(
         kind="Continue",
