@@ -29,6 +29,7 @@ token.json
 .harness/.healthcheck-state
 .harness/runs/
 .harness/handoff.md
+.harness/handoff-sequence
 /runtime/
 /state/
 /journal.jsonl

@@ -44,6 +44,19 @@ def path(root):
     return pathlib.Path(root) / ".harness" / "handoff.md"
 
 
+def preserve_sequence(root, entries, *, allocated=0):
+    """Keep issued identifiers even when close/ack removes the live journal."""
+    sequence = pathlib.Path(root) / ".harness" / "handoff-sequence"
+    raw = sequence.read_text(encoding="utf-8") if sequence.exists() else "0\n"
+    if re.fullmatch(r"(?:0|[1-9][0-9]*)\n", raw) is None:
+        raise ValueError("invalid handoff sequence; refusing to reuse an identifier")
+    highwater = max(int(raw), allocated, max((entry["id"] for entry in entries), default=0))
+    temporary = sequence.with_suffix(".tmp")
+    temporary.write_text(f"{highwater}\n", encoding="utf-8")
+    temporary.replace(sequence)
+    return highwater
+
+
 def parse(root):
     """[{id, kind, when, status, fields{}}] — порядок как в файле."""
     p = path(root)
@@ -87,7 +100,8 @@ def write(root, entries):
 
 def add(root, kind, when, fields):
     entries = parse(root)
-    nid = max((e["id"] for e in entries), default=0) + 1
+    nid = preserve_sequence(root, entries) + 1
+    preserve_sequence(root, entries, allocated=nid)
     fields = dict(fields)
     fields["когда записано"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     entries.append({"id": nid, "kind": kind, "when": when,
@@ -101,6 +115,7 @@ def close(root, target):
     kept = [e for e in entries if e["id"] != target]
     if len(kept) == len(entries):
         return False
+    preserve_sequence(root, entries)
     write(root, kept)
     return True
 
@@ -111,6 +126,7 @@ def ack(root):
     Хвосты со сроком «сейчас» переводом не закрываются — их закрывает работа.
     Гейт продолжит их держать, и это намеренно."""
     entries = parse(root)
+    preserve_sequence(root, entries)
     kept = []
     for e in entries:
         if e["kind"] == "решение":
