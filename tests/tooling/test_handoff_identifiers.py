@@ -5,9 +5,10 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = importlib.util.spec_from_file_location("handoff_under_test", ROOT / ".harness/scripts/handoff.py")
+SPEC = importlib.util.spec_from_file_location(
+    "handoff_under_test", ROOT / ".harness/scripts/handoff.py"
+)
 assert SPEC is not None and SPEC.loader is not None
 handoff = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(handoff)
@@ -41,7 +42,9 @@ def test_existing_journal_is_migrated_before_ack(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("operation", ["add", "close", "ack"])
-def test_corrupt_sequence_preserves_journal_and_refuses_mutation(tmp_path: Path, operation: str) -> None:
+def test_corrupt_sequence_preserves_journal_and_refuses_mutation(
+    tmp_path: Path, operation: str
+) -> None:
     (tmp_path / ".harness").mkdir()
     handoff.add(tmp_path, "решение", "", {"что": "original"})
     before = handoff.path(tmp_path).read_bytes()
@@ -54,3 +57,20 @@ def test_corrupt_sequence_preserves_journal_and_refuses_mutation(tmp_path: Path,
         else:
             handoff.ack(tmp_path)
     assert handoff.path(tmp_path).read_bytes() == before
+
+
+def test_failed_journal_write_does_not_release_reserved_identifier(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / ".harness").mkdir()
+    assert handoff.add(tmp_path, "решение", "", {"что": "first"}) == 1
+    original_write = handoff.write
+
+    def fail_write(*args):
+        raise OSError("interrupted journal write")
+
+    monkeypatch.setattr(handoff, "write", fail_write)
+    with pytest.raises(OSError, match="interrupted journal"):
+        handoff.add(tmp_path, "решение", "", {"что": "interrupted"})
+    monkeypatch.setattr(handoff, "write", original_write)
+    assert handoff.add(tmp_path, "решение", "", {"что": "next"}) == 3
