@@ -928,6 +928,46 @@ exact-historical-source mode for any compared reads. Do not build a new
 multi-seal scenario just to obtain this profile. Until a valid same-cut profile
 exists, inventory reconstruction is the leading hypothesis, not a proven cause.
 
+### Short mixed-V3 mounted profile (2026-10-14)
+
+This is a separate, shorter witness, not the failing 40-entry writer fixture. The
+selector is
+`tests/composition/test_r14_native_selected_accounting_source.py::test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once`.
+It uses two native members (one `SUCCEEDED`, one `CANCELLED_BEFORE_ACCEPT`),
+publishes V3 accounting, reads it after reopen, checks exact replay, rejects a
+wrong physical cut, and rejects an orphan publication without moving the head.
+
+The instrumentation commands were:
+
+```sh
+TMPDIR=/private/tmp/r14-v3-mixed-profile PYTHONPATH=src:/private/tmp PYTHONUNBUFFERED=1 uv --cache-dir /private/tmp/uvcache run pytest -s -q -p r14_inventory_probe tests/composition/test_r14_native_selected_accounting_source.py::test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once
+TMPDIR=/private/tmp/r14-v3-mixed-profile PYTHONPATH=src:/private/tmp PYTHONUNBUFFERED=1 uv --cache-dir /private/tmp/uvcache run pytest -s -q -p r14_test_profile tests/composition/test_r14_native_selected_accounting_source.py::test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once
+```
+
+Both mounted runs passed: the history-inventory probe completed in 35.83 s; the
+whole-test `cProfile` probe completed in 39.23 s (profiled test-call wall was
+38.754 s). The latter profile reports 93 `_read_call_history` calls with 18.851 s
+cumulative time; 47,079 JSON encodes with 10.134 s cumulative, 18,538 decodes with
+5.582 s cumulative, 260 selector calls with 7.727 s cumulative, and 12 V3 decoder
+calls with 6.260 s cumulative. These are inclusive totals from different, nested
+branches and must not be summed. The fixture intentionally exercises reopen,
+replay, wrong-cut and orphan negatives, so none of these totals represents the
+ordinary user journey.
+
+In one short reader call, four `execution_inventory` calls over snapshots of 7 or
+8 records took about 27 ms combined. That weakens “inventory reconstruction is
+already dominant at this short history size”; it does not eliminate the candidate
+for the 40-entry/209 MB writer history. `selectors.select` time may include async
+waiting, but this probe did not separate thread CPU from wait time or identify the
+waited-on owner RPC, so it does not establish IPC as the cause. The whole-test
+profile likewise does not establish GIL contention or a scaling curve.
+
+Differential update: retain repeated semantic history validation, native/V3
+accounting and H1 issuance checks as candidates for the slow writer read; mark
+inventory-only dominance unproven and size-dependent. Keep the next discriminator
+on the next necessary same-cut mounted read. Do not rerun this test or the long
+two-seal selector solely to collect more profile detail.
+
 ### Preview authentication-order regression witness (2026-10-14)
 
 The preview path now reads the selected execution-call history before starting
