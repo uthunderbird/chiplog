@@ -256,8 +256,10 @@ _SelectedRun = tuple[str, bytes, PhysicalPublicationCommand, ExecutionRunRecord,
 def _select_prepare_from_runs(
     runtime: CommonCliExecutionRuntime,
     runs: tuple[_SelectedRun, ...],
+    *,
+    turn_id: str,
 ) -> H1SelectedPrepare:
-    """Authenticate the one V3 Prepare in an already authenticated Run prefix."""
+    """Authenticate all Prepares and select the one for the requested Turn."""
     matches: list[H1SelectedPrepare] = []
     for decision_id, decision_bytes, command, run, physical in runs:
         retained = _decode_v3_prepare(decision_bytes)
@@ -304,21 +306,21 @@ def _select_prepare_from_runs(
             command.expected_head,
             R13Workspace(runtime),
         )
-        matches.append(
-            H1SelectedPrepare(
-                retained=retained,
-                retained_bytes=retained.canonical_bytes(),
-                decision_id=decision_id,
-                decision_bytes=decision_bytes,
-                publication=command,
-                physical_run=physical,
-                started_run=started,
-                source_tenant_sequence=source_sequence,
-                workspace_member_bytes=workspace[0].model_dump_json().encode(),
-                proposal_context_bytes=workspace[0].content.encode(),
-                issuance_ref=retained.workspace_issuance,
-            )
+        candidate = H1SelectedPrepare(
+            retained=retained,
+            retained_bytes=retained.canonical_bytes(),
+            decision_id=decision_id,
+            decision_bytes=decision_bytes,
+            publication=command,
+            physical_run=physical,
+            started_run=started,
+            source_tenant_sequence=source_sequence,
+            workspace_member_bytes=workspace[0].model_dump_json().encode(),
+            proposal_context_bytes=workspace[0].content.encode(),
+            issuance_ref=retained.workspace_issuance,
         )
+        if retained.request.manifest.turn_id == turn_id:
+            matches.append(candidate)
     if len(matches) != 1:
         raise ValueError("H1 selected Run lineage has no unique V3 Prepare")
     return matches[0]
@@ -455,7 +457,11 @@ def select_h1_v3_prepare_for_native_fanout(
                 raise ValueError("native fanout Run lineage has a gap or competing descendant")
         if retained.request.captured_run != captured:
             raise ValueError("native fanout retained exchange differs from physical predecessor")
-        prepare = _select_prepare_from_runs(runtime, tuple(runs[:-1]))
+        prepare = _select_prepare_from_runs(
+            runtime,
+            tuple(runs[:-1]),
+            turn_id=retained.proposal.fan_out.response_seal.original_turn_id,
+        )
         runtime._check_database_identity()
         after = database.stat()
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
@@ -521,7 +527,9 @@ def select_h1_v3_prepare_for_candidate(
             elif run.predecessor != runs[index - 1][3].head:
                 raise ValueError("H1 selected Run lineage has a gap or competing descendant")
 
-        selected = _select_prepare_from_runs(runtime, tuple(runs))
+        selected = _select_prepare_from_runs(
+            runtime, tuple(runs), turn_id=captured.turns[0].turn_id
+        )
         runtime._check_database_identity()
         after = database.stat()
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
@@ -703,7 +711,9 @@ def _select_h1_prepare_at_cut(
     if cut.retained.exchange.request.captured_run != captured:
         raise ValueError("H1 selected seal retained exchange differs from physical predecessor")
     prepare = _select_prepare_from_runs(
-        runtime, tuple(item for item in runs if item[3].head != sealed_run.head)
+        runtime,
+        tuple(item for item in runs if item[3].head != sealed_run.head),
+        turn_id=captured.turns[0].turn_id,
     )
     return H1SelectedPostSealPrepare(
         captured,
@@ -891,7 +901,7 @@ def select_h1_v3_prepare_for_seal(
         if retained.exchange.request.captured_run != captured:
             raise ValueError("H1 selected seal retained exchange differs from physical predecessor")
         prefix = tuple(item for item in runs if item[3].head != sealed_run.head)
-        prepare = _select_prepare_from_runs(runtime, prefix)
+        prepare = _select_prepare_from_runs(runtime, prefix, turn_id=captured.turns[0].turn_id)
         seal = H1SelectedSeal(
             command=seal_command,
             decision_id=decision_id,

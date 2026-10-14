@@ -68,6 +68,29 @@ def _selected(runtime: CommonCliExecutionRuntime, identity: str) -> dict[str, ob
     return entry
 
 
+def _native_response_for_call(
+    history: ExecutionRecoveryHistory, original_call_id: str
+) -> CallSubjectHead:
+    executions = tuple(
+        execution
+        for execution in history[3]
+        if any(
+            record.original_call_id == original_call_id
+            for record in execution.proposal.fan_out.initialized_records
+        )
+    )
+    if len(executions) != 1:
+        raise LoopRejected(
+            "accepted/direct terminal requires one selected native execution for call"
+        )
+    seal = executions[0].proposal.fan_out.response_seal
+    seal_digest = seal.digest()
+    return CallSubjectHead(
+        subject_id=seal.response_seal_id,
+        revision=Present(head="record:" + seal_digest, fingerprint=seal_digest),
+    )
+
+
 def _current_cut(
     runtime: CommonCliExecutionRuntime,
     *,
@@ -83,19 +106,23 @@ def _current_cut(
     history = authenticated_history or read_execution_recovery_history(
         runtime, selected_only=selected_only
     )
-    snapshot, _, _, executions, _, _ = history
-    if len(executions) != 1 or not snapshot.records:
-        raise LoopRejected("accepted/direct terminal requires one selected native execution")
-    seal = executions[0].proposal.fan_out.response_seal
-    seal_digest = seal.digest()
-    seal_ref = CallSubjectHead(
-        subject_id=seal.response_seal_id,
-        revision=Present(head="record:" + seal_digest, fingerprint=seal_digest),
-    )
+    snapshot, _, _, _, _, acceptances = history
+    if not snapshot.records:
+        raise LoopRejected("accepted/direct terminal requires selected execution history")
+    if expected_source_cut is not None:
+        if original_call_id not in (None, expected_source_cut.original_call_id):
+            raise LoopRejected("accepted/direct terminal historical target differs")
+        original_call_id = expected_source_cut.original_call_id
+    if original_call_id is None:
+        accepted_ids = {item.loop_request.binding.original_call_id for item in acceptances}
+        if len(accepted_ids) != 1:
+            return None
+        original_call_id = next(iter(accepted_ids))
+    seal_ref = _native_response_for_call(history, original_call_id)
     projection = authenticated_projection or R14OriginalNativePrepareSource(runtime).collect(
         seal_ref
     )
-    if projection is None:
+    if projection is None or projection.selected_response_seal != seal_ref:
         raise LoopRejected("accepted/direct terminal original Prepare source unavailable")
     source = R14NativeSelectedAccountingSource(
         runtime,
@@ -118,11 +145,7 @@ def _current_cut(
     accepted = source.collect_one_accepted(
         source_run,
         selected_only=selected_only,
-        original_call_id=(
-            original_call_id
-            if expected_source_cut is None
-            else expected_source_cut.original_call_id
-        ),
+        original_call_id=original_call_id,
         _source_facts=selected_source,
     )
     if accepted is None:
@@ -190,9 +213,7 @@ async def _finish(
         is_materialized=lambda: runtime._loop_decision_materialized(command.idempotency_key, entry),
     )
     runtime._finish_decision(command.idempotency_key, expected=entry)
-    selected = read_selected_accepted_direct_terminal(
-        runtime, original_call_id=original_call_id
-    )
+    selected = read_selected_accepted_direct_terminal(runtime, original_call_id=original_call_id)
     if selected != evidence.result:
         raise LoopRejected("selected accepted/direct terminal result was not observed")
     return cast(PreparedAcceptedDirectTerminalV1, selected)
@@ -209,9 +230,7 @@ async def publish_accepted_direct_terminal(
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
         runtime._pending()
-        validate_selected_accepted_direct_terminal(
-            runtime, original_call_id=original_call_id
-        )
+        validate_selected_accepted_direct_terminal(runtime, original_call_id=original_call_id)
         prior = [
             json.loads(raw)
             for _, _, raw in runtime._loop_decisions().entries()
@@ -232,10 +251,9 @@ async def publish_accepted_direct_terminal(
         if len(prior) > 1:
             raise LoopRejected("ambiguous accepted/direct terminal history")
     if prior:
-        selected_call_id = (
-            retained_accepted_direct_terminal(prior[0])
-            .result.accounting.original_call_id
-        )
+        selected_call_id = retained_accepted_direct_terminal(
+            prior[0]
+        ).result.accounting.original_call_id
         return await _finish(runtime, prior[0], original_call_id=selected_call_id)
 
     if original_call_id is not None and has_other_terminal:
@@ -415,7 +433,6 @@ def validate_selected_accepted_direct_terminal(
     current_cut = None
     seen_call_keys: set[tuple[str, str]] = set()
     marker_history = authenticated_history
-    marker_projection = authenticated_projection
     for _, _, raw in runtime._loop_decisions().entries():
         entry = json.loads(raw)
         if entry.get("kind") != "DECIDED":
@@ -467,24 +484,6 @@ def validate_selected_accepted_direct_terminal(
                 raise LoopRejected("accepted/direct terminal exact batch is absent or inconsistent")
         if marker_history is None:
             marker_history = read_execution_recovery_history(runtime, selected_only=True)
-        if marker_projection is None:
-            executions = marker_history[3]
-            if len(executions) != 1:
-                raise LoopRejected(
-                    "accepted/direct terminal requires one selected native execution"
-                )
-            seal = executions[0].proposal.fan_out.response_seal
-            seal_digest = seal.digest()
-            seal_ref = CallSubjectHead(
-                subject_id=seal.response_seal_id,
-                revision=Present(head="record:" + seal_digest, fingerprint=seal_digest),
-            )
-            marker_projection = R14OriginalNativePrepareSource(runtime).collect(seal_ref)
-            if (
-                marker_projection is None
-                or marker_projection.selected_response_seal != seal_ref
-            ):
-                raise LoopRejected("accepted/direct terminal selected Prepare projection differs")
         marker_call_id = evidence.result.accounting.original_call_id
         if _selected_competing_open(runtime, marker_call_id):
             raise LoopRejected("accepted/direct terminal conflicts with selected RECOVERY_REQUIRED")
@@ -494,6 +493,15 @@ def validate_selected_accepted_direct_terminal(
             # its requested member; unqualified startup validation still
             # reconstructs every marker below.
             continue
+        seal_ref = _native_response_for_call(marker_history, marker_call_id)
+        marker_projection = (
+            authenticated_projection
+            if authenticated_projection is not None
+            and authenticated_projection.selected_response_seal == seal_ref
+            else R14OriginalNativePrepareSource(runtime).collect(seal_ref)
+        )
+        if marker_projection is None or marker_projection.selected_response_seal != seal_ref:
+            raise LoopRejected("accepted/direct terminal selected Prepare projection differs")
         current = _current_cut(
             runtime,
             original_call_id=marker_call_id,
@@ -507,10 +515,7 @@ def validate_selected_accepted_direct_terminal(
         )
         if current is None or current[1] != evidence.request.cut:
             raise LoopRejected("accepted/direct terminal retained source cut differs")
-        if (
-            original_call_id is None
-            or marker_call_id == original_call_id
-        ):
+        if original_call_id is None or marker_call_id == original_call_id:
             selected.append(entry)
             current_cut = current
     if original_call_id is not None and not selected:

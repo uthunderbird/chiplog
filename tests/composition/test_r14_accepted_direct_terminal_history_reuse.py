@@ -3,8 +3,85 @@ from __future__ import annotations
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import pytest
+
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.composition import r14_accepted_direct_terminal_publication as publication
 from chiplog.composition import r14_loop_history as loop_history
+
+
+def _two_seal_history(*accepted_ids):
+    executions = tuple(
+        SimpleNamespace(
+            proposal=SimpleNamespace(
+                fan_out=SimpleNamespace(
+                    initialized_records=(SimpleNamespace(original_call_id=call_id),),
+                    response_seal=SimpleNamespace(
+                        response_seal_id=seal_id, digest=lambda digest=digest: digest
+                    ),
+                )
+            )
+        )
+        for call_id, seal_id, digest in (
+            ("call-a", "seal-a", "a" * 64),
+            ("call-b", "seal-b", "b" * 64),
+        )
+    )
+    acceptances = tuple(
+        SimpleNamespace(
+            loop_request=SimpleNamespace(binding=SimpleNamespace(original_call_id=call_id))
+        )
+        for call_id in accepted_ids
+    )
+    return (SimpleNamespace(records=(object(),)), None, None, executions, (), acceptances)
+
+
+def test_direct_terminal_selects_the_requested_seal_among_two():
+    history = _two_seal_history("call-b")
+    assert publication._native_response_for_call(history, "call-a").subject_id == "seal-a"
+    assert publication._native_response_for_call(history, "call-b").subject_id == "seal-b"
+
+
+def test_direct_terminal_rejects_missing_or_ambiguous_target_seal():
+    history = _two_seal_history("call-b")
+    with pytest.raises(LoopRejected, match="for call"):
+        publication._native_response_for_call(history, "absent")
+    duplicated = (*history[:3], history[3] + (history[3][1],), *history[4:])
+    with pytest.raises(LoopRejected, match="for call"):
+        publication._native_response_for_call(duplicated, "call-b")
+
+
+def test_direct_terminal_rejects_projection_for_another_seal():
+    history = _two_seal_history("call-b")
+    wrong = SimpleNamespace(
+        selected_response_seal=publication._native_response_for_call(history, "call-a")
+    )
+    with pytest.raises(LoopRejected, match="Prepare source unavailable"):
+        publication._current_cut(
+            object(),
+            original_call_id="call-b",
+            authenticated_history=history,
+            authenticated_projection=wrong,
+        )
+
+
+def test_direct_terminal_keeps_unqualified_acceptance_ambiguous():
+    assert (
+        publication._current_cut(
+            object(), authenticated_history=_two_seal_history("call-a", "call-b")
+        )
+        is None
+    )
+
+
+def test_direct_terminal_rejects_a_different_explicit_historical_target():
+    with pytest.raises(LoopRejected, match="historical target differs"):
+        publication._current_cut(
+            object(),
+            original_call_id="call-a",
+            authenticated_history=_two_seal_history("call-b"),
+            expected_source_cut=SimpleNamespace(original_call_id="call-b"),
+        )
 
 
 def test_selected_direct_terminal_reuses_strict_history_inside_authority_gate(

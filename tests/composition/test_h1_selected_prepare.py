@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 from dataclasses import fields
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.execution_transition_contracts import PrepareExecutionRequest
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.composition import h1_selected_prepare as selected_prepare
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
 from chiplog.composition.h1_preseal_contracts import H1SelectedPrepare, H1SelectedSeal
 from chiplog.composition.h1_selected_prepare import (
@@ -23,6 +26,64 @@ from chiplog.composition.h1_selected_prepare import (
 from chiplog.composition.r14_execution_complete_seal_records import RetainedExecutionCompleteSealV2
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.support.h1_cli_execution import admit_complete_script, advance
+
+
+@pytest.mark.parametrize("case", ["second-turn", "missing", "duplicate", "bad-earlier"])
+def test_prepare_selection_is_turn_qualified_but_validates_the_whole_prefix(monkeypatch, case):
+    workspace = SimpleNamespace(
+        producer="projections",
+        surface="workspace",
+        content="context",
+        model_dump_json=lambda: "{}",
+    )
+    started = SimpleNamespace(head="started")
+    runs = [("started", b"started", object(), started, object())]
+    retained_by_raw = {}
+    for ordinal in (1, 2):
+        turn_id = f"turn-{ordinal}"
+        run = SimpleNamespace(head=f"prepared-{ordinal}")
+        command = SimpleNamespace(expected_head=ordinal)
+        retained = SimpleNamespace(
+            request=PrepareExecutionRequest.model_construct(
+                manifest=SimpleNamespace(turn_id=turn_id, members=(workspace,))
+            ),
+            proposal=SimpleNamespace(run=run),
+            workspace_issuance=turn_id,
+            command=command,
+            canonical_bytes=lambda: b"retained",
+        )
+        raw = turn_id.encode()
+        retained_by_raw[raw] = retained
+        runs.append((turn_id, raw, command, run, object()))
+    if case == "duplicate":
+        runs.append(runs[-1])
+    verified = []
+
+    def verify(request, *_args):
+        verified.append(request.manifest.turn_id)
+        if case == "bad-earlier" and request.manifest.turn_id == "turn-1":
+            raise ValueError("bad earlier Prepare")
+
+    monkeypatch.setattr(selected_prepare, "_decode_v3_prepare", retained_by_raw.get)
+    monkeypatch.setattr(selected_prepare, "transition_command", lambda value: value.command)
+    issuance = SimpleNamespace(started_run_head="started", snapshot=SimpleNamespace(tenant_head=1))
+    monkeypatch.setattr(
+        selected_prepare,
+        "R13Workspace",
+        lambda _runtime: SimpleNamespace(
+            open_h1_workspace_issuance=lambda: SimpleNamespace(load=lambda _ref: issuance)
+        ),
+    )
+    runtime = SimpleNamespace(_verify_h1_prepare_issuance=verify)
+    turn_id = "absent" if case == "missing" else "turn-2"
+    if case == "second-turn":
+        result = selected_prepare._select_prepare_from_runs(runtime, tuple(runs), turn_id=turn_id)
+        assert result.retained is retained_by_raw[b"turn-2"]
+        assert verified == ["turn-1", "turn-2"]
+    else:
+        reason = "bad earlier Prepare" if case == "bad-earlier" else "unique V3 Prepare"
+        with pytest.raises(ValueError, match=reason):
+            selected_prepare._select_prepare_from_runs(runtime, tuple(runs), turn_id=turn_id)
 
 
 def test_selected_prepare_carrier_has_the_frozen_evidence_fields() -> None:
