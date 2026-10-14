@@ -1761,3 +1761,71 @@ serializing again inside the timed region. For the two-seal deadline, attach
 that passive probe to the next required mounted run; do not reconstruct the
 removed historical fixture or rerun the multi-minute selector solely for
 profiling.
+
+### Current-tree two-seal witness result (2026-10-14)
+
+The exact mounted selector was run on the current tree without a profiler:
+
+```sh
+UV_CACHE_DIR=/private/tmp/r14-6-uv-cache GIT_CONFIG_COUNT=1 \
+GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false \
+uv run pytest -q tests/composition/test_r14_native_selected_accounting_source.py::test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay --durations=1
+```
+
+The sandboxed attempt stopped before owner startup because AF_UNIX bind was
+denied. The same selector with local owner sockets permitted ran for 717.24 s
+and failed at `runtime.accept_call(...)` with `call acceptance rejected: writer
+STALE`. It had captured and sealed Turn 2 and prepared its acceptance preview;
+the writer did not select the second call. Therefore the test did not reach
+second-seal terminal publication, second-seal V3 publication, cross-order
+replay, or reopen. The current result is a functional failure, not R14.6
+completion evidence.
+
+This wall duration is not a controlled comparison to the earlier 416.00 s and
+420.61 s runs: those were separate invocations, and this run had no phase timer
+or profile. The failed fixture's loop journal is 209,312,600 bytes, matching the
+size recorded in the earlier writer-probe artifact; file size alone does not
+explain the extra elapsed time. Do not call this a performance regression or an
+exponential curve without matching per-phase measurements and workload counts.
+
+#### Differential ranking
+
+- **Leading mechanism: repeated authenticated semantic history work.** In the
+  earlier 416 s invocation, 105 `_read_call_history` calls consumed 356.418 s
+  wall / 356.059 s thread CPU; 216 inventory calls consumed 1.680 s total, and
+  the writer's single history read took 13.062 s. In the separate 420.61 s
+  invocation, `capture_dispatch` took 0.176 s. These measurements locate most
+  of the earlier run in history reads, but do not attribute the current 717 s
+  total to the same calls.
+- **The current `STALE` cause is not yet localized.** In the earlier
+  instrumented run, `check_prepared` mapped `_check_live`'s explicit source and
+  owner deadline rejection to `STALE`; that is the established five-second
+  horizon failure for that invocation, not a proven predicate for the current
+  run. The current unprofiled error does not identify which live-check
+  predicate failed; `STALE` may also represent changed source cut, branch, or
+  scope. Extending the horizon would neither reduce history-processing work
+  nor establish a safe new authority duration.
+- **GIL contention is unsupported.** The measured history work was almost all
+  thread CPU time. That supports CPU-heavy Python/JSON processing; it does not
+  establish contention from the GIL.
+- **Test trimming and cross-call caching are not selected remedies.** Removing
+  readiness, the real next-Turn transition, writer admission, or reopen would
+  discard required evidence. Reusing results across reads would also erase the
+  fresh authenticated-source check. Only exact repeated work within one
+  authenticated cut remains a candidate, and each reuse must retain the
+  existing source/head checks.
+
+#### Next discriminator
+
+Do not repeat the full selector solely to collect more timing. Use the preserved
+current failed fixture for one bounded observation of the writer's history
+path only if the current runtime successfully authenticates the preserved
+source cut; matching path and file attributes alone are insufficient. Separate
+`read_execution_call_history` from `capture_dispatch`, and count/time the
+selected recovery, next-Turn, native-accounting, and historical-source helpers
+without emitting payloads. If opening the fixture would alter its authenticated
+source state, cannot preserve its physical identity, or fails current cut
+authentication, skip the probe and defer instrumentation to the next required
+mounted R14 run. A candidate optimization survives only if it removes
+byte-identical duplicate work within that captured cut while preserving all
+final currentness and deadline predicates.
