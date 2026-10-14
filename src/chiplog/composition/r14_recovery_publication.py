@@ -635,6 +635,13 @@ def authenticate_selected_recovery_prefix_held(runtime, actual, anchored) -> boo
     try:
         runtime._check_database_identity()
         pending = runtime._pending()
+        if len(pending) == 1 and pending[0].get("operation_kind") in {
+            "agent_loop.accepted-open-accounting.v1",
+            "agent_loop.accepted-open-recovery.v1",
+        }:
+            from .r14_historical_suffix import authenticate_selected_open_prefix_held
+
+            return authenticate_selected_open_prefix_held(runtime, actual, anchored)
         if (
             len(pending) == 1
             and pending[0].get("operation_kind") == "agent_loop.execution-next-turn.v1"

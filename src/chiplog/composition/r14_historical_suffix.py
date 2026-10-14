@@ -46,6 +46,8 @@ NATIVE_OPEN_PENDING_LIFECYCLE_OPERATIONS = frozenset(
     {
         "agent_loop.execution-suspension.v1",
         "agent_loop.execution-successor.v1",
+        "agent_loop.accepted-open-accounting.v1",
+        "agent_loop.accepted-open-recovery.v1",
     }
 )
 
@@ -345,6 +347,63 @@ def native_open_physical_execution_history_held(
     return ExecutionHistorySnapshot(tenant_head=snapshot.tenant_head, records=records)
 
 
+def authenticate_selected_open_prefix_held(runtime, actual, anchored):
+    """Authenticate unchanged historical bytes, never the OPEN causal claim."""
+    from chiplog.composition import r14_accepted_open_accounting_records as records
+
+    runtime._authority_gate().require_held()
+    runtime._check_database_identity()
+    pending = runtime._pending()
+    if len(pending) != 1 or runtime._pending_owners() or runtime._pending_gate_publications():
+        return False
+    entry = pending[0]
+    operation = entry.get("operation_kind")
+    if operation == records.ACCEPTED_OPEN_ACCOUNTING_OPERATION:
+        evidence = records.retained_accepted_open_accounting(entry)
+        command = records.accepted_open_accounting_command(evidence)
+    elif operation == records.ACCEPTED_OPEN_RECOVERY_OPERATION:
+        evidence = records.retained_accepted_open_recovery(entry)
+        command = records.accepted_open_recovery_command(evidence)
+    else:
+        return False
+    cut = evidence.request.cut
+    if (
+        runtime._publication(entry) != command
+        or command.tenant_id != runtime._tenant_id
+        or cut.tenant_id != runtime._tenant_id
+        or cut.database_id != runtime._database_identity[0]
+        or entry.get("operation_id") != command.idempotency_key
+        or entry.get("expected_head") != command.expected_head
+        or entry.get("fingerprint") != command.request_fingerprint
+        or entry.get("predecessor") != cut.materialization_commitment
+        or command.expected_head != cut.tenant_commit_sequence
+    ):
+        return False
+    with read_connection(runtime._database) as connection:
+        head = connection.execute(
+            "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+        ).fetchone()
+        if head is None:
+            return False
+        state = inspect_publication(connection, command, command.expected_head + 1)
+        if state == "ABSENT":
+            valid = (
+                actual == anchored == entry.get("predecessor")
+                and anchored == runtime._commitment_journal.load(runtime._tenant_id)
+                and command.expected_head == head[0]
+                and actual == capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+            )
+        elif state == "COMPLETE":
+            valid = authenticate_native_open_pending_lifecycle_held(
+                runtime, connection, actual, anchored, pending_publication=entry,
+                selected=((command, entry),), frontier=head[0],
+            )
+        else:
+            return False
+    runtime._check_database_identity()
+    return valid
+
+
 def authenticate_native_open_pending_lifecycle_held(
     runtime, connection, actual, anchored, *, pending_publication, selected, frontier
 ):
@@ -364,7 +423,7 @@ def authenticate_native_open_pending_lifecycle_held(
     sequence = command.expected_head + 1
     if (
         sequence != frontier
-        or entry.get("predecessor") != anchored
+        or anchored not in (entry.get("predecessor"), entry.get("resulting"))
         or entry.get("resulting") != actual
         or capture_authority_snapshot_commitment(connection, runtime._tenant_id) != actual
         or runtime._commitment_journal.load(runtime._tenant_id) != anchored
@@ -389,7 +448,7 @@ def authenticate_native_open_pending_lifecycle_held(
         runtime,
         connection,
         expected_head=command.expected_head,
-        expected_commitment=anchored,
+        expected_commitment=str(entry["predecessor"]),
     )
     return True
 

@@ -45,45 +45,31 @@ def build_accepted_open_recovery_cut(
     try:
         with runtime._authority_gate().hold():
             runtime._check_database_identity()
-            authenticated_later_suffix = False
+            with read_connection(runtime._database) as connection:
+                actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+            anchored = runtime._commitment_journal.load(runtime._tenant_id)
             if (
-                source_materialization_commitment is not None
-                and source_tenant_commit_sequence is not None
-            ):
-                with read_connection(runtime._database) as connection:
-                    actual = capture_authority_snapshot_commitment(
-                        connection, runtime._tenant_id
-                    )
-                anchored = runtime._commitment_journal.load(runtime._tenant_id)
-                if (
-                    actual != accepted_open.materialization_commitment
-                    or anchored != accepted_open.materialization_commitment
-                ):
-                    from chiplog.composition.r14_original_call_resolution_source import (
-                        authenticate_selected_resolution_prefix_held,
-                    )
-
-                    authenticated_later_suffix = (
-                        authenticate_selected_resolution_prefix_held(runtime, actual, anchored)
-                    )
-            if (
-                runtime._database_identity != accepted_open.database_identity
+                actual != accepted_open.materialization_commitment
+                or runtime._database_identity != accepted_open.database_identity
                 or runtime._tenant_id != accepted_open.tenant_id
-                or (
-                    runtime._commitment_journal.load(runtime._tenant_id)
-                    != accepted_open.materialization_commitment
-                    and not authenticated_later_suffix
-                )
             ):
                 return None
-            if source_materialization_commitment is None:
-                snapshot = read_execution_history(runtime)
-            else:
+            historical = (
+                source_materialization_commitment is not None
+                and source_tenant_commit_sequence is not None
+            )
+            if historical:
+                # The canonical outer fold proves complete membership and any
+                # exact pending suffix before a historical cut can be exported.
                 snapshot, _, _, _, _, _ = read_execution_recovery_history(
                     runtime,
                     selected_only=True,
                     exact_historical_sources=True,
                 )
+            else:
+                if anchored != actual:
+                    return None
+                snapshot = read_execution_history(runtime)
             matches = [
                 item
                 for item in snapshot.records
@@ -168,10 +154,7 @@ def build_accepted_open_recovery_cut(
                 commitment = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
             if (
                 commitment != accepted_open.materialization_commitment
-                or (
-                    runtime._commitment_journal.load(runtime._tenant_id) != commitment
-                    and not authenticated_later_suffix
-                )
+                or runtime._commitment_journal.load(runtime._tenant_id) != anchored
                 or runtime._database_identity != accepted_open.database_identity
             ):
                 return None

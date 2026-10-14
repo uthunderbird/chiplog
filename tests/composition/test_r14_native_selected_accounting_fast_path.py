@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -109,8 +109,9 @@ def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(monkey
     assert events.count("collect-one") == 1
 
 
+@pytest.mark.parametrize("prefix_kind", ["native-direct", "pending-open", "rejected-open"])
 def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_seals(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, prefix_kind
 ):
     """Probe the caller/verifier boundary; source authentication is tested elsewhere."""
     from chiplog.composition import r14_historical_suffix as suffix
@@ -118,6 +119,9 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
     from chiplog.composition import r16_dispatch_history, r16_effects
 
     class ReachedSemanticVerifier(BaseException):
+        pass
+
+    class ReachedPrefixVerdict(BaseException):
         pass
 
     @contextmanager
@@ -181,11 +185,20 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
         resolution, "authenticate_selected_resolution_prefix_held", lambda *_: False
     )
     monkeypatch.setattr(
-        suffix, "authenticate_selected_r14_native_terminal_suffix_held", lambda *_, **kw: True
+        suffix, "authenticate_selected_r14_native_terminal_suffix_held",
+        lambda *_, **kw: prefix_kind == "native-direct",
+    )
+    monkeypatch.setattr(
+        suffix, "authenticate_selected_open_prefix_held",
+        lambda *_: prefix_kind == "pending-open",
     )
 
     def effects_read(runtime, owners, *, authenticate_later_suffix, **kwargs):
-        assert authenticate_later_suffix(runtime, "actual", "anchored")
+        assert authenticate_later_suffix(runtime, "actual", "anchored") is (
+            prefix_kind != "rejected-open"
+        )
+        if prefix_kind != "native-direct":
+            raise ReachedPrefixVerdict
         return SimpleNamespace(materialization_commitment="actual"), journal
 
     monkeypatch.setattr(r16_effects, "_read_materialized_effects_with_history", effects_read)
@@ -197,7 +210,9 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
         raise ReachedSemanticVerifier
 
     monkeypatch.setattr(suffix, "validate_native_terminal_suffix_semantics", semantic_verifier)
-    with pytest.raises(ReachedSemanticVerifier):
+    with pytest.raises(
+        ReachedSemanticVerifier if prefix_kind == "native-direct" else ReachedPrefixVerdict
+    ):
         source._collect_one_accepted_outcome(
             current_obligation_state="CLOSED",
             allow_authenticated_later_suffix=True,
@@ -400,6 +415,52 @@ async def test_open_cut_uses_exact_member_instead_of_first_inventory_row(monkeyp
         assert result.original_call_id == call_id
         assert result.accepted.revision == branch.accepted
         assert result.execution_intent.revision == branch.execution_intent
+    else:
+        assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", [None, "history", "actual", "anchor-after"])
+async def test_historical_open_cut_consumes_exact_history_proof_before_anchor_gate(
+    monkeypatch, damage
+):
+    """Real cut builder; source facts and outer history acquisition are inert."""
+    from chiplog.composition import r14_native_accepted_open_cut as cuts
+    from chiplog.composition import r14_original_call_resolution_source as resolutions
+
+    _, _, call_id, facts, snapshot, *_ = await _open_cut_probe(monkeypatch, "second-member")
+    runtime = cuts.CommonCliExecutionRuntime()
+    acquired = False
+
+    def history(*args, **kwargs):
+        nonlocal acquired
+        assert kwargs == {"selected_only": True, "exact_historical_sources": True}
+        acquired = True
+        if damage == "history":
+            raise ValueError("unverified physical suffix")
+        return snapshot, None, None, None, None, None
+
+    runtime._commitment_journal = SimpleNamespace(
+        load=lambda _: "c" * 64 if acquired and damage == "anchor-after" else "b" * 64
+    )
+    monkeypatch.setattr(cuts, "read_execution_recovery_history", history)
+    monkeypatch.setattr(
+        cuts, "capture_authority_snapshot_commitment",
+        lambda *_: "c" * 64 if damage == "actual" else facts.materialization_commitment,
+    )
+    monkeypatch.setattr(
+        resolutions, "authenticate_selected_resolution_prefix_held", lambda *a: False
+    )
+    result = cuts.build_accepted_open_recovery_cut(
+        runtime, facts, source_materialization_commitment="b" * 64,
+        source_tenant_commit_sequence=8,
+    )
+    if damage is None:
+        assert result is not None
+        assert acquired
+        assert result.original_call_id == call_id
+        assert result.materialization_commitment == "b" * 64
+        assert result.tenant_commit_sequence == 8
     else:
         assert result is None
 
@@ -711,7 +772,14 @@ async def test_open_outer_fold_reads_effects_once_with_physical_history(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_open_historical_cut_selects_call_seal_among_two_native_executions(monkeypatch):
+@pytest.mark.parametrize(
+    "pending_operation",
+    [None, "agent_loop.accepted-open-accounting.v1", "agent_loop.accepted-open-recovery.v1",
+     "agent_loop.execution-suspension.v1"],
+)
+async def test_open_historical_cut_selects_call_seal_among_two_native_executions(
+    monkeypatch, pending_operation
+):
     from chiplog.composition import r14_accepted_open_accounting_publication as publication
 
     cut, _, call_id, _, snapshot, acceptance, *_ = await _open_cut_probe(
@@ -748,6 +816,11 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
     def collect(run, **kwargs):
         assert kwargs["original_call_id"] == call_id
         assert kwargs["expected_outcome_record_id"] == cut.selected_outcome_record_id
+        assert kwargs.get("authenticated_effects_history") is (
+            snapshot if pending_operation in (
+                "agent_loop.accepted-open-accounting.v1", "agent_loop.accepted-open-recovery.v1"
+            ) else None
+        )
         return facts
 
     monkeypatch.setattr(
@@ -757,7 +830,17 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
     )
     monkeypatch.setattr(publication, "execution_run_head", lambda _: cut.current_run)
     monkeypatch.setattr(publication, "build_accepted_open_recovery_cut", lambda *a, **kw: cut)
-    assert publication._current_cut(object(), expected_source_cut=cut) == (facts, cut)
+    runtime = SimpleNamespace(
+        _pending=lambda: (
+            () if pending_operation is None else ({"operation_kind": pending_operation},)
+        ),
+        _pending_owners=lambda: (),
+        _pending_gate_publications=lambda: (),
+        _authority_gate=lambda: SimpleNamespace(require_held=lambda: None),
+    )
+    assert publication._current_cut(
+        runtime, selected_only=True, expected_source_cut=cut
+    ) == (facts, cut)
     assert projections == [cut.response_id]
 
 
@@ -818,10 +901,14 @@ async def test_open_startup_validation_does_not_project_incomplete_whole_seal(mo
         expected_head=command.expected_head,
         fingerprint=command.request_fingerprint,
     )
-    facts = SimpleNamespace(accepted=SimpleNamespace(acceptance=acceptance))
+    facts = SimpleNamespace(
+        accepted=SimpleNamespace(acceptance=acceptance),
+        materialization_commitment=cut.materialization_commitment,
+    )
     runtime = SimpleNamespace(
         _tenant_id=cut.tenant_id,
         _database=object(),
+        _authority_gate=lambda: SimpleNamespace(hold=nullcontext),
         _loop_decisions=lambda: SimpleNamespace(
             entries=lambda: (("decision", b"pred", json.dumps(entry)),)
         ),
@@ -853,3 +940,216 @@ async def test_open_startup_validation_does_not_project_incomplete_whole_seal(mo
 
     monkeypatch.setattr(publication, "_accepted_open_sealed_accounting", incomplete_projection)
     publication.validate_selected_accepted_open_recovery(runtime)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method",
+    [
+        "publish_accepted_open_accounting",
+        "publish_accepted_open_recovery",
+        "read_selected_accepted_open_accounting",
+        "read_selected_accepted_open_recovery",
+    ],
+)
+async def test_public_open_api_forwards_exact_original_call(monkeypatch, method):
+    from chiplog.composition import r14_accepted_open_accounting_publication as publication
+    from chiplog.composition import r14_loop_history as history
+    from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+
+    runtime = object()
+    result = object()
+    calls = []
+
+    async def write(actual_runtime, peer, *, original_call_id):
+        calls.append((actual_runtime, peer, original_call_id))
+        return result
+
+    def read(actual_runtime, *, original_call_id):
+        calls.append((actual_runtime, original_call_id))
+        return result
+
+    if method.startswith("publish"):
+        monkeypatch.setattr(publication, method, write)
+        assert (
+            await getattr(CommonCliExecutionRuntime, method)(
+                runtime, "hermetic-ingress", original_call_id="target-call"
+            )
+            is result
+        )
+        assert calls == [(runtime, "hermetic-ingress", "target-call")]
+    else:
+        monkeypatch.setattr(history, method, read)
+        assert (
+            getattr(CommonCliExecutionRuntime, method)(runtime, original_call_id="target-call")
+            is result
+        )
+        assert calls == [(runtime, "target-call")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovery", [False, True])
+@pytest.mark.parametrize("damage", [None, "other-envelope", "duplicate-call"])
+async def test_open_writer_replays_requested_call_after_validating_all_marked_envelopes(
+    monkeypatch, recovery, damage
+):
+    """Prior selection boundary; actual owner builders are replaced explicitly."""
+    import json
+
+    from chiplog.capabilities.agent_loop.contracts import LoopRejected
+    from chiplog.composition import r14_accepted_open_accounting_publication as publication
+
+    operation = (
+        publication.ACCEPTED_OPEN_RECOVERY_OPERATION
+        if recovery
+        else publication.ACCEPTED_OPEN_ACCOUNTING_OPERATION
+    )
+    entries, commands, evidence = [], {}, {}
+    checked, finished = [], []
+    for label in ("A", "B"):
+        call = "call-B" if damage == "duplicate-call" else "call-" + label
+        seal = "seal-B" if damage == "duplicate-call" else "seal-" + label
+        entry = dict(
+            kind="DECIDED",
+            operation_kind=operation,
+            operation_id=label,
+            expected_head=1,
+            fingerprint="fingerprint-" + label,
+            predecessor="source",
+        )
+        if label == "A" and damage == "other-envelope":
+            entry["fingerprint"] = "changed"
+        entries.append(entry)
+        commands[label] = SimpleNamespace(
+            operation_kind=operation,
+            idempotency_key=label,
+            expected_head=1,
+            request_fingerprint="fingerprint-" + label,
+            records=tuple(SimpleNamespace(schema_id="inert") for _ in range(3 if recovery else 1)),
+        )
+        evidence[label] = SimpleNamespace(
+            label=label,
+            request=SimpleNamespace(
+                cut=SimpleNamespace(
+                    original_call_id=call, response_id=seal, materialization_commitment="source"
+                )
+            ),
+        )
+
+    @contextmanager
+    def held():
+        yield
+
+    async def actor(_):
+        return object()
+
+    runtime = SimpleNamespace(
+        _execution_actor=actor,
+        _check_execution_actor=lambda _: None,
+        _authority_gate=lambda: SimpleNamespace(hold=held),
+        _pending=lambda: (),
+        _loop_decisions=lambda: SimpleNamespace(
+            entries=lambda: tuple(
+                (entry["operation_id"], b"pred", json.dumps(entry)) for entry in entries
+            )
+        ),
+        _publication=lambda entry: commands[entry["operation_id"]],
+    )
+
+    def retained(entry):
+        checked.append(entry["operation_id"])
+        return evidence[entry["operation_id"]]
+
+    async def finish(actual_runtime, entry):
+        assert actual_runtime is runtime
+        finished.append(entry["operation_id"])
+        return entry["operation_id"]
+
+    retained_name = (
+        "retained_accepted_open_recovery" if recovery else "retained_accepted_open_accounting"
+    )
+    builder_name = (
+        "accepted_open_recovery_command" if recovery else "accepted_open_accounting_command"
+    )
+    monkeypatch.setattr(publication, retained_name, retained)
+    monkeypatch.setattr(publication, builder_name, lambda value: commands[value.label])
+    monkeypatch.setattr(publication, "_finish_recovery" if recovery else "_finish", finish)
+    write = (
+        publication.publish_accepted_open_recovery
+        if recovery
+        else publication.publish_accepted_open_accounting
+    )
+    if damage is None:
+        assert await write(runtime, original_call_id="call-B") == "B"
+        assert checked == ["A", "B"] and finished == ["B"]
+    else:
+        with pytest.raises(LoopRejected, match=r"envelope|duplicate"):
+            await write(runtime, original_call_id="call-B")
+        assert finished == []
+
+
+@pytest.mark.parametrize("state", ["COMPLETE", "ABSENT", "PARTIAL"])
+@pytest.mark.parametrize("physical_ahead", [False, True])
+@pytest.mark.parametrize("damage", [None, "source", "anchor"])
+def test_open_source_authentication_binds_current_physical_cut(
+    monkeypatch, state, physical_ahead, damage
+):
+    """Source acquisition is inert; this checks its current-cut trust boundary."""
+    from chiplog.capabilities.agent_loop.contracts import LoopRejected
+    from chiplog.composition import r14_accepted_open_accounting_publication as publication
+
+    actual = "current" if physical_ahead else "source"
+    anchor = "source"
+    gate_held = False
+    acquired = False
+
+    @contextmanager
+    def hold():
+        nonlocal gate_held
+        assert not gate_held
+        gate_held = True
+        try:
+            yield
+        finally:
+            gate_held = False
+
+    @contextmanager
+    def connection(_):
+        assert gate_held
+        yield object()
+
+    cut = SimpleNamespace(materialization_commitment="source", tenant_commit_sequence=7)
+
+    def collect(_runtime, **kwargs):
+        nonlocal acquired
+        assert gate_held
+        assert kwargs["expected_source_cut"] is cut
+        assert kwargs["source_materialization_commitment"] == "source"
+        assert kwargs["source_tenant_commit_sequence"] == 7
+        acquired = True
+        return SimpleNamespace(
+            materialization_commitment="wrong" if damage == "source" else actual
+        ), cut
+
+    runtime = SimpleNamespace(
+        _database=object(),
+        _tenant_id="tenant",
+        _authority_gate=lambda: SimpleNamespace(hold=hold),
+        _commitment_journal=SimpleNamespace(
+            load=lambda _: "changed" if acquired and damage == "anchor" else anchor
+        ),
+        _selected_physical_state=lambda _: (state, actual, anchor),
+    )
+    monkeypatch.setattr(publication, "read_connection", connection)
+    monkeypatch.setattr(publication, "capture_authority_snapshot_commitment", lambda *_: actual)
+    monkeypatch.setattr(publication, "_current_cut", collect)
+    valid = damage is None and (state == "COMPLETE" or (state == "ABSENT" and not physical_ahead))
+    if valid:
+        assert publication._authenticate_selected_open_source(
+            runtime, {"predecessor": "source"}, object(), cut
+        )[1] is cut
+    else:
+        with pytest.raises(LoopRejected):
+            publication._authenticate_selected_open_source(
+                runtime, {"predecessor": "source"}, object(), cut
+            )

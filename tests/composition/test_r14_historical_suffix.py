@@ -739,6 +739,9 @@ def test_selected_open_source_stamp_matches_header_before_physical_prefix_valida
     [
         ("agent_loop.execution-suspension.v1", True),
         ("agent_loop.execution-successor.v1", True),
+        ("agent_loop.accepted-open-accounting.v1", True),
+        ("agent_loop.accepted-open-recovery.v1", True),
+        ("agent_loop.accepted-direct-terminal.v1", True),
         ("agent_loop.execution-suspension.v1", False),
         ("agent_loop.unknown.v1", True),
     ],
@@ -808,6 +811,8 @@ def test_exact_open_history_reaches_semantic_validation_before_pending_lifecycle
     if has_open and pending_operation in (
         "agent_loop.execution-suspension.v1",
         "agent_loop.execution-successor.v1",
+        "agent_loop.accepted-open-accounting.v1",
+        "agent_loop.accepted-open-recovery.v1",
     ):
         with pytest.raises(ReachedSemanticValidation):
             history._read_call_history(runtime, selected_only=True, exact_historical_sources=True)
@@ -907,10 +912,14 @@ def test_lifecycle_physical_validation_keeps_default_strict_and_reaches_pending_
                 successor._selected_matches(runtime, entry, command, evidence, **kwargs)
 
 
-@pytest.mark.parametrize("family", ["suspension", "successor"])
-@pytest.mark.parametrize("damage", [None, "predecessor", "unselected", "orphan", "source-bytes"])
+@pytest.mark.parametrize(
+    "family", ["suspension", "successor", "accepted-open-accounting", "accepted-open-recovery"]
+)
+@pytest.mark.parametrize(
+    "damage", [None, "anchor-advanced", "predecessor", "unselected", "orphan", "source-bytes"]
+)
 def test_completed_pending_lifecycle_requires_exact_final_batch_and_real_source_prefix(
-    tmp_path, family, damage
+    tmp_path, monkeypatch, family, damage
 ):
     import hashlib
 
@@ -940,7 +949,10 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_real_source_
     raw = b"later"
     command = PhysicalPublicationCommand(
         tenant_id="tenant",
-        operation_kind="agent_loop.execution-" + family + ".v1",
+        operation_kind="agent_loop."
+        + ("execution-" if family in ("suspension", "successor") else "")
+        + family
+        + ".v1",
         idempotency_key="pending",
         request_fingerprint="selected",
         expected_head=1,
@@ -975,20 +987,26 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_real_source_
             )
     with read_connection(database) as connection:
         actual = capture_authority_snapshot_commitment(connection, "tenant")
+    anchored = actual if damage == "anchor-advanced" else predecessor
     entry = dict(
         operation_kind=command.operation_kind,
         operation_id=command.idempotency_key,
+        expected_head=command.expected_head,
+        fingerprint=command.request_fingerprint,
         predecessor="wrong" if damage == "predecessor" else predecessor,
         resulting=actual,
     )
     gate = AuthorityGate(database)
     runtime = SimpleNamespace(
         _tenant_id="tenant",
+        _database=database,
+        _database_identity=("database", 1, 2),
+        _publication=lambda _: command,
         _authority_gate=lambda: gate,
         _pending=lambda: (entry,),
         _pending_owners=lambda: (),
         _pending_gate_publications=lambda: (),
-        _commitment_journal=SimpleNamespace(load=lambda _: predecessor),
+        _commitment_journal=SimpleNamespace(load=lambda _: anchored),
         _check_database_identity=lambda: None,
     )
     selected = () if damage == "unselected" else ((command, entry),)
@@ -997,9 +1015,35 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_real_source_
         if damage == "source-bytes":
             with pytest.raises(ValueError, match="OPEN source commitment"):
                 suffix.authenticate_native_open_pending_lifecycle_held(
-                    runtime, connection, actual, predecessor, **kwargs
+                    runtime, connection, actual, anchored, **kwargs
                 )
         else:
             assert suffix.authenticate_native_open_pending_lifecycle_held(
-                runtime, connection, actual, predecessor, **kwargs
-            ) is (damage is None)
+                runtime, connection, actual, anchored, **kwargs
+            ) is (damage in (None, "anchor-advanced"))
+    if family.startswith("accepted-open") and damage != "unselected":
+        # Canonical owner acquisition is inert; the prefix proof uses real SQLite.
+        from chiplog.composition import r14_accepted_open_accounting_records as records
+        from chiplog.composition.r14_recovery_publication import (
+            authenticate_selected_recovery_prefix_held,
+        )
+
+        evidence = SimpleNamespace(request=SimpleNamespace(cut=SimpleNamespace(
+            tenant_id="tenant", database_id="database", materialization_commitment=predecessor,
+            tenant_commit_sequence=command.expected_head,
+        )))
+        recovery = family == "accepted-open-recovery"
+        monkeypatch.setattr(
+            records,
+            "retained_accepted_open_recovery" if recovery else "retained_accepted_open_accounting",
+            lambda _: evidence,
+        )
+        monkeypatch.setattr(
+            records,
+            "accepted_open_recovery_command" if recovery else "accepted_open_accounting_command",
+            lambda _: command,
+        )
+        with gate.hold():
+            assert authenticate_selected_recovery_prefix_held(
+                runtime, actual, anchored
+            ) is (damage in (None, "anchor-advanced"))

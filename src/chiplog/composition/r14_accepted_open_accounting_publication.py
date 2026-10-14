@@ -291,12 +291,28 @@ def _current_cut(
         projection,
         bind_native_execution_preparation_v2(projection),
     )
+    physical_history = None
+    if selected_only and expected_source_cut is not None:
+        runtime._authority_gate().require_held()
+        pending = runtime._pending()
+        if (
+            len(pending) == 1
+            and pending[0].get("operation_kind") in (
+                ACCEPTED_OPEN_ACCOUNTING_OPERATION, ACCEPTED_OPEN_RECOVERY_OPERATION
+            )
+            and not runtime._pending_owners()
+            and not runtime._pending_gate_publications()
+        ):
+            # These canonical OPEN batches add no Runs. The exact outer fold
+            # already authenticated this snapshot; effects rechecks physical bytes.
+            physical_history = snapshot
     facts = source.collect_one_accepted_open_outcome(
         execution_run_head(snapshot.records[-1])
         if expected_source_cut is None
         else expected_source_cut.current_run,
         original_call_id=original_call_id,
         selected_only=selected_only,
+        authenticated_effects_history=physical_history,
         expected_outcome_record_id=(
             None if expected_source_cut is None else expected_source_cut.selected_outcome_record_id
         ),
@@ -364,24 +380,85 @@ async def _finish(runtime, entry: dict[str, object]):
         is_materialized=lambda: runtime._loop_decision_materialized(command.idempotency_key, entry),
     )
     runtime._finish_decision(command.idempotency_key, expected=entry)
-    selected = read_selected_accepted_open_accounting(runtime)
+    selected = read_selected_accepted_open_accounting(
+        runtime, original_call_id=evidence.request.cut.original_call_id
+    )
     if selected != evidence.result.accounting:
         raise LoopRejected("selected accepted/open accounting was not observed")
     return selected
 
 
-async def publish_accepted_open_accounting(runtime, peer: str = "hermetic-ingress"):
+def _selected_open_for_call(runtime, operation: str, original_call_id: str | None):
+    """Authenticate every marked OPEN envelope before choosing a replay target."""
+    selected = []
+    seen = set()
+    for _, _, raw in runtime._loop_decisions().entries():
+        entry = json.loads(raw)
+        if entry.get("kind") != "DECIDED":
+            continue
+        command = runtime._publication(entry)
+        recovery_marker = (
+            command.operation_kind == ACCEPTED_OPEN_RECOVERY_OPERATION
+            or "accepted_open_recovery_evidence" in entry
+            or any(
+                record.schema_id == "chiplog.execution.accepted-open-terminal-disposition.v1"
+                for record in command.records
+            )
+        )
+        accounting_marker = (
+            command.operation_kind == ACCEPTED_OPEN_ACCOUNTING_OPERATION
+            or "accepted_open_accounting_evidence" in entry
+            or any(
+                record.schema_id == "chiplog.execution.accepted-open-accounting.v1"
+                for record in command.records
+            )
+        )
+        if not recovery_marker and not accounting_marker:
+            continue
+        if (
+            "accepted_open_recovery_evidence" in entry
+            and "accepted_open_accounting_evidence" in entry
+        ):
+            raise LoopRejected("selected accepted/open envelope mixes publication families")
+        if recovery_marker:
+            evidence = retained_accepted_open_recovery(entry)
+            expected = accepted_open_recovery_command(evidence)
+            family = ACCEPTED_OPEN_RECOVERY_OPERATION
+        else:
+            evidence = retained_accepted_open_accounting(entry)
+            expected = accepted_open_accounting_command(evidence)
+            family = ACCEPTED_OPEN_ACCOUNTING_OPERATION
+        cut = evidence.request.cut
+        if (
+            command != expected
+            or command.operation_kind != family
+            or entry.get("operation_kind") != family
+            or entry.get("operation_id") != command.idempotency_key
+            or entry.get("expected_head") != command.expected_head
+            or entry.get("fingerprint") != command.request_fingerprint
+            or entry.get("predecessor") != cut.materialization_commitment
+        ):
+            raise LoopRejected("selected accepted/open publication envelope differs")
+        key = (family, cut.response_id, cut.original_call_id)
+        if key in seen:
+            raise LoopRejected("duplicate accepted/open publication for selected call and seal")
+        seen.add(key)
+        if family == operation and original_call_id in (None, cut.original_call_id):
+            selected.append(entry)
+    return selected
+
+
+async def publish_accepted_open_accounting(
+    runtime, peer: str = "hermetic-ingress", *, original_call_id: str | None = None
+):
     """Select one account-only record for the exact current accepted/open obligation."""
     observed = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
         runtime._pending()
-        selected = [
-            json.loads(raw)
-            for _, _, raw in runtime._loop_decisions().entries()
-            if (entry := json.loads(raw)).get("kind") == "DECIDED"
-            and entry.get("operation_kind") == ACCEPTED_OPEN_ACCOUNTING_OPERATION
-        ]
+        selected = _selected_open_for_call(
+            runtime, ACCEPTED_OPEN_ACCOUNTING_OPERATION, original_call_id
+        )
         if len(selected) > 1:
             raise LoopRejected("ambiguous accepted/open accounting history")
         prior = selected[0] if selected else None
@@ -390,7 +467,7 @@ async def publish_accepted_open_accounting(runtime, peer: str = "hermetic-ingres
 
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
-        current = _current_cut(runtime)
+        current = _current_cut(runtime, original_call_id=original_call_id)
         if current is None:
             raise LoopRejected("exact selected accepted/open outcome unavailable; HOLD")
         facts, cut = current
@@ -429,7 +506,9 @@ async def publish_accepted_open_accounting(runtime, peer: str = "hermetic-ingres
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(observed)
-                current_facts, current_cut = _current_cut(runtime)
+                current_facts, current_cut = _current_cut(
+                    runtime, original_call_id=cut.original_call_id
+                )
                 if (
                     current_facts != facts
                     or current_cut != cut
@@ -486,14 +565,44 @@ async def publish_accepted_open_accounting(runtime, peer: str = "hermetic-ingres
     return await _finish(runtime, entry)
 
 
+def _authenticate_selected_open_source(runtime, entry, command, retained_cut):
+    """Bind a historical OPEN source to the fully authenticated current physical cut."""
+    with runtime._authority_gate().hold():
+        with read_connection(runtime._database) as connection:
+            actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+        anchored = runtime._commitment_journal.load(runtime._tenant_id)
+        state, publication_actual, publication_anchor = runtime._selected_physical_state(command)
+        if (
+            publication_actual != actual
+            or publication_anchor != anchored
+            or state not in ("ABSENT", "COMPLETE")
+            or (state == "ABSENT" and actual != anchored)
+            or (state == "ABSENT" and actual != entry.get("predecessor"))
+        ):
+            raise LoopRejected("accepted/open exact publication is absent, partial, or stale")
+        current = _current_cut(
+            runtime,
+            selected_only=True,
+            expected_source_cut=retained_cut,
+            source_materialization_commitment=retained_cut.materialization_commitment,
+            source_tenant_commit_sequence=retained_cut.tenant_commit_sequence,
+        )
+        with read_connection(runtime._database) as connection:
+            final_actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+        if (
+            current is None
+            or current[0].materialization_commitment != actual
+            or final_actual != actual
+            or runtime._commitment_journal.load(runtime._tenant_id) != anchored
+        ):
+            raise LoopRejected("accepted/open selected source does not authenticate current cut")
+        return current
+
+
 def validate_selected_accepted_open_accounting(runtime) -> None:
     """Authenticate selected/open source bytes before startup can replay the writer."""
-    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
-    from chiplog.platform.workspace_snapshot import read_connection
-
     runtime._pending()
-    selected: list[dict[str, object]] = []
-    claimed = False
+    seen_call_keys = set()
     for _, _, raw in runtime._loop_decisions().entries():
         entry = json.loads(raw)
         if entry.get("kind") != "DECIDED":
@@ -514,7 +623,6 @@ def validate_selected_accepted_open_accounting(runtime) -> None:
         )
         if not marker:
             continue
-        claimed = True
         evidence = retained_accepted_open_accounting(entry)
         expected = accepted_open_accounting_command(evidence)
         if (
@@ -527,28 +635,16 @@ def validate_selected_accepted_open_accounting(runtime) -> None:
             or len(command.records) != 1
         ):
             raise LoopRejected("selected accepted/open accounting envelope differs")
-        with read_connection(runtime._database) as connection:
-            actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
-        anchored = runtime._commitment_journal.load(runtime._tenant_id)
-        if actual not in (entry.get("predecessor"), entry.get("resulting")) or anchored not in (
-            entry.get("predecessor"),
-            entry.get("resulting"),
-        ):
-            raise LoopRejected("accepted/open publication is not an exact predecessor/result")
-        current = _current_cut(
-            runtime,
-            selected_only=True,
-        )
-        if current is None:
-            raise LoopRejected("accepted/open current cut unavailable")
+        key = (evidence.request.cut.response_id, evidence.request.cut.original_call_id)
+        if key in seen_call_keys:
+            raise LoopRejected("duplicate accepted/open accounting for selected call and seal")
+        seen_call_keys.add(key)
+        current = _authenticate_selected_open_source(runtime, entry, command, evidence.request.cut)
         facts, cut = current
         if facts.outcome.canonical_bytes() != evidence.request.cut.selected_outcome_bytes or (
             cut != evidence.request.cut
         ):
             raise LoopRejected("accepted/open retained cut differs from exact selected history")
-        selected.append(entry)
-    if claimed and len(selected) != 1:
-        raise LoopRejected("ambiguous accepted/open accounting selection")
 
 
 async def hold_if_accepted_open(runtime, peer: str) -> bool:
@@ -708,23 +804,27 @@ async def _finish_recovery(runtime, entry: dict[str, object]):
         is_materialized=lambda: runtime._loop_decision_materialized(command.idempotency_key, entry),
     )
     runtime._finish_decision(command.idempotency_key, expected=entry)
-    if read_selected_accepted_open_recovery(runtime) != evidence.result:
+    if (
+        read_selected_accepted_open_recovery(
+            runtime, original_call_id=evidence.request.cut.original_call_id
+        )
+        != evidence.result
+    ):
         raise LoopRejected("selected accepted/open recovery was not observed")
     return evidence.result
 
 
-async def publish_accepted_open_recovery(runtime, peer: str = "hermetic-ingress"):
+async def publish_accepted_open_recovery(
+    runtime, peer: str = "hermetic-ingress", *, original_call_id: str | None = None
+):
     """Atomically publish OPEN accounting, terminal disposition, and loop obligation."""
     observed = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
         runtime._pending()
-        selected = [
-            json.loads(raw)
-            for _, _, raw in runtime._loop_decisions().entries()
-            if (entry := json.loads(raw)).get("kind") == "DECIDED"
-            and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
-        ]
+        selected = _selected_open_for_call(
+            runtime, ACCEPTED_OPEN_RECOVERY_OPERATION, original_call_id
+        )
         if len(selected) > 1:
             raise LoopRejected("ambiguous accepted/open recovery history")
         prior = selected[0] if selected else None
@@ -733,7 +833,7 @@ async def publish_accepted_open_recovery(runtime, peer: str = "hermetic-ingress"
 
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
-        current = _current_cut(runtime)
+        current = _current_cut(runtime, original_call_id=original_call_id)
         if current is None:
             raise LoopRejected("exact selected accepted/open outcome unavailable; HOLD")
         facts, cut = current
@@ -772,7 +872,9 @@ async def publish_accepted_open_recovery(runtime, peer: str = "hermetic-ingress"
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(observed)
-                current_facts, current_cut = _current_cut(runtime)
+                current_facts, current_cut = _current_cut(
+                    runtime, original_call_id=cut.original_call_id
+                )
                 if (
                     current_facts != facts
                     or current_cut != cut
@@ -861,43 +963,7 @@ def _validated_selected_accepted_open_recoveries(runtime):
         if key in seen_call_keys:
             raise LoopRejected("duplicate accepted/open recovery for selected call and seal")
         seen_call_keys.add(key)
-        with read_connection(runtime._database) as connection:
-            actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
-        anchored = runtime._commitment_journal.load(runtime._tenant_id)
-        authenticated_later_suffix = False
-        if actual != anchored:
-            from chiplog.composition.r14_original_call_resolution_source import (
-                authenticate_selected_resolution_prefix_held,
-            )
-
-            with runtime._authority_gate().hold():
-                authenticated_later_suffix = authenticate_selected_resolution_prefix_held(
-                    runtime, actual, anchored
-                )
-        if actual != anchored and not authenticated_later_suffix:
-            raise LoopRejected("accepted/open current physical and anchored commitments differ")
-        state, publication_actual, publication_anchor = runtime._selected_physical_state(command)
-        if (
-            publication_actual != actual
-            or publication_anchor != anchored
-            or not _accepted_open_publication_state_is_valid(
-                state,
-                actual,
-                anchored,
-                str(entry["predecessor"]),
-                authenticated_later_suffix=authenticated_later_suffix,
-            )
-        ):
-            raise LoopRejected("accepted/open exact publication is absent, partial, or stale")
-        current = _current_cut(
-            runtime,
-            selected_only=True,
-            expected_source_cut=evidence.request.cut,
-            source_materialization_commitment=evidence.request.cut.materialization_commitment,
-            source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
-        )
-        if current is None:
-            raise LoopRejected("accepted/open recovery selected source cut differs")
+        current = _authenticate_selected_open_source(runtime, entry, command, evidence.request.cut)
         accounting_cut = current[1]
         if current[1] != evidence.request.cut:
             if not _cut_is_preserved_by_selected_suspension(

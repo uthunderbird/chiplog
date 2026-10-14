@@ -1187,6 +1187,7 @@ class R14NativeSelectedAccountingSource:
                     or allow_authenticated_later_suffix
                 ):
                     from chiplog.composition.r14_historical_suffix import (
+                        authenticate_selected_open_prefix_held,
                         authenticate_selected_r14_native_terminal_suffix_held,
                     )
                     from chiplog.composition.r14_original_call_resolution_source import (
@@ -1198,6 +1199,8 @@ class R14NativeSelectedAccountingSource:
                         if authenticate_selected_resolution_prefix_held(
                             runtime, actual, anchored
                         ):
+                            return True
+                        if authenticate_selected_open_prefix_held(runtime, actual, anchored):
                             return True
                         native_suffix_authenticated = (
                             authenticate_selected_r14_native_terminal_suffix_held(

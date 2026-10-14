@@ -1039,31 +1039,35 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await publish_execution_accounting_readiness(self, peer)
 
-    async def publish_accepted_open_accounting(self, peer: str = "hermetic-ingress"):
+    async def publish_accepted_open_accounting(
+        self, peer: str = "hermetic-ingress", *, original_call_id: str | None = None
+    ):
         from chiplog.composition.r14_accepted_open_accounting_publication import (
             publish_accepted_open_accounting,
         )
 
-        return await publish_accepted_open_accounting(self, peer)
+        return await publish_accepted_open_accounting(self, peer, original_call_id=original_call_id)
 
-    def read_selected_accepted_open_accounting(self):
+    def read_selected_accepted_open_accounting(self, *, original_call_id: str | None = None):
         from chiplog.composition.r14_loop_history import (
             read_selected_accepted_open_accounting,
         )
 
-        return read_selected_accepted_open_accounting(self)
+        return read_selected_accepted_open_accounting(self, original_call_id=original_call_id)
 
-    async def publish_accepted_open_recovery(self, peer: str = "hermetic-ingress"):
+    async def publish_accepted_open_recovery(
+        self, peer: str = "hermetic-ingress", *, original_call_id: str | None = None
+    ):
         from chiplog.composition.r14_accepted_open_accounting_publication import (
             publish_accepted_open_recovery,
         )
 
-        return await publish_accepted_open_recovery(self, peer)
+        return await publish_accepted_open_recovery(self, peer, original_call_id=original_call_id)
 
-    def read_selected_accepted_open_recovery(self):
+    def read_selected_accepted_open_recovery(self, *, original_call_id: str | None = None):
         from chiplog.composition.r14_loop_history import read_selected_accepted_open_recovery
 
-        return read_selected_accepted_open_recovery(self)
+        return read_selected_accepted_open_recovery(self, original_call_id=original_call_id)
 
     def read_selected_original_obligation_sources(self, *, historical: bool = False):
         from chiplog.composition.r14_loop_history import (

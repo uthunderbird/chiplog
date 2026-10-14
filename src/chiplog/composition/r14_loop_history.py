@@ -2328,7 +2328,9 @@ def read_selected_native_sealed_accounting_v3(
         return found[0] if len(found) == 1 else None
 
 
-def read_selected_accepted_open_accounting(runtime: R14PlanningRuntime):
+def read_selected_accepted_open_accounting(
+    runtime: R14PlanningRuntime, *, original_call_id: str | None = None
+):
     """Read the unique effects-specific account record after selected-source validation."""
     from chiplog.composition.r14_accepted_open_accounting_publication import (
         validate_selected_accepted_open_accounting,
@@ -2347,10 +2349,17 @@ def read_selected_accepted_open_accounting(runtime: R14PlanningRuntime):
             if (entry := _strict_json(raw)).get("kind") == "DECIDED"
             and entry.get("operation_kind") == ACCEPTED_OPEN_ACCOUNTING_OPERATION
         ]
-        return found[0].result.accounting if len(found) == 1 else None
+        matching = tuple(
+            value
+            for value in found
+            if original_call_id is None or value.request.cut.original_call_id == original_call_id
+        )
+        return matching[0].result.accounting if len(matching) == 1 else None
 
 
-def read_selected_accepted_open_recovery(runtime: R14PlanningRuntime):
+def read_selected_accepted_open_recovery(
+    runtime: R14PlanningRuntime, *, original_call_id: str | None = None
+):
     """Read the atomic accepted/open terminal and obligation publication."""
     from chiplog.composition.r14_accepted_open_accounting_publication import (
         validate_selected_accepted_open_recovery,
@@ -2369,7 +2378,12 @@ def read_selected_accepted_open_recovery(runtime: R14PlanningRuntime):
             if (entry := _strict_json(raw)).get("kind") == "DECIDED"
             and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
         ]
-        return found[0].result if len(found) == 1 else None
+        matching = tuple(
+            value
+            for value in found
+            if original_call_id is None or value.request.cut.original_call_id == original_call_id
+        )
+        return matching[0].result if len(matching) == 1 else None
 
 
 def read_selected_original_obligation_sources(
