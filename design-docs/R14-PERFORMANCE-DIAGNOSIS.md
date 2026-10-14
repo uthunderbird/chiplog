@@ -1819,13 +1819,20 @@ exponential curve without matching per-phase measurements and workload counts.
 
 Do not repeat the full selector solely to collect more timing. Use the preserved
 current failed fixture for one bounded observation of the writer's history
-path only if the current runtime successfully authenticates the preserved
-source cut; matching path and file attributes alone are insufficient. Separate
-`read_execution_call_history` from `capture_dispatch`, and count/time the
-selected recovery, next-Turn, native-accounting, and historical-source helpers
-without emitting payloads. If opening the fixture would alter its authenticated
-source state, cannot preserve its physical identity, or fails current cut
-authentication, skip the probe and defer instrumentation to the next required
-mounted R14 run. A candidate optimization survives only if it removes
-byte-identical duplicate work within that captured cut while preserving all
-final currentness and deadline predicates.
+path only after a non-mutating preflight proves that startup will not repair or
+recover selected rows. This is currently unproven: `open_common_cli_execution_runtime`
+enters `_open_runtime`, which calls `trust.recover_materialization()` and then
+`runtime._prepare_startup()`; R14 startup can complete pending owner, loop, and
+gate publications. A successful open could therefore change the exact fixture
+being measured. Do not open the original fixture until a source-authenticated
+preflight establishes that none of these recovery writes can occur and the
+runtime will preserve the existing path/inode. If no supported read-only
+preflight can establish this, defer the probe to the next required mounted R14
+run rather than profile this saved fixture.
+
+At that next required run, separate `read_execution_call_history` from
+`capture_dispatch`, record the exact `_check_live` rejection predicate, and
+count/time selected recovery, next-Turn, native-accounting, and historical-source
+helpers without emitting payloads. A candidate optimization survives only if it
+removes byte-identical duplicate work within one authenticated cut while
+preserving all final currentness and deadline predicates.
