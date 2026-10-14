@@ -1709,14 +1709,18 @@ reader call on the preserved fixture and restore/verify the fixture afterward.
 
 The old `pytest-9070` fixture root had been removed. Its 44-file backup was
 restored under the same pathname and matched by size, SHA-256, mode, and mtime,
-but the current runtime rejected it during startup:
-`selected native accounting source differs from historical cut`. The copy
-therefore did not preserve the runtime's full physical/source identity and is
-not a valid current-code measurement fixture. The probe stopped before the
-target read. It briefly left a SQLite handle while unwinding; after process
-exit `lsof +D` showed no open handles, and the temporary copy was restored
-in-place from the backup and reverified across all 44 files. Do not retry this
-backup as though matching file bytes were sufficient.
+but the current runtime rejected it during startup with the shared error
+`selected native accounting source differs from historical cut`. The validator
+uses this error for a compound predicate over source bytes/stamp, tenant/head,
+authority, preparation bindings, lineage, inventory, seal and fingerprint; the
+trace did not identify which field differed. The only established result is that
+matching the restored file attributes did not produce a cut accepted by this
+current runtime, so the probe is not a valid measurement of the target read. It
+briefly left a SQLite handle while unwinding; after process exit `lsof +D` showed
+no open handles, and the temporary copy was restored in-place from the backup
+and reverified across all 44 files. Do not retry this backup as though matching
+file bytes were sufficient; first create a current-valid fixture or isolate the
+rejected predicate.
 
 A passive `cProfile` hook then ran inside the existing short mounted mixed-V3
 selector on its live current-code fixture. Command:
