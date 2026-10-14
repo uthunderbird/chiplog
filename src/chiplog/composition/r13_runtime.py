@@ -454,9 +454,9 @@ class R13Runtime(R8PlanningRuntime):
     def committed(self, record: RunRecord) -> None:
         self._finish_decision(record.head)
 
-    def _loop_decision_materialized(
+    def _loop_decision_record(
         self, operation_id: str, expected: dict[str, object] | None = None
-    ) -> bool:
+    ) -> tuple[dict[str, object], bool]:
         with self._authority_gate().hold():
             self._pending()  # Validate the complete authenticated marker sequence.
             entries = [json.loads(payload) for _, _, payload in self._loop_decisions().entries()]
@@ -467,10 +467,16 @@ class R13Runtime(R8PlanningRuntime):
             ]
             if len(selected) != 1 or (expected is not None and selected[0] != expected):
                 raise LoopRejected("missing or changed exact loop decision history")
-            return any(
-                entry.get("kind") == "MATERIALIZED" and entry.get("operation_id") == operation_id
-                for entry in entries
+            return selected[0], any(
+                item.get("kind") == "MATERIALIZED" and item.get("operation_id") == operation_id
+                for item in entries
             )
+
+    def _loop_decision_materialized(
+        self, operation_id: str, expected: dict[str, object] | None = None
+    ) -> bool:
+        _, materialized = self._loop_decision_record(operation_id, expected)
+        return materialized
 
     def _finish_decision(
         self, operation_id: str, *, expected: dict[str, object] | None = None

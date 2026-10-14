@@ -579,14 +579,9 @@ class R14PlanningRuntime(R13PlanningRuntime):
         self, operation_id: str, expected: dict[str, object] | None = None
     ) -> bool:
         with self._authority_gate().hold():
-            if not super()._loop_decision_materialized(operation_id, expected):
+            entry, materialized = self._loop_decision_record(operation_id, expected)
+            if not materialized:
                 return False
-            entries = [json.loads(payload) for _, _, payload in self._loop_decisions().entries()]
-            entry = next(
-                item
-                for item in entries
-                if item.get("kind") == "DECIDED" and item.get("operation_id") == operation_id
-            )
             state, actual, anchored = self._selected_physical_state(self._publication(entry))
             if state != "COMPLETE" or actual != anchored:
                 raise OwnerJournalIntegrityError(

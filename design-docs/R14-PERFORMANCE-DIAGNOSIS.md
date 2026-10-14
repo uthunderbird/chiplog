@@ -1091,6 +1091,36 @@ reuse facts or remove any currentness check from this result. The earlier
 writer-path read still needs a same-cut breakdown on a naturally required run;
 the short mixed-V3 test is not a substitute for that witness.
 
+### Two-accepted functional slice: repeated terminal replay decoding (2026-10-14)
+
+The mounted selector
+`test_v3_interleaves_two_sequentially_accepted_members_across_replay_and_reopen`
+passed in 181.91 s, and passed again in the checkpoint hook in 184.59 s. It
+covers two accepted members in one seal, an early incomplete-accounting HOLD,
+terminal and V3 exact replay, reopen/readback, and unchanged tenant head. It
+does not cover two seals, three accepted members, or full physical orphan
+detection.
+
+The first instrumented execution used `faulthandler_timeout=90`; at 90 s the
+main thread was in `r14_runtime._loop_decision_materialized`, reached from
+`_finish_decision` during terminal publication. The R13 method fully validates
+the pending marker sequence, parses every loop decision, checks the unique exact
+`DECIDED` entry and `expected`, and returns whether it is materialized. On a
+materialized decision, the R14 override then parsed every loop decision again
+only to recover that same selected entry before its independent physical
+membership/anchor check. The selected entry and materialized flag now come from
+one base validation pass. Each call still reads and validates the current
+journal, runs `_pending()`, checks uniqueness and `expected`, and performs the
+R14 physical check; no value is retained across calls.
+
+This removes one provably duplicate full JSON parse from the materialized R14
+branch. The stack sample shows that branch was active during the slow test, but
+does not measure its exclusive cost or prove it is the dominant cause. This
+change does not address the separate 12.922 s `read_execution_call_history`
+writer interval or prove that the five-second writer horizon is met. Keep the
+two-seal and three-member requirements open until their bounded functional
+witnesses pass.
+
 Source provenance: verified HEAD `1a7670ea48b024efe56cedd3fd0c6bb5285d0a7d`;
 Python 3.14.5 and pytest 9.1.1 loaded the four modules from this checkout. SHA-256
 was `83368366…` for `r14_loop_history.py`, `5483aeca…` for
