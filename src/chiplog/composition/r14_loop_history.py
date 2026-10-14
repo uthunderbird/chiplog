@@ -2008,23 +2008,6 @@ def _read_call_history(
                         tenant_head=0 if head is None else head[0],
                         records=tuple(mixed_records),
                     )
-                    current_inventory = execution_inventory(
-                        tenant,
-                        current_snapshot,
-                        tuple(preparations),
-                        tuple(cancellations),
-                        tuple(execution_preparations),
-                        tuple(execution_cancellations),
-                        tuple(acceptances),
-                    )
-                    current_history: ExecutionRecoveryHistory = (
-                        current_snapshot,
-                        current_inventory,
-                        tuple(preparations),
-                        tuple(execution_preparations),
-                        tuple(execution_cancellations),
-                        tuple(acceptances),
-                    )
                     from chiplog.composition.r14_native_sealed_accounting_v3_history import (
                         decode_selected_native_sealed_accounting_v3,
                     )
@@ -2038,7 +2021,7 @@ def _read_call_history(
                             command,
                             entry,
                             authenticated_history,
-                            current_history,
+                            current_snapshot,
                             execution_preparations,
                             execution_cancellations,
                             mixed_records,

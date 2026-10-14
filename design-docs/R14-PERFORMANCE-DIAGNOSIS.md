@@ -968,6 +968,38 @@ inventory-only dominance unproven and size-dependent. Keep the next discriminato
 on the next necessary same-cut mounted read. Do not rerun this test or the long
 two-seal selector solely to collect more profile detail.
 
+### Saved-fixture validity check at HEAD `1a7670e` (2026-10-14)
+
+A later attempt to reuse the saved three-member terminal-read fixture reached
+`LoopIntegrityError` for its selected `native-sealed-accounting` record before
+returning the target result. No timings from that failed read are used. The
+fixture predates the current source state and is not a valid current-source
+profile input; do not retry it or patch its evidence to force acceptance. The
+one-seal mixed-V3 test above creates fresh state and remains the bounded current
+baseline. The failed attempt changed only the fixture's gate SQLite bytes; those
+bytes were restored in place from a complete backup, and all 46 paths, file
+contents, modes, device/inode identities and sizes then matched the pre-run
+manifest. The mounted two-seal fixture copy remains path/inode-incompatible.
+
+### V3 reader reuses the current execution snapshot boundary (2026-10-14)
+
+Source inspection found one exact repeated derivation on the deferred-V3 path:
+`_read_call_history` built `execution_inventory` to place beside the current
+snapshot for the V3 decoder, but the decoder consumed only the snapshot. The
+outer `read_execution_call_history` then built the inventory again from the same
+tenant head, ordered records and selected lifecycle tuples. The decoder now
+receives the authenticated `ExecutionHistorySnapshot` directly; the outer reader
+still builds and returns the final inventory once, and the V3 source and physical
+membership checks remain in place.
+
+`test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once` passed on the
+mounted runtime in 32.98 s, including selected readback, reopen, exact replay and
+the full-reader orphan negative. This verifies the V3 reader path, not a speedup
+large enough to meet the five-second writer deadline. The simplified two-seal
+experiment did not produce a verdict and was stopped after 213.06 s; its test
+changes were reverted. Do not treat that run as pass/fail or repeat the long
+scenario until a genuinely bounded writer witness is available.
+
 ### Preview authentication-order regression witness (2026-10-14)
 
 The preview path now reads the selected execution-call history before starting
@@ -1032,3 +1064,37 @@ with that observation's deadline and check time. If it identifies an
 incomplete cut, trace the specific `_source_for` cut result. If it identifies
 owner classification, record the owner reply schema and decoded result type.
 Only then choose and verify a local repair.
+
+### Current-source V3 collect probe (2026-10-14)
+
+To test whether the repeated `R14NativeSelectedAccountingSource.collect` calls
+could explain the short mixed-V3 runtime, the existing mounted witness was run
+once with a temporary in-memory timer (no cProfile, no payload reserialization,
+and no production predicates changed):
+
+```sh
+PYTHONPATH=src:/private/tmp PYTHONUNBUFFERED=1 uv --cache-dir /private/tmp/uvcache run pytest -s -q -p r14_v3_collect_probe tests/composition/test_r14_native_selected_accounting_source.py::test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once
+```
+
+The test passed (`1 passed in 32.74s`; instrumented test-call interval 32.31s).
+The timer observed 12 selected V3 decoder calls. Each decoder took about
+0.47–0.51s thread CPU. `prepare_sealed_accounting_v3` took about 0.34–0.37s
+inclusive; its two nested `source_collect` calls took about 13–14ms each. The
+decoder's direct source collection also took about 13–14ms. This bounds the
+observed repeated source collection to a small part of this short witness; it
+does not predict its share in the 40-entry writer history.
+
+This probe weakens the route “remove repeated source collection to fix the
+five-second writer deadline.” It does not eliminate source collection at larger
+history sizes, nor identify the remaining 0.3s inside V3 preparation. Do not
+reuse facts or remove any currentness check from this result. The earlier
+writer-path read still needs a same-cut breakdown on a naturally required run;
+the short mixed-V3 test is not a substitute for that witness.
+
+Source provenance: verified HEAD `1a7670ea48b024efe56cedd3fd0c6bb5285d0a7d`;
+Python 3.14.5 and pytest 9.1.1 loaded the four modules from this checkout. SHA-256
+was `83368366…` for `r14_loop_history.py`, `5483aeca…` for
+`r14_native_sealed_accounting_v3_history.py`, `99a1c195…` for
+`r14_native_selected_accounting_source.py`, and `dc771b0e…` for the target test.
+The temporary timer hash was `cd5ca5cf…`; it lived under `/private/tmp` and was
+not added to the repository.

@@ -9,6 +9,7 @@ from pydantic import TypeAdapter
 
 from chiplog.capabilities.agent_loop.contracts import RunRecord
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
 from chiplog.composition.r14_loop_history import ExecutionRecoveryHistory
 from chiplog.composition.r14_native_accounting_history import _verify_original_prepare_projection
 from chiplog.composition.r14_native_accounting_records import (
@@ -47,7 +48,7 @@ def decode_selected_native_sealed_accounting_v3(
     command: PhysicalPublicationCommand,
     entry: dict[str, object],
     history: ExecutionRecoveryHistory,
-    current_history: ExecutionRecoveryHistory,
+    current_history: ExecutionHistorySnapshot,
     fanouts: list,
     cancellations: list,
     run_records: list[RunRecord | ExecutionRunRecord],
@@ -119,7 +120,7 @@ def decode_selected_native_sealed_accounting_v3(
     rebuilt = source.prepare_sealed_accounting_v3(
         evidence.request.selected_response,
         authenticated_history=history,
-        authenticated_effects_history=current_history[0],
+        authenticated_effects_history=current_history,
         authenticated_accepted_open_recoveries=accepted_open_recoveries,
         authenticated_projection=True,
     )
