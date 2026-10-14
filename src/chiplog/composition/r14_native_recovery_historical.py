@@ -10,6 +10,8 @@ import hashlib
 import json
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
@@ -45,6 +47,67 @@ if TYPE_CHECKING:
     from .common_cli_execution_runtime import CommonCliExecutionRuntime
     from .r14_native_recovery_cut import NativeRecoveryCutSource
     from .r14_recovery_publication import RetainedRecoveryPublication
+
+
+_LOOP_CUT_TOKEN = object()
+
+
+def _freeze_json(value):
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _thaw_json(value):
+    if isinstance(value, MappingProxyType):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthenticatedLoopDecision:
+    decision_id: str
+    predecessor: str | None
+    raw: bytes
+    entry: object
+    publication: object | None
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class _AuthenticatedLoopDecisionCut:
+    """Request-local parsed cut; callers cannot construct it without the private token."""
+
+    runtime: object
+    decisions: tuple[_AuthenticatedLoopDecision, ...]
+
+    def __init__(self, token, runtime, decisions):
+        if token is not _LOOP_CUT_TOKEN:
+            raise TypeError("authenticated loop cut is internal")
+        object.__setattr__(self, "runtime", runtime)
+        object.__setattr__(self, "decisions", tuple(
+            _AuthenticatedLoopDecision(
+                decision_id=str(decision_id),
+                predecessor=predecessor,
+                raw=raw,
+                entry=_freeze_json(entry),
+                publication=publication,
+            )
+            for decision_id, predecessor, raw, entry, publication in decisions
+        ))
+
+
+def _make_authenticated_loop_decision_cut(runtime, decisions):
+    """Seal rows from ``_read_call_history`` to their parsing runtime.
+
+    This is an internal data-transfer helper, not an authentication API: its sole
+    production caller builds rows and publications from the same strict parse of
+    each current journal entry before handing the cut to this module.
+    """
+    return _AuthenticatedLoopDecisionCut(_LOOP_CUT_TOKEN, runtime, decisions)
 
 
 def _v3_accepted_cut_route(cut) -> str | None:
@@ -219,6 +282,36 @@ def _authenticated_scope_sources(cut, scope_source, authenticated) -> bool:
     return True
 
 
+def _authenticated_loop_cut_matches(runtime, cut) -> bool:
+    """Recheck the complete current journal against one caller-authenticated cut."""
+    if not isinstance(cut, _AuthenticatedLoopDecisionCut) or cut.runtime is not runtime:
+        return False
+    current = runtime._loop_decisions().entries()
+    supplied = tuple(
+        (row.decision_id, row.predecessor, row.raw) for row in cut.decisions
+    )
+    return current == supplied
+
+
+def _historical_publications(runtime, cut, tenant_commit_sequence):
+    """Use commands from the same parsed cut, decoding non-Run operations as before."""
+    selections = []
+    for row in cut.decisions:
+        decision_id, raw, item, selected = (
+            row.decision_id,
+            row.raw,
+            row.entry,
+            row.publication,
+        )
+        if item.get("kind") != "DECIDED":
+            continue
+        if selected is None:
+            selected = runtime._publication(item)
+        if selected.expected_head < tenant_commit_sequence:
+            selections.append((decision_id, raw, item, selected))
+    return selections
+
+
 def _authenticate_v3_accepted_cut(
     runtime: CommonCliExecutionRuntime,
     evidence: RetainedRecoveryPublication,
@@ -348,6 +441,7 @@ def authenticate_native_recovery_selected(
     entry: dict[str, object],
     *,
     through_sequence: int | None = None,
+    authenticated_loop_decisions=None,
 ) -> bool:
     """Authenticate retained original C without reopening recursive current history."""
     from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
@@ -360,13 +454,23 @@ def authenticate_native_recovery_selected(
     runtime._authority_gate().require_held()
     try:
         runtime._check_database_identity()
-        actual_entries = [
-            item
-            for _, _, raw in runtime._loop_decisions().entries()
-            if (item := json.loads(raw)).get("kind") == "DECIDED"
-            and item.get("operation_id") == entry.get("operation_id")
-        ]
-        if len(actual_entries) != 1 or actual_entries[0] != entry:
+        if authenticated_loop_decisions is None:
+            actual_entries = [
+                item
+                for _, _, raw in runtime._loop_decisions().entries()
+                if (item := json.loads(raw)).get("kind") == "DECIDED"
+                and item.get("operation_id") == entry.get("operation_id")
+            ]
+        else:
+            if not _authenticated_loop_cut_matches(runtime, authenticated_loop_decisions):
+                return False
+            actual_entries = [
+                item
+                for item in (row.entry for row in authenticated_loop_decisions.decisions)
+                if item.get("kind") == "DECIDED"
+                and item.get("operation_id") == entry.get("operation_id")
+            ]
+        if len(actual_entries) != 1 or _thaw_json(actual_entries[0]) != entry:
             return False
         cut = evidence.accounting_request.cut
         batch = command(evidence)
@@ -380,13 +484,22 @@ def authenticate_native_recovery_selected(
             return False
         selections = []
         with read_connection(runtime._database) as connection:
-            for decision_id, _, raw in runtime._loop_decisions().entries():
-                item = json.loads(raw)
-                if item.get("kind") != "DECIDED":
-                    continue
-                selected = runtime._publication(item)
-                if selected.expected_head < cut.tenant_commit_sequence:
-                    selections.append((decision_id, raw, item, selected))
+            if authenticated_loop_decisions is None:
+                for decision_id, _, raw in runtime._loop_decisions().entries():
+                    item = json.loads(raw)
+                    if item.get("kind") != "DECIDED":
+                        continue
+                    selected = runtime._publication(item)
+                    if selected.expected_head < cut.tenant_commit_sequence:
+                        selections.append((decision_id, raw, item, selected))
+            else:
+                if not _authenticated_loop_cut_matches(runtime, authenticated_loop_decisions):
+                    return False
+                selections = _historical_publications(
+                    runtime,
+                    authenticated_loop_decisions,
+                    cut.tenant_commit_sequence,
+                )
             rows = tuple(
                 connection.execute(
                     "SELECT record_id,owner,schema_id,canonical_bytes,commit_sequence FROM records "

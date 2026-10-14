@@ -294,7 +294,14 @@ def retained(entry):
     return evidence
 
 
-def validate_selected(runtime, entry, physical_command, *, through_sequence=None):
+def validate_selected(
+    runtime,
+    entry,
+    physical_command,
+    *,
+    through_sequence=None,
+    authenticated_loop_decisions=None,
+):
     evidence = retained(entry)
     if evidence.actor_budget_v1 is not None:
         from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
@@ -326,12 +333,33 @@ def validate_selected(runtime, entry, physical_command, *, through_sequence=None
         if prefix.snapshot_bytes != receipt.trust_snapshot_bytes:
             raise ValueError("selected recovery actor original trust prefix differs")
     if through_sequence is None:
-        authenticated = source(runtime).authenticate_selected_held(runtime, evidence, entry)
+        cut_source = source(runtime)
+        if authenticated_loop_decisions is not None:
+            from .r14_native_recovery_cut import NativeRecoveryCutSource
+
+            if isinstance(cut_source, NativeRecoveryCutSource):
+                authenticated = cut_source.authenticate_selected_held(
+                    runtime,
+                    evidence,
+                    entry,
+                    authenticated_loop_decisions=authenticated_loop_decisions,
+                )
+            else:
+                authenticated = cut_source.authenticate_selected_held(
+                    runtime, evidence, entry
+                )
+        else:
+            authenticated = cut_source.authenticate_selected_held(runtime, evidence, entry)
     else:
         from .r14_native_recovery_historical import authenticate_native_recovery_selected
 
         authenticated = authenticate_native_recovery_selected(
-            source(runtime), runtime, evidence, entry, through_sequence=through_sequence
+            source(runtime),
+            runtime,
+            evidence,
+            entry,
+            through_sequence=through_sequence,
+            authenticated_loop_decisions=authenticated_loop_decisions,
         )
     if command(evidence) != physical_command or not authenticated:
         raise ValueError("recovery selected cut or exact atomic publication unauthenticated")

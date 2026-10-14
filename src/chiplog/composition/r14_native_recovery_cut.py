@@ -2736,7 +2736,15 @@ class NativeRecoveryCutSource:
         runtime: CommonCliExecutionRuntime,
         evidence: RetainedRecoveryPublication,
         entry: dict[str, object],
+        *,
+        authenticated_loop_decisions=None,
     ) -> bool:
         from .r14_native_recovery_historical import authenticate_native_recovery_selected
 
-        return authenticate_native_recovery_selected(self, runtime, evidence, entry)
+        return authenticate_native_recovery_selected(
+            self,
+            runtime,
+            evidence,
+            entry,
+            authenticated_loop_decisions=authenticated_loop_decisions,
+        )

@@ -46,8 +46,12 @@ from chiplog.composition.r14_native_recovery_cut import (
     _selected_reduction_sources,
 )
 from chiplog.composition.r14_native_recovery_historical import (
+    _authenticated_loop_cut_matches,
     _authenticated_scope_sources,
+    _AuthenticatedLoopDecisionCut,
     _external_intent_matches_dispatch_carrier,
+    _historical_publications,
+    _make_authenticated_loop_decision_cut,
     _selected_decision_matches_source,
     _selected_source_carrier_id,
     _v3_accepted_cut_route,
@@ -57,6 +61,108 @@ from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.capabilities.effects.support.dispatch_outcomes import original_intent, original_send
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 from tests.support.recovery_candidate import inert_recovery_candidate
+
+
+def test_historical_loop_cut_rechecks_every_fresh_journal_row() -> None:
+    selected_command = SimpleNamespace(expected_head=2)
+    decisions = (
+        (
+            "selected-id",
+            None,
+            b"selected-raw",
+            {"kind": "DECIDED", "operation_id": "selected"},
+            selected_command,
+        ),
+        (
+            "marker-id",
+            "selected-id",
+            b"materialized-raw",
+            {"kind": "MATERIALIZED", "operation_id": "selected"},
+            None,
+        ),
+    )
+    runtime = SimpleNamespace(
+        _loop_decisions=lambda: SimpleNamespace(
+            entries=lambda: tuple((row[0], row[1], row[2]) for row in decisions)
+        )
+    )
+
+    cut = _make_authenticated_loop_decision_cut(runtime, decisions)
+    assert _authenticated_loop_cut_matches(runtime, cut)
+    foreign_runtime = SimpleNamespace(
+        _loop_decisions=lambda: SimpleNamespace(
+            entries=lambda: tuple((row[0], row[1], row[2]) for row in decisions)
+        )
+    )
+    assert not _authenticated_loop_cut_matches(foreign_runtime, cut)
+    assert not _authenticated_loop_cut_matches(runtime, decisions)
+    with pytest.raises(TypeError):
+        cut.decisions[0].entry["kind"] = "MATERIALIZED"
+    with pytest.raises((AttributeError, TypeError)):
+        cut.decisions[0].publication = SimpleNamespace(expected_head=999)
+    with pytest.raises(TypeError):
+        _AuthenticatedLoopDecisionCut(None, runtime, decisions)
+
+    changed_marker = (*decisions[1][:2], b"changed-marker", *decisions[1][3:])
+    changed_decisions = (decisions[0], changed_marker)
+    runtime._loop_decisions = lambda: SimpleNamespace(
+        entries=lambda: tuple((row[0], row[1], row[2]) for row in changed_decisions)
+    )
+    assert not _authenticated_loop_cut_matches(runtime, cut)
+
+    runtime._loop_decisions = lambda: SimpleNamespace(
+        entries=lambda: tuple((row[0], row[1], row[2]) for row in decisions)
+    )
+    assert _authenticated_loop_cut_matches(runtime, cut)
+    runtime._loop_decisions = lambda: SimpleNamespace(entries=lambda: ())
+    assert not _authenticated_loop_cut_matches(runtime, cut)
+
+
+def test_historical_publications_reuse_exact_commands_and_keep_all_decisions() -> None:
+    cached = SimpleNamespace(expected_head=2)
+    equal_to_cut = SimpleNamespace(expected_head=3)
+    non_agent_loop = {
+        "kind": "DECIDED",
+        "operation_id": "workspace-policy",
+        "operation_kind": "workspace.policy",
+    }
+    fallback_command = SimpleNamespace(expected_head=1)
+    runtime = SimpleNamespace(
+        _publication=lambda entry: fallback_command
+        if entry.get("operation_id") == "workspace-policy"
+        else pytest.fail("cached command should not be rebuilt")
+    )
+    decisions = (
+        (
+            "agent-loop-id",
+            None,
+            b"agent-loop-raw",
+            {"kind": "DECIDED", "operation_id": "agent-loop"},
+            cached,
+        ),
+        (
+            "workspace-id",
+            "agent-loop-id",
+            b"workspace-raw",
+            non_agent_loop,
+            None,
+        ),
+        (
+            "at-cut-id",
+            "workspace-id",
+            b"at-cut-raw",
+            {"kind": "DECIDED", "operation_id": "at-cut"},
+            equal_to_cut,
+        ),
+    )
+
+    cut = _make_authenticated_loop_decision_cut(runtime, decisions)
+    selections = _historical_publications(runtime, cut, 3)
+
+    assert selections == [
+        ("agent-loop-id", b"agent-loop-raw", decisions[0][3], cached),
+        ("workspace-id", b"workspace-raw", non_agent_loop, fallback_command),
+    ]
 
 
 def test_inherited_no_retry_references_require_one_exact_inactive_source() -> None:

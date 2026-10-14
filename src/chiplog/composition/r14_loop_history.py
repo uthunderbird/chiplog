@@ -416,21 +416,41 @@ def _read_call_history(
             loop_journal_entries = runtime._loop_decisions().entries()
             selected_decision_envelopes = {}
             loop_decision_bytes_by_id = {}
+            selected_loop_commands_by_id = {}
+            selected = []
             for decision_id, _, raw in loop_journal_entries:
                 loop_decision_bytes_by_id[str(decision_id)] = raw
                 entry = _strict_json(raw)
                 entries.append(entry)
                 if entry.get("kind") == "DECIDED":
                     selected_decision_envelopes[entry["operation_id"]] = (decision_id, raw)
+                    if str(entry.get("operation_kind", "")).startswith("agent_loop"):
+                        command = runtime._publication(entry)
+                        selected.append((command, entry))
+                        selected_loop_commands_by_id[str(decision_id)] = command
             decisions = [entry for entry in entries if entry.get("kind") == "DECIDED"]
             identities = [entry["operation_id"] for entry in decisions]
             if len(identities) != len(set(identities)):
                 raise ValueError("duplicate independently selected loop identity")
-            selected = [
-                (runtime._publication(entry), entry)
-                for entry in decisions
-                if str(entry.get("operation_kind", "")).startswith("agent_loop")
-            ]
+            authenticated_loop_decisions = tuple(
+                (
+                    decision_id,
+                    predecessor,
+                    raw,
+                    entry,
+                    selected_loop_commands_by_id.get(str(decision_id)),
+                )
+                for (decision_id, predecessor, raw), entry in zip(
+                    loop_journal_entries, entries, strict=True
+                )
+            )
+            from chiplog.composition.r14_native_recovery_historical import (
+                _make_authenticated_loop_decision_cut,
+            )
+
+            authenticated_loop_decisions = _make_authenticated_loop_decision_cut(
+                runtime, authenticated_loop_decisions
+            )
             call_values = {}
             owner_snapshot = runtime._owner_decisions().snapshot()
             for decision in owner_snapshot.decisions:
@@ -1193,7 +1213,12 @@ def _read_call_history(
                     ):
                         from chiplog.composition.r14_recovery_publication import validate_selected
 
-                        validate_selected(runtime, entry, command)
+                        validate_selected(
+                            runtime,
+                            entry,
+                            command,
+                            authenticated_loop_decisions=authenticated_loop_decisions,
+                        )
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
