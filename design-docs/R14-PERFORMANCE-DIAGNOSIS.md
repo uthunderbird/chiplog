@@ -904,7 +904,7 @@ Differential status:
 | Candidate | Evidence | Status / implication |
 |---|---|---|
 | Fresh `capture_dispatch` dominates the 13.1 s writer check | It measured 0.176 s. | Eliminated as the main cost in this run. Keep its fresh capture. |
-| One strict JSON decode/canonicalization of the loop journal dominates | The parser-only pass took under 0.24 s; the full history reader took 12.92 s. | Eliminated as a sufficient explanation. Repeated decode/canonicalization inside semantic helpers remains possible. |
+| One strict JSON decode/canonicalization of the loop journal dominates | The original parser-only pass took under 0.24 s; an independent exact decision-byte reproduction took 0.520 s; the full history reader took 12.92 s. | Eliminated as a sufficient explanation. Repeated decode/canonicalization inside semantic helpers remains possible. |
 | Repeated `execution_inventory` reconstruction dominates | `_read_call_history` has eight call sites (lines 1241, 1279, 1570, 1620, 1858, 1913, 1946, 2011); each validates a snapshot by serializing then reparsing it in `r14_execution_inventory.py`. `read_execution_call_history` constructs the final inventory once more after `_read_call_history` returns. | Strongest code-grounded candidate, not measured yet. Prefix snapshots grow during replay, so repeated full reconstruction may be superlinear in selected history length; this does not establish exponential growth. Measure time and bytes per call before reusing any result. |
 | Nested envelope build/validation dominates the inventory passes | `execution_inventory` calls `build_envelope` for each retained execution fanout. That builder serializes evidence and freshly parses the resulting envelope. Its byte helper has a one-pair reuse cache capped at 4 MiB; a cache hit still serializes the evidence and parses the public envelope, while larger pairs are not retained. | Strong code-grounded sub-hypothesis of the inventory cost, not independently timed. Count helper calls, bytes, and cache hits/misses; report exclusive time to avoid adding it to inclusive inventory time. |
 | Accounting and H1 issuance validation dominates | The exact history contains one native-accounting and one V3 accounting selection. A different reader profile attributed 3.47 s cumulative to native-accounting decode and 2.91 s to original-Prepare projection, but that profile is not this writer read. | Live secondary candidate; do not transfer the older timing as a result for this run. Instrument these exact decoder/projection boundaries on a valid same-cut read. |
@@ -915,6 +915,61 @@ The one-line parser reuse in `r14_loop_history.py` removes a duplicate ordinary
 same canonical and duplicate-key check, but the parser-only result bounds its
 possible saving to a small part of the 12.92 s. It is not evidence that the
 writer deadline now fits.
+
+### Exact failed-artifact journal decode decomposition (2026-10-14)
+
+A separate read-only script decomposed the exact 40-entry loop-journal artifact
+from the failed writer selector above, without opening a runtime or changing
+the fixture. The journal file contains 209,312,600 outer bytes; its hex-wrapped
+selected decisions total 104,651,091 bytes.
+
+| Work over the exact artifact | Wall | Thread CPU |
+|---|---:|---:|
+| Parse outer journal rows and hex-decode selected decisions | 0.518 s | 0.518 s |
+| Duplicate-key decode and canonical re-encode each decision, asserting exact bytes | 0.520 s | 0.520 s |
+
+These one-pass costs are a small fraction of the 12.922 s writer history read.
+They rule out one outer-journal pass or one strict decision parse as a sufficient
+explanation; they do **not** bound repeated parsing of the same decision bytes
+inside semantic history decoders.
+This independent reproduction differs from the earlier 0.22–0.23 s strict-pass
+estimate recorded above; keeping the exact stages visible makes that measurement
+difference resolvable instead of silently treating the numbers as interchangeable.
+
+The selected `native-one-call-cancelled-accounting` evidence is 26,100,942
+characters and contains 12 `selected_decision_bytes` references to 9 distinct
+values. Three references repeat a value already present in the same evidence;
+the repeated encoded values total 2,835,507 characters. Source inspection
+confirms `decode_selected_native_accounting` enumerates the loop journal again,
+then `json.loads` and reconstructs each referenced prior publication, including
+the Prepare projection. This makes repeated semantic reconstruction an active
+candidate; reference size alone does not attribute its runtime cost.
+
+The journal's exact-body decode cache is also conditional: `.entries()` still
+reads and compares the entire body and rechecks source identity, key, and head
+on a hit; a newly appended body misses the cache and reauthenticates the full
+prefix. On the saved 209,312,600-byte body, a hot `read_bytes()` plus exact byte
+comparison took 0.030–0.046 s across three passes. That rules out the body
+read/compare alone as a major part of the 12.9 s history read; the microprobe
+did not include `_existing_sources`, key/head validation, or a cache miss after
+an append. Another repeated path precedes this reader: with `selected_only=False`,
+`_read_call_history` calls `_require_no_pending()`, which scans the owner
+snapshot, parses loop `_pending()` entries (including H1 V2 durable validation),
+and checks gate pending state. It then enumerates the loop journal and owner
+snapshot again for history reconstruction. The individual `owner-journal` is
+only 237,960 bytes in this fixture, but semantic validation is not bounded by
+file size alone.
+
+Therefore the next mounted measurement must use three non-overlapping blocks:
+(1) `_require_no_pending`, split into owner snapshot, loop pending/H1 validation,
+and gate pending; (2) history reconstruction, with `_strict_json`/`json.loads`
+invocations and bytes, `_publication` invocations and decoded record bytes,
+and native/V3/H1 decoder time; (3) each journal `.entries()` call, with body
+bytes, decode/auth cache hit or miss, and source/head checks. Also record source
+deadline slack at writer-check entry and exit. Keep an outer writer-history timer
+and compare it with the sum of non-overlapping phase times; report any exclusive
+remainder instead of allocating it by guess. Do not add nested inclusive timings
+or infer an exponential growth law from this single artifact.
 
 Next discriminator: on the next necessary valid mounted history read, collect
 one low-volume `cProfile` call tree around `read_execution_call_history` and
@@ -1140,6 +1195,12 @@ and one writer `read_execution_call_history` call at 13.062 s. The test reached
 the same explicit source-horizon rejection described above. The mounted result
 is a failure, not a completed R14.6 witness.
 
+This 416.00 s result is a separate invocation from the 420.61 s run above.
+Only the 420.61 s run captured entry slack (about 4.35 s before the nearest
+source deadline) and final expiry (about 8.99 s after it). The 416.00 s run
+recorded the 13.062 s reader but not deadline slack at check entry; do not
+transfer the first run's slack measurement to this second invocation.
+
 This directly **eliminates inventory reconstruction as the dominant cost in
 this run**; the earlier candidate ranking based on source call sites was not
 enough. It also lowers the priority of GIL and generic journal-parser
@@ -1248,3 +1309,451 @@ s, including reopen, exact replay, wrong-cut and orphan checks. Ruff passed.
 This verifies the positive mounted path and its existing negatives; it does not
 measure a material runtime gain or prove the two-seal five-second writer now
 passes. R14.6 remains open.
+
+### Latest writer-probe attempt (2026-10-14)
+
+A new in-memory wrapper probe was attempted against the same mounted two-seal
+selector. In the sandbox it first failed before owner startup because AF_UNIX
+bind was denied. With local test sockets permitted, the instrumented run exited
+in 7.79 s at `capture_execution` with `WorkspaceRejected: unregistered
+workspace class dispatch`; it never entered `_check_live`. Its aggregate wrapper
+counters cover only this early failing path and are not evidence about the
+multi-minute history read or the deadline rejection. Do not use those counters
+to rank R14.6 hot paths.
+
+The early failure is explained by the probe itself: it monkeypatched
+`IndependentTenantDecisionJournal.entries` and `_entries`, while
+`r12._check_dispatch()` compares that class's method objects against its
+registered `_DISPATCH` snapshot. The workspace guard correctly rejected the
+modified class. This is a confirmed instrumentation defect, not evidence of a
+product regression or nondeterminism. Any replacement probe must observe the
+journal without changing a class in `_DISPATCH`.
+
+The same selector was then run directly, without instrumentation, to test
+whether the early rejection was probe-induced. That control remained silent and
+was interrupted after 819.67 s (`no tests ran`), so it also yielded no writer
+verdict. It neither falsifies nor confirms the earlier two-seal deadline
+failure. The wrapper discrepancy is explained, so a short setup comparison is
+no longer needed. No more full-selector reruns are justified until a
+non-invasive measurement can isolate the target read.
+
+### Exact saved-cut history profile (2026-10-14)
+
+To avoid another full selector, one direct `read_execution_call_history`
+invocation was profiled with `cProfile` against the preserved
+`pytest-9067/test_v3_accounts_two_sequentia0` fixture. Before opening, the
+fixture had 44 files, a 40-row, 209,312,600-byte loop journal, and the expected
+R14 native recovery-profile first decision. The matching
+`NativeRecoveryCutSource` and custody (`scenarios=["CONFIRM"]`, `cap=1`) were
+provided. The runtime's selected source cut was checked unchanged before the
+reader. The reader passed and returned 14 Run records and two ordered calls.
+After the probe process exited, only broker/gate/reads SQLite state differed;
+all 44 files were restored from the verified backup, with file set, content,
+mode, and mtime checked. The database inode remained 145248473.
+
+The profiled reader took 27.403 s wall / 27.392 s thread CPU; cProfile recorded
+27.398 s and 4,417,456 calls. This was a direct call outside the five-second
+writer predicate, so it measures the same history-reading function on the
+saved source cut, not deadline admission. cProfile overhead was not calibrated;
+the absolute profile time should not be substituted for the earlier 13.062 s
+uninstrumented writer interval.
+
+| Operation | Calls | Exclusive time | Cumulative time |
+|---|---:|---:|---:|
+| JSON `raw_decode` | 3,101 | 9.954 s | 9.954 s |
+| JSON `iterencode` | 7,748 | 7.252 s | 7.252 s |
+| File reads | 502 | 1.353 s | 1.353 s |
+| SHA-256 | 6,551 | 1.339 s | 1.339 s |
+| Journal `_entries` | 235 | 0.600 s | 2.026 s |
+
+At the R14/R17 helper level, `_read_call_history` took 27.301 s. Three
+`validate_selected` calls took 21.055 s cumulative, including 18.624 s in
+`authenticate_native_recovery_selected`; one `validate_selected_next_turn`
+took 15.431 s; seven R17 `read_historical` calls took 11.666 s; four
+`decode_selected_native_accounting` calls took 9.220 s; and 29 `_pending`
+calls took 8.150 s cumulative. These helper totals overlap. They describe one
+history shape, not independent work to add together.
+
+This changes the differential ranking. It directly rules out the simple claim
+that the 209 MB outer file read or one JSON pass alone causes the delay: the
+profile contains thousands of nested semantic decodes and canonical encodes.
+The strongest measured contributors are selected recovery validation,
+next-turn validation, and repeated historical source reads; canonical JSON
+decode/encode is the dominant low-level CPU cost. This supports repeated
+semantic validation over the growing authenticated cut. It still does not
+prove a growth exponent or identify which individual validation can be reused
+without changing a trust boundary.
+
+At the time of this profile, the next design question was whether a local
+duplicate existed among recovery validation, next-turn validation, and R17
+historical reads. The later differential comparison below answers this for
+`validate_selected_next_turn`; its ranking supersedes the earlier candidate
+ranking above. Do not cache across calls, extend deadlines, or weaken recovery
+source authentication.
+
+### Differential hypothesis ranking after the saved-cut profile
+
+This section supersedes the earlier provisional candidate ranking in this
+document.
+
+The target observation here is one successful `read_execution_call_history`
+on `pytest-9067/test_v3_accounts_two_sequentia0`: 14 Run records, two ordered
+calls, 27.403 s under uncalibrated cProfile. Other test durations and the
+13.062 s writer interval are separate observations; they are not added to this
+profile or used as controlled comparisons.
+
+| Hypothesis or proposed remedy | Predicted signature | Evidence / falsifier | Status |
+|---|---|---|---|
+| One 209 MB outer journal read or one strict parse causes the cost | A single raw read or decode pass should approach the reader duration. | Exact standalone stages were 0.518 s outer parse/hex decode and 0.520 s strict decision decode/canonical re-encode; cProfile instead records 3,101 `raw_decode` and 7,748 `iterencode` calls. | Rejected as a sufficient cause; repeated semantic parsing remains supported. |
+| `execution_inventory` reconstruction is the dominant cost | Inventory calls should dominate exclusive or cumulative time. | In the separate 416 s run, 216 inventory calls took 1.680 s; the exact saved-cut profile assigns large cumulative time to recovery, next-turn, and historical validation. | Rejected for the measured 416 s run; not generalized to every history shape. |
+| Fresh dispatch capture is the writer bottleneck | `capture_dispatch` should consume most of the writer interval. | It measured 0.176 s in the failed writer run; the smaller mounted writer check passed in 0.085 s total. | Rejected as the cause in that writer run; larger-cut history remains a workload factor. |
+| GIL contention explains the long run | Wall time should substantially exceed this thread's CPU time, or concurrent Python work should be observed. | Saved-cut read was 27.403 s wall / 27.392 s thread CPU; no concurrent workload attribution exists. | Unsupported; CPU-bound JSON work is observed, GIL contention is not. |
+| Raise the five-second source horizon | The same authenticated work would finish without changing validation. | The saved-cut reader alone takes 27.4 s under cProfile, while the short cut's writer check fits. No acceptable replacement horizon is established. | Remedy rejected for now: it changes authority duration and does not reduce latency. |
+| Reuse the result of the named accounting validation inside `validate_selected_next_turn` | One named readiness candidate is fully validated in the eligible-candidate loop and immediately validated again with the same runtime, candidate dict, command, and `through_sequence`. | Source at `r14_next_turn_records.py` establishes the equality condition and call order; the profile reports 15.431 s cumulative in the enclosing validator, but does not isolate the duplicate call's exclusive cost. | Strongest local candidate; duplication is established, savings and race behavior remain unmeasured. |
+| Cache across history reads, combine R17 reads, or remove pending/source scans | Repeated inputs and freshness boundaries must be identical across calls or independently retained. | Profile counts calls but does not prove identical state/bytes across invocations; these reads authenticate independent journal prefixes and physical membership. | Rejected as premature; no candidate-specific evidence supports these broader remedies. |
+
+The exact candidate is in `validate_selected_next_turn`: the named readiness
+decision is required to satisfy
+`prior.expected_head + 1 == request.cut.tenant_commit_sequence`. The later
+loop validates every readiness whose resulting sequence is at or before that
+cut, so the named candidate necessarily passes through
+`validate_accounting_selected`. After that loop, the function calls
+`validate_accounting_selected` again on the same local `prior` and
+`prior_batch`, with the same `runtime` and `through_sequence`, then uses the
+returned `original` to check the accounting/readiness pair, source bytes,
+selected decision, result stamp, frontier fingerprint, and complete inventory
+fingerprint. The duplicate's second invocation has no intervening write in
+this function. The outer `validate_selected_next_turn` call in
+`_read_call_history` is a distinct boundary with `through_sequence=None`; it
+must remain.
+
+This source comparison establishes repeated work and equal arguments, not
+equivalent behavior under arbitrary out-of-band database or journal mutation,
+nor the time saved by reusing the first result. The read is under the
+`AuthorityGate`, which excludes cooperative writers; physical validation and
+every eligible (including unnamed) readiness check must remain. A controlled
+probe should instrument only the named candidate: confirm it is validated
+twice before a local change and once after, compare the complete returned
+history, and verify that a malformed eligible *unnamed* readiness still
+rejects the read. Any intervening mutation, changed validation inputs,
+changed failure outcome, or continued double validation falsifies this reuse
+candidate. Record writer-entry deadline slack separately on the next required
+mounted run; this profile was outside the writer predicate.
+
+Do not repeat the full mounted selector for this question. The next design
+step is a bounded call-level comparison of this exact duplicate and its
+preserved negative case. Until it is measured, do not claim the candidate
+explains the five-second rejection or quantifies the performance gain.
+
+### Named readiness duplicate probe and local reuse (2026-10-14)
+
+A bounded instrumented read of the same preserved 40-row history passed and
+returned 14 Run records and two ordered calls. It observed five validations of
+the same named-readiness pattern inside that top-level read. The fixture
+contains exactly one selected next-turn publication and one accounting-
+readiness publication. Each validation pair checked that same named readiness
+twice, for ten named calls total. Every pair had the same journal operation
+ID, expected head 16, `through_sequence` 17, identical entry and
+physical-command object identities, and equal returned evidence. The exact
+caller breakdown was not instrumented; these additional invocations occur
+under retained historical validation. All calls ran on the same
+`MainThread`; outer wall, thread CPU, and process CPU were 26.845 s, 26.773 s,
+and 26.773 s respectively.
+
+Each accounting-validator interval was about 6.8–7.1 s, but the ten intervals
+must not be summed: calls are nested through historical validation on one
+thread. These inclusive intervals do not predict the saving from removing a
+call. This run shows CPU work in one thread and gives no signal that concurrent
+GIL contention is the delay. The reader result and selected source cut matched
+the earlier saved-cut read. The temporary fixture's three SQLite side files
+were restored in place from the verified backup, and all 44 file hashes then
+matched it.
+
+The production change now captures the named candidate's successful
+`validate_accounting_selected` result while retaining validation of every
+eligible candidate in order, then uses that result for the existing pair and
+C→C' checks. Matching is by the unique selected journal decision ID. The outer
+`validate_selected_next_turn` call and its trust-prefix, physical, source-byte,
+frontier, and inventory checks are unchanged. Two focused tests pass: one
+asserts exact named-ID selection and that a later eligible candidate still
+runs; the other confirms failure of that unnamed candidate still rejects the
+read. Ruff passes.
+
+The mounted restart/replay test was interrupted after 4.5 min without a
+verdict; it is neither a pass nor a product failure. Its pytest cleanup
+removed the older saved fixture before a post-change same-cut timing could be
+collected. Do not claim an end-to-end speedup yet. The next necessary mounted
+witness must establish restart/replay and foreign-evidence HOLD after this
+change; keep that selector isolated and stop treating its long runtime as a
+routine intermediate gate.
+
+### Differential update: owner-prefix replay candidate (2026-10-14)
+
+The preserved post-change `pytest-9070/test_selected_next_turn_restar0`
+fixture was used for one bounded `read_execution_call_history` probe. It had
+28 loop-journal rows (153,160,248 bytes), six owner-journal entries, and a
+238,664-byte owner journal. The reader passed with nine Run records and one
+ordered call. Wall time was 15.003 s; thread CPU was 14.956 s. This was a
+direct authenticated history read, not a writer-admission timing.
+
+The probe wrapped only the module-level
+`snapshot_from_captured_entries` function. It observed 37 calls across runtime
+startup plus the target read, visiting 162 captured entries in total and
+passing 2,952,129 payload bytes through those prefix scans. The implementation
+of `_scan_entries` traverses each supplied tuple once. The summed wrapper time
+was 23.8 ms wall/thread CPU, with no nested snapshot calls. This is below 0.2%
+of the reader's measured thread CPU. Therefore repeated owner-prefix snapshot
+construction is directly present but is rejected as a material cause of this
+fixture's 15 s reader interval. This does not establish its cost on larger
+owner journals or the earlier two-seal writer cut.
+
+The post-change cut again invoked named accounting validation four times, once
+per observed invocation, with the same operation ID, expected head 15, and
+`through_sequence=16`. The individual inclusive intervals were about 5.3–5.6
+s, some nested in historical validation; they must not be summed or treated as
+the saving from the local reuse. The run is not a controlled before/after
+comparison: its 28-row/one-call cut differs from the earlier 40-row/two-call
+cut. It confirms the changed call shape and preserved reader result, but does
+not quantify speedup.
+
+Updated differential status for the slow path:
+
+| Candidate | Current evidence | Status / next discriminator |
+|---|---|---|
+| One outer journal parse or one strict JSON pass | Exact one-pass stages remain about 0.52 s; the profiled reader performs thousands of JSON decodes/encodes. | Rejected as sufficient cause. |
+| Owner-journal growing-prefix snapshots | 37 observed scans, 2.95 MB aggregate payload input, 23.8 ms total CPU on this fixture. | Rejected as material for this cut; reopen only if owner-journal size is materially larger. |
+| GIL contention | Latest read was 15.003 s wall / 14.956 s thread CPU. | Unsupported; observed cost is CPU work on one thread. |
+| Repeated selected recovery / accounting / R17 semantic validation | Prior exact saved-cut profile assigns large overlapping cumulative time to these paths; post-change named readiness calls remain individually expensive, but their nested time is not attributable. | Live. Next measure must key calls by selected decision/source fingerprint and cut, and report exclusive CPU plus semantic input bytes. |
+| Exponential growth | Current samples vary in history shape, rows, and bytes; there is no controlled size series. | Not established. Say “history-sensitive CPU growth” only as a hypothesis until equal-shape scaling points exist. |
+| Five-second writer expiry caused by history read | A successful read outside admission does not identify writer entry slack or which deadline is minimum. | Unresolved. Capture deadline provenance and entry/exit slack on the next necessary writer call; do not raise the horizon. |
+
+The selected next discriminator is a low-volume call tree for the already
+ranked semantic validators, keyed by the exact decision identity, source
+fingerprint, cut/head and `through_sequence`. If the same key recurs with
+material exclusive CPU, inspect that local boundary for safe result reuse. If
+keys differ or repeated-key exclusive time is small, retire reuse as the main
+latency route and measure which distinct evidence bytes account for JSON CPU.
+This is a diagnostic action only; no further optimization follows from the
+current timing alone.
+
+### Nested evidence size and exact repeated payloads (2026-10-14)
+
+A second read-only pass over the same 28-row loop journal found 76,576,487
+bytes of selected decision payload across 28 distinct decisions. Three unique
+large JSON string fields account for 58,585,366 bytes: native accounting
+evidence (26,109,165), recovery evidence (20,902,567), and next-turn evidence
+(11,573,634). These are about 76% of all selected decision bytes. There were
+17 top-level scalar strings of at least 50 KB, totalling 63,215,452 bytes;
+those complete large strings were all distinct, so exact whole-string reuse
+does not explain their size.
+
+Parsing those embedded JSON strings one level further exposed exact repeated
+leaf payloads across authenticated evidence: `canonical_record_bytes` occurred
+72 times but had only 12 distinct byte values, with 10,079,428 repeated bytes
+beyond the first copy. `canonical_payload` had 584,308 repeated bytes;
+`content`, 2,201,350; `request`, 527,436; and `trust_snapshot_bytes`, 218,952.
+These counts describe repeated serialized values in the saved decision
+artifact. They do not show which validators parse each occurrence, how much
+CPU they consume, or whether any copy can be removed without weakening a
+distinct historical proof.
+
+The two available journal cuts also have similar outer bytes per row:
+5,232,815 bytes for the 40-row cut and 5,470,009 for the 28-row cut. Their
+history shapes differ, so this is not a controlled scaling curve, but it
+provides no observed exponential signature. Keep “exponential” unproven.
+
+This updates the live explanation: large evidence envelopes contain a mix of
+unique source bytes and exact repeated canonical records. The leading route is
+now the CPU cost of decoding/canonicalizing those embedded payloads, whether
+the work repeats the same bytes or processes unique large sources. Repeated
+validator calls remain a separate candidate; inclusive nested timings cannot
+rank it against payload volume.
+
+The next discriminating profile should attribute decode/encode CPU to the
+exact input byte hash and caller boundary for the three large evidence
+envelopes and repeated `canonical_record_bytes`. Report distinct bytes,
+occurrence bytes, repeated bytes, and exclusive CPU separately. If exact
+repeated values account for material exclusive CPU, test only a local reuse at
+that authenticated boundary. If unique source bytes dominate, do not pursue
+reuse as the main route; inspect the evidence producer and its contract before
+proposing a storage or schema change.
+
+### Input-hash profile of the authenticated reader (2026-10-14)
+
+The same saved cut was read once more with passive `sys.setprofile` around
+`read_execution_call_history`, recording exact input hashes at Python
+`JSONDecoder.raw_decode`, `TypeAdapter.validate_json`, and
+`BaseModel.model_validate_json` frames. The reader passed with nine Run records
+and one ordered call. The profile covered only the calling thread and added
+material overhead: its reader interval was 21.916 s wall / 21.842 s thread CPU,
+versus 15.003 s / 14.956 s in the preceding unprofiled read. Use the input
+identities and call counts below; do not treat profiled durations as baseline
+latency. C/Rust internals are not individually visible beyond the Python
+wrapper's inclusive interval.
+
+The strongest exact repeated-input signal is `r13_runtime._pending`. Within
+this one history read it called `json.loads` on each of the same three large
+decision payloads 21 times apiece:
+
+| Selected decision | Exact input bytes | Repeated decodes | Raw-decode CPU (inclusive, profiled) |
+|---|---:|---:|---:|
+| Native cancelled accounting | 36,513,791 | 21 | 1.813 s |
+| Accounting readiness | 22,307,799 | 21 | 0.822 s |
+| Next Turn | 12,812,361 | 21 | 0.505 s |
+
+These three inputs alone amount to 1,504,312,971 bytes presented to
+`raw_decode` across the 21 `_pending` passes, with 3.140 s of measured
+inclusive raw-decode CPU under the profiler. Their hashes and lengths exactly
+match the three corresponding selected loop-journal decisions in the saved
+artifact. Source confirms `_pending` authenticates `.entries()`, then performs
+`json.loads(payload)` for every row to derive pending state and validate the
+DECIDED/MATERIALIZED sequence.
+
+The same three hashes also recur through distinct validation callers in this
+reader: `R17 read_historical` parsed each five times and
+`authenticate_native_recovery_selected` parsed each four times. Their measured
+inclusive intervals overlap with caller work and each other; do not add them
+to the `_pending` total. This directly establishes repeated parsing of the
+same large decision bytes across multiple reader paths. It does not yet show
+that every occurrence has the same semantic purpose or that a result can
+safely cross those boundaries.
+
+This is stronger than the earlier call-count-only hypothesis: one measurable
+source of the long CPU path is repeated full JSON parsing of three 13–37 MB
+selected decisions, especially in `_pending`. It is not the entire 15 s reader
+cost; other validators and canonical encoders remain live. The owner-prefix
+snapshot route remains dismissed for this cut (23.8 ms total across startup
+and read). Exponential scaling remains unproven.
+
+Before changing code, the next discriminator is to attribute the 21
+`_pending` invocations to their caller stacks and check which occur inside the
+same held `AuthorityGate` / captured loop-journal cut. If they are repeated
+within one immutable read cut, the smallest candidate is local reuse of the
+already authenticated entries or their parsed pending projection, while
+retaining each public boundary's required source/head check. If the invocations
+cross independently admitted boundaries or observe different cuts, they must
+remain separate. Preserve the current negative behavior for orphan markers,
+rival pending publications, malformed entries, and H1 V2 durable evidence.
+
+### `_pending` caller-stack differential (2026-10-14)
+
+A passive profile of only the inherited `R13Runtime._pending` code object was
+run twice on the same saved cut. Both reader runs passed (nine Run records,
+one ordered call), at about 15.7 seconds wall / thread CPU. The profile found
+21 `_pending` calls in one `read_execution_call_history` invocation. Their
+caller stacks divide into nested R17 ingress history reads, historical
+recovery/native-scope validation, and one top-level `_require_no_pending`
+check. Several ingress-history reads sit under distinct historical validation
+paths; they are not 21 calls from one loop in a single function.
+
+Each `_pending` invocation took roughly 0.19–0.22 seconds inclusive thread
+CPU on this fixture. Those values include nested work and can overlap, so
+they must not be summed as exclusive cost. The earlier hash profile
+independently attributes 3.140 seconds of inclusive raw JSON decode CPU to
+the three repeated decision inputs inside `_pending`. This makes repeated
+authenticated pending-state reconstruction a real contributor, but it does
+not account for the full ~15.7-second reader path. The four named readiness
+accounting validations each still took about 5.2–5.6 seconds inclusive; those
+intervals nest in the same historical checks and are not additive.
+
+The stack evidence rules out the simplest optimization claim: there is no
+single loop that calls `_pending` 21 times on one already captured tuple.
+Calls are reached through multiple semantic validators, and each obtains
+entries through the authority-gated journal path. A cross-call cache would
+therefore need to preserve each call's authenticated source/head observation;
+this profile alone does not show that those observations share one lease or
+captured cut. Keep cross-boundary reuse rejected until that equivalence is
+proved. The remaining measurable hypotheses are (a) repeated JSON decode of
+the same authenticated decisions across those boundaries, and (b) separate
+canonicalization/validation work over large evidence. They can be separated
+only with an exclusive call tree keyed by decision hash and captured source
+cut. No evidence here supports exponential growth, GIL wait, or a safe
+cross-boundary cache.
+
+One sandboxed attempt failed before the reader because the owner process could
+not bind its AF_UNIX socket. Re-running the same bounded probe with the
+required permission completed; after each process, the temporary 44-file
+fixture was restored from the verified backup and checked for content, mode,
+and mtime. The main SQLite file inode remained 145264204. Each profile was
+limited to one reader call; this is not a load test or a controlled scaling
+series.
+
+
+### Differential decision before another optimization (2026-10-14)
+
+The current evidence separates several claims that had been conflated:
+
+| Claim | Differential result | What it rules out / leaves open |
+|---|---|---|
+| The long read is waiting on the GIL or I/O | On the saved cut, wall time and calling-thread CPU were nearly equal; low-level CPU is concentrated in JSON decode/canonical encode. | GIL waiting is unsupported. A CPU-bound Python path is observed. This does not identify which semantic validation is redundant. |
+| The large journal file alone explains the delay | One outer parse/hex pass was about 0.52 s; a hot exact-body read/compare was 0.03–0.05 s. | One physical read or one parse is insufficient. Repeated semantic parsing and validation remain live. |
+| Runtime grows exponentially with history | Two available cuts differ in history shape and have similar outer bytes per row; there is no controlled size series. | Exponential growth is not established. The observed repeated full-prefix work is compatible with superlinear growth, but does not prove an exponent. |
+| Repeated `_pending()` decoding is the whole bottleneck | Three exact selected decisions contribute 3.140 s inclusive `raw_decode` CPU across 21 calls, within a roughly 15.7 s reader. | This is a real, bounded contributor, not a sufficient explanation. An empty-result memo could at most target part of this measured work; it cannot explain or certify the remaining deadline failure. |
+| One generic history snapshot cache is justified | `_pending()` calls occur through distinct semantic validators; the reentrant gate alone does not freeze state. Fresh journal `entries()` rechecks source/head, while an append returns a different tuple object. | Reject cross-boundary/general caching. A narrowly scoped reuse would need fresh `entries()` on each call and exact tuple identity; this still does not address recovery/readiness validation. |
+| Readiness validation is the next candidate to remove | Four calls each cost about 5.2–5.6 s inclusive, but they are nested; a separate exact-input profile shows the same decision bytes also enter distinct recovery and R17 readers. | Keep this as the leading unresolved route. Inclusive totals cannot show whether calls duplicate the same semantic obligation or merely share bytes. Do not remove a call based on byte identity alone. |
+
+Decision: do not broaden the memo proposal or alter the five-second horizon. The
+next probe should make a caller-by-input matrix for the four readiness
+validations and the nested recovery/R17 readers. For every boundary, record the
+decision hash, cut identity, caller stack, exclusive CPU, decoded/canonicalized
+bytes, and the semantic checks performed. The decisive discriminator is
+whether two calls validate the same obligation over the same authenticated cut
+with the same dynamic dependencies. If yes, test reuse at that named boundary
+while preserving all other eligible-candidate checks and the source/head
+recheck. If no, retain both and profile the largest unique payload path. Do not
+rerun the multi-minute selector to obtain this matrix; use one bounded direct
+reader call on the preserved fixture and restore/verify the fixture afterward.
+
+
+### Differential follow-up: saved-cut validity and live one-seal attribution (2026-10-14)
+
+The old `pytest-9070` fixture root had been removed. Its 44-file backup was
+restored under the same pathname and matched by size, SHA-256, mode, and mtime,
+but the current runtime rejected it during startup:
+`selected native accounting source differs from historical cut`. The copy
+therefore did not preserve the runtime's full physical/source identity and is
+not a valid current-code measurement fixture. The probe stopped before the
+target read. It briefly left a SQLite handle while unwinding; after process
+exit `lsof +D` showed no open handles, and the temporary copy was restored
+in-place from the backup and reverified across all 44 files. Do not retry this
+backup as though matching file bytes were sufficient.
+
+A passive `cProfile` hook then ran inside the existing short mounted mixed-V3
+selector on its live current-code fixture. Command:
+
+```sh
+PYTHONPATH=/private/tmp:/Users/thunderbird/Projects/chiplog/src .venv/bin/python -m pytest -s -q -p r14_short_cprofile_plugin tests/composition/test_r14_native_selected_accounting_source.py::test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once
+```
+
+The selector passed (`1 passed in 110.48 s`). Profiling covered the test's
+calling thread, including setup and reopen operations: wall 109.44 s, thread
+CPU 85.82 s, cProfile thread time 85.75 s. It is not comparable to the earlier
+unprofiled 32–33 s duration or to a single direct reader call.
+
+| Function group | Calls | Exclusive thread CPU | Inclusive thread CPU |
+|---|---:|---:|---:|
+| JSON `iterencode` | 46,714 | 19.84 s | 19.84 s |
+| JSON `raw_decode` | 18,454 | 10.35 s | 10.36 s |
+| `R13Runtime._pending` | 292 | 0.028 s | 5.05 s |
+| `R14Runtime._scan` | 557 | 0.023 s | 6.45 s |
+| H1 workspace issuance `_scan` | 112 | 0.001 s | 0.261 s |
+| `_read_call_history` | 93 | 0.115 s | 46.48 s |
+| journal `_entries` | 2,834 | 1.38 s | 7.11 s |
+
+These rows overlap by call-tree nesting except for exclusive CPU, so inclusive
+times must not be added. The short mounted shape confirms the same broad
+profile signature: JSON encoding/decoding is substantial; H1 issuance scanning
+is small here; `_pending` is not all the cost. It does not establish a saving
+from memoizing `_pending`, nor does this one-seal test explain the failed
+40-entry two-seal writer admission.
+
+The best-supported live hypothesis is now repeated canonical serialization
+inside authenticated history reconstruction, with `RecoveryDTO.canonical_bytes`
+accounting for 11,867 calls and 18.92 s inclusive in this profile. That is a
+candidate boundary, not proof that calls repeat the same object or can be
+removed. The next attribution should occur inside a fresh current-code fixture
+and identify the caller family and represented DTO size without hashing or
+serializing again inside the timed region. For the two-seal deadline, attach
+that passive probe to the next required mounted run; do not reconstruct the
+removed historical fixture or rerun the multi-minute selector solely for
+profiling.

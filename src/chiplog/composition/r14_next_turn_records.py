@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -46,6 +47,7 @@ from .r14_recovery_publication import (
     ACCOUNTING_SCHEMA,
     CONTINUATION_SCHEMA,
     RecoveryActorBudgetV1,
+    RetainedRecoveryPublication,
     validate_recovery_actor_budget,
 )
 from .r14_recovery_publication import (
@@ -176,8 +178,7 @@ def selected_prior_turn_context(
     if response.seal.complete_ordered_initialized != before.turns[0].initialized_calls:
         raise ValueError("Turn 2 selected response has another initialized-call set")
     sources = {
-        (source.schema_id, source.subject.subject_id): source
-        for source in cut.complete_sources
+        (source.schema_id, source.subject.subject_id): source for source in cut.complete_sources
     }
 
     def selected_record(schema: str, ref: object, model: type) -> object:
@@ -333,6 +334,31 @@ def _decision_ref(identity: str, decision_id: str, raw: bytes) -> CallSubjectHea
     )
 
 
+def _validate_eligible_accounting_candidates(
+    runtime: CommonCliExecutionRuntime,
+    selected: Sequence[tuple[str, bytes, dict[str, object], PhysicalPublicationCommand]],
+    *,
+    named_decision_id: str,
+    through_sequence: int,
+) -> RetainedRecoveryPublication:
+    named_evidence: RetainedRecoveryPublication | None = None
+    named_validated = False
+    for decision_id, _, candidate, candidate_batch in selected:
+        if int(candidate.get("expected_head", -1)) + 1 <= through_sequence:
+            evidence = validate_accounting_selected(  # type: ignore[no-untyped-call]
+                runtime,
+                candidate,
+                candidate_batch,
+                through_sequence=through_sequence,
+            )
+            if decision_id == named_decision_id:
+                named_evidence = evidence
+                named_validated = True
+    if not named_validated or named_evidence is None:
+        raise ValueError("next Turn named readiness was not validated")
+    return named_evidence
+
+
 def validate_selected_next_turn(
     runtime: CommonCliExecutionRuntime,
     entry: dict[str, object],
@@ -409,16 +435,11 @@ def validate_selected_next_turn(
         or prior.get("resulting") != request.cut.materialization_commitment
     ):
         raise ValueError("next Turn names a readiness pair for another source cut")
-    for _, _, candidate, candidate_batch in selected:
-        if int(candidate.get("expected_head", -1)) + 1 <= request.cut.tenant_commit_sequence:
-            validate_accounting_selected(  # type: ignore[no-untyped-call]
-                runtime,
-                candidate,
-                candidate_batch,
-                through_sequence=request.cut.tenant_commit_sequence,
-            )
-    original = validate_accounting_selected(  # type: ignore[no-untyped-call]
-        runtime, prior, prior_batch, through_sequence=request.cut.tenant_commit_sequence
+    original = _validate_eligible_accounting_candidates(
+        runtime,
+        selected,
+        named_decision_id=decision_id,
+        through_sequence=request.cut.tenant_commit_sequence,
     )
     pair = accounting_command(original)
     expected_decision = _decision_ref(pair.idempotency_key, decision_id, raw)

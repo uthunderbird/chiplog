@@ -11,6 +11,7 @@ from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
 )
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
+from chiplog.composition import r14_next_turn_records
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
 from chiplog.composition.r14_loop_history import (
     read_execution_history,
@@ -24,6 +25,58 @@ from chiplog.composition.r14_next_turn_records import (
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.support.native_cancelled import native_response, selected_native_cancelled
+
+
+def test_named_accounting_validation_reuses_exact_candidate_after_all_eligible(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    named = {"operation_id": "named", "expected_head": 4}
+    unnamed = {"operation_id": "unnamed", "expected_head": 4}
+    named_batch, unnamed_batch = object(), object()
+    named_result, unnamed_result = object(), object()
+    candidates = [
+        ("named", b"named", named, named_batch),
+        ("unnamed", b"unnamed", unnamed, unnamed_batch),
+    ]
+    calls = []
+
+    def validate(_runtime, entry, batch, *, through_sequence):
+        calls.append((entry, batch, through_sequence))
+        return named_result if entry is named else unnamed_result
+
+    monkeypatch.setattr(r14_next_turn_records, "validate_accounting_selected", validate)
+    assert (
+        r14_next_turn_records._validate_eligible_accounting_candidates(
+            object(), candidates, named_decision_id="named", through_sequence=5
+        )
+        is named_result
+    )
+    assert calls == [(named, named_batch, 5), (unnamed, unnamed_batch, 5)]
+
+
+def test_unnamed_eligible_accounting_failure_after_named_still_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    named = {"operation_id": "named", "expected_head": 4}
+    unnamed = {"operation_id": "unnamed", "expected_head": 4}
+    candidates = [
+        ("named", b"named", named, object()),
+        ("unnamed", b"unnamed", unnamed, object()),
+    ]
+    calls = []
+
+    def validate(_runtime, entry, _batch, *, through_sequence):
+        calls.append((entry, through_sequence))
+        if entry is unnamed:
+            raise ValueError("malformed unnamed accounting")
+        return object()
+
+    monkeypatch.setattr(r14_next_turn_records, "validate_accounting_selected", validate)
+    with pytest.raises(ValueError, match="malformed unnamed accounting"):
+        r14_next_turn_records._validate_eligible_accounting_candidates(
+            object(), candidates, named_decision_id="named", through_sequence=5
+        )
+    assert calls == [(named, 5), (unnamed, 5)]
 
 
 @pytest.mark.asyncio
@@ -187,10 +240,13 @@ async def test_selected_next_turn_physical_record_tamper_blocks_restart(tmp_path
         assert record_id == next_run.head
         assert original == next_run.canonical_bytes()
         damaged = original[:-1] + (b" " if original[-1:] != b" " else b"\n")
-        assert connection.execute(
-            "UPDATE records SET canonical_bytes=? WHERE record_id=?",
-            (damaged, record_id),
-        ).rowcount == 1
+        assert (
+            connection.execute(
+                "UPDATE records SET canonical_bytes=? WHERE record_id=?",
+                (damaged, record_id),
+            ).rowcount
+            == 1
+        )
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT canonical_bytes FROM records WHERE record_id=?", (record_id,)
