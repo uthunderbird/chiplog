@@ -340,6 +340,8 @@ def _validate_eligible_accounting_candidates(
     *,
     named_decision_id: str,
     through_sequence: int,
+    authenticated_loop_decisions=None,
+    verified_h1_prepares=None,
 ) -> RetainedRecoveryPublication:
     named_evidence: RetainedRecoveryPublication | None = None
     named_validated = False
@@ -350,6 +352,8 @@ def _validate_eligible_accounting_candidates(
                 candidate,
                 candidate_batch,
                 through_sequence=through_sequence,
+                authenticated_loop_decisions=authenticated_loop_decisions,
+                verified_h1_prepares=verified_h1_prepares,
             )
             if decision_id == named_decision_id:
                 named_evidence = evidence
@@ -363,6 +367,9 @@ def validate_selected_next_turn(
     runtime: CommonCliExecutionRuntime,
     entry: dict[str, object],
     physical_command: PhysicalPublicationCommand,
+    *,
+    authenticated_loop_decisions=None,
+    verified_h1_prepares=None,
 ) -> RetainedNextTurnPublication:
     """Authenticate C and the exact selected/physical C→C' bridge before replay."""
     evidence = retained_next_turn(entry)
@@ -413,11 +420,37 @@ def validate_selected_next_turn(
     ):
         raise ValueError("next Turn foreign database or tenant")
     selected = []
-    for decision_id, _, raw in runtime._loop_decisions().entries():
-        candidate = json.loads(raw)
+    if authenticated_loop_decisions is None:
+        loop_rows = None
+        current_entries = runtime._loop_decisions().entries()
+    else:
+        from chiplog.composition.r14_native_recovery_historical import (
+            _authenticated_loop_cut_matches,
+            _thaw_json,
+        )
+
+        if not _authenticated_loop_cut_matches(runtime, authenticated_loop_decisions):
+            raise ValueError("next Turn authenticated loop cut is stale")
+        loop_rows = authenticated_loop_decisions.decisions
+        current_entries = None
+    rows = (
+        ((decision_id, raw, json.loads(raw), None) for decision_id, _, raw in current_entries)
+        if loop_rows is None
+        else (
+            (
+                row.decision_id,
+                row.raw,
+                _thaw_json(row.entry),
+                row.publication,
+            )
+            for row in loop_rows
+        )
+    )
+    for decision_id, raw, candidate, command in rows:
         if candidate.get("kind") != "DECIDED":
             continue
-        command = runtime._publication(candidate)
+        if command is None:
+            command = runtime._publication(candidate)
         if command.operation_kind == ACCOUNTING_OPERATION:
             selected.append((str(decision_id), raw, candidate, command))
     named = [
@@ -440,6 +473,8 @@ def validate_selected_next_turn(
         selected,
         named_decision_id=decision_id,
         through_sequence=request.cut.tenant_commit_sequence,
+        authenticated_loop_decisions=authenticated_loop_decisions,
+        verified_h1_prepares=verified_h1_prepares,
     )
     pair = accounting_command(original)
     expected_decision = _decision_ref(pair.idempotency_key, decision_id, raw)

@@ -20,6 +20,7 @@ from chiplog.composition.r14_native_accounting_records import (
     NativeSealedAccountingV3PhysicalEnvelope,
     NativeSealedAccountingV3Record,
     RetainedNativeSealedAccountingV3Publication,
+    _sealed_accounting_v3_artifacts,
     sealed_accounting_v3_command,
     sealed_accounting_v3_envelope,
     sealed_accounting_v3_record,
@@ -116,11 +117,15 @@ def test_v3_candidate_command_is_one_seal_scoped_atomic_physical_row():
 
     command = sealed_accounting_v3_command(evidence)
     envelope = sealed_accounting_v3_envelope(evidence)
+    record, bundled_command, bundled_envelope = _sealed_accounting_v3_artifacts(evidence)
     reopened = TypeAdapter(NativeSealedAccountingV3PhysicalEnvelope).validate_json(
         envelope.canonical_bytes()
     )
 
     assert reopened == envelope
+    assert record == evidence.record
+    assert bundled_command == command
+    assert bundled_envelope == envelope
     assert command.tenant_id == "tenant"
     assert command.expected_head == 12
     assert command.idempotency_key == evidence.record.record_id

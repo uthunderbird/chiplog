@@ -222,6 +222,8 @@ def _authenticated_scope_sources(cut, scope_source, authenticated) -> bool:
         return False
     # Child DTOs share the scope's physical trust anchor but have their own
     # semantic reference and bytes. Reconstruct each from authenticated scope.
+    recipient_bytes = scope.recipient.canonical_bytes()
+    recipient_fingerprint = hashlib.sha256(recipient_bytes).hexdigest()
     children = (
         (
             "chiplog.native-recovery.selected-admission.v1",
@@ -230,14 +232,14 @@ def _authenticated_scope_sources(cut, scope_source, authenticated) -> bool:
         ),
         (
             "chiplog.native-recovery.recipient.v1",
-            scope.recipient.canonical_bytes(),
+            recipient_bytes,
             SimpleNamespace(
                 subject_id=(
                     "native-recipient:"
-                    + hashlib.sha256(scope.recipient.canonical_bytes()).hexdigest()
+                    + recipient_fingerprint
                 ),
-                head="record:" + hashlib.sha256(scope.recipient.canonical_bytes()).hexdigest(),
-                fingerprint=hashlib.sha256(scope.recipient.canonical_bytes()).hexdigest(),
+                head="record:" + recipient_fingerprint,
+                fingerprint=recipient_fingerprint,
             ),
         ),
         (
@@ -314,22 +316,13 @@ def _historical_publications(runtime, cut, tenant_commit_sequence):
 
 def _authenticate_v3_accepted_cut(
     runtime: CommonCliExecutionRuntime,
-    evidence: RetainedRecoveryPublication,
     cut,
     rows,
     members,
     *,
     direct_terminal: bool,
 ) -> bool:
-    """Revalidate the selected accepted cut's exact source carriers and owner join."""
-    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
-        PreparedExecutionAccounting,
-        PreparedExecutionContinuation,
-    )
-    from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
-        prepare_execution_accounting,
-        prepare_execution_continuation,
-    )
+    """Revalidate exact source carriers after the retained owner join was checked."""
     from chiplog.capabilities.agent_loop.native_recovery_cut_validation import (
         validate_native_recovery_cut,
     )
@@ -419,17 +412,7 @@ def _authenticate_v3_accepted_cut(
             or scope_source.physical_record.revision.fingerprint != anchor.record.fingerprint
         ):
             return False
-        if not _authenticated_scope_sources(cut, scope_source, authenticated):
-            return False
-
-        accounting = prepare_execution_accounting(evidence.accounting_request)
-        continuation = prepare_execution_continuation(evidence.continuation_request)
-        return (
-            isinstance(accounting, PreparedExecutionAccounting)
-            and isinstance(continuation, PreparedExecutionContinuation)
-            and accounting == evidence.accounting_result
-            and continuation == evidence.continuation_result
-        )
+        return _authenticated_scope_sources(cut, scope_source, authenticated)
     except (OSError, RuntimeError, TypeError, ValueError, KeyError):
         return False
 
@@ -442,6 +425,7 @@ def authenticate_native_recovery_selected(
     *,
     through_sequence: int | None = None,
     authenticated_loop_decisions=None,
+    verified_h1_prepares=None,
 ) -> bool:
     """Authenticate retained original C without reopening recursive current history."""
     from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
@@ -493,8 +477,8 @@ def authenticate_native_recovery_selected(
                     if selected.expected_head < cut.tenant_commit_sequence:
                         selections.append((decision_id, raw, item, selected))
             else:
-                if not _authenticated_loop_cut_matches(runtime, authenticated_loop_decisions):
-                    return False
+                # The exact journal bytes were rechecked above while this
+                # authority gate remained held; no await or gate release occurs.
                 selections = _historical_publications(
                     runtime,
                     authenticated_loop_decisions,
@@ -516,12 +500,20 @@ def authenticate_native_recovery_selected(
                         record,
                         _ref(selected.idempotency_key, raw, decision_id),
                     )
-            for decision in runtime._owner_decisions().snapshot().decisions:
-                raw = next(
-                    raw
-                    for key, _, raw in runtime._owner_decisions()._raw.entries()
-                    if key == decision.decision_id
-                )
+            from chiplog.platform.owner_decision_journal import snapshot_from_captured_entries
+
+            owner_journal = runtime._owner_decisions()
+            owner_entries = tuple(owner_journal._raw.entries())
+            captured_owner = snapshot_from_captured_entries(owner_entries, cut.tenant_id)
+            if captured_owner != owner_journal.snapshot():
+                return False
+            owner_raw_by_decision = {}
+            for key, _, raw in owner_entries:
+                owner_raw_by_decision.setdefault(key, raw)
+            for decision in captured_owner.decisions:
+                raw = owner_raw_by_decision.get(decision.decision_id)
+                if raw is None:
+                    return False
                 for owner_record in decision.prepared.request.complete_records:
                     row = next((row for row in rows if row[0] == owner_record.record_id), None)
                     if row is None:
@@ -609,12 +601,20 @@ def authenticate_native_recovery_selected(
                     return False
                 route = _v3_accepted_cut_route(cut)
                 if route == "direct-terminal":
-                    return _authenticate_v3_accepted_cut(
-                        runtime, evidence, cut, rows, members, direct_terminal=True
+                    authenticated = _authenticate_v3_accepted_cut(
+                        runtime, cut, rows, members, direct_terminal=True
+                    )
+                    return authenticated and (
+                        tuple(owner_journal._raw.entries()) == owner_entries
+                        and owner_journal.snapshot() == captured_owner
                     )
                 if route == "accepted-open":
-                    return _authenticate_v3_accepted_cut(
-                        runtime, evidence, cut, rows, members, direct_terminal=False
+                    authenticated = _authenticate_v3_accepted_cut(
+                        runtime, cut, rows, members, direct_terminal=False
+                    )
+                    return authenticated and (
+                        tuple(owner_journal._raw.entries()) == owner_entries
+                        and owner_journal.snapshot() == captured_owner
                     )
                 if route != "legacy-cancellation":
                     return False
@@ -653,6 +653,7 @@ def authenticate_native_recovery_selected(
                 fanouts,
                 cancellations,
                 history_records,
+                verified_h1_prepares=verified_h1_prepares,
             )
             facts = TypeAdapter(R14NativeOneCallCancelledFacts).validate_json(
                 bounded.selected_source_bytes
@@ -885,9 +886,7 @@ def authenticate_native_recovery_selected(
             from chiplog.composition.r14_native_accounting_records import (
                 NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION,
                 NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA,
-                sealed_accounting_v3_command,
-                sealed_accounting_v3_envelope,
-                validate_retained_sealed_accounting_v3_publication,
+                _sealed_accounting_v3_artifacts,
             )
             from chiplog.composition.r14_native_sealed_accounting_v3_history import (
                 retained_selected_native_sealed_accounting_v3,
@@ -901,13 +900,10 @@ def authenticate_native_recovery_selected(
                 selected_evidence = retained_selected_native_sealed_accounting_v3(item)
                 if selected_evidence.request.selected_response != facts.selected_seal.response_seal:
                     continue
-                expected_command = sealed_accounting_v3_command(selected_evidence)
-                expected_envelope = sealed_accounting_v3_envelope(
-                    selected_evidence
-                ).canonical_bytes().decode()
-                selected_record = validate_retained_sealed_accounting_v3_publication(
+                selected_record, expected_command, envelope = _sealed_accounting_v3_artifacts(
                     selected_evidence
                 )
+                expected_envelope = envelope.canonical_bytes().decode()
                 source_stamp = selected_evidence.source_stamp
                 if (
                     selected != expected_command

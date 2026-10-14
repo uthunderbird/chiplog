@@ -301,6 +301,7 @@ def validate_selected(
     *,
     through_sequence=None,
     authenticated_loop_decisions=None,
+    verified_h1_prepares=None,
 ):
     evidence = retained(entry)
     if evidence.actor_budget_v1 is not None:
@@ -343,6 +344,7 @@ def validate_selected(
                     evidence,
                     entry,
                     authenticated_loop_decisions=authenticated_loop_decisions,
+                    verified_h1_prepares=verified_h1_prepares,
                 )
             else:
                 authenticated = cut_source.authenticate_selected_held(
@@ -360,6 +362,7 @@ def validate_selected(
             entry,
             through_sequence=through_sequence,
             authenticated_loop_decisions=authenticated_loop_decisions,
+            verified_h1_prepares=verified_h1_prepares,
         )
     if command(evidence) != physical_command or not authenticated:
         raise ValueError("recovery selected cut or exact atomic publication unauthenticated")

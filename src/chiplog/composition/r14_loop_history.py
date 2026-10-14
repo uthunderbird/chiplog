@@ -1218,6 +1218,7 @@ def _read_call_history(
                             entry,
                             command,
                             authenticated_loop_decisions=authenticated_loop_decisions,
+                            verified_h1_prepares=verified_h1_prepares,
                         )
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
@@ -1235,7 +1236,13 @@ def _read_call_history(
 
                         if command.operation_kind != NEXT_TURN_PUBLICATION:
                             raise ValueError("next Turn retained under substituted operation")
-                        evidence = validate_selected_next_turn(runtime, entry, command)
+                        evidence = validate_selected_next_turn(
+                            runtime,
+                            entry,
+                            command,
+                            authenticated_loop_decisions=authenticated_loop_decisions,
+                            verified_h1_prepares=verified_h1_prepares,
+                        )
                         before, after = evidence.request.run, evidence.result.run
                         if (
                             not isinstance(before, ExecutionRunRecord)

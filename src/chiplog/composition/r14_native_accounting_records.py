@@ -201,10 +201,14 @@ def validate_retained_sealed_accounting_v3_publication(
     return evidence.record
 
 
-def sealed_accounting_v3_command(
+def _sealed_accounting_v3_artifacts(
     evidence: RetainedNativeSealedAccountingV3Publication,
-) -> PhysicalPublicationCommand:
-    """Build the candidate single-row command for one exact response seal."""
+) -> tuple[
+    NativeSealedAccountingV3Record,
+    PhysicalPublicationCommand,
+    NativeSealedAccountingV3PhysicalEnvelope,
+]:
+    """Rebuild one validated record, command, and envelope from retained evidence."""
     record = validate_retained_sealed_accounting_v3_publication(evidence)
     raw = record.canonical_bytes()
     fingerprint = hashlib.sha256(raw).hexdigest()
@@ -231,7 +235,7 @@ def sealed_accounting_v3_command(
     envelope = envelope.model_copy(update={"request_fingerprint": request_fingerprint})
     if len(envelope.canonical_bytes()) > MAX_NATIVE_ACCOUNTING_RECORD_BYTES:
         raise ValueError("native sealed accounting V3 envelope exceeds physical bound")
-    return PhysicalPublicationCommand(
+    command = PhysicalPublicationCommand(
         tenant_id=envelope.tenant_id,
         operation_kind=envelope.operation_kind,
         idempotency_key=envelope.idempotency_key,
@@ -250,30 +254,21 @@ def sealed_accounting_v3_command(
             ),
         ),
     )
+    return record, command, envelope
+
+
+def sealed_accounting_v3_command(
+    evidence: RetainedNativeSealedAccountingV3Publication,
+) -> PhysicalPublicationCommand:
+    """Build the candidate single-row command for one exact response seal."""
+    return _sealed_accounting_v3_artifacts(evidence)[1]
 
 
 def sealed_accounting_v3_envelope(
     evidence: RetainedNativeSealedAccountingV3Publication,
 ) -> NativeSealedAccountingV3PhysicalEnvelope:
     """Reconstruct the registered V3 candidate envelope for selected history."""
-    command = sealed_accounting_v3_command(evidence)
-    record = command.records[0]
-    return NativeSealedAccountingV3PhysicalEnvelope(
-        tenant_id=command.tenant_id,
-        idempotency_key=command.idempotency_key,
-        expected_head=command.expected_head,
-        retained_fingerprint=evidence.digest(),
-        records=(
-            FanOutPhysicalMember(
-                record_id=record.record_id,
-                owner=record.owner,
-                schema_id=record.schema_id,
-                canonical_payload_base64=base64.b64encode(record.canonical_bytes).decode(),
-                fingerprint=record.fingerprint,
-            ),
-        ),
-        request_fingerprint=command.request_fingerprint,
-    )
+    return _sealed_accounting_v3_artifacts(evidence)[2]
 
 
 def _build_sealed_accounting_v3_record(
@@ -313,10 +308,10 @@ def accounting_record(
     return record
 
 
-def accounting_command(
+def _native_one_call_accounting_artifacts(
     evidence: RetainedNativeOneCallAccountingPublication,
     source: R14NativeExecutionRecordSourceManifest,
-) -> PhysicalPublicationCommand:
+) -> tuple[PhysicalPublicationCommand, NativeOneCallAccountingPhysicalEnvelope]:
     """Rebuild the sole physical member from canonical retained evidence."""
     request, response, sent, returned = (
         evidence.request,
@@ -372,7 +367,7 @@ def accounting_command(
     envelope = envelope.model_copy(update={"request_fingerprint": request_fingerprint})
     if len(envelope.canonical_bytes()) > MAX_NATIVE_ACCOUNTING_RECORD_BYTES:
         raise ValueError("native accounting envelope exceeds physical bound")
-    return PhysicalPublicationCommand(
+    command = PhysicalPublicationCommand(
         tenant_id=envelope.tenant_id,
         operation_kind=envelope.operation_kind,
         idempotency_key=envelope.idempotency_key,
@@ -387,6 +382,15 @@ def accounting_command(
             ),
         ),
     )
+    return command, envelope
+
+
+def accounting_command(
+    evidence: RetainedNativeOneCallAccountingPublication,
+    source: R14NativeExecutionRecordSourceManifest,
+) -> PhysicalPublicationCommand:
+    """Rebuild the sole physical member from canonical retained evidence."""
+    return _native_one_call_accounting_artifacts(evidence, source)[0]
 
 
 def accounting_envelope(
@@ -394,21 +398,4 @@ def accounting_envelope(
     source: R14NativeExecutionRecordSourceManifest,
 ) -> NativeOneCallAccountingPhysicalEnvelope:
     """Reconstruct the registered physical envelope for selected history."""
-    command = accounting_command(evidence, source)
-    record = command.records[0]
-    return NativeOneCallAccountingPhysicalEnvelope(
-        tenant_id=command.tenant_id,
-        idempotency_key=command.idempotency_key,
-        expected_head=command.expected_head,
-        retained_fingerprint=evidence.digest(),
-        records=(
-            FanOutPhysicalMember(
-                record_id=record.record_id,
-                owner=record.owner,
-                schema_id=record.schema_id,
-                canonical_payload_base64=base64.b64encode(record.canonical_bytes).decode(),
-                fingerprint=record.fingerprint,
-            ),
-        ),
-        request_fingerprint=command.request_fingerprint,
-    )
+    return _native_one_call_accounting_artifacts(evidence, source)[1]

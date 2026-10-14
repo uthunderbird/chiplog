@@ -23,8 +23,7 @@ from chiplog.composition.r14_native_accounting_records import (
     NATIVE_ACCOUNTING_OPERATION,
     NATIVE_ACCOUNTING_SCHEMA,
     RetainedNativeOneCallAccountingPublication,
-    accounting_command,
-    accounting_envelope,
+    _native_one_call_accounting_artifacts,
 )
 from chiplog.composition.r14_native_execution_record_source import (
     R14NativeExecutionRecordSourceManifest,
@@ -423,10 +422,11 @@ def decode_selected_native_accounting(
             or matches[0].canonical_bytes != item.canonical_record_bytes
         ):
             raise ValueError("native accounting prior physical member differs")
+    expected_command, expected_envelope = _native_one_call_accounting_artifacts(evidence, source)
     if (
-        accounting_command(evidence, source) != command
+        expected_command != command
         or entry.get("native_one_call_accounting_envelope")
-        != accounting_envelope(evidence, source).canonical_bytes().decode()
+        != expected_envelope.canonical_bytes().decode()
         or len(command.records) != 1
         or command.records[0].schema_id != NATIVE_ACCOUNTING_SCHEMA
         or command.records[0].owner != "agent_loop"

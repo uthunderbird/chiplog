@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
 from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
 )
@@ -27,6 +28,55 @@ from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 
 
+@pytest.mark.asyncio
+async def test_historical_accounting_uses_exact_read_local_prepare_and_rejects_bad_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from chiplog.composition import r14_native_recovery_historical as historical
+
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
+    )
+    async with open_common_cli_execution_runtime(
+        tmp_path / "prepare-reuse.sqlite",
+        resources=resources,
+        responses=(native_response(),),
+        manifest=R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
+        recovery_cut_source=NativeRecoveryCutSource(),
+    ) as runtime:
+        await runtime.publish_native_recovery_profile()
+        await selected_native_cancelled(runtime, bound=True)
+        await runtime.publish_native_one_call_cancelled_accounting()
+        await runtime.publish_execution_accounting_readiness()
+        expected = read_execution_history(runtime)
+        original = historical.decode_selected_native_accounting
+        mode = "exact"
+        observed = []
+
+        def decode(*args, verified_h1_prepares=None, **kwargs):
+            assert verified_h1_prepares and len(verified_h1_prepares) == 1
+            key, proof = next(iter(verified_h1_prepares.items()))
+            observed.append(mode)
+            supplied = verified_h1_prepares
+            if mode == "bytes-miss":
+                supplied = {(key[0] + b" ", key[1]): proof}
+            elif mode == "issuance-miss":
+                supplied = {(key[0], key[1] + " "): proof}
+            elif mode == "bad-scope":
+                supplied = {key: (proof[0], proof[1], None)}
+            return original(*args, verified_h1_prepares=supplied, **kwargs)
+
+        monkeypatch.setattr(historical, "decode_selected_native_accounting", decode)
+        for mode in ("exact", "bytes-miss", "issuance-miss"):
+            assert read_execution_history(runtime) == expected
+            assert mode in observed
+        mode = "bad-scope"
+        with pytest.raises(LoopIntegrityError) as rejected:
+            read_execution_history(runtime)
+        assert "unauthenticated" in str(rejected.value.__cause__)
+        assert mode in observed
+
+
 def test_named_accounting_validation_reuses_exact_candidate_after_all_eligible(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -34,24 +84,44 @@ def test_named_accounting_validation_reuses_exact_candidate_after_all_eligible(
     unnamed = {"operation_id": "unnamed", "expected_head": 4}
     named_batch, unnamed_batch = object(), object()
     named_result, unnamed_result = object(), object()
+    authenticated_loop_decisions = object()
+    verified_h1_prepares = {}
     candidates = [
         ("named", b"named", named, named_batch),
         ("unnamed", b"unnamed", unnamed, unnamed_batch),
     ]
     calls = []
 
-    def validate(_runtime, entry, batch, *, through_sequence):
-        calls.append((entry, batch, through_sequence))
+    def validate(
+        _runtime,
+        entry,
+        batch,
+        *,
+        through_sequence,
+        authenticated_loop_decisions=None,
+        verified_h1_prepares=None,
+    ):
+        assert verified_h1_prepares is locals_expected_prepares
+        calls.append((entry, batch, through_sequence, authenticated_loop_decisions))
         return named_result if entry is named else unnamed_result
 
+    locals_expected_prepares = verified_h1_prepares
     monkeypatch.setattr(r14_next_turn_records, "validate_accounting_selected", validate)
     assert (
         r14_next_turn_records._validate_eligible_accounting_candidates(
-            object(), candidates, named_decision_id="named", through_sequence=5
+            object(),
+            candidates,
+            named_decision_id="named",
+            through_sequence=5,
+            authenticated_loop_decisions=authenticated_loop_decisions,
+            verified_h1_prepares=verified_h1_prepares,
         )
         is named_result
     )
-    assert calls == [(named, named_batch, 5), (unnamed, unnamed_batch, 5)]
+    assert calls == [
+        (named, named_batch, 5, authenticated_loop_decisions),
+        (unnamed, unnamed_batch, 5, authenticated_loop_decisions),
+    ]
 
 
 def test_unnamed_eligible_accounting_failure_after_named_still_rejects(
@@ -65,8 +135,18 @@ def test_unnamed_eligible_accounting_failure_after_named_still_rejects(
     ]
     calls = []
 
-    def validate(_runtime, entry, _batch, *, through_sequence):
-        calls.append((entry, through_sequence))
+    authenticated_loop_decisions = object()
+
+    def validate(
+        _runtime,
+        entry,
+        _batch,
+        *,
+        through_sequence,
+        authenticated_loop_decisions=None,
+        verified_h1_prepares=None,
+    ):
+        calls.append((entry, through_sequence, authenticated_loop_decisions))
         if entry is unnamed:
             raise ValueError("malformed unnamed accounting")
         return object()
@@ -74,9 +154,16 @@ def test_unnamed_eligible_accounting_failure_after_named_still_rejects(
     monkeypatch.setattr(r14_next_turn_records, "validate_accounting_selected", validate)
     with pytest.raises(ValueError, match="malformed unnamed accounting"):
         r14_next_turn_records._validate_eligible_accounting_candidates(
-            object(), candidates, named_decision_id="named", through_sequence=5
+            object(),
+            candidates,
+            named_decision_id="named",
+            through_sequence=5,
+            authenticated_loop_decisions=authenticated_loop_decisions,
         )
-    assert calls == [(named, 5), (unnamed, 5)]
+    assert calls == [
+        (named, 5, authenticated_loop_decisions),
+        (unnamed, 5, authenticated_loop_decisions),
+    ]
 
 
 @pytest.mark.asyncio

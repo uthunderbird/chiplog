@@ -2738,6 +2738,7 @@ class NativeRecoveryCutSource:
         entry: dict[str, object],
         *,
         authenticated_loop_decisions=None,
+        verified_h1_prepares=None,
     ) -> bool:
         from .r14_native_recovery_historical import authenticate_native_recovery_selected
 
@@ -2747,4 +2748,5 @@ class NativeRecoveryCutSource:
             evidence,
             entry,
             authenticated_loop_decisions=authenticated_loop_decisions,
+            verified_h1_prepares=verified_h1_prepares,
         )
