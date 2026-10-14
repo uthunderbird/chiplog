@@ -23,6 +23,328 @@ _SUFFIX_OPERATIONS = frozenset(
     }
 )
 _APPEND_EVIDENCE = "effects.record_evidence"
+_NATIVE_SUFFIX_LOOP_OPERATIONS = frozenset(
+    {
+        "agent_loop.accepted-direct-terminal.v1",
+        "agent_loop.native-sealed-accounting.v3",
+    }
+)
+_NATIVE_SUFFIX_OWNER_OPERATIONS = frozenset(
+    {
+        "effects.authorize",
+        "effects.commit_send",
+        "effects.record_evidence",
+        "effects.reconcile",
+    }
+)
+
+
+def _validate_native_suffix_loop_command(runtime, entry, command) -> None:
+    """Bind native suffix bytes to their retained record without replaying history."""
+    operation = command.operation_kind
+    if operation == "agent_loop.accepted-direct-terminal.v1":
+        from chiplog.composition.r14_accepted_direct_terminal_records import (
+            accepted_direct_terminal_command,
+            retained_accepted_direct_terminal,
+        )
+
+        evidence = retained_accepted_direct_terminal(entry)
+        expected = accepted_direct_terminal_command(evidence)
+    elif operation == "agent_loop.native-sealed-accounting.v3":
+        from chiplog.composition.r14_native_accounting_records import (
+            NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION,
+            retained_selected_native_sealed_accounting_v3,
+            sealed_accounting_v3_command,
+            validate_retained_sealed_accounting_v3_publication,
+        )
+
+        if operation != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION:
+            raise ValueError("native suffix V3 operation is unregistered")
+        evidence = retained_selected_native_sealed_accounting_v3(entry)
+        validate_retained_sealed_accounting_v3_publication(evidence)
+        expected = sealed_accounting_v3_command(evidence)
+    else:
+        raise ValueError("native suffix contains an unregistered loop operation")
+    if (
+        command != expected
+        or entry.get("operation_id") != command.idempotency_key
+        or entry.get("operation_kind") != operation
+        or entry.get("fingerprint") != command.request_fingerprint
+        or entry.get("expected_head") != command.expected_head
+    ):
+        raise ValueError("native suffix selected loop command differs from retained evidence")
+
+
+def authenticate_selected_r14_native_terminal_suffix_held(
+    runtime, actual: str, anchored: str, *, original_call_id: str
+) -> bool:
+    """Authenticate a physical suffix after one selected native direct terminal.
+
+    This proves exact selected envelopes and physical tenant history only. R16
+    effect semantics are checked separately on the mounted effects cut.
+    """
+    runtime._authority_gate().require_held()
+    try:
+        runtime._check_database_identity()
+        if runtime._pending_owners() or runtime._pending_gate_publications():
+            return False
+        from chiplog.composition.r14_accepted_direct_terminal_records import (
+            retained_accepted_direct_terminal,
+        )
+
+        targets = []
+        loop_entries = []
+        for _, _, raw in runtime._loop_decisions().entries():
+            entry = json.loads(raw)
+            if entry.get("kind") != "DECIDED":
+                continue
+            operation = entry.get("operation_kind")
+            command = runtime._publication(entry)
+            if operation in _NATIVE_SUFFIX_LOOP_OPERATIONS:
+                _validate_native_suffix_loop_command(runtime, entry, command)
+                loop_entries.append((entry, command))
+            if operation == "agent_loop.accepted-direct-terminal.v1":
+                evidence = retained_accepted_direct_terminal(entry)
+                if evidence.result.accounting.original_call_id == original_call_id:
+                    targets.append((entry, command))
+        if len(targets) != 1:
+            return False
+        target_entry, target_command = targets[0]
+        target_sequence = target_command.expected_head + 1
+        steps = {}
+        for entry, command in loop_entries:
+            sequence = command.expected_head + 1
+            if sequence <= target_sequence:
+                continue
+            if sequence in steps:
+                return False
+            steps[sequence] = (
+                command,
+                str(entry.get("predecessor")),
+                str(entry.get("resulting")),
+            )
+
+        owner_snapshot = runtime._owner_decisions().snapshot()
+        for decision in owner_snapshot.decisions:
+            sequence = decision.tenant_commit_sequence
+            if sequence <= target_sequence:
+                continue
+            command = runtime._owner_command(decision)
+            if command.operation_kind not in _NATIVE_SUFFIX_OWNER_OPERATIONS or sequence in steps:
+                return False
+            steps[sequence] = (
+                command,
+                decision.prepared.predecessor_commitment,
+                decision.resulting_commitment,
+            )
+
+        with read_connection(runtime._database) as source:
+            if capture_authority_snapshot_commitment(source, runtime._tenant_id) != actual:
+                return False
+            head_row = source.execute(
+                "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+            ).fetchone()
+            if head_row is None:
+                return False
+            current_head = int(head_row[0])
+            expected_sequences = tuple(range(target_sequence + 1, current_head + 1))
+            if tuple(sorted(steps)) != expected_sequences:
+                return False
+            publications = tuple(
+                source.execute(
+                    "SELECT operation_kind,idempotency_key,request_fingerprint,"
+                    "commit_sequence,record_ids FROM publications "
+                    "WHERE tenant_id=? AND commit_sequence>? ORDER BY commit_sequence",
+                    (runtime._tenant_id, target_sequence),
+                ).fetchall()
+            )
+            if tuple(row[3] for row in publications) != expected_sequences:
+                return False
+            record_sequences = tuple(
+                row[0]
+                for row in source.execute(
+                    "SELECT DISTINCT commit_sequence FROM records "
+                    "WHERE tenant_id=? AND commit_sequence>? ORDER BY commit_sequence",
+                    (runtime._tenant_id, target_sequence),
+                ).fetchall()
+            )
+            if record_sequences != expected_sequences:
+                return False
+
+            # Authenticate the target publication too, then remove it from a
+            # private snapshot so the resulting source commitment is checked.
+            target_sequence_row = source.execute(
+                "SELECT operation_kind,idempotency_key,request_fingerprint,commit_sequence,"
+                "record_ids "
+                "FROM publications WHERE tenant_id=? AND operation_kind=? AND idempotency_key=?",
+                (runtime._tenant_id, target_command.operation_kind, target_command.idempotency_key),
+            ).fetchone()
+            if (
+                target_sequence_row
+                != (
+                    target_command.operation_kind,
+                    target_command.idempotency_key,
+                    target_command.request_fingerprint,
+                    target_sequence,
+                    "\n".join(record.record_id for record in target_command.records),
+                )
+                or inspect_publication(source, target_command, target_sequence) != "COMPLETE"
+            ):
+                return False
+            target_physical = tuple(
+                source.execute(
+                    "SELECT record_id,owner,schema_id,canonical_bytes FROM records "
+                    "WHERE tenant_id=? AND commit_sequence=? ORDER BY rowid",
+                    (runtime._tenant_id, target_sequence),
+                ).fetchall()
+            )
+            if target_physical != tuple(
+                (record.record_id, record.owner, record.schema_id, record.canonical_bytes)
+                for record in target_command.records
+            ):
+                return False
+
+            with closing(sqlite3.connect(":memory:")) as historical:
+                source.backup(historical)
+                current_commitment = actual
+                latest_predecessor = None
+                for sequence in reversed(expected_sequences):
+                    command, predecessor, resulting = steps[sequence]
+                    publication = publications[sequence - target_sequence - 1]
+                    if (
+                        resulting != current_commitment
+                        or command.expected_head + 1 != sequence
+                        or publication
+                        != (
+                            command.operation_kind,
+                            command.idempotency_key,
+                            command.request_fingerprint,
+                            sequence,
+                            "\n".join(record.record_id for record in command.records),
+                        )
+                        or inspect_publication(source, command, sequence) != "COMPLETE"
+                    ):
+                        return False
+                    physical = tuple(
+                        source.execute(
+                            "SELECT record_id,owner,schema_id,canonical_bytes FROM records "
+                            "WHERE tenant_id=? AND commit_sequence=? ORDER BY rowid",
+                            (runtime._tenant_id, sequence),
+                        ).fetchall()
+                    )
+                    if physical != tuple(
+                        (record.record_id, record.owner, record.schema_id, record.canonical_bytes)
+                        for record in command.records
+                    ):
+                        return False
+                    historical.execute("BEGIN")
+                    for record in command.records:
+                        if historical.execute(
+                            "DELETE FROM records WHERE tenant_id=? AND record_id=?",
+                            (runtime._tenant_id, record.record_id),
+                        ).rowcount != 1:
+                            return False
+                    if historical.execute(
+                        "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
+                        "AND idempotency_key=?",
+                        (runtime._tenant_id, command.operation_kind, command.idempotency_key),
+                    ).rowcount != 1:
+                        return False
+                    historical.execute(
+                        "UPDATE tenant_heads SET head=? WHERE tenant_id=?",
+                        (command.expected_head, runtime._tenant_id),
+                    )
+                    if (
+                        capture_authority_snapshot_commitment(historical, runtime._tenant_id)
+                        != predecessor
+                    ):
+                        return False
+                    historical.commit()
+                    current_commitment = predecessor
+                    if sequence == expected_sequences[-1]:
+                        latest_predecessor = predecessor
+                if current_commitment != str(target_entry.get("resulting")):
+                    return False
+                historical.execute("BEGIN")
+                for record in target_command.records:
+                    if historical.execute(
+                        "DELETE FROM records WHERE tenant_id=? AND record_id=?",
+                        (runtime._tenant_id, record.record_id),
+                    ).rowcount != 1:
+                        return False
+                if historical.execute(
+                    "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
+                    "AND idempotency_key=?",
+                    (
+                        runtime._tenant_id,
+                        target_command.operation_kind,
+                        target_command.idempotency_key,
+                    ),
+                ).rowcount != 1:
+                    return False
+                historical.execute(
+                    "UPDATE tenant_heads SET head=? WHERE tenant_id=?",
+                    (target_command.expected_head, runtime._tenant_id),
+                )
+                target_predecessor = str(target_entry.get("predecessor"))
+                if (
+                    capture_authority_snapshot_commitment(historical, runtime._tenant_id)
+                    != target_predecessor
+                ):
+                    return False
+                historical.commit()
+                current_commitment = target_predecessor
+
+            runtime._check_database_identity()
+            return (
+                capture_authority_snapshot_commitment(source, runtime._tenant_id) == actual
+                and runtime._commitment_journal.load(runtime._tenant_id) == anchored
+                and anchored in (actual, latest_predecessor, target_predecessor)
+            )
+    except (ValueError, TypeError, RuntimeError, OSError, sqlite3.Error, KeyError):
+        return False
+
+
+def validate_native_terminal_suffix_semantics(
+    runtime, journal, original_call_id: str, *, allowed_intent_ids: frozenset[str]
+) -> None:
+    """Validate R16 source/order semantics on an already mounted complete effects cut."""
+    from chiplog.composition.r14_accepted_direct_terminal_records import (
+        retained_accepted_direct_terminal,
+    )
+    from chiplog.composition.r16_dispatch_authority import validate_issuance
+    from chiplog.composition.r16_dispatch_outcomes import validate_outcome_issuance
+
+    targets = [
+        runtime._publication(entry).expected_head + 1
+        for _, _, raw in runtime._loop_decisions().entries()
+        if (entry := json.loads(raw)).get("kind") == "DECIDED"
+        and entry.get("operation_kind") == "agent_loop.accepted-direct-terminal.v1"
+        and retained_accepted_direct_terminal(entry).result.accounting.original_call_id
+        == original_call_id
+    ]
+    if len(targets) != 1:
+        raise ValueError("native terminal suffix semantic anchor is ambiguous")
+    terminal_sequence = targets[0]
+
+    for decision in journal.decisions:
+        if decision.tenant_commit_sequence <= terminal_sequence:
+            continue
+        batch = decision.prepared.request
+        if batch.operation in ("effects.authorize", "effects.commit_send"):
+            issuance = validate_issuance(batch, runtime)
+            retained_intent = issuance.request.command.intent
+            intent_id = getattr(retained_intent, "intent_id", None) or getattr(
+                retained_intent, "subject_id", None
+            )
+            if intent_id not in allowed_intent_ids:
+                raise ValueError("native terminal suffix dispatch belongs to another seal")
+        elif batch.operation in ("effects.record_evidence", "effects.reconcile"):
+            issuance = validate_outcome_issuance(batch, runtime)
+            if issuance.request.original_send.snapshot.intent.intent_id not in allowed_intent_ids:
+                raise ValueError("native terminal suffix outcome belongs to another seal")
+        else:
+            raise ValueError("native terminal suffix includes an unregistered R16 operation")
 
 
 def _validate_loop_entry(runtime, entry, command) -> None:

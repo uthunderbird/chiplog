@@ -564,8 +564,14 @@ def _read_call_history(
                 native_accounting_count = 0
                 native_sealed_accounting_seals: set[str] = set()
                 deferred_native_sealed_accounting: list[
-                    tuple[PhysicalPublicationCommand, dict[str, object], ExecutionRecoveryHistory]
+                    tuple[
+                        PhysicalPublicationCommand,
+                        dict[str, object],
+                        ExecutionRecoveryHistory,
+                        tuple,
+                    ]
                 ] = []
+                accepted_open_recoveries = []
                 captured_heads: set[str] = set()
                 native_prepares: dict[tuple[str, str], str] = {}
                 verified_h1_prepares: dict[
@@ -1289,7 +1295,12 @@ def _read_call_history(
                             tuple(acceptances),
                         )
                         deferred_native_sealed_accounting.append(
-                            (command, entry, authenticated_history)
+                            (
+                                command,
+                                entry,
+                                authenticated_history,
+                                tuple(accepted_open_recoveries),
+                            )
                         )
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
@@ -1394,6 +1405,7 @@ def _read_call_history(
                             if isinstance(raw_decision, str)
                             else raw_decision,
                         )
+                        accepted_open_recoveries.append(evidence)
                         expected_ids.update(record.record_id for record in command.records)
                         expected_publications.add((command.operation_kind, identity))
                         continue
@@ -2018,7 +2030,7 @@ def _read_call_history(
                         decode_selected_native_sealed_accounting_v3,
                     )
 
-                    for command, entry, authenticated_history in (
+                    for command, entry, authenticated_history, open_recoveries in (
                         deferred_native_sealed_accounting
                     ):
                         decode_selected_native_sealed_accounting_v3(
@@ -2032,6 +2044,7 @@ def _read_call_history(
                             execution_cancellations,
                             mixed_records,
                             verified_h1_prepares=verified_h1_prepares,
+                            accepted_open_recoveries=open_recoveries,
                         )
                 runtime._check_database_identity()
                 return (
@@ -2278,8 +2291,10 @@ def read_selected_original_obligation_sources(
         )
 
 
-def read_selected_accepted_direct_terminal(runtime: R14PlanningRuntime):
-    """Read the exact result of the unique selected closed-outcome terminal."""
+def read_selected_accepted_direct_terminal(
+    runtime: R14PlanningRuntime, *, original_call_id: str | None = None
+):
+    """Read one exact selected terminal; unqualified reads require a singleton."""
     from chiplog.composition.r14_accepted_direct_terminal_publication import (
         validate_selected_accepted_direct_terminal,
     )
@@ -2289,13 +2304,22 @@ def read_selected_accepted_direct_terminal(runtime: R14PlanningRuntime):
     )
 
     with runtime._authority_gate().hold():
-        _read_call_history(runtime)
-        validate_selected_accepted_direct_terminal(runtime)
+        authenticated_history = _read_call_history(runtime)
+        validate_selected_accepted_direct_terminal(
+            runtime,
+            original_call_id=original_call_id,
+            authenticated_effects_history=authenticated_history[3],
+        )
         found = [
             retained_accepted_direct_terminal(entry)
             for _, _, raw in runtime._loop_decisions().entries()
             if (entry := _strict_json(raw)).get("kind") == "DECIDED"
             and entry.get("operation_kind") == ACCEPTED_DIRECT_TERMINAL_OPERATION
+            and (
+                original_call_id is None
+                or retained_accepted_direct_terminal(entry).result.accounting.original_call_id
+                == original_call_id
+            )
         ]
         return found[0].result if len(found) == 1 else None
 

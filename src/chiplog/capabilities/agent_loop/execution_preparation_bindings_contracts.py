@@ -375,11 +375,13 @@ class NativeExecutionPreparationBindingsV2(RecoveryDTO):
         except ValueError as error:
             raise ValueError("native preparation retained bytes are malformed") from error
         if (
-            len(run.turns) != 1
-            or len(run.turns[0].attempts) != 1
-            or run.turns[0].selector != 0
-            or run.turns[0].attempts[0].manifest.artifact != artifact
-            or run.turns[0].attempts[0].manifest.tenant != self.tenant_id
+            not run.turns
+            or any(len(turn.attempts) != 1 or turn.selector != 0 for turn in run.turns)
+            or not any(
+                turn.attempts[0].manifest.artifact == artifact
+                and turn.attempts[0].manifest.tenant == self.tenant_id
+                for turn in run.turns
+            )
             or run.tenant != self.tenant_id
         ):
             raise ValueError("native preparation Run manifest differs")

@@ -12,10 +12,14 @@ from chiplog.architecture.r7_runtime import (
 )
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
-from chiplog.composition.r14_loop_history import read_execution_history
+from chiplog.composition.r14_loop_history import (
+    read_execution_history,
+    read_execution_recovery_history,
+)
 from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
 from chiplog.composition.r14_next_turn_records import (
     NEXT_TURN_PUBLICATION,
+    selected_prior_turn_context,
     validate_selected_next_turn,
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
@@ -64,14 +68,43 @@ async def test_selected_next_turn_restarts_and_replays(tmp_path: Path):
             validate_selected_next_turn(
                 runtime, selected[0], replace(batch, records=(forged_record,))
             )
-        assert read_execution_history(runtime).records[-1] == next_run
+        recovery_before_close = read_execution_recovery_history(runtime)
+        assert recovery_before_close[0].records[-1] == next_run
+        cancellations_before_close = recovery_before_close[4]
+        assert len(cancellations_before_close) == 1
+        terminal_before_close = cancellations_before_close[0].proposal.terminal
+        result_before_close = cancellations_before_close[0].proposal.result
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
         manifest=R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
         recovery_cut_source=source,
     ) as runtime:
-        assert read_execution_history(runtime).records[-1] == next_run
+        recovery = read_execution_recovery_history(runtime)
+        assert recovery[0].records[-1] == next_run
+        cancellations = recovery[4]
+        assert len(cancellations) == 1
+        terminal = cancellations[0].proposal.terminal
+        result = cancellations[0].proposal.result
+        assert terminal == terminal_before_close
+        assert result == result_before_close
+        attempt = run.turns[0].attempts[run.turns[0].selector]
+        expected_context = [
+            {
+                "turn_id": run.turns[0].turn_id,
+                "response_base64": attempt.response_base64,
+                "rejection": attempt.rejection,
+                "visibility": attempt.manifest.digest(),
+                "results": [
+                    {
+                        "original_call_id": terminal.original_call_id,
+                        "terminal": terminal.model_dump(mode="json"),
+                        "result": result.model_dump(mode="json"),
+                    }
+                ],
+            }
+        ]
+        assert selected_prior_turn_context(runtime, next_run) == expected_context
         assert await runtime.start_next_execution_turn(run.run_id, run.head) == next_run
 
 

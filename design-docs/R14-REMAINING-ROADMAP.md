@@ -1,6 +1,6 @@
 # Remaining R14 implementation roadmap
 
-Status: OPEN. Planning snapshot: `967d5d0` (2026-10-13). This document plans only
+Status: OPEN. Planning snapshot: `3715201` (2026-10-13). This document plans only
 remaining R14 work. It does not change normative requirements, discharge a ledger
 row, authorize R15–R17 implementation, or choose a retry budget.
 
@@ -52,15 +52,48 @@ implementation is a dependency conflict to surface, not permission to proceed.
 All paths below are relative to the repository. Existing tests are starting
 points, not claims that the missing histories already exist. New test selectors
 must be chosen after executable requirements are frozen for each slice.
+The milestone order is strict: finish and verify all of R14 before starting R15,
+then continue through R17. Within the active R14 milestone, work one slice at a
+time in dependency order. If a user-owned decision holds one branch, keep that
+branch OPEN and continue only with a later R14 branch explicitly identified as
+independent of it; do not claim the held branch or any dependent slice complete.
+This permits sequential progress on the accepted/cancelled part of R14.8 while
+read-only lineage remains gated, but does not permit parallel R14–R17 milestones.
+
+**Per-slice durable-version admission:** freeze the canonical bytes, digest
+domains and semantics of every already admitted record version. Changed semantics
+get a distinct version; readers select interpretation from the authenticated
+original record/profile and reject unknown versions without coercion. Before
+replay or work, the global startup version gate rejects unsupported database
+version tuples with typed `UNSUPPORTED_SCHEMA_VERSION / HOLD_ADOPTION`; do not
+migrate or synthesize missing historical companions. Mounted checks cover exact
+replay for retained versions admitted by the current tuple and no-write rejection
+for unsupported tuples. This is the existing version-one policy, not a new
+migration project.
+
+**Per-slice writer admission:** no slice may make a new or changed authoritative
+publication/action route executable before its exact command, handler, record
+kind and applicability are registered and verified. A missing or mismatched
+registration must fail closed before durable publication or external emission.
+Add and negative-test each route when its slice introduces it; keep partial
+coverage explicit. R14.10 consolidates and audits the accumulated registry, and
+R14.13 proves bidirectional completeness. A later global inventory is not a
+prerequisite substitute for local admission.
 
 ### R14.6 — Sealed-call accounting foundation (original R14.1)
 
-Depends on existing fanout/acceptance publications. Work at
+Depends on existing fanout/acceptance publications. Existing V3 implementation
+is the starting point: `r14_native_sealed_accounting_v3_publication.py` provides
+the sole writer, `r14_native_sealed_accounting_v3_history.py` and
+`r14_loop_history.py` provide selected history/reopen reading, and
+`test_r14_native_selected_accounting_source.py::test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once`
+mounts one accepted plus one cancelled member through publication, reopen and
+replay. These paths establish a single-seal mixed-member baseline, not full
+fanout accounting. Extend them alongside
 `src/chiplog/composition/r14_execution_inventory.py`,
 `r14_native_accounting_history.py`, `r14_native_accounting_publication.py`,
 `r14_accepted_open_accounting_publication.py`, and agent-loop
-`native_one_call_accounting_preparation.py` (`prepare_native_one_call_cancelled_accounting_v2`).
-The present one-call preparation is a reuse boundary, not full-fanout accounting.
+`native_one_call_accounting_preparation.py`.
 
 Enumerate every original initialized member from the selected seal; retain exact
 ordered bytes and exactly one admissible branch for the currently executable
@@ -92,20 +125,65 @@ histories select zero partial companions and emit zero pre-accept external calls
 Read-only members remain unselected, not falsely accounted as terminal outcomes;
 without the registered lineage bound, no read-only initialization or durable
 pending record is allowed. The complete serialized envelope has explicit N/N+1 bounds.
-Also cover two distinct seals in one Run, exact per-seal replay, two accepted calls
-with distinct outcomes, a cross-seal accepted-evidence substitution, and full
-physical orphan detection after reopen.
+Also cover two distinct seals in one Run, exact per-seal replay, and at least
+three accepted calls with distinct outcomes and valid interleavings, including a
+member whose dispatch starts only after another member has terminalized. Admit
+only explicitly registered existing operation families needed by the bounded
+accepted/cancelled member histories: per-call terminal publications, V3
+accounting, and accepted-member `effects.authorize`, `effects.commit_send`,
+`effects.record_evidence` and `effects.reconcile`. Validate each publication's
+exact original-call, effect and seal bindings and its family-specific causal
+prerequisites; allow repeated selected evidence while a member remains open and
+interleaving across members/seals. Do not require one global A/B order. For each
+terminal, construct its own source-sequence-bounded semantic prefix, excluding
+later evidence while still authenticating the complete current physical snapshot.
+V3 is publishable only after every member in that seal has its admissible terminal
+branch. Reopen and replay all terminals and each V3 without advancing the tenant
+head. Include a cross-seal accepted-evidence substitution and full physical orphan
+detection after reopen; unknown publication families HOLD.
 
-**Reader/writer constraints from the cold implementation review:** reconstruct the
-V3 member frontier from the authenticated history cut already supplied to the
+**Reader/writer constraints to preserve while extending the V3 path:** reconstruct
+the V3 member frontier from the authenticated history cut already supplied to the
 outer reader. Do not invoke the ordinary selected-accounting collector from inside
 `_read_call_history`, because its history lookup re-enters that reader. Preserve
 the source stamp outside the V3 owner request, then reacquire history after owner
-IPC and apply the same actor, worker/session, commitment, and authenticated-source
-admission/CAS checks used by the V2 writer before selecting the physical command.
-These checks are required for V3 publication and canonical reopen, not optional
-hardening. This is the cold review's required implementation guard, not evidence
-that the V3 persistence path is already implemented.
+IPC and retain the actor, worker/session, commitment, and authenticated-source
+admission/CAS checks already used by the V3 writer. The current mounted baseline
+does not yet prove these properties for multiple accepted members, multiple seals,
+or the complete fanout and orphan-detection cases listed above.
+
+For multiple accepted terminals, pass an explicit `original_call_id` through both
+writer cut reads, admission rechecks, prior lookup, replay and result reading.
+Authenticate every marked terminal envelope before filtering; enforce uniqueness
+per `(response_id, original_call_id)`, return the exact requested member, and keep
+unqualified readers HOLD on ambiguity. Keep the legacy whole-seal reader
+singleton-only and ensure multi-call V3 uses the per-call frontier loop. Retained
+terminal reads need a separate historical CLOSED locator and source-sequence
+bound: authenticate the current full physical effects snapshot, then construct a
+distinct historical semantic prefix for every closure join and ordered evidence
+source. Do not pass that prefix as the current physical cut or rely on pinning the
+old commitment while reading current R16 state.
+
+Authenticate the intervening publication suffix in a bounded native-terminal
+verifier that validates exact sequence coverage, predecessor/resulting commitment
+chain, retained envelopes and complete physical batches from one already captured
+history context. Its finite operation-family set is the R14.6 accepted/cancelled
+member lifecycle above; each family needs its owner-specific envelope/source
+checks and per-call causal ordering, while valid publications from different
+members or seals may interleave. Do not call source-reconstructing terminal or V3
+validators from this verifier: validate physical suffix integrity first, then
+validate terminal semantics using the authenticated history/prefix inputs,
+avoiding recursive `_read_call_history` paths. The regression must reject an
+omitted sequence, broken chain, changed/extra physical row, unknown family,
+foreign closed locator, cross-call/seal substitution, or later evidence admitted
+into an earlier prefix. A mounted positive must include delayed dispatch of an
+accepted member after another member's terminal, at least three accepted calls,
+and a multi-seal interleaving.
+
+A54 bounds limit each request/envelope, not retained-history memory or total
+reader work. Profiling growth across seal count and history length is explicitly
+deferred in the harness handoff until the horizontal scenario passes; optimize
+repeated full-history traversal only if that profile shows it is material.
 
 ### R14.7 — Executable read-only lineage (original R14.3; accounting completion for R14.1)
 
@@ -128,9 +206,17 @@ New runtime modules are to be named at that slice, not asserted to exist now.
 R14.7 includes the minimum authenticated successor-initialization and inherited-
 pending seam required for `SuccessorReadOnlyAttempt`; reuse the current successor
 flow and widen its preparation/source verification only for this pending branch.
-R14.9 later completes the total frontier inventory and nonempty continuation
-preservation for every required subject. This keeps the initial read-only successor
-observable without pulling the full recovery frontier into this slice.
+Until R14.9 supplies total frontier classification and nonempty continuation
+preservation, the executable successor branch is restricted to a pending-only
+profile: authenticate the complete relevant subject inventory and closed
+action-lineage proof before any action; require the selected read-only pending
+head to be the only actionable subject, with every other required subject
+authenticated as ABSENT, N/A, or already closed without an unresolved obligation
+or no-retry reference. Unknown, mixed, or incomplete histories HOLD before
+successor initialization. R14.9 later broadens this restricted admission to total
+frontier handling and nonempty continuation preservation for every required
+subject. This keeps the initial read-only successor observable without admitting
+histories whose action eligibility has not yet been proved.
 
 For every pending head, the single CAS must choose one complete branch: either
 atomically close it as `NEXT_ATTEMPT_ACCEPTED`, advance the shared counter and
@@ -187,6 +273,18 @@ Accepted/cancelled cases can be mounted before the user sets the retry bound.
 Any read-only request that requires a lineage remains HOLD before allocation until
 R14.7 can construct it with the registered bound.
 
+For `CompleteAcceptance`, the authoritative scope is every earlier sealed
+response in the Run lineage, enumerated from authoritative rows. Recompute each
+response's accounting and continuation-ready predicate inside the same acceptance
+transaction; do not reduce this consumer to the newest seal. Add a mounted
+multi-response history where the newest seal is consumable but an older seal has
+an absent, stale or rival reduction, and require no acceptance publication. The
+positive multi-response case must survive reopen with the same complete join.
+
+Dependency boundary: accepted/cancelled joins from R14.6 may be mounted before
+the retry-bound decision; read-only accounting and lineage consumers depend on
+R14.7 and remain HOLD until that decision is recorded.
+
 Checks: extend `tests/composition/test_r14_loop_semantic_reduction_publication.py`,
 `test_r14_historical_suffix.py`, `test_r14_original_resolution_mounted.py`, and
 agent-loop `test_original_semantic_reduction_preparation.py`. Add one mounted
@@ -221,8 +319,17 @@ stale/rival cuts, lost acknowledgement and crash-before/after-selection. Observe
 one successor/next Turn and unchanged original stream/counter identities. Exercise
 both obligation classes, changed observation heads, forbidden transfer/copy,
 unknown model/effect/delivery lineage, and prove no successor action is reissued.
-Freeze the takeover preservation requirement for the later scheduler seam;
-implementing R15 takeover remains outside this roadmap.
+Freeze the cross-stage seams before implementation integration: `R15-CONTRACT-FREEZE.md`
+owns scheduler policy while R14 owns the shared stable lineage, current-Run,
+physical-epoch, lease and trusted-clock fence; `R16-CONTRACT-FREEZE.md` owns effect,
+outbox and reconciliation semantics while the original Run/call/obligation and
+no-retry identities remain bound to R14 history; `R17-CONTRACT-FREEZE.md` owns
+ingress custody, bounded admission and exact delivery while preserving the
+authenticated source, recipient and recovery identities consumed by the R14 loop.
+Record these ownership seams as verified links in R14.13; existing freeze documents
+may supply the contract, but a reference alone is not evidence of compatibility.
+Implementing R15 takeover, R16 dispatch/reconciliation, or R17 delivery remains
+outside this roadmap.
 
 ### R14.10 — Current writer fencing registry (original R14.4 / A99)
 
@@ -232,9 +339,10 @@ R14.11 and R14.12 writers are added and is not complete until R14.13. Reuse
 composition `r14_worker_applicability_support.py::interpret_worker_applicability`
 and `matches_captured_cut` for current execution and recovery writers.
 
-Bind real current commands/handlers/record kinds/applicability variants in both
-directions against the registry. Explicitly list uncovered writer families;
-partial registration must not report global completeness. Fresh stale worker,
+Consolidate and verify the per-slice registrations for real current
+commands/handlers/record kinds/applicability variants in both directions against
+the registry. Explicitly list uncovered writer families; partial registration
+must not report global completeness. Fresh stale worker,
 session or selector rejects before publication and leaves records, publications,
 tenant head and durable decisions unchanged. Replay/recovery is covered only if
 its own admission route is registered and verified.
@@ -261,9 +369,12 @@ Do not claim A99 complete while later R14 writer families remain unregistered.
 ### R14.11 — Durable model-attempt recovery (original R14.5)
 
 The emission marker, capture, unknown-outcome retention and lost-response HOLD
-can proceed using the existing exact writer guard, without waiting for the
-read-only retry-bound decision or the post-terminal lease family. Gate only
-proof-authorized replacement on the current writer registration from R14.10.
+can proceed without waiting for the read-only retry-bound decision or the
+post-terminal lease family. Before the first publication or emission from each
+new or changed route, register and verify its exact command/handler/record-kind/
+applicability under the per-slice writer-admission rule; an existing physical
+guard alone does not establish semantic registration. Gate proof-authorized
+replacement on its current writer registration as well.
 Reuse agent-loop `execution_contracts.py`,
 `model_attempt_recovery_contracts.py`,
 `model_attempt_recovery_preparation.py::prepare_model_attempt_replacement` and
@@ -313,12 +424,26 @@ head. Reopen/replay across a crash between these commits must not create a secon
 resolver authority. Terminal Run state and exhausted epochs never suppress
 recovery admission or rewrite Run history.
 
+Apply the per-slice durable-version rule to retained terminal batches. Interpret
+each admitted terminal using its authenticated original schema/profile. Do not
+append missing accounting companions or work genesis to an immutable old batch.
+If the store's exact version tuple does not include the required companions,
+startup must reject it as `UNSUPPORTED_SCHEMA_VERSION / HOLD_ADOPTION` before
+replay or work; a supported current tuple must have an exact replayable terminal
+and its selected companions. Verify both the admitted replay case and unsupported
+tuple no-write rejection.
+
 Checks: extend `tests/capabilities/agent_loop/test_post_terminal_contracts.py` and
 `test_post_terminal_record_contracts.py`; add mounted lease/expiry/race/reopen and
 rollover observers. Preserve the original stream across restart and prove exactly
-one selected replacement epoch. Reopen the authoritative recovery view after
-closure and after epoch exhaustion; stale/missing subject, selector, epoch or
-current obligation heads must hold, while open work remains claimable.
+one selected replacement epoch. Inject a crash after the original-obligation
+terminal commit but before the causally bound work update; after restart, require
+the same terminal head and resolver authority, one selected work update bound to
+that head, and no second resolver invocation/publication, including on repeated
+recovery. Add the control where the closure did not commit and verify the work
+update is not selected. Reopen the authoritative recovery view after closure and
+after epoch exhaustion; stale/missing subject, selector, epoch or current
+obligation heads must hold, while open work remains claimable.
 
 ### R14.13 — Full R14 convergence and evidence audit
 
@@ -326,7 +451,10 @@ Depends on R14.6–R14.12. Map every original R14 requirement and named invarian
 A15, A38–A47, A49–A52, A54–A57, A59, A99 and A108 to executed V5/V6 histories and
 current tree/profile/fixture-bound artifacts. Inspect selected durable state and
 physical envelopes. Finish bidirectional writer inventory after all R14 additions.
-No remaining HOLD or unsupported required R14 path can be reported as complete.
+No unresolved implementation blocker, unsupported required R14 path, or
+unverified normative clause can be reported as complete. A correctly implemented
+runtime HOLD remains an expected outcome for invalid, stale or unauthenticated
+input and does not itself block milestone completion.
 The read-only retry-bound decision gates read-only initialization, lineage/pending
 allocation, retry/exhaustion histories and full completion. Budget-independent
 worker and model-attempt results remain implementable while that decision is open.
@@ -337,16 +465,28 @@ observation, and a discriminating negative/no-write observation. Show each A54
 bound independently, each A57 pending CAS branch, terminal-work creation coupled
 to the Run terminal batch, all three A99 pre-root branches including exact-prefix
 recovery and incomplete-commitment rejection, and selected-attempt/manifest
-continuity from A108.
+continuity from A108. Include the `CompleteAcceptance` earlier-response scope:
+multi-response positive/reopen evidence and an older absent/stale/rival reduction
+with a newer consumable seal that leaves acceptance unpublished. Include retained
+record-version exact replay for admitted tuples and pre-replay no-write rejection
+for unsupported tuples; never synthesize missing historical terminal companions.
 
 Intermediate slices use fast mounted positives/negatives and recovery checks;
-heavy stress/combinatorial work stays in backlog until a minimal horizontal
-scenario passes, then returns before final integration, per AGENTS.md. At merge
-preparation run full regression and one cold swarm-red-team over the integrated
-diff for critical/blocking defects. Exact final selectors follow the repository's
-current verification commands; do not invent a new orchestrator or waive the
-strict R8 catalog. Commit handoff follows current AGENTS.md; the user's existing
-authorization for intermediate commits remains in force.
+heavy stress/combinatorial work stays in backlog until all scoped R14–R17 items
+are closed and the required horizontal scenario passes, per AGENTS.md. That
+cross-stage checkpoint is the hermetic end-to-end user flow already requested:
+start using the bot; create the first task or tasks; complete them and observe
+their journal entries; create follow-up tasks; and schedule multiple calendar
+events through the canonical bot path. Record its mounted evidence in
+`R14-R17-COMPLETION.md` before restoring deferred load/stress checks. This
+cross-stage checkpoint does not expand R14.13's R14-only acceptance boundary or
+authorize implementing later roadmap work early. At merge preparation run the
+required R14 regression; before integrated release, run full regression and one
+cold swarm-red-team over the integrated diff for critical/blocking defects.
+Exact final selectors follow the repository's current verification commands; do
+not invent a new orchestrator or waive the strict R8 catalog. Commit handoff
+follows current AGENTS.md; the user's existing authorization for intermediate
+commits remains in force.
 
 ## Open user-owned decision and limits
 

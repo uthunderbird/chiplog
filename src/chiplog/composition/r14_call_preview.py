@@ -335,16 +335,18 @@ async def preview_call_acceptance(
 ) -> CallAcceptancePreview:
     observed = await authenticate(runtime, peer)
     with runtime._authority_gate().hold():
+        execution_call_history = read_execution_call_history(runtime)
         captured = capture_dispatch(
             runtime,
             runtime._require_dispatch_resources(),
             observed,
             target.current_run.subject_id,
             original_call_id=target.original_call_id,
+            execution_call_history=execution_call_history,
         )
         worker = captured.cut.worker
         assert worker is not None
-        _, inventory, preparations = read_execution_call_history(runtime)
+        _, inventory, preparations = execution_call_history
         matches = [
             row
             for row in inventory.ordered_calls

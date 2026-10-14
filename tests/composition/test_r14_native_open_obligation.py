@@ -10,7 +10,7 @@ import pytest
 from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
 from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_ACCEPTED_OPEN_V29_PRODUCTION_MANIFEST,
-    R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+    R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
 )
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallPreparationRejected
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
@@ -82,6 +82,102 @@ def test_historical_recovery_publication_requires_complete_or_exact_pending_stat
 
 
 @pytest.mark.asyncio
+async def test_open_obligation_successor_holds_after_reopen(tmp_path: Path) -> None:
+    database = tmp_path / "native-open-successor-hold.sqlite"
+    resources = HermeticDispatchResources(
+        scenarios=("LOST_RESPONSE_AFTER_EFFECT",),
+        cap=1,
+        custody_path=tmp_path / "custody",
+    )
+    manifest = R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST
+    source = NativeRecoveryCutSource()
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        responses=(native_response(),),
+        manifest=manifest,
+        recovery_cut_source=source,
+    ) as runtime:
+        await runtime.publish_native_recovery_profile(version="v5")
+        wire = await admit_runtime_slot(runtime, "native-open-successor-hold")
+        receipt = await runtime.drive_input(wire)
+        started = await runtime.begin_execution(
+            "hermetic-ingress", receipt.stable_run_lineage_id, receipt.selected_run_head.head
+        )
+        captured = await runtime.capture_execution(
+            "hermetic-ingress", started.run_id, started.head, native_one_call_context=True
+        )
+        sealed = await runtime.seal_execution("hermetic-ingress", captured.run_id, captured.head)
+        _, inventory, _ = read_execution_call_history(runtime)
+        calls = [
+            item
+            for item in inventory.ordered_calls
+            if item.initialized_record.call.classification == "CONSEQUENTIAL"
+        ]
+        assert len(calls) == 1
+        preview = await runtime.preview_call_acceptance(
+            "hermetic-ingress",
+            CallAcceptanceTarget(
+                original_call_id=calls[0].original_call_id,
+                initialized=calls[0].initialized,
+                current_run=execution_run_head(sealed),
+            ),
+        )
+        accepted = await runtime.accept_call(
+            "hermetic-ingress",
+            CallAcceptanceAdoption(
+                act_id="accept-open-successor-hold", preview_bytes=preview.canonical_bytes()
+            ),
+        )
+        intent_id = accepted.external_intent.subject_id
+        await runtime.authorize_dispatch(
+            "hermetic-ingress", intent_id, "authorize-open-successor-hold", sealed.run_id
+        )
+        await runtime.commit_first_send(
+            "hermetic-ingress", intent_id, "send-open-successor-hold", sealed.run_id
+        )
+        with pytest.raises(HermeticResponseLost):
+            await runtime.emit_committed("hermetic-ingress", intent_id)
+        assert len(resources.require_original_provider().transfers) == 1
+        selected_recovery = await runtime.publish_accepted_open_recovery()
+        assert selected_recovery.accounting.kind == "RECOVERY_REQUIRED"
+        selected_outcome = DispatchOutcomeRecordV2.model_validate_json(
+            selected_recovery.accounting.selected_outcome_bytes
+        )
+        assert selected_outcome.snapshot.state == "OUTCOME_UNKNOWN"
+        assert selected_outcome.snapshot.obligation.state == "OPEN"
+
+        suspension = await runtime.suspend_execution(sealed.run_id, sealed.head, ())
+        assert suspension.baseline.original_obligations == (selected_recovery.opening.original,)
+
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        manifest=manifest,
+        recovery_cut_source=source,
+    ) as reopened:
+        new_request = await admit_runtime_slot(
+            reopened,
+            "open-obligation-successor-after-reopen",
+            b"start a different follow-up task",
+        )
+        history_before_successor = read_execution_call_history(reopened)
+
+        held = await reopened.drive_input(new_request)
+        assert isinstance(held, ExecutionDriverRejectedV1)
+        assert held.code == "HOLD", held.reason
+        assert held.reason == (
+            "recovery owner preparation HOLD: successor requires recovery of original obligations"
+        )
+        assert read_execution_call_history(reopened) == history_before_successor
+        assert not any(
+            json.loads(raw).get("operation_kind") == "agent_loop.execution-successor.v1"
+            for _, _, raw in reopened._loop_decisions().entries()
+        )
+        assert len(resources.require_original_provider().transfers) == 1
+
+
+@pytest.mark.asyncio
 async def test_selected_native_open_obligation_remains_outcome_unknown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -95,7 +191,7 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         database,
         resources=resources,
         responses=(native_response(),),
-        manifest=R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+        manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
         recovery_cut_source=NativeRecoveryCutSource(),
     ) as runtime:
         await runtime.publish_native_recovery_profile(version="v5")
@@ -291,14 +387,130 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert suspension.pair.suspended_run.subject_id == sealed.run_id
         assert suspension.baseline.original_obligations == (joined.calls[0].disposition.obligation,)
         assert suspension.pair.suspended_run.revision.head
+        from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+        from chiplog.composition import r14_native_selected_accounting_source as selected_source
+        from chiplog.composition.r14_native_sealed_accounting_v3_publication import (
+            publish_native_sealed_accounting_v3,
+        )
+
+        original_mismatch_check = selected_source._accepted_open_cut_mismatches
+        exercised_mismatch_negatives = False
+
+        def verify_suspension_cut_exception(*args):
+            nonlocal exercised_mismatch_negatives
+            mismatches = original_mismatch_check(*args)
+            if not exercised_mismatch_negatives:
+                runtime_arg, retained_cut, accepted_outcome, history, original_obligation = args
+                assert mismatches == ()
+
+                def rehash_cut(changes):
+                    changed = retained_cut.model_copy(update=changes)
+                    body = changed.model_dump(mode="json")
+                    body.pop("cut_fingerprint")
+                    fingerprint = hashlib.sha256(
+                        json.dumps(
+                            body,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        ).encode()
+                    ).hexdigest()
+                    return changed.model_copy(update={"cut_fingerprint": fingerprint})
+
+                changed_acceptance = rehash_cut(
+                    {"accepted_record_bytes": retained_cut.accepted_record_bytes + b"tampered"}
+                )
+                changed_mismatches = original_mismatch_check(
+                    runtime_arg,
+                    changed_acceptance,
+                    accepted_outcome,
+                    history,
+                    original_obligation,
+                )
+                assert "accepted_bytes" in changed_mismatches
+
+                snapshot = history[0]
+                current_run = next(
+                    run
+                    for run in snapshot.records
+                    if isinstance(run, ExecutionRunRecord)
+                    and run.run_id == retained_cut.current_run.subject_id
+                    and run.state == "SUSPENDED"
+                )
+                wrong_predecessor = next(
+                    run
+                    for run in snapshot.records
+                    if isinstance(run, ExecutionRunRecord)
+                    and run.run_id == retained_cut.current_run.subject_id
+                    and run.head
+                    not in (retained_cut.current_run.revision.head, current_run.head)
+                )
+                changed_run = rehash_cut(
+                    {
+                        "current_run": CallSubjectHead(
+                            subject_id=wrong_predecessor.run_id,
+                            revision=Present(
+                                head=wrong_predecessor.head,
+                                fingerprint=wrong_predecessor.digest(),
+                            ),
+                        ),
+                        "current_run_bytes": wrong_predecessor.canonical_bytes(),
+                    }
+                )
+                run_mismatches = original_mismatch_check(
+                    runtime_arg,
+                    changed_run,
+                    accepted_outcome,
+                    history,
+                    original_obligation,
+                )
+                assert run_mismatches == (
+                    "current_run_head",
+                    "current_run_fingerprint",
+                    "current_run_bytes",
+                )
+                exercised_mismatch_negatives = True
+            return mismatches
+
+        monkeypatch.setattr(
+            selected_source,
+            "_accepted_open_cut_mismatches",
+            verify_suspension_cut_exception,
+        )
+
+        v3_record = await publish_native_sealed_accounting_v3(runtime, seal_ref)
+        assert exercised_mismatch_negatives
+        assert len(v3_record.result.complete_ordered_calls) == 1
+        assert v3_record.result.complete_ordered_calls[0].disposition.kind == "RECOVERY_REQUIRED"
+        assert (
+            v3_record.result.complete_ordered_calls[0]
+            .disposition.recovered_outcome.outcome.kind
+            == "ABSENT"
+        )
         assert len(resources.require_original_provider().transfers) == 1
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
-        manifest=R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST,
+        manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
         recovery_cut_source=NativeRecoveryCutSource(),
     ) as reopened:
         assert reopened.read_selected_execution_suspension() == suspension
+        from chiplog.composition.r14_loop_history import (
+            read_selected_native_sealed_accounting_v3,
+        )
+
+        with read_connection(reopened._database) as connection:
+            before_v3_replay = connection.execute(
+                "SELECT head FROM tenant_heads WHERE tenant_id=?", (reopened._tenant_id,)
+            ).fetchone()[0]
+        assert read_selected_native_sealed_accounting_v3(
+            reopened, seal_ref.revision.fingerprint
+        ) == v3_record
+        with read_connection(reopened._database) as connection:
+            after_v3_replay = connection.execute(
+                "SELECT head FROM tenant_heads WHERE tenant_id=?", (reopened._tenant_id,)
+            ).fetchone()[0]
+        assert after_v3_replay == before_v3_replay
         assert reopened.read_selected_execution_suspension().baseline.original_obligations == (
             joined.calls[0].disposition.obligation,
         )
@@ -367,15 +579,15 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert recovered_frontier.calls[0].disposition.recovered_outcome.outcome.kind == "ABSENT"
         with pytest.raises(LoopRejected, match="OUTCOME_UNKNOWN/OPEN"):
             await reopened.start_next_execution_turn(sealed.run_id, sealed.head)
-        history_before_successor = read_execution_call_history(reopened)
         new_request = await admit_runtime_slot(
             reopened,
             "open-obligation-successor",
             b"start a different follow-up task",
         )
+        history_before_successor = read_execution_call_history(reopened)
         held = await reopened.drive_input(new_request)
         assert isinstance(held, ExecutionDriverRejectedV1)
-        assert held.code == "HOLD"
+        assert held.code == "HOLD", held.reason
         assert "recovery of original obligations" in held.reason
         assert read_execution_call_history(reopened) == history_before_successor
         assert not any(

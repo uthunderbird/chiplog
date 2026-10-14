@@ -185,6 +185,7 @@ def selected_accepted_direct_terminal_call_frontier(
     try:
         current = validate_selected_accepted_direct_terminal(
             runtime,
+            original_call_id=original_call_id,
             authenticated_history=authenticated_history,
             authenticated_effects_history=authenticated_effects_history,
             authenticated_projection=authenticated_projection,
@@ -206,6 +207,10 @@ def selected_accepted_direct_terminal_call_frontier(
             for _, _, raw in runtime._loop_decisions().entries()
             if (entry := json.loads(raw)).get("kind") == "DECIDED"
             and entry.get("operation_kind") == ACCEPTED_DIRECT_TERMINAL_OPERATION
+            and retained_accepted_direct_terminal(entry).result.accounting.response_id
+            == response_id
+            and retained_accepted_direct_terminal(entry).result.accounting.original_call_id
+            == original_call_id
         ]
         if len(entries) != 1:
             return None

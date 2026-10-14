@@ -7,7 +7,11 @@ import json
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
+    CallSubjectHead,
+    CancelledBeforeAcceptRecord,
+    NotExecutedCallResultRecord,
+)
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.execution_next_turn_preparation import (
@@ -22,6 +26,11 @@ from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     native_recovery_fingerprint,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present, RecoveryDTO
+from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+    CancelledBeforeAcceptResult,
+    InitializedCall,
+    TerminalCallFrontier,
+)
 from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
     EXECUTION_RECOVERY_REQUEST_SCHEMA,
     EXECUTION_RECOVERY_RESULT_SCHEMA,
@@ -32,6 +41,7 @@ from chiplog.platform.broker import PublicPortCall, PublicPortSuccess
 if TYPE_CHECKING:
     from .common_cli_execution_runtime import CommonCliExecutionRuntime
 
+from .r14_cancellation_contracts import CANCELLATION_SCHEMA, NOT_EXECUTED_SCHEMA
 from .r14_recovery_publication import (
     ACCOUNTING_SCHEMA,
     CONTINUATION_SCHEMA,
@@ -187,6 +197,72 @@ def selected_prior_turn_context(
 
     results: list[dict[str, object]] = []
     for call in response.ordered_calls:
+        if (
+            not isinstance(call, TerminalCallFrontier)
+            or call.response_id != response.selected_seal.subject_id
+        ):
+            raise ValueError("prior-turn call differs from the selected response frontier")
+        if isinstance(call.disposition, CancelledBeforeAcceptResult):
+            if not isinstance(call.acceptance, InitializedCall):
+                raise ValueError("cancelled prior-turn call was accepted")
+            initialized_matches = [
+                reference
+                for reference in response.seal.complete_ordered_initialized
+                if reference.subject_id == call.original_call_id
+                and reference.revision == call.acceptance.initialized
+            ]
+            terminal_sources = [
+                source
+                for source in cut.complete_sources
+                if source.schema_id == CANCELLATION_SCHEMA
+                and source.subject.revision == call.disposition.terminal
+            ]
+            result_sources = [
+                source
+                for source in cut.complete_sources
+                if source.schema_id == NOT_EXECUTED_SCHEMA
+                and source.subject.revision == call.disposition.not_executed_result
+            ]
+            if (
+                len(initialized_matches) != 1
+                or len(terminal_sources) != 1
+                or len(result_sources) != 1
+            ):
+                raise ValueError("cancelled prior-turn call lacks exact selected sources")
+            initialized = initialized_matches[0]
+            terminal_source = terminal_sources[0]
+            result_source = result_sources[0]
+            terminal = selected_record(
+                CANCELLATION_SCHEMA, terminal_source.subject, CancelledBeforeAcceptRecord
+            )
+            result = selected_record(
+                NOT_EXECUTED_SCHEMA, result_source.subject, NotExecutedCallResultRecord
+            )
+            if (
+                terminal_source.subject.revision != call.disposition.terminal
+                or result_source.subject.revision != call.disposition.not_executed_result
+                or terminal.original_call_id != call.original_call_id
+                or result.original_call_id != call.original_call_id
+                or terminal.original.tenant_id != before.tenant
+                or terminal.original.original_run_id != before.run_id
+                or terminal.original.original_turn_id != before.turns[0].turn_id
+                or terminal.original.captured_response != response.seal.captured_response
+                or terminal.initialized != initialized
+                or call.disposition.initialized_predecessor != initialized.revision
+                or result.initialized != initialized
+                or terminal.not_executed_result_id != result.result_id
+                or result.terminal != terminal_source.subject
+                or result.outcome != "NOT_EXECUTED"
+            ):
+                raise ValueError("cancelled prior-turn terminal/result join differs")
+            results.append(
+                {
+                    "original_call_id": call.original_call_id,
+                    "terminal": terminal.model_dump(mode="json"),
+                    "result": result.model_dump(mode="json"),
+                }
+            )
+            continue
         terminal_sources = [
             source
             for source in cut.complete_sources

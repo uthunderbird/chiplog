@@ -17,6 +17,7 @@ from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_contracts impor
     NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA,
     PreparedNativeSealedAccountingV3,
 )
+from chiplog.composition.r14_loop_history import read_execution_recovery_history
 from chiplog.composition.r14_native_accounting_records import (
     NATIVE_SEALED_ACCOUNTING_V3_OPERATION,
     NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION,
@@ -53,6 +54,24 @@ def _selected(runtime, identity: str) -> dict[str, object] | None:
     if entry.get("operation_kind") != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION:
         raise LoopRejected("native sealed accounting V3 identity belongs to another operation")
     return entry
+
+
+def _authenticated_accepted_open_recoveries(runtime) -> tuple:
+    """Read recovery envelopes after the caller authenticated their outer history."""
+    from chiplog.composition.r14_accepted_open_accounting_records import (
+        ACCEPTED_OPEN_RECOVERY_OPERATION,
+        retained_accepted_open_recovery,
+    )
+
+    found = tuple(
+        retained_accepted_open_recovery(entry)
+        for _, _, raw in runtime._loop_decisions().entries()
+        if (entry := json.loads(raw)).get("kind") == "DECIDED"
+        and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
+    )
+    if len(found) > 1:
+        raise LoopRejected("ambiguous accepted/open recovery selection")
+    return found
 
 
 async def _finish(runtime, entry: dict[str, object]):
@@ -103,14 +122,26 @@ async def publish_native_sealed_accounting_v3(
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed_actor)
         runtime._pending()
+        history = read_execution_recovery_history(runtime, selected_only=True)
+        accepted_open_recoveries = _authenticated_accepted_open_recoveries(runtime)
         projection = R14OriginalNativePrepareSource(runtime).collect(selected_response)
         if projection is None:
             raise LoopRejected("native sealed accounting V3 Prepare source is unavailable")
         source = R14NativeSelectedAccountingSource(
             runtime, projection, bind_native_execution_preparation_v2(projection)
         )
-        facts = source.collect(projection.prepared_run)
-        request = source.prepare_sealed_accounting_v3(selected_response)
+        facts = source.collect(
+            projection.prepared_run,
+            selected_only=True,
+            authenticated_history=history,
+            authenticated_projection=True,
+        )
+        request = source.prepare_sealed_accounting_v3(
+            selected_response,
+            authenticated_history=history,
+            authenticated_accepted_open_recoveries=accepted_open_recoveries,
+            authenticated_projection=True,
+        )
         if facts is None or request is None:
             raise LoopRejected("native sealed accounting V3 source is incomplete")
         with read_connection(runtime._database) as connection:
@@ -195,14 +226,26 @@ async def publish_native_sealed_accounting_v3(
             or runtime._commitment_journal.load(runtime._tenant_id) != commitment
         ):
             raise LoopRejected("native sealed accounting V3 source stamp changed after owner IPC")
+        current_history = read_execution_recovery_history(runtime, selected_only=True)
+        current_open_recoveries = _authenticated_accepted_open_recoveries(runtime)
         current_projection = R14OriginalNativePrepareSource(runtime).collect(selected_response)
         if current_projection != projection:
             raise LoopRejected("native sealed accounting V3 Prepare changed after owner IPC")
         current_source = R14NativeSelectedAccountingSource(
             runtime, current_projection, bind_native_execution_preparation_v2(current_projection)
         )
-        current_facts = current_source.collect(current_projection.prepared_run)
-        current_request = current_source.prepare_sealed_accounting_v3(selected_response)
+        current_facts = current_source.collect(
+            current_projection.prepared_run,
+            selected_only=True,
+            authenticated_history=current_history,
+            authenticated_projection=True,
+        )
+        current_request = current_source.prepare_sealed_accounting_v3(
+            selected_response,
+            authenticated_history=current_history,
+            authenticated_accepted_open_recoveries=current_open_recoveries,
+            authenticated_projection=True,
+        )
         with read_connection(runtime._database) as connection:
             current_commitment = capture_authority_snapshot_commitment(
                 connection, runtime._tenant_id
@@ -210,14 +253,22 @@ async def publish_native_sealed_accounting_v3(
             current_head = connection.execute(
                 "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
             ).fetchone()
-        if (
-            current_facts != facts
-            or current_request != request
-            or current_commitment != commitment
-            or current_head is None
-            or int(current_head[0]) != stamp.tenant_commit_sequence
-        ):
-            raise LoopRejected("native sealed accounting V3 source changed after owner IPC")
+            if (
+                current_facts != facts
+                or current_request != request
+                or current_commitment != commitment
+                or current_head is None
+                or int(current_head[0]) != stamp.tenant_commit_sequence
+            ):
+                raise LoopRejected("native sealed accounting V3 source changed after owner IPC")
+
+
+    final_actor = await runtime._execution_actor(peer)
+    with runtime._authority_gate().hold():
+        if not runtime._same_execution_actor_identity(refreshed_actor, final_actor):
+            raise LoopRejected("native sealed accounting V3 authenticated actor changed")
+        runtime._check_execution_actor(final_actor)
+    refreshed_actor = final_actor
 
     def guard() -> Literal["STALE"] | None:
         with runtime._authority_gate().hold():

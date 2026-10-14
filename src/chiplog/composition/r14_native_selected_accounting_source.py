@@ -19,6 +19,7 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallSubjectHead,
     InitializedCallRecord,
 )
+from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.execution_contracts import (
     ConsequentialToolCall,
     ExecutionRunRecord,
@@ -31,7 +32,11 @@ from chiplog.capabilities.agent_loop.execution_recovery_observations import Reco
 from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_contracts import (
     PrepareNativeSealedAccountingV3,
 )
-from chiplog.capabilities.agent_loop.recovery_contracts import NotApplicable, Present
+from chiplog.capabilities.agent_loop.recovery_contracts import (
+    NotApplicable,
+    OriginalObligationBinding,
+    Present,
+)
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
     ConsequentialAcceptedCall,
@@ -135,6 +140,20 @@ class R14NativeSelectedOutcomePublication:
 
 
 @dataclass(frozen=True, slots=True)
+class R14NativeHistoricalClosedOutcomeLocator:
+    """Exact retained CLOSED member selected by an R14 terminal cut."""
+
+    selected_outcome_record_id: str
+    selected_outcome_bytes: bytes
+    selected_outcome_fingerprint: str
+    selected_effect_member_bytes: bytes
+    selected_decision: CallSubjectHead
+    outcome_commit_sequence: int
+    publication_ordinal: int
+    batch_record_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class R14NativeAcceptedOpenOutcome:
     """Retained selected R16 OPEN cause and current outcome for one accepted call."""
 
@@ -159,6 +178,187 @@ class R14NativeAcceptedOpenOutcome:
     complete_ordered_dispatch_sources: tuple[RecoverySourceRecord, ...]
     complete_ordered_dispatch_members: tuple[SelectedEffectHistoryMember, ...]
     complete_ordered_evidence_sources: tuple[RecoverySourceRecord, ...]
+
+
+def _accepted_open_cut_mismatches(
+    runtime: CommonCliExecutionRuntime,
+    cut,
+    outcome,
+    authenticated_history,
+    original_obligation: OriginalObligationBinding,
+) -> tuple[str, ...]:
+    """Name retained OPEN cut fields that disagree with accepted/Effects source cuts."""
+    accepted = outcome.accepted
+    source = accepted.source
+    seal = accepted.selected_seal
+    acceptance = accepted.acceptance
+    rows = tuple(
+        row
+        for row in source.target_inventory_rows
+        if row.original_call_id == accepted.original_call_id
+    )
+    lineage = tuple(source.target_run_lineage)
+    if len(rows) != 1 or len(lineage) == 0:
+        return ("accepted_member_or_run_lineage",)
+    row = rows[0]
+    accepted_record = acceptance.loop_proposal.accepted
+    execution_intent = acceptance.loop_proposal.execution_intent
+    selected = outcome.selected_member.selected_decision
+    snapshot = authenticated_history[0]
+    run_matches = tuple(
+        run
+        for run in snapshot.records
+        if isinstance(run, ExecutionRunRecord)
+        and run.run_id == lineage[-1].subject_id
+        and run.head == lineage[-1].revision.head
+    )
+    if len(run_matches) != 1:
+        return ("current_run",)
+    run = run_matches[0]
+    current_run_ref = CallSubjectHead(
+        subject_id=run.run_id,
+        revision=Present(head=run.head, fingerprint=run.digest()),
+    )
+    if lineage[-1] != current_run_ref:
+        return ("current_run",)
+    selected_outcome_bytes = outcome.outcome.canonical_bytes()
+    checks = {
+        "tenant_id": cut.tenant_id == source.tenant_id,
+        "database_id": cut.database_id == source.database_identity[0],
+        "current_run_id": cut.current_run.subject_id == run.run_id,
+        "current_run_head": cut.current_run.revision.head == run.head,
+        "current_run_fingerprint": cut.current_run.revision.fingerprint == run.digest(),
+        "current_run_bytes": cut.current_run_bytes == run.canonical_bytes(),
+        "response_id": cut.response_id == seal.response_seal.subject_id,
+        "original_call_id": cut.original_call_id == accepted.original_call_id,
+        "initialized": cut.initialized == accepted.initialized,
+        "acceptance_accepted": row.acceptance.accepted == cut.accepted.revision,
+        "acceptance_execution_intent": (
+            row.acceptance.execution_intent == cut.execution_intent.revision
+        ),
+        "acceptance_effect_intent": (
+            row.acceptance.external_effect_intent == cut.external_effect_intent.revision
+        ),
+        "accepted_id": cut.accepted.subject_id == accepted_record.accepted_id,
+        "accepted_bytes": cut.accepted_record_bytes == accepted_record.canonical_bytes(),
+        "execution_intent_id": (
+            cut.execution_intent.subject_id == execution_intent.execution_intent_id
+        ),
+        "execution_intent_bytes": (
+            cut.execution_intent_record_bytes == execution_intent.canonical_bytes()
+        ),
+        "effect_intent": cut.external_effect_intent == execution_intent.external_intent,
+        "outcome_record_id": cut.selected_outcome_record_id == outcome.outcome_record_id,
+        "outcome_bytes": cut.selected_outcome_bytes == selected_outcome_bytes,
+        "outcome_fingerprint": cut.selected_outcome_fingerprint
+        == hashlib.sha256(selected_outcome_bytes).hexdigest(),
+        "decision_id": cut.selected_decision.subject_id == selected.subject_id,
+        "decision_head": cut.selected_decision.revision.head == selected.head,
+        "decision_fingerprint": cut.selected_decision.revision.fingerprint == selected.fingerprint,
+        "outcome_commit_sequence": cut.outcome_commit_sequence == outcome.commit_sequence,
+        "publication_ordinal": cut.publication_ordinal == outcome.publication_ordinal,
+        "batch_record_ids": cut.batch_record_ids == outcome.batch_record_ids,
+    }
+    mismatches = tuple(name for name, valid in checks.items() if not valid)
+    if mismatches != (
+        "current_run_head",
+        "current_run_fingerprint",
+        "current_run_bytes",
+    ):
+        return mismatches
+    if not _selected_suspension_preserves_open_cut(
+        runtime,
+        cut,
+        run,
+        current_run_ref,
+        snapshot,
+        original_obligation,
+    ):
+        return mismatches
+    return ()
+
+
+def _selected_suspension_preserves_open_cut(
+    runtime: CommonCliExecutionRuntime,
+    cut,
+    current_run: ExecutionRunRecord,
+    current_run_ref: CallSubjectHead,
+    authenticated_history: ExecutionHistorySnapshot,
+    original_obligation: OriginalObligationBinding,
+) -> bool:
+    """Allow the retained OPEN cut's Run to advance only through its selected suspension."""
+    if (
+        original_obligation.original_run_id != cut.current_run.subject_id
+        or original_obligation.original_call_id != cut.original_call_id
+        or original_obligation.evidence_stream_id != cut.external_effect_intent.subject_id
+    ):
+        return False
+    retained_runs = tuple(
+        record
+        for record in authenticated_history.records
+        if isinstance(record, ExecutionRunRecord)
+        and record.run_id == cut.current_run.subject_id
+        and record.head == cut.current_run.revision.head
+        and record.digest() == cut.current_run.revision.fingerprint
+        and record.canonical_bytes() == cut.current_run_bytes
+    )
+    current_runs = tuple(
+        record
+        for record in authenticated_history.records
+        if isinstance(record, ExecutionRunRecord)
+        and record.run_id == current_run.run_id
+        and record.head == current_run.head
+        and record.digest() == current_run.digest()
+        and record.canonical_bytes() == current_run.canonical_bytes()
+    )
+    if (
+        len(retained_runs) != 1
+        or len(current_runs) != 1
+        or current_run.tenant != retained_runs[0].tenant
+        or current_run.run_id != retained_runs[0].run_id
+        or current_run.predecessor != retained_runs[0].head
+    ):
+        return False
+    from chiplog.composition import r14_execution_suspension as suspension
+
+    operation_id = (
+        "execution-suspension:"
+        + cut.current_run.subject_id
+        + ":"
+        + cut.current_run.revision.head
+    )
+    try:
+        selected_entry = suspension._entry_for(runtime, operation_id)
+        if selected_entry is None:
+            return False
+        _, _, entry = selected_entry
+        evidence = suspension._retained(entry)
+        command = suspension._command(evidence)
+        validated_evidence, selected = suspension._validate_selected(
+            runtime,
+            entry,
+            command,
+            check_history=False,
+        )
+        if validated_evidence != evidence:
+            return False
+        result_run = evidence.result.run
+        matching_obligations = tuple(
+            binding
+            for binding in selected.baseline.original_obligations
+            if binding == original_obligation
+        )
+        return (
+            evidence.request.cut.current_run == cut.current_run
+            and selected.baseline.predecessor_run == cut.current_run
+            and selected.pair.predecessor_run == cut.current_run
+            and selected.pair.suspended_run == current_run_ref
+            and result_run == current_run
+            and result_run.canonical_bytes() == current_run.canonical_bytes()
+            and len(matching_obligations) == 1
+        )
+    except (LoopRejected, OSError, RuntimeError, TypeError, ValueError, KeyError):
+        return False
 
 
 def _selected_outcome_publication(
@@ -460,6 +660,7 @@ class R14NativeSelectedAccountingSource:
         *,
         authenticated_history=None,
         authenticated_effects_history: ExecutionHistorySnapshot | None = None,
+        authenticated_accepted_open_recoveries: tuple = (),
         authenticated_projection: bool = False,
     ) -> PrepareNativeSealedAccountingV3 | None:
         """Build exact ordered terminal frontiers for one authenticated native seal."""
@@ -515,6 +716,53 @@ class R14NativeSelectedAccountingSource:
             )
             if accepted is None:
                 return None
+            open_recoveries = tuple(
+                evidence
+                for evidence in authenticated_accepted_open_recoveries
+                if evidence.request.cut.response_id == selected_response.subject_id
+                and evidence.request.cut.original_call_id == row.original_call_id
+            )
+            if len(open_recoveries) > 1:
+                return None
+            if open_recoveries:
+                if authenticated_history is None:
+                    return None
+                from chiplog.composition.r14_accepted_open_accounting_publication import (
+                    _accepted_open_call_frontier,
+                )
+
+                cut = open_recoveries[0].request.cut
+                accepted_outcome = self.collect_one_accepted_open_outcome(
+                    accepted.source.target_run_lineage[-1],
+                    selected_only=True,
+                    expected_outcome_record_id=cut.selected_outcome_record_id,
+                    expected_selected_decision=cut.selected_decision,
+                    expected_tenant_commit_sequence=cut.tenant_commit_sequence,
+                    original_call_id=row.original_call_id,
+                    _accepted_facts=accepted,
+                    authenticated_effects_history=authenticated_effects_history,
+                )
+                if accepted_outcome is None:
+                    return None
+                mismatches = _accepted_open_cut_mismatches(
+                    self._runtime,
+                    cut,
+                    accepted_outcome,
+                    authenticated_history,
+                    open_recoveries[0].result.opening.original,
+                )
+                if mismatches:
+                    return None
+                try:
+                    frontier = _accepted_open_call_frontier(
+                        accepted,
+                        cut,
+                        open_recoveries[0].result,
+                    )
+                except (LoopRejected, TypeError, ValueError):
+                    return None
+                frontiers.append(frontier)
+                continue
             from chiplog.composition.r14_accepted_direct_terminal_frontier import (
                 selected_accepted_direct_terminal_call_frontier,
             )
@@ -696,11 +944,6 @@ class R14NativeSelectedAccountingSource:
         """Project already-authenticated selected history to one exact acceptance."""
         if facts is None or facts.target_legacy_seals:
             return None
-        if len(facts.selected_native_seals) != 1:
-            return None
-        seal = facts.selected_native_seals[0]
-        if not seal.initialized_records or not seal.inventory_rows:
-            return None
         acceptances = facts.target_acceptances
         if original_call_id is None:
             if len(acceptances) != 1:
@@ -711,6 +954,19 @@ class R14NativeSelectedAccountingSource:
             for item in acceptances
             if item.loop_request.binding.original_call_id == original_call_id
         )
+        matching_seals = tuple(
+            seal
+            for seal in facts.selected_native_seals
+            if any(
+                record.original_call_id == original_call_id
+                for record in seal.initialized_records
+            )
+        )
+        if len(matching_seals) != 1:
+            return None
+        seal = matching_seals[0]
+        if not seal.initialized_records or not seal.inventory_rows:
+            return None
         records = tuple(
             item for item in seal.initialized_records if item.original_call_id == original_call_id
         )
@@ -773,6 +1029,7 @@ class R14NativeSelectedAccountingSource:
         expected_tenant_commit_sequence: int | None = None,
         original_call_id: str | None = None,
         _accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
+        authenticated_effects_history: ExecutionHistorySnapshot | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join the retained OPEN cause to a still-open current R16 outcome."""
         return self._collect_one_accepted_outcome(
@@ -784,6 +1041,7 @@ class R14NativeSelectedAccountingSource:
             current_obligation_state="OPEN",
             accepted_facts=_accepted_facts,
             original_call_id=original_call_id,
+            authenticated_effects_history=authenticated_effects_history,
         )
 
     def collect_one_accepted_closed_outcome(
@@ -798,6 +1056,7 @@ class R14NativeSelectedAccountingSource:
         original_call_id: str | None = None,
         _accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
         authenticated_effects_history: ExecutionHistorySnapshot | None = None,
+        expected_closed_outcome_locator: R14NativeHistoricalClosedOutcomeLocator | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Read a closed current outcome while retaining its original OPEN cause.
 
@@ -815,6 +1074,7 @@ class R14NativeSelectedAccountingSource:
             accepted_facts=_accepted_facts,
             original_call_id=original_call_id,
             authenticated_effects_history=authenticated_effects_history,
+            expected_closed_outcome_locator=expected_closed_outcome_locator,
         )
 
     def _collect_one_accepted_outcome(
@@ -830,6 +1090,7 @@ class R14NativeSelectedAccountingSource:
         accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
         original_call_id: str | None = None,
         authenticated_effects_history: ExecutionHistorySnapshot | None = None,
+        expected_closed_outcome_locator: R14NativeHistoricalClosedOutcomeLocator | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join one accepted call's retained OPEN cause to its current outcome.
 
@@ -849,6 +1110,20 @@ class R14NativeSelectedAccountingSource:
             and type(expected_selected_decision) is not CallSubjectHead
         ):
             raise TypeError("historical OPEN selected decision must be exact")
+        if expected_closed_outcome_locator is not None:
+            if current_obligation_state != "CLOSED":
+                raise TypeError("historical CLOSED locator requires a closed outcome reader")
+            if type(expected_closed_outcome_locator) is not R14NativeHistoricalClosedOutcomeLocator:
+                raise TypeError("historical CLOSED locator must be exact")
+            if (
+                expected_tenant_commit_sequence is not None
+                and expected_tenant_commit_sequence
+                != expected_closed_outcome_locator.outcome_commit_sequence
+            ):
+                raise TypeError("historical CLOSED locator disagrees with selected tenant sequence")
+            expected_tenant_commit_sequence = (
+                expected_closed_outcome_locator.outcome_commit_sequence
+            )
         from chiplog.composition.r16_dispatch_history import verify_dispatch_history
         from chiplog.composition.r16_effects import _read_materialized_effects_with_history
 
@@ -873,6 +1148,18 @@ class R14NativeSelectedAccountingSource:
                 )
                 if accepted is None:
                     return None
+                seal_call_ids = frozenset(
+                    item.original_call_id for item in accepted.selected_seal.initialized_records
+                )
+                allowed_intent_ids = frozenset(
+                    row.acceptance.external_effect_intent.head
+                    for row in accepted.source.target_inventory_rows
+                    if row.original_call_id in seal_call_ids
+                    and isinstance(row.acceptance, ConsequentialAcceptedCall)
+                    and isinstance(row.acceptance.external_effect_intent, Present)
+                )
+                if accepted.original_call_id not in seal_call_ids or not allowed_intent_ids:
+                    return None
                 matching_rows = tuple(
                     row
                     for row in accepted.source.target_inventory_rows
@@ -886,15 +1173,35 @@ class R14NativeSelectedAccountingSource:
                 ):
                     return None
                 suffix_verifier = None
+                native_suffix_authenticated = False
                 if (
                     expected_tenant_commit_sequence is not None
                     or allow_authenticated_later_suffix
                 ):
+                    from chiplog.composition.r14_historical_suffix import (
+                        authenticate_selected_r14_native_terminal_suffix_held,
+                    )
                     from chiplog.composition.r14_original_call_resolution_source import (
                         authenticate_selected_resolution_prefix_held,
                     )
 
-                    suffix_verifier = authenticate_selected_resolution_prefix_held
+                    def authenticate_selected_suffix(runtime, actual, anchored):
+                        nonlocal native_suffix_authenticated
+                        if authenticate_selected_resolution_prefix_held(
+                            runtime, actual, anchored
+                        ):
+                            return True
+                        native_suffix_authenticated = (
+                            authenticate_selected_r14_native_terminal_suffix_held(
+                                runtime,
+                                actual,
+                                anchored,
+                                original_call_id=accepted.original_call_id,
+                            )
+                        )
+                        return native_suffix_authenticated
+
+                    suffix_verifier = authenticate_selected_suffix
                 cut, retained_journal = _read_materialized_effects_with_history(
                     runtime,
                     runtime._owner_decisions(),
@@ -902,6 +1209,17 @@ class R14NativeSelectedAccountingSource:
                     authenticated_execution_history=authenticated_effects_history,
                 )
                 verified = verify_dispatch_history(cut, retained_journal)
+                if native_suffix_authenticated:
+                    from chiplog.composition.r14_historical_suffix import (
+                        validate_native_terminal_suffix_semantics,
+                    )
+
+                    validate_native_terminal_suffix_semantics(
+                        runtime,
+                        retained_journal,
+                        accepted.original_call_id,
+                        allowed_intent_ids=allowed_intent_ids,
+                    )
                 authenticated_suffix = False
                 if (
                     expected_tenant_commit_sequence is not None
@@ -910,12 +1228,9 @@ class R14NativeSelectedAccountingSource:
                     before != anchored_before
                     or anchored_before != cut.materialization_commitment
                 ):
-                    from chiplog.composition.r14_original_call_resolution_source import (
-                        authenticate_selected_resolution_prefix_held,
-                    )
-
-                    authenticated_suffix = authenticate_selected_resolution_prefix_held(
-                        runtime, before, anchored_before
+                    authenticated_suffix = bool(
+                        suffix_verifier is not None
+                        and suffix_verifier(runtime, before, anchored_before)
                     )
                 if (
                     retained_journal != journal
@@ -981,7 +1296,17 @@ class R14NativeSelectedAccountingSource:
                     and expected_intent.revision.fingerprint == intent_ref.fingerprint
                 ):
                     candidates.append((record, member, row))
-            if expected_outcome_record_id is None:
+            if expected_closed_outcome_locator is not None:
+                # The terminal identifies the CLOSED member. The OPEN cause is
+                # still selected independently from the same verified intent
+                # history; the locator must never be reinterpreted as that cause.
+                selected = [
+                    item
+                    for item in candidates
+                    if item[0].snapshot.state == "OUTCOME_UNKNOWN"
+                    and item[0].snapshot.obligation.state == "OPEN"
+                ]
+            elif expected_outcome_record_id is None:
                 if current_obligation_state == "OPEN":
                     selected = [
                         item
@@ -1024,15 +1349,72 @@ class R14NativeSelectedAccountingSource:
             if len(selected) != 1:
                 return None
             outcome, member, row = selected[0]
-            current = (
-                latest_at_cut.get(outcome.snapshot.intent.intent_id)
-                if expected_tenant_commit_sequence is not None
-                else latest.get(outcome.snapshot.intent.intent_id)
-            )
+            if expected_closed_outcome_locator is not None:
+                locator = expected_closed_outcome_locator
+                historical_closure = latest_at_cut.get(outcome.snapshot.intent.intent_id)
+                # `latest_at_cut` was built from the authenticated physical
+                # snapshot, so it is the last member for this intent at the
+                # terminal's exact tenant sequence. Later members remain in
+                # `latest` and stay independently covered by full-snapshot and
+                # suffix authentication above.
+                if (
+                    historical_closure is None
+                    or not isinstance(historical_closure[0], DispatchOutcomeRecordV2)
+                    or historical_closure[0].snapshot.obligation.state != "CLOSED"
+                    or historical_closure[2].record.record_id != locator.selected_outcome_record_id
+                    or historical_closure[0].canonical_bytes() != locator.selected_outcome_bytes
+                    or historical_closure[2].record.fingerprint
+                    != locator.selected_outcome_fingerprint
+                    or historical_closure[1].canonical_bytes()
+                    != locator.selected_effect_member_bytes
+                    or historical_closure[1].selected_decision.subject_id
+                    != locator.selected_decision.subject_id
+                    or historical_closure[1].selected_decision.head
+                    != locator.selected_decision.revision.head
+                    or historical_closure[1].selected_decision.fingerprint
+                    != locator.selected_decision.revision.fingerprint
+                    or historical_closure[2].commit_sequence != locator.outcome_commit_sequence
+                    or historical_closure[2].publication_ordinal != locator.publication_ordinal
+                    or historical_closure[2].batch_record_ids != locator.batch_record_ids
+                ):
+                    return None
+                prefix_record_ids = {
+                    item.record.record_id
+                    for item in cut.rows
+                    if item.commit_sequence <= locator.outcome_commit_sequence
+                }
+                prefix_records = tuple(
+                    item for item in verified.v2_records if item.record.head in prefix_record_ids
+                )
+                prefix_members = tuple(
+                    item
+                    for item in verified.members
+                    if item.record.head in prefix_record_ids
+                )
+                latest_outcome = _closed_outcome_join_is_valid(
+                    expected_intent.subject_id,
+                    (outcome, member, row),
+                    historical_closure,
+                    prefix_records,
+                    prefix_members,
+                )
+                if latest_outcome is None:
+                    return None
+                current = historical_closure
+            else:
+                current = (
+                    latest_at_cut.get(outcome.snapshot.intent.intent_id)
+                    if expected_tenant_commit_sequence is not None
+                    else latest.get(outcome.snapshot.intent.intent_id)
+                )
             if current is None:
                 return None
             latest_record, latest_member, latest_row = current
-            if current_obligation_state == "OPEN":
+            if expected_closed_outcome_locator is not None:
+                # Already checked as the exact last member of its historical
+                # prefix above; do not apply full-history terminality to it.
+                pass
+            elif current_obligation_state == "OPEN":
                 latest_outcome = _open_outcome_join_is_valid(
                     expected_intent.subject_id,
                     (outcome, member, row),
@@ -1072,12 +1454,9 @@ class R14NativeSelectedAccountingSource:
             ) and (
                 after != anchored_after or anchored_after != before
             ):
-                from chiplog.composition.r14_original_call_resolution_source import (
-                    authenticate_selected_resolution_prefix_held,
-                )
-
-                authenticated_suffix = authenticate_selected_resolution_prefix_held(
-                    runtime, after, anchored_after
+                authenticated_suffix = bool(
+                    suffix_verifier is not None
+                    and suffix_verifier(runtime, after, anchored_after)
                 )
             if (
                 after != before

@@ -61,6 +61,11 @@ class CallPublicationAuthority:
         exchange = await prepare_call_exchange(self.runtime, peer, adoption)
         if exchange.observed.result.reference_bytes != self.observed.result.reference_bytes:
             raise LoopRejected("call preparation invocation changed principal binding")
+        # Replay can consume the original ingress budget. The fresh preparation
+        # authenticates the same principal and supplies the invocation proof that
+        # the writer will recheck against current trust state before selection.
+        self.observed = exchange.observed
+        self._invocations.observed = exchange.observed
         value = CallAcceptanceIssuance.model_validate_json(exchange.canonical_bytes())
         identity = call_identity(value)
         with self.runtime._authority_gate().hold():
@@ -111,9 +116,10 @@ class CallPublicationAuthority:
             for row in inventory.ordered_calls
             if row.original_call_id == target.original_call_id
         )
+        if fresh != value.captured:
+            raise LoopRejected("call acceptance predecessor source cut changed")
         if (
-            fresh != value.captured
-            or inventory != cut.predecessor_inventory
+            inventory != cut.predecessor_inventory
             or len(rows) != 1
             or rows[0].initialized != target.initialized
             or not isinstance(rows[0].acceptance, InitializedCall)

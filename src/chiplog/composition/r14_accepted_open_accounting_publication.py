@@ -57,8 +57,8 @@ from chiplog.platform.authority_reads import capture_authority_snapshot_commitme
 from chiplog.platform.workspace_snapshot import read_connection
 
 
-def _accepted_open_sealed_accounting(facts, cut, result):
-    """Build the exact one-call RECOVERY_REQUIRED frontier from selected records."""
+def _accepted_open_call_frontier(accepted_facts, cut, result) -> TerminalCallFrontier:
+    """Build one exact RECOVERY_REQUIRED frontier from selected OPEN records."""
     opening, terminal = result.opening, result.terminal
     opening_raw, terminal_raw = opening.canonical_bytes(), terminal.canonical_bytes()
     opening_digest = hashlib.sha256(opening_raw).hexdigest()
@@ -71,7 +71,7 @@ def _accepted_open_sealed_accounting(facts, cut, result):
         subject_id=terminal.terminal_id,
         revision=Present(head="record:" + terminal_digest, fingerprint=terminal_digest),
     )
-    accepted = facts.accepted.acceptance
+    accepted = accepted_facts.acceptance
     manifest = tuple(
         member.revision for member in accepted.loop_proposal.complete_acceptance_manifest
     )
@@ -122,6 +122,12 @@ def _accepted_open_sealed_accounting(facts, cut, result):
             ),
         ),
     )
+    return call
+
+
+def _accepted_open_sealed_accounting(facts, cut, result):
+    """Build the legacy whole-seal accounting projection for one call."""
+    call = _accepted_open_call_frontier(facts.accepted, cut, result)
     seal = facts.accepted.selected_seal
     ordered_call_ids = tuple(item.original_call_id for item in seal.initialized_records)
     return sealed_call_accounting(

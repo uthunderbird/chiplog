@@ -52,6 +52,7 @@ def decode_selected_native_sealed_accounting_v3(
     cancellations: list,
     run_records: list[RunRecord | ExecutionRunRecord],
     verified_h1_prepares: dict,
+    accepted_open_recoveries: tuple = (),
 ) -> NativeSealedAccountingV3Record:
     """Rebuild source and exact V3 request from the authenticated outer history cut."""
     if command.operation_kind != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION:
@@ -119,6 +120,7 @@ def decode_selected_native_sealed_accounting_v3(
         evidence.request.selected_response,
         authenticated_history=history,
         authenticated_effects_history=current_history[0],
+        authenticated_accepted_open_recoveries=accepted_open_recoveries,
         authenticated_projection=True,
     )
     if rebuilt != evidence.request:

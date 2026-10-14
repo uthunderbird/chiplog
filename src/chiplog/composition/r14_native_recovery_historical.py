@@ -769,6 +769,80 @@ def authenticate_native_recovery_selected(
                             owner_command.canonical_bytes,
                         )
                     )
+            from chiplog.composition.r14_native_accounting_records import (
+                NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION,
+                NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA,
+                sealed_accounting_v3_command,
+                sealed_accounting_v3_envelope,
+                validate_retained_sealed_accounting_v3_publication,
+            )
+            from chiplog.composition.r14_native_sealed_accounting_v3_history import (
+                retained_selected_native_sealed_accounting_v3,
+            )
+
+            selected_v3_sources: dict[str, RecoverySourceRecord] = {}
+            matching_v3 = []
+            for decision_id, raw, item, selected in selections:
+                if selected.operation_kind != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION:
+                    continue
+                selected_evidence = retained_selected_native_sealed_accounting_v3(item)
+                if selected_evidence.request.selected_response != facts.selected_seal.response_seal:
+                    continue
+                expected_command = sealed_accounting_v3_command(selected_evidence)
+                expected_envelope = sealed_accounting_v3_envelope(
+                    selected_evidence
+                ).canonical_bytes().decode()
+                selected_record = validate_retained_sealed_accounting_v3_publication(
+                    selected_evidence
+                )
+                source_stamp = selected_evidence.source_stamp
+                if (
+                    selected != expected_command
+                    or len(expected_command.records) != 1
+                    or item.get("operation_kind")
+                    != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION
+                    or item.get("operation_id") != expected_command.idempotency_key
+                    or item.get("native_sealed_accounting_v3_envelope") != expected_envelope
+                    or item.get("predecessor")
+                    != source_stamp.authority_materialization_commitment
+                    or item.get("expected_head") != expected_command.expected_head
+                    or item.get("fingerprint") != expected_command.request_fingerprint
+                    or source_stamp.tenant_id != cut.tenant_id
+                    or source_stamp.database_identity != runtime._database_identity
+                    or source_stamp.tenant_commit_sequence != expected_command.expected_head
+                    or selected_record != selected_evidence.record
+                    or selected_record.record_id != expected_command.records[0].record_id
+                ):
+                    return False
+                selected_decision = _ref(
+                    selected.idempotency_key, raw, decision_id
+                )
+                selected_physical = [
+                    row
+                    for row in physical
+                    if row.physical_record.subject_id == selected_record.record_id
+                ]
+                if (
+                    len(selected_physical) != 1
+                    or (
+                        selected_physical[0].owner,
+                        selected_physical[0].schema_id,
+                        selected_physical[0].canonical_record_bytes,
+                        selected_physical[0].selected_decision,
+                    )
+                    != (
+                        "agent_loop",
+                        NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA,
+                        selected_record.canonical_bytes(),
+                        selected_decision,
+                    )
+                ):
+                    return False
+                matching_v3.append((selected_record.record_id, selected_physical[0]))
+            if len(matching_v3) > 1:
+                return False
+            selected_v3_sources.update(matching_v3)
+
             known_ids = {
                 row.physical_record.subject_id
                 for row in physical
@@ -781,6 +855,9 @@ def authenticate_native_recovery_selected(
                     "chiplog.execution.continuation-ready.v1",
                 }
             }
+            if known_ids.intersection(selected_v3_sources):
+                return False
+            known_ids.update(selected_v3_sources)
             if not classify_native_occurrences(
                 occurrences,
                 {},

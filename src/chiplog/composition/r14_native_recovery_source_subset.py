@@ -230,7 +230,7 @@ class R14NativeRecoverySourceSubsetReader:
                     cancellations,
                     authenticated_execution_history=authenticated_history,
                 )
-        except OSError, RuntimeError, TypeError, ValueError:
+        except (OSError, RuntimeError, TypeError, ValueError):
             return None
 
     @staticmethod

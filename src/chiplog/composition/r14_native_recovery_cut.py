@@ -936,16 +936,10 @@ class NativeRecoveryCutSource:
             for row in snapshot.records
             if isinstance(row, ExecutionRunRecord) and row.run_id == scope.planned_run_id
         )
-        suspension_suffix = (
-            lineage[-1].state == "SUSPENDED"
-            if lineage
-            else False
-        )
-        authenticated_lineage = lineage[:-1] if suspension_suffix else lineage
+        suspension_suffix = bool(lineage and lineage[-1].state == "SUSPENDED")
         if (
             not lineage
-            or tuple(_run_ref(row) for row in authenticated_lineage)
-            != facts.source.target_run_lineage
+            or tuple(_run_ref(row) for row in lineage) != facts.source.target_run_lineage
         ):
             return None
         run = lineage[-1]
@@ -1339,6 +1333,70 @@ class NativeRecoveryCutSource:
                 selected_suspension_command.schema_id,
                 selected_suspension_command.canonical_payload,
             )
+        from chiplog.composition.r14_native_accounting_records import (
+            NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION,
+            NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA,
+            sealed_accounting_v3_command,
+            validate_retained_sealed_accounting_v3_publication,
+        )
+        from chiplog.composition.r14_native_sealed_accounting_v3_history import (
+            retained_selected_native_sealed_accounting_v3,
+        )
+
+        v3_selections = []
+        for _, _, raw in runtime._loop_decisions().entries():
+            entry = json.loads(raw)
+            if (
+                entry.get("kind") != "DECIDED"
+                or entry.get("operation_kind")
+                != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION
+            ):
+                continue
+            evidence = retained_selected_native_sealed_accounting_v3(entry)
+            if (
+                evidence.request.selected_response.subject_id
+                == seals[0].proposal.fan_out.response_seal.response_seal_id
+                and evidence.request.selected_response.revision.fingerprint
+                == seals[0].proposal.fan_out.response_seal.digest()
+            ):
+                command = sealed_accounting_v3_command(evidence)
+                record = validate_retained_sealed_accounting_v3_publication(evidence)
+                if (
+                    runtime._publication(entry) != command
+                    or entry.get("operation_id") != command.idempotency_key
+                    or entry.get("native_sealed_accounting_v3_envelope")
+                    is None
+                    or record.record_id != command.records[0].record_id
+                ):
+                    return None
+                v3_selections.append(evidence)
+        if len(v3_selections) > 1:
+            return None
+        for evidence in v3_selections:
+            record = evidence.record
+            raw = record.canonical_bytes()
+            selection = selected.get(record.record_id)
+            if selection is None or (
+                selection[0].owner,
+                selection[0].schema_id,
+                selection[0].canonical_bytes,
+            ) != (
+                "agent_loop",
+                NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA,
+                raw,
+            ):
+                return None
+            native_sources.setdefault(record.record_id, []).append(
+                RecoverySourceRecord(
+                    owner="agent_loop",
+                    subject=_ref(record.record_id, raw),
+                    schema_id=NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA,
+                    canonical_record_bytes=raw,
+                    selected_decision=selection[1],
+                    physical_record=_ref(record.record_id, raw),
+                )
+            )
+            known.add(record.record_id)
         if subset.authenticated_acceptances:
             from chiplog.composition.r14_call_batch import (
                 LOOP_PREPARATION_SCHEMA,

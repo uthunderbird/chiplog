@@ -76,6 +76,7 @@ class R14OriginalNativePrepareProjection:
     retained_prepare_bytes: bytes
     prepared_run: CallSubjectHead
     prepared_run_bytes: bytes
+    selected_turn_id: str
     workspace_issuance: H1WorkspaceIssuanceRefV1
     workspace_issuance_bytes: bytes
     manifest: ExecutionVisibilityManifest
@@ -151,10 +152,22 @@ class R14OriginalNativePrepareSource:
             or prepare.started_run.policy != proposal.run.policy
         ):
             raise R14OriginalPrepareSourceError("selected Prepare differs from its physical Run")
-        if len(selected.captured_run.turns) != 1 or len(proposal.run.turns) != 1:
-            raise R14OriginalPrepareSourceError("selected Prepare has no one-turn native lineage")
-        captured_turn = selected.captured_run.turns[0]
-        proposal_turn = proposal.run.turns[0]
+        sealed_turns = tuple(
+            turn for turn in selected.sealed_run.turns if turn.response_seal == selected_seal
+        )
+        if len(sealed_turns) != 1:
+            raise R14OriginalPrepareSourceError("selected response seal has no unique Run turn")
+        selected_turn_id = sealed_turns[0].turn_id
+        captured_turns = tuple(
+            turn for turn in selected.captured_run.turns if turn.turn_id == selected_turn_id
+        )
+        proposal_turns = tuple(
+            turn for turn in proposal.run.turns if turn.turn_id == selected_turn_id
+        )
+        if len(captured_turns) != 1 or len(proposal_turns) != 1:
+            raise R14OriginalPrepareSourceError("selected Prepare lacks its exact Run turn")
+        captured_turn = captured_turns[0]
+        proposal_turn = proposal_turns[0]
         if (
             len(captured_turn.attempts) != 1
             or captured_turn.selector != 0
@@ -208,8 +221,9 @@ class R14OriginalNativePrepareSource:
         if isinstance(retained, RetainedExecutionTransitionV4):
             native_binding = retained.native_scope_binding
             verify_native_prepare_scope(self._runtime, request, native_binding, historical=True)
-            calls = selected.sealed_run.turns[0].initialized_calls
-            attempt = selected.captured_run.turns[0].attempts[0]
+            sealed_turn = sealed_turns[0]
+            calls = sealed_turn.initialized_calls
+            attempt = captured_turn.attempts[0]
             if attempt.response_base64 is None or calls is None or len(calls) != 1:
                 raise R14OriginalPrepareSourceError(
                     "native scope requires its sole initialized call"
@@ -240,6 +254,7 @@ class R14OriginalNativePrepareSource:
                 revision=Present(head=proposal.run.head, fingerprint=digest),
             ),
             prepared_run_bytes=proposal.run.canonical_bytes(),
+            selected_turn_id=selected_turn_id,
             workspace_issuance=prepare.issuance_ref,
             workspace_issuance_bytes=issuance_bytes,
             manifest=manifest,

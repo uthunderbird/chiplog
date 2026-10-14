@@ -349,21 +349,10 @@ async def prepare_call_exchange(
         effects_proposal=DispatchRecordV2.model_validate_json(raw),
     )
     build_acceptance_envelope(retained)
-    with runtime._authority_gate().hold():
-        fresh = capture_dispatch(
-            runtime,
-            resources,
-            observed,
-            worker.run.run_id,
-            original_call_id=target.original_call_id,
-        )
-        if fresh != captured:
-            raise LoopRejected("call acceptance source cut changed during owner preparation")
-        require_dispatch_scope(fresh, resources, mandate, None, first_send=False)
-        if time.monotonic_ns() >= min(
-            loop_sent.budget.absolute_deadline_ns, effects_sent.budget.absolute_deadline_ns
-        ):
-            raise LoopRejected("call acceptance owner preparation expired")
+    if time.monotonic_ns() >= min(
+        loop_sent.budget.absolute_deadline_ns, effects_sent.budget.absolute_deadline_ns
+    ):
+        raise LoopRejected("call acceptance owner preparation expired")
     return PreparedCallExchange(
         preview=preview,
         adoption=adoption,

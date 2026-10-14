@@ -71,6 +71,7 @@ def _selected(runtime: CommonCliExecutionRuntime, identity: str) -> dict[str, ob
 def _current_cut(
     runtime: CommonCliExecutionRuntime,
     *,
+    original_call_id: str | None = None,
     selected_only: bool = False,
     expected_source_cut: AcceptedDirectTerminalCutV1 | None = None,
     source_materialization_commitment: str | None = None,
@@ -118,18 +119,38 @@ def _current_cut(
         source_run,
         selected_only=selected_only,
         original_call_id=(
-            None if expected_source_cut is None else expected_source_cut.original_call_id
+            original_call_id
+            if expected_source_cut is None
+            else expected_source_cut.original_call_id
         ),
         _source_facts=selected_source,
     )
     if accepted is None:
         return None
+    closed_locator = None
+    if expected_source_cut is not None:
+        from chiplog.composition.r14_native_selected_accounting_source import (
+            R14NativeHistoricalClosedOutcomeLocator,
+        )
+
+        closed_locator = R14NativeHistoricalClosedOutcomeLocator(
+            selected_outcome_record_id=expected_source_cut.selected_outcome_record_id,
+            selected_outcome_bytes=expected_source_cut.selected_outcome_bytes,
+            selected_outcome_fingerprint=expected_source_cut.selected_outcome_fingerprint,
+            selected_effect_member_bytes=expected_source_cut.selected_effect_member_bytes,
+            selected_decision=expected_source_cut.selected_decision,
+            outcome_commit_sequence=expected_source_cut.outcome_commit_sequence,
+            publication_ordinal=expected_source_cut.publication_ordinal,
+            batch_record_ids=expected_source_cut.batch_record_ids,
+        )
     closed = source.collect_one_accepted_closed_outcome(
         source_run,
         selected_only=selected_only,
         original_call_id=accepted.original_call_id,
         _accepted_facts=accepted,
         authenticated_effects_history=authenticated_effects_history,
+        allow_authenticated_later_suffix=expected_source_cut is not None,
+        expected_closed_outcome_locator=closed_locator,
     )
     if closed is None:
         return None
@@ -151,7 +172,10 @@ def _current_cut(
 
 
 async def _finish(
-    runtime: CommonCliExecutionRuntime, entry: dict[str, object]
+    runtime: CommonCliExecutionRuntime,
+    entry: dict[str, object],
+    *,
+    original_call_id: str,
 ) -> PreparedAcceptedDirectTerminalV1:
     from chiplog.composition.r14_loop_history import read_selected_accepted_direct_terminal
 
@@ -166,20 +190,28 @@ async def _finish(
         is_materialized=lambda: runtime._loop_decision_materialized(command.idempotency_key, entry),
     )
     runtime._finish_decision(command.idempotency_key, expected=entry)
-    selected = read_selected_accepted_direct_terminal(runtime)
+    selected = read_selected_accepted_direct_terminal(
+        runtime, original_call_id=original_call_id
+    )
     if selected != evidence.result:
         raise LoopRejected("selected accepted/direct terminal result was not observed")
     return cast(PreparedAcceptedDirectTerminalV1, selected)
 
 
 async def publish_accepted_direct_terminal(
-    runtime: CommonCliExecutionRuntime, peer: str = "hermetic-ingress"
+    runtime: CommonCliExecutionRuntime,
+    peer: str = "hermetic-ingress",
+    *,
+    original_call_id: str | None = None,
 ) -> PreparedAcceptedDirectTerminalV1:
     """Select one atomic accounting + terminal + result batch for the exact closed source."""
     observed = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
         runtime._pending()
+        validate_selected_accepted_direct_terminal(
+            runtime, original_call_id=original_call_id
+        )
         prior = [
             json.loads(raw)
             for _, _, raw in runtime._loop_decisions().entries()
@@ -189,14 +221,37 @@ async def publish_accepted_direct_terminal(
                 or "accepted_direct_terminal_evidence" in entry
             )
         ]
+        has_other_terminal = bool(prior)
+        if original_call_id is not None:
+            prior = [
+                entry
+                for entry in prior
+                if retained_accepted_direct_terminal(entry).result.accounting.original_call_id
+                == original_call_id
+            ]
         if len(prior) > 1:
             raise LoopRejected("ambiguous accepted/direct terminal history")
     if prior:
-        return await _finish(runtime, prior[0])
+        selected_call_id = (
+            retained_accepted_direct_terminal(prior[0])
+            .result.accounting.original_call_id
+        )
+        return await _finish(runtime, prior[0], original_call_id=selected_call_id)
+
+    if original_call_id is not None and has_other_terminal:
+        # Validating a different selected member can replay a full historical
+        # source cut. Refresh the actor after that read before collecting this
+        # call's own cut; the writer still binds the refreshed identity again.
+        refreshed = await runtime._execution_actor(peer)
+        if not runtime._same_execution_actor_identity(observed, refreshed):
+            raise LoopRejected(
+                "accepted/direct terminal actor changed after prior-member validation"
+            )
+        observed = refreshed
 
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
-        current = _current_cut(runtime)
+        current = _current_cut(runtime, original_call_id=original_call_id)
         if current is None:
             raise LoopRejected("exact selected closed R16 outcome unavailable; HOLD")
         facts, cut = current
@@ -238,7 +293,7 @@ async def publish_accepted_direct_terminal(
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(observed)
-                current = _current_cut(runtime)
+                current = _current_cut(runtime, original_call_id=cut.original_call_id)
                 if current is None:
                     return "STALE"
                 current_facts, current_cut = current
@@ -295,7 +350,7 @@ async def publish_accepted_direct_terminal(
         entry = _selected(runtime, identity)
         if entry is None or retained_accepted_direct_terminal(entry) != evidence:
             raise LoopRejected("selected accepted/direct terminal evidence differs")
-    return await _finish(runtime, entry)
+    return await _finish(runtime, entry, original_call_id=cut.original_call_id)
 
 
 def _selected_competing_open(runtime: CommonCliExecutionRuntime, original_call_id: str) -> bool:
@@ -347,6 +402,8 @@ def selected_direct_terminal_for_call(
 def validate_selected_accepted_direct_terminal(
     runtime: CommonCliExecutionRuntime,
     *,
+    original_call_id: str | None = None,
+    allow_multiple: bool = False,
     authenticated_history: ExecutionRecoveryHistory | None = None,
     authenticated_effects_history: ExecutionHistorySnapshot | None = None,
     authenticated_projection=None,
@@ -356,6 +413,9 @@ def validate_selected_accepted_direct_terminal(
     claimed = False
     selected: list[dict[str, object]] = []
     current_cut = None
+    seen_call_keys: set[tuple[str, str]] = set()
+    marker_history = authenticated_history
+    marker_projection = authenticated_projection
     for _, _, raw in runtime._loop_decisions().entries():
         entry = json.loads(raw)
         if entry.get("kind") != "DECIDED":
@@ -373,6 +433,13 @@ def validate_selected_accepted_direct_terminal(
             continue
         claimed = True
         evidence = retained_accepted_direct_terminal(entry)
+        call_key = (
+            evidence.result.accounting.response_id,
+            evidence.result.accounting.original_call_id,
+        )
+        if call_key in seen_call_keys:
+            raise LoopRejected("duplicate accepted/direct terminal for response and call")
+        seen_call_keys.add(call_key)
         expected = accepted_direct_terminal_command(evidence)
         if (
             command != expected
@@ -398,23 +465,57 @@ def validate_selected_accepted_direct_terminal(
                 or (state == "ABSENT" and actual != entry.get("predecessor"))
             ):
                 raise LoopRejected("accepted/direct terminal exact batch is absent or inconsistent")
+        if marker_history is None:
+            marker_history = read_execution_recovery_history(runtime, selected_only=True)
+        if marker_projection is None:
+            executions = marker_history[3]
+            if len(executions) != 1:
+                raise LoopRejected(
+                    "accepted/direct terminal requires one selected native execution"
+                )
+            seal = executions[0].proposal.fan_out.response_seal
+            seal_digest = seal.digest()
+            seal_ref = CallSubjectHead(
+                subject_id=seal.response_seal_id,
+                revision=Present(head="record:" + seal_digest, fingerprint=seal_digest),
+            )
+            marker_projection = R14OriginalNativePrepareSource(runtime).collect(seal_ref)
+            if (
+                marker_projection is None
+                or marker_projection.selected_response_seal != seal_ref
+            ):
+                raise LoopRejected("accepted/direct terminal selected Prepare projection differs")
+        marker_call_id = evidence.result.accounting.original_call_id
+        if _selected_competing_open(runtime, marker_call_id):
+            raise LoopRejected("accepted/direct terminal conflicts with selected RECOVERY_REQUIRED")
+        if original_call_id is not None and marker_call_id != original_call_id:
+            # The retained envelope and exact physical batch were authenticated
+            # above. A qualified lookup needs a semantic source cut only for
+            # its requested member; unqualified startup validation still
+            # reconstructs every marker below.
+            continue
         current = _current_cut(
             runtime,
+            original_call_id=marker_call_id,
             selected_only=True,
             expected_source_cut=evidence.request.cut,
             source_materialization_commitment=evidence.request.cut.materialization_commitment,
             source_tenant_commit_sequence=evidence.request.cut.tenant_commit_sequence,
-            authenticated_history=authenticated_history,
+            authenticated_history=marker_history,
             authenticated_effects_history=authenticated_effects_history,
-            authenticated_projection=authenticated_projection,
+            authenticated_projection=marker_projection,
         )
         if current is None or current[1] != evidence.request.cut:
             raise LoopRejected("accepted/direct terminal retained source cut differs")
-        current_cut = current
-        if _selected_competing_open(runtime, evidence.result.accounting.original_call_id):
-            raise LoopRejected("accepted/direct terminal conflicts with selected RECOVERY_REQUIRED")
-        selected.append(entry)
-    if claimed and len(selected) != 1:
+        if (
+            original_call_id is None
+            or marker_call_id == original_call_id
+        ):
+            selected.append(entry)
+            current_cut = current
+    if original_call_id is not None and not selected:
+        return None
+    if claimed and len(selected) != 1 and not allow_multiple:
         raise LoopRejected("ambiguous accepted/direct terminal selection")
     return current_cut
 

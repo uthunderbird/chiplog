@@ -131,22 +131,33 @@ def _verify_original_prepare_projection(
         ),
         None,
     )
+    prepared_turns = (
+        tuple(turn for turn in run.turns if turn.turn_id == seal.original_turn_id)
+        if isinstance(run, ExecutionRunRecord)
+        else ()
+    )
+    captured_turns = tuple(
+        turn for turn in captured.turns if turn.turn_id == seal.original_turn_id
+    )
     if (
         not isinstance(run, ExecutionRunRecord)
         or started is None
         or run.tenant != runtime._tenant_id
         or run.run_id != captured.run_id
         or run.policy != started.policy
-        or len(captured.turns) != 1
-        or len(run.turns) != 1
-        or len(captured.turns[0].attempts) != 1
-        or len(run.turns[0].attempts) != 1
+        or len(prepared_turns) != 1
+        or len(captured_turns) != 1
+        or len(prepared_turns[0].attempts) != 1
+        or len(captured_turns[0].attempts) != 1
+        or prepared_turns[0].selector != 0
+        or captured_turns[0].selector != 0
+        or prepared_turns[0].turn_id != captured_turns[0].turn_id
     ):
         raise ValueError("native accounting original Prepare Run differs")
-    manifest = captured.turns[0].attempts[0].manifest
+    manifest = captured_turns[0].attempts[0].manifest
     if (
         manifest != retained.request.manifest
-        or manifest != run.turns[0].attempts[0].manifest
+        or manifest != prepared_turns[0].attempts[0].manifest
         or len(manifest.members) != 4
         or tuple(item.surface for item in manifest.members)
         != ("workspace", "context", "prompt", "schema")
@@ -199,6 +210,7 @@ def _verify_original_prepare_projection(
             revision=Present(head=run.head, fingerprint=hashlib.sha256(run_bytes).hexdigest()),
         ),
         prepared_run_bytes=run_bytes,
+        selected_turn_id=seal.original_turn_id,
         workspace_issuance=retained.workspace_issuance,
         workspace_issuance_bytes=issuance_bytes,
         manifest=manifest,

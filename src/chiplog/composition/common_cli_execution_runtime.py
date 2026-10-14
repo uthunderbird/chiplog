@@ -1079,19 +1079,28 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return read_selected_accepted_open_frontier(self)
 
-    async def publish_accepted_direct_terminal(self, peer: str = "hermetic-ingress"):
+    async def publish_accepted_direct_terminal(
+        self,
+        peer: str = "hermetic-ingress",
+        *,
+        original_call_id: str | None = None,
+    ):
         from chiplog.composition.r14_accepted_direct_terminal_publication import (
             publish_accepted_direct_terminal,
         )
 
-        return await publish_accepted_direct_terminal(self, peer)
+        return await publish_accepted_direct_terminal(
+            self, peer, original_call_id=original_call_id
+        )
 
-    def read_selected_accepted_direct_terminal(self):
+    def read_selected_accepted_direct_terminal(self, *, original_call_id: str | None = None):
         from chiplog.composition.r14_loop_history import (
             read_selected_accepted_direct_terminal,
         )
 
-        return read_selected_accepted_direct_terminal(self)
+        return read_selected_accepted_direct_terminal(
+            self, original_call_id=original_call_id
+        )
 
     def read_selected_accepted_direct_terminal_frontier(
         self,

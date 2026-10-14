@@ -90,8 +90,19 @@ def capture_dispatch(
     runtime._require_no_pending()
     runtime._check_database_identity()
     principal = require_invocation(runtime, observed)
+    if execution_call_history is None and original_call_id is not None:
+        from chiplog.composition.r14_loop_history import read_execution_call_history
+        from chiplog.composition.r14_runtime import R14PlanningRuntime
+
+        if isinstance(runtime, R14PlanningRuntime):
+            execution_call_history = read_execution_call_history(runtime)
     cut, selected = _read_materialized_effects_with_history(
-        runtime, runtime._owner_decisions(), run_id=worker_run_id
+        runtime,
+        runtime._owner_decisions(),
+        run_id=worker_run_id,
+        authenticated_execution_history=(
+            None if execution_call_history is None else execution_call_history[0]
+        ),
     )
     if any(row.record.schema_id == "chiplog.effects.record.v1" for row in cut.rows):
         raise LoopRejected("mixed legacy/v2 effects history is unsupported")
@@ -110,6 +121,12 @@ def capture_dispatch(
         selected_call = (
             origin.original_call_id if isinstance(origin, InitializedCallOrigin) else None
         )
+        if selected_call is not None and execution_call_history is None:
+            from chiplog.composition.r14_loop_history import read_execution_call_history
+            from chiplog.composition.r14_runtime import R14PlanningRuntime
+
+            if isinstance(runtime, R14PlanningRuntime):
+                execution_call_history = read_execution_call_history(runtime)
         if original_call_id is not None and original_call_id != selected_call:
             raise LoopRejected("dispatch caller cannot replace the selected origin policy")
         original_call_id = selected_call
@@ -122,18 +139,14 @@ def capture_dispatch(
     if cut.worker.owner_session != sessions[2]:
         raise LoopRejected("dispatch worker generation differs")
     if original_call_id is not None:
-        from chiplog.composition.r14_loop_history import read_execution_call_history
         from chiplog.composition.r14_runtime import R14PlanningRuntime
 
         if not isinstance(runtime, R14PlanningRuntime) or not isinstance(
             cut.worker.run, ExecutionRunRecord
         ):
             raise LoopRejected("initialized-call dispatch requires a registered executable Run")
-        snapshot, inventory, _ = (
-            execution_call_history
-            if execution_call_history is not None
-            else read_execution_call_history(runtime)
-        )
+        assert execution_call_history is not None
+        snapshot, inventory, _ = execution_call_history
         originals = tuple(
             row.initialized_record
             for row in inventory.ordered_calls

@@ -19,6 +19,7 @@ from chiplog.capabilities.effects.dispatch_v2 import (
 )
 from chiplog.capabilities.effects.dispatch_v2_contracts import (
     CommitFirstSendV2,
+    InitializedCallOrigin,
     PublishDispatchIntentV2,
 )
 from chiplog.composition.r7_planning import ObservedTrustCall
@@ -270,12 +271,23 @@ class DispatchPublicationAuthority:
                 )
                 if intent is None:
                     return "DENIED"
+                origin = intent.mandate.origin
+                original_call_id = (
+                    origin.original_call_id
+                    if isinstance(origin, InitializedCallOrigin)
+                    else None
+                )
+                capture_kwargs = {}
+                if original_call_id is not None:
+                    capture_kwargs["original_call_id"] = original_call_id
+                if value.request.previous is not None:
+                    capture_kwargs["intent_id"] = intent.intent_id
                 fresh = capture_dispatch(
                     self.runtime,
                     self.runtime._dispatch_resources,
                     value.observed,
                     worker.run.run_id,
-                    intent_id=None if value.request.previous is None else intent.intent_id,
+                    **capture_kwargs,
                 )
                 require_dispatch_scope(
                     fresh,

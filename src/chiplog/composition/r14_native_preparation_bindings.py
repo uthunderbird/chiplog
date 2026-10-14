@@ -24,16 +24,19 @@ def bind_native_execution_preparation_v2(
         run = ExecutionRunRecord.model_validate_json(projection.prepared_run_bytes)
     except ValueError as error:
         raise ValueError("original Prepare projection has malformed prepared Run bytes") from error
+    selected_turns = tuple(
+        turn for turn in run.turns if turn.turn_id == projection.selected_turn_id
+    )
     if (
         len(members) != 4
         or tuple(member.surface for member in members)
         != ("workspace", "context", "prompt", "schema")
         or projection.selected_prepare_decision_id == ""
         or run.canonical_bytes() != projection.prepared_run_bytes
-        or len(run.turns) != 1
-        or len(run.turns[0].attempts) != 1
-        or run.turns[0].selector != 0
-        or projection.manifest != run.turns[0].attempts[0].manifest
+        or len(selected_turns) != 1
+        or len(selected_turns[0].attempts) != 1
+        or selected_turns[0].selector != 0
+        or projection.manifest != selected_turns[0].attempts[0].manifest
         or hashlib.sha256(projection.selected_prepare_decision_bytes).hexdigest()
         != projection.selected_prepare_decision_fingerprint
         or projection.artifact_bytes != artifact.canonical_bytes()

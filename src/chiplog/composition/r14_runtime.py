@@ -720,7 +720,7 @@ class R14PlanningRuntime(R13PlanningRuntime):
             validate_selected_native_accounting(self)
             validate_selected_accepted_open_accounting(self)
             validate_selected_accepted_open_recovery(self)
-            validate_selected_accepted_direct_terminal(self)
+            validate_selected_accepted_direct_terminal(self, allow_multiple=True)
             from chiplog.composition.r14_original_resolver_invocation_publication import (
                 validate_invocation_startup,
             )
