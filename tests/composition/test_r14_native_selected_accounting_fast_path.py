@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import pytest
+
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     ConsequentialAcceptedCall,
@@ -105,3 +107,749 @@ def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(monkey
     assert events.index("baseline") < events.index("collect-one")
     assert "duplicate-collect" not in events
     assert events.count("collect-one") == 1
+
+
+def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_seals(
+    monkeypatch, tmp_path
+):
+    """Probe the caller/verifier boundary; source authentication is tested elsewhere."""
+    from chiplog.composition import r14_historical_suffix as suffix
+    from chiplog.composition import r14_original_call_resolution_source as resolution
+    from chiplog.composition import r16_dispatch_history, r16_effects
+
+    class ReachedSemanticVerifier(BaseException):
+        pass
+
+    @contextmanager
+    def held():
+        yield
+
+    journal = SimpleNamespace(decisions=())
+    owners = SimpleNamespace(snapshot=lambda: journal)
+    runtime = SimpleNamespace(
+        _tenant_id="tenant",
+        _database=tmp_path / "runtime.sqlite",
+        _database_identity=("database", 1, 2),
+        _commitment_journal=SimpleNamespace(load=lambda _tenant: "anchored"),
+        _authority_gate=lambda: SimpleNamespace(hold=held),
+        _check_database_identity=lambda: None,
+        _owner_decisions=lambda: owners,
+    )
+
+    def row(call_id, intent_id):
+        return SimpleNamespace(
+            original_call_id=call_id,
+            acceptance=ConsequentialAcceptedCall(
+                initialized=Present(head="initialized-" + call_id, fingerprint="1" * 64),
+                accepted=Present(head="accepted-" + call_id, fingerprint="2" * 64),
+                execution_intent=Present(head="execution-" + call_id, fingerprint="3" * 64),
+                external_effect_intent=Present(head=intent_id, fingerprint="4" * 64),
+                complete_acceptance_manifest=(
+                    Present(head="accepted-" + call_id, fingerprint="2" * 64),
+                    Present(head="execution-" + call_id, fingerprint="3" * 64),
+                ),
+            ),
+        )
+
+    first, second = row("call-first", "effect-first"), row("call-second", "effect-second")
+    first_seal = SimpleNamespace(
+        initialized_records=(SimpleNamespace(original_call_id="call-first"),)
+    )
+    second_seal = SimpleNamespace(
+        initialized_records=(SimpleNamespace(original_call_id="call-second"),)
+    )
+    accepted = SimpleNamespace(
+        original_call_id="call-first",
+        selected_seal=first_seal,
+        source=SimpleNamespace(
+            target_inventory_rows=(first, second, row("foreign-call", "foreign-effect")),
+            selected_native_seals=(first_seal, second_seal),
+        ),
+    )
+    source = object.__new__(R14NativeSelectedAccountingSource)
+    source._runtime = runtime
+
+    @contextmanager
+    def connection(_database):
+        yield object()
+
+    monkeypatch.setattr(accounting_module, "read_connection", connection)
+    monkeypatch.setattr(
+        accounting_module, "capture_authority_snapshot_commitment", lambda *_: "actual"
+    )
+    monkeypatch.setattr(
+        resolution, "authenticate_selected_resolution_prefix_held", lambda *_: False
+    )
+    monkeypatch.setattr(
+        suffix, "authenticate_selected_r14_native_terminal_suffix_held", lambda *_, **kw: True
+    )
+
+    def effects_read(runtime, owners, *, authenticate_later_suffix, **kwargs):
+        assert authenticate_later_suffix(runtime, "actual", "anchored")
+        return SimpleNamespace(materialization_commitment="actual"), journal
+
+    monkeypatch.setattr(r16_effects, "_read_materialized_effects_with_history", effects_read)
+    monkeypatch.setattr(r16_dispatch_history, "verify_dispatch_history", lambda *_: object())
+
+    def semantic_verifier(runtime, journal, call_id, *, allowed_intent_ids):
+        assert call_id == "call-first"
+        assert allowed_intent_ids == frozenset({"effect-first", "effect-second"})
+        raise ReachedSemanticVerifier
+
+    monkeypatch.setattr(suffix, "validate_native_terminal_suffix_semantics", semantic_verifier)
+    with pytest.raises(ReachedSemanticVerifier):
+        source._collect_one_accepted_outcome(
+            current_obligation_state="CLOSED",
+            allow_authenticated_later_suffix=True,
+            accepted_facts=accepted,
+        )
+
+
+def _outcome_request(previous, send, positive=(), negative=(), *, close=False, name="receipt"):
+    from chiplog.capabilities.effects.contracts import CommandIdentity
+    from chiplog.capabilities.effects.dispatch_outcome_contracts import (
+        DispatchEvidenceV2,
+        DispatchOutcomeCommandV2,
+        DispatchOutcomePreparationV2,
+        DispatchOutcomeRecordV2,
+    )
+    from chiplog.capabilities.effects.dispatch_v2 import digest, reference
+
+    evidence = (
+        None
+        if close
+        else DispatchEvidenceV2(
+            evidence_id=name,
+            source_identity="source",
+            transmission=send.snapshot.transmissions[0].transmission,
+            raw_bytes=name.encode(),
+            raw_digest=digest(name.encode()),
+            observation="PROVIDER_RECEIPT",
+            occurred_members=positive,
+            permanently_incapable_members=negative,
+        )
+    )
+    command = DispatchOutcomeCommandV2(
+        schema_id="chiplog.effects.dispatch-outcome-command.v2",
+        identity=CommandIdentity(
+            command_id=name, fingerprint=digest(name.encode()), expected_tenant_head=1
+        ),
+        operation="RESOLVE_OBLIGATION" if close else "APPEND_EVIDENCE",
+        intent=reference(send.snapshot.intent.intent_id, send.snapshot.intent.canonical_bytes()),
+        original_send=send.record,
+        expected_attempt=previous.snapshot.attempt,
+        complete_children=tuple(child.transmission for child in send.snapshot.transmissions),
+        prior_evidence=previous.snapshot.evidence_heads
+        if isinstance(previous, DispatchOutcomeRecordV2)
+        else (),
+        evidence=evidence,
+        resolver=reference("principal", b"principal") if close else None,
+    )
+    return DispatchOutcomePreparationV2(
+        schema_id="chiplog.effects.dispatch-outcome-preparation.v2",
+        original_send=send,
+        previous=previous,
+        command=command,
+    )
+
+
+def _selected_outcome_tuple(outcome, *, ordinal=1, commit_sequence=1):
+    import hashlib
+
+    from chiplog.adapters.driven.effects_queries import StoredEffectRow
+    from chiplog.capabilities.effects.dispatch_authority_contracts import (
+        SelectedEffectHistoryMember,
+    )
+    from chiplog.capabilities.effects.dispatch_v2 import reference
+    from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
+
+    raw = outcome.canonical_bytes()
+    member = SelectedEffectHistoryMember(
+        kind=outcome.kind,
+        selected_decision=reference("decision", b"selected decision"),
+        publication_ordinal=ordinal,
+        original_selected_cut=reference("cut", b"selected cut"),
+        record=outcome.record,
+        predecessor=outcome.predecessor,
+        intent=reference(
+            outcome.snapshot.intent.intent_id, outcome.snapshot.intent.canonical_bytes()
+        ),
+        semantics=outcome.snapshot.intent.mandate.semantics,
+        command_bytes=outcome.command.canonical_bytes(),
+        record_bytes=raw,
+    )
+    physical = OwnerRecordBytes(
+        owner="effects",
+        record_kind="effects." + outcome.kind,
+        record_id=outcome.record.head,
+        schema_id=outcome.schema_id,
+        canonical_bytes=raw,
+        fingerprint=hashlib.sha256(raw).hexdigest(),
+    )
+    return (
+        outcome,
+        member,
+        StoredEffectRow(
+            commit_sequence=commit_sequence,
+            publication_ordinal=ordinal,
+            batch_record_ids=(outcome.record.head,),
+            record=physical,
+        ),
+    )
+
+
+async def _open_cut_probe(monkeypatch, case):
+    """Inert source-selection probe; mounted source authentication is separate."""
+    from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
+    from chiplog.composition import r14_native_accepted_open_cut as cuts
+    from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
+    from tests.capabilities.effects.support.dispatch_outcomes import original_send
+    from tests.support.acceptance_v2 import prepared_acceptance
+    from tests.support.execution_fan_out import fixture
+
+    acceptance = prepared_acceptance()
+    intent = acceptance.effects_proposal.snapshot.intent
+    send = original_send()
+    send = send.model_copy(update={"snapshot": send.snapshot.model_copy(update={"intent": intent})})
+    outcome, member, row = _selected_outcome_tuple(
+        prepare_outcome(_outcome_request(send, send)), commit_sequence=2
+    )
+    run = (await fixture()).captured_run
+    run = run.model_copy(update={"tenant": intent.mandate.tenant_id})
+    run_ref = cuts.CallSubjectHead(
+        subject_id=run.run_id, revision=Present(head=run.head, fingerprint=run.digest())
+    )
+    initialized = acceptance.loop_request.binding.initialized
+    manifest = tuple(
+        item.revision for item in acceptance.loop_proposal.complete_acceptance_manifest
+    )
+    branch = ConsequentialAcceptedCall(
+        initialized=initialized.revision,
+        accepted=manifest[0],
+        execution_intent=manifest[1],
+        external_effect_intent=manifest[2],
+        complete_acceptance_manifest=manifest,
+    )
+    call_id = acceptance.loop_request.binding.original_call_id
+    first = SimpleNamespace(
+        original_call_id="earlier-call",
+        acceptance=branch.model_copy(
+            update={"accepted": Present(head="earlier-accepted", fingerprint="9" * 64)}
+        ),
+    )
+    target = SimpleNamespace(original_call_id=call_id, acceptance=branch)
+    rows = (first, target) if case == "second-member" else (first,)
+    if case == "duplicate":
+        rows = (first, target, target)
+    selected = SimpleNamespace(
+        accepted=SimpleNamespace(
+            source=SimpleNamespace(target_run_lineage=(run_ref,), target_inventory_rows=rows),
+            acceptance=acceptance,
+            initialized=initialized,
+            original_call_id=call_id,
+            selected_seal=SimpleNamespace(response_seal=SimpleNamespace(subject_id="seal")),
+        ),
+        database_identity=("database", 1, 2),
+        tenant_id=run.tenant,
+        tenant_commit_sequence=9,
+        materialization_commitment="a" * 64,
+        outcome=outcome,
+        selected_member=member,
+        outcome_record_id=row.record.record_id,
+        commit_sequence=row.commit_sequence,
+        publication_ordinal=row.publication_ordinal,
+        batch_record_ids=row.batch_record_ids,
+    )
+
+    @contextmanager
+    def held():
+        yield
+
+    class Runtime:
+        _tenant_id = run.tenant
+        _database = object()
+        _database_identity = selected.database_identity
+        _commitment_journal = SimpleNamespace(load=lambda _: "a" * 64)
+
+        def _authority_gate(self):
+            return SimpleNamespace(hold=held)
+
+        def _check_database_identity(self):
+            pass
+
+    monkeypatch.setattr(cuts, "CommonCliExecutionRuntime", Runtime)
+    snapshot = ExecutionHistorySnapshot(tenant_head=9, records=(run,))
+    monkeypatch.setattr(cuts, "read_execution_history", lambda _: snapshot)
+
+    @contextmanager
+    def connection(_database):
+        yield object()
+
+    monkeypatch.setattr(cuts, "read_connection", connection)
+    monkeypatch.setattr(cuts, "capture_authority_snapshot_commitment", lambda *_: "a" * 64)
+    result = cuts.build_accepted_open_recovery_cut(Runtime(), selected)
+    return result, branch, call_id, selected, snapshot, acceptance, send
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["second-member", "missing", "duplicate"])
+async def test_open_cut_uses_exact_member_instead_of_first_inventory_row(monkeypatch, case):
+    result, branch, call_id, *_ = await _open_cut_probe(monkeypatch, case)
+    if case == "second-member":
+        assert result is not None
+        assert result.original_call_id == call_id
+        assert result.accepted.revision == branch.accepted
+        assert result.execution_intent.revision == branch.execution_intent
+    else:
+        assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "damage",
+    [
+        None,
+        "acceptance",
+        "effect",
+        "seal",
+        "future-outcome",
+        "future-run",
+        "closed-at-source",
+        "later-closed",
+    ],
+)
+async def test_open_causal_source_joins_captured_prefix_and_excludes_future_closure(
+    monkeypatch, damage
+):
+    """Inert preauthenticated inputs isolate the causal join, not IPC provenance."""
+    from dataclasses import replace
+
+    from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
+    from chiplog.composition import r14_historical_suffix as suffix
+    from chiplog.composition.r14_native_accepted_open_cut import _fingerprint
+    from chiplog.composition.r16_dispatch_history import VerifiedDispatchHistory
+
+    cut, _, _, selected, snapshot, acceptance, send = await _open_cut_probe(
+        monkeypatch, "second-member"
+    )
+    assert cut is not None
+    initialized = acceptance.loop_request.initialized_record
+    fanout = SimpleNamespace(
+        proposal=SimpleNamespace(
+            fan_out=SimpleNamespace(
+                initialized_records=(initialized,),
+                response_seal=SimpleNamespace(
+                    response_seal_id="seal",
+                    original_run_id=snapshot.records[-1].run_id,
+                    original_turn_id=initialized.call.original.original_turn_id,
+                ),
+            )
+        )
+    )
+    send_tuple = _selected_outcome_tuple(send, commit_sequence=1)
+    outcome_tuple = _selected_outcome_tuple(selected.outcome, commit_sequence=2)
+    observed = [send_tuple, outcome_tuple]
+    updates = {}
+    if damage == "acceptance":
+        updates["accepted"] = cut.accepted.model_copy(
+            update={"revision": Present(head="foreign-acceptance", fingerprint="9" * 64)}
+        )
+    elif damage == "effect":
+        updates["external_effect_intent"] = cut.external_effect_intent.model_copy(
+            update={"revision": Present(head="foreign-effect", fingerprint="9" * 64)}
+        )
+    elif damage == "seal":
+        updates["response_id"] = "other-seal"
+    elif damage == "future-run":
+        updates["current_run"] = cut.current_run.model_copy(
+            update={"revision": Present(head="future-run", fingerprint="9" * 64)}
+        )
+    elif damage == "future-outcome":
+        observed[1] = (*outcome_tuple[:2], replace(outcome_tuple[2], commit_sequence=10))
+        updates["outcome_commit_sequence"] = 10
+    elif damage in ("closed-at-source", "later-closed"):
+        members = tuple(item.subject_id for item in send.snapshot.intent.mandate.bundle_members)
+        confirmed = prepare_outcome(
+            _outcome_request(selected.outcome, send, positive=members, name="confirmed")
+        )
+        closed = prepare_outcome(_outcome_request(confirmed, send, close=True, name="closed"))
+        first_sequence = 3 if damage == "closed-at-source" else 10
+        observed.extend(
+            (
+                _selected_outcome_tuple(confirmed, commit_sequence=first_sequence),
+                _selected_outcome_tuple(closed, commit_sequence=first_sequence + 1),
+            )
+        )
+    cut = cut.model_copy(update=updates)
+    cut = cut.model_copy(update={"cut_fingerprint": _fingerprint(cut)})
+    effects_cut = SimpleNamespace(tenant_id=cut.tenant_id, rows=tuple(item[2] for item in observed))
+    verified = VerifiedDispatchHistory(
+        members=tuple(item[1] for item in observed), v2_records=tuple(item[0] for item in observed)
+    )
+    runtime = SimpleNamespace(
+        _tenant_id=cut.tenant_id, _database_identity=selected.database_identity
+    )
+
+    def reentry(*args, **kwargs):
+        raise AssertionError("causal join must consume captured history")
+
+    monkeypatch.setattr(accounting_module, "read_execution_recovery_history", reentry)
+    kwargs = dict(
+        snapshot=snapshot,
+        fanouts=(fanout,),
+        acceptances=(acceptance,),
+        effects_cut=effects_cut,
+        verified_effects=verified,
+    )
+    if damage in (None, "later-closed"):
+        suffix.validate_native_open_causal_source_prefix(runtime, cut, **kwargs)
+    else:
+        with pytest.raises(ValueError, match="OPEN causal source"):
+            suffix.validate_native_open_causal_source_prefix(runtime, cut, **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("family", ["execution-suspension", "execution-successor"])
+@pytest.mark.parametrize(
+    "state",
+    [
+        "ABSENT",
+        "COMPLETE",
+        "unselected",
+        "conflict",
+        "orphan",
+        "future-head",
+        "predecessor",
+    ],
+)
+async def test_open_effects_history_keeps_only_exact_physical_runs(
+    tmp_path, monkeypatch, family, state
+):
+    """Real physical readback; owner transition semantics are authenticated by the caller."""
+    import hashlib
+    import sqlite3
+
+    from chiplog.composition import r14_historical_suffix as suffix
+    from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCHEMA
+    from chiplog.platform._sqlite import (
+        PhysicalPublicationCommand,
+        PhysicalRecord,
+        SQLiteMaterializer,
+    )
+    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+    from chiplog.platform.workspace_snapshot import read_connection
+
+    _, _, _, _, snapshot, _, _ = await _open_cut_probe(monkeypatch, "second-member")
+    original = snapshot.records[0]
+    later = original.model_copy(update={"predecessor": original.head, "head": "loop:later"})
+    assert later.head != original.head
+
+    def command(record, sequence, operation):
+        raw = record.canonical_bytes()
+        fingerprint = hashlib.sha256(raw).hexdigest()
+        return PhysicalPublicationCommand(
+            tenant_id=original.tenant,
+            operation_kind="agent_loop." + operation + ".v1",
+            idempotency_key=record.head,
+            request_fingerprint=fingerprint,
+            expected_head=sequence - 1,
+            fence_generation="r6",
+            expected_fence_frontier=0,
+            minimum_fence_frontier=0,
+            records=(
+                PhysicalRecord(record.head, "agent_loop", EXECUTION_RUN_SCHEMA, raw, fingerprint),
+            ),
+        )
+
+    first, pending = (
+        command(original, 1, "execution-transition"),
+        command(later, 3 if state == "future-head" else 2, family),
+    )
+    database = tmp_path / "physical-history.sqlite"
+    with SQLiteMaterializer(database, record_contracts={"agent_loop": EXECUTION_RUN_SCHEMA}):
+        pass
+    with sqlite3.connect(database) as db:
+        physical_head = 2 if state in ("COMPLETE", "conflict") else 1
+        db.execute("INSERT INTO tenant_heads VALUES (?, ?)", (original.tenant, physical_head))
+
+        def publish(cmd):
+            record = cmd.records[0]
+            db.execute(
+                "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    original.tenant,
+                    record.record_id,
+                    record.owner,
+                    record.schema_id,
+                    record.canonical_bytes,
+                    cmd.expected_head + 1,
+                ),
+            )
+            db.execute(
+                "INSERT INTO publications VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    original.tenant,
+                    cmd.operation_kind,
+                    cmd.idempotency_key,
+                    cmd.request_fingerprint,
+                    cmd.expected_head + 1,
+                    record.record_id,
+                ),
+            )
+
+        publish(first)
+        if state in ("COMPLETE", "conflict"):
+            publish(pending)
+        if state == "conflict":
+            db.execute(
+                "UPDATE records SET canonical_bytes=? WHERE record_id=?", (b"bad", later.head)
+            )
+        if state == "orphan":
+            db.execute(
+                "INSERT INTO records VALUES (?, 'orphan', 'agent_loop', ?, ?, 1)",
+                (
+                    original.tenant,
+                    EXECUTION_RUN_SCHEMA,
+                    b"orphan",
+                ),
+            )
+    with read_connection(database) as connection:
+        commitment = capture_authority_snapshot_commitment(connection, original.tenant)
+    pending_entry = dict(
+        operation_id=later.head, predecessor="wrong" if state == "predecessor" else commitment
+    )
+    runtime = SimpleNamespace(
+        _tenant_id=original.tenant,
+        _authority_gate=lambda: SimpleNamespace(require_held=lambda: None),
+        _pending=lambda: () if state == "unselected" else (pending_entry,),
+        _publication=lambda entry: pending,
+        _commitment_journal=SimpleNamespace(load=lambda _: commitment),
+    )
+    selected_snapshot = snapshot.__class__(tenant_head=physical_head, records=(original, later))
+    with read_connection(database) as connection:
+        kwargs = dict(
+            snapshot=selected_snapshot,
+            selected=((first, {}), (pending, pending_entry)),
+            expected_ids={original.head, later.head},
+            expected_publications={
+                (cmd.operation_kind, cmd.idempotency_key) for cmd in (first, pending)
+            },
+        )
+        if state in ("ABSENT", "COMPLETE"):
+            result = suffix.native_open_physical_execution_history_held(
+                runtime, connection, **kwargs
+            )
+            assert result.records == ((original,) if state == "ABSENT" else (original, later))
+            assert selected_snapshot.records == (original, later)
+        else:
+            with pytest.raises(ValueError, match="OPEN physical"):
+                suffix.native_open_physical_execution_history_held(runtime, connection, **kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", [None, "absent-prefix-run", "future-prefix-run"])
+async def test_open_outer_fold_reads_effects_once_with_physical_history(monkeypatch, damage):
+    """Boundary wiring probe; actual source causality is exercised separately."""
+    from chiplog.composition import r14_historical_suffix as suffix
+    from chiplog.composition import r16_dispatch_history, r16_effects
+
+    cut, _, _, _, snapshot, *_ = await _open_cut_probe(monkeypatch, "second-member")
+    assert cut is not None
+    original = snapshot.records[0]
+    later = original.model_copy(update={"head": "loop:pending", "predecessor": original.head})
+    current_selected = snapshot.__class__(tenant_head=10, records=(original, later))
+    physical = snapshot.__class__(tenant_head=10, records=(original,))
+    prefix = (
+        snapshot
+        if damage != "absent-prefix-run"
+        else snapshot.__class__(tenant_head=snapshot.tenant_head, records=(original, later))
+    )
+    calls = []
+    runtime = SimpleNamespace(_tenant_id=cut.tenant_id, _owner_decisions=lambda: "owners")
+    monkeypatch.setattr(
+        suffix, "native_open_physical_execution_history_held", lambda *a, **kw: physical
+    )
+    monkeypatch.setattr(suffix, "capture_authority_snapshot_commitment", lambda *_: "actual")
+    effects_cut = SimpleNamespace(materialization_commitment="actual")
+
+    def read_effects(
+        runtime, journal, *, authenticated_execution_history, authenticate_later_suffix
+    ):
+        assert journal == "owners"
+        assert authenticated_execution_history is physical
+        assert authenticated_execution_history is not current_selected
+        calls.append("effects")
+        return effects_cut, "retained-journal"
+
+    monkeypatch.setattr(r16_effects, "_read_materialized_effects_with_history", read_effects)
+    monkeypatch.setattr(r16_dispatch_history, "verify_dispatch_history", lambda *args: "verified")
+    monkeypatch.setattr(
+        suffix,
+        "validate_native_open_causal_source_prefix",
+        lambda runtime, cut, **kwargs: calls.append((cut, kwargs)),
+    )
+    sequence = 10 if damage == "future-prefix-run" else 1
+    connection = SimpleNamespace(execute=lambda *args: [(original.head, sequence)])
+    sources = tuple((SimpleNamespace(), {}, cut, prefix, (), ()) for _ in range(2))
+    kwargs = dict(
+        sources=sources,
+        snapshot=current_selected,
+        selected=(),
+        expected_ids=(),
+        expected_publications=(),
+        acceptances=(),
+    )
+    if damage is None:
+        suffix.validate_native_open_sources_held(runtime, connection, **kwargs)
+        assert calls[0] == "effects" and len(calls) == 3
+        assert all(value[1]["snapshot"] is prefix for value in calls[1:])
+        assert all(value[1]["verified_effects"] == "verified" for value in calls[1:])
+    else:
+        with pytest.raises(ValueError, match="unmaterialized or future Run"):
+            suffix.validate_native_open_sources_held(runtime, connection, **kwargs)
+        assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_open_historical_cut_selects_call_seal_among_two_native_executions(monkeypatch):
+    from chiplog.composition import r14_accepted_open_accounting_publication as publication
+
+    cut, _, call_id, _, snapshot, acceptance, *_ = await _open_cut_probe(
+        monkeypatch, "second-member"
+    )
+    assert cut is not None
+    executions = tuple(
+        SimpleNamespace(
+            proposal=SimpleNamespace(
+                fan_out=SimpleNamespace(
+                    initialized_records=(SimpleNamespace(original_call_id=member),),
+                    response_seal=SimpleNamespace(response_seal_id=seal, digest=lambda: "b" * 64),
+                )
+            )
+        )
+        for member, seal in (("earlier-call", "earlier-seal"), (call_id, cut.response_id))
+    )
+    history = (snapshot, None, (), executions, (), (acceptance,))
+    monkeypatch.setattr(publication, "read_execution_recovery_history", lambda *a, **kw: history)
+    projections = []
+
+    def projection(ref):
+        projections.append(ref.subject_id)
+        return SimpleNamespace(selected_response_seal=ref)
+
+    monkeypatch.setattr(
+        publication,
+        "R14OriginalNativePrepareSource",
+        lambda runtime: SimpleNamespace(collect=projection),
+    )
+    monkeypatch.setattr(publication, "bind_native_execution_preparation_v2", lambda _: object())
+    facts = object()
+
+    def collect(run, **kwargs):
+        assert kwargs["original_call_id"] == call_id
+        assert kwargs["expected_outcome_record_id"] == cut.selected_outcome_record_id
+        return facts
+
+    monkeypatch.setattr(
+        publication,
+        "R14NativeSelectedAccountingSource",
+        lambda *a: SimpleNamespace(collect_one_accepted_open_outcome=collect),
+    )
+    monkeypatch.setattr(publication, "execution_run_head", lambda _: cut.current_run)
+    monkeypatch.setattr(publication, "build_accepted_open_recovery_cut", lambda *a, **kw: cut)
+    assert publication._current_cut(object(), expected_source_cut=cut) == (facts, cut)
+    assert projections == [cut.response_id]
+
+
+def test_open_unqualified_cut_holds_for_multiple_accepted_calls(monkeypatch):
+    from chiplog.composition import r14_accepted_open_accounting_publication as publication
+
+    acceptances = tuple(
+        SimpleNamespace(
+            loop_request=SimpleNamespace(binding=SimpleNamespace(original_call_id=call_id))
+        )
+        for call_id in ("first", "second")
+    )
+    history = (
+        SimpleNamespace(records=(object(),)),
+        None,
+        (),
+        (object(), object()),
+        (),
+        acceptances,
+    )
+    monkeypatch.setattr(publication, "read_execution_recovery_history", lambda *a, **kw: history)
+    assert publication._current_cut(object()) is None
+
+
+@pytest.mark.asyncio
+async def test_open_startup_validation_does_not_project_incomplete_whole_seal(monkeypatch):
+    """Validator boundary: selected owner/source acquisition is inert here."""
+    import json
+
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        PrepareAcceptedOpenRecoveryV1,
+    )
+    from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+        prepare_accepted_open_recovery_v1,
+    )
+    from chiplog.composition import r14_accepted_open_accounting_publication as publication
+
+    cut, _, _, _, _, acceptance, *_ = await _open_cut_probe(monkeypatch, "second-member")
+    assert cut is not None
+    request = PrepareAcceptedOpenRecoveryV1(
+        command_id="accepted-open-recovery:" + cut.cut_fingerprint, cut=cut
+    )
+    result = prepare_accepted_open_recovery_v1(request)
+    assert result.kind == "PREPARED_ACCEPTED_OPEN_RECOVERY_V1"
+    evidence = SimpleNamespace(request=request, result=result)
+    command = SimpleNamespace(
+        operation_kind=publication.ACCEPTED_OPEN_RECOVERY_OPERATION,
+        idempotency_key=request.command_id,
+        expected_head=cut.tenant_commit_sequence,
+        request_fingerprint="selected-fingerprint",
+        records=tuple(SimpleNamespace(schema_id="member") for _ in range(3)),
+    )
+    entry = dict(
+        kind="DECIDED",
+        operation_kind=command.operation_kind,
+        operation_id=command.idempotency_key,
+        predecessor=cut.materialization_commitment,
+        expected_head=command.expected_head,
+        fingerprint=command.request_fingerprint,
+    )
+    facts = SimpleNamespace(accepted=SimpleNamespace(acceptance=acceptance))
+    runtime = SimpleNamespace(
+        _tenant_id=cut.tenant_id,
+        _database=object(),
+        _loop_decisions=lambda: SimpleNamespace(
+            entries=lambda: (("decision", b"pred", json.dumps(entry)),)
+        ),
+        _publication=lambda entry: command,
+        _commitment_journal=SimpleNamespace(load=lambda _: cut.materialization_commitment),
+        _selected_physical_state=lambda command: (
+            "COMPLETE",
+            cut.materialization_commitment,
+            cut.materialization_commitment,
+        ),
+    )
+
+    @contextmanager
+    def connection(_):
+        yield object()
+
+    monkeypatch.setattr(publication, "read_connection", connection)
+    monkeypatch.setattr(
+        publication,
+        "capture_authority_snapshot_commitment",
+        lambda *_: cut.materialization_commitment,
+    )
+    monkeypatch.setattr(publication, "retained_accepted_open_recovery", lambda _: evidence)
+    monkeypatch.setattr(publication, "accepted_open_recovery_command", lambda _: command)
+    monkeypatch.setattr(publication, "_current_cut", lambda *a, **kw: (facts, cut))
+
+    def incomplete_projection(*args):
+        raise AssertionError("startup must validate the exact call, not an incomplete whole seal")
+
+    monkeypatch.setattr(publication, "_accepted_open_sealed_accounting", incomplete_projection)
+    publication.validate_selected_accepted_open_recovery(runtime)

@@ -1151,10 +1151,18 @@ class R14NativeSelectedAccountingSource:
                 seal_call_ids = frozenset(
                     item.original_call_id for item in accepted.selected_seal.initialized_records
                 )
+                # The physical suffix may interleave accepted members from any
+                # authenticated seal of this Run. The target terminal still
+                # selects its own seal and acceptance below.
+                suffix_call_ids = frozenset(
+                    item.original_call_id
+                    for seal in accepted.source.selected_native_seals
+                    for item in seal.initialized_records
+                )
                 allowed_intent_ids = frozenset(
                     row.acceptance.external_effect_intent.head
                     for row in accepted.source.target_inventory_rows
-                    if row.original_call_id in seal_call_ids
+                    if row.original_call_id in suffix_call_ids
                     and isinstance(row.acceptance, ConsequentialAcceptedCall)
                     and isinstance(row.acceptance.external_effect_intent, Present)
                 )

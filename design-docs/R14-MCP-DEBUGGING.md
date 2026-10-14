@@ -1,5 +1,16 @@
 # R14 MCP debugger investigation — 2026-10-15
 
+## User-required protocol for subsequent debugger probes
+
+Updated 2026-10-15. Before launching or continuing a hypothesis probe, record
+the ideal behavior and, for **each** planned breakpoint: whether it should be
+reached, its condition where applicable, expected local values, expected immediate
+next steps, and the expected stack frames. Use multiple discriminating breakpoints
+and conditional breakpoints where they distinguish the relevant branches.
+Name the observation that would falsify the hypothesis. Record actual stops,
+values, steps and stack separately from these prior expectations. Strongly relax
+or disable debugger timeouts; do not confuse a tool yield with target completion.
+
 ## Recovered starting point
 
 The long session is

@@ -499,6 +499,17 @@ def _read_call_history(
                 if not selected_only and actual != runtime._commitment_journal.load(tenant):
                     raise ValueError("loop read cut differs from current independent anchor")
                 pending_source_publication = None
+                deferred_open_pending_publication = None
+                authenticated_source_prefix = None
+                require_native_open_fold = False
+                has_native_open_candidate = any(
+                    command.operation_kind
+                    in (
+                        "agent_loop.accepted-open-accounting.v1",
+                        "agent_loop.accepted-open-recovery.v1",
+                    )
+                    for command, _entry in selected
+                )
                 if exact_historical_sources:
                     anchor = runtime._commitment_journal.load(tenant)
                     pending = runtime._pending()
@@ -522,13 +533,30 @@ def _read_call_history(
                             )
                         else:
                             authenticated = False
-                        if not authenticated:
+                        from chiplog.composition.r14_historical_suffix import (
+                            NATIVE_OPEN_PENDING_LIFECYCLE_OPERATIONS,
+                        )
+
+                        defer_open_pending = (
+                            has_native_open_candidate
+                            and operation in NATIVE_OPEN_PENDING_LIFECYCLE_OPERATIONS
+                        )
+                        if not authenticated and not defer_open_pending:
                             raise ValueError(
                                 "historical source read has an unverified pending write"
                             )
+                        if authenticated:
+                            authenticated_source_prefix = (actual, anchor)
+                        if defer_open_pending:
+                            deferred_open_pending_publication = pending[0]
+                            require_native_open_fold = True
                         pending_source_publication = pending[0]
                     elif actual != anchor:
-                        raise ValueError("historical source read differs from independent anchor")
+                        if not has_native_open_candidate:
+                            raise ValueError(
+                                "historical source read differs from independent anchor"
+                            )
+                        require_native_open_fold = True
                 fence = connection.execute(
                     "SELECT generation, frontier FROM deletion_fences WHERE tenant_id=?", (tenant,)
                 ).fetchone()
@@ -593,6 +621,7 @@ def _read_call_history(
                     ]
                 ] = []
                 accepted_open_recoveries = []
+                deferred_native_open_sources = []
                 captured_heads: set[str] = set()
                 native_prepares: dict[tuple[str, str], str] = {}
                 verified_h1_prepares: dict[
@@ -612,6 +641,11 @@ def _read_call_history(
                 resolver_policy_sources = None
                 for command, entry in selected:
                     identity = command.idempotency_key
+                    allow_pending_absent = (
+                        deferred_open_pending_publication is not None
+                        and deferred_open_pending_publication == entry
+                        and runtime._publication(deferred_open_pending_publication) == command
+                    )
                     if command.operation_kind not in (
                         "agent_loop",
                         FANOUT_OPERATION,
@@ -843,7 +877,13 @@ def _read_call_history(
                             raise ValueError(
                                 "successor does not reference the selected suspension evidence"
                             )
-                        successor._selected_matches(runtime, retained_entry[2], command, retained)
+                        successor._selected_matches(
+                            runtime,
+                            retained_entry[2],
+                            command,
+                            retained,
+                            allow_pending_absent=allow_pending_absent,
+                        )
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
@@ -957,9 +997,7 @@ def _read_call_history(
                             if isinstance(row, ExecutionRunRecord) and row.run_id == before.run_id
                         )
                         if (
-                            replace(
-                                resume_command(retained), expected_preimage_commitment=None
-                            )
+                            replace(resume_command(retained), expected_preimage_commitment=None)
                             != command
                             or request.cut.tenant_id != tenant
                             or request.cut.tenant_commit_sequence != command.expected_head
@@ -1064,6 +1102,7 @@ def _read_call_history(
                             retained_entry[2],
                             command,
                             check_history=False,
+                            allow_pending_absent=allow_pending_absent,
                         )
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
@@ -1290,8 +1329,7 @@ def _read_call_history(
                         expected_publications.add((command.operation_kind, identity))
                         continue
                     if (
-                        command.operation_kind
-                        == "agent_loop.native-sealed-accounting.v3"
+                        command.operation_kind == "agent_loop.native-sealed-accounting.v3"
                         or "native_sealed_accounting_v3_evidence" in entry
                         or "native_sealed_accounting_v3_envelope" in entry
                     ):
@@ -1426,6 +1464,29 @@ def _read_call_history(
                             or entry.get("expected_head") != command.expected_head
                         ):
                             raise ValueError("selected accepted/open recovery differs")
+                        from chiplog.composition.r14_historical_suffix import (
+                            validate_native_open_selected_source_stamp_held,
+                        )
+
+                        validate_native_open_selected_source_stamp_held(
+                            runtime,
+                            connection,
+                            command=command,
+                            entry=entry,
+                            cut=evidence.request.cut,
+                        )
+                        deferred_native_open_sources.append(
+                            (
+                                command,
+                                entry,
+                                evidence.request.cut,
+                                ExecutionHistorySnapshot(
+                                    tenant_head=command.expected_head, records=tuple(mixed_records)
+                                ),
+                                tuple(execution_preparations),
+                                tuple(acceptances),
+                            )
+                        )
                         from chiplog.composition.r14_original_obligation_sources import (
                             accepted_open_recovery_sources,
                         )
@@ -1520,6 +1581,29 @@ def _read_call_history(
                             or entry.get("expected_head") != command.expected_head
                         ):
                             raise ValueError("selected accepted/open accounting differs")
+                        from chiplog.composition.r14_historical_suffix import (
+                            validate_native_open_selected_source_stamp_held,
+                        )
+
+                        validate_native_open_selected_source_stamp_held(
+                            runtime,
+                            connection,
+                            command=command,
+                            entry=entry,
+                            cut=evidence.request.cut,
+                        )
+                        deferred_native_open_sources.append(
+                            (
+                                command,
+                                entry,
+                                evidence.request.cut,
+                                ExecutionHistorySnapshot(
+                                    tenant_head=command.expected_head, records=tuple(mixed_records)
+                                ),
+                                tuple(execution_preparations),
+                                tuple(acceptances),
+                            )
+                        )
                         expected_ids.add(command.records[0].record_id)
                         expected_publications.add((command.operation_kind, identity))
                         continue
@@ -2037,6 +2121,27 @@ def _read_call_history(
                     physical_ids != expected_ids or physical_publications != expected_publications
                 ):
                     raise ValueError("orphaned, missing or unknown loop publication members")
+                if require_native_open_fold and not deferred_native_open_sources:
+                    raise ValueError("deferred historical source has no authenticated OPEN cause")
+                if deferred_native_open_sources:
+                    from chiplog.composition.r14_historical_suffix import (
+                        validate_native_open_sources_held,
+                    )
+
+                    validate_native_open_sources_held(
+                        runtime,
+                        connection,
+                        sources=tuple(deferred_native_open_sources),
+                        snapshot=ExecutionHistorySnapshot(
+                            tenant_head=0 if head is None else head[0], records=tuple(mixed_records)
+                        ),
+                        selected=selected,
+                        expected_ids=expected_ids,
+                        expected_publications=expected_publications,
+                        acceptances=acceptances,
+                        pending_publication=deferred_open_pending_publication,
+                        authenticated_source_prefix=authenticated_source_prefix,
+                    )
                 if deferred_native_sealed_accounting:
                     current_snapshot = ExecutionHistorySnapshot(
                         tenant_head=0 if head is None else head[0],
@@ -2046,9 +2151,12 @@ def _read_call_history(
                         decode_selected_native_sealed_accounting_v3,
                     )
 
-                    for command, entry, authenticated_history, open_recoveries in (
-                        deferred_native_sealed_accounting
-                    ):
+                    for (
+                        command,
+                        entry,
+                        authenticated_history,
+                        open_recoveries,
+                    ) in deferred_native_sealed_accounting:
                         decode_selected_native_sealed_accounting_v3(
                             runtime,
                             connection,
@@ -2212,8 +2320,9 @@ def read_selected_native_sealed_accounting_v3(
             for _, _, raw in runtime._loop_decisions().entries()
             if (entry := _strict_json(raw)).get("kind") == "DECIDED"
             and entry.get("operation_kind") == "agent_loop.native-sealed-accounting.v3"
-            and retained_selected_native_sealed_accounting_v3(entry)
-            .request.selected_response.revision.fingerprint
+            and retained_selected_native_sealed_accounting_v3(
+                entry
+            ).request.selected_response.revision.fingerprint
             == selected_response_fingerprint
         ]
         return found[0] if len(found) == 1 else None

@@ -84,6 +84,7 @@ def _command(evidence: RetainedExecutionSuspension) -> PhysicalPublicationComman
         EXECUTION_RECOVERY_REQUEST_SCHEMA,
         EXECUTION_RECOVERY_RESULT_SCHEMA,
     )
+
     request, result = evidence.request, evidence.result
     call, reply = evidence.owner_call, evidence.owner_reply
     if not isinstance(call, PublicPortCall) or not isinstance(reply, PublicPortSuccess):
@@ -108,15 +109,11 @@ def _command(evidence: RetainedExecutionSuspension) -> PhysicalPublicationComman
         or result.run.state != "SUSPENDED"
         or request.fence.kind != "NON_SCHEDULER_NOT_APPLICABLE"
         or any(
-            run.root_binding != "NOT_APPLICABLE"
-            for run in request.cut.complete_ordered_run_lineage
+            run.root_binding != "NOT_APPLICABLE" for run in request.cut.complete_ordered_run_lineage
         )
     ):
         raise ValueError("suspension retained owner result or non-scheduler source differs")
-    if (
-        call.operation_id == OWNER_OPERATION
-        and result.baseline.original_obligations
-    ):
+    if call.operation_id == OWNER_OPERATION and result.baseline.original_obligations:
         raise ValueError("legacy suspension owner route cannot retain original obligations")
     baseline_raw = result.baseline.canonical_bytes()
     run_raw = result.run.canonical_bytes()
@@ -219,7 +216,12 @@ def _validate_selected(
     physical_command,
     *,
     check_history: bool = True,
+    allow_pending_absent: bool = False,
 ):
+    if allow_pending_absent:
+        runtime._authority_gate().require_held()
+        if check_history:
+            raise ValueError("pending suspension requires outer authenticated history")
     evidence = _retained(entry)
     command = _command(evidence)
     if (
@@ -232,10 +234,8 @@ def _validate_selected(
     ):
         raise ValueError("selected suspension decision differs from exact owner batch")
     with read_connection(runtime._database) as connection:
-        if (
-            inspect_publication(connection, command, int(entry.get("expected_head", -1)) + 1)
-            != "COMPLETE"
-        ):
+        state = inspect_publication(connection, command, int(entry.get("expected_head", -1)) + 1)
+        if state != "COMPLETE" and not (allow_pending_absent and state == "ABSENT"):
             raise ValueError("selected suspension physical publication is incomplete")
     budget = evidence.actor_budget_v1
     if not isinstance(budget, RecoveryActorBudgetV1):
@@ -247,14 +247,12 @@ def _validate_selected(
             "WHERE tenant_id=? AND commit_sequence=? ORDER BY record_id",
             (command.tenant_id, int(entry["expected_head"]) + 1),
         ).fetchall()
-    found = {
-        (str(row[0]), str(row[1]), str(row[2])): bytes(row[3]) for row in rows
-    }
+    found = {(str(row[0]), str(row[1]), str(row[2])): bytes(row[3]) for row in rows}
     expected = {
         (record.record_id, record.owner, record.schema_id): record.canonical_bytes
         for record in command.records
     }
-    if found != expected:
+    if found != expected and not (allow_pending_absent and state == "ABSENT" and not found):
         raise ValueError("selected suspension physical records differ from retained batch")
     if check_history:
         history = read_execution_history(runtime)
@@ -442,7 +440,7 @@ async def suspend_execution(
                         return "STALE"
                     if time.monotonic_ns() >= actor_budget.request.budget.absolute_deadline_ns:
                         return "STALE"
-                except (ValueError, TypeError, RuntimeError, LoopRejected):
+                except ValueError, TypeError, RuntimeError, LoopRejected:
                     return "STALE"
             return None
 

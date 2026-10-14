@@ -97,5 +97,131 @@ repair, with real retained consumption-source negative checks and physical OPEN
 prefix hash checks, returned `34 passed, 3 deselected in 1.13s` with
 `PYTHONPATH=src ./.venv/bin/python -m pytest -q tests/composition/test_r14_historical_suffix.py -k 'not covers_existing_per_call' tests/composition/test_r14_native_selected_accounting_fast_path.py`.
 The three missing OPEN/cancelled family cases remain red. The physical OPEN
-prefix helper is tested but not yet wired into the causal fold; it grants no
-authority and does not by itself fix the OPEN-family composition guarantee.
+prefix helper alone grants no authority and does not by itself fix the
+OPEN-family composition guarantee. The subsequent wiring state is recorded below.
+
+## OPEN source fold follow-up
+
+Both OPEN accounting/recovery reader branches now check selected source headers
+and the real physical prefix commitment. The mounted selector
+`tests/composition/test_r14_native_open_obligation.py::test_selected_native_open_obligation_remains_outcome_unknown`
+passed with diagnostic clocks before the later causal fold was added:
+`1 passed in 1243.67s (0:20:43)`. Command used the clock environment documented in
+`R14-MCP-DEBUGGING.md`, `--basetemp=/private/tmp/chiplog-r14-open-prefix-wired`;
+log `/private/tmp/chiplog-r14-open-prefix-wired.log`. This is functional evidence
+for the physical source-stamp wiring, not production timing or the later fold.
+
+The later fold captures Run/fanout/acceptance prefixes before each OPEN and
+checks all captured causes after one complete current effects acquisition.
+Selected recovery history remains separate from exact physical Run history:
+only an authenticated pending ABSENT batch can be removed from the latter;
+COMPLETE stays and CONFLICT rejects. Exact adjusted whole-loop membership is
+checked even on this selected-only OPEN path. Captured prefix Runs must exist
+physically at or before the source sequence. No source collector is called from
+the physical-ahead callback. Ordinary anchored reads also execute the causal fold.
+
+`PYTHONPATH=src ./.venv/bin/python -m pytest -q tests/composition/test_r14_native_selected_accounting_fast_path.py tests/composition/test_r14_historical_suffix.py -k 'not covers_existing_per_call'`
+returned `59 passed, 3 deselected in 1.79s` after physical/pure-causal helpers and
+wiring. Ten of those use real SQLite publication inspection for ABSENT/COMPLETE,
+unverified absence, conflict and orphan states under suspension/successor operation
+names; their Run transition semantics are inert inputs, not mounted owner proof.
+Eight pure causal checks reject coherent cut-field substitutions, future Run or
+outcome, and already-closed source histories, while allowing closure after source.
+Three later wiring probes separately passed (`3 passed, 23 deselected in 1.04s`),
+showing one effects acquisition with the physical snapshot for two captured OPEN
+prefixes and rejecting absent/future prefix Runs before effects acquisition.
+
+A cold no-parent design read found no new critical/blocking omission in the
+wiring, conditional on its existing authenticated input contracts. The fresh mounted
+run with the causal fold passed (`1 passed in 1389.17s`, exit 0):
+`--basetemp=/private/tmp/chiplog-r14-open-causal-permitted`, log
+`/private/tmp/chiplog-r14-open-causal-permitted.log`, same selector/environment as above,
+with local socket permission. The first attempt at `open-causal-wired` failed
+before OPEN at owner-process `listener.bind()` with sandbox PermissionError
+(`1 failed in 7.87s`); it is not a functional verdict on the fold.
+That run preceded the isolated pending/family/selector follow-up below. Mounted
+pending suspension/successor recovery, accepted cross-seal
+interruption/substitution, and production-clock witnesses remain required.
+
+### Newly reproduced remaining OPEN blockers
+
+Two target-selection probes in `test_r14_native_selected_accounting_fast_path.py`
+failed (`2 failed, 26 deselected in 1.13s`, selector filter
+`historical_cut_selects_call_seal or open_unqualified_cut`). OPEN `_current_cut`
+still requires one native execution globally and does not pass a target call to
+the existing outcome collector. The OPEN publication/read/replay paths also use
+global singleton selection. A cold plan read additionally identified that startup
+validation invokes the legacy whole-seal projection with only one call frontier;
+target qualification alone cannot admit a multi-call seal. The next slice must
+validate per-call frontiers while preserving singleton-only legacy whole-seal
+access, authenticate all marked envelopes before filtering, and enforce unique
+`(response_id, original_call_id)` keys. Resolver overlay must bind the exact call
+and obligation; multi-resolver convergence remains an explicit later gap.
+
+The early exact-history gate is another blocker: expected historical OPEN reads
+set `exact_historical_sources=True`, which rejects pending suspension/successor
+before the new fold. The outer-reader reachability probe
+`test_exact_open_history_reaches_semantic_validation_before_pending_lifecycle_verdict`
+returned `2 failed, 2 passed, 39 deselected in 1.28s`: both lifecycle/OPEN cases
+fail before semantic validation; unknown-family and no-OPEN controls still HOLD.
+This probe replaces source authentication with controlled inert inputs and proves
+only early-gate reachability, not publication validity. Deferral must require the
+later complete physical/causal proof. COMPLETE pending lifecycle needs an exact
+final-batch predecessor/resulting proof in the effects callback; merely deferring
+the gate would still leave it unsupported. Keep ABSENT/COMPLETE mounted recovery
+and corrupted-predecessor/orphan negatives required.
+
+Cold `$swarm-red-team` on `gpt-6.1-sol`, effort low, without parent context
+confirmed three P1 mechanisms in this pending route: the early gate; ABSENT
+membership adjustment depending on `pending_source_publication` before the fold;
+and missing COMPLETE final-pending anchor proof. Proposed narrow repair is to
+carry the same authenticated pending entry through semantic decoding and the
+existing ABSENT membership adjustment, then require a nonempty captured OPEN
+fold. COMPLETE proof must bind that exact semantically validated selected entry,
+sole pending identity, final physical sequence, sole publication, ordered exact
+batch, independent anchor and stripped-prefix hash. No canonical history/source
+collector may re-enter from that callback. The review found no additional P0/P1
+in this conditional design; it produced no mounted-success evidence.
+
+## Isolated follow-up awaiting checkpoint integration
+
+`/private/tmp/chiplog-r14-debug-checkpoint` contains the later fixes while the
+mounted run's main sources were frozen. The exact early gate can defer only the
+same selected pending lifecycle entry, then requires nonempty OPEN causes and the
+full late fold. ABSENT validators retain strict defaults; their exceptional outer
+path still validates owner envelopes, suspension actor budget and typed records.
+The original suspension referenced by a successor and successor-start remain strict.
+COMPLETE pending lifecycle proves the exact final batch and real stripped prefix.
+Existing invocation/resolution prefix authentication is carried from the successful
+early verifier within the same held acquisition, never invented from a caller's
+claimed commitment pair.
+
+The first cold implementation review found a real P1: ABSENT with actual==anchor
+skipped the effects callback and lacked physical head/predecessor binding. Four new
+real-SQLite cases failed with DID NOT RAISE (future-head and wrong predecessor for
+both lifecycle operations). The isolated physical-history helper now checks actual
+tenant head against snapshot, pending expected_head against that head, and retained
+predecessor against both actual hash and independent anchor. All 14 physical-history
+cases passed afterward. Re-review closed that P1; no mounted pending success is claimed.
+
+The three existing OPEN/cancelled suffix families now use their canonical retained
+builders in the isolated verifier. Causal OPEN validation executes before a reader
+exports these facts; cancellation's outer source decoder is retained. The former
+three physical coverage failures pass. OPEN historical source selection is now
+call/seal-qualified, and startup validates each exact call frontier without invoking
+an incomplete legacy whole-seal projection. The legacy whole-seal reader stays
+singleton-only. Public per-call OPEN writer/read/replay APIs remain the next slice;
+this source/validator repair alone does not create a multi-call OPEN publication.
+
+Command in that isolated tree with explicit its `src` PYTHONPATH and UV_NO_SYNC=1:
+`./.venv/bin/python -m pytest -q --tb=short tests/composition/test_r14_native_selected_accounting_fast_path.py tests/composition/test_r14_historical_suffix.py`
+returned `98 passed in 2.55s`, with no deselected cases. After restoring unrelated
+copied source changes out of the isolated checkpoint candidate, the same command
+returned `98 passed in 2.17s`. Ruff and diff checks passed. A new cold
+`gpt-6.1-sol`/low `$swarm-red-team` read the actual narrow slice and found P0=0/P1=0;
+it independently obtained 98 passed. Its mechanism audit covered omission,
+unknown family, duplication/reorder, cross-owner substitution, stale/future sources,
+ABSENT/COMPLETE pending boundaries and callback recursion. Same-model independence
+limits remain. Some component acquisition/retained inputs are inert, as marked in tests.
+This is focused component/boundary evidence, not mounted pending recovery, cross-seal
+interrupted recovery, multi-resolver convergence or production-clock completion.

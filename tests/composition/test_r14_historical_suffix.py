@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import pytest
@@ -104,7 +104,9 @@ def _owner(sequence: int, predecessor: str, resulting: str):
         f"fingerprint-{sequence}",
         (_Record(f"record-{sequence}", "effects", "chiplog.effects.dispatch-outcome-record.v2"),),
     )
-    request = SimpleNamespace(identity=SimpleNamespace(command_id=command.idempotency_key))
+    request = SimpleNamespace(
+        identity=SimpleNamespace(command_id=command.idempotency_key), operation=operation
+    )
     prepared = SimpleNamespace(
         request=request,
         predecessor_commitment=predecessor,
@@ -291,9 +293,7 @@ def test_one_unanchored_final_publication_is_authenticated_as_exact_suffix(
 ) -> None:
     loop = _loop("agent_loop.loop-semantic-reduction.v1", 2, "commit-1", "commit-2")
     owner = _owner(3, "commit-2", "commit-3")
-    runtime, connection, head = _setup(
-        monkeypatch, [loop], owner_steps=[owner], anchor=2
-    )
+    runtime, connection, head = _setup(monkeypatch, [loop], owner_steps=[owner], anchor=2)
 
     assert _run(runtime, connection, head, anchor=2)
     assert not _run(runtime, connection, head, anchor=1)
@@ -304,9 +304,7 @@ def test_decision_collection_order_does_not_replace_persisted_sequence(
 ) -> None:
     first = _loop("agent_loop.original-resolver-invocation.v1", 2, "commit-1", "commit-2")
     second = _loop("agent_loop.loop-semantic-reduction.v1", 3, "commit-2", "commit-3")
-    accounting = _loop(
-        "agent_loop.execution-accounting-readiness.v1", 4, "commit-3", "commit-4"
-    )
+    accounting = _loop("agent_loop.execution-accounting-readiness.v1", 4, "commit-3", "commit-4")
     next_turn = _loop("agent_loop.execution-next-turn.v1", 5, "commit-4", "commit-5")
     runtime, connection, head = _setup(monkeypatch, [next_turn, second, accounting, first])
     from chiplog.composition import r14_next_turn_records as next_turn_records
@@ -317,9 +315,7 @@ def test_decision_collection_order_does_not_replace_persisted_sequence(
         invocation, "validate_selected_for_historical_suffix", lambda *_args: object()
     )
     monkeypatch.setattr(recovery, "validate_selected", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(
-        next_turn_records, "validate_selected_next_turn", lambda *_args: object()
-    )
+    monkeypatch.setattr(next_turn_records, "validate_selected_next_turn", lambda *_args: object())
     assert _run(runtime, connection, head)
 
 
@@ -357,3 +353,653 @@ def test_mixed_suffix_rejects_gaps_forks_and_incomplete_physical_state(
         extra_publication=head + 1 if mutate == "extra_after_anchor" else None,
     )
     assert not _run(runtime, connection, head)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "effects.authorize",
+        "effects.commit_send",
+        "effects.record_evidence",
+        "effects.reconcile",
+        "dispatch.consume_effect_send",
+    ],
+)
+@pytest.mark.parametrize("foreign", [False, True])
+def test_native_suffix_keeps_unselected_effects_out_of_authenticated_run_members(
+    monkeypatch, operation, foreign
+):
+    from chiplog.composition import r14_accepted_direct_terminal_records as terminal
+    from chiplog.composition import (
+        r16_dispatch_authority,
+        r16_dispatch_outbox,
+        r16_dispatch_outcomes,
+    )
+
+    entry, command = _loop("agent_loop.accepted-direct-terminal.v1", 1, "c0", "c1")
+    runtime = _Runtime([entry], {command.idempotency_key: command})
+    monkeypatch.setattr(
+        terminal,
+        "retained_accepted_direct_terminal",
+        lambda _: SimpleNamespace(
+            result=SimpleNamespace(accounting=SimpleNamespace(original_call_id="call-A"))
+        ),
+    )
+    intent_id = "foreign-effect" if foreign else "effect-B"
+    issuance = SimpleNamespace(
+        request=SimpleNamespace(
+            command=SimpleNamespace(intent=SimpleNamespace(intent_id=intent_id)),
+            original_send=SimpleNamespace(
+                snapshot=SimpleNamespace(intent=SimpleNamespace(intent_id=intent_id))
+            ),
+        )
+    )
+    validated = []
+
+    def validate(batch, runtime):
+        validated.append(batch.operation)
+        return issuance
+
+    monkeypatch.setattr(r16_dispatch_authority, "validate_issuance", validate)
+    monkeypatch.setattr(r16_dispatch_outcomes, "validate_outcome_issuance", validate)
+    monkeypatch.setattr(
+        r16_dispatch_outbox,
+        "validate_consumptions",
+        lambda runtime, journal: validated.append("dispatch.consume_effect_send"),
+    )
+    monkeypatch.setattr(
+        r16_dispatch_outbox.ConsumeRequest,
+        "model_validate_json",
+        lambda _: SimpleNamespace(intent=SimpleNamespace(subject_id=intent_id)),
+    )
+    journal = SimpleNamespace(
+        decisions=(
+            SimpleNamespace(
+                tenant_commit_sequence=2,
+                prepared=SimpleNamespace(
+                    request=SimpleNamespace(
+                        operation=operation, command=SimpleNamespace(canonical_bytes=b"consumption")
+                    )
+                ),
+            ),
+        )
+    )
+    if foreign:
+        with pytest.raises(ValueError, match="belongs to another seal"):
+            suffix.validate_native_terminal_suffix_semantics(
+                runtime, journal, "call-A", allowed_intent_ids=frozenset({"effect-A", "effect-B"})
+            )
+    else:
+        suffix.validate_native_terminal_suffix_semantics(
+            runtime, journal, "call-A", allowed_intent_ids=frozenset({"effect-A", "effect-B"})
+        )
+    assert validated == [operation]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "agent_loop.accepted-open-accounting.v1",
+        "agent_loop.accepted-open-recovery.v1",
+        "agent_loop.native-one-call-cancelled-accounting.v1",
+    ],
+)
+def test_native_suffix_covers_existing_per_call_terminal_publication_families(
+    monkeypatch, operation
+):
+    """Physical sequence coverage; retained-envelope semantics have separate tests."""
+    from chiplog.composition import r14_accepted_direct_terminal_records as terminal
+
+    later = _loop(operation, 2, "commit-1", "commit-2")
+    runtime, connection, head = _setup(monkeypatch, [later])
+    old_entry = runtime.entries[0]
+    old_command = runtime.commands[old_entry["operation_id"]]
+    target_operation = "agent_loop.accepted-direct-terminal.v1"
+    target_command = _Command(
+        target_operation,
+        old_command.idempotency_key,
+        old_command.expected_head,
+        old_command.request_fingerprint,
+        old_command.records,
+    )
+    old_entry["operation_kind"] = target_operation
+    runtime.commands[target_command.idempotency_key] = target_command
+    connection.execute(
+        "UPDATE publications SET operation_kind=? WHERE commit_sequence=1",
+        (target_operation,),
+    )
+    connection.commit()
+    monkeypatch.setattr(
+        terminal,
+        "retained_accepted_direct_terminal",
+        lambda _: SimpleNamespace(
+            result=SimpleNamespace(accounting=SimpleNamespace(original_call_id="call-A"))
+        ),
+    )
+    checked = []
+    monkeypatch.setattr(
+        suffix,
+        "_validate_native_suffix_loop_command",
+        lambda runtime, entry, command: checked.append(command.operation_kind),
+    )
+    assert suffix.authenticate_selected_r14_native_terminal_suffix_held(
+        runtime, f"commit-{head}", f"commit-{head}", original_call_id="call-A"
+    )
+    assert operation in checked
+
+
+@pytest.mark.parametrize("operation", ["dispatch.consume_effect_send", "dispatch.foreign"])
+def test_native_suffix_authenticates_physical_send_consumption_and_holds_unknown_family(
+    monkeypatch, operation
+):
+    """Physical suffix composition; the outbox validator owns ticket/SEND semantics."""
+    from chiplog.composition import r14_accepted_direct_terminal_records as terminal
+    from chiplog.composition import r16_dispatch_outbox as outbox
+
+    decision, owner_command = _owner(2, "commit-1", "commit-2")
+    owner_command = replace(owner_command, operation_kind=operation)
+    decision.command = owner_command
+    decision.prepared.request.operation = operation
+    runtime, connection, head = _setup(monkeypatch, [], owner_steps=[(decision, owner_command)])
+    entry = runtime.entries[0]
+    old_command = runtime.commands[entry["operation_id"]]
+    target_operation = "agent_loop.accepted-direct-terminal.v1"
+    runtime.commands[old_command.idempotency_key] = replace(
+        old_command, operation_kind=target_operation
+    )
+    entry["operation_kind"] = target_operation
+    connection.execute(
+        "UPDATE publications SET operation_kind=? WHERE commit_sequence=1", (target_operation,)
+    )
+    connection.commit()
+    monkeypatch.setattr(
+        terminal,
+        "retained_accepted_direct_terminal",
+        lambda _: SimpleNamespace(
+            result=SimpleNamespace(accounting=SimpleNamespace(original_call_id="call-A"))
+        ),
+    )
+    monkeypatch.setattr(suffix, "_validate_native_suffix_loop_command", lambda *_: None)
+    checked = []
+    monkeypatch.setattr(
+        outbox,
+        "validate_consumptions",
+        lambda runtime, journal: checked.append(journal.decisions),
+    )
+    result = suffix.authenticate_selected_r14_native_terminal_suffix_held(
+        runtime, f"commit-{head}", f"commit-{head}", original_call_id="call-A"
+    )
+    assert result is (operation == "dispatch.consume_effect_send")
+    assert bool(checked) is (operation == "dispatch.consume_effect_send")
+
+
+@pytest.mark.parametrize(
+    "damage", [None, "missing-send", "late-send", "duplicate", "ticket", "intent"]
+)
+def test_consumption_source_validation_binds_exact_prior_send_without_history_reentry(
+    monkeypatch, damage
+):
+    """Exercise real retained-body validation; journal authentication is external."""
+    from chiplog.capabilities.effects.dispatch_v2 import digest, reference
+    from chiplog.composition import r16_dispatch_outbox as outbox
+    from chiplog.platform._owner_publication_contracts import (
+        OwnerCommandBytes,
+        OwnerRecordBytes,
+        PublicationIdentity,
+        SingleOwnerBatch,
+    )
+    from tests.capabilities.effects.support.dispatch_outcomes import original_send
+
+    send = original_send()
+    send_raw = send.canonical_bytes()
+    send_row = OwnerRecordBytes(
+        owner="effects",
+        record_kind="effects.SEND_COMMITTED",
+        record_id=send.record.head,
+        schema_id=send.schema_id,
+        canonical_bytes=send_raw,
+        fingerprint=digest(send_raw),
+    )
+    selected_send = SimpleNamespace(
+        decision_id="selected-send",
+        decision_head="selected-send-head",
+        decision_fingerprint=digest(b"selected send"),
+        prepared=SimpleNamespace(
+            request=SimpleNamespace(
+                operation="effects.commit_send",
+                complete_records=(send_row,),
+            )
+        ),
+    )
+    consume_request, _ticket = outbox._request(selected_send, send)
+    if damage == "ticket":
+        consume_request = consume_request.model_copy(
+            update={
+                "ticket_bytes": b"different but consistently rehashed ticket",
+                "ticket_digest": digest(b"different but consistently rehashed ticket"),
+            }
+        )
+    elif damage == "intent":
+        consume_request = consume_request.model_copy(
+            update={
+                "intent": reference("foreign-intent", b"foreign intent"),
+            }
+        )
+    request_raw = consume_request.canonical_bytes()
+    consumption = outbox.ConsumptionRecord(
+        schema_id=outbox.CONSUMPTION_SCHEMA,
+        state="CONSUMED",
+        request=consume_request,
+    )
+    record_raw = consumption.canonical_bytes()
+    # Only retained-body fields consumed by this validator are constructed.
+    # This fixture grants no authentication or publication authority.
+    batch = SingleOwnerBatch.model_construct(
+        operation="dispatch.consume_effect_send",
+        identity=PublicationIdentity(
+            tenant_id=consume_request.tenant_id,
+            command_id=consume_request.command_id,
+            command_fingerprint=digest(request_raw),
+            canonicalization_version="chiplog.owner-publication.v1",
+        ),
+        command=OwnerCommandBytes(
+            owner="broker_dispatch",
+            schema_id=outbox.CONSUME_SCHEMA,
+            canonical_bytes=request_raw,
+            fingerprint=digest(request_raw),
+        ),
+        complete_records=(
+            OwnerRecordBytes(
+                owner="broker_dispatch",
+                record_kind="send-consumption",
+                record_id=consume_request.command_id,
+                schema_id=outbox.CONSUMPTION_SCHEMA,
+                canonical_bytes=record_raw,
+                fingerprint=digest(record_raw),
+            ),
+        ),
+    )
+    selected_consumption = SimpleNamespace(prepared=SimpleNamespace(request=batch))
+    decisions = (selected_send, selected_consumption)
+    if damage == "missing-send":
+        decisions = (selected_consumption,)
+    elif damage == "late-send":
+        decisions = (selected_consumption, selected_send)
+    elif damage == "duplicate":
+        decisions = (*decisions, selected_consumption)
+    journal = SimpleNamespace(decisions=decisions)
+
+    def reentry(*args, **kwargs):
+        raise AssertionError("consumption validation must use supplied journal")
+
+    monkeypatch.setattr(outbox, "_capture_sources", reentry)
+    runtime = SimpleNamespace(_owner_decisions=reentry)
+    if damage is None:
+        outbox.validate_consumptions(runtime, journal)
+    else:
+        with pytest.raises(ValueError, match=r"missing selected SEND|duplicate child|substitutes"):
+            outbox.validate_consumptions(runtime, journal)
+
+
+@pytest.mark.parametrize("damage", [None, "commitment", "earlier-row", "future-bound", "fence"])
+def test_open_source_commitment_is_proved_against_physical_prefix_without_changing_current(
+    tmp_path, damage
+):
+    from chiplog.platform._sqlite import SQLiteMaterializer
+    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+    from chiplog.platform.workspace_snapshot import read_connection
+
+    database = tmp_path / "open-source-prefix.sqlite"
+    with SQLiteMaterializer(database, record_contracts={"agent_loop": "chiplog.loop.test.v1"}):
+        pass
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO tenant_heads VALUES ('tenant', 1)")
+        db.execute(
+            "INSERT INTO records VALUES "
+            "('tenant', 'r1', 'agent_loop', 'chiplog.loop.test.v1', ?, 1)",
+            (b"first",),
+        )
+        db.execute("INSERT INTO publications VALUES ('tenant', 'source', 'c1', 'f1', 1, 'r1')")
+    with read_connection(database) as db:
+        original_commitment = capture_authority_snapshot_commitment(db, "tenant")
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE tenant_heads SET head=2 WHERE tenant_id='tenant'")
+        db.execute(
+            "INSERT INTO records VALUES "
+            "('tenant', 'r2', 'agent_loop', 'chiplog.loop.test.v1', ?, 2)",
+            (b"later",),
+        )
+        db.execute("INSERT INTO publications VALUES ('tenant', 'later', 'c2', 'f2', 2, 'r2')")
+        if damage == "earlier-row":
+            db.execute("UPDATE records SET canonical_bytes=? WHERE record_id='r1'", (b"changed",))
+        elif damage == "fence":
+            db.execute("INSERT INTO deletion_fences VALUES ('tenant', 'r6', 1)")
+    runtime = SimpleNamespace(
+        _tenant_id="tenant",
+        _authority_gate=lambda: SimpleNamespace(require_held=lambda: None),
+        _check_database_identity=lambda: None,
+    )
+    expected_head = 3 if damage == "future-bound" else 1
+    expected_commitment = "f" * 64 if damage == "commitment" else original_commitment
+    with read_connection(database) as db:
+        before = capture_authority_snapshot_commitment(db, "tenant")
+        if damage is None:
+            suffix.validate_native_open_physical_source_prefix_held(
+                runtime, db, expected_head=expected_head, expected_commitment=expected_commitment
+            )
+        else:
+            with pytest.raises(ValueError, match="OPEN source"):
+                suffix.validate_native_open_physical_source_prefix_held(
+                    runtime,
+                    db,
+                    expected_head=expected_head,
+                    expected_commitment=expected_commitment,
+                )
+        assert capture_authority_snapshot_commitment(db, "tenant") == before
+        assert db.execute("SELECT head FROM tenant_heads").fetchone()[0] == 2
+        assert db.execute("SELECT record_id FROM records ORDER BY record_id").fetchall() == [
+            ("r1",),
+            ("r2",),
+        ]
+
+
+@pytest.mark.parametrize("damage", [None, "source-head", "predecessor", "tenant"])
+def test_selected_open_source_stamp_matches_header_before_physical_prefix_validation(
+    monkeypatch, damage
+):
+    cut = SimpleNamespace(
+        tenant_id="foreign" if damage == "tenant" else "tenant",
+        tenant_commit_sequence=2 if damage == "source-head" else 1,
+        materialization_commitment="source-commitment",
+    )
+    entry = {"predecessor": "different" if damage == "predecessor" else "source-commitment"}
+    command = SimpleNamespace(expected_head=1, tenant_id="tenant")
+    checked = []
+    monkeypatch.setattr(
+        suffix,
+        "validate_native_open_physical_source_prefix_held",
+        lambda runtime, connection, **kwargs: checked.append(kwargs),
+    )
+    runtime = SimpleNamespace(_tenant_id="tenant")
+    if damage is None:
+        suffix.validate_native_open_selected_source_stamp_held(
+            runtime, object(), command=command, entry=entry, cut=cut
+        )
+        assert checked == [{"expected_head": 1, "expected_commitment": "source-commitment"}]
+    else:
+        with pytest.raises(ValueError, match="OPEN source stamp"):
+            suffix.validate_native_open_selected_source_stamp_held(
+                runtime, object(), command=command, entry=entry, cut=cut
+            )
+        assert not checked
+
+
+@pytest.mark.parametrize(
+    "pending_operation,has_open",
+    [
+        ("agent_loop.execution-suspension.v1", True),
+        ("agent_loop.execution-successor.v1", True),
+        ("agent_loop.execution-suspension.v1", False),
+        ("agent_loop.unknown.v1", True),
+    ],
+)
+def test_exact_open_history_reaches_semantic_validation_before_pending_lifecycle_verdict(
+    tmp_path, monkeypatch, pending_operation, has_open
+):
+    """Early gate reachability only; physical/callback proof remains separate."""
+    from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
+    from chiplog.composition import r14_accepted_open_accounting_records as open_records
+    from chiplog.composition import r14_loop_history as history
+    from chiplog.composition import r14_native_recovery_historical as historical
+    from chiplog.platform._sqlite import SQLiteMaterializer
+    from chiplog.platform.authority_gate import AuthorityGate
+    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+    from chiplog.platform.workspace_snapshot import read_connection
+
+    class ReachedSemanticValidation(Exception):
+        pass
+
+    database = tmp_path / "pending-open.sqlite"
+    with SQLiteMaterializer(database, record_contracts={"agent_loop": "chiplog.loop.test.v1"}):
+        pass
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO tenant_heads VALUES ('tenant', 1)")
+        connection.execute("INSERT INTO deletion_fences VALUES ('tenant', 'r6', 0)")
+    with read_connection(database) as connection:
+        commitment = capture_authority_snapshot_commitment(connection, "tenant")
+    open_entry, open_command = _loop(
+        "agent_loop.accepted-open-recovery.v1", 1, "before", commitment
+    )
+    open_entry["accepted_open_recovery_evidence"] = "inert gate-reachability input"
+    pending_entry, pending_command = _loop(pending_operation, 2, commitment, "later")
+    selected = (
+        [(open_entry, open_command), (pending_entry, pending_command)]
+        if has_open
+        else [(pending_entry, pending_command)]
+    )
+    commands = {command.idempotency_key: command for _, command in selected}
+    gate = AuthorityGate(database)
+    runtime = SimpleNamespace(
+        _tenant_id="tenant",
+        _database=database,
+        _authority_gate=lambda: gate,
+        _pending=lambda: (pending_entry,),
+        _publication=lambda entry: commands[entry["operation_id"]],
+        _loop_decisions=lambda: SimpleNamespace(
+            entries=lambda: tuple(
+                (
+                    entry["operation_id"],
+                    b"predecessor",
+                    json.dumps(entry, sort_keys=True, separators=(",", ":")),
+                )
+                for entry, _ in selected
+            )
+        ),
+        _owner_decisions=lambda: SimpleNamespace(snapshot=lambda: SimpleNamespace(decisions=())),
+        _commitment_journal=SimpleNamespace(load=lambda _: commitment),
+        _check_database_identity=lambda: None,
+    )
+    monkeypatch.setattr(historical, "_make_authenticated_loop_decision_cut", lambda *args: args[1])
+
+    def reach_semantics(entry):
+        raise ReachedSemanticValidation
+
+    monkeypatch.setattr(open_records, "retained_accepted_open_recovery", reach_semantics)
+    if has_open and pending_operation in (
+        "agent_loop.execution-suspension.v1",
+        "agent_loop.execution-successor.v1",
+    ):
+        with pytest.raises(ReachedSemanticValidation):
+            history._read_call_history(runtime, selected_only=True, exact_historical_sources=True)
+    else:
+        with pytest.raises(LoopIntegrityError, match="unverified pending write"):
+            history._read_call_history(runtime, selected_only=True, exact_historical_sources=True)
+
+
+@pytest.mark.parametrize("family", ["suspension", "successor"])
+@pytest.mark.parametrize("state", ["ABSENT", "COMPLETE", "CONFLICT"])
+@pytest.mark.parametrize("allow_absent", [False, True])
+def test_lifecycle_physical_validation_keeps_default_strict_and_reaches_pending_semantics(
+    tmp_path, monkeypatch, family, state, allow_absent
+):
+    """Real readback, inert owner-envelope acquisition; budget probe is explicit."""
+    import hashlib
+
+    from chiplog.composition import r14_execution_successor as successor
+    from chiplog.composition import r14_execution_suspension as suspension
+    from chiplog.platform._sqlite import (
+        PhysicalPublicationCommand,
+        PhysicalRecord,
+        SQLiteMaterializer,
+    )
+    from chiplog.platform.authority_gate import AuthorityGate
+
+    class BudgetValidationReached(Exception):
+        pass
+
+    raw = b"inert canonical row"
+    command = PhysicalPublicationCommand(
+        tenant_id="tenant",
+        operation_kind="agent_loop.execution-" + family + ".v1",
+        idempotency_key="selected",
+        request_fingerprint="fingerprint",
+        expected_head=1,
+        fence_generation="r6",
+        expected_fence_frontier=0,
+        minimum_fence_frontier=0,
+        records=(
+            PhysicalRecord(
+                "row", "agent_loop", "chiplog.loop.test.v1", raw, hashlib.sha256(raw).hexdigest()
+            ),
+        ),
+    )
+    database = tmp_path / "pending-validator.sqlite"
+    with SQLiteMaterializer(database, record_contracts={"agent_loop": "chiplog.loop.test.v1"}):
+        pass
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO tenant_heads VALUES ('tenant', ?)", (1 if state == "ABSENT" else 2,)
+        )
+        if state != "ABSENT":
+            connection.execute(
+                "INSERT INTO records VALUES ('tenant','row','agent_loop',?,?,2)",
+                ("chiplog.loop.test.v1", raw),
+            )
+        if state == "COMPLETE":
+            connection.execute(
+                "INSERT INTO publications VALUES ('tenant',?,'selected','fingerprint',2,'row')",
+                (command.operation_kind,),
+            )
+    evidence = SimpleNamespace(
+        request=SimpleNamespace(cut=SimpleNamespace(materialization_commitment="source")),
+        actor_budget_v1=suspension.RecoveryActorBudgetV1.model_construct(),
+        canonical_bytes=lambda: b"inert evidence",
+    )
+    entry = dict(
+        fingerprint="fingerprint",
+        expected_head=1,
+        predecessor="source",
+        execution_suspension_evidence="inert evidence",
+    )
+    gate = AuthorityGate(database)
+    runtime = SimpleNamespace(_database=database, _authority_gate=lambda: gate)
+    monkeypatch.setattr(suspension, "_retained", lambda _: evidence)
+    monkeypatch.setattr(suspension, "_command", lambda _: command)
+    monkeypatch.setattr(successor, "_command", lambda _: command)
+
+    def check_budget(_):
+        raise BudgetValidationReached
+
+    monkeypatch.setattr(suspension, "validate_recovery_actor_budget", check_budget)
+    kwargs = {"allow_pending_absent": True} if allow_absent else {}
+    permitted = state == "COMPLETE" or (state == "ABSENT" and allow_absent)
+    with gate.hold():
+        if family == "suspension":
+            expected = BudgetValidationReached if permitted else ValueError
+            with pytest.raises(expected):
+                suspension._validate_selected(
+                    runtime, entry, command, check_history=False, **kwargs
+                )
+        elif permitted:
+            assert successor._selected_matches(runtime, entry, command, evidence, **kwargs)
+        else:
+            with pytest.raises(ValueError, match="physical publication is incomplete"):
+                successor._selected_matches(runtime, entry, command, evidence, **kwargs)
+
+
+@pytest.mark.parametrize("family", ["suspension", "successor"])
+@pytest.mark.parametrize("damage", [None, "predecessor", "unselected", "orphan", "source-bytes"])
+def test_completed_pending_lifecycle_requires_exact_final_batch_and_real_source_prefix(
+    tmp_path, family, damage
+):
+    import hashlib
+
+    from chiplog.platform._sqlite import (
+        PhysicalPublicationCommand,
+        PhysicalRecord,
+        SQLiteMaterializer,
+    )
+    from chiplog.platform.authority_gate import AuthorityGate
+    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+    from chiplog.platform.workspace_snapshot import read_connection
+
+    database = tmp_path / "completed-pending.sqlite"
+    with SQLiteMaterializer(database, record_contracts={"agent_loop": "chiplog.loop.test.v1"}):
+        pass
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO tenant_heads VALUES ('tenant', 1)")
+        connection.execute(
+            "INSERT INTO records VALUES ('tenant','first','agent_loop','chiplog.loop.test.v1',?,1)",
+            (b"first",),
+        )
+        connection.execute(
+            "INSERT INTO publications VALUES ('tenant','source','first','first',1,'first')"
+        )
+    with read_connection(database) as connection:
+        predecessor = capture_authority_snapshot_commitment(connection, "tenant")
+    raw = b"later"
+    command = PhysicalPublicationCommand(
+        tenant_id="tenant",
+        operation_kind="agent_loop.execution-" + family + ".v1",
+        idempotency_key="pending",
+        request_fingerprint="selected",
+        expected_head=1,
+        fence_generation="r6",
+        expected_fence_frontier=0,
+        minimum_fence_frontier=0,
+        records=(
+            PhysicalRecord(
+                "later", "agent_loop", "chiplog.loop.test.v1", raw, hashlib.sha256(raw).hexdigest()
+            ),
+        ),
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE tenant_heads SET head=2")
+        connection.execute(
+            "INSERT INTO records VALUES ('tenant','later','agent_loop','chiplog.loop.test.v1',?,2)",
+            (raw,),
+        )
+        connection.execute(
+            "INSERT INTO publications VALUES ('tenant',?,'pending','selected',2,'later')",
+            (command.operation_kind,),
+        )
+        if damage == "orphan":
+            connection.execute(
+                "INSERT INTO records VALUES "
+                "('tenant','orphan','agent_loop','chiplog.loop.test.v1',?,2)",
+                (b"orphan",),
+            )
+        elif damage == "source-bytes":
+            connection.execute(
+                "UPDATE records SET canonical_bytes=? WHERE record_id='first'", (b"changed",)
+            )
+    with read_connection(database) as connection:
+        actual = capture_authority_snapshot_commitment(connection, "tenant")
+    entry = dict(
+        operation_kind=command.operation_kind,
+        operation_id=command.idempotency_key,
+        predecessor="wrong" if damage == "predecessor" else predecessor,
+        resulting=actual,
+    )
+    gate = AuthorityGate(database)
+    runtime = SimpleNamespace(
+        _tenant_id="tenant",
+        _authority_gate=lambda: gate,
+        _pending=lambda: (entry,),
+        _pending_owners=lambda: (),
+        _pending_gate_publications=lambda: (),
+        _commitment_journal=SimpleNamespace(load=lambda _: predecessor),
+        _check_database_identity=lambda: None,
+    )
+    selected = () if damage == "unselected" else ((command, entry),)
+    with gate.hold(), read_connection(database) as connection:
+        kwargs = dict(pending_publication=entry, selected=selected, frontier=2)
+        if damage == "source-bytes":
+            with pytest.raises(ValueError, match="OPEN source commitment"):
+                suffix.authenticate_native_open_pending_lifecycle_held(
+                    runtime, connection, actual, predecessor, **kwargs
+                )
+        else:
+            assert suffix.authenticate_native_open_pending_lifecycle_held(
+                runtime, connection, actual, predecessor, **kwargs
+            ) is (damage is None)

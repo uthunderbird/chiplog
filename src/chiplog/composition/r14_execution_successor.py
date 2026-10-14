@@ -279,8 +279,19 @@ def _retained(entry, field=EVIDENCE_FIELD, cls=RetainedExecutionSuccessor):
 
 
 def _selected_matches(
-    runtime, entry, command, evidence, *, start=False, source_validated=False
+    runtime,
+    entry,
+    command,
+    evidence,
+    *,
+    start=False,
+    source_validated=False,
+    allow_pending_absent=False,
 ):
+    if allow_pending_absent:
+        runtime._authority_gate().require_held()
+        if start:
+            raise ValueError("pending successor start is not supported by OPEN history")
     expected = _start_command(evidence) if start else _command(evidence)
     selected_predecessor = (
         evidence.source_resulting_commitment
@@ -308,7 +319,8 @@ def _selected_matches(
             raise ValueError("successor start source commitment differs from selected batch")
         _selected_matches(runtime, source_entry[2], source_command, source_evidence)
     with read_connection(runtime._database) as connection:
-        if inspect_publication(connection, command, command.expected_head + 1) != "COMPLETE":
+        state = inspect_publication(connection, command, command.expected_head + 1)
+        if state != "COMPLETE" and not (allow_pending_absent and state == "ABSENT"):
             raise ValueError("selected successor physical publication is incomplete")
         rows = connection.execute(
             "SELECT record_id,owner,schema_id,canonical_bytes FROM records "
@@ -319,7 +331,7 @@ def _selected_matches(
     expected_records = {
         (r.record_id, r.owner, r.schema_id): r.canonical_bytes for r in command.records
     }
-    if found != expected_records:
+    if found != expected_records and not (allow_pending_absent and state == "ABSENT" and not found):
         raise ValueError("selected successor physical rows differ from retained batch")
     return True
 
@@ -482,9 +494,7 @@ async def drive_successor(
             if not admitted.principal_id:
                 raise LoopRejected("selected admitted principal is absent")
             _assert_ingress_unclaimed(runtime, driver_request)
-            observation = _source_for(
-                runtime, admitted.principal_id, driver_request, admitted
-            )
+            observation = _source_for(runtime, admitted.principal_id, driver_request, admitted)
             if observation is None:
                 return None
             cut, suspension, current = observation
@@ -647,9 +657,7 @@ async def _publish_batch(
                 )
                 if current != (cut, suspension, evidence.request.run):
                     return "STALE"
-                classification = classify_execution_successor(
-                    evidence.request, evidence.result
-                )
+                classification = classify_execution_successor(evidence.request, evidence.result)
                 if (
                     classification.disposition != "SUCCESSOR_REQUIRED"
                     or classification.source_request_fingerprint != evidence.request.digest()
@@ -673,7 +681,7 @@ async def _publish_batch(
                     >= evidence.actor_budget_v1.request.budget.absolute_deadline_ns
                 ):
                     return "STALE"
-            except (ValueError, TypeError, RuntimeError, LoopRejected):
+            except ValueError, TypeError, RuntimeError, LoopRejected:
                 return "STALE"
         return None
 

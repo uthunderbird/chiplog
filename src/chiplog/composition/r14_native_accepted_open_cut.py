@@ -94,7 +94,14 @@ def build_accepted_open_recovery_cut(
             if len(matches) != 1:
                 return None
             run = matches[0]
-            branch = accepted_open.accepted.source.target_inventory_rows[0].acceptance
+            matching_rows = tuple(
+                row
+                for row in accepted_open.accepted.source.target_inventory_rows
+                if row.original_call_id == accepted_open.accepted.original_call_id
+            )
+            if len(matching_rows) != 1:
+                return None
+            branch = matching_rows[0].acceptance
             acceptance = accepted_open.accepted.acceptance
             if (
                 branch.kind != "CONSEQUENTIAL_ACCEPTED"

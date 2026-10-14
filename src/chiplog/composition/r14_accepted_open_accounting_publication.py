@@ -244,6 +244,7 @@ def _selected(runtime, identity: str) -> dict[str, object] | None:
 def _current_cut(
     runtime,
     *,
+    original_call_id: str | None = None,
     selected_only: bool = False,
     expected_source_cut: AcceptedOpenRecoveryCutV1 | None = None,
     source_materialization_commitment: str | None = None,
@@ -254,17 +255,36 @@ def _current_cut(
         selected_only=selected_only,
         exact_historical_sources=expected_source_cut is not None,
     )
-    snapshot, _, _, executions, _, _ = history
-    if len(executions) != 1 or not snapshot.records:
-        raise LoopRejected("accepted/open source requires one selected native execution")
-    seal = executions[0].proposal.fan_out.response_seal
+    snapshot, _, _, executions, _, acceptances = history
+    if not snapshot.records:
+        raise LoopRejected("accepted/open source requires selected execution history")
+    if expected_source_cut is not None:
+        if original_call_id not in (None, expected_source_cut.original_call_id):
+            raise LoopRejected("accepted/open historical target differs")
+        original_call_id = expected_source_cut.original_call_id
+    if original_call_id is None:
+        accepted_ids = {value.loop_request.binding.original_call_id for value in acceptances}
+        if len(accepted_ids) != 1:
+            return None
+        original_call_id = next(iter(accepted_ids))
+    matches = tuple(
+        value
+        for value in executions
+        if any(
+            record.original_call_id == original_call_id
+            for record in value.proposal.fan_out.initialized_records
+        )
+    )
+    if len(matches) != 1:
+        raise LoopRejected("accepted/open requires one selected native execution for call")
+    seal = matches[0].proposal.fan_out.response_seal
     seal_digest = seal.digest()
     seal_ref = CallSubjectHead(
         subject_id=seal.response_seal_id,
         revision=Present(head="record:" + seal_digest, fingerprint=seal_digest),
     )
     projection = R14OriginalNativePrepareSource(runtime).collect(seal_ref)
-    if projection is None:
+    if projection is None or projection.selected_response_seal != seal_ref:
         raise LoopRejected("accepted/open original Prepare source unavailable")
     source = R14NativeSelectedAccountingSource(
         runtime,
@@ -272,7 +292,10 @@ def _current_cut(
         bind_native_execution_preparation_v2(projection),
     )
     facts = source.collect_one_accepted_open_outcome(
-        execution_run_head(snapshot.records[-1]),
+        execution_run_head(snapshot.records[-1])
+        if expected_source_cut is None
+        else expected_source_cut.current_run,
+        original_call_id=original_call_id,
         selected_only=selected_only,
         expected_outcome_record_id=(
             None if expected_source_cut is None else expected_source_cut.selected_outcome_record_id
@@ -548,9 +571,7 @@ async def hold_if_accepted_open(runtime, peer: str) -> bool:
         return True
     return not (
         _reduction_matches_resolution(resolution, reduction)
-        and _reduction_matches_current_evidence(
-            reduction, facts.complete_ordered_evidence_sources
-        )
+        and _reduction_matches_current_evidence(reduction, facts.complete_ordered_evidence_sources)
     )
 
 
@@ -600,7 +621,7 @@ def _hold_if_resolved_reduction_stale(runtime) -> bool:
                 reduction_witness=retained_reduction.request.complete_anchor_sources[-1],
             )
         )
-    except (LoopRejected, ValueError, TypeError, RuntimeError, OSError):
+    except LoopRejected, ValueError, TypeError, RuntimeError, OSError:
         return True
 
 
@@ -614,7 +635,7 @@ def _reduction_matches_current_evidence(
     """A consumable reduction must cover the complete current authenticated R16 cut."""
     try:
         current = tuple(source.physical_record for source in evidence_sources)
-    except (AttributeError, TypeError):
+    except AttributeError, TypeError:
         return False
     if not current or reduction.record.complete_ordered_evidence != current:
         return False
@@ -805,10 +826,10 @@ async def publish_accepted_open_recovery(runtime, peer: str = "hermetic-ingress"
     return await _finish_recovery(runtime, entry)
 
 
-def _validated_selected_accepted_open_recovery(runtime):
+def _validated_selected_accepted_open_recoveries(runtime):
     """Validate each selected recovery publication and retain its exact frontier."""
-    claimed = False
     selected = []
+    seen_call_keys = set()
     for _, _, raw in runtime._loop_decisions().entries():
         entry = json.loads(raw)
         if entry.get("kind") != "DECIDED":
@@ -824,7 +845,6 @@ def _validated_selected_accepted_open_recovery(runtime):
         )
         if not marker:
             continue
-        claimed = True
         evidence = retained_accepted_open_recovery(entry)
         expected = accepted_open_recovery_command(evidence)
         if (
@@ -837,6 +857,10 @@ def _validated_selected_accepted_open_recovery(runtime):
             or len(command.records) != 3
         ):
             raise LoopRejected("selected accepted/open recovery envelope differs")
+        key = (evidence.request.cut.response_id, evidence.request.cut.original_call_id)
+        if key in seen_call_keys:
+            raise LoopRejected("duplicate accepted/open recovery for selected call and seal")
+        seen_call_keys.add(key)
         with read_connection(runtime._database) as connection:
             actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
         anchored = runtime._commitment_journal.load(runtime._tenant_id)
@@ -889,16 +913,28 @@ def _validated_selected_accepted_open_recovery(runtime):
                     "accepted/open recovery selected source cut differs: " + ",".join(differing)
                 )
             accounting_cut = evidence.request.cut
-        accounting = _accepted_open_sealed_accounting(current[0], accounting_cut, evidence.result)
-        selected.append((entry, evidence, accounting))
-    if claimed and len(selected) != 1:
+        frontier = _accepted_open_call_frontier(
+            current[0].accepted, accounting_cut, evidence.result
+        )
+        selected.append((entry, evidence, frontier, current[0]))
+    return tuple(selected)
+
+
+def _validated_selected_accepted_open_recovery(runtime):
+    """Legacy whole-seal accessor remains singleton-only."""
+    selected = _validated_selected_accepted_open_recoveries(runtime)
+    if len(selected) > 1:
         raise LoopRejected("ambiguous accepted/open recovery selection")
-    return selected[0] if selected else None
+    if not selected:
+        return None
+    entry, evidence, _frontier, facts = selected[0]
+    accounting = _accepted_open_sealed_accounting(facts, evidence.request.cut, evidence.result)
+    return entry, evidence, accounting
 
 
 def validate_selected_accepted_open_recovery(runtime) -> None:
     """Recompute every selected recovery publication before startup replay."""
-    _validated_selected_accepted_open_recovery(runtime)
+    _validated_selected_accepted_open_recoveries(runtime)
 
 
 def read_selected_accepted_open_frontier(runtime):
