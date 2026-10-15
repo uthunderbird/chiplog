@@ -394,7 +394,7 @@ class NativeOneCallScopeService:
                 and not authenticate_selected_recovery_prefix_held(runtime, actual, anchored)
             ):
                 raise LoopRejected("native context original initialization is not materialized")
-            runtime._validate_historical(evidence, wire)
+            admitted = runtime._validate_historical(evidence, wire)
             entries = runtime._loop_decisions().entries()
             if not any(
                 identity == scope.selected_resource_observation_ref.selected_initialization.head
@@ -402,12 +402,8 @@ class NativeOneCallScopeService:
                 for identity, _, raw in entries
             ):
                 raise LoopRejected("native context original initialization bytes differ")
-            admitted = runtime.read_historical_admitted_inbox(
-                wire.identity.original_ingress_identity.command_id
-            )
             if (
-                admitted is None
-                or canonical_ingress_record_bytes(admitted.record) != scope.selected_admission_bytes
+                canonical_ingress_record_bytes(admitted.record) != scope.selected_admission_bytes
                 or ExactHead(**admitted.physical_record.model_dump())
                 != scope.selected_admission_ref
             ):

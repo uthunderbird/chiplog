@@ -16,9 +16,7 @@ from chiplog.composition.r14_native_accounting_records import (
     NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION,
     NativeSealedAccountingV3Record,
     RetainedNativeSealedAccountingV3Publication,
-    sealed_accounting_v3_command,
-    sealed_accounting_v3_envelope,
-    validate_retained_sealed_accounting_v3_publication,
+    _sealed_accounting_v3_artifacts,
 )
 from chiplog.composition.r14_native_preparation_bindings import bind_native_execution_preparation_v2
 from chiplog.composition.r14_native_selected_accounting_source import (
@@ -126,9 +124,7 @@ def decode_selected_native_sealed_accounting_v3(
             "native sealed accounting V3 request differs from current source: "
             + ("unavailable" if rebuilt is None else "fingerprint-mismatch")
         )
-    record = validate_retained_sealed_accounting_v3_publication(evidence)
-    expected = sealed_accounting_v3_command(evidence)
-    envelope = sealed_accounting_v3_envelope(evidence)
+    record, expected, envelope = _sealed_accounting_v3_artifacts(evidence)
     if (
         command != expected
         or entry.get("operation_kind") != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION

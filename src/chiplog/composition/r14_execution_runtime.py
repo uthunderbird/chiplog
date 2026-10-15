@@ -269,6 +269,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
         peer: str,
         request: ExecutionTransitionRequest,
         *,
+        verify_selected_output: bool = True,
         expected_snapshot: ExecutionHistorySnapshot | None = None,
         workspace_issuance: H1WorkspaceIssuanceRefV1 | None = None,
         workspace_member_bytes: bytes | None = None,
@@ -519,9 +520,10 @@ class R14ExecutionRuntime(R14PlanningRuntime):
         if result.disposition not in ("COMMITTED", "REPLAY"):
             raise LoopRejected("execution publication " + result.disposition)
         self._finish_decision(command.idempotency_key)
-        current = read_execution_history(self)
-        if proposal.run not in current.records:
-            raise LoopRejected("selected execution output absent after publication")
+        if verify_selected_output:
+            current = read_execution_history(self)
+            if proposal.run not in current.records:
+                raise LoopRejected("selected execution output absent after publication")
         return proposal.run
 
     async def _publish_selected_inbox_initialization(
@@ -824,6 +826,8 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                     command_id="visibility:" + started.head, run=started, members=members
                 ),
                 expected_snapshot=snapshot,
+                # Prepare's fresh source read requires this exact Run as predecessor.
+                verify_selected_output=False,
             )
             manifest = ExecutionVisibilityManifest(
                 tenant=started.tenant,
@@ -865,6 +869,8 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 h1_source_tenant_sequence=source_tenant_sequence,
                 h1_workspace_port=workspace_port,
                 native_scope_binding=native_scope_binding,
+                # Emit's fresh source read requires this exact Run as predecessor.
+                verify_selected_output=False,
             )
             with self._authority_gate().hold():
                 self._verify_h1_prepare_issuance(
@@ -880,7 +886,10 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                     workspace_port,
                 )
             emitted = await self._publish_initial_transition(
-                peer, EmitExecutionAttempt(command_id="emit:" + prepared.head, run=prepared)
+                peer,
+                EmitExecutionAttempt(command_id="emit:" + prepared.head, run=prepared),
+                # The pre-model read requires this exact Run as the latest record.
+                verify_selected_output=False,
             )
             refreshed = await self._execution_actor(peer)
             with self._authority_gate().hold():

@@ -509,3 +509,26 @@ terminal tests plus exact historical-cut, CLOSED-source and history-forwarding
 selectors. No production pass is inferred for the clean checkpoint source profile
 without its five inherited performance changes; the real-clock result belongs
 only to the explicitly retained isolated WIP profile above.
+
+### Inherited capture performance slice
+
+Five inherited performance modules are now saved with their actual dependencies:
+local immutable digest reuse, reuse of already authenticated historical admission,
+V3 artifact reconstruction reuse and removal of redundant capture postpublication
+reads. Every next capture consumer still reads fresh selected history; default
+standalone publication keeps its output check. The native scope also checks the
+Run head/digest before scope issuance.
+
+On the frozen MAIN WIP, execution runtime tests returned 7 passed in 33.51s;
+recovery preparation/V3 record tests returned 22 passed in 0.83s. Three real
+producer corruption probes returned 3 passed in 10.33s: after completing
+Accumulate, Prepare or Emit, corrupt the exact selected row, reanchor physical
+storage, require typed refusal, zero model requests and unchanged journal/head.
+They prove legacy capture outcome fences, not native-scope append rejection or
+absence of AUTHENTICATE IPC. Cold actual reviews found zero P0/P1.
+
+The appended permanent test preserves those executed probe bodies. The earlier
+normal-clock SUSP pass remains tied to its recorded isolated WIP profile; saving
+these source bytes in a checkpoint does not convert that result into a new HEAD
+production run. R14 remains OPEN; cross-seal continuation and strict CLOSED
+locator substitution are still pending.

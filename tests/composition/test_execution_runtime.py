@@ -245,7 +245,7 @@ async def test_actor_substitution_after_emit_never_reaches_model(
             nonlocal calls
             calls += 1
             observed = await authenticate(peer)
-            if calls != 4:  # capture start, Prepare, Emit, then the final pre-model refresh
+            if calls != 5:  # capture start, Accumulate, Prepare, Emit, then pre-model refresh
                 return observed
             reference = json.loads(observed.result.reference_bytes or b"{}")
             reference["principal_id"] = "substituted-principal"
@@ -267,5 +267,63 @@ async def test_actor_substitution_after_emit_never_reaches_model(
             ),
         ):
             await runtime.capture_execution("hermetic-ingress", "run", started.head)
-        assert calls == 4
+        assert calls == 5
         assert invoked == []
+
+
+@pytest.mark.parametrize("phase", ["accumulate", "prepare", "emit"])
+async def test_capture_rejects_corrupted_completed_predecessor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
+    from chiplog.capabilities.agent_loop.execution_transition_contracts import (
+        AccumulateExecutionVisibility,
+        EmitExecutionAttempt,
+        PrepareExecutionRequest,
+    )
+    from chiplog.platform.authority_reads import capture_authority_storage_state
+
+    target = {"accumulate": AccumulateExecutionVisibility,
+              "prepare": PrepareExecutionRequest, "emit": EmitExecutionAttempt}[phase]
+    database = tmp_path / "capture-corruption.sqlite"
+    async with open_execution_runtime(database, responses=(b"unused",)) as runtime:
+        created = await runtime.create_execution("hermetic-ingress", "run", "Plan", BudgetPolicy())
+        started = await runtime.begin_execution("hermetic-ingress", "run", created.head)
+        publish = runtime._publish_initial_transition
+        damaged = []
+
+        async def intercept(peer, request, **kwargs):
+            result = await publish(peer, request, **kwargs)
+            if isinstance(request, target):
+                assert not damaged
+                with runtime._authority_gate().hold():
+                    entries = runtime._loop_decisions().entries()
+                    with sqlite3.connect(database) as connection:
+                        head = connection.execute(
+                            "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+                        ).fetchone()[0]
+                        changed = connection.execute(
+                            "UPDATE records SET canonical_bytes=? "
+                            "WHERE tenant_id=? AND record_id=?",
+                            (b"not-json", runtime._tenant_id, result.head),
+                        )
+                        assert changed.rowcount == 1
+                    actual = capture_authority_storage_state(database)[0]
+                    runtime._commitment_journal.commit(runtime._tenant_id, actual)
+                    assert capture_authority_storage_state(database)[0] == (
+                        runtime._commitment_journal.load(runtime._tenant_id)
+                    )
+                    damaged.append((entries, head))
+            return result
+
+        monkeypatch.setattr(runtime, "_publish_initial_transition", intercept)
+        with pytest.raises((LoopIntegrityError, LoopRejected)):
+            await runtime.capture_execution("hermetic-ingress", "run", started.head)
+        assert len(damaged) == 1
+        entries, head = damaged[0]
+        assert runtime._execution_model.requests == []
+        assert runtime._loop_decisions().entries() == entries
+        with sqlite3.connect(database) as connection:
+            assert connection.execute(
+                "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+            ).fetchone()[0] == head

@@ -2530,7 +2530,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
     def _validate_historical(
         self, evidence: RetainedInboxExecutionInitialization, wire: DriveInputRequestV1
-    ) -> None:
+    ) -> AdmittedInboxObservation:
         observation = ResourceObservation(
             evidence.dispatch_grant_bytes,
             evidence.dispatch_credential_bytes,
@@ -2565,6 +2565,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         decoded = self._selected_input(wire, observation, historical=True, admitted=admitted)
         if decoded != evidence.request.admitted:
             raise LoopRejected("historical selected R17 input differs")
+        return admitted
 
     def _receipt(
         self,

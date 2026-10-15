@@ -1136,22 +1136,26 @@ def _unique_record_by_revision[T: RecoveryDTO](
 def _accounting(cut: ExecutionRecoveryCut) -> tuple[SealedAccountingRecord, ...]:
     registry = frontier_registry_reference(cut.frontier.registry)
     frontier = call_record_reference("recovery-frontier:" + cut.frontier.run_id, cut.frontier)
+    cut_fingerprint: str | None = None
     records = []
     for view in cut.complete_ordered_responses:
         if view.frontier_head != frontier:
             raise RecoveryIntegrityFault("response frontier differs from current cut")
         seal = view.seal
+        seal_fingerprint = seal.digest()
         joined = sealed_call_accounting(
             seal.response_seal_id,
-            seal.digest(),
+            seal_fingerprint,
             tuple(item.subject_id for item in seal.complete_ordered_initialized),
             view.ordered_calls,
         )
+        if cut_fingerprint is None:
+            cut_fingerprint = cut.digest()
         preimage = {
             "domain": "chiplog.execution.sealed-accounting.v1",
-            "source_cut_fingerprint": cut.digest(),
+            "source_cut_fingerprint": cut_fingerprint,
             "sealed_response": view.selected_seal.model_dump(mode="json"),
-            "sealed_manifest_fingerprint": seal.digest(),
+            "sealed_manifest_fingerprint": seal_fingerprint,
             "registry": registry.model_dump(mode="json"),
             "frontier": frontier.model_dump(mode="json"),
             "complete_ordered_calls": [item.model_dump(mode="json") for item in joined.calls],
@@ -1162,9 +1166,9 @@ def _accounting(cut: ExecutionRecoveryCut) -> tuple[SealedAccountingRecord, ...]
         records.append(
             SealedAccountingRecord(
                 accounting_id=identity,
-                source_cut_fingerprint=cut.digest(),
+                source_cut_fingerprint=cut_fingerprint,
                 sealed_response=view.selected_seal,
-                sealed_manifest_fingerprint=seal.digest(),
+                sealed_manifest_fingerprint=seal_fingerprint,
                 registry=registry,
                 frontier=frontier,
                 complete_ordered_calls=joined.calls,
@@ -1608,6 +1612,7 @@ def prepare_execution_continuation(
         expected = _accounting(request.cut)
         if request.complete_accounting != expected:
             raise RecoveryHold("accounting is missing, extra, reordered, or from another cut")
+        cut_fingerprint: str | None = None
         continuations = []
         for view, accounting in zip(request.cut.complete_ordered_responses, expected, strict=True):
             joined = sealed_call_accounting(
@@ -1617,15 +1622,17 @@ def prepare_execution_continuation(
                 view.ordered_calls,
             )
             closures, reductions = _continuation_closures(request.cut, joined)
+            if cut_fingerprint is None:
+                cut_fingerprint = request.cut.digest()
             preimage = (
                 b"chiplog.execution.continuation-ready.v1\x00"
-                + request.cut.digest().encode()
+                + cut_fingerprint.encode()
                 + accounting.canonical_bytes()
             )
             continuations.append(
                 ContinuationReadyRecord(
                     readiness_id="continuation-ready:" + _sha(preimage),
-                    source_cut_fingerprint=request.cut.digest(),
+                    source_cut_fingerprint=cut_fingerprint,
                     accounting=accounting,
                     complete_original_closures=closures,
                     complete_current_reductions=reductions,
