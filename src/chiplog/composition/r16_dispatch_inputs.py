@@ -73,6 +73,29 @@ class DispatchCapture:
     observed_time_ns: int = field(compare=False)
 
 
+def _verified_call_history_for_dispatch(runtime):
+    """Reuse exact call history when its complete source cut is still current."""
+    from chiplog.composition.r14_loop_history import read_execution_call_history
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
+
+    if not isinstance(runtime, R14PlanningRuntime):
+        return None
+    from chiplog.composition.r14_call_history_witness import (
+        capture_call_history_inputs,
+        read_cached_execution_call_history,
+        remember_verified_call_history,
+    )
+
+    with runtime._authority_gate().hold():
+        cached = read_cached_execution_call_history(runtime)
+        if cached is not None:
+            return cached
+        inputs = capture_call_history_inputs(runtime)
+        history = read_execution_call_history(runtime)
+        remember_verified_call_history(runtime, inputs, history)
+        return history
+
+
 def capture_dispatch(
     runtime: R16DispatchRuntime,
     resources: HermeticDispatchResources,
@@ -90,12 +113,32 @@ def capture_dispatch(
     runtime._require_no_pending()
     runtime._check_database_identity()
     principal = require_invocation(runtime, observed)
-    if execution_call_history is None and original_call_id is not None:
-        from chiplog.composition.r14_loop_history import read_execution_call_history
-        from chiplog.composition.r14_runtime import R14PlanningRuntime
+    hinted_intent = None
+    if intent_id is not None and execution_call_history is None:
+        from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2
 
-        if isinstance(runtime, R14PlanningRuntime):
-            execution_call_history = read_execution_call_history(runtime)
+        owner_snapshot = runtime._owner_decisions().snapshot()
+        hints = {
+            record.snapshot.intent.canonical_bytes(): record.snapshot.intent
+            for decision in owner_snapshot.decisions
+            for raw in decision.prepared.request.complete_records
+            if raw.owner == "effects"
+            and raw.schema_id == "chiplog.effects.dispatch-record.v2"
+            for record in (DispatchRecordV2.model_validate_json(raw.canonical_bytes),)
+            if record.snapshot.intent.intent_id == intent_id
+        }
+        if len(hints) == 1:
+            hinted_intent = next(iter(hints.values()))
+            hinted_origin = hinted_intent.mandate.origin
+            if isinstance(hinted_origin, InitializedCallOrigin):
+                if (
+                    original_call_id is not None
+                    and original_call_id != hinted_origin.original_call_id
+                ):
+                    raise LoopRejected("dispatch call hint differs from selected origin")
+                original_call_id = hinted_origin.original_call_id
+    if execution_call_history is None and original_call_id is not None:
+        execution_call_history = _verified_call_history_for_dispatch(runtime)
     cut, selected = _read_materialized_effects_with_history(
         runtime,
         runtime._owner_decisions(),
@@ -117,16 +160,14 @@ def capture_dispatch(
         if not intents:
             raise LoopRejected("dispatch intent is absent from authenticated selected history")
         selected_intent = intents[-1]
+        if hinted_intent is not None and selected_intent != hinted_intent:
+            raise LoopRejected("dispatch selected intent differs from current owner hint")
         origin = selected_intent.mandate.origin
         selected_call = (
             origin.original_call_id if isinstance(origin, InitializedCallOrigin) else None
         )
         if selected_call is not None and execution_call_history is None:
-            from chiplog.composition.r14_loop_history import read_execution_call_history
-            from chiplog.composition.r14_runtime import R14PlanningRuntime
-
-            if isinstance(runtime, R14PlanningRuntime):
-                execution_call_history = read_execution_call_history(runtime)
+            execution_call_history = _verified_call_history_for_dispatch(runtime)
         if original_call_id is not None and original_call_id != selected_call:
             raise LoopRejected("dispatch caller cannot replace the selected origin policy")
         original_call_id = selected_call

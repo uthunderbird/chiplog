@@ -926,12 +926,17 @@ class R14NativeSelectedAccountingSource:
         selected_only: bool = False,
         original_call_id: str | None = None,
         _source_facts: R14NativeSelectedAccountingSourceFacts | None = None,
+        authenticated_history=None,
     ) -> R14NativeOneCallAcceptedFacts | None:
         """Project one exact accepted member from the complete selected Run facts."""
         facts = (
             _source_facts
             if _source_facts is not None
-            else self.collect(target_run, selected_only=selected_only)
+            else self.collect(
+                target_run,
+                selected_only=selected_only,
+                authenticated_history=authenticated_history,
+            )
         )
         return self._accepted_facts(facts, original_call_id=original_call_id)
 
@@ -1030,6 +1035,7 @@ class R14NativeSelectedAccountingSource:
         original_call_id: str | None = None,
         _accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
         authenticated_effects_history: ExecutionHistorySnapshot | None = None,
+        authenticated_recovery_history=None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join the retained OPEN cause to a still-open current R16 outcome."""
         return self._collect_one_accepted_outcome(
@@ -1042,6 +1048,7 @@ class R14NativeSelectedAccountingSource:
             accepted_facts=_accepted_facts,
             original_call_id=original_call_id,
             authenticated_effects_history=authenticated_effects_history,
+            authenticated_recovery_history=authenticated_recovery_history,
         )
 
     def collect_one_accepted_closed_outcome(
@@ -1090,6 +1097,7 @@ class R14NativeSelectedAccountingSource:
         accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
         original_call_id: str | None = None,
         authenticated_effects_history: ExecutionHistorySnapshot | None = None,
+        authenticated_recovery_history=None,
         expected_closed_outcome_locator: R14NativeHistoricalClosedOutcomeLocator | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join one accepted call's retained OPEN cause to its current outcome.
@@ -1145,6 +1153,7 @@ class R14NativeSelectedAccountingSource:
                     target_run,
                     selected_only=selected_only,
                     original_call_id=original_call_id,
+                    authenticated_history=authenticated_recovery_history,
                 )
                 if accepted is None:
                     return None
@@ -1188,6 +1197,7 @@ class R14NativeSelectedAccountingSource:
                 ):
                     from chiplog.composition.r14_historical_suffix import (
                         authenticate_selected_open_prefix_held,
+                        authenticate_selected_pending_r14_suffix_held,
                         authenticate_selected_r14_native_terminal_suffix_held,
                     )
                     from chiplog.composition.r14_original_call_resolution_source import (
@@ -1201,6 +1211,10 @@ class R14NativeSelectedAccountingSource:
                         ):
                             return True
                         if authenticate_selected_open_prefix_held(runtime, actual, anchored):
+                            return True
+                        if authenticate_selected_pending_r14_suffix_held(
+                            runtime, actual, anchored
+                        ):
                             return True
                         native_suffix_authenticated = (
                             authenticate_selected_r14_native_terminal_suffix_held(

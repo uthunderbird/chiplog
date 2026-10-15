@@ -11,6 +11,38 @@ import pytest
 from chiplog.composition import r14_historical_suffix as suffix
 
 
+@pytest.mark.parametrize(
+    ("operation", "expected_calls"),
+    [
+        ("agent_loop.original-resolver-invocation.v1", 1),
+        ("agent_loop.original-call-resolution.v1", 1),
+        ("agent_loop.not-registered.v1", 0),
+    ],
+)
+def test_pending_r14_suffix_dispatches_exactly_once_only_for_registered_operation(
+    monkeypatch, operation, expected_calls
+):
+    class Gate:
+        def require_held(self):
+            pass
+
+    runtime = SimpleNamespace(
+        _authority_gate=lambda: Gate(),
+        _pending=lambda: ({"operation_kind": operation},),
+    )
+    calls = []
+    monkeypatch.setattr(
+        suffix,
+        "authenticate_selected_r14_suffix_held",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or True,
+    )
+
+    assert suffix.authenticate_selected_pending_r14_suffix_held(
+        runtime, "actual", "anchored"
+    ) is (expected_calls == 1)
+    assert len(calls) == expected_calls
+
+
 @dataclass(frozen=True)
 class _Record:
     record_id: str
@@ -487,6 +519,17 @@ def test_native_suffix_covers_existing_per_call_terminal_publication_families(
         runtime, f"commit-{head}", f"commit-{head}", original_call_id="call-A"
     )
     assert operation in checked
+
+
+def test_native_v3_suffix_resolves_retained_evidence_reader():
+    from types import SimpleNamespace
+
+    with pytest.raises(ValueError, match="V3 evidence is absent"):
+        suffix._validate_native_suffix_loop_command(
+            None,
+            {"operation_kind": "agent_loop.native-sealed-accounting.v3"},
+            SimpleNamespace(operation_kind="agent_loop.native-sealed-accounting.v3"),
+        )
 
 
 @pytest.mark.parametrize("operation", ["dispatch.consume_effect_send", "dispatch.foreign"])

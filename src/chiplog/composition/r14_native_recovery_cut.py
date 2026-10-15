@@ -1761,7 +1761,8 @@ class NativeRecoveryCutSource:
             if selected_outcome is None:
                 return None
             if closed is None:
-                runtime._authority_gate().require_held()
+                gate = runtime._authority_gate()
+                gate.require_held()
                 history = subset.authenticated_execution_history
                 if history is None:
                     return None
@@ -1769,9 +1770,10 @@ class NativeRecoveryCutSource:
                     read_selected_accepted_open_frontier,
                 )
 
-                accounting = read_selected_accepted_open_frontier(
-                    runtime, _authenticated_history=history
-                )
+                with gate.hold():
+                    accounting = read_selected_accepted_open_frontier(
+                        runtime, _authenticated_history=history
+                    )
             else:
                 accounting = runtime.read_selected_accepted_open_frontier()  # type: ignore[no-untyped-call]
             resolution = read_selected_original_call_resolution_source_held(runtime)

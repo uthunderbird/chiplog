@@ -204,9 +204,9 @@ def validated_catalog_broker_version(root: Path, observed: dict[str, str]) -> st
         raise R8SurfaceViolation("audited implementation inventory is incomplete or unknown")
     if any(observed[relative] != digest for relative, digest in catalog.items()):
         raise R8SurfaceViolation("implementation requires renewed boundary evidence")
-    return "r8-broker-v1:" + hashlib.sha256(
-        json.dumps(catalog, sort_keys=True).encode()
-    ).hexdigest()
+    return (
+        "r8-broker-v1:" + hashlib.sha256(json.dumps(catalog, sort_keys=True).encode()).hexdigest()
+    )
 
 
 def verify_implementation_identity(root: Path) -> None:
@@ -248,6 +248,13 @@ def verify_offline_import_boundary(root: Path) -> None:
                 modules = tuple(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
                 modules = (node.module,)
+            if (
+                relative == "chiplog/composition/r13_runtime.py"
+                and isinstance(node, ast.Import)
+                and tuple(alias.name for alias in node.names) == ("orjson",)
+            ):
+                # Native JSON parsing only; this adds no transport or adapter surface.
+                continue
             if (
                 relative
                 == "chiplog/capabilities/deployment_trust/operator_policy_command_verifier.py"

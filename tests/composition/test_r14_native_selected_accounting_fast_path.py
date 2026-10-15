@@ -17,6 +17,55 @@ from chiplog.composition.r14_native_selected_accounting_source import (
 )
 
 
+def test_open_cut_validation_reuses_authenticated_history_without_skipping_gate(monkeypatch):
+    """The fresh subset's selected-history proof is forwarded within the held gate."""
+    from chiplog.composition import r14_accepted_open_accounting_publication as publication
+    from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
+
+    class ReachedAccounting(BaseException):
+        pass
+
+    history = object()
+    subset = SimpleNamespace(
+        accepted_closed_outcome=None,
+        accepted_open_outcome=SimpleNamespace(accepted=SimpleNamespace(original_call_id="call")),
+        authenticated_execution_history=history,
+    )
+    events = []
+
+    class Gate:
+        held = False
+
+        def require_held(self):
+            assert self.held
+            events.append("held")
+
+        @contextmanager
+        def hold(self):
+            was_held = self.held
+            self.held = True
+            try:
+                yield
+            finally:
+                self.held = was_held
+
+    gate = Gate()
+    runtime = SimpleNamespace(_authority_gate=lambda: gate)
+    source = object.__new__(NativeRecoveryCutSource)
+
+    def frontier(actual_runtime, *, _authenticated_history=None):
+        assert actual_runtime is runtime
+        assert gate.held
+        assert _authenticated_history is history
+        events.append("frontier")
+        raise ReachedAccounting
+
+    monkeypatch.setattr(publication, "read_selected_accepted_open_frontier", frontier)
+    with gate.hold(), pytest.raises(ReachedAccounting):
+        source._selected_accepted_recovery_inputs(runtime, subset)
+    assert events == ["held", "frontier"]
+
+
 def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(monkeypatch, tmp_path):
     events: list[str] = []
 
@@ -109,7 +158,16 @@ def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(monkey
     assert events.count("collect-one") == 1
 
 
-@pytest.mark.parametrize("prefix_kind", ["native-direct", "pending-open", "rejected-open"])
+@pytest.mark.parametrize(
+    "prefix_kind",
+    [
+        "native-direct",
+        "pending-open",
+        "pending-resolver-invocation",
+        "pending-original-resolution",
+        "rejected-open",
+    ],
+)
 def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_seals(
     monkeypatch, tmp_path, prefix_kind
 ):
@@ -138,6 +196,16 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
         _authority_gate=lambda: SimpleNamespace(hold=held),
         _check_database_identity=lambda: None,
         _owner_decisions=lambda: owners,
+        _pending=lambda: (
+            ({
+                "operation_kind": {
+                    "pending-resolver-invocation": "agent_loop.original-resolver-invocation.v1",
+                    "pending-original-resolution": "agent_loop.original-call-resolution.v1",
+                }[prefix_kind]
+            },)
+            if prefix_kind in {"pending-resolver-invocation", "pending-original-resolution"}
+            else ()
+        ),
     )
 
     def row(call_id, intent_id):
@@ -192,6 +260,18 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
         suffix, "authenticate_selected_open_prefix_held",
         lambda *_: prefix_kind == "pending-open",
     )
+    pending_suffix_calls = []
+
+    def authenticate_pending_suffix(runtime, actual, anchored):
+        pending_suffix_calls.append((actual, anchored))
+        return prefix_kind in {
+            "pending-resolver-invocation",
+            "pending-original-resolution",
+        }
+
+    monkeypatch.setattr(
+        suffix, "authenticate_selected_pending_r14_suffix_held", authenticate_pending_suffix
+    )
 
     def effects_read(runtime, owners, *, authenticate_later_suffix, **kwargs):
         assert authenticate_later_suffix(runtime, "actual", "anchored") is (
@@ -218,6 +298,7 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
             allow_authenticated_later_suffix=True,
             accepted_facts=accepted,
         )
+    assert len(pending_suffix_calls) == int(prefix_kind != "pending-open")
 
 
 def _outcome_request(previous, send, positive=(), negative=(), *, close=False, name="receipt"):
@@ -813,6 +894,7 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
     monkeypatch.setattr(publication, "bind_native_execution_preparation_v2", lambda _: object())
     facts = object()
     physical_snapshot = object()
+    recovery_history = history
     from chiplog.composition import r14_historical_suffix as suffix
 
     monkeypatch.setattr(
@@ -830,6 +912,7 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
             ) else physical_snapshot if pending_operation == "agent_loop.execution-suspension.v1"
             else None
         )
+        assert kwargs.get("authenticated_recovery_history") is recovery_history
         return facts
 
     monkeypatch.setattr(
@@ -849,7 +932,8 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
         _authority_gate=lambda: SimpleNamespace(require_held=lambda: None),
     )
     assert publication._current_cut(
-        runtime, selected_only=True, expected_source_cut=cut
+        runtime, selected_only=True, expected_source_cut=cut,
+        authenticated_history=recovery_history,
     ) == (facts, cut)
     assert projections == [cut.response_id]
 

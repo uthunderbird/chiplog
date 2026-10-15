@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import cProfile
+import inspect
+import io
 import json
+import pstats
 import secrets
 import sqlite3
 import time
@@ -231,6 +235,8 @@ async def _selected_v23_native_fanout(
     model_responses: tuple[bytes, ...] | None = None,
     recovery_cut_source=None,
     recovery_profile_version: str | None = None,
+    phase_trace: list[tuple[str, int]] | None = None,
+    phase_counts: list[tuple[str, int, int]] | None = None,
 ) -> AsyncIterator[
     tuple[CommonCliExecutionRuntime, CallSubjectHead, AcceptedCallReceipt | None, str]
 ]:
@@ -253,6 +259,26 @@ async def _selected_v23_native_fanout(
         ),
     ).canonical_bytes()
     accepted: AcceptedCallReceipt | None = None
+
+    async def timed_phase(name: str, operation):
+        if phase_trace is None:
+            return await operation
+        started_ns = time.monotonic_ns()
+        try:
+            return await operation
+        finally:
+            phase_trace.append((name, time.monotonic_ns() - started_ns))
+
+    def timed_sync_phase(name: str, operation):
+        if phase_trace is None:
+            return operation()
+        started_ns = time.monotonic_ns()
+        try:
+            return operation()
+        finally:
+            phase_trace.append((name, time.monotonic_ns() - started_ns))
+
+    runtime_start_ns = time.monotonic_ns()
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
@@ -260,26 +286,48 @@ async def _selected_v23_native_fanout(
         manifest=manifest,
         recovery_cut_source=recovery_cut_source,
     ) as runtime:
+        if phase_trace is not None:
+            phase_trace.append(("runtime startup", time.monotonic_ns() - runtime_start_ns))
         if recovery_profile_version is not None:
-            await runtime.publish_native_recovery_profile(version=recovery_profile_version)
-        request = await admit_runtime_slot(runtime, "native-v23")
-        initial = await runtime.drive_input(request)
+            await timed_phase(
+                "publish recovery profile",
+                runtime.publish_native_recovery_profile(version=recovery_profile_version),
+            )
+        request = await timed_phase(
+            "admit initial slot", admit_runtime_slot(runtime, "native-v23")
+        )
+        initial = await timed_phase("drive initial input", runtime.drive_input(request))
         assert isinstance(initial, SelectedExecutionReceiptV1)
-        started = await runtime.begin_execution(
-            "hermetic-ingress", initial.stable_run_lineage_id, initial.selected_run_head.head
+        started = await timed_phase(
+            "begin first Run",
+            runtime.begin_execution(
+                "hermetic-ingress", initial.stable_run_lineage_id, initial.selected_run_head.head
+            ),
         )
-        captured = await runtime.capture_execution(
-            "hermetic-ingress",
-            initial.stable_run_lineage_id,
-            started.head,
-            native_one_call_context=native_one_call_context,
+        captured = await timed_phase(
+            "capture first Turn",
+            runtime.capture_execution(
+                "hermetic-ingress",
+                initial.stable_run_lineage_id,
+                started.head,
+                native_one_call_context=native_one_call_context,
+            ),
         )
-        await runtime.seal_execution(
-            "hermetic-ingress", initial.stable_run_lineage_id, captured.head
+        await timed_phase(
+            "seal first Turn",
+            runtime.seal_execution(
+                "hermetic-ingress", initial.stable_run_lineage_id, captured.head
+            ),
         )
         _snapshot, inventory, _legacy, seals, _cancellations, _acceptances = (
-            read_execution_recovery_history(runtime)
+            timed_sync_phase(
+                "first recovery history read", lambda: read_execution_recovery_history(runtime)
+            )
         )
+        if phase_counts is not None:
+            phase_counts.append(
+                ("first recovery view", len(inventory.ordered_calls), len(seals))
+            )
         accepted_ids = accepted_call_ids or (
             () if accepted_call_id is None else (accepted_call_id,)
         )
@@ -299,17 +347,20 @@ async def _selected_v23_native_fanout(
                 None,
             )
             assert row is not None
-            await runtime.cancel_execution_call(
-                "hermetic-ingress",
-                CancelCallSubmission(
-                    act_id="cancel-native-effect",
-                    original_call_id=row.original_call_id,
-                    initialized=reference(
-                        row.initialized_record.original_call_id, row.initialized_record
-                    ),
-                    current_run=CallSubjectHead(
-                        subject_id=sealed.run_id,
-                        revision=Present(head=sealed.head, fingerprint=sealed.digest()),
+            await timed_phase(
+                "cancel first-Turn member",
+                runtime.cancel_execution_call(
+                    "hermetic-ingress",
+                    CancelCallSubmission(
+                        act_id="cancel-native-effect",
+                        original_call_id=row.original_call_id,
+                        initialized=reference(
+                            row.initialized_record.original_call_id, row.initialized_record
+                        ),
+                        current_run=CallSubjectHead(
+                            subject_id=sealed.run_id,
+                            revision=Present(head=sealed.head, fingerprint=sealed.digest()),
+                        ),
                     ),
                 ),
             )
@@ -1162,6 +1213,7 @@ async def test_v3_reads_three_accepted_members_across_delayed_dispatch_and_repla
 @pytest.mark.asyncio
 async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = tmp_path / "native-v23-prepare.sqlite"
     custody = tmp_path / "dispatch-custody"
@@ -1177,6 +1229,23 @@ async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_orde
             ),
         ),
     ).canonical_bytes()
+    setup_phases: list[tuple[str, int]] = []
+    setup_counts: list[tuple[str, int, int]] = []
+
+    async def timed_setup(name: str, operation):
+        started_ns = time.monotonic_ns()
+        try:
+            return await operation
+        finally:
+            setup_phases.append((name, time.monotonic_ns() - started_ns))
+
+    def timed_setup_sync(name: str, operation):
+        started_ns = time.monotonic_ns()
+        try:
+            return operation()
+        finally:
+            setup_phases.append((name, time.monotonic_ns() - started_ns))
+
     async with _selected_v23_native_fanout(
         tmp_path,
         cancelled_call_id="effect",
@@ -1186,46 +1255,358 @@ async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_orde
         model_responses=(native_response(), followup),
         recovery_cut_source=NativeRecoveryCutSource(),
         recovery_profile_version="v3",
+        phase_trace=setup_phases,
+        phase_counts=setup_counts,
     ) as (runtime, first_seal, _accepted, run_id):
-        await runtime.publish_native_one_call_cancelled_accounting()
-        await publish_native_sealed_accounting_v3(runtime, first_seal)
-
-        await runtime.publish_execution_accounting_readiness()
-        first_run = read_execution_history(runtime).records[-1]
-        next_run = await runtime.start_next_execution_turn(run_id, first_run.head)
-        captured = await runtime.capture_execution(
-            "hermetic-ingress", next_run.run_id, next_run.head
+        await timed_setup(
+            "publish cancellation accounting",
+            runtime.publish_native_one_call_cancelled_accounting(),
         )
-        second_run = await runtime.seal_execution(
-            "hermetic-ingress", captured.run_id, captured.head
+        await timed_setup(
+            "publish first-seal V3", publish_native_sealed_accounting_v3(runtime, first_seal)
+        )
+
+        await timed_setup(
+            "publish accounting readiness", runtime.publish_execution_accounting_readiness()
+        )
+        first_run = timed_setup_sync(
+            "read first execution history", lambda: read_execution_history(runtime).records[-1]
+        )
+        next_run = await timed_setup(
+            "start second Turn", runtime.start_next_execution_turn(run_id, first_run.head)
+        )
+        captured = await timed_setup(
+            "capture second Turn",
+            runtime.capture_execution("hermetic-ingress", next_run.run_id, next_run.head),
+        )
+        second_run = await timed_setup(
+            "seal second Turn",
+            runtime.seal_execution("hermetic-ingress", captured.run_id, captured.head),
         )
         second_seal = second_run.turns[-1].response_seal
         assert second_seal is not None
         assert first_seal != second_seal
+        second_history = timed_setup_sync(
+            "second recovery history read",
+            lambda: read_execution_recovery_history(runtime),
+        )
+        setup_counts.append(
+            (
+                "second recovery view",
+                len(second_history[1].ordered_calls),
+                len(second_history[3]),
+            )
+        )
         second_call = next(
             item
-            for item in read_execution_recovery_history(runtime)[1].ordered_calls
+            for item in second_history[1].ordered_calls
             if item.initialized_record.call.original.model_call_label == "followup-effect"
+        )
+        print(
+            "R14_SETUP_TRACE",
+            {"phase_wall_ns": tuple(setup_phases), "recovery_views": tuple(setup_counts)},
+            flush=True,
         )
         second_run_head = CallSubjectHead(
             subject_id=second_run.run_id,
             revision=Present(head=second_run.head, fingerprint=second_run.digest()),
         )
-        preview = await runtime.preview_call_acceptance(
-            "hermetic-ingress",
-            CallAcceptanceTarget(
-                original_call_id=second_call.original_call_id,
-                initialized=second_call.initialized,
-                current_run=second_run_head,
-            ),
+        from chiplog.composition import (
+            r14_call_authority,
+            r14_call_preparation,
+            r14_call_preview,
+            r14_call_publication,
         )
-        accepted = await runtime.accept_call(
-            "hermetic-ingress",
-            CallAcceptanceAdoption(
-                act_id="accept-followup-seal-member",
-                preview_bytes=preview.canonical_bytes(),
-            ),
+
+        # Spans are nested; async thread CPU can include other event-loop work.
+        trace_origin_ns = time.monotonic_ns()
+        spans: list[tuple[str, int, int, int, int]] = []
+        writer_refusal: list[str] = []
+        writer_guard_ages: list[tuple[int, int, str | None]] = []
+        writer_deadline_details: list[dict[str, object]] = []
+        writer_history_profile: list[str] = []
+
+        def timed(name, function):
+            if inspect.iscoroutinefunction(function):
+
+                async def wrapped(*args, **kwargs):
+                    start = time.monotonic_ns()
+                    cpu_start = time.thread_time_ns()
+                    try:
+                        return await function(*args, **kwargs)
+                    finally:
+                        end = time.monotonic_ns()
+                        spans.append(
+                            (
+                                name,
+                                start - trace_origin_ns,
+                                end - trace_origin_ns,
+                                end - start,
+                                time.thread_time_ns() - cpu_start,
+                            )
+                        )
+
+                return wrapped
+
+            def wrapped(*args, **kwargs):
+                start = time.monotonic_ns()
+                cpu_start = time.thread_time_ns()
+                try:
+                    return function(*args, **kwargs)
+                finally:
+                    end = time.monotonic_ns()
+                    spans.append(
+                        (
+                            name,
+                            start - trace_origin_ns,
+                            end - trace_origin_ns,
+                            end - start,
+                            time.thread_time_ns() - cpu_start,
+                        )
+                    )
+
+            return wrapped
+
+        target = CallAcceptanceTarget(
+            original_call_id=second_call.original_call_id,
+            initialized=second_call.initialized,
+            current_run=second_run_head,
         )
+        with monkeypatch.context() as preview_probe:
+            preview_probe.setattr(
+                r14_call_preview,
+                "read_execution_call_history",
+                timed("preview.history", r14_call_preview.read_execution_call_history),
+            )
+            preview_probe.setattr(
+                r14_call_preview,
+                "_read_call_previews_and_history",
+                timed(
+                    "preview.preview_history",
+                    r14_call_preview._read_call_previews_and_history,
+                ),
+            )
+            preview_probe.setattr(
+                r14_call_preview,
+                "authenticate",
+                timed("preview.authenticate", r14_call_preview.authenticate),
+            )
+            preview_probe.setattr(
+                r14_call_preview,
+                "capture_dispatch",
+                timed("preview.capture", r14_call_preview.capture_dispatch),
+            )
+            preview_probe.setattr(
+                r14_call_preview,
+                "owner_call",
+                timed("preview.owner_call", r14_call_preview.owner_call),
+            )
+            preview_start_ns = time.monotonic_ns()
+            preview_cpu_start = time.thread_time_ns()
+            preview = await runtime.preview_call_acceptance("hermetic-ingress", target)
+            preview_end_ns = time.monotonic_ns()
+        preview_cpu_ns = time.thread_time_ns() - preview_cpu_start
+        mandate = json.loads(preview.mandate_bytes)["horizon"]
+        mandate_not_before_ns = mandate["not_before_ns"]
+        mandate_expires_at_ns = mandate["expires_at_ns"]
+        preview_mandate_age_ns = time.monotonic_ns() - mandate_not_before_ns
+
+        adoption = CallAcceptanceAdoption(
+            act_id="accept-followup-seal-member",
+            preview_bytes=preview.canonical_bytes(),
+        )
+        accept_start_ns = time.monotonic_ns()
+        accept_cpu_start = time.thread_time_ns()
+
+        def report_accept_trace(failure: str) -> None:
+            now_ns = time.monotonic_ns()
+            print(
+                "R14_ACCEPT_TRACE",
+                {
+                    "failure": failure,
+                    "preview_start_offset_ns": preview_start_ns - trace_origin_ns,
+                    "preview_end_offset_ns": preview_end_ns - trace_origin_ns,
+                    "preview_wall_ns": preview_end_ns - preview_start_ns,
+                    "preview_thread_cpu_ns": preview_cpu_ns,
+                    "preview_mandate_age_ns": preview_mandate_age_ns,
+                    "accept_start_offset_ns": accept_start_ns - trace_origin_ns,
+                    "accept_end_offset_ns": now_ns - trace_origin_ns,
+                    "accept_wall_ns": now_ns - accept_start_ns,
+                    "accept_thread_cpu_ns": time.thread_time_ns() - accept_cpu_start,
+                    "mandate_age_at_return_ns": now_ns - mandate_not_before_ns,
+                    "mandate_remaining_at_return_ns": mandate_expires_at_ns - now_ns,
+                    "writer_refusal": writer_refusal[-1] if writer_refusal else None,
+                    "writer_guard_mandate_ages_ns": tuple(writer_guard_ages),
+                    "writer_deadline_details": tuple(writer_deadline_details),
+                    "writer_history_profile": tuple(writer_history_profile),
+                    "spans_start_end_wall_thread_cpu_ns": tuple(spans),
+                    "setup_phase_wall_ns": tuple(setup_phases),
+                },
+                flush=True,
+            )
+
+        with monkeypatch.context() as probe:
+            probe.setattr(
+                r14_call_authority.CallPublicationAuthority,
+                "prepare_fresh",
+                timed(
+                    "accept.authority_prepare_fresh",
+                    r14_call_authority.CallPublicationAuthority.prepare_fresh,
+                ),
+            )
+            probe.setattr(
+                r14_call_authority,
+                "_prepare_call_exchange_with_history",
+                timed(
+                    "accept.prepare_call_exchange",
+                    r14_call_authority._prepare_call_exchange_with_history,
+                ),
+            )
+            probe.setattr(
+                r14_call_preparation,
+                "authenticate",
+                timed("accept.prepare_authenticate", r14_call_preparation.authenticate),
+            )
+            probe.setattr(
+                r14_call_preparation,
+                "owner_call",
+                timed("accept.effects_owner_call", r14_call_preparation.owner_call),
+            )
+            probe.setattr(
+                r14_call_preparation,
+                "_read_call_previews_and_history",
+                timed(
+                    "accept.preview_history",
+                    r14_call_preparation._read_call_previews_and_history,
+                ),
+            )
+            probe.setattr(
+                r14_call_preparation,
+                "capture_dispatch",
+                timed("accept.prepare_capture", r14_call_preparation.capture_dispatch),
+            )
+            probe.setattr(
+                r14_call_publication,
+                "authenticate",
+                timed("accept.replay_authenticate", r14_call_publication.authenticate),
+            )
+            original_check_live = r14_call_authority.CallPublicationAuthority._check_live
+
+            def checked_live(authority, value):
+                not_before_ns = value.preview.request.mandate.horizon.not_before_ns
+                start_age_ns = time.monotonic_ns() - not_before_ns
+                refusal = None
+                try:
+                    return original_check_live(authority, value)
+                except LoopRejected as error:
+                    refusal = str(error)
+                    writer_refusal.append(str(error))
+                    frame = error.__traceback__
+                    check_locals = None
+                    while frame is not None:
+                        if frame.tb_frame.f_code.co_name == "_check_live":
+                            check_locals = frame.tb_frame.f_locals
+                            break
+                        frame = frame.tb_next
+                    now_ns = time.monotonic_ns()
+                    fresh = check_locals.get("fresh") if check_locals is not None else None
+                    cut = check_locals.get("cut") if check_locals is not None else None
+                    sources = getattr(cut, "sources", ())
+                    candidates = (
+                        ("loop_rpc", value.loop_sent.budget.absolute_deadline_ns),
+                        ("effects_rpc", value.effects_sent.budget.absolute_deadline_ns),
+                        (
+                            "effects_lease",
+                            value.retained.effects_request.current.lease_expires_at_ns,
+                        ),
+                        ("mandate", value.preview.request.mandate.horizon.expires_at_ns),
+                        *(
+                            (f"source_{index}", source.valid_until_ns)
+                            for index, source in enumerate(sources)
+                        ),
+                    )
+                    earliest = min((deadline for _, deadline in candidates), default=None)
+                    writer_deadline_details.append(
+                        {
+                            "reason": refusal,
+                            "observed_at_ns": getattr(fresh, "observed_time_ns", None),
+                            "check_deadline_ns": (
+                                check_locals.get("deadline") if check_locals is not None else None
+                            ),
+                            "now_ns": now_ns,
+                            "candidate_deadlines_ns": candidates,
+                            "earliest_names": tuple(
+                                name for name, deadline in candidates if deadline == earliest
+                            ),
+                            "earliest_slack_at_exception_ns": (
+                                None if earliest is None else earliest - now_ns
+                            ),
+                            "earliest_slack_at_observation_ns": (
+                                None
+                                if earliest is None or fresh is None
+                                else earliest - fresh.observed_time_ns
+                            ),
+                        }
+                    )
+                    raise
+                finally:
+                    writer_guard_ages.append(
+                        (start_age_ns, time.monotonic_ns() - not_before_ns, refusal)
+                    )
+
+            probe.setattr(
+                r14_call_authority.CallPublicationAuthority,
+                "_check_live",
+                timed("writer.check_live", checked_live),
+            )
+            history_profile = cProfile.Profile(time.thread_time_ns, 1e-9)
+            original_writer_history = r14_call_authority.read_execution_call_history
+
+            def profiled_writer_history(*args, **kwargs):
+                wall_start_ns = time.monotonic_ns()
+                thread_start_ns = time.thread_time_ns()
+                history_profile.enable()
+                try:
+                    return original_writer_history(*args, **kwargs)
+                finally:
+                    history_profile.disable()
+                    writer_history_profile.append(
+                        f"wall_ns={time.monotonic_ns() - wall_start_ns} "
+                        f"thread_cpu_ns={time.thread_time_ns() - thread_start_ns}"
+                    )
+                    for sort_key in ("cumtime", "tottime"):
+                        stream = io.StringIO()
+                        pstats.Stats(history_profile, stream=stream).strip_dirs().sort_stats(
+                            sort_key
+                        ).print_stats(15)
+                        writer_history_profile.append(f"{sort_key}:\n{stream.getvalue()}")
+
+            probe.setattr(
+                r14_call_authority,
+                "read_execution_call_history",
+                profiled_writer_history,
+            )
+            probe.setattr(
+                r14_call_authority,
+                "capture_dispatch",
+                timed("writer.capture", r14_call_authority.capture_dispatch),
+            )
+            original_submit = runtime._appender.submit
+            probe.setattr(
+                runtime._appender,
+                "submit",
+                timed("writer.submit", original_submit),
+            )
+            try:
+                accepted = await runtime.accept_call("hermetic-ingress", adoption)
+            except Exception as error:
+                error_label = (
+                    "writer-stale" if "writer STALE" in str(error) else type(error).__name__
+                )
+                report_accept_trace(error_label)
+                raise
+            else:
+                report_accept_trace("selected")
         second_terminal = await _close_accepted_member(
             runtime,
             second_call.original_call_id,
@@ -1254,8 +1635,8 @@ async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_orde
         second_v3 = await publish_native_sealed_accounting_v3(runtime, second_seal)
         first_v3 = await publish_native_sealed_accounting_v3(runtime, first_seal)
         before_replay = read_execution_history(runtime).tenant_head
-        assert second_v3.request.selected_response == second_seal
-        assert first_v3.request.selected_response == first_seal
+        assert second_v3.selected_response_fingerprint == second_seal.revision.fingerprint
+        assert first_v3.selected_response_fingerprint == first_seal.revision.fingerprint
         assert read_selected_native_sealed_accounting_v3(
             runtime, second_seal.revision.fingerprint
         ) == second_v3
@@ -1273,6 +1654,7 @@ async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_orde
         database,
         resources=resources,
         manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
+        recovery_cut_source=NativeRecoveryCutSource(),
     ) as reopened:
         reopened_head = read_execution_history(reopened).tenant_head
         assert read_selected_native_sealed_accounting_v3(
@@ -1287,3 +1669,295 @@ async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_orde
         assert reopened.read_selected_accepted_direct_terminal(
             original_call_id=second_call.original_call_id
         ) == second_terminal
+
+
+@pytest.mark.asyncio
+async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
+    from chiplog.composition.r14_accepted_open_accounting_records import (
+        ACCEPTED_OPEN_RECOVERY_OPERATION,
+        retained_accepted_open_recovery,
+    )
+    from chiplog.platform._sqlite import LostCommitAcknowledgement
+
+    first_response = ExecutionContinue(
+        kind="Continue",
+        tool_calls=(
+            ConsequentialToolCall(
+                call_id="first-open-effect",
+                tool="request_self_effect",
+                arguments=SelfEffectArguments(payload=b"first-open", bundle_members=("open",)),
+            ),
+        ),
+    ).canonical_bytes()
+    second_response = ExecutionContinue(
+        kind="Continue",
+        tool_calls=(
+            ConsequentialToolCall(
+                call_id="second-open-effect",
+                tool="request_self_effect",
+                arguments=SelfEffectArguments(payload=b"second-open", bundle_members=("open",)),
+            ),
+        ),
+    ).canonical_bytes()
+    scenarios = ("LOST_RESPONSE_AFTER_EFFECT", "LOST_RESPONSE_AFTER_EFFECT")
+    database = tmp_path / "native-v23-prepare.sqlite"
+    custody = tmp_path / "dispatch-custody"
+
+    async with _selected_v23_native_fanout(
+        tmp_path,
+        tool_calls=ExecutionContinue.model_validate_json(first_response).tool_calls,
+        accepted_call_ids=("first-open-effect",),
+        cancelled_call_id=None,
+        dispatch_cap=2,
+        dispatch_scenarios=scenarios,
+        manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
+        model_responses=(first_response, second_response),
+        recovery_cut_source=NativeRecoveryCutSource(),
+        recovery_profile_version="v5",
+        native_one_call_context=True,
+    ) as (runtime, first_seal, first_accepted, run_id):
+        assert first_accepted is not None
+        first_open_call_id = first_accepted.original_call_id
+        first_open_accepted = first_accepted
+        first_open_intent = first_open_accepted.external_intent.subject_id
+        await runtime.authorize_dispatch(
+            "hermetic-ingress", first_open_intent, "authorize-first-open", run_id
+        )
+        await runtime.commit_first_send(
+            "hermetic-ingress", first_open_intent, "send-first-open", run_id
+        )
+        with pytest.raises(HermeticResponseLost):
+            await runtime.emit_committed("hermetic-ingress", first_open_intent)
+        first_open_result = await runtime.publish_accepted_open_recovery(
+            original_call_id=first_open_call_id
+        )
+        first_v3 = await publish_native_sealed_accounting_v3(runtime, first_seal)
+        assert tuple(item.disposition.kind for item in first_v3.result.complete_ordered_calls) == (
+            "RECOVERY_REQUIRED",
+        )
+        first_open_entries = tuple(
+            retained_accepted_open_recovery(json.loads(raw))
+            for _, _, raw in runtime._loop_decisions().entries()
+            if json.loads(raw).get("kind") == "DECIDED"
+            and json.loads(raw).get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
+        )
+        first_open_evidence = next(
+            item
+            for item in first_open_entries
+            if item.request.cut.original_call_id == first_open_call_id
+        )
+        first_open_cut = first_open_evidence.request.cut
+
+        # A prior OPEN must be resolved and resumed before the next Turn is admitted.
+        first_run = read_execution_history(runtime).records[-1]
+        assert first_run.run_id == run_id
+        recovery_source = runtime._full_recovery_cut_source
+        collect_held_calls = []
+
+        class CountingRecoverySource:
+            def collect_held(self, actual_runtime):
+                collect_held_calls.append(actual_runtime)
+                return recovery_source.collect_held(actual_runtime)
+
+            def authenticate_selected_held(self, actual_runtime, evidence, entry):
+                return recovery_source.authenticate_selected_held(
+                    actual_runtime, evidence, entry
+                )
+
+        runtime._full_recovery_cut_source = CountingRecoverySource()
+        suspension = await runtime.suspend_execution(run_id, first_run.head, ())
+        assert collect_held_calls == [runtime]
+        runtime._full_recovery_cut_source = recovery_source
+        suspended_head = suspension.pair.suspended_run.revision.head
+        await runtime.observe_dispatch_outcome(first_open_intent)
+        closed = await runtime.resolve_dispatch_outcome(
+            "hermetic-ingress", first_open_intent, "close-first-open"
+        )
+        assert DispatchOutcomeRecordV2.model_validate_json(
+            closed.complete_records[0].canonical_bytes
+        ).snapshot.state == "CONFIRMED"
+        await runtime.publish_original_resolver_authority_policy()
+        await runtime.publish_original_resolver_invocation()
+        await runtime.publish_original_call_resolution()
+        await runtime.publish_loop_semantic_reduction()
+        resumed = await runtime.resume_execution(
+            run_id, suspended_head, b"resume-first-open-before-next-turn"
+        )
+        await runtime.publish_execution_accounting_readiness()
+        next_run = await runtime.start_next_execution_turn(resumed.run_id, resumed.head)
+        captured = await runtime.capture_execution(
+            "hermetic-ingress", next_run.run_id, next_run.head
+        )
+        second_run = await runtime.seal_execution(
+            "hermetic-ingress", captured.run_id, captured.head
+        )
+        second_seal = second_run.turns[-1].response_seal
+        assert second_seal is not None and second_seal != first_seal
+        second_history = read_execution_recovery_history(runtime)
+        second_call = next(
+            item
+            for item in second_history[1].ordered_calls
+            if item.initialized_record.call.original.model_call_label == "second-open-effect"
+        )
+        second_head = CallSubjectHead(
+            subject_id=second_run.run_id,
+            revision=Present(head=second_run.head, fingerprint=second_run.digest()),
+        )
+        preview = await runtime.preview_call_acceptance(
+            "hermetic-ingress",
+            CallAcceptanceTarget(
+                original_call_id=second_call.original_call_id,
+                initialized=second_call.initialized,
+                current_run=second_head,
+            ),
+        )
+        second_accepted = await runtime.accept_call(
+            "hermetic-ingress",
+            CallAcceptanceAdoption(
+                act_id="accept-second-seal-open", preview_bytes=preview.canonical_bytes()
+            ),
+        )
+        second_intent = second_accepted.external_intent.subject_id
+        await runtime.authorize_dispatch(
+            "hermetic-ingress", second_intent, "authorize-second-open", run_id
+        )
+        await runtime.commit_first_send(
+            "hermetic-ingress", second_intent, "send-second-open", run_id
+        )
+        with pytest.raises(HermeticResponseLost):
+            await runtime.emit_committed("hermetic-ingress", second_intent)
+
+        predecessor_anchor = runtime._commitment_journal.load(runtime._tenant_id)
+        original_submit = runtime._appender.submit
+        interrupted_commands = []
+
+        async def lose_recovery_ack(command):
+            if command.operation_kind == ACCEPTED_OPEN_RECOVERY_OPERATION:
+                interrupted_commands.append(command)
+                command = replace(command, fault="after_commit")
+            return await original_submit(command)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(runtime._appender, "submit", lose_recovery_ack)
+            with pytest.raises(LostCommitAcknowledgement, match="injected"):
+                await runtime.publish_accepted_open_recovery(
+                    original_call_id=second_call.original_call_id
+                )
+        assert len(interrupted_commands) == 1
+        state, actual, anchor = runtime._selected_physical_state(interrupted_commands[0])
+        assert state == "COMPLETE" and actual != anchor
+        pending = runtime._pending()
+        assert len(pending) == 1
+        pending_evidence = retained_accepted_open_recovery(pending[0])
+        second_open_cut = pending_evidence.request.cut
+        assert second_open_cut.original_call_id == second_call.original_call_id
+        assert anchor == predecessor_anchor
+        assert anchor == runtime._commitment_journal.load(runtime._tenant_id)
+
+        # The real outer fold must authenticate both seals and every original call.
+        outer = read_execution_recovery_history(
+            runtime, selected_only=True, exact_historical_sources=True
+        )
+        assert {
+            item.proposal.sealed_run.turns[-1].response_seal for item in outer[3]
+        } >= {first_seal, second_seal}
+        assert {
+            item.initialized_record.call.original.model_call_label
+            for item in outer[1].ordered_calls
+        } == {"first-open-effect", "second-open-effect"}
+        assert first_open_result.accounting.kind == "RECOVERY_REQUIRED"
+
+    resources = HermeticDispatchResources(
+        scenarios=scenarios, cap=3, custody_path=custody
+    )
+    async with open_common_cli_execution_runtime(
+        database,
+        resources=resources,
+        manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
+        recovery_cut_source=NativeRecoveryCutSource(),
+    ) as reopened:
+        assert not reopened._pending()
+        assert reopened.read_selected_accepted_open_recovery(
+            original_call_id=first_open_call_id
+        ) == first_open_result
+        assert reopened.read_selected_accepted_open_recovery(
+            original_call_id=second_call.original_call_id
+        ) == pending_evidence.result
+
+        projection = R14OriginalNativePrepareSource(reopened).collect(second_seal)
+        assert projection is not None
+        source = selected_source.R14NativeSelectedAccountingSource(
+            reopened, projection, bind_native_execution_preparation_v2(projection)
+        )
+        assert source.collect_one_accepted_open_outcome(
+            second_open_cut.current_run,
+            selected_only=True,
+            original_call_id=second_open_cut.original_call_id,
+            expected_outcome_record_id=second_open_cut.selected_outcome_record_id,
+            expected_selected_decision=second_open_cut.selected_decision,
+            expected_tenant_commit_sequence=second_open_cut.tenant_commit_sequence,
+        ) is not None
+        substitutions = (
+            (
+                "outcome_record_id",
+                first_open_cut.selected_outcome_record_id,
+                second_open_cut.selected_outcome_record_id,
+            ),
+            (
+                "selected_decision",
+                first_open_cut.selected_decision,
+                second_open_cut.selected_decision,
+            ),
+            (
+                "tenant_commit_sequence",
+                first_open_cut.tenant_commit_sequence,
+                second_open_cut.tenant_commit_sequence,
+            ),
+        )
+        for field, foreign_value, exact_value in substitutions:
+            assert foreign_value != exact_value, field
+            result = source.collect_one_accepted_open_outcome(
+                second_open_cut.current_run,
+                selected_only=True,
+                original_call_id=second_open_cut.original_call_id,
+                expected_outcome_record_id=(
+                    foreign_value if field == "outcome_record_id"
+                    else second_open_cut.selected_outcome_record_id
+                ),
+                expected_selected_decision=(
+                    foreign_value if field == "selected_decision"
+                    else second_open_cut.selected_decision
+                ),
+                expected_tenant_commit_sequence=(
+                    foreign_value if field == "tenant_commit_sequence"
+                    else second_open_cut.tenant_commit_sequence
+                ),
+            )
+            assert result is None, field
+
+        first_v3_reopened = await publish_native_sealed_accounting_v3(reopened, first_seal)
+        second_v3_reopened = await publish_native_sealed_accounting_v3(reopened, second_seal)
+        assert first_v3_reopened.result == first_v3.result
+        assert tuple(
+            item.disposition.kind for item in second_v3_reopened.result.complete_ordered_calls
+        ) == ("RECOVERY_REQUIRED",)
+        reopened_head = read_execution_history(reopened).tenant_head
+        assert (
+            await publish_native_sealed_accounting_v3(reopened, second_seal)
+            == second_v3_reopened
+        )
+        assert (
+            await publish_native_sealed_accounting_v3(reopened, first_seal) == first_v3_reopened
+        )
+        assert await reopened.publish_accepted_open_recovery(
+            original_call_id=second_call.original_call_id
+        ) == pending_evidence.result
+        assert await reopened.publish_accepted_open_recovery(
+            original_call_id=first_open_call_id
+        ) == first_open_result
+        assert read_execution_history(reopened).tenant_head == reopened_head
+        assert len(resources.require_original_provider().transfers) == 2

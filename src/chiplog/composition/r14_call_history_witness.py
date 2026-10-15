@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
@@ -25,8 +25,13 @@ if TYPE_CHECKING:
     from .r16_dispatch_runtime import ExecutionDispatchRuntime
 
 
-# This slice covers the executed native V5 prefix, not every history family.
+# These exact families are validated by the complete call-history reader before
+# a cache entry is retained.  This remains a closed schema allowlist, not a
+# general cache admission path.
 _SCHEMAS = {
+    "agent_loop.native-one-call-recovery-profile.v3": {
+        "chiplog.execution.native-one-call-recovery-profile.v3",
+    },
     "agent_loop.native-one-call-recovery-profile.v5": {
         "chiplog.execution.native-one-call-recovery-profile.v5",
     },
@@ -37,6 +42,13 @@ _SCHEMAS = {
         "chiplog.agent-loop.execution-record.v2",
         "chiplog.call.initialized.v1",
         "chiplog.call.response-seal.v1",
+    },
+    "agent_loop.cancel-execution-before-accept.v1": {
+        "chiplog.call.cancelled-before-accept.v1",
+        "chiplog.call.not-executed-result.v1",
+    },
+    "agent_loop.native-one-call-cancelled-accounting.v1": {
+        "chiplog.agent-loop.native-one-call-cancelled-accounting.v1",
     },
     "agent_loop.accepted-direct-terminal.v1": {
         "chiplog.execution.accepted-direct-terminal-accounting.v1",
@@ -49,6 +61,33 @@ _SCHEMAS = {
         "chiplog.execution.sealed-accounting.v1",
     },
     "agent_loop.execution-next-turn.v1": {"chiplog.agent-loop.execution-record.v2"},
+    "agent_loop.accepted-open-recovery.v1": {
+        "chiplog.execution.accepted-open-accounting.v1",
+        "chiplog.execution.accepted-open-recovery-opening.v1",
+        "chiplog.execution.accepted-open-terminal-disposition.v1",
+    },
+    "agent_loop.execution-suspension.v1": {
+        "chiplog.execution.suspension-baseline.v2",
+        "chiplog.agent-loop.execution-record.v2",
+        "chiplog.execution.suspension-pair.v2",
+    },
+    "agent_loop.original-resolver-authority-policy.v1": {
+        "chiplog.loop.original-resolver-authority-policy.v1",
+        "chiplog.loop.original-effect-evidence-reducer-policy.v1",
+    },
+    "agent_loop.original-resolver-invocation.v1": {
+        "chiplog.loop.original-resolver-invocation.v1",
+    },
+    "agent_loop.original-call-resolution.v1": {
+        "chiplog.loop.original-resolution-basis.v1",
+        "chiplog.loop.original-obligation-closure.v1",
+        "chiplog.loop.recovered-call-outcome.v1",
+        "chiplog.loop.original-resolver-batch.v1",
+    },
+    "agent_loop.loop-semantic-reduction.v1": {
+        "chiplog.loop.semantic-reduction.v1",
+    },
+    "agent_loop.execution-resume.v1": {"chiplog.agent-loop.execution-record.v2"},
 }
 _OWNER_OPERATIONS = frozenset(
     {
@@ -77,7 +116,7 @@ def _standard_configuration(runtime):
 
     if type(runtime) is not CommonCliExecutionRuntime:
         return None
-    source = runtime._full_recovery_cut_source
+    source = getattr(runtime, "_full_recovery_cut_source", None)
     if (
         type(source) is not NativeRecoveryCutSource
         or vars(source) != {"_profile_reader": None}
@@ -124,7 +163,10 @@ def _supported_prefix(entries: RawEntries) -> bool:
         schemas = _SCHEMAS.get(operation)
         if schemas is None or {row["schema"] for row in entry["records"]} != schemas:
             return False
-        if operation == "agent_loop.native-one-call-recovery-profile.v5":
+        if operation in {
+            "agent_loop.native-one-call-recovery-profile.v3",
+            "agent_loop.native-one-call-recovery-profile.v5",
+        }:
             native = True
         if operation == "agent_loop.execution-transition.v2":
             transition = json.loads(entry["execution_transition"])
@@ -232,6 +274,34 @@ def read_cached_execution_call_history(runtime):
         runtime._call_history_cache = None
         return None
     return history
+
+
+def remember_verified_call_history(
+    runtime,
+    inputs: CallHistoryInputs | None,
+    history,
+    *,
+    allow_preview_change: bool = False,
+) -> bool:
+    """Retain already-read history while every non-preview input remains exact."""
+    runtime._authority_gate().require_held()
+    if inputs is None:
+        runtime._call_history_cache = None
+        return False
+    current = capture_call_history_inputs(runtime)
+    if current is None:
+        runtime._call_history_cache = None
+        return False
+    matches = (
+        replace(current, preview=inputs.preview) == inputs
+        if allow_preview_change
+        else current == inputs
+    )
+    if not matches:
+        runtime._call_history_cache = None
+        return False
+    runtime._call_history_cache = (current, history)
+    return True
 
 
 @dataclass(frozen=True, repr=False)

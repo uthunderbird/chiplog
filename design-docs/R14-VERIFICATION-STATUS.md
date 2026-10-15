@@ -629,3 +629,35 @@ selection returned `4 passed in 57.47s` for atomic acceptance, replay and
 interruption/reopen behavior on its standard runtime fixture. These checks
 support the local reuse mechanism only: they do not establish deadline relief or
 replace the missing fresh production-clock two-seal acceptance.
+
+### Current-main production-clock multi-member and two-seal passes (2026-10-15)
+
+On current `feat/r14-r17-integrated` at HEAD `143b5c1`, with ordinary Python
+monotonic clocks, no deadline shim, and no admission-budget changes:
+
+- `PYTHONUNBUFFERED=1 PYTHONPATH=src ./.venv/bin/python -m pytest -s -q tests/composition/test_r14_native_selected_accounting_source.py::test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay --basetemp=/private/tmp/chiplog-r14-two-seal-main-native-oct15`
+  returned `1 passed in 1376.04s`. It accepts the second-Turn call within its
+  60-second mandate (preview 11.78s; accept 16.79s; writer selected with 41.15s
+  remaining), closes its direct terminal, publishes and replays V3 for both
+  seals in cross order without advancing the head, reopens, and reads both V3
+  records plus the second direct terminal. The first seal in this selector is
+  cancelled; it does not prove an interrupted accepted OPEN across seals.
+- `PYTHONUNBUFFERED=1 PYTHONPATH=src ./.venv/bin/python -m pytest -s -q tests/composition/test_r14_native_selected_accounting_source.py::test_v3_reads_three_accepted_members_across_delayed_dispatch_and_replay --basetemp=/private/tmp/chiplog-r14-three-outcomes-main-native-oct15`
+  returned `1 passed in 465.83s`. It proves three accepted members with
+  `SUCCEEDED / FAILED_DEFINITE / SUCCEEDED`, delayed dispatch after the first
+  member, exact terminal and V3 replay without head advancement, rejection of
+  an unselected call without writes, and reopen reads for all three terminals.
+
+Before/after SHA256 values match for the tracked source, test and ledger files
+captured before these runs. These results close the fresh production-clock
+sequential two-seal and three-member rows only. Accepted interrupted cross-seal
+recovery, mounted same-kind substitution negatives and the remaining R14.6–R14.13
+requirements remain open.
+
+### Accepted OPEN suspension guard attribution (2026-10-15)
+
+The selector `test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator` passed second-call authorization, SEND and accepted-OPEN recovery, then returned `STALE` at the first suspension. A normal-clock run with local owner sockets returned `1 failed in 242.88s`; it is a failure witness, not completion evidence.
+
+A follow-up mcp-debugger run used the prewritten per-breakpoint expectations in `/private/tmp/r14-cross-seal-suspension-stale-debug-expectations.md`, with seven verified non-pausing logpoints and no actor-budget or clock changes. BP1 recorded `now=1360682491378125`, deadline `1360711244135916`, and `source_cut_validated=False`. BP2 recorded an equal `ExecutionRecoveryCut` at `1360732449080083`: the held source collection took 49.957s, while only 28.753s remained at BP1. Conditional BP4 then recorded expiry at `1360732589054083` with `source_cut_validated=True`. BP3 source mismatch, BP5 caught exception and conditional SQLite head/preimage points did not fire. The test returned `STALE` in 234.16s.
+
+Runner `/private/tmp/chiplog-r14-cross-seal-suspension-debug-runner.py` wrote `/private/tmp/chiplog-r14-cross-seal-suspension-debug-profile.json`: HEAD remained `143b5c1318ee054b3e14ed2453873f87cf2da504`; all 1,215 captured source/test/config files matched before and after. The debugger session was closed. This proves the guard-held re-collection crosses the fixed actor budget on this history. The fresh subset already carries `authenticated_execution_history`, produced by `read_execution_recovery_history(selected_only=True, exact_historical_sources=True)` under the authority gate. The collector then called the accepted-OPEN frontier reader, whose validator reopened that same history, and `_current_cut` reopened it again while independently checking current authority commitment, database identity, tenant, selected decision and outcome, and physical effects preimage. A boundary test initially failed because the history argument was not forwarded; the forwarding change now passes while the gate remains held. Next action: run this same mounted cross-seal selector without timeout changes; the suspension must pass and execution must reach second-seal recovery and locator-substitution negatives.

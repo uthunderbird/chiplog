@@ -12,6 +12,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, cast
 
+import orjson
+
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.adapters.driven.loop_sqlite import OWNER, SCHEMA
@@ -38,6 +40,19 @@ if TYPE_CHECKING:
 
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+_orjson_loads = orjson.loads
+
+
+def _decode_pending_json(raw: bytes | str) -> object:
+    """Use the native decoder for pending rows, preserving stdlib edge behavior."""
+    try:
+        return _orjson_loads(raw)
+    except orjson.JSONDecodeError:
+        # The stdlib accepts a few non-standard forms (notably NaN) and UTF-16/32
+        # byte input. Preserve those historical semantics on the cold path.
+        return json.loads(raw)
 
 
 class R13Runtime(R8PlanningRuntime):
@@ -122,9 +137,12 @@ class R13Runtime(R8PlanningRuntime):
             policy = decode_h1_workspace_policy_v2(record.canonical_bytes)
         except ValueError as error:
             raise LoopRejected("H1 V2 workspace policy bytes differ") from error
-        prefix = "workspace-policy:" + hashlib.sha256(
-            json.dumps([policy.tenant, policy.principal, policy.channel]).encode()
-        ).hexdigest()
+        prefix = (
+            "workspace-policy:"
+            + hashlib.sha256(
+                json.dumps([policy.tenant, policy.principal, policy.channel]).encode()
+            ).hexdigest()
+        )
         expected_id = prefix + ":" + digest
         if (
             policy.tenant != command.tenant_id
@@ -160,7 +178,7 @@ class R13Runtime(R8PlanningRuntime):
     def _pending(self) -> tuple[dict[str, object], ...]:
         pending: dict[str, dict[str, object]] = {}
         for _, _, payload in self._loop_decisions().entries():
-            entry = json.loads(payload)
+            entry = _decode_pending_json(payload)
             if not isinstance(entry, dict) or entry.get("version") != 1:
                 raise LoopRejected("unknown loop decision journal entry")
             operation = entry.get("operation_id")

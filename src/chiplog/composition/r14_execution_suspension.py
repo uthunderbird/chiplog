@@ -25,6 +25,7 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
     Present,
     RecoveryDTO,
 )
+from chiplog.capabilities.agent_loop.recovery_frontier_contracts import RecoveryRequiredResult
 from chiplog.capabilities.agent_loop.recovery_record_contracts import (
     RecoveryRecordMember,
     decode_recovery_record_member,
@@ -409,6 +410,15 @@ async def suspend_execution(
             actor_budget_v1=actor_budget,
         )
         batch = _command(evidence)
+        if (
+            batch.expected_head != cut.tenant_commit_sequence
+            or batch.expected_preimage_commitment != cut.materialization_commitment
+        ):
+            raise LoopRejected("suspension command does not bind the authenticated source cut")
+        transaction_binds_open_cut = any(
+            isinstance(item.disposition, RecoveryRequiredResult)
+            for item in cut.frontier.ordered_calls
+        )
         source_cut_validated = False
 
         def guard():
@@ -417,14 +427,19 @@ async def suspend_execution(
                 try:
                     runtime._check_execution_actor(actor)
                     if not source_cut_validated:
-                        current = source(runtime).collect_held(runtime)
-                        if current != cut:
-                            return "STALE"
-                        # SQLiteMaterializer holds this same authority gate
-                        # continuously from admission through decision and
-                        # commit. Reuse the authenticated pre-publication cut
-                        # within this one submit, while retaining the live
-                        # actor and runtime fences below at both callbacks.
+                        runtime._check_database_identity()
+                        if not transaction_binds_open_cut:
+                            current = source(runtime).collect_held(runtime)
+                            if current != cut:
+                                return "STALE"
+                        # A retained recovery-required frontier has already
+                        # authenticated the accepted/open source. The writer
+                        # transaction binds that exact cut by tenant head and
+                        # materialization preimage before this guard; the
+                        # remaining live actor/runtime fences still run here.
+                        # Other frontiers keep the full source replay because
+                        # their current dispatch-resource check is independent
+                        # of the SQLite materialization commitment.
                         source_cut_validated = True
                     if runtime.current_worker() != worker:
                         return "STALE"

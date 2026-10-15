@@ -1,8 +1,10 @@
 """Post-owner admission retains fresh authority while reusing verified semantics."""
 
+import json
+import math
 import sqlite3
 from contextlib import closing, nullcontext
-from dataclasses import replace
+from dataclasses import fields, replace
 from types import SimpleNamespace
 
 import pytest
@@ -13,16 +15,18 @@ from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
 from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
 )
+from chiplog.composition import r13_runtime, r14_loop_history
 from chiplog.composition import r14_call_authority as call_authority
 from chiplog.composition import r14_call_history_witness as history_witness
 from chiplog.composition import r14_call_preview as call_preview
-from chiplog.composition import r14_loop_history
+from chiplog.composition import r16_dispatch_inputs as dispatch_inputs
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
 from chiplog.composition.r14_call_acceptance_port import (
     CallAcceptanceAdoption,
     CallAcceptanceTarget,
 )
 from chiplog.composition.r14_call_history_witness import (
+    _supported_prefix,
     capture_call_history_inputs,
     read_cached_execution_call_history,
     seed_call_history_cache,
@@ -41,8 +45,92 @@ from chiplog.platform.authority_reads import (
 )
 from chiplog.platform.owner_publications import BrokerPublicationCoordinator
 from chiplog.platform.workspace_snapshot import workspace_snapshot
+from chiplog.verification.r8_surface import R8SurfaceViolation, verify_offline_import_boundary
 from tests.support.h1_cli_execution import admit_runtime_slot
 from tests.support.native_cancelled import native_response
+
+
+def test_call_history_cache_recognizes_authenticated_open_resolution_prefix():
+    """The exact mounted OPEN/resolution loop families remain eligible for reuse."""
+    expected = {
+        "agent_loop.native-one-call-recovery-profile.v5": {
+            "chiplog.execution.native-one-call-recovery-profile.v5",
+        },
+        "agent_loop.accepted-open-recovery.v1": {
+            "chiplog.execution.accepted-open-accounting.v1",
+            "chiplog.execution.accepted-open-recovery-opening.v1",
+            "chiplog.execution.accepted-open-terminal-disposition.v1",
+        },
+        "agent_loop.execution-suspension.v1": {
+            "chiplog.execution.suspension-baseline.v2",
+            "chiplog.agent-loop.execution-record.v2",
+            "chiplog.execution.suspension-pair.v2",
+        },
+        "agent_loop.original-resolver-authority-policy.v1": {
+            "chiplog.loop.original-resolver-authority-policy.v1",
+            "chiplog.loop.original-effect-evidence-reducer-policy.v1",
+        },
+        "agent_loop.original-resolver-invocation.v1": {
+            "chiplog.loop.original-resolver-invocation.v1",
+        },
+        "agent_loop.original-call-resolution.v1": {
+            "chiplog.loop.original-resolution-basis.v1",
+            "chiplog.loop.original-obligation-closure.v1",
+            "chiplog.loop.recovered-call-outcome.v1",
+            "chiplog.loop.original-resolver-batch.v1",
+        },
+        "agent_loop.loop-semantic-reduction.v1": {
+            "chiplog.loop.semantic-reduction.v1",
+        },
+        "agent_loop.execution-resume.v1": {
+            "chiplog.agent-loop.execution-record.v2",
+        },
+        "agent_loop.execution-next-turn.v1": {
+            "chiplog.agent-loop.execution-record.v2",
+        },
+    }
+    entries = [
+        (
+            str(index),
+            None,
+            json.dumps(
+                {
+                    "kind": "DECIDED",
+                    "operation_kind": operation,
+                    "records": [{"schema": schema} for schema in sorted(schemas)],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode(),
+        )
+        for index, (operation, schemas) in enumerate(expected.items())
+    ]
+    entries.insert(
+        0,
+        (
+            "profile",
+            None,
+            b'{"kind":"DECIDED","operation_kind":"agent_loop.native-one-call-recovery-profile.v5",'
+            b'"records":[{"schema":"chiplog.execution.native-one-call-recovery-profile.v5"}]}',
+        ),
+    )
+    assert _supported_prefix(tuple(entries))
+
+    unknown = (
+        "unknown",
+        None,
+        b'{"kind":"DECIDED","operation_kind":"agent_loop.unregistered.v1",'
+        b'"records":[{"schema":"chiplog.unknown.v1"}]}',
+    )
+    assert not _supported_prefix((*entries, unknown))
+
+    wrong_schema = (
+        "wrong-schema",
+        None,
+        b'{"kind":"DECIDED","operation_kind":"agent_loop.execution-resume.v1",'
+        b'"records":[{"schema":"chiplog.execution.resume.v1"}]}',
+    )
+    assert not _supported_prefix((*entries, wrong_schema))
 
 
 @pytest.mark.asyncio
@@ -260,8 +348,34 @@ async def test_public_accept_seeds_exact_history_cache_and_main_commitment_chang
             "hermetic-ingress", started.run_id, started.head, native_one_call_context=True
         )
         sealed = await runtime.seal_execution("hermetic-ingress", captured.run_id, captured.head)
+
+        expected_entries = runtime._loop_decisions().entries()
+        assert len(expected_entries) == 20
+        decoded_rows: list[bytes | str] = []
+        native_loads = r13_runtime._orjson_loads
+
+        def count_native_loads(raw: bytes | str) -> object:
+            decoded_rows.append(raw)
+            return native_loads(raw)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(r13_runtime, "_orjson_loads", count_native_loads)
+            assert runtime._pending() == ()
+        assert decoded_rows == [payload for _, _, payload in expected_entries]
+        assert len(decoded_rows) == 20
+
         before = read_execution_call_history(runtime)
         (row,) = before[1].ordered_calls
+        full_history_reads = []
+        original_preview_history_reader = call_preview.read_execution_call_history
+
+        def counted_preview_history_reader(current_runtime):
+            full_history_reads.append(current_runtime)
+            return original_preview_history_reader(current_runtime)
+
+        monkeypatch.setattr(
+            call_preview, "read_execution_call_history", counted_preview_history_reader
+        )
         preview = await runtime.preview_call_acceptance(
             "hermetic-ingress",
             CallAcceptanceTarget(
@@ -270,13 +384,128 @@ async def test_public_accept_seeds_exact_history_cache_and_main_commitment_chang
                 current_run=execution_run_head(sealed),
             ),
         )
+        assert full_history_reads == [runtime]
         adoption = CallAcceptanceAdoption(
             act_id="history-cache-adoption", preview_bytes=preview.canonical_bytes()
         )
-        await runtime.accept_call("hermetic-ingress", adoption)
+        cache_lookup_observations = []
+        original_cached_history_reader = history_witness.read_cached_execution_call_history
 
+        def observed_cached_history_reader(current_runtime):
+            entry = current_runtime._call_history_cache
+            current_inputs = history_witness.capture_call_history_inputs(current_runtime)
+            changed_fields = (
+                tuple(
+                    item.name
+                    for item in fields(entry[0])
+                    if getattr(entry[0], item.name) != getattr(current_inputs, item.name)
+                )
+                if entry is not None and current_inputs is not None
+                else ()
+            )
+            result = original_cached_history_reader(current_runtime)
+            cache_lookup_observations.append(
+                (entry is not None, current_inputs is not None, result is not None, changed_fields)
+            )
+            return result
+
+        monkeypatch.setattr(
+            history_witness,
+            "read_cached_execution_call_history",
+            observed_cached_history_reader,
+        )
+        await runtime.accept_call("hermetic-ingress", adoption)
+        assert cache_lookup_observations == [(True, True, True, ())]
         assert runtime._call_history_cache is not None
         inputs, cached_history = runtime._call_history_cache
+
+        dispatch_cache_observations = []
+        original_dispatch_cache_reader = history_witness.read_cached_execution_call_history
+
+        def observed_dispatch_cache_reader(current_runtime):
+            result = original_dispatch_cache_reader(current_runtime)
+            dispatch_cache_observations.append(result)
+            return result
+
+        monkeypatch.setattr(
+            history_witness,
+            "read_cached_execution_call_history",
+            observed_dispatch_cache_reader,
+        )
+        with runtime._authority_gate().hold():
+            dispatch_history = dispatch_inputs._verified_call_history_for_dispatch(runtime)
+        assert dispatch_cache_observations == [cached_history]
+        assert dispatch_history == cached_history
+
+        fallback_cache_results = []
+        fallback_history_reads = []
+
+        def unsupported_dispatch_cache_inputs(_runtime):
+            return None
+
+        def observed_fallback_cache_reader(current_runtime):
+            result = original_dispatch_cache_reader(current_runtime)
+            fallback_cache_results.append(result)
+            return result
+
+        def counted_fallback_history_reader(current_runtime):
+            fallback_history_reads.append(current_runtime)
+            return read_execution_call_history(current_runtime)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                history_witness,
+                "read_cached_execution_call_history",
+                observed_fallback_cache_reader,
+            )
+            patch.setattr(
+                history_witness,
+                "capture_call_history_inputs",
+                unsupported_dispatch_cache_inputs,
+            )
+            patch.setattr(
+                r14_loop_history,
+                "read_execution_call_history",
+                counted_fallback_history_reader,
+            )
+            with runtime._authority_gate().hold():
+                fallback_history = dispatch_inputs._verified_call_history_for_dispatch(runtime)
+        assert fallback_cache_results == [None]
+        assert fallback_history_reads == [runtime]
+        assert fallback_history == cached_history
+        with runtime._authority_gate().hold():
+            runtime._call_history_cache = None
+
+        refreshed_cache_results = []
+        refreshed_history_reads = []
+
+        def observed_refreshed_cache_reader(current_runtime):
+            result = original_dispatch_cache_reader(current_runtime)
+            refreshed_cache_results.append(result)
+            return result
+
+        def counted_refreshed_history_reader(current_runtime):
+            refreshed_history_reads.append(current_runtime)
+            return read_execution_call_history(current_runtime)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                history_witness,
+                "read_cached_execution_call_history",
+                observed_refreshed_cache_reader,
+            )
+            patch.setattr(
+                r14_loop_history,
+                "read_execution_call_history",
+                counted_refreshed_history_reader,
+            )
+            with runtime._authority_gate().hold():
+                refreshed_history = dispatch_inputs._verified_call_history_for_dispatch(runtime)
+                repeated_history = dispatch_inputs._verified_call_history_for_dispatch(runtime)
+        assert refreshed_history_reads == [runtime]
+        assert refreshed_cache_results == [None, cached_history]
+        assert refreshed_history == repeated_history == cached_history
+
         assert inputs.runtime is runtime
         assert cached_history[0].tenant_head == before[0].tenant_head + 1
         assert inputs.authority_commitment == capture_authority_storage_state(runtime._database)[0]
@@ -371,6 +600,35 @@ async def test_public_accept_seeds_exact_history_cache_and_main_commitment_chang
             assert read_cached_execution_call_history(runtime) is None
             assert runtime._call_history_cache is None
         assert resources.require_original_provider().transfers == ()
+
+
+def test_pending_json_decoder_preserves_stdlib_duplicate_nan_and_large_integer_values() -> None:
+    duplicate_key = b'{"value":1,"value":2}'
+    assert r13_runtime._decode_pending_json(duplicate_key) == json.loads(duplicate_key)
+
+    nan_value = r13_runtime._decode_pending_json(b'{"value":NaN}')
+    assert isinstance(nan_value, dict) and math.isnan(nan_value["value"])
+
+    large_integer = b'{"value":9223372036854775808}'
+    assert r13_runtime._decode_pending_json(large_integer) == json.loads(large_integer)
+
+
+def test_r8_registers_native_json_dependency_only_at_pending_reader(tmp_path) -> None:
+    composition = tmp_path / "src/chiplog/composition"
+    composition.mkdir(parents=True)
+    pending_reader = composition / "r13_runtime.py"
+    pending_reader.write_text("import orjson\n", encoding="utf-8")
+    verify_offline_import_boundary(tmp_path)
+
+    unrelated = composition / "unrelated.py"
+    unrelated.write_text("import orjson\n", encoding="utf-8")
+    with pytest.raises(R8SurfaceViolation, match="unregistered dependency"):
+        verify_offline_import_boundary(tmp_path)
+    unrelated.unlink()
+
+    pending_reader.write_text("from orjson import loads\n", encoding="utf-8")
+    with pytest.raises(R8SurfaceViolation, match="unregistered dependency"):
+        verify_offline_import_boundary(tmp_path)
 
 
 def no_replay(*args, **kwargs):

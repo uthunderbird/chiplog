@@ -50,7 +50,25 @@ async def test_mounted_same_run_resume_reopens_the_selected_suspension(tmp_path)
         await runtime.publish_native_one_call_cancelled_accounting()
         history = read_execution_history(runtime)
         run = next(row for row in reversed(history.records) if isinstance(row, ExecutionRunRecord))
+        recovery_source = runtime._full_recovery_cut_source
+        collect_held_calls = []
+
+        class CountingRecoverySource:
+            def collect_held(self, actual_runtime):
+                collect_held_calls.append(actual_runtime)
+                return recovery_source.collect_held(actual_runtime)
+
+            def authenticate_selected_held(self, actual_runtime, evidence, entry):
+                return recovery_source.authenticate_selected_held(
+                    actual_runtime, evidence, entry
+                )
+
+        runtime._full_recovery_cut_source = CountingRecoverySource()
         suspension = await runtime.suspend_execution(run.run_id, run.head, ())
+        # Pre-acceptance cancellation still needs the fresh dispatch-resource
+        # currentness check in the guard, so retain its second source read.
+        assert collect_held_calls == [runtime, runtime]
+        runtime._full_recovery_cut_source = recovery_source
         suspended_head = suspension.pair.suspended_run.revision.head
 
         resumed = await runtime.resume_execution(run.run_id, suspended_head, b"resume-the-same-run")

@@ -577,7 +577,7 @@ def validate_native_open_sources_held(
             ):
                 native_anchor = (call_id, evidence.request.cut.current_run.subject_id)
                 return True
-        return False
+        return authenticate_selected_pending_r14_suffix_held(runtime, actual, anchored)
 
     effects_cut, journal = _read_materialized_effects_with_history(
         runtime,
@@ -627,9 +627,11 @@ def _validate_native_suffix_loop_command(runtime, entry, command) -> None:
     elif operation == "agent_loop.native-sealed-accounting.v3":
         from chiplog.composition.r14_native_accounting_records import (
             NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION,
-            retained_selected_native_sealed_accounting_v3,
             sealed_accounting_v3_command,
             validate_retained_sealed_accounting_v3_publication,
+        )
+        from chiplog.composition.r14_native_sealed_accounting_v3_history import (
+            retained_selected_native_sealed_accounting_v3,
         )
 
         if operation != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION:
@@ -1271,4 +1273,17 @@ def authenticate_selected_r14_source_cut_held(
         return True
     return authenticate_selected_r14_suffix_held(
         runtime, actual, anchored, target_commitment=target_commitment
+    )
+
+
+def authenticate_selected_pending_r14_suffix_held(runtime, actual: str, anchored: str) -> bool:
+    """Authenticate one registered pending R14 operation against its anchor."""
+    runtime._authority_gate().require_held()
+    if actual == anchored:
+        return False
+    pending = runtime._pending()
+    if len(pending) != 1 or pending[0].get("operation_kind") not in _SUFFIX_OPERATIONS:
+        return False
+    return authenticate_selected_r14_suffix_held(
+        runtime, actual, anchored, target_commitment=anchored
     )

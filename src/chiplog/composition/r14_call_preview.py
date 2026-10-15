@@ -341,8 +341,21 @@ def _read_call_previews_and_history_held(
 async def preview_call_acceptance(
     runtime: ExecutionDispatchRuntime, peer: str, target: CallAcceptanceTarget
 ) -> CallAcceptancePreview:
+    from chiplog.composition.r14_call_history_witness import (
+        capture_call_history_inputs,
+        read_cached_execution_call_history,
+        remember_verified_call_history,
+    )
+
     with runtime._authority_gate().hold():
-        execution_call_history = read_execution_call_history(runtime)
+        history_inputs = capture_call_history_inputs(runtime)
+        execution_call_history = read_cached_execution_call_history(runtime)
+        if execution_call_history is None:
+            execution_call_history = read_execution_call_history(runtime)
+        if history_inputs is not None and not remember_verified_call_history(
+            runtime, history_inputs, execution_call_history
+        ):
+            raise LoopRejected("call preview history inputs changed during verification")
         loop_entries = runtime._loop_decisions().entries()
         loop_head = loop_entries[-1][0] if loop_entries else None
     observed = await authenticate(runtime, peer)
@@ -481,6 +494,10 @@ async def preview_call_acceptance(
         )
         if current != captured:
             raise LoopRejected("call preview sources changed during precursor evaluation")
+        if history_inputs is not None and not remember_verified_call_history(
+            runtime, history_inputs, execution_call_history
+        ):
+            raise LoopRejected("call preview history inputs changed during precursor evaluation")
         require_dispatch_scope(
             current, runtime._require_dispatch_resources(), mandate, None, first_send=False
         )
@@ -494,6 +511,10 @@ async def preview_call_acceptance(
             result=DispatchPrecursorResultV2.model_validate_json(raw),
         )
         validate_call_preview(value, runtime)
+        if history_inputs is not None and not remember_verified_call_history(
+            runtime, history_inputs, execution_call_history
+        ):
+            raise LoopRejected("call preview history inputs changed before selected readback")
         previous = read_call_previews(runtime)
         if any(item.preview.preview_id == preview.preview_id for item in previous):
             raise LoopRejected("call preview identity already selected")
@@ -501,6 +522,13 @@ async def preview_call_acceptance(
         entries = journal.entries()
         try:
             journal.append(value.canonical_bytes(), entries[-1][0] if entries else None)
+            if history_inputs is not None and not remember_verified_call_history(
+                runtime,
+                history_inputs,
+                execution_call_history,
+                allow_preview_change=True,
+            ):
+                raise LoopRejected("call preview history inputs changed during selected readback")
             if read_call_previews(runtime)[-1] != value:
                 raise ValueError("selected preview readback differs")
         except (ValueError, RuntimeError, OSError) as error:

@@ -334,6 +334,7 @@ def _current_cut(
         else expected_source_cut.current_run,
         original_call_id=original_call_id,
         selected_only=selected_only,
+        authenticated_recovery_history=history if selected_only else None,
         authenticated_effects_history=physical_history,
         expected_outcome_record_id=(
             None if expected_source_cut is None else expected_source_cut.selected_outcome_record_id
