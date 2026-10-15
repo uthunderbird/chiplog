@@ -108,6 +108,38 @@ async def test_exact_owner_run_is_first_atomic_member(complete: bool) -> None:
     assert all(member.owner == "agent_loop" for member in command.records)
 
 
+async def test_complete_physical_envelope_enforces_its_own_exact_byte_boundary() -> None:
+    evidence = await _evidence()
+
+    def with_limit(limit):
+        inner = evidence.request.request
+        request = evidence.request.model_copy(
+            update={
+                "request": inner.model_copy(
+                    update={
+                        "bound": inner.bound.model_copy(
+                            update={"max_serialized_batch_bytes": limit}
+                        )
+                    }
+                )
+            }
+        )
+        proposal = prepare_execution_captured_fan_out(request)
+        assert isinstance(proposal, ExecutionCapturedFanOutProposal)
+        return evidence.model_copy(update={"request": request, "proposal": proposal})
+
+    # Use a fixed decimal width so the limit itself does not move the boundary.
+    envelope_size = len(build_envelope(with_limit(99999)).canonical_bytes())
+    assert 10000 < envelope_size < 99999
+    exact = with_limit(envelope_size)
+    assert len(exact.proposal.canonical_bytes()) < envelope_size - 1
+    assert len(build_envelope(exact).canonical_bytes()) == envelope_size
+    over = with_limit(envelope_size - 1)
+    assert len(over.proposal.canonical_bytes()) < envelope_size - 1
+    with pytest.raises(ValueError, match="complete physical envelope exceeds bound"):
+        build_envelope(over)
+
+
 @pytest.mark.parametrize(
     "mutation", ["state", "origin", "predecessor", "event", "attempt", "turn", "calls"]
 )
