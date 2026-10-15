@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING
 
 from chiplog.adapters.driven.effects_broker import EffectsIntegrityError
@@ -55,6 +56,12 @@ async def _replay(
             )
         )
     if isinstance(result, PublicationRejected) and result.kind == "HOLD":
+        await runtime._recover_exact(
+            runtime._owner_command(selected),
+            selected.prepared.predecessor_commitment,
+            selected.resulting_commitment,
+            is_materialized=partial(runtime._owner_decision_materialized, selected),
+        )
         result = await coordinator.recover_selected(runtime._tenant_id, command_id)
     if not isinstance(result, JournalSelectedPublication):
         if isinstance(result, PublicationRejected):

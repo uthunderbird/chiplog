@@ -238,10 +238,46 @@ async def prepare_call_exchange(
     runtime: ExecutionDispatchRuntime, peer: str, adoption: CallAcceptanceAdoption
 ) -> PreparedCallExchange:
     """Fresh preparation only; selected replay must be resolved before this call."""
+    exchange, _ = await _prepare_call_exchange_with_history(runtime, peer, adoption)
+    target = exchange.preview.preview.target
+    mandate = exchange.preview.request.mandate
+    resources = runtime._require_dispatch_resources()
+    with runtime._authority_gate().hold():
+        fresh = capture_dispatch(
+            runtime,
+            resources,
+            exchange.observed,
+            target.current_run.subject_id,
+            original_call_id=target.original_call_id,
+        )
+        if fresh != exchange.captured:
+            raise LoopRejected("call acceptance source cut changed during owner preparation")
+        require_dispatch_scope(fresh, resources, mandate, None, first_send=False)
+        deadline = min(
+            exchange.loop_sent.budget.absolute_deadline_ns,
+            exchange.effects_sent.budget.absolute_deadline_ns,
+            exchange.retained.effects_request.current.lease_expires_at_ns,
+            mandate.horizon.expires_at_ns,
+            *(
+                source.valid_until_ns
+                for source in exchange.retained.loop_request.binding.cut.sources
+            ),
+        )
+        if fresh.observed_time_ns >= deadline or time.monotonic_ns() >= deadline:
+            raise LoopRejected("call acceptance original authority or owner preparation expired")
+    return exchange
+
+
+async def _prepare_call_exchange_with_history(runtime, peer, adoption):
+    from .r14_call_history_witness import CallHistoryWitness, capture_call_history_inputs
+
     observed = await authenticate(runtime, peer)
     resources = runtime._require_dispatch_resources()
     with runtime._authority_gate().hold():
+        inputs = capture_call_history_inputs(runtime)
         preview_values, history = _read_call_previews_and_history(runtime, require_history=True)
+        if inputs is not None and capture_call_history_inputs(runtime) != inputs:
+            raise LoopRejected("call preparation history inputs changed across verification")
         matches = tuple(
             value
             for value in preview_values
@@ -260,6 +296,7 @@ async def prepare_call_exchange(
             original_call_id=target.original_call_id,
             execution_call_history=history,
         )
+        witness = None if inputs is None else CallHistoryWitness(inputs, history, captured)
         if captured.principal != preview.captured.principal:
             raise LoopRejected("adoption principal differs from original preview")
         require_dispatch_scope(captured, resources, mandate, None, first_send=False)
@@ -353,7 +390,7 @@ async def prepare_call_exchange(
         loop_sent.budget.absolute_deadline_ns, effects_sent.budget.absolute_deadline_ns
     ):
         raise LoopRejected("call acceptance owner preparation expired")
-    return PreparedCallExchange(
+    exchange = PreparedCallExchange(
         preview=preview,
         adoption=adoption,
         captured=captured,
@@ -362,3 +399,4 @@ async def prepare_call_exchange(
         effects_sent=effects_sent,
         retained=retained,
     )
+    return exchange, witness

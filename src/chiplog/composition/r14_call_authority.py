@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import secrets
 import time
-from typing import Literal
+from contextlib import nullcontext
+from typing import TYPE_CHECKING, Literal
 
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent
@@ -27,12 +28,15 @@ from .r14_call_issuance import (
     call_identity,
     validate_call_issuance,
 )
-from .r14_call_preparation import prepare_call_exchange
+from .r14_call_preparation import _prepare_call_exchange_with_history
 from .r14_loop_history import read_execution_call_history
 from .r16_dispatch_authority import DispatchPublicationAuthority
 from .r16_dispatch_inputs import capture_dispatch, require_dispatch_scope
 from .r16_dispatch_runtime import ExecutionDispatchRuntime
 from .r16_effects_authority import effect_materialization_state
+
+if TYPE_CHECKING:
+    from .r14_call_history_witness import CallHistoryWitness
 
 
 class CallPublicationAuthority:
@@ -40,7 +44,9 @@ class CallPublicationAuthority:
         self.runtime = runtime
         self.observed = observed
         self._invocations = DispatchPublicationAuthority(runtime, observed)
-        self._issued: list[tuple[PreparedOwnerPublication, CallAcceptanceIssuance]] = []
+        self._issued: list[
+            tuple[PreparedOwnerPublication, CallAcceptanceIssuance, CallHistoryWitness | None]
+        ] = []
 
     def invocation(self, identity: PublicationIdentity) -> InvocationProofRef:
         return self._invocations.invocation(identity)
@@ -58,7 +64,7 @@ class CallPublicationAuthority:
     async def prepare_fresh(self, peer: str, adoption: CallAcceptanceAdoption) -> CallEffectBatch:
         # Only this method can add an issued preparation. The returned exchange
         # comes from actual owner calls; there is no register(caller_value) port.
-        exchange = await prepare_call_exchange(self.runtime, peer, adoption)
+        exchange, witness = await _prepare_call_exchange_with_history(self.runtime, peer, adoption)
         if exchange.observed.result.reference_bytes != self.observed.result.reference_bytes:
             raise LoopRejected("call preparation invocation changed principal binding")
         # Replay can consume the original ingress budget. The fresh preparation
@@ -80,13 +86,13 @@ class CallPublicationAuthority:
                 0,
                 value.captured.cut.materialization_commitment,
             )
-            self._issued.append((prepared, value))
+            self._issued.append((prepared, value, witness))
         return batch
 
     async def prepare(
         self, request: RegisteredPublication
     ) -> PreparedOwnerPublication | PublicationRejected:
-        for prepared, _ in self._issued:
+        for prepared, _, _ in self._issued:
             if prepared.request is request:
                 return prepared
         return PublicationRejected(
@@ -100,15 +106,23 @@ class CallPublicationAuthority:
         runtime = self.runtime
         resources = runtime._require_dispatch_resources()
         target = value.preview.preview.target
-        execution_call_history = read_execution_call_history(runtime)
-        fresh = capture_dispatch(
-            runtime,
-            resources,
-            value.observed,
-            target.current_run.subject_id,
-            original_call_id=target.original_call_id,
-            execution_call_history=execution_call_history,
+        from chiplog.platform.workspace_snapshot import workspace_snapshot
+
+        witness = next((proof for _, issued, proof in self._issued if issued is value), None)
+        execution_call_history = (
+            read_execution_call_history(runtime)
+            if witness is None
+            else witness.recheck(runtime, value.captured)
         )
+        with (nullcontext() if witness is None else workspace_snapshot(runtime._database)):
+            fresh = capture_dispatch(
+                runtime,
+                resources,
+                value.observed,
+                target.current_run.subject_id,
+                original_call_id=target.original_call_id,
+                execution_call_history=execution_call_history,
+            )
         _, inventory, _ = execution_call_history
         cut = value.retained.loop_request.binding.cut
         rows = tuple(
@@ -142,7 +156,7 @@ class CallPublicationAuthority:
     def check_prepared(
         self, prepared: PreparedOwnerPublication
     ) -> Literal["DENIED", "STALE", "INDETERMINATE"] | None:
-        for issued, value in self._issued:
+        for issued, value, _ in self._issued:
             if prepared is not issued:
                 continue
             try:

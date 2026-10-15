@@ -454,3 +454,12 @@ class HermeticDispatchResources:
                 ]
             )
         )
+
+
+# Stable implementation identities for broker-private historical input witnesses.
+_HISTORICAL_DISPATCH_METHODS = (
+    ("_historical_custody", HermeticDispatchResources._historical_custody),
+    ("verify_historical", HermeticDispatchResources.verify_historical),
+    ("historical_recipient", HermeticDispatchResources.historical_recipient),
+    ("observation_digest", HermeticDispatchResources.observation_digest),
+)
