@@ -150,6 +150,14 @@ def main() -> int:
                 )
             git("rev-parse", "--verify", ":" + name)
         print("checkpoint: только выбранные тесты; без регрессии, не готовность к main", flush=True)
+        env = os.environ.copy()
+        inherited_pythonpath = env.get("PYTHONPATH")
+        source_path = str(ROOT / "src")
+        env["PYTHONPATH"] = (
+            source_path
+            if not inherited_pythonpath
+            else source_path + os.pathsep + inherited_pythonpath
+        )
         result = subprocess.run(
             [
                 "sh",
@@ -161,6 +169,7 @@ def main() -> int:
                 *selectors,
             ],
             cwd=ROOT,
+            env=env,
         )
         if result.returncode:
             return reject(

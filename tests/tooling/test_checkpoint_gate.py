@@ -123,6 +123,29 @@ def test_only_selected_case_runs_and_failures_block(tmp_path: Path, name: str, c
         assert "1 passed" in result.stdout
 
 
+def test_selected_pytest_imports_from_checkpoint_checkout(tmp_path: Path) -> None:
+    env = fixture(tmp_path)
+    candidate = tmp_path / "src/sentinelpkg"
+    candidate.mkdir(parents=True)
+    (candidate / "__init__.py").write_text('SOURCE_ID = "candidate"\n')
+    foreign = tmp_path / "foreign/sentinelpkg"
+    foreign.mkdir(parents=True)
+    (foreign / "__init__.py").write_text('SOURCE_ID = "foreign"\n')
+    selected = tmp_path / "tests/tooling/test_source_root.py"
+    selected.write_text(
+        "import sentinelpkg\n\n"
+        "def test_source_root():\n"
+        "    assert sentinelpkg.SOURCE_ID == 'candidate', sentinelpkg.__file__\n"
+    )
+    git(tmp_path, env, "add", "src/sentinelpkg", "tests/tooling/test_source_root.py")
+    env["PYTHONPATH"] = str(tmp_path / "foreign")
+
+    result = run(tmp_path, env, ["tests/tooling/test_source_root.py::test_source_root"])
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
 @pytest.mark.parametrize(
     "selectors",
     [[], {}, "tests", [1], ["--collect-only"], ["tests"], ["tests/../implementation.py"]],
