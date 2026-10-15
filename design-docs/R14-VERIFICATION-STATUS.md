@@ -532,3 +532,36 @@ normal-clock SUSP pass remains tied to its recorded isolated WIP profile; saving
 these source bytes in a checkpoint does not convert that result into a new HEAD
 production run. R14 remains OPEN; cross-seal continuation and strict CLOSED
 locator substitution are still pending.
+
+### Fresh native three-outcome and pending damage witnesses
+
+A fresh normal-clock mounted three-member selector passed in 665.48s, session
+5971 exit 0. It proved SUCCEEDED / FAILED_DEFINITE / RECOVERY_REQUIRED, delayed
+dispatch, V3 and exact terminal/V3 replay without head advancement, rejected an
+unselected-call write without journal changes, and reopened qualified terminals.
+Profile: isolated HEAD `8dff0ff` plus mounted-test candidate module SHA256
+`284f90a6327ccf8cd824124eafb024fef578f20d9e4817f780c156a5e1a3f1b3`.
+All 1207 source/test/config hashes matched before/after. Builtin clocks and the
+project import path were asserted inside pytest at entry/teardown. No authority
+budget change. This is one seal, not production two-seal evidence; V3 replay
+after that separate fixture's reopen was not asserted by this selector.
+
+Two fresh normal-clock pending SUSP negatives passed in 204.75s, session 52276
+exit 0: before-COMMIT ABSENT with corrupted exact Run predecessor; after-COMMIT
+COMPLETE with an orphan row outside its final batch. Each first passed the real
+pending outer read, then reanchored damaged storage, preserved target state,
+required typed outer/startup refusal before context yield, and kept pending,
+loop journal, tenant head and one external transfer unchanged. Source/test/config
+and external probe hashes matched before/after on the same isolated 8d profile.
+The first attempt failed because the test whitelist omitted the concrete
+OwnerJournalIntegrityError. After reading its source wrapper, that explicit type
+was added; runtime code was unchanged. These are outcome fences, not proof of
+the exact rejecting stage or all-family negative inventory.
+
+Original cross-seal continuation session 25277 exited 0: both V3 and terminals
+replayed exactly with unchanged history and two transfers. It remains diagnostic
+clock evidence on the original fixture. The subsequent strict CLOSED probe
+failed its own-locator positive control after closing the second outcome; it
+never reached the foreign-locator negative. MCP inspection is investigating whether the failure is a
+probe fingerprint-domain mistake or a reader defect. No strict CLOSED success
+or completed R14.6/production multi-seal claim follows from these results.
