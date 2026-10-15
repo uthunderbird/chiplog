@@ -27,6 +27,7 @@ class _Command:
     request_fingerprint: str
     records: tuple[_Record, ...]
     tenant_id: str = "tenant"
+    expected_preimage_commitment: str | None = None
 
 
 class _Runtime:
@@ -1021,7 +1022,10 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_real_source_
             assert suffix.authenticate_native_open_pending_lifecycle_held(
                 runtime, connection, actual, anchored, **kwargs
             ) is (damage in (None, "anchor-advanced"))
-    if family.startswith("accepted-open") and damage != "unselected":
+    if (
+        family in ("suspension", "accepted-open-accounting", "accepted-open-recovery")
+        and damage != "unselected"
+    ):
         # Canonical owner acquisition is inert; the prefix proof uses real SQLite.
         from chiplog.composition import r14_accepted_open_accounting_records as records
         from chiplog.composition.r14_recovery_publication import (
@@ -1032,17 +1036,32 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_real_source_
             tenant_id="tenant", database_id="database", materialization_commitment=predecessor,
             tenant_commit_sequence=command.expected_head,
         )))
-        recovery = family == "accepted-open-recovery"
-        monkeypatch.setattr(
-            records,
-            "retained_accepted_open_recovery" if recovery else "retained_accepted_open_accounting",
-            lambda _: evidence,
-        )
-        monkeypatch.setattr(
-            records,
-            "accepted_open_recovery_command" if recovery else "accepted_open_accounting_command",
-            lambda _: command,
-        )
+        if family == "suspension":
+            from chiplog.composition import r14_execution_suspension as suspension
+
+            monkeypatch.setattr(suspension, "_retained", lambda _: evidence)
+            monkeypatch.setattr(
+                suspension, "_command",
+                lambda _: replace(command, expected_preimage_commitment=predecessor),
+            )
+        else:
+            recovery = family == "accepted-open-recovery"
+            monkeypatch.setattr(
+                records,
+                (
+                    "retained_accepted_open_recovery"
+                    if recovery else "retained_accepted_open_accounting"
+                ),
+                lambda _: evidence,
+            )
+            monkeypatch.setattr(
+                records,
+                (
+                    "accepted_open_recovery_command"
+                    if recovery else "accepted_open_accounting_command"
+                ),
+                lambda _: command,
+            )
         with gate.hold():
             assert authenticate_selected_recovery_prefix_held(
                 runtime, actual, anchored

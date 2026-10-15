@@ -242,3 +242,121 @@ acceptance-history hypothesis and isolated missing OPEN prefix support in the
 effects suffix callback. Session was closed after observations. The isolated
 repair adds only that existing prefix proof; no accepted-facts/history reuse was
 added. The pending-OPEN boundary test failed false before the callback repair.
+
+## Probe 6 — fixed pending OPEN startup source
+
+Expectations were recorded before launching session
+`0e6c75d6-ef25-49d2-a893-7a6d9d28010a`. The script reopens the exact unchanged
+after-anchor red fixture at its original path; no files or identity bindings are
+repinned. Runtime startup must authenticate it before replay. It uses the frozen
+`dd0fabc` candidate, the same diagnostic clock and no new target deadline.
+
+- Historical `_current_cut` facts breakpoint: expected reached with nonempty
+  current physical facts, then cut construction. Expected stack: startup →
+  accounting validator → helper → `_current_cut`. Condition is a retained
+  historical source cut. Missing facts falsifies the repair for this fixture.
+- Cut breakpoint: same condition and stack, expected nonempty cut retaining
+  original source sequence, then pair return. Missing cut localizes a remaining
+  builder refusal.
+- Helper rejection breakpoint: expected unreached. If reached, inspect source
+  presence and before/after physical/anchor values; stack is startup → validator
+  → helper. The final script asserts no pending and one original transfer.
+
+Observations follow after the run.
+
+Observed at facts breakpoint: expected startup stack, facts present, exact call,
+source sequence 18/current sequence 19, and the already authenticated physical
+snapshot was injected. At cut breakpoint: cut present and exactly equal to the
+retained historical cut; facts still report current sequence 19 and cut sequence
+18. Both successful breakpoints were then removed; helper rejection stayed armed
+while startup/replay and the final script assertions continued. Completion is
+recorded separately after observing exit.
+
+The post-proof script did not complete: its unguarded `asyncio.run()` recursed
+through multiprocessing bootstrap and owner startup failed. After adding the
+main guard, source facts/cut were again valid (now pending already repaired and
+special snapshot unnecessary), but owner attestation rejected two extra loaded
+policy modules: deployment_trust `_j7_grant_process` and `_r7_process`. All
+identity, capability and authority-empty flags matched; only module closure
+differed. Top-level project imports in the standalone main module were inherited
+by spawned owners. They were moved inside guarded `main`; no attestation allowlist
+or authority check was changed. These are diagnostic-helper failures, not passing
+full debugger-script outcomes. Both debugger sessions were closed. A corrected
+ordinary script run exited successfully and reported one original transfer.
+This reopened the already repaired fixture; the six fresh pytest witnesses
+remain the evidence for recovery from pending state. Source proof at both planned breakpoints remains
+observed; the six complete fresh pytest fault witnesses are separate evidence.
+
+For the guarded debugger attempt only, parent multiprocessing Event waits were
+temporarily raised to at least one hour through evaluation, in addition to the
+diagnostic monotonic_ns scaling. This patch lived only in that closed process;
+production sources and budgets were untouched.
+
+### SUSPENSION prefix probe
+
+Before setting breakpoints in session `427b1bce-9d47-4012-afa7-678c35f052ac`:
+reopen the exact failed SUSPENSION fixture, with guarded project imports and the
+diagnostic clock; no new target deadline.
+
+- Break at `cut = evidence.request.cut` in the prefix helper, conditioned on
+  `operation == 'agent_loop.execution-suspension.v1'`. Expected reached with a
+  canonical suspension command and retained request, before shared header proof.
+  Expected stack: startup history validation → native scope historical read →
+  recovery prefix dispatcher → OPEN prefix helper. Next: header proof passes,
+  COMPLETE final batch proof returns true. Missing breakpoint or wrong cut fields
+  falsifies this acquisition hypothesis.
+- Break at the dispatcher's exception return (condition: sole pending suspension).
+  Expected unreached in a healthy fixture. If reached, inspect the active exception
+  and helper inputs before continuing; expected stack is the same prefix dispatcher
+  under startup history validation. Any caught canonical/header exception explains
+  the persistent scope refusal and falsifies successful prefix authentication.
+
+Observed: the first breakpoint was reached with exactly the expected startup
+stack. Canonical request cut is `ExecutionRecoveryCut`, source sequence 19,
+predecessor matches the source commitment, but retained physical command equality
+is false. A restart with the same breakpoints isolated the sole differing field:
+`expected_preimage_commitment` is None on `_publication(entry)` and the source
+commitment on `_command(evidence)`. The exception-return breakpoint was not hit;
+the header check returned false normally and startup raised the same scope error.
+The debugger session was closed.
+
+The SUSP branch now normalizes that physical-only command field exactly as the
+existing suspension selected validator does; predecessor/cut and physical prefix
+checks remain enforced separately. The SQLite unit matrix now creates the same
+asymmetric representations, and passed 82 tests. Cold delta review found no P0/P1.
+Fresh three-boundary mounted rerun and exact failed-fixture reopen are pending.
+
+The first complete reopen exposed two further boundaries: selected-only startup
+did not defer pending SUSP to the existing outer lifecycle fold, and preservation
+of a suspended OPEN cut invoked the ordinary no-pending suspension reader. The
+ABSENT case additionally required passing the separately validated physical Run
+projection to the historical effects source. All three repairs retained the
+complete semantic snapshot and exact outer fold. The original ABSENT fixture
+then reopened successfully with one original transfer (exit 0).
+
+Before breakpoints for fixed-source session
+`f0a675d1-3845-4432-8418-5703124651e1`, reopening the original COMPLETE fixture:
+
+- At prefix `return valid`, conditioned on SUSP operation, expected reached with
+  `valid is True`, physical head 20/source 19 and independent anchor at source.
+  Stack: startup → historical scope → recovery prefix → prefix proof. Next the
+  native scope read should continue. False proof or a differing command beyond
+  its normalized preimage falsifies the fix.
+- At suspension-preservation `return bool`, conditioned on a pending SUSP,
+  expected reached with a validated selected suspension, exact predecessor and
+  suspended Run refs, and retained original obligation in the baseline. Stack:
+  startup → OPEN recovery validator → cut preservation. Next return True, replay
+  pending batch, and finish with no pending/one transfer. Missing selected DTO,
+  mismatched refs or missing obligation falsifies the preservation repair.
+
+Observed at the first breakpoint: `valid=True`, physical head 20/source head 19,
+actual=resulting, anchor=predecessor, normalized canonical command equals the
+journal command; stack matched the prediction. The successful breakpoint was
+removed. At the second breakpoint: `SelectedExecutionSuspension`, exact
+predecessor and suspended Run refs, original obligation present, one pending;
+all bool operands were true and stack matched startup's OPEN recovery validator.
+After removing that breakpoint and continuing, the script printed one original
+transfer and exited 0. Session was closed. This is the original COMPLETE pending
+fixture; the earlier ordinary exit-0 reopen covered original ABSENT pending.
+The fresh three-boundary mounted run has passed its first (before-COMMIT) case;
+the remaining two are still running on the unchanged isolated candidate.

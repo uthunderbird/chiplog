@@ -268,15 +268,7 @@ def native_open_physical_execution_history_held(
     Only an independently pending, wholly absent batch may be omitted from the
     physical cut. The caller retains its original selected snapshot for replay.
     """
-    from chiplog.adapters.driven.loop_sqlite import OWNER, SCHEMA
-    from chiplog.capabilities.agent_loop.contracts import RunRecord
-    from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
-    from chiplog.capabilities.agent_loop.execution_history_contracts import ExecutionRunRecordV3
-    from chiplog.capabilities.agent_loop.execution_run_record_contracts import (
-        EXECUTION_RUN_V2_SCHEMA,
-        EXECUTION_RUN_V3_SCHEMA,
-    )
-    from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
+    from chiplog.adapters.driven.loop_sqlite import OWNER
 
     runtime._authority_gate().require_held()
     physical_head = connection.execute(
@@ -326,6 +318,32 @@ def native_open_physical_execution_history_held(
     )
     if physical_ids != expected_ids or physical_publications != expected_publications:
         raise ValueError("OPEN physical history has orphaned, missing or unknown loop members")
+    return _materialized_native_open_run_history_held(runtime, connection, snapshot=snapshot)
+
+
+def _materialized_native_open_run_history_held(runtime, connection, *, snapshot):
+    """Project Runs only after the caller proves complete selected membership.
+
+    The canonical outer OPEN fold must authenticate every omitted pending member
+    under the same continuously held gate before this physical projection is used.
+    """
+    from chiplog.adapters.driven.loop_sqlite import OWNER, SCHEMA
+    from chiplog.capabilities.agent_loop.contracts import RunRecord
+    from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+    from chiplog.capabilities.agent_loop.execution_history_contracts import ExecutionRunRecordV3
+    from chiplog.capabilities.agent_loop.execution_run_record_contracts import (
+        EXECUTION_RUN_V2_SCHEMA,
+        EXECUTION_RUN_V3_SCHEMA,
+    )
+    from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
+
+    runtime._authority_gate().require_held()
+    tenant = runtime._tenant_id
+    head = connection.execute(
+        "SELECT head FROM tenant_heads WHERE tenant_id=?", (tenant,)
+    ).fetchone()
+    if head is None or snapshot.tenant_head != head[0]:
+        raise ValueError("OPEN physical history frontier differs from the current cut")
     schemas = {
         RunRecord: SCHEMA,
         ExecutionRunRecord: EXECUTION_RUN_V2_SCHEMA,
@@ -364,6 +382,13 @@ def authenticate_selected_open_prefix_held(runtime, actual, anchored):
     elif operation == records.ACCEPTED_OPEN_RECOVERY_OPERATION:
         evidence = records.retained_accepted_open_recovery(entry)
         command = records.accepted_open_recovery_command(evidence)
+    elif operation == "agent_loop.execution-suspension.v1":
+        from dataclasses import replace
+
+        from chiplog.composition.r14_execution_suspension import _command, _retained
+
+        evidence = _retained(entry)
+        command = replace(_command(evidence), expected_preimage_commitment=None)
     else:
         return False
     cut = evidence.request.cut

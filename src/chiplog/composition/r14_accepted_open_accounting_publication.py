@@ -250,6 +250,8 @@ def _current_cut(
     source_materialization_commitment: str | None = None,
     source_tenant_commit_sequence: int | None = None,
 ):
+    if selected_only and expected_source_cut is not None:
+        runtime._authority_gate().require_held()
     history = read_execution_recovery_history(
         runtime,
         selected_only=selected_only,
@@ -306,6 +308,22 @@ def _current_cut(
             # These canonical OPEN batches add no Runs. The exact outer fold
             # already authenticated this snapshot; effects rechecks physical bytes.
             physical_history = snapshot
+        elif (
+            len(pending) == 1
+            and pending[0].get("operation_kind") == "agent_loop.execution-suspension.v1"
+            and not runtime._pending_owners()
+            and not runtime._pending_gate_publications()
+        ):
+            from chiplog.composition.r14_historical_suffix import (
+                _materialized_native_open_run_history_held,
+            )
+
+            # The exact outer fold proved membership, including an ABSENT Run.
+            # Keep its semantic snapshot for replay; effects needs physical Runs.
+            with read_connection(runtime._database) as connection:
+                physical_history = _materialized_native_open_run_history_held(
+                    runtime, connection, snapshot=snapshot
+                )
     facts = source.collect_one_accepted_open_outcome(
         execution_run_head(snapshot.records[-1])
         if expected_source_cut is None
@@ -357,7 +375,41 @@ def _cut_is_preserved_by_selected_suspension(
     )
 
     with runtime._authority_gate().hold():
-        suspension = read_selected_execution_suspension_held(runtime)
+        pending = runtime._pending()
+        if (
+            len(pending) == 1
+            and pending[0].get("operation_kind") == "agent_loop.execution-suspension.v1"
+            and not runtime._pending_owners()
+            and not runtime._pending_gate_publications()
+        ):
+            from chiplog.composition.r14_execution_suspension import (
+                _command,
+                _entry_for,
+                _retained,
+                _validate_selected,
+            )
+            from chiplog.composition.r14_loop_history import _read_call_history
+
+            _read_call_history(runtime, selected_only=True, exact_historical_sources=True)
+            selected = [
+                _entry_for(runtime, str(entry["operation_id"]))
+                for _, _, raw in runtime._loop_decisions().entries()
+                if (entry := json.loads(raw)).get("kind") == "DECIDED"
+                and entry.get("operation_kind") == "agent_loop.execution-suspension.v1"
+            ]
+            if (
+                len(selected) != 1
+                or selected[0] is None
+                or selected[0][2].get("operation_id") != pending[0].get("operation_id")
+            ):
+                return False
+            entry = selected[0][2]
+            _, suspension = _validate_selected(
+                runtime, entry, _command(_retained(entry)),
+                check_history=False, allow_pending_absent=True,
+            )
+        else:
+            suspension = read_selected_execution_suspension_held(runtime)
     return bool(
         suspension is not None
         and suspension.pair.predecessor_run == retained.current_run

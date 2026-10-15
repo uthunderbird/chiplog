@@ -303,3 +303,92 @@ returned false before repair. The proposed extra accepted-history reuse was
 therefore not implemented. With the anchor-position physical repair, the focused
 three-file suite returned `159 passed in 3.48s`. Further mounted fault results
 are pending and remain required before startup recovery is declared verified.
+
+## OPEN checkpoint `dd0fabc` and remaining mounted verification
+
+The call-qualified API/source and pending-cut repair is committed as
+`dd0fabc` (10 files). Its checkpoint gate ran the focused fast-path,
+historical-suffix and existing recovery-prefix files: `162 passed in 4.06s`.
+R8 development structure/import preflight passed before those selected tests.
+After integrating exact candidate bytes into the main workspace while preserving
+all unrelated dirty bytes, the same three-file command returned
+`162 passed in 3.69s`. Cold code review found no new P0/P1 semantic bypass.
+
+The effects callback now recognizes exact pending OPEN prefix proof. For sole
+pending OPEN accounting/recovery only, historical source acquisition passes the
+canonical outer reader's physical Run snapshot under the continuously held gate;
+these batches add no Runs, and effects still checks the exact physical Run map
+and frontier. Lifecycle/direct-terminal/V3 snapshots are not admitted by this
+exception. COMPLETE physical proof accepts predecessor or resulting independent
+anchor, and always reconstructs the stripped prefix against entry.predecessor.
+
+The new actual after-anchor accounting fault first failed startup in 142.52s.
+After snapshot repair, the two selectors `[after_anchor-accounting]` and
+`[before_commit-recovery]` in `test_r14_open_pending_mounted.py` passed:
+`2 passed in 380.89s (0:06:20)`. They check the real outer read before replay,
+reopen without pending, exact replay with unchanged history, and one external
+transfer. The additional four-selector run on the identical clean candidate
+finished `4 passed in 789.18s (0:13:09)`. Together the two invocations cover both
+OPEN families before COMMIT, after COMMIT and after anchor advancement; all six
+selectors passed. Both source trees still match the frozen ten-file candidate.
+Logs are `/private/tmp/chiplog-r14-open-pending-snapshot-fixed.log`
+and `/private/tmp/chiplog-r14-open-pending-other-boundaries.log`.
+
+The next mounted test file remains outside this checkpoint: three accepted
+members now require SUCCEEDED/FAILED_DEFINITE/RECOVERY_REQUIRED with delayed
+dispatch, followed by accepted-first-seal/second-seal-OPEN interrupted recovery.
+Cold plan review required native scope on first capture, a complete historical
+locator triple, and bounded claims for the foreign CLOSED-to-OPEN negative;
+those corrections precede execution. The three-member selector has passed; the
+cross-seal selector is still running, with sources frozen. A separate guarded
+script reopened the exact three-member fixture and replayed V3, verifying that
+selected history and external transfers were unchanged (exit 0; log
+`/private/tmp/chiplog-r14-three-member-v3-reopen.log`). This is diagnostic-clock
+functional evidence, not production latency evidence. Full pending lifecycle recovery, strict
+same-kind cross-seal evidence isolation and production-clock evidence remain
+required; neither this checkpoint nor diagnostic-clock passes close R14.6.
+
+The mounted SUSPENSION after-COMMIT case reproduced a historical scope refusal:
+`test_selected_open_pending_batch_recovers_after_reopen[after_commit-suspension]`
+failed in 195.09s at `r17_native_one_call_scope.py` (initialization physical prefix
+could not be authenticated with an independently pending suspension). A narrow
+prefix repair now decodes the canonical retained suspension and reuses the same
+exact header, batch, predecessor and independent-anchor proofs. Cold review of
+the plan and actual diff found zero P0/P1. The quick three-file regression command
+for `test_r14_native_selected_accounting_fast_path.py`,
+`test_r14_historical_suffix.py` and `test_r14_recovery_pending_prefix.py` returned
+`162 passed in 4.47s`; its SQLite matrix now exercises suspension prefix dispatch.
+The initial mounted rerun still failed (210.62s): MCP inspection found the
+canonical command's preimage field must be normalized to the physical journal
+representation, as in the existing suspension validator. That correction passes
+the 82-test SQLite/semantic unit file. Reopening the exact failed fixture then
+passed scope authentication but failed at startup's effects commitment check:
+startup's selected reader does not yet activate the pending lifecycle fold.
+A cold-reviewed narrow startup condition and fresh mounted results remain
+required; no lifecycle recovery success is claimed.
+
+The subsequent narrow repair activates the existing deferred OPEN fold for a
+selected-only startup with exactly one pending suspension, and gives the
+historical OPEN source a separately verified physical Run projection after the
+canonical outer fold. The complete semantic snapshot remains intact. Pending
+suspension preservation uses the exact outer fold, global singleton selected
+suspension, annotated decision and existing selected validator, instead of the
+ordinary no-pending reader. No direct/V3/successor pending exception was added.
+
+The physical-source selection unit first failed (`None` rather than the physical
+projection; three sibling cases passed), then the three-file quick command
+returned `162 passed in 3.31s`. Cold reviews of the actual source diff returned
+zero P0/P1. The original ABSENT failed fixture reopened with exit 0 and one
+original transfer. MCP debugger session
+`f0a675d1-3845-4432-8418-5703124651e1` reopened the original COMPLETE failed
+fixture: prefix proof True, selected suspension exact refs/obligation, final
+script exit 0 and one transfer. Both planned breakpoints matched the expected
+stack and operands; the session was closed.
+
+Fresh mounted three-boundary rerun log:
+`/private/tmp/chiplog-r14-suspension-pending-full.log`. Its before-COMMIT case has
+passed; after-COMMIT and after-anchor are pending. No aggregate pass is claimed.
+The two-seal interrupted OPEN selector is still running. A separately cold-read
+script for own CLOSED positive control and foreign CLOSED locator rejection is
+prepared but not executed. Same-kind cross-seal evidence and full pending
+lifecycle coverage therefore remain OPEN.

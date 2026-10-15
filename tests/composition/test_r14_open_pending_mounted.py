@@ -1,4 +1,4 @@
-"""Recover an exact selected OPEN batch on both sides of the SQLite commit."""
+"""Recover selected OPEN-source publications around commit and anchor advancement."""
 
 from dataclasses import replace
 
@@ -21,12 +21,13 @@ from chiplog.composition.r14_loop_history import (
 from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._sqlite import LostCommitAcknowledgement
+from chiplog.platform.workspace_snapshot import read_connection
 from tests.support.h1_cli_execution import admit_runtime_slot
 from tests.support.native_cancelled import native_response
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("family", ["accounting", "recovery"])
+@pytest.mark.parametrize("family", ["accounting", "recovery", "suspension"])
 @pytest.mark.parametrize("fault", ["before_commit", "after_commit", "after_anchor"])
 async def test_selected_open_pending_batch_recovers_after_reopen(
     tmp_path, monkeypatch, family, fault
@@ -40,7 +41,10 @@ async def test_selected_open_pending_batch_recovers_after_reopen(
         manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
         recovery_cut_source=NativeRecoveryCutSource(),
     )
-    operation = "agent_loop.accepted-open-" + family + ".v1"
+    operation = (
+        "agent_loop.execution-suspension.v1" if family == "suspension"
+        else "agent_loop.accepted-open-" + family + ".v1"
+    )
     async with open_common_cli_execution_runtime(
         database, responses=(native_response(),), **options
     ) as runtime:
@@ -79,6 +83,16 @@ async def test_selected_open_pending_batch_recovers_after_reopen(
         await runtime.commit_first_send("hermetic-ingress", intent, "send", sealed.run_id)
         with pytest.raises(HermeticResponseLost):
             await runtime.emit_committed("hermetic-ingress", intent)
+        if family == "suspension":
+            saved_recovery = await runtime.publish_accepted_open_recovery(
+                original_call_id=call.original_call_id
+            )
+
+            async def publish(*, original_call_id):
+                assert original_call_id == call.original_call_id
+                return await runtime.suspend_execution(sealed.run_id, sealed.head, ())
+        else:
+            publish = getattr(runtime, "publish_accepted_open_" + family)
         submit = runtime._appender.submit
         append = runtime._append_decision
         injected = []
@@ -99,7 +113,6 @@ async def test_selected_open_pending_batch_recovers_after_reopen(
                 raise RuntimeError("injected fault before materialized marker")
             return append(entry)
 
-        publish = getattr(runtime, "publish_accepted_open_" + family)
         expected_error = LostCommitAcknowledgement if fault == "after_commit" else RuntimeError
         with monkeypatch.context() as patch:
             patch.setattr(runtime._appender, "submit", interrupt)
@@ -114,21 +127,46 @@ async def test_selected_open_pending_batch_recovers_after_reopen(
         assert state == ("ABSENT" if fault == "before_commit" else "COMPLETE")
         assert (actual == anchor) == (fault != "after_commit")
         # This is the real outer semantic/physical fold, before replay repairs the cut.
-        read_execution_recovery_history(runtime, selected_only=True, exact_historical_sources=True)
+        history = read_execution_recovery_history(
+            runtime, selected_only=True, exact_historical_sources=True
+        )
+        if family == "suspension":
+            from chiplog.composition.r14_execution_suspension import _retained
+
+            expected_suspension = _retained(pending[0]).result
+            assert expected_suspension.run in history[0].records
+            with read_connection(database) as connection:
+                batch_ids = tuple(row[0] for row in connection.execute(
+                    "SELECT record_id FROM records WHERE tenant_id=? AND commit_sequence=? "
+                    "ORDER BY rowid", (runtime._tenant_id, command.expected_head + 1),
+                ))
+            assert batch_ids == (
+                () if fault == "before_commit" else tuple(row.record_id for row in command.records)
+            )
 
     async with open_common_cli_execution_runtime(database, **options) as reopened:
         assert not reopened._pending()
-        read = getattr(reopened, "read_selected_accepted_open_" + family)
-        selected = read(original_call_id=call.original_call_id)
-        assert selected is not None
-        accounting = selected if family == "accounting" else selected.accounting
-        assert accounting.kind == "RECOVERY_REQUIRED"
+        if family == "suspension":
+            selected = reopened.read_selected_execution_suspension()
+            assert selected is not None
+            assert selected.baseline.original_obligations == (saved_recovery.opening.original,)
+            assert selected.baseline == expected_suspension.baseline
+            assert selected.pair == expected_suspension.pair
+        else:
+            read = getattr(reopened, "read_selected_accepted_open_" + family)
+            selected = read(original_call_id=call.original_call_id)
+            assert selected is not None
+            accounting = selected if family == "accounting" else selected.accounting
+            assert accounting.kind == "RECOVERY_REQUIRED"
         state, actual, anchor = reopened._selected_physical_state(command)
         assert state == "COMPLETE" and actual == anchor
         assert len(resources.require_original_provider().transfers) == 1
         before = read_execution_recovery_history(reopened)
-        replay = await getattr(reopened, "publish_accepted_open_" + family)(
-            original_call_id=call.original_call_id
-        )
+        if family == "suspension":
+            replay = await reopened.suspend_execution(sealed.run_id, sealed.head, ())
+        else:
+            replay = await getattr(reopened, "publish_accepted_open_" + family)(
+                original_call_id=call.original_call_id
+            )
         assert replay == selected
         assert read_execution_recovery_history(reopened) == before

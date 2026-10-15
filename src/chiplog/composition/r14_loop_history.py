@@ -510,9 +510,18 @@ def _read_call_history(
                     )
                     for command, _entry in selected
                 )
-                if exact_historical_sources:
+                pending = (
+                    runtime._pending()
+                    if exact_historical_sources or (selected_only and has_native_open_candidate)
+                    else ()
+                )
+                if exact_historical_sources or (
+                    selected_only
+                    and has_native_open_candidate
+                    and len(pending) == 1
+                    and pending[0].get("operation_kind") == "agent_loop.execution-suspension.v1"
+                ):
                     anchor = runtime._commitment_journal.load(tenant)
-                    pending = runtime._pending()
                     if pending:
                         operation = pending[0].get("operation_kind") if len(pending) == 1 else None
                         if operation == "agent_loop.original-resolver-invocation.v1":

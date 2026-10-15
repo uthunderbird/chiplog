@@ -812,6 +812,14 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
     )
     monkeypatch.setattr(publication, "bind_native_execution_preparation_v2", lambda _: object())
     facts = object()
+    physical_snapshot = object()
+    from chiplog.composition import r14_historical_suffix as suffix
+
+    monkeypatch.setattr(
+        suffix, "_materialized_native_open_run_history_held",
+        lambda *a, **kw: physical_snapshot, raising=False,
+    )
+    monkeypatch.setattr(publication, "read_connection", lambda _: nullcontext(object()))
 
     def collect(run, **kwargs):
         assert kwargs["original_call_id"] == call_id
@@ -819,7 +827,8 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
         assert kwargs.get("authenticated_effects_history") is (
             snapshot if pending_operation in (
                 "agent_loop.accepted-open-accounting.v1", "agent_loop.accepted-open-recovery.v1"
-            ) else None
+            ) else physical_snapshot if pending_operation == "agent_loop.execution-suspension.v1"
+            else None
         )
         return facts
 
@@ -831,6 +840,7 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
     monkeypatch.setattr(publication, "execution_run_head", lambda _: cut.current_run)
     monkeypatch.setattr(publication, "build_accepted_open_recovery_cut", lambda *a, **kw: cut)
     runtime = SimpleNamespace(
+        _database="inert-probe",
         _pending=lambda: (
             () if pending_operation is None else ({"operation_kind": pending_operation},)
         ),
