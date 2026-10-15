@@ -1163,3 +1163,117 @@ def test_open_source_authentication_binds_current_physical_cut(
             publication._authenticate_selected_open_source(
                 runtime, {"predecessor": "source"}, object(), cut
             )
+
+
+def test_open_current_cut_reuses_history_but_keeps_original_historical_selection(monkeypatch):
+    from chiplog.composition import r14_accepted_open_accounting_publication as publication
+
+    class ReachedBuilder(BaseException):
+        pass
+
+    seal = SimpleNamespace(response_seal_id="seal", digest=lambda: "a" * 64)
+    history = (
+        SimpleNamespace(records=(object(),)), None, None,
+        (SimpleNamespace(proposal=SimpleNamespace(fan_out=SimpleNamespace(
+            initialized_records=(SimpleNamespace(original_call_id="call"),), response_seal=seal,
+        ))),), None, (),
+    )
+    retained = SimpleNamespace(
+        original_call_id="call", current_run=object(), selected_outcome_record_id="original",
+        selected_decision=object(), tenant_commit_sequence=7,
+    )
+    events = []
+    facts = object()
+
+    class PrepareSource:
+        def __init__(self, runtime):
+            pass
+
+        def collect(self, seal_ref):
+            events.append("prepare")
+            return SimpleNamespace(selected_response_seal=seal_ref)
+
+    class AccountingSource:
+        def __init__(self, *args):
+            pass
+
+        def collect_one_accepted_open_outcome(self, target, **kwargs):
+            assert target is retained.current_run
+            assert kwargs["expected_outcome_record_id"] == "original"
+            assert kwargs["expected_selected_decision"] is retained.selected_decision
+            assert kwargs["expected_tenant_commit_sequence"] == 7
+            assert "_accepted_facts" not in kwargs
+            events.append("historical-selection")
+            return facts
+
+    def duplicate(*args, **kwargs):
+        pytest.fail("fresh held history was read again")
+
+    def build(runtime, selected, **kwargs):
+        assert selected is facts and kwargs["authenticated_history"] is history
+        assert events == ["held", "prepare", "held", "historical-selection"]
+        raise ReachedBuilder
+
+    runtime = SimpleNamespace(
+        _authority_gate=lambda: SimpleNamespace(require_held=lambda: events.append("held")),
+        _pending=lambda: (),
+    )
+    monkeypatch.setattr(publication, "read_execution_recovery_history", duplicate)
+    monkeypatch.setattr(publication, "R14OriginalNativePrepareSource", PrepareSource)
+    monkeypatch.setattr(publication, "R14NativeSelectedAccountingSource", AccountingSource)
+    monkeypatch.setattr(publication, "bind_native_execution_preparation_v2", lambda *_: object())
+    monkeypatch.setattr(publication, "build_accepted_open_recovery_cut", build)
+    with pytest.raises(ReachedBuilder):
+        publication._current_cut(
+            runtime, selected_only=True, expected_source_cut=retained,
+            source_materialization_commitment="historical", source_tenant_commit_sequence=7,
+            authenticated_history=history,
+        )
+
+
+@pytest.mark.parametrize("damage", [None, "commitment", "identity", "tenant"])
+def test_open_builder_reuses_held_history_after_current_source_checks(monkeypatch, damage):
+    from chiplog.composition import r14_native_accepted_open_cut as builder
+
+    class ReachedRunJoin(BaseException):
+        pass
+
+    class Records:
+        def __iter__(self):
+            raise ReachedRunJoin
+
+    @contextmanager
+    def connection(_path):
+        yield object()
+
+    runtime = SimpleNamespace(
+        _authority_gate=lambda: SimpleNamespace(
+            hold=lambda: connection(None), require_held=lambda: None
+        ),
+        _check_database_identity=lambda: None, _database="database", _tenant_id="tenant",
+        _database_identity=("database", 1, 2),
+        _commitment_journal=SimpleNamespace(load=lambda *_: "current"),
+    )
+    selected = SimpleNamespace(
+        materialization_commitment="wrong" if damage == "commitment" else "current",
+        database_identity=("wrong", 1, 2) if damage == "identity" else runtime._database_identity,
+        tenant_id="wrong" if damage == "tenant" else "tenant",
+        accepted=SimpleNamespace(source=SimpleNamespace(target_run_lineage=())),
+    )
+
+    def duplicate(*args, **kwargs):
+        pytest.fail("builder read an already authenticated history again")
+
+    monkeypatch.setattr(builder, "CommonCliExecutionRuntime", SimpleNamespace)
+    monkeypatch.setattr(builder, "read_connection", connection)
+    monkeypatch.setattr(builder, "capture_authority_snapshot_commitment", lambda *_: "current")
+    monkeypatch.setattr(builder, "read_execution_recovery_history", duplicate)
+    kwargs = dict(
+        source_materialization_commitment="historical", source_tenant_commit_sequence=7,
+        authenticated_history=(SimpleNamespace(records=Records()), None, None, (), (), ()),
+    )
+    if damage is None:
+        with pytest.raises(ReachedRunJoin):
+            builder.build_accepted_open_recovery_cut(runtime, selected, **kwargs)
+    else:
+        assert builder.build_accepted_open_recovery_cut(runtime, selected, **kwargs) is None

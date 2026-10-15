@@ -463,3 +463,49 @@ checkpoint R8 structure/import gate plus those tests passed (184 in 1.43s).
 Ruff passed for the four changed source modules and both test files. Cold actual
 review found no critical/blocking defect in either correction. This checkpoint
 is partial correctness progress; it closes neither R14.6 nor production budgets.
+
+### Exact interrupted cross-seal fixture reopened after `5d16f4c`
+
+`chiplog-r14-cross-seal-pending-reopen-builder-fixed.log` printed
+`cross-seal exact fixture reopened; two original transfers`; execution session
+79980 completed with exit 0. Original H1-bound paths and custody were retained,
+with V39/NativeRecoveryCutSource and the fixture's original diagnostic-clock
+profile. Startup recovered the sole pending publication. This is the resumed
+original failed fixture on current MAIN WIP, not a passing fresh full selector
+or production-clock evidence. The source/test candidate hashes recorded before
+the run remained unchanged through the checkpoint integration.
+
+The original pair still records 1 passed / 1 failed in 5401.28s. Its remaining
+positive V3/replay assertions now run separately on the recovered fixture via
+`chiplog-r14-cross-seal-resume-baseline.py`. Reads must preserve the post-recovery
+history; second V3 may advance head once; subsequent cross-order V3 and terminal
+replays must preserve the new history and two transfers. The strict same-kind
+CLOSED locator substitution probe remains gated on this continuation's pass.
+
+A separate history-only SUSP optimization is being tested in an isolated tree;
+its focused 170-test pass and cold review do not close handoff №34. Normal-clock
+mounted result is pending. See `R14-PERFORMANCE-DIAGNOSIS.md` for its source
+profile and unchanged authority/budget boundaries.
+
+### First fresh native-clock SUSP pass, isolated history-only candidate
+
+`chiplog-r14-history-reuse-native.log`: **1 passed in 209.62s**, session 12777
+exit 0. Selector:
+`test_r14_open_pending_mounted.py::test_selected_open_pending_batch_recovers_after_reopen[before_commit-suspension]`.
+Source tree `/private/tmp/chiplog-r14-suspension-history-reuse`: HEAD `5d16f4c`
+plus the five inherited source WIP files and three-module held-history candidate.
+Builtin monotonic clocks verified in the pytest interpreter at entry/teardown;
+no clock shim or actor-budget change. Source manifest unchanged with exit 0.
+This proves the fresh pending-read/reopen/replay SUSP slice in that explicit
+profile. It is not a clean-HEAD/full-MAIN result and does not discharge handoff
+№34's remaining production multi-seal route or №36's negative inventory.
+The candidate remains isolated until MAIN's frozen cross-seal run finishes.
+
+Additional checks for the isolated candidate: native recovery cut's 24 fast tests
+passed in 0.62s (`-k 'not selected_native_cut_reopens'`; two mounted cases were
+not rerun). The clean checkpoint tree's R8 structure/import preflight and selected
+six pytest selectors passed: 173 in 1.79s. Scope: fast-path/history suffix/pending
+terminal tests plus exact historical-cut, CLOSED-source and history-forwarding
+selectors. No production pass is inferred for the clean checkpoint source profile
+without its five inherited performance changes; the real-clock result belongs
+only to the explicitly retained isolated WIP profile above.

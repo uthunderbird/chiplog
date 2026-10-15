@@ -1760,7 +1760,20 @@ class NativeRecoveryCutSource:
             selected_outcome = closed or opened
             if selected_outcome is None:
                 return None
-            accounting = runtime.read_selected_accepted_open_frontier()  # type: ignore[no-untyped-call]
+            if closed is None:
+                runtime._authority_gate().require_held()
+                history = subset.authenticated_execution_history
+                if history is None:
+                    return None
+                from chiplog.composition.r14_accepted_open_accounting_publication import (
+                    read_selected_accepted_open_frontier,
+                )
+
+                accounting = read_selected_accepted_open_frontier(
+                    runtime, _authenticated_history=history
+                )
+            else:
+                accounting = runtime.read_selected_accepted_open_frontier()  # type: ignore[no-untyped-call]
             resolution = read_selected_original_call_resolution_source_held(runtime)
             selected_reduction = runtime.read_selected_loop_semantic_reduction()  # type: ignore[no-untyped-call]
             if (

@@ -249,13 +249,17 @@ def _current_cut(
     expected_source_cut: AcceptedOpenRecoveryCutV1 | None = None,
     source_materialization_commitment: str | None = None,
     source_tenant_commit_sequence: int | None = None,
+    authenticated_history=None,
 ):
-    if selected_only and expected_source_cut is not None:
+    if authenticated_history is not None or (selected_only and expected_source_cut is not None):
         runtime._authority_gate().require_held()
-    history = read_execution_recovery_history(
-        runtime,
-        selected_only=selected_only,
-        exact_historical_sources=expected_source_cut is not None,
+    history = (
+        authenticated_history if authenticated_history is not None
+        else read_execution_recovery_history(
+            runtime,
+            selected_only=selected_only,
+            exact_historical_sources=expected_source_cut is not None,
+        )
     )
     snapshot, _, _, executions, _, acceptances = history
     if not snapshot.records:
@@ -348,6 +352,7 @@ def _current_cut(
         facts,
         source_materialization_commitment=source_materialization_commitment,
         source_tenant_commit_sequence=source_tenant_commit_sequence,
+        authenticated_history=authenticated_history,
     )
     if cut is None:
         return None
@@ -617,7 +622,9 @@ async def publish_accepted_open_accounting(
     return await _finish(runtime, entry)
 
 
-def _authenticate_selected_open_source(runtime, entry, command, retained_cut):
+def _authenticate_selected_open_source(
+    runtime, entry, command, retained_cut, *, authenticated_history=None
+):
     """Bind a historical OPEN source to the fully authenticated current physical cut."""
     with runtime._authority_gate().hold():
         with read_connection(runtime._database) as connection:
@@ -638,6 +645,7 @@ def _authenticate_selected_open_source(runtime, entry, command, retained_cut):
             expected_source_cut=retained_cut,
             source_materialization_commitment=retained_cut.materialization_commitment,
             source_tenant_commit_sequence=retained_cut.tenant_commit_sequence,
+            authenticated_history=authenticated_history,
         )
         with read_connection(runtime._database) as connection:
             final_actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
@@ -980,7 +988,7 @@ async def publish_accepted_open_recovery(
     return await _finish_recovery(runtime, entry)
 
 
-def _validated_selected_accepted_open_recoveries(runtime):
+def _validated_selected_accepted_open_recoveries(runtime, *, authenticated_history=None):
     """Validate each selected recovery publication and retain its exact frontier."""
     selected = []
     seen_call_keys = set()
@@ -1015,7 +1023,10 @@ def _validated_selected_accepted_open_recoveries(runtime):
         if key in seen_call_keys:
             raise LoopRejected("duplicate accepted/open recovery for selected call and seal")
         seen_call_keys.add(key)
-        current = _authenticate_selected_open_source(runtime, entry, command, evidence.request.cut)
+        current = _authenticate_selected_open_source(
+            runtime, entry, command, evidence.request.cut,
+            authenticated_history=authenticated_history,
+        )
         accounting_cut = current[1]
         if current[1] != evidence.request.cut:
             if not _cut_is_preserved_by_selected_suspension(
@@ -1038,9 +1049,11 @@ def _validated_selected_accepted_open_recoveries(runtime):
     return tuple(selected)
 
 
-def _validated_selected_accepted_open_recovery(runtime):
+def _validated_selected_accepted_open_recovery(runtime, *, authenticated_history=None):
     """Legacy whole-seal accessor remains singleton-only."""
-    selected = _validated_selected_accepted_open_recoveries(runtime)
+    selected = _validated_selected_accepted_open_recoveries(
+        runtime, authenticated_history=authenticated_history
+    )
     if len(selected) > 1:
         raise LoopRejected("ambiguous accepted/open recovery selection")
     if not selected:
@@ -1055,7 +1068,7 @@ def validate_selected_accepted_open_recovery(runtime) -> None:
     _validated_selected_accepted_open_recoveries(runtime)
 
 
-def read_selected_accepted_open_frontier(runtime):
+def read_selected_accepted_open_frontier(runtime, *, _authenticated_history=None):
     """Return selected recovery accounting, with an exact outcome when resolved."""
     from chiplog.composition.r14_original_call_resolution_publication import (
         read_selected_original_call_resolution_source_held,
@@ -1063,7 +1076,9 @@ def read_selected_accepted_open_frontier(runtime):
 
     with runtime._authority_gate().hold():
         runtime._require_no_pending()
-        validated = _validated_selected_accepted_open_recovery(runtime)
+        validated = _validated_selected_accepted_open_recovery(
+            runtime, authenticated_history=_authenticated_history
+        )
         if validated is None:
             # With no selected recovery record, retain the original reader's
             # full selected execution-history validation before returning None.

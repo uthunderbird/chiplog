@@ -38,10 +38,13 @@ def build_accepted_open_recovery_cut(
     *,
     source_materialization_commitment: str | None = None,
     source_tenant_commit_sequence: int | None = None,
+    authenticated_history=None,
 ) -> AcceptedOpenRecoveryCutV1 | None:
     """Bind retained R14 acceptance and selected R16 OPEN evidence to one source cut."""
     if type(runtime) is not CommonCliExecutionRuntime:
         raise TypeError("accepted/open recovery cut requires the mounted CLI runtime")
+    if authenticated_history is not None:
+        runtime._authority_gate().require_held()
     try:
         with runtime._authority_gate().hold():
             runtime._check_database_identity()
@@ -61,11 +64,15 @@ def build_accepted_open_recovery_cut(
             if historical:
                 # The canonical outer fold proves complete membership and any
                 # exact pending suffix before a historical cut can be exported.
-                snapshot, _, _, _, _, _ = read_execution_recovery_history(
-                    runtime,
-                    selected_only=True,
-                    exact_historical_sources=True,
+                history = (
+                    authenticated_history if authenticated_history is not None
+                    else read_execution_recovery_history(
+                        runtime,
+                        selected_only=True,
+                        exact_historical_sources=True,
+                    )
                 )
+                snapshot = history[0]
             else:
                 if anchored != actual:
                     return None
