@@ -2763,3 +2763,7 @@ class NativeRecoveryCutSource:
             authenticated_loop_decisions=authenticated_loop_decisions,
             verified_h1_prepares=verified_h1_prepares,
         )
+
+
+# Preserve callback dispatch when trusted composition replaces the native method.
+_NATIVE_AUTHENTICATE_SELECTED_HELD = NativeRecoveryCutSource.authenticate_selected_held

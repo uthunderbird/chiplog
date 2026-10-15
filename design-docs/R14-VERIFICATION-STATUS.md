@@ -565,3 +565,37 @@ failed its own-locator positive control after closing the second outcome; it
 never reached the foreign-locator negative. MCP inspection is investigating whether the failure is a
 probe fingerprint-domain mistake or a reader defect. No strict CLOSED success
 or completed R14.6/production multi-seal claim follows from these results.
+
+
+### Native second-admission diagnosis and local command reuse
+
+Fresh native two-seal execution failed at the second accept_call with
+STALE:admission-expired (948.92s total); it did not reach the second interrupted
+publication. An MCP run, with no pause before expiry, stopped earlier in
+prepare_call_exchange after reading previews/history. The original mandate's
+60-second admission expired; trust session/snapshot and current worker matched.
+This is not evidence of a 15-minute worker lease failure. The debugger was closed.
+
+A read-only profile after ordinary reopen attributed 26.971s of a 27.191s preview
+read to full history. Command construction occurred five times (8.898s cumulative).
+The isolated repair derives the recovery command once per native validation and
+passes it through private synchronous authentication. All historical cutoff,
+physical, journal, trust and owner-result checks remain. Public boolean wrappers
+and substituted source callbacks retain their dispatch. Reuse requires the exact
+native class, original method function and the same bound receiver; no result is
+cached across validations. A cold review found callback replacement bypass in the
+first candidate; new dispatch regressions reproduced it before the guard repair.
+
+The command-reuse profile reduced five constructions to three and function calls
+from 2,658,197 to 2,214,298. Elapsed read time did not improve in these samples:
+27.417s versus 27.191s. Both reads preserved head29, loop/owner journals and one
+transfer. Post-restart attribution is not proof of original admission viability.
+A 17-test focused selection passed before the callback guard repair; six focused
+checks passed after the original-function guard, and three dispatch cases pass
+after adding bound-receiver identity. The final checkpoint hook verifies its own
+staged source and selected tests. Fresh native two-seal success remains required.
+
+The earlier strict CLOSED probe used an internal outcome fingerprint instead of
+SHA256 of complete canonical bytes. MCP proved that the reader correctly rejects
+that wrong domain. The corrected read-only probe remains running; no strict CLOSED
+pass or R14.6 completion is claimed here.

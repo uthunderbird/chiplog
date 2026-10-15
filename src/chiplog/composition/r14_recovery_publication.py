@@ -333,11 +333,31 @@ def validate_selected(
         )
         if prefix.snapshot_bytes != receipt.trust_snapshot_bytes:
             raise ValueError("selected recovery actor original trust prefix differs")
-    if through_sequence is None:
-        cut_source = source(runtime)
-        if authenticated_loop_decisions is not None:
-            from .r14_native_recovery_cut import NativeRecoveryCutSource
+    from .r14_native_recovery_cut import (
+        _NATIVE_AUTHENTICATE_SELECTED_HELD,
+        NativeRecoveryCutSource,
+    )
 
+    cut_source = source(runtime)
+    derived_command = None
+    if (
+        type(cut_source) is NativeRecoveryCutSource
+        and getattr(cut_source.authenticate_selected_held, "__self__", None) is cut_source
+        and getattr(cut_source.authenticate_selected_held, "__func__", None)
+        is _NATIVE_AUTHENTICATE_SELECTED_HELD
+    ):
+        from .r14_native_recovery_historical import _authenticate_native_recovery_selected
+
+        runtime._authority_gate().require_held()
+        derived_command = command(evidence)
+        authenticated = _authenticate_native_recovery_selected(
+            cut_source, runtime, evidence, entry, derived_command,
+            through_sequence=through_sequence,
+            authenticated_loop_decisions=authenticated_loop_decisions,
+            verified_h1_prepares=verified_h1_prepares,
+        )
+    elif through_sequence is None:
+        if authenticated_loop_decisions is not None:
             if isinstance(cut_source, NativeRecoveryCutSource):
                 authenticated = cut_source.authenticate_selected_held(
                     runtime,
@@ -364,7 +384,9 @@ def validate_selected(
             authenticated_loop_decisions=authenticated_loop_decisions,
             verified_h1_prepares=verified_h1_prepares,
         )
-    if command(evidence) != physical_command or not authenticated:
+    if derived_command is None:
+        derived_command = command(evidence)
+    if derived_command != physical_command or not authenticated:
         raise ValueError("recovery selected cut or exact atomic publication unauthenticated")
     return evidence
 

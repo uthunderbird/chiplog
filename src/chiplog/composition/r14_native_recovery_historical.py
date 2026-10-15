@@ -39,7 +39,7 @@ from chiplog.composition.r14_native_accounting_records import NATIVE_ACCOUNTING_
 from chiplog.composition.r14_native_recovery_source_subset import R14NativeRecoverySourceSubset
 from chiplog.composition.r14_native_selected_accounting_source import R14NativeOneCallCancelledFacts
 from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
-from chiplog.platform._sqlite import PhysicalRecord
+from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.workspace_snapshot import read_connection
 
@@ -428,12 +428,38 @@ def authenticate_native_recovery_selected(
     verified_h1_prepares=None,
 ) -> bool:
     """Authenticate retained original C without reopening recursive current history."""
+    from .r14_recovery_publication import command
+
+    runtime._authority_gate().require_held()
+    try:
+        batch = command(evidence)
+    except OSError, RuntimeError, TypeError, ValueError, KeyError, sqlite3.Error:
+        return False
+    return _authenticate_native_recovery_selected(
+        source, runtime, evidence, entry, batch,
+        through_sequence=through_sequence,
+        authenticated_loop_decisions=authenticated_loop_decisions,
+        verified_h1_prepares=verified_h1_prepares,
+    )
+
+
+def _authenticate_native_recovery_selected(
+    source: NativeRecoveryCutSource,
+    runtime: CommonCliExecutionRuntime,
+    evidence: RetainedRecoveryPublication,
+    entry: dict[str, object],
+    batch: PhysicalPublicationCommand,
+    *,
+    through_sequence: int | None = None,
+    authenticated_loop_decisions=None,
+    verified_h1_prepares=None,
+) -> bool:
+    """Use the caller's freshly derived command within this synchronous validation."""
     from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
     from chiplog.composition.r14_native_scope_binding import bind_native_prepare_scope
     from chiplog.composition.r17_native_one_call_scope import NativeOneCallScopeService
 
     from .r14_native_recovery_cut import _ref, classify_native_occurrences
-    from .r14_recovery_publication import command
 
     runtime._authority_gate().require_held()
     try:
@@ -457,7 +483,6 @@ def authenticate_native_recovery_selected(
         if len(actual_entries) != 1 or _thaw_json(actual_entries[0]) != entry:
             return False
         cut = evidence.accounting_request.cut
-        batch = command(evidence)
         if (
             cut != evidence.continuation_request.cut
             or cut.tenant_id != runtime._tenant_id
