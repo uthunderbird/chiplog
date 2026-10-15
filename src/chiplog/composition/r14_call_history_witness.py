@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.platform.authority_gate import FileIdentity
+from chiplog.platform.authority_reads import (
+    AuthoritySnapshotIntegrityError,
+    capture_authority_snapshot_commitment,
+)
+from chiplog.platform.workspace_snapshot import workspace_snapshot
 
 from .r16_dispatch_inputs import DispatchCapture
 from .r16_dispatch_registry import HermeticDispatchResources
@@ -145,12 +150,24 @@ class CallHistoryInputs:
     preview: JournalInputs
     h1_workspace: JournalInputs
     dashboard: JournalInputs
+    database_identity: tuple[str, int, int]
+    authority_commitment: str
 
 
 def capture_call_history_inputs(runtime: ExecutionDispatchRuntime) -> CallHistoryInputs | None:
     """Read exact authenticated inputs; opening auxiliary streams cannot provision them."""
     runtime._authority_gate().require_held()
     runtime._check_database_identity()
+    database_identity = runtime._database_identity
+    try:
+        with workspace_snapshot(runtime._database) as snapshot:
+            authority_commitment = capture_authority_snapshot_commitment(
+                snapshot.connection, runtime._tenant_id
+            )
+    except AuthoritySnapshotIntegrityError:
+        return None
+    if runtime._commitment_journal.load(runtime._tenant_id) != authority_commitment:
+        return None
     configuration = _standard_configuration(runtime)
     if configuration is None:
         return None
@@ -174,7 +191,47 @@ def capture_call_history_inputs(runtime: ExecutionDispatchRuntime) -> CallHistor
             )
         ) as journal:
             extras.append(_journal_inputs(journal))
-    return CallHistoryInputs(runtime, configuration, loop, owner, preview, *extras)
+    return CallHistoryInputs(
+        runtime,
+        configuration,
+        loop,
+        owner,
+        preview,
+        *extras,
+        database_identity,
+        authority_commitment,
+    )
+
+
+def seed_call_history_cache(runtime) -> None:
+    """Seed the one-entry runtime cache only across an unchanged exact input cut."""
+    runtime._authority_gate().require_held()
+    before = capture_call_history_inputs(runtime)
+    from .r14_loop_history import read_execution_call_history
+
+    verified = read_execution_call_history(runtime)
+    if before is None:
+        runtime._call_history_cache = None
+        return
+    after = capture_call_history_inputs(runtime)
+    runtime._call_history_cache = (
+        (after, verified) if after is not None and before == after else None
+    )
+
+
+def read_cached_execution_call_history(runtime):
+    """Return prior fully verified history only for the exact current input cut."""
+    runtime._authority_gate().require_held()
+    entry = getattr(runtime, "_call_history_cache", None)
+    if entry is None:
+        return None
+    runtime._require_no_pending()
+    inputs, history = entry
+    current = capture_call_history_inputs(runtime)
+    if current is None or current != inputs:
+        runtime._call_history_cache = None
+        return None
+    return history
 
 
 @dataclass(frozen=True, repr=False)

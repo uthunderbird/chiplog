@@ -8,17 +8,25 @@ from types import SimpleNamespace
 import pytest
 
 from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
+from chiplog.adapters.driven.effects_broker import EffectsIntegrityError
 from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
 from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
 )
 from chiplog.composition import r14_call_authority as call_authority
+from chiplog.composition import r14_call_history_witness as history_witness
+from chiplog.composition import r14_call_preview as call_preview
+from chiplog.composition import r14_loop_history
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
 from chiplog.composition.r14_call_acceptance_port import (
     CallAcceptanceAdoption,
     CallAcceptanceTarget,
 )
-from chiplog.composition.r14_call_history_witness import capture_call_history_inputs
+from chiplog.composition.r14_call_history_witness import (
+    capture_call_history_inputs,
+    read_cached_execution_call_history,
+    seed_call_history_cache,
+)
 from chiplog.composition.r14_call_preview import execution_run_head
 from chiplog.composition.r14_loop_history import read_execution_call_history
 from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
@@ -28,7 +36,9 @@ from chiplog.platform._owner_publication_contracts import (
     JournalSelectedPublication,
     PublicationRejected,
 )
-from chiplog.platform.authority_reads import capture_authority_storage_state
+from chiplog.platform.authority_reads import (
+    capture_authority_storage_state,
+)
 from chiplog.platform.owner_publications import BrokerPublicationCoordinator
 from chiplog.platform.workspace_snapshot import workspace_snapshot
 from tests.support.h1_cli_execution import admit_runtime_slot
@@ -223,6 +233,143 @@ async def test_native_post_owner_admission_uses_same_verified_history_with_fresh
         assert after[1].ordered_calls[0].acceptance.kind == "CONSEQUENTIAL_ACCEPTED"
         selected = runtime._owner_decisions().lookup(runtime._tenant_id, batch.identity.command_id)
         assert selected is not None and authority.materialization_state(selected) == "COMPLETE"
+        assert resources.require_original_provider().transfers == ()
+
+
+@pytest.mark.asyncio
+async def test_public_accept_seeds_exact_history_cache_and_main_commitment_change_misses(
+    tmp_path, monkeypatch
+):
+    resources = HermeticDispatchResources(
+        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
+    )
+    async with open_common_cli_execution_runtime(
+        tmp_path / "history-cache.sqlite",
+        resources=resources,
+        responses=(native_response(),),
+        manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
+        recovery_cut_source=NativeRecoveryCutSource(),
+    ) as runtime:
+        await runtime.publish_native_recovery_profile(version="v5")
+        wire = await admit_runtime_slot(runtime, "call-history-cache")
+        receipt = await runtime.drive_input(wire)
+        started = await runtime.begin_execution(
+            "hermetic-ingress", receipt.stable_run_lineage_id, receipt.selected_run_head.head
+        )
+        captured = await runtime.capture_execution(
+            "hermetic-ingress", started.run_id, started.head, native_one_call_context=True
+        )
+        sealed = await runtime.seal_execution("hermetic-ingress", captured.run_id, captured.head)
+        before = read_execution_call_history(runtime)
+        (row,) = before[1].ordered_calls
+        preview = await runtime.preview_call_acceptance(
+            "hermetic-ingress",
+            CallAcceptanceTarget(
+                original_call_id=row.original_call_id,
+                initialized=row.initialized,
+                current_run=execution_run_head(sealed),
+            ),
+        )
+        adoption = CallAcceptanceAdoption(
+            act_id="history-cache-adoption", preview_bytes=preview.canonical_bytes()
+        )
+        await runtime.accept_call("hermetic-ingress", adoption)
+
+        assert runtime._call_history_cache is not None
+        inputs, cached_history = runtime._call_history_cache
+        assert inputs.runtime is runtime
+        assert cached_history[0].tenant_head == before[0].tenant_head + 1
+        assert inputs.authority_commitment == capture_authority_storage_state(runtime._database)[0]
+
+        def unexpected_full_history_read(*args, **kwargs):
+            raise AssertionError("unchanged post-accept preview join missed verified history cache")
+
+        original_preview_reader = call_preview.read_execution_call_history
+        monkeypatch.setattr(
+            call_preview, "read_execution_call_history", unexpected_full_history_read
+        )
+        with runtime._authority_gate().hold():
+            assert read_cached_execution_call_history(runtime) == cached_history
+        preview_values, joined = call_preview._read_call_previews_and_history(
+            runtime, require_history=True
+        )
+        assert joined == cached_history
+        assert len(preview_values) == 1
+        assert preview_values[0].preview.canonical_bytes() == adoption.preview_bytes
+
+        actual_anchor = runtime._commitment_journal.load(runtime._tenant_id)
+        assert actual_anchor == inputs.authority_commitment
+        runtime._commitment_journal.commit(runtime._tenant_id, "0" * 64)
+        fallback_reads = []
+
+        def observed_full_reader(current_runtime):
+            fallback_reads.append(current_runtime)
+            return original_preview_reader(current_runtime)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(call_preview, "read_execution_call_history", observed_full_reader)
+            with pytest.raises(EffectsIntegrityError):
+                call_preview._read_call_previews_and_history(runtime, require_history=True)
+        assert fallback_reads == [runtime]
+        runtime._commitment_journal.commit(runtime._tenant_id, actual_anchor)
+        with runtime._authority_gate().hold():
+            seed_call_history_cache(runtime)
+            assert runtime._call_history_cache is not None
+
+        with sqlite3.connect(runtime._database) as connection:
+            connection.execute("CREATE TABLE unrelated_unregistered_table (value TEXT)")
+        fallback_reads.clear()
+        with monkeypatch.context() as patch:
+            patch.setattr(call_preview, "read_execution_call_history", observed_full_reader)
+            with pytest.raises(EffectsIntegrityError):
+                call_preview._read_call_previews_and_history(runtime, require_history=True)
+        assert fallback_reads == [runtime]
+        with sqlite3.connect(runtime._database) as connection:
+            connection.execute("DROP TABLE unrelated_unregistered_table")
+
+        full_reads = []
+        original_reader = r14_loop_history.read_execution_call_history
+
+        def count_full_reader(current_runtime):
+            full_reads.append(current_runtime)
+            return original_reader(current_runtime)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(history_witness, "capture_call_history_inputs", lambda _: None)
+            patch.setattr(r14_loop_history, "read_execution_call_history", count_full_reader)
+            with runtime._authority_gate().hold():
+                seed_call_history_cache(runtime)
+            assert full_reads == [runtime]
+            assert runtime._call_history_cache is None
+
+        with runtime._authority_gate().hold():
+            seed_call_history_cache(runtime)
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                runtime,
+                "_require_no_pending",
+                lambda: (_ for _ in ()).throw(RuntimeError("pending owner publication")),
+            )
+            with (
+                runtime._authority_gate().hold(),
+                pytest.raises(RuntimeError, match="pending owner publication"),
+            ):
+                read_cached_execution_call_history(runtime)
+
+        with sqlite3.connect(runtime._database) as connection:
+            row_id = connection.execute(
+                "SELECT record_id FROM records WHERE tenant_id=? ORDER BY record_id LIMIT 1",
+                (runtime._tenant_id,),
+            ).fetchone()[0]
+            changed = connection.execute(
+                "UPDATE records SET canonical_bytes=canonical_bytes || X'20' "
+                "WHERE tenant_id=? AND record_id=?",
+                (runtime._tenant_id, row_id),
+            )
+            assert changed.rowcount == 1
+        with runtime._authority_gate().hold():
+            assert read_cached_execution_call_history(runtime) is None
+            assert runtime._call_history_cache is None
         assert resources.require_original_provider().transfers == ()
 
 

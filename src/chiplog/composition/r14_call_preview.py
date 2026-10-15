@@ -306,7 +306,15 @@ def _read_call_previews_and_history_held(
                 raise ValueError("noncanonical or duplicate selected call preview")
             validate_call_preview(value, runtime)
             result[identity] = value
-        history = read_execution_call_history(runtime) if result or require_history else None
+        history = None
+        if result or require_history:
+            from chiplog.composition.r14_call_history_witness import (
+                read_cached_execution_call_history,
+            )
+
+            history = read_cached_execution_call_history(runtime)
+            if history is None:
+                history = read_execution_call_history(runtime)
         if result:
             assert history is not None
             snapshot, _, initializations = history

@@ -67,6 +67,7 @@ class R16DispatchRuntime(R16PlanningRuntime):
     )
 
     def _bind_appender(self) -> None:
+        self._call_history_cache = None
         resources = _RESOURCES.get()
         if resources is None:
             raise ValueError("dispatch assembly lacks its independently held offline resources")

@@ -22,8 +22,8 @@ from chiplog.platform.owner_publications import (
 
 from .r14_call_acceptance_port import AcceptedCallReceipt, CallAcceptanceAdoption
 from .r14_call_authority import CallPublicationAuthority
+from .r14_call_history_witness import seed_call_history_cache
 from .r14_call_issuance import call_receipt, validate_call_issuance
-from .r14_loop_history import read_execution_call_history
 from .r16_dispatch_publication import authenticate
 
 if TYPE_CHECKING:
@@ -69,7 +69,8 @@ async def _replay(
                 raise ValueError("selected call materialization is corrupt: " + result.reason)
             raise LoopRejected("selected call replay rejected: " + result.reason)
         raise ValueError("selected acceptance disappeared during exact replay")
-    read_execution_call_history(runtime)
+    with runtime._authority_gate().hold():
+        seed_call_history_cache(runtime)
     return call_receipt(batch, original)
 
 
@@ -113,7 +114,8 @@ async def accept_call(
                     raise ValueError("call acceptance materialization is corrupt: " + result.reason)
                 raise LoopRejected("call acceptance rejected: " + result.reason)
             value = validate_call_issuance(batch, runtime)
-            read_execution_call_history(runtime)
+            with runtime._authority_gate().hold():
+                seed_call_history_cache(runtime)
             return call_receipt(batch, value)
     except LoopRejected, OwnerPublicationUncertain:
         raise

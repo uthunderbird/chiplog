@@ -562,9 +562,15 @@ Original cross-seal continuation session 25277 exited 0: both V3 and terminals
 replayed exactly with unchanged history and two transfers. It remains diagnostic
 clock evidence on the original fixture. The subsequent strict CLOSED probe
 failed its own-locator positive control after closing the second outcome; it
-never reached the foreign-locator negative. MCP inspection is investigating whether the failure is a
-probe fingerprint-domain mistake or a reader defect. No strict CLOSED success
-or completed R14.6/production multi-seal claim follows from these results.
+never reached the foreign-locator negative. MCP inspection established that the
+probe used an internal outcome fingerprint instead of the complete canonical
+outcome digest. The corrected read-only
+probe completed as session 30384 after using SHA256 over complete canonical
+outcome bytes. It proved both own-locator positives before rejecting genuine
+A-to-B and B-to-A foreign locators, then exact replayed both V3 and per-call
+terminals with two original transfers and unchanged history. This remains
+diagnostic-clock proof on the original fixture; no fresh production-clock
+two-seal success or completed R14.6 claim follows from these results.
 
 
 ### Native second-admission diagnosis and local command reuse
@@ -597,5 +603,29 @@ staged source and selected tests. Fresh native two-seal success remains required
 
 The earlier strict CLOSED probe used an internal outcome fingerprint instead of
 SHA256 of complete canonical bytes. MCP proved that the reader correctly rejects
-that wrong domain. The corrected read-only probe remains running; no strict CLOSED
-pass or R14.6 completion is claimed here.
+that wrong domain. The corrected read-only probe completed with both own-locator
+positives and both foreign-locator rejections; see session 30384 above.
+
+### Post-accept history cache verification
+
+The private runtime-local cache retains full post-accept history only when
+before/read/after `CallHistoryInputs` match under the authority gate. Its key
+contains exact selected journals and configuration, runtime path/device/inode,
+schema-checked main authority commitment, and equality with the independent
+commitment journal. A hit repeats `_require_no_pending`; preview bytes are still
+re-read, validated and joined, while authentication, mandate, dispatch and scope
+remain fresh. Unsupported cache inputs still run the full history reader and do
+not seed an entry.
+
+`PYTHONPATH=src .venv/bin/python -m pytest -q tests/composition/test_call_history_witness_mounted.py`
+returned `17 passed in 234.75s`. The new public Common CLI acceptance case
+observes a post-commit cache hit with no second full history read. It separately
+proves public-reader fallback and typed rejection for a changed independent
+anchor and an unregistered SQL table, plus cache miss after authority-row
+mutation, full read on unsupported cache inputs, and refusal while the pending
+guard is held. The existing
+`tests/composition/test_call_preview_runtime.py -k 'actual_atomic_call_acceptance or public_acceptance_exact_replay'`
+selection returned `4 passed in 57.47s` for atomic acceptance, replay and
+interruption/reopen behavior on its standard runtime fixture. These checks
+support the local reuse mechanism only: they do not establish deadline relief or
+replace the missing fresh production-clock two-seal acceptance.
