@@ -148,10 +148,23 @@ def build_accepted_direct_terminal_cut(
             cut = cut.model_copy(update={"cut_fingerprint": _fingerprint(cut)})
             with read_connection(runtime._database) as connection:
                 commitment = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+            anchored = runtime._commitment_journal.load(runtime._tenant_id)
+            from chiplog.composition.r14_historical_suffix import (
+                authenticate_selected_open_prefix_held,
+            )
+
             if (
                 commitment != closed.materialization_commitment
-                or runtime._commitment_journal.load(runtime._tenant_id) != commitment
                 or runtime._database_identity != closed.database_identity
+                or (
+                    anchored != commitment
+                    and (
+                        authenticated_snapshot is None
+                        or source_materialization_commitment is None
+                        or source_tenant_commit_sequence is None
+                        or not authenticate_selected_open_prefix_held(runtime, commitment, anchored)
+                    )
+                )
             ):
                 return None
             return cut

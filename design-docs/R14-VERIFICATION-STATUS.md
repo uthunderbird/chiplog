@@ -11,8 +11,8 @@ This is an evidence ledger, not a replacement acceptance boundary.
 | Mixed accepted/cancelled seal and per-seal V3 | `test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once` | Existing mounted baseline; retain, then verify current integrated tree. |
 | Two seals in one Run, target-scoped terminal and Prepare | `test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay`; `R14-MCP-DEBUGGING.md` | Corrected original selector passed under diagnostic clocks; production admission budgets and accepted cross-seal interrupted recovery remain unverified. |
 | Per-seal replay and reopen without head advance | Same two-seal selector | Both V3 records, cross-order replay and reopen/head invariants passed in the corrected diagnostic run. |
-| Three accepted members with distinct dispositions | `test_v3_reads_three_accepted_members_across_delayed_dispatch_and_replay`; owner `test_v3_accounts_three_accepted_members_with_distinct_existing_outcomes` | Mounted candidate currently expects SUCCEEDED / FAILED_DEFINITE / SUCCEEDED. Owner-only test covers RECOVERY_REQUIRED as third distinct disposition. Mounted distinct-disposition witness remains insufficient. |
-| Dispatch after another member terminalizes | Three-member mounted selector closes first before accepting second | Candidate covers delayed dispatch; execution result on current tree still needed. |
+| Three accepted members with distinct dispositions | `test_v3_reads_three_accepted_members_across_delayed_dispatch_and_replay`; owner `test_v3_accounts_three_accepted_members_with_distinct_existing_outcomes` | Frozen mounted diagnostic-clock selector passed with SUCCEEDED / FAILED_DEFINITE / RECOVERY_REQUIRED and delayed dispatch; separate same-fixture V3 reopen/replay also passed. Candidate remains outside the integrated checkpoint; production-clock verification is still required. |
+| Dispatch after another member terminalizes | Three-member mounted selector closes first before accepting second | Frozen distinct-outcome selector passed with delayed dispatch. Integrating that candidate and verifying production admission remain required. |
 | Multi-seal member interleaving | Two-seal selector | Sequential Turns alone do not prove all required member interleavings; inspect exact observations before claiming closure. |
 | Complete physical membership / orphan detection after reopen | Mixed-seal selector has physical orphan damage; `test_r14_loop_history.py` | Existing candidates; inspect mutation scope and verify mounted rejection on current tree. |
 | Cross-call / cross-seal evidence substitution | Owner duplicate/cross-seal test; two-seal source rejects foreign call lookup | These narrow checks do not prove mounted accepted-evidence substitution rejection. Add discriminating test. |
@@ -392,3 +392,74 @@ The two-seal interrupted OPEN selector is still running. A separately cold-read
 script for own CLOSED positive control and foreign CLOSED locator rejection is
 prepared but not executed. Same-kind cross-seal evidence and full pending
 lifecycle coverage therefore remain OPEN.
+
+The fresh SUSPENSION run subsequently finished: `3 passed, 6 deselected in
+1484.84s (0:24:44)`, covering before-COMMIT, after-COMMIT and after-anchor.
+All seven candidate file hashes still match the frozen manifest
+`/private/tmp/chiplog-r14-suspension-candidate-hashes.json`; their ASTs match the
+source/test files in checkpoint `943e4a4` (import formatting differs only).
+This establishes those three diagnostic-clock SUSPENSION recovery cases,
+including the real outer pre-replay read, unchanged exact replay, preserved
+original obligation and one external transfer. It does not close the full
+pending lifecycle inventory or production-clock requirement. The normal-clock
+fresh before-COMMIT SUSPENSION case is now running, with builtin clock assertions
+inside the pytest process and source profile recorded before/after.
+
+That ordinary-clock case failed in 214.40s: SUSP writer returned STALE before
+the injected before-COMMIT fault. Builtin clock assertions passed at test entry
+and teardown; `/private/tmp/chiplog-r14-production-clock-profile.json` reports
+`unchanged_profile=true`, 1206 tracked source/test/config file hashes and HEAD
+`943e4a4`. The recorded profile includes the still-uncommitted main performance
+changes, so this is neither clean-HEAD evidence nor a passing production case.
+The log is `/private/tmp/chiplog-r14-production-clock-suspension.log`.
+It tests close/reopen within one process with retained resources, not a fresh
+process restart. Admission operands are now being inspected with conditional MCP
+breakpoints; no permanent budget/clock change has been made.
+
+### Cross-seal pending anchor and native SUSP phase attribution (2026-10-15)
+
+Frozen pair run: `chiplog-r14-three-outcomes-cross-seal.log` returned one pass,
+one failure in 5401.28s. Three distinct mounted dispositions passed; second-seal
+accepted OPEN recovery after COMMIT failed the exact reader because the first
+seal's complete direct terminal required physical commitment equal to anchor.
+MCP session `86cd68cb-098d-441d-a1e1-f3810ab8d5a7` confirmed COMPLETE first
+batch (expected head 20), sole pending OPEN recovery (expected head 34), exact
+snapshot joins and pending predecessor/resulting equal to anchor/current cut.
+Session closed without recovery; whole original fixture archived first.
+
+Candidate physical-prefix correction preserves the target COMPLETE requirement
+and all snapshot joins; it authenticates the sole canonical pending suffix with
+the existing physical-prefix proof. Both frontier callers use the held runtime
+proof; the pure strict predicate remains unchanged. Target semantic reconstruction
+still runs. Cold actual review found no blocking defect; return-None compatibility
+for a non-COMPLETE member was retained. Focused command:
+`PYTHONPATH=src UV_NO_SYNC=1 .venv/bin/python -m pytest -q tests/composition/test_r14_direct_terminal_pending_open.py tests/composition/test_r14_direct_terminal_frontier.py tests/composition/test_r14_historical_suffix.py tests/composition/test_r14_native_selected_accounting_fast_path.py`
+returned 171 passed in 1.27s. The new seven-case orchestration matrix mocks the
+prefix verdict; independent physical rejection evidence is in historical-suffix
+tests. Exact-fixture candidate reopen is still running; no mounted green claim.
+
+Original-code phase observer reproduced native SUSP STALE in 204.23s with an
+unchanged source manifest and no observer errors. Inert reopened cut collection
+profile completed with the same cut and unchanged sources. Attribution identifies
+repeated history acquisition; neither profile closes the production-budget gap.
+
+Further exact-fixture discriminator: the first candidate passed the physical
+predicate and failed the direct-cut builder's final unconditional anchor check.
+MCP session `4acb9fdb-fa00-4101-83ea-6b16aa727ef7` observed a non-None fully
+built cut exactly equal to retained first-terminal evidence; only the independent
+anchor differed from current physical commitment. The candidate now retains
+strict new-cut admission and requires an authenticated snapshot, both historical
+source stamps and the existing pending-prefix proof for this historical exception.
+Six boundary cases additionally cover missing stamps/snapshot, failed proof and
+changed CLOSED commitment; semantic DTOs are replaced only in that focused test.
+The real semantic/physical composition remains the running original-fixture reopen
+(`chiplog-r14-cross-seal-pending-reopen-builder-fixed.log`), not a completed pass.
+
+The six-file focused pytest selection above, additionally including
+`test_r14_direct_terminal_historical_cut.py` and
+`test_r14_accepted_direct_terminal_history_reuse.py`, returned 184 passed in
+1.45s in MAIN and 184 passed in 1.86s in the isolated checkpoint tree. The
+checkpoint R8 structure/import gate plus those tests passed (184 in 1.43s).
+Ruff passed for the four changed source modules and both test files. Cold actual
+review found no critical/blocking defect in either correction. This checkpoint
+is partial correctness progress; it closes neither R14.6 nor production budgets.

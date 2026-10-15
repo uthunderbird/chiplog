@@ -360,3 +360,137 @@ transfer and exited 0. Session was closed. This is the original COMPLETE pending
 fixture; the earlier ordinary exit-0 reopen covered original ABSENT pending.
 The fresh three-boundary mounted run has passed its first (before-COMMIT) case;
 the remaining two are still running on the unchanged isolated candidate.
+
+### Native-clock SUSPENSION admission probe
+
+The ordinary fresh native-clock mounted case failed with SUSP publication STALE
+in 214.40s before injected COMMIT fault. Clock assertions passed in the pytest
+interpreter before test entry and after teardown; the before/after profile of
+1206 tracked source/test/config files and HEAD was unchanged. This proves a
+failure on that recorded WIP profile, not a clean-HEAD performance result.
+
+Before breakpoints in session `ab26524a-6ce0-4a35-a025-36cbe3cb44d7`:
+fresh guarded runner and new basetemp, native application clocks preserved for
+the deadline hypothesis, no short debugger-session deadline. Both breakpoints
+are conditional; no user pause occurs before an already expired budget or STALE.
+
+- At the final actor-budget predicate in SUSP `guard`, condition is deadline
+  already expired. Ideal: unreached, with budget remaining at writer admission.
+  Hypothesis: reached with `source_cut_validated=True` after exact current cut,
+  worker/session, journal head, commitment and no-pending fences have passed.
+  Stack expected: materializer admission → SUSP guard, or decision → SUSP guard;
+  inspect which callback actually stopped. Next step returns STALE. A valid
+  instrumented miss followed by the STALE stop falsifies this final-predicate
+  hypothesis and requires bisecting earlier refusals. Debugger trace overhead
+  cannot establish production duration; the earlier ordinary red does that.
+- After submit, condition `published.disposition == 'STALE'`. Expected reached
+  under the hypothesis; ideal unreached. Stack: test → local publish → public
+  suspend route → suspend publication. Inspect closure validation flag and budget
+  operands without rerunning the guard. Next step raises the recorded typed
+  rejection. Another disposition, missing stop or false source-validation flag
+  changes the next diagnostic slice rather than authorizing a timeout increase.
+
+Observed: the expired-budget conditional breakpoint hit in the materializer's
+first admission callback (`_sqlite._publish` at its `admission_guard()` call).
+`source_cut_validated=True`, recomputed cut equals retained cut, current decision
+head equals captured head, and the issued budget span is exactly 30,000,000,000ns.
+All earlier guard fences had passed to reach this line. The condition itself was
+already true before the pause; elapsed inspected later includes pause time and is
+not a native timing measurement. Continuing reached the second breakpoint with
+`published.disposition='STALE'` and the validation flag still true, under the
+expected test/public-route/publication stack. Both breakpoints were cleared.
+The ordinary test rejection was reproduced; builtin teardown clock checks passed.
+The runner then stopped at expected `SystemExit(1)` and the session was closed.
+Next: attribute native work between actor-budget issuance and admission, then
+remove a demonstrated repeat while preserving the 30-second budget and fences.
+
+### Cross-seal pending OPEN after COMMIT: next debugger hypothesis
+
+Frozen mounted run `chiplog-r14-three-outcomes-cross-seal.log`: three-outcome
+selector passed; cross-seal selector failed at exact historical read after the
+second OPEN recovery's injected after-COMMIT failure (5401.28s total). No strict
+foreign CLOSED-locator proof is claimed from this failed positive baseline.
+
+Plan: reopen the original fixture with matching V39 resources/custody and the
+same diagnostic clock profile, without SEND, moving files or repinning. Hypothesis:
+first-seal direct-terminal batch remains COMPLETE, but its validator rejects the
+second selected OPEN's unanchored physical suffix. The ideal exact reader accepts
+only after independently authenticating that sole pending suffix and its source;
+it must still reject corruption or an unrelated anchor mismatch.
+
+Breakpoint: direct-terminal validator's `accepted/direct terminal exact batch is
+absent or inconsistent` raise. Should hit if startup follows the same failing
+reader. Condition: none (the line itself is the failed predicate). Expected locals:
+`state == COMPLETE`, `physical == actual`, `physical_anchor == anchored`, and
+`actual != anchored`; command belongs to the earlier direct terminal. Expected
+stack: startup/exact reader → V3 rebuild → direct frontier → validator. Next step
+raises the known rejection. Absent/changed earlier batch falsifies the hypothesis;
+a startup failure before this frame requires a smaller diagnostic entry point.
+No short session deadline; diagnostic clock evidence is not production timing.
+Cold-review amendment: startup may reach the direct validator directly rather
+than through V3; inspect actual stack and original_call_id, pending operation/key,
+and both publication sequences. Before launch preserve the whole closed fixture
+(including custody/journals) as `chiplog-r14-cross-seal-red-preserved.tar`, with
+per-file SHA256 manifest; diagnosis uses original paths to preserve H1 binding.
+At the first refusal inspect operands then close the debugger, without continuing
+startup recovery. No mutation-based negative runs against the preserved original.
+
+Observed session `86cd68cb-098d-441d-a1e1-f3810ab8d5a7`: breakpoint hit through
+startup execution validation → exact reader → V3 decoder → V3 preparation →
+direct-terminal frontier → selected validator. Earlier direct terminal expected
+head 20, state COMPLETE; `physical == actual`, `physical_anchor == anchored`,
+`actual != anchored`. Sole pending accepted-open-recovery expected head 34;
+its predecessor equals anchored and resulting equals actual. This supports the
+anchor-suffix hypothesis, but does not itself prove every pending member: the
+existing exact prefix authenticator must supply that proof. Closed debugger at
+this refusal without continuing recovery. Original witness preserved beforehand.
+
+Native phase observer run: 204.23s STALE; source manifest unchanged; no observer
+errors or incomplete synchronous frames. Budget span 30s. Instrumented command
+wall time ~1.67s; guard collect ~41.50s; guard returned STALE with validated-source
+flag true and identical source cut sequence/commitment/run to initial collect.
+These are instrumented phase attribution, not production latency measurements.
+Next diagnostic slice: cProfile a fresh, inert held cut collection on this closed
+no-pending fixture, without an actor issuance, publication or SEND.
+
+Cross-seal candidate reopen now passes the original physical refusal, then fails
+`accepted/direct terminal retained source cut differs`. It is not mounted green.
+Next two breakpoint expectations (same original pending fixture, archived already;
+no SEND and no short session deadline):
+
+- `_current_cut` at `if closed is None`, condition `closed is None`, near line176.
+  Should hit if historical first-seal facts reach effects acquisition but current
+  physical Run membership cannot be joined. Ideal: no hit, closed source exists.
+  Expected locals: matching accepted original call, retained CLOSED locator,
+  historical execution history and separately supplied current effects snapshot.
+  Stack: startup exact/V3 reconstruction → direct validator → current-cut reader.
+  Next step returns None; a non-None closed source or earlier failure falsifies
+  this narrower effects-boundary hypothesis.
+- Validator at `accepted/direct terminal retained source cut differs` raise.
+  Should hit if the source reader returned None or changed cut; ideal: not hit.
+  Inspect `current`, retained cut, original call, projection and history stamps.
+  Next step raises known rejection. If a concrete changed cut exists, compare its
+  differing fields before choosing any repair. Close before startup recovery.
+
+Source inspection adds a narrower candidate before this run reaches its stops:
+the direct-cut builder's final check still unconditionally requires anchor equal
+to physical commitment, even when its authenticated snapshot is supplied.
+Replace the conditional CLOSED-missing breakpoint with builder final predicate
+at `commitment != closed.materialization_commitment`. Expected should hit after
+a concrete cut was built; ideal returns that exact cut only with independently
+proved pending prefix. Expected locals: closed non-None, cut non-None,
+authenticated_snapshot non-None, commitment equals closed commitment but anchor
+differs. Stack: current-cut → builder. Next predicate returns None; any different
+operand falsifies this candidate. Validator refusal breakpoint remains second.
+
+Observed session `4acb9fdb-fa00-4101-83ea-6b16aa727ef7`: stopped in builder's
+final predicate. `closed`, built `cut` and authenticated snapshot are non-None;
+physical commitment equals closed source commitment, database identity matches,
+anchor differs. Historical source sequence is 20, supplied current snapshot 35;
+caller semantic history frontier is 21. The fully built cut compares exactly
+equal to the selected retained first-terminal cut. Thus the mismatch is the
+builder's final unconditional anchor check, not a semantic cut discrepancy.
+Closed without recovery. Next repair retains all identity/physical checks and
+allows only a supplied authenticated snapshot plus both historical source stamps
+and the existing independently authenticated sole pending prefix. Fresh terminal
+creation remains strict.

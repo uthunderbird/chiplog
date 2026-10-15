@@ -2481,7 +2481,7 @@ def read_selected_accepted_direct_terminal_frontier(
     """Return sealed accounting only after the selected terminal batch is COMPLETE."""
     from chiplog.composition.r14_accepted_direct_terminal_frontier import (
         accepted_direct_terminal_sealed_accounting,
-        require_complete_direct_terminal_publication,
+        require_complete_direct_terminal_publication_held,
     )
     from chiplog.composition.r14_accepted_direct_terminal_publication import (
         validate_selected_accepted_direct_terminal,
@@ -2491,9 +2491,6 @@ def read_selected_accepted_direct_terminal_frontier(
         accepted_direct_terminal_command,
         retained_accepted_direct_terminal,
     )
-    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
-    from chiplog.platform.workspace_snapshot import read_connection
-
     with runtime._authority_gate().hold():
         if authenticated_history is None:
             authenticated_history = read_execution_recovery_history(runtime)
@@ -2518,18 +2515,7 @@ def read_selected_accepted_direct_terminal_frontier(
         if runtime._publication(entry) != command:
             raise LoopRejected("selected accepted/direct terminal physical command differs")
 
-        runtime._check_database_identity()
-        with read_connection(runtime._database) as connection:
-            current_snapshot = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
-        journal_anchor = runtime._commitment_journal.load(runtime._tenant_id)
-        state, selected_snapshot, selected_anchor = runtime._selected_physical_state(command)
-        require_complete_direct_terminal_publication(
-            state,
-            current_snapshot,
-            journal_anchor,
-            selected_snapshot,
-            selected_anchor,
-        )
+        require_complete_direct_terminal_publication_held(runtime, command)
 
         facts, cut = current
         seal = facts.accepted.selected_seal

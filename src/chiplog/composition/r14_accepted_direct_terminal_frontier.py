@@ -179,9 +179,6 @@ def selected_accepted_direct_terminal_call_frontier(
         accepted_direct_terminal_command,
         retained_accepted_direct_terminal,
     )
-    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
-    from chiplog.platform.workspace_snapshot import read_connection
-
     try:
         current = validate_selected_accepted_direct_terminal(
             runtime,
@@ -225,22 +222,10 @@ def selected_accepted_direct_terminal_call_frontier(
             or evidence.result.accounting.source_cut_fingerprint != cut.cut_fingerprint
         ):
             return None
-        runtime._check_database_identity()
-        with read_connection(runtime._database) as connection:
-            current_snapshot = capture_authority_snapshot_commitment(
-                connection, runtime._tenant_id
-            )
-        journal_anchor = runtime._commitment_journal.load(runtime._tenant_id)
-        state, selected_snapshot, selected_anchor = runtime._selected_physical_state(command)
-        if state != "COMPLETE":
-            return None
-        require_complete_direct_terminal_publication(
-            state,
-            current_snapshot,
-            journal_anchor,
-            selected_snapshot,
-            selected_anchor,
-        )
+        with runtime._authority_gate().hold():
+            if runtime._selected_physical_state(command)[0] != "COMPLETE":
+                return None
+            require_complete_direct_terminal_publication_held(runtime, command)
         return accepted_direct_terminal_call_frontier(
             cut,
             evidence.result,
@@ -271,9 +256,32 @@ def require_complete_direct_terminal_publication(
         raise LoopRejected("selected direct terminal batch is not completely materialized")
 
 
+def require_complete_direct_terminal_publication_held(runtime, command) -> None:
+    """Keep a complete terminal readable across one authenticated pending suffix."""
+    from chiplog.composition.r14_historical_suffix import authenticate_selected_open_prefix_held
+    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
+    from chiplog.platform.workspace_snapshot import read_connection
+
+    runtime._authority_gate().require_held()
+    runtime._check_database_identity()
+    with read_connection(runtime._database) as connection:
+        current = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
+    anchor = runtime._commitment_journal.load(runtime._tenant_id)
+    state, physical, physical_anchor = runtime._selected_physical_state(command)
+    if state != "COMPLETE" or physical != current or physical_anchor != anchor:
+        raise LoopRejected("selected direct terminal batch is not completely materialized")
+    if current == anchor:
+        require_complete_direct_terminal_publication(
+            state, current, anchor, physical, physical_anchor
+        )
+    elif not authenticate_selected_open_prefix_held(runtime, current, anchor):
+        raise LoopRejected("selected direct terminal batch is not completely materialized")
+
+
 __all__ = [
     "accepted_direct_terminal_call_frontier",
     "accepted_direct_terminal_sealed_accounting",
     "require_complete_direct_terminal_publication",
+    "require_complete_direct_terminal_publication_held",
     "selected_accepted_direct_terminal_call_frontier",
 ]

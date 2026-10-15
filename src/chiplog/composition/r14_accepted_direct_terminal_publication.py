@@ -474,12 +474,22 @@ def validate_selected_accepted_direct_terminal(
                 actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
             anchored = runtime._commitment_journal.load(runtime._tenant_id)
             state, physical, physical_anchor = runtime._selected_physical_state(command)
+            from chiplog.composition.r14_historical_suffix import (
+                authenticate_selected_open_prefix_held,
+            )
+
             if (
                 physical != actual
                 or physical_anchor != anchored
-                or actual != anchored
                 or state not in ("ABSENT", "COMPLETE")
                 or (state == "ABSENT" and actual != entry.get("predecessor"))
+                or (
+                    actual != anchored
+                    and (
+                        state != "COMPLETE"
+                        or not authenticate_selected_open_prefix_held(runtime, actual, anchored)
+                    )
+                )
             ):
                 raise LoopRejected("accepted/direct terminal exact batch is absent or inconsistent")
         if marker_history is None:
