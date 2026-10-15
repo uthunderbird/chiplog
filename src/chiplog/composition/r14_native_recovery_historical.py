@@ -9,8 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Mapping
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
@@ -83,11 +84,15 @@ class _AuthenticatedLoopDecisionCut:
 
     runtime: object
     decisions: tuple[_AuthenticatedLoopDecision, ...]
+    _recovery_derivations: Mapping[
+        tuple[str, bytes], tuple[RetainedRecoveryPublication, PhysicalPublicationCommand]
+    ] = field(compare=False, repr=False)
 
     def __init__(self, token, runtime, decisions):
         if token is not _LOOP_CUT_TOKEN:
             raise TypeError("authenticated loop cut is internal")
         object.__setattr__(self, "runtime", runtime)
+        object.__setattr__(self, "_recovery_derivations", MappingProxyType({}))
         object.__setattr__(self, "decisions", tuple(
             _AuthenticatedLoopDecision(
                 decision_id=str(decision_id),
@@ -293,6 +298,73 @@ def _authenticated_loop_cut_matches(runtime, cut) -> bool:
         (row.decision_id, row.predecessor, row.raw) for row in cut.decisions
     )
     return current == supplied
+
+
+def _native_recovery_derivation_allowed(runtime) -> bool:
+    from .r14_native_recovery_cut import (
+        _NATIVE_AUTHENTICATE_SELECTED_HELD,
+        NativeRecoveryCutSource,
+    )
+
+    source = getattr(runtime, "_full_recovery_cut_source", None)
+    return (
+        type(source) is NativeRecoveryCutSource
+        and callable(getattr(source, "collect_held", None))
+        and getattr(source.authenticate_selected_held, "__self__", None) is source
+        and getattr(source.authenticate_selected_held, "__func__", None)
+        is _NATIVE_AUTHENTICATE_SELECTED_HELD
+    )
+
+
+def _recovery_derivation_row(runtime, entry, cut):
+    from .r14_recovery_publication import OPERATION
+
+    runtime._authority_gate().require_held()
+    if not _authenticated_loop_cut_matches(runtime, cut):
+        raise ValueError("recovery derivation requires the unchanged authenticated loop cut")
+    rows = tuple(
+        row for row in cut.decisions
+        if row.entry.get("kind") == "DECIDED"
+        and row.entry.get("operation_id") == entry.get("operation_id")
+    )
+    if (
+        len(rows) != 1
+        or _thaw_json(rows[0].entry) != entry
+        or entry.get("operation_kind") != OPERATION
+    ):
+        raise ValueError("recovery derivation entry differs from the exact selected bytes")
+    return rows[0]
+
+
+def _read_derived_recovery(runtime, entry, cut):
+    """Derive pure owner-result bytes once; never cache source authentication."""
+    from .r14_recovery_publication import command, retained
+
+    if not _native_recovery_derivation_allowed(runtime):
+        raise ValueError("recovery derivation requires the original native source method")
+    row = _recovery_derivation_row(runtime, entry, cut)
+    key = row.decision_id, row.raw
+    result = cut._recovery_derivations.get(key)
+    if result is None:
+        evidence = retained(_thaw_json(row.entry))
+        result = evidence, command(evidence)
+        object.__setattr__(
+            cut,
+            "_recovery_derivations",
+            MappingProxyType({**cut._recovery_derivations, key: result}),
+        )
+    return result
+
+
+def _read_cached_recovery_command(runtime, entry, evidence, cut):
+    """Next-turn lookup accepts only evidence returned by this read's producer."""
+    if cut is None or not _native_recovery_derivation_allowed(runtime):
+        return None
+    row = _recovery_derivation_row(runtime, entry, cut)
+    result = cut._recovery_derivations.get((row.decision_id, row.raw))
+    if result is None or result[0] is not evidence:
+        return None
+    return result[1]
 
 
 def _historical_publications(runtime, cut, tenant_commit_sequence):

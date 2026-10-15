@@ -346,10 +346,18 @@ def validate_selected(
         and getattr(cut_source.authenticate_selected_held, "__func__", None)
         is _NATIVE_AUTHENTICATE_SELECTED_HELD
     ):
-        from .r14_native_recovery_historical import _authenticate_native_recovery_selected
+        from .r14_native_recovery_historical import (
+            _authenticate_native_recovery_selected,
+            _read_derived_recovery,
+        )
 
         runtime._authority_gate().require_held()
-        derived_command = command(evidence)
+        if authenticated_loop_decisions is None:
+            derived_command = command(evidence)
+        else:
+            evidence, derived_command = _read_derived_recovery(
+                runtime, entry, authenticated_loop_decisions
+            )
         authenticated = _authenticate_native_recovery_selected(
             cut_source, runtime, evidence, entry, derived_command,
             through_sequence=through_sequence,

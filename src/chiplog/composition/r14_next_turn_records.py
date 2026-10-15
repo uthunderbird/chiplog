@@ -476,7 +476,11 @@ def validate_selected_next_turn(
         authenticated_loop_decisions=authenticated_loop_decisions,
         verified_h1_prepares=verified_h1_prepares,
     )
-    pair = accounting_command(original)
+    from .r14_native_recovery_historical import _read_cached_recovery_command
+
+    pair = _read_cached_recovery_command(runtime, prior, original, authenticated_loop_decisions)
+    if pair is None:
+        pair = accounting_command(original)
     expected_decision = _decision_ref(pair.idempotency_key, decision_id, raw)
     old = original.accounting_request.cut
     accounting = original.continuation_request.complete_accounting[0]
