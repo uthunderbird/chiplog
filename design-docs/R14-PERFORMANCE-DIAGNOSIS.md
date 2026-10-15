@@ -1797,14 +1797,12 @@ exponential curve without matching per-phase measurements and workload counts.
   invocation, `capture_dispatch` took 0.176 s. These measurements locate most
   of the earlier run in history reads, but do not attribute the current 717 s
   total to the same calls.
-- **The current `STALE` cause is not yet localized.** In the earlier
-  instrumented run, `check_prepared` mapped `_check_live`'s explicit source and
-  owner deadline rejection to `STALE`; that is the established five-second
-  horizon failure for that invocation, not a proven predicate for the current
-  run. The current unprofiled error does not identify which live-check
-  predicate failed; `STALE` may also represent changed source cut, branch, or
-  scope. Extending the horizon would neither reduce history-processing work
-  nor establish a safe new authority duration.
+- **At the time of this unprofiled run, the `STALE` cause was not localized.**
+  The later monitored follow-up below identifies the immediate rejection for
+  that separate invocation as admission expiry at the preview mandate horizon.
+  Neither result attributes the full selector runtime to that guard. Extending
+  the horizon would neither reduce history-processing work nor establish a
+  safe new authority duration.
 - **GIL contention is unsupported.** The measured history work was almost all
   thread CPU time. That supports CPU-heavy Python/JSON processing; it does not
   establish contention from the GIL.
@@ -1836,3 +1834,1192 @@ count/time selected recovery, next-Turn, native-accounting, and historical-sourc
 helpers without emitting payloads. A candidate optimization survives only if it
 removes byte-identical duplicate work within one authenticated cut while
 preserving all final currentness and deadline predicates.
+
+#### Differential follow-up: second two-seal writer refusal (2026-10-14)
+
+The mounted selector
+`test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay`
+was repeated once with passive `sys.monitoring` probes. It again failed at the
+second `runtime.accept_call(...)` with writer `STALE`, after preparing the
+second acceptance preview. It did not reach the second terminal/V3 publication,
+cross-order replay, or reopen. This is a reproduced functional failure, not
+completion evidence.
+
+The probe observed the exact rejection branch this time. During
+`CallPublicationAuthority._check_live -> capture_dispatch -> require_invocation`,
+`R7PlanningRuntime._trust_observation_guard` reached its admission-deadline
+return. At that line, `admission_valid_until_ns` was already 6.165 seconds in
+the past; `require_invocation` independently classified the refusal as
+`STALE:admission-expired`. `prepare_call_exchange` sets this field from the
+selected preview mandate's `horizon.expires_at_ns` (`r14_call_preparation.py`),
+so this is mandate expiry, not evidence that the five-second authentication
+RPC budget itself expired. The separate final deadline comparison in
+`_check_live` was not reached. Do not conflate these two guards.
+
+This discriminates the immediate refusal from the performance hypotheses:
+
+| Hypothesis | Result from this run | Consequence |
+|---|---|---|
+| The current `STALE` is the five-second owner/RPC preparation horizon | Rejected for this invocation: the guard reported preview mandate expiry before `_check_live`'s final minimum-deadline predicate. | Do not extend or retune the five-second horizon to fix this refusal. |
+| The current `STALE` is an owner session, ledger generation, trust snapshot, source-cut, or branch change | Not the observed immediate rejection: the admission-deadline branch returned first. Those later predicates were not reached in this invocation. | Keep these integrity checks; this run does not eliminate them as possible later failures. |
+| Waiting on AF_UNIX or the GIL explains the delay | Disfavored by separate prior profiles where measured history work was mostly calling-thread CPU; this run itself only identifies the local expiry branch. | Do not change socket/thread policy from this evidence. The current run has no phase attribution. |
+| One large retained record parse explains the delay | Disfavored by the existing single-payload discriminator and history profiles, which found one parse/canonicalization pass far below stage duration. | Repeated semantic history reconstruction remains the stronger hypothesis. |
+| The runtime grows exponentially | Still unproven. These are separate test invocations, not a controlled series with matched starting state and workload cardinality. | Describe observed superlinear-looking growth only; do not fit an exponent. |
+
+The result establishes the immediate refusal for this invocation, but does not
+yet select a safe performance patch or explain the full selector duration. The
+leading mechanism remains repeated authenticated history work; its stage costs
+in this invocation were not measured. Cross-call caching, saved-cut reuse,
+deadline changes, and skipped validation remain unsupported. Before editing
+code, the next decisive evidence is a passive timeline around the mandate and
+the subsequent acceptance stages, including source/currentness dependencies.
+Capture it during the next required mounted functional run; do not rerun the
+full selector solely to recover a lost report.
+
+#### Differential boundary and narrow readback candidate (2026-10-14)
+
+The mandate is issued with `not_before_ns=captured.observed_time_ns` and expires
+60 seconds later. The monitored rejection reached its admission-deadline guard
+at approximately 66.165 seconds of mandate age. This measures age at that
+guard, not the duration of any individual stage and not the share of the
+717.24-second selector spent in this interval. The five-second owner/RPC
+preparation budget is a separate deadline and was not the deadline reported by
+this rejection. Session, ledger, trust-snapshot, source-cut, and branch checks
+after the deadline guard remain unexamined for this invocation.
+
+Source inspection identifies work after mandate start, without apportioning its
+runtime: precursor owner exchange; renewed authentication; fresh dispatch
+capture and scope checks; `read_call_previews()` before append; append and
+`read_call_previews()` after append; then later preview/history validation in
+`prepare_call_exchange()` and a fresh history read at writer admission. Each of
+the two preview reads reconstructs execution history. Separate profiles make
+repeated history processing plausible, but do not quantify these calls in the
+monitored two-seal invocation.
+
+The initially proposed optimization—replace the post-append full semantic
+preview/history read with exact raw journal readback—does not reduce the history
+work in this failing selector. `_selected_v23_native_fanout` defaults to no
+accepted calls and this test supplies no accepted-call IDs; it cancels the first
+Turn's call and creates its first preview only for the second Turn. Therefore
+the preview journal is empty before this issuance: pre-append
+`read_call_previews()` skips history, while post-append `read_call_previews()`
+performs the one fresh history reconstruction. Requiring history before append
+and removing the post-append history read would move that one read, not remove
+it. The possible saving is limited to repeated validation of the newly appended
+preview, whose cost has not been measured. Do not select this as the fix for the
+two-seal deadline failure.
+
+The raw-readback idea also is not strictly equivalent under direct external
+checkpoint mutation between pre-append validation and selection: the current
+post-append reader would observe the changed checkpoint; raw journal equality
+would not. Preparation and writer admission still perform fresh validation
+before authority is granted, but that does not preserve the immediate
+`preview_call_acceptance()` result. Keep the post-append semantic read unless a
+measured benefit and a source-currentness proof justify changing this boundary.
+
+The broader measured mechanism remains repeated semantic history replay. A
+bounded same-reader candidate is the top-level `_require_no_pending()` followed
+by `_read_call_history`'s own loop-journal read and parse. Earlier profiles
+showed exact large decision bytes parsed repeatedly by `_pending()` through
+distinct nested validators; they do not justify a cross-call cache. Before
+considering only the top-level duplicate, prove that one captured journal tuple
+can feed both pending-state validation and history replay while retaining the
+same pending/H1 checks and a fresh exact source/head comparison before return.
+Measure that local contribution on the next required mounted functional run;
+do not rerun the selector solely for profiling.
+
+#### Same-reader pending-reduction boundary (2026-10-14)
+
+Cold review narrows the candidate further. Reordering `_pending()` before the
+owner check is not equivalent: `_require_no_pending()` short-circuits, so a
+pending owner currently wins without reading an unauthentic loop journal. The
+established strict-read precedence is owner, loop/H1 validation, then gate
+publications. Keep that order and retain selected-only's distinct behavior.
+
+The plausible saving is one duplicate semantic JSON decode per ordinary
+strict history read, not removal of authenticated source checks. A possible
+shape is to reuse the decoded loop entries locally for pending reduction and
+history replay, while retaining a fresh `entries()` call after gate-pending
+inspection and before replay. Require that fresh call to authenticate the same
+exact cut; if it differs, fail before semantic replay. This also preserves
+visibility of a body/head/source mutation during gate inspection. The journal
+already caches decoding only for byte-identical bodies, but validates physical
+source identities, key bytes, and anchored head on every `entries()` call.
+
+The old profile attributed about 0.19–0.22 seconds inclusive to each
+`_pending()` invocation on its fixture; it did not measure an isolated current
+strict read or show that this saving survives the full mounted path. Treat this
+as a small local optimization candidate, not an explanation for a mandate that
+expired by 6.165 seconds. Before implementation, the next mounted run must
+measure exclusive pending-reduction and history-replay costs around the same
+reader, and confirm the candidate can recover a material part of the observed
+slack while preserving the order and cut checks. Required differential cases
+include pending-owner precedence, malformed H1 validation before gate-pending,
+mutation during gate inspection failing before semantic replay, and
+selected-only behavior. If the measured saving is immaterial, retire this
+candidate without changing the checks.
+
+#### Full parsed-entry cache rejected on memory cost (2026-10-14)
+
+Two cold reviews disagreed on whether to implement a read-local cache or measure
+first. A read-only parse-only probe against the saved writer-cut loop journal at
+`/private/tmp/r14-profile-9056/native-v23-prepare.sqlite.loop-journal` resolves
+the main tradeoff without opening its runtime. The three large selected payloads
+were 36,505,620, 22,324,899, and 12,820,575 bytes. One parse of the three took
+0.189 seconds of thread CPU and left 112.0 MiB of traced Python allocations
+retained (126.5 MiB peak). Artificially parsing those same three inputs 21 times
+took 3.689 seconds of thread CPU.
+
+The 21-call count and 3.140-second raw-decode figure came from a different saved
+cut. Its payloads had the same lengths but different SHA-256 values, so neither
+the call count nor the predicted saving is established for this writer cut. The
+21-pass probe above is a bound on repeated parser work for its exact bytes, not
+an observation that the failed writer read made 21 such passes. The 112 MiB
+retained-object cost would also add substantial memory to a history reader, and
+the cache would make mutable dictionaries returned by `_pending()` alias across
+calls. No whole-dictionary cache is selected.
+
+This retires the full parsed-entry cache as the current R14.6 fix. Reopen the
+candidate only if a required mounted functional run attributes enough repeated
+`_pending()` calls to exact input hashes to show material time savings, and a
+bounded implementation can avoid retaining these full parsed objects or can
+measure an acceptable memory tradeoff. Continue to rerun journal source/head and
+H1 validation at every existing boundary. This candidate does not explain the
+separate 6.165-second mandate overrun; that remains a writer-path failure, not
+a parser-cache verdict.
+
+#### Post-append freshness substitution rejected on deadline behavior (2026-10-14)
+
+A possible narrower shortcut was to retain the authenticated execution history
+used before append, enumerate and validate the newly selected preview, then
+replace the post-append `read_execution_call_history()` with a fresh
+`capture_dispatch()` compared to the original capture. Cold source review found
+that a capture after enumeration would detect changes to the physical AMR
+commitment/frontier, executable Run bytes, owner snapshot, and authenticated
+loop head. It also found a behavioral difference: `capture_dispatch()` calls
+`require_invocation()`, which enforces the authentication admission deadline;
+the existing post-append preview reader does not. If append plus preview
+enumeration crosses that deadline, the proposed path can reject after the
+preview is already durable, where the current path returns it. No contract
+currently authorizes that new failure boundary.
+
+Ordering also matters independently of the deadline: a capture before preview
+enumeration leaves a mutation injected during enumeration undetected, while the
+current reader authenticates history after enumeration. A post-enumeration
+capture addresses that ordering race, but not the additional late-deadline
+failure. Therefore do not substitute the capture or implement this optimization
+unless a contract change explicitly accepts that late refusal and recovery
+behavior. The safe differential conclusion is that repeated history work is
+plausible, but this candidate is not behavior-preserving as written; keep the
+existing post-append reader and seek a measured optimization with equivalent
+deadline semantics.
+
+#### R14.6 acquisition discriminator and writer-read candidates (2026-10-14)
+
+Command:
+`uv run pytest -q tests/composition/test_r14_native_selected_accounting_source.py::test_v3_source_projects_mixed_terminal_members_in_seal_order`
+Result: 1 passed in 42.25 seconds on the current tree. This mounted witness
+selects a genuine two-member seal with one accepted and one cancelled member,
+collects the authenticated source facts in seal order, and obtains the exact
+V3 owner preparation. It confirms the mixed-member acquisition baseline. It
+does not prove two seals in one Run, durable V3 publication/reopen, full
+physical orphan detection, or writer-admission freshness; those remain open.
+
+Two independent source reviews searched for a behavior-preserving reduction of
+the recorded 12.9-second writer-side `read_execution_call_history()` that could
+recover at least the 6.165 seconds by which the later mandate-expiry sample
+missed its fixed horizon. These measurements came from separate invocations;
+their difference does not show that a 12.9-second read caused the later expiry
+or that shortening it by 6.165 seconds would make the flow pass. Neither review
+established such a candidate. They located
+three possible same-reader duplicates: V3 retained-evidence decode, V3 source
+collection followed by request reconstruction, and pending reduction followed
+by strict loop-entry parsing. The first two lack matched exclusive timings; the
+last is estimated at only 0.19–0.22 seconds on a different fixture and still
+requires strict owner/loop/H1/gate precedence and a fresh source/head check.
+That estimate cannot be transferred to the two-seal writer cut.
+
+Route decision: defer these optimizations until instrumentation can be captured
+during the next required R14.6 mounted functional witness. Capture exclusive
+time, caller, input identity/size, and authenticated cut/head for each candidate
+while preserving all existing admission and deadline checks. Do not repeat the
+long selector solely to profile it, and do not treat the focused acquisition
+pass as a fix for the separate two-seal writer refusal.
+
+A proposed split test that stopped after publishing the first seal and building
+source facts for the second seal proved too expensive to use as a standalone
+discriminator. Command:
+`uv run pytest -q tests/composition/test_r14_native_selected_accounting_source.py::test_v3_collects_two_selected_seals_before_second_seal_acceptance`
+It was interrupted after 472.96 seconds with `KeyboardInterrupt`; pytest reported
+no tests ran, so it provides no semantic verdict and did not establish which
+internal stage was active. The temporary test change was removed. This rejects
+the proposed *separate setup-only run*, not the underlying two-seal requirement;
+observe source acquisition during the next required functional witness instead.
+
+#### Issuance decode count by authenticated reader boundary
+
+The saved trace resolves the proposed intra-verifier candidate without another
+mounted run. It contains 13 `verify_dispatch_history()` spans. Each span visits
+nine selected effect rows, including exactly one row from each of the three
+accepted-call batches. Each selected call issuance is decoded once per verifier
+span; there is no repeated decode of one batch within a verifier invocation.
+The same profile contains four strict `_read_call_history()` spans, each of
+which validates each of the same three selected call issuances once. Thus each
+issuance is decoded 17 times total: 13 times at separate effects-history
+verification boundaries and 4 times at separate loop-history boundaries.
+Across all three issuances, 39 decodes are children of the 13 verifier calls and
+12 decodes are children of the four strict history calls. This exactly accounts
+for the observed 51 decodes.
+
+This falsifies the proposed local per-verifier memoization: its eligible
+duplicate count is zero. The repeats are across reader boundaries, where each
+call has freshly acquired effects/history state or independently validates the
+selected loop history. Any reuse across those calls would need a proof that
+preserves the current physical membership, commitment, owner-journal and
+tenant-history checks. The trace establishes cost, not that those boundaries
+are redundant. Keep cross-call reuse unselected.
+
+The acquisition map and call-chain source are now established below. A candidate
+survives only if it removes repeated work while preserving fresh physical
+membership and exact source/head checks. The four strict history decodes belong
+to distinct `_read_call_history()` calls; the existing trace identifies one
+nested strict replay already removed by the same-runtime forwarding experiment.
+Do not infer further savings by dividing 15.47 seconds across 17 validations.
+
+#### Acquisition boundary inside one strict history read
+
+Source tracing maps the 12 seal-specific verifier calls to the deferred V3
+loop in `_read_call_history()`: each selected V3 record is decoded separately;
+that decoder rebuilds the retained source and calls
+`prepare_sealed_accounting_v3()`. The source then invokes
+`_read_materialized_effects_with_history()` and `verify_dispatch_history()`.
+The 13th verifier call is the separate target-terminal validation.
+
+The three seal validations do not currently share one SQLite transaction.
+`_read_call_history()` holds its authority gate and a local `read_connection`,
+but it does not establish `workspace_snapshot()`'s context. Each effects
+acquisition enters `join_workspace_snapshot()` with no current snapshot, so
+that helper opens a new query-only `BEGIN` transaction. Each acquisition also
+captures the current materialization commitment, checks exact physical batch
+membership, compares the full effects member set, and rechecks the owner
+journal and commitment before returning. The repeated cuts had equal measured
+owner/effects/execution-history identities, but they were independent physical
+read transactions. That identity match does not prove their physical view was
+unchanged between acquisitions.
+
+This narrows, but does not close, the leading hypothesis. The measurable repeated
+work is seal-independent full R16 history acquisition/verification followed by
+seal-specific joins. Reusing one verified dispatch history across the three
+seals could avoid two full acquisitions per strict read, but would change the
+current observation from three separately fresh cuts to one cut shared by all
+three. The code evidence does not establish that a read-start snapshot is the
+required contract, nor that the held in-process authority gate excludes every
+physical writer. Do not implement that reuse from equal identities alone.
+
+The next discriminator is a contract-preserving differential test of the
+physical freshness boundary: establish whether a mutation to effects membership
+or the current commitment between seal validations is required to make the
+whole history read HOLD. Compare the current separate-acquisition path with a
+candidate that shares the first physical snapshot; if the candidate accepts a
+mutation that the current path rejects, reuse is invalid under the present
+contract. If the contract instead defines one snapshot for the whole read, that
+definition must be grounded in the existing normative contract before treating
+such a mutation as in-scope. This is a correctness discriminator, not a
+performance benchmark; do not rerun the long three-member scenario merely to
+measure call counts already present in the saved trace.
+
+#### Cost bound for same-reader V3 verification reuse
+
+The saved baseline trace gives an upper-bound estimate for the same-reader
+candidate without another run. The 12 V3-related `verify_dispatch_history()`
+spans account for about 17.9 seconds of inclusive CPU (the 13-span total is
+19.27 seconds, including the separate terminal validation). Each V3 physical
+acquisition accounts for about 0.28–0.38 seconds CPU; the remaining verifier
+cost includes selected dispatch request/issuance validation. A strict history
+pass currently performs three seal-specific acquisitions/verifications. If a
+single common verification could soundly replace those three while preserving
+seal-specific joins, the saved baseline suggests an upper bound of roughly
+three seconds CPU per history pass, before accounting for any cost of sharing
+or rechecking freshness. This is material but cannot explain the full ~60-second
+target read. The four history passes include a nested strict replay already
+removed by the same-runtime forwarding comparison, so this upper bound should
+not be projected onto the current target read without a new matched profile.
+
+Route state: intra-verifier issuance memoization is **closed / falsified** by
+zero within-pass duplicates. Cross-reader cache reuse is **closed / rejected**
+because each reader reacquires current physical membership and authority. A
+single common snapshot/verification across the three V3 seals in one
+`_read_call_history()` remains **open / unproven**: it has a bounded possible
+saving, but it would replace three independent physical acquisitions with one.
+The current next action is to ground the required freshness scope, then design a
+negative mutation-between-seals probe. Do not implement or claim a speedup until
+that boundary is resolved.
+
+#### Keep the read hotspot separate from the two-seal writer failure
+
+The same-reader three-V3 verification opportunity belongs to the saved
+three-accepted-member target-read profile. It must not be used to explain the
+separate `test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay`
+writer refusal: that invocation failed while preparing acceptance on Turn 2,
+before its second terminal or V3 publication existed. At that point the selected
+history contained only the first seal's V3 record, so there was no three-seal
+fanout to collapse. The known 6.165-second mandate overrun and the ~60-second
+terminal-read CPU hotspot are separate symptoms with different selected
+histories and call paths. Any optimization proposed for one must be measured on
+that exact path before claiming it addresses the other.
+
+#### Mandate-age timeline hypotheses (2026-10-14)
+
+Source inspection confirms where the 60-second clock starts and which work
+follows it. `preview_call_acceptance()` first reads execution history,
+authenticates, and captures dispatch. It then constructs the mandate with
+`not_before_ns=captured.observed_time_ns` and expiry at
+`captured.observed_time_ns + MAX_HORIZON_NS`. After that timestamp, preview
+still calls the owner to evaluate the mandate, authenticates again, captures
+dispatch again, checks scope and preview validity, and selects/readbacks the
+preview journal entry. Only after the preview returns does `accept_call()`
+start `prepare_call_exchange()`: fresh authentication, selected-preview and
+history reads, another dispatch capture, loop-owner preparation, effects-owner
+preparation, issuance validation, and finally writer admission. Writer
+`_check_live()` reads history and captures dispatch again.
+
+This ordering establishes **exposure**, not elapsed time: both completion of the
+preview and the later acceptance consume the same mandate horizon. It does not
+show which interval consumed the 66.165 seconds observed at the admission
+rejection. In particular, do not assign the overrun to the writer history read,
+the preview owner's IPC, repeated authentication, or time between calls from
+the ordering alone. The focused trace establishes that admission expiry was
+the first refusal observed in `require_invocation`; it does not establish that
+no other freshness condition would also have failed later.
+
+Differential hypotheses for the **next required mounted functional run**:
+
+| Candidate source of mandate age | Discriminator | Interpretation |
+|---|---|---|
+| Preview before the caller can accept | Time the initial execution-history read, both selected-preview/history reads around append, both authentication calls, both dispatch captures, the effects owner call, and the whole preview. Record start/end offsets from one monotonic origin. | A large preview interval, with the inner span boundaries, locates horizon consumption before the caller receives the preview. |
+| Acceptance before writer admission | Time initial replay authentication, outer `CallPublicationAuthority.prepare_fresh`, nested `prepare_call_exchange`, fresh authentication, preview/history reads, capture, effects owner call, and writer submit. | The direct loop-owner RPC and local preparation are inside `prepare_call_exchange`; the surrounding `prepare_fresh` span also includes issuance validation after that await. Their difference bounds the outside work. If the outer residual dominates, split it later. |
+| Writer guard | Time `_check_live`, its existing history read and dispatch capture, and record mandate age at guard entry/exit plus the original `LoopRejected` reason before the existing `STALE` mapping. | This separates an admission-expiry reason from other stale causes and measures time actually inside the guard. |
+| Time outside measured calls | Compare the start/end offsets for preview return, accept entry, wrapped calls, and writer entry in the same trace. | The remaining gaps locate caller/runtime work not covered by an inner wrapper; do not assign those gaps to a particular subsystem without another discriminator. |
+
+Keep the existing mandate, RPC, source-observation and lease horizons fixed.
+The test-local wrappers preserve each original call and exception, then restore
+through `monkeypatch.context()`. Span rows contain start/end offsets, elapsed
+wall time, and calling-thread CPU; nested spans overlap and their CPU values are
+not additive. The trace emits only scalar timing data and the fixed refusal
+reason, not request or journal payloads. Do not reread journals to count records
+or measure bytes. Attach these marks to the next required functional run; do not
+repeat the multi-minute selector solely to collect them. The result should
+decide whether to optimize preview tail, authenticated history replay,
+acceptance owner work, writer validation, or none of those. It must not presume
+that speeding up one history read will recover the full 6.165 seconds.
+
+#### Current-tree two-seal trace with phase boundaries (2026-10-14)
+
+Command (the sandboxed attempt failed before test setup because the spawned
+owner could not bind its AF_UNIX socket; the same test was then run with local
+owner sockets permitted):
+
+```sh
+TMPDIR=/private/tmp UV_CACHE_DIR=/private/tmp/chiplog-uv-cache \
+uv run pytest -q -s \
+  tests/composition/test_r14_native_selected_accounting_source.py::test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay
+```
+
+The mounted test ran for 717.22 seconds and failed at second-turn writer
+admission with `STALE:admission-expired`. It did not publish the second
+terminal/V3 record or reach cross-order replay and reopen. The test-local trace
+starts immediately before preview; measured preview plus acceptance was 85.46
+seconds. Thus about 631.76 seconds of selector elapsed time lies outside those
+two traced calls, predominantly in the required setup that precedes preview;
+the trace does not split that setup into phases.
+
+| Span | Offset from trace origin | Wall | Calling-thread CPU |
+|---|---:|---:|---:|
+| Preview, whole call | 0.000–42.388 s | 42.388 s | 41.492 s |
+| Initial `preview.history` | 0.001–20.678 s | 20.677 s | 20.276 s |
+| Post-append `preview.preview_history` | 21.539–42.386 s | 20.847 s | 20.412 s |
+| Nested post-append `preview.history` | 21.616–42.385 s | 20.769 s | 20.298 s |
+| Acceptance, whole call | 42.388–85.463 s | 43.075 s | 21.370 s |
+| `accept.preview_history` | 42.427–62.768 s | 20.340 s | 20.014 s |
+| `writer.check_live` | 64.497–85.462 s | 20.965 s | 20.491 s |
+| Nested `writer.history` | 64.497–85.141 s | 20.644 s | 20.169 s |
+| Nested `writer.capture` | 85.141–85.462 s | 0.321 s | 0.321 s |
+
+The post-append history span is nested inside `preview.preview_history`; do not
+add both durations. `writer.history` and `writer.capture` are nested inside
+`writer.check_live`. The trace recorded mandate age 21.297 seconds when preview
+returned, 43.406 seconds at writer-guard entry, and 64.371 seconds at exit. The
+guard's exact first refusal was
+`denying invocation is not currently authenticated (STALE:admission-expired)`;
+its later source/scope/minimum-deadline checks were not reached. This proves the
+immediate failure for this invocation, not that those later checks would pass.
+
+This run separates three issues. First, the same authenticated history reader
+costs about 20 seconds at acceptance preparation and again at writer admission.
+The writer-side read is longer than five seconds, but this invocation expired
+the 60-second mandate inside `require_invocation()` before `_check_live` reached
+its later minimum-deadline comparison. The trace therefore does not establish
+which owner-preparation deadline was limiting, or that this read alone caused
+the observed refusal. Second, preview spends about 20.8 seconds after the
+mandate is constructed in its selected-preview readback, which contributes to
+the 60-second mandate age. Third, roughly 632 seconds before preview remain
+unlocalized. They include
+required R14.6 work: first-turn cancellation, cancellation accounting, first
+V3 publication, readiness, same-Run next-Turn transition, and second capture
+and seal. Source review found no demonstrated publication that can be removed
+while retaining this witness. Do not attribute this setup interval to the
+writer failure or remove the transitions without a contract-preserving
+replacement.
+
+The trace motivates reducing CPU inside a **fresh** history read, not extending
+the mandate or reusing the preparation cut at writer admission. Previous saved-
+cut profiles found repeated `_pending()` parsing of identical large decisions
+and repeated inventory/canonicalization work, but those measurements came from
+other cuts; they do not show which part of this 20-second read can be removed
+while retaining its checks. The next implementation candidate must preserve
+every live journal, physical membership, owner, source/head, branch and deadline
+predicate, and demonstrate that the writer read fits its existing deadline.
+The post-append preview readback is also not removed by this evidence: it
+detects lifecycle changes during the owner call, and replacing it with raw
+journal equality would change that behavior.
+
+#### Cold differential review of prepared-history reuse (2026-10-14)
+
+Three independent source reviews challenged a proposed writer fast path that
+would reuse the prepared execution inventory after comparing a short list of
+database and journal heads. All found the same missing dependency class:
+`_read_call_history()` resolves retained H1 workspace issuance and dashboard
+issuance through separate journals, in addition to validating selected loop
+decisions, physical membership, and retained checkpoint bytes. Those external
+inputs can disappear or change while SQLite identity, tenant frontier,
+materialization commitment, owner head, and loop head remain constant. The
+current full reader would reject; the proposed head-only stamp could use stale
+inventory. A held in-process authority gate does not prove those files
+immutable.
+
+This rejects the **listed head-only stamp**, not every possible per-preparation
+stamp. A safe stamp would need to bind or freshly verify the complete dependency
+closure, physical insertions and omissions, and all live authority/resource
+predicates. That is a new evidence boundary and race-test matrix, so it is not
+the narrowest current change. Keep full fresh history replay at writer
+admission. The smaller route is to profile and reduce work inside one fresh
+reader, but only where a differential mutation test proves unchanged rejection
+behavior.
+
+The measured two-seal run now has a firmer split of the duration: 85.46 seconds
+are inside preview plus acceptance; about 631.76 seconds are outside them,
+mostly before the trace origin. The trace does not attribute that setup interval
+to startup, fixture construction, recovery, SQLite, or any single R14
+publication. Earlier reviewers found the current transition chain is required
+for the same-Run two-seal witness, so deleting those publications is not a
+supported shortcut. The next useful observation is phase timing at the
+already-required functional run boundary: existing runtime startup; first Run
+begin/capture/seal; cancellation and its accounting/V3; readiness and next-Turn;
+second capture/seal; then preview and acceptance. Record elapsed time at each
+boundary and use cardinalities already present in returned history views; do not
+reread journals to gather counts or bytes. Until that evidence exists, the
+632-second segment is localized only to pre-preview setup, and no claim that it
+is history replay or exponential growth is supported.
+
+The mounted test now emits `R14_SETUP_TRACE` from these existing boundaries
+before beginning the second preview. It times runtime startup, first-turn
+admission/begin/capture/seal/cancel, the two already-required history reads,
+cancellation accounting, first V3, readiness, next-Turn transition, and second
+capture/seal. It also records call and seal counts from the two already-returned
+recovery views. The probe calls no additional readers and does not alter
+ordering or outcomes. Cold source review found no critical issue. These phase
+values are not available yet; the full selector was not repeated solely to
+collect them.
+
+#### Differential result from the instrumented two-seal run (2026-10-14)
+
+The required mounted selector was then run once with the phase trace above:
+
+```sh
+TMPDIR=/private/tmp UV_CACHE_DIR=/private/tmp/chiplog-uv-cache \
+uv run pytest -q -s \
+  tests/composition/test_r14_native_selected_accounting_source.py::test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay
+```
+
+It failed once after 336.85 seconds at second-call acceptance. It did not reach
+the second terminal/V3 publication, reverse-order replay, or reopen assertion.
+This is the current instrumented result; the earlier 717.22-second run is a
+separate attempt and must not be averaged with it. The returned recovery views
+showed one call/one seal after Turn 1 and two calls/two seals after Turn 2.
+
+| Setup phase, in execution order | Wall |
+|---|---:|
+| Runtime startup | 3.483 s |
+| Publish recovery profile | 0.024 s |
+| Admit initial slot / drive initial input / begin first Run | 0.327 s |
+| Capture and seal first Turn | 2.056 s |
+| First recovery history read | 0.151 s |
+| Cancel first-Turn member | 1.071 s |
+| Publish cancellation accounting | 9.204 s |
+| Publish first-seal V3 | 10.267 s |
+| Publish accounting readiness | 24.584 s |
+| Read first execution history | 4.454 s |
+| Start second Turn | 55.188 s |
+| Capture second Turn | 144.423 s |
+| Seal second Turn | 30.814 s |
+| Second recovery history read | 9.631 s |
+
+The setup phases are sequential and sum to about 295.68 seconds. Preview took
+19.864 seconds wall / 19.812 seconds calling-thread CPU. Acceptance took
+20.623 seconds wall / 10.309 seconds calling-thread CPU. These boundaries leave
+the rest of the 336.85-second selector outside those measured calls; the
+measured setup accounts for most of that remainder.
+
+The acceptance trace separates the immediate refusal from the earlier
+717-second attempt. The mandate was 9.916 seconds old when preview returned.
+The writer guard began at mandate age 20.432 seconds and returned at 30.538
+seconds, leaving 29.461 seconds before mandate expiry. Its fresh history read
+took 9.914 seconds; dispatch capture took 0.191 seconds. `_check_live` then
+raised `call acceptance original authority or owner preparation expired`,
+which `check_prepared` mapped to `STALE`. Thus mandate expiry does not explain
+this invocation. The existing check computes its effective deadline as the
+minimum of both owner-call deadlines, effects lease, mandate horizon, and all
+captured source-validity horizons. This trace does **not** retain those exact
+operands or the winning minimum, so it cannot yet distinguish the loop/effects
+RPC horizon from a source-validity horizon. It shows that writer work crossed
+the five-second currentness window; it does not license increasing that window.
+
+Source inspection gives a specific, testable explanation for the 144.423-second
+second-Turn capture. `capture_execution` has three direct full history reads
+and four `_publish_initial_transition` calls (Accumulate Visibility, Prepare,
+Emit, Capture); each transition reads history before publication, in its
+admission guard, and after publication. That is 15 full history replays in the
+capture path. The independent writer/preview measurements show a fresh history
+read at about 9.7–9.9 seconds. Multiplying that cost by 15 gives about 145
+seconds, close to the measured capture duration. This is a strong source-based
+explanation, not an exact attribution: the transition snapshots have different
+cardinalities, and no nested per-call profile was collected. The next narrow
+discriminator, if still needed after this diagnosis, is to time those existing
+15 call boundaries during the next required functional witness, without
+skipping any read or changing publication order.
+
+The failed fixture's loop journal was 209,306,700 bytes by file metadata; the
+call-preview journal was 4,761,526 bytes and H1 issuance journal 3,222,886
+bytes. These are sizes only; the journals were not scanned to count records or
+time parsing. The repeated full-history call path is a better-supported lead
+than a generic “large request” explanation for second-Turn capture. One
+ordinary parse/canonicalization of a single large record is already known to be
+too cheap to explain tens of seconds. No observation here establishes
+exponential growth: there is one instrumented workload, with stage durations
+that vary by operation.
+
+#### Hypothesis discrimination and safe next step
+
+| Candidate | Evidence now | Status |
+|---|---|---|
+| Repeated strict history replay inside second-Turn capture | Source has 15 read callsites across the three direct reads and four three-read publication transitions; the 15 × observed reader cost predicts the measured capture time. | Leading, not yet isolated by nested timings. Preserve all checks; next measure existing read boundaries. |
+| One unusually expensive owner request or socket wait causes the 144 s capture | Capture is a local runtime path containing multiple history reads; no owner wait breakdown was captured for this phase. | Weakened by source structure, not fully ruled out. Do not start with GIL or socket tuning. |
+| A 209 MB journal by itself causes the full delay | File is large, but no read/parse attribution or record count was collected in this run. One parse pass is known to be cheap relative to multi-second phases. | Not established; size alone is not a causal measurement. |
+| Mandate expiry caused this writer refusal | Mandate still had 29.461 s at guard return. | Ruled out for this invocation. |
+| The five-second owner/currentness or source horizon caused the writer refusal | Fresh writer history took 9.914 s and guard ended with the minimum-deadline rejection; exact minimum operands were not recorded. | Strong candidate, exact winning horizon unresolved. Keep bounds unchanged. |
+| GIL contention / exponential algorithmic growth | No competing-thread wait measurement; no controlled cardinality series in this selector. | Unsupported. Do not optimize or redesign for either claim. |
+
+The tempting next experiment was to reopen the failed pytest fixture and profile
+one `read_execution_call_history`. A cold review rejected treating that as
+read-only: runtime startup can change custody, trust, owner, H1, preview, or
+journal state without advancing the tenant head, and the proposed reconstruction
+of `HermeticDispatchResources` had not yet been proven identical to the original
+manifest and bindings. Copying the fixture would also change the custody-bound
+path/inode and measure a rejected or different recovery path. Do not run that
+profile on the lone artifact. The existing timing evidence is sufficient to
+rank the next source-level probe; retain the artifact unchanged.
+
+#### Differential result: request-local loop-cut reuse (2026-10-14)
+
+The first in-reader experiment passes `_read_call_history()`'s already parsed
+and authenticated loop-decision cut to `validate_selected_next_turn()`. Before
+using it, the validator compares the complete ordered `(decision_id,
+predecessor, raw)` journal entries again under the continuously held authority
+gate. It retains candidate order, filters, exact raw bytes, per-candidate
+accounting validation, and source/physical checks. This reuse is local to one
+reader call; it does not cross a gate release, IPC, or publication.
+
+A cold plan review found no critical issue with those conditions and warned
+that the work is diagnostic: matching loop bytes does not authenticate physical,
+owner, accounting, trust, or source state. Those checks remain in place. The
+existing next-Turn mounted suite passed all five tests in 507.54 seconds,
+including selected replay, foreign evidence hold, physical tamper rejection,
+and reopen. The test command was:
+
+```sh
+TMPDIR=/private/tmp UV_CACHE_DIR=/private/tmp/chiplog-uv-cache \
+uv run pytest -q tests/composition/test_r14_next_turn_publication.py
+```
+
+The two-seal mounted selector was then run once with its existing timing/profile
+probe. It failed after 300.64 seconds at second-call writer admission, again
+before second terminal/V3 publication and cross-order replay. The precise
+refusal remains source freshness: all eleven `source_0` through `source_10`
+deadlines were earliest; the effects lease and mandate each had about 29.56
+seconds remaining. The five-second source horizons are unchanged.
+
+| Writer-history measure | Earlier profiled attempt | Cut-reuse attempt |
+|---|---:|---:|
+| Wall / thread CPU | 10.656 / 10.640 s | 10.462 / 10.434 s |
+| `json.loads` calls | 2,170 | 2,130 |
+| `validate_selected_next_turn` cumulative | 4.538 s | 4.352 s |
+| `_validate_eligible_accounting_candidates` cumulative | 3.738 s | 3.667 s |
+| Writer refusal | source/currentness deadline | source/currentness deadline |
+
+The roughly 0.2-second read difference is small relative to the 10.4-second
+reader and is not a controlled benchmark. Removing 40 JSON decodes did not
+change the result. This rejects duplicate loop-row decoding as the dominant
+writer cost; it does not reject request-local cut reuse as a harmless small
+reduction. Do not claim the writer budget is solved.
+
+The profile instead keeps attention on retained accounting validation and
+canonicalization: `_validate_eligible_accounting_candidates` still accounts
+for 3.667 seconds, selected native accounting decoding for 3.340 seconds across
+three calls, and `RecoveryDTO.canonical_bytes()` for 3.433 seconds across 2,183
+calls. These are overlapping cumulative costs, not additive intervals. The
+current evidence does not say which canonicalizations are repeated for the same
+semantic object, or which retained source objects are safe to share. The next
+discriminator is source-level call-path analysis of these exact profile rows,
+then a narrowly instrumented required run only if the candidate operation is
+still ambiguous. Any reduction must preserve each eligible candidate's
+accounting, source, trust, and physical membership validation. No further
+multi-minute run is justified until that analysis identifies a concrete
+repeated computation and a differential rejection case.
+
+#### Source trace and bounded same-scope reduction (2026-10-14)
+
+Source tracing confirms that `validate_selected_next_turn()` walks every
+selected accounting publication eligible through the requested sequence and
+calls `validate_accounting_selected()` on each. It then returns the named,
+independently validated evidence and compares its reconstructed physical pair,
+source bytes, decision reference, and cut relationships. This is deliberately
+candidate-complete validation; simply validating the named item would weaken
+history eligibility checks. The source establishes the validation multiplicity,
+but does not explain the 2,183 `RecoveryDTO.canonical_bytes()` calls: the
+profile recorded neither receiver identity nor call sites, and the retained
+graph includes many DTO types. Do not infer that all those calls target one
+object or that candidate-level caching is safe.
+
+One separate exact duplicate was found in
+`_authenticated_scope_sources()`: for an immutable authenticated recipient DTO,
+the same canonical bytes were generated four times and the same SHA-256 three
+times to reconstruct the recipient child identity, head, fingerprint, and
+physical child bytes. The helper first requires exactly four matching physical
+trust children; after that gate, it now computes the bytes and digest once and
+reuses those local values. The DTO is frozen and its fields are immutable. All
+child membership, identity, head, fingerprint, selected-decision, and physical
+record comparisons remain. This is same-call local reuse; it does not persist
+across an authentication boundary.
+
+The focused mounted-independent regression passed:
+
+```sh
+TMPDIR=/private/tmp UV_CACHE_DIR=/private/tmp/chiplog-uv-cache \
+uv run pytest -q tests/composition/test_r14_native_recovery_cut.py::test_r17_scope_children_are_exactly_bound_to_authenticated_trust_carrier
+```
+
+This proves the scope binding still accepts its valid fixture, not that the
+optimization materially changes the two-seal runtime. These bytes are produced
+by a `DeliveryDTO` subtype, so this edit does not directly reduce the measured
+`RecoveryDTO.canonical_bytes()` row. It is a bounded local cleanup, not the
+writer-timeout fix. The next useful profile must record call site, receiver
+type/object identity, input/output size, wall time, and thread CPU around
+`RecoveryDTO.canonical_bytes()` and accounting validation, but only during the
+next already-required mounted functional witness. Do not rerun the long failing
+selector only to collect that trace; keep the five-second freshness constraints
+and every candidate/source/physical check unchanged.
+
+#### V3 retained-artifact reconstruction trace (2026-10-14)
+
+The two-seal writer profile showed repeated work in a different DTO path from
+the `RecoveryDTO.canonical_bytes()` row: the V3 selected-history decoder
+validated one retained publication, built its physical command (validating it
+again), then built its envelope through the public command builder (validating
+it a third time). The historical selected-publication reader had the same
+validate / command / envelope reconstruction chain. Source inspection confirms
+these calls use the same immutable retained evidence within one decode; the
+reconstructed record, command, envelope, source/head comparisons, and public
+builder validation boundaries remain necessary.
+
+The bounded change introduces one private helper that returns the validated
+record, command, and envelope from one validation. Internal decoder sites use
+that tuple once. The public command and envelope builders still validate
+independently when called on their own. This removes two repeated retained
+publication validations per internal decode without caching across calls or
+changing any source, physical, ordering, or deadline checks. The focused
+`test_r14_native_sealed_accounting_records.py` suite passes (6 tests), including
+equivalence of the bundled outputs with both public builders.
+
+Two required mounted two-seal attempts after earlier bounded reductions remain
+incomplete, with different observed refusal points. One ended after 299.12 s at
+writer source freshness (`source_0..source_10`); a later attempt ended after
+468.25 s at `loop_rpc` admission expiry. Neither reached the second terminal,
+V3 publication, cross-order replay, or reopen. Their profiles reported
+`read_execution_call_history` at 10.394 s and 20.476 s wall respectively, with
+thread CPU nearly equal to wall, and 2,130 `json.loads` calls in each. The
+variation and different failure points mean these attempts do not establish a
+performance trend or prove this V3 reduction fixes the admission deadline.
+They do establish that the required witness is still blocked before its
+acceptance criterion.
+
+Do not run another multi-minute test as a standalone diagnostic. Keep this
+local reduction and its fast regression. Measure its end-to-end effect only in
+the next required mounted R14.6 functional witness, which must complete the
+second terminal, V3 publication, cross-order replay, and reopen. If that witness
+still expires, record the exact winning admission-deadline operand and its
+start/end timestamps; do not enlarge any freshness or lease horizon. Until the
+full witness passes, R14.6 remains open.
+
+#### Latest two-seal differential run (2026-10-14)
+
+After the retained V3 artifact reconstruction change, the required two-seal
+selector ran for 607.56 seconds and failed at the second `accept_call` with
+`STALE:admission-expired`. It again did not reach second terminal publication,
+second-seal V3 publication, cross-order replay, or reopen. This is a functional
+failure, not a passing run. The mounted setup trace measured second-Turn capture
+at 225.282 s and second-Turn sealing at 59.891 s. Preview took 38.270 s wall /
+38.131 s calling-thread CPU; acceptance took 43.240 s wall / 20.607 s
+calling-thread CPU.
+
+The writer guard's fresh `read_execution_call_history` took 21.273 s wall /
+21.157 s calling-thread CPU. Its cProfile sample attributed overlapping
+cumulative costs of 14.365 s to two `validate_selected` calls, 12.602 s to two
+`authenticate_native_recovery_selected` calls, 8.886 s to five
+`read_historical` calls, 8.635 s to `validate_selected_next_turn`, 7.238 s to
+three selected native-accounting decodes, 6.824 s to 2,127 JSON raw decodes,
+and 6.170 s to 21 `_pending` calls. These sums overlap; they are not additive.
+This supports repeated history/source validation and JSON/canonicalization as
+the expensive local path. One sample cannot tell which same objects are
+revisited or which repeated checks are removable.
+
+The initial reading of the refusal trace incorrectly treated its earliest
+saved deadline as the cause. The traceback and exact exception show the actual
+path: `_check_live` first spent 21.273 s re-reading history, then
+`capture_dispatch()` called `require_invocation()`, which rejected with
+`STALE:admission-expired` before `_check_live` reached its final minimum-deadline
+comparison. `prepare_call_exchange()` sets
+`observed.admission_valid_until_ns` to the preview mandate expiry, and the trace
+recorded `mandate_remaining_at_return_ns = -2.409 s`. Mandate expiry therefore
+caused this invocation's refusal. The 21.618 s `_check_live` span includes both
+the 21.273 s history read and a 0.327 s dispatch capture; the exception was
+raised during that capture.
+
+The diagnostic wrapper also calculated a saved candidate minimum and reported
+`loop_rpc` with -17.872 s slack at the point of exception. That minimum was not
+the throwing predicate: it is evaluated only after `capture_dispatch()` returns.
+It may become the next constraint after mandate expiry is avoided, but this run
+does not prove that. Keep it as a later candidate, not the current cause. The
+effects lease and mandate were not both still valid: the mandate had expired.
+No evidence here justifies changing either horizon.
+
+Differential hypotheses, ordered by evidence:
+
+1. **Repeated local history validation consumes the mandate horizon.** The
+   writer history read took 21.273 s and was almost entirely calling-thread CPU;
+   `require_invocation()` failed immediately after it because the mandate
+   expiry had passed by 2.409 s. This is the strongest causal explanation for
+   this invocation. Keep mandate and source horizons unchanged; identify
+   repeated work within the authenticated current read.
+2. **The saved `loop_rpc` deadline may be the next constraint.** The diagnostic
+   wrapper calculated it as earliest at the exception timestamp, but the
+   throwing nested check was mandate expiry and the final `_check_live`
+   comparison had not run. Whether `loop_rpc` would refuse a faster check is
+   unresolved. Preserve the existing bound for now and do not claim it caused
+   this failure.
+3. **Second-Turn capture is dominated by full history rereads.** The trace now
+   measures 225.282 s, while source analysis already identified 15 full-history
+   read callsites in its capture transitions. This remains a strong, separate
+   cost. Exact attribution would need timings on the existing boundaries during
+   a required functional witness; it does not explain which deadline wins at
+   the later writer check.
+4. **GIL contention, socket delay, or exponential growth.** The profiled writer
+   read has wall and calling-thread CPU within 0.116 s. That weighs against a
+   socket wait in this interval, but does not measure competing-thread lock
+   wait. No controlled cardinality series exists, so neither GIL contention nor
+   an exponential law is established.
+
+Next action: continue source-level differential analysis of the 21.273 s
+current-history read and remove only exact same-cut repeated work that preserves
+current-source authentication. A later required functional witness must log
+the throwing callsite separately from the post-capture saved-deadline minimum;
+do not infer a winning bound from candidate values after an earlier nested
+exception. Do not run a diagnostic-only multi-minute test or enlarge mandate,
+source, RPC, or lease horizons.
+
+#### Request-local loop-cut check reuse (2026-10-14)
+
+The source trace then exposed an exact repeated read in
+`authenticate_native_recovery_selected()`: with an authenticated loop-decision
+cut, the function compared the complete current loop journal to that same cut
+before selecting the entry, then repeated the comparison after opening the
+SQLite read connection, before deriving historical publications. The function
+requires the authority gate to be held. From the first comparison through the
+second it executes synchronously, with no `await`, gate release, callback, or
+write. The journal's canonical append/read path uses this same gate. A cold
+review confirmed the second comparison is redundant for admitted mutations
+under that gate; it also noted that direct external file mutation is outside
+what either check can reliably serialize.
+
+The second comparison was removed; exact full-journal equality is still checked
+once per selected authentication, before selected entries and SQL history are
+used. The helper-level regression still verifies rejection of foreign cuts,
+unsealed inputs, changed marker bytes, truncation, and restored original bytes.
+Fast verification passed (8 focused tests; Ruff and `git diff --check` clean).
+The mounted positive recovery/reopen test also passed:
+`test_selected_native_cut_reopens_and_legacy_prepare_holds[True]` (1 passed in
+260.20 s). This confirms the selected recovery path still accepts the valid
+historical cut after the repeated check is removed. It is not a full R14.6
+two-seal witness and does not prove the reduction is large enough to meet the
+current writer deadline.
+
+This is a small, source-proven reduction in the 21.273 s writer-history path,
+not a complete explanation for the remaining gap: the latest failure happened
+after mandate expiry during nested dispatch capture. `loop_rpc` was only the
+earliest saved candidate at the later exception timestamp; `_check_live` had
+not reached that final predicate. A further long run is not justified by this
+single small reduction. Continue source-level
+analysis of the measured validation multiplicities and preserve every exact
+owner, source, inventory, and physical check. Any next mounted run must be the
+required full R14.6 witness after a material, independently reviewed reduction,
+not a performance-only probe.
+
+#### Candidate rejection: readiness versus next-Turn validation
+
+The profile's two `validate_selected` calls suggested that a readiness record
+might be validated once by the general reader and again as an eligible
+candidate for a selected next Turn. Source inspection confirms the call paths
+can reach the same selected readiness decision. However, the checks have
+different scopes: the general reader authenticates the full current native
+recovery cut; the next-Turn candidate walk authenticates each eligible
+readiness decision against its historical prefix through the target sequence.
+The latter also deliberately validates unnamed eligible candidates and keeps
+going after the named candidate. Skipping the general validation would remove
+the current-cut check, while skipping the candidate check would weaken the
+candidate-complete guarantee. The apparent duplicate is therefore not safe to
+remove as-is. A shared pure parse/command result could be considered only if
+both current and historical authority checks still run; the present profile
+does not isolate enough exclusive cost to justify that refactor.
+
+#### Source-level differential audit of the writer read (2026-10-14)
+
+Three tempting reductions do not explain the latest 21.273-second writer read:
+
+1. **H1 issuance scans:** the earlier source finding of repeated complete scans
+   no longer describes the current implementation. It opens one issuance
+   journal, loads the selected issuance once, and reuses the verified projection
+   for the later accounting check. The older mounted profile also measured
+   issuance scanning as a small fraction of its much shorter read. Do not
+   reintroduce an H1 scan optimization from that stale call graph.
+2. **Execution inventory reconstruction:** the repeated calls inside
+   `_read_call_history` use different prefix heads or different accumulated
+   arrays. For example, an acceptance validates the inventory before adding
+   itself, while later records validate the inventory after that acceptance.
+   Equal Run identities do not make these inventory snapshots interchangeable.
+3. **Readiness versus Next-Turn validation:** the general reader checks the
+   current selected recovery cut; Next-Turn separately validates every
+   eligible readiness candidate against its historical prefix. Keep both.
+
+The latest profile's 21 `_pending()` calls parsed the same three large selected
+decision payloads repeatedly. This confirms repeated CPU work on equal bytes,
+but not that each caller has the same return-value need or authenticated cut.
+Calls arrive through distinct semantic validators; each obtains fresh journal
+entries and checks pending disposition plus durable H1 V2 evidence. The held
+authority gate serializes admitted local writers during this synchronous
+reader, but this alone does not prove that sharing a parsed result preserves
+every caller's read contract. Do not add a general cache or skip those checks
+without a caller-by-input profile tied to exact cut identity.
+
+The two profiled `validate_selected` calls were then compared at their source
+boundaries. The ordinary history pass authenticates the selected recovery
+publication against the complete current cut. The nested Next-Turn pass
+authenticates every eligible accounting candidate against a historical prefix
+ending at `through_sequence`. The same decision may be visited, but these are
+not interchangeable validations: removing either would drop a distinct
+current-cut or historical-candidate guarantee. The authenticated loop cut is
+now passed through to both, but remains independently checked for each
+historical selection. Keep both validations.
+
+One smaller exact-byte repeat is visible in the historical accounting path:
+`decode_selected_native_accounting()` parses
+`evidence.selected_source_bytes` as `R14NativeOneCallCancelledFacts`; after it
+returns, `authenticate_native_recovery_selected()` parses those same bytes
+again to obtain the native scope binding and record references. Both parses
+occur synchronously under the held authority gate and concern the same retained
+evidence object. This establishes duplicated decoding, not its exclusive cost
+or whether avoiding it is large enough to change the admission outcome. Keep
+it as the next source-grounded candidate only if a local return-value plumbing
+change preserves both decoder canonicality checks and all subsequent native
+scope, physical membership, and historical-cut checks. Do not infer that this
+alone closes the measured ~15-second overrun.
+
+One narrower source candidate remains: within one selected retained execution
+transition, canonical serialization and digest computation occur at several
+validation sites (`_read_call_history` and `transition_command`). The short
+mounted profile measured many `canonical_bytes` and `transition_command`
+calls, but it did not attribute exclusive time or byte volume to this DTO in
+the failing two-seal writer read. Therefore this is not yet a material
+optimization target. If a required functional witness is run, record per
+callsite DTO family, payload length, invocation count and exclusive CPU while
+keeping model validation, historical/native-scope checks, physical membership,
+fresh dispatch capture and every deadline unchanged.
+
+**Current decision:** do not change authority horizons, remove a semantic
+validation, add a cross-boundary parsed-object cache, or rerun a diagnostic-only
+multi-minute scenario. The latest concrete refusal remains mandate expiry
+inside nested dispatch capture after the expensive history read. The
+source-level candidates that could be removed without changing scope have not
+yet been shown to save enough time. Keep R14.6 open; use the per-callsite
+observation only on the next required two-seal functional witness, after any
+independently reviewed material source reduction.
+
+#### Owner-journal lookup differential (2026-10-14)
+
+One structural read-amplification candidate was found in the current V3 path:
+for each parsed owner decision, it called the full owner journal's `entries()`
+and linearly searched for that decision's raw bytes. For N decisions this
+repeats full journal enumeration N times. This is a concrete quadratic lookup
+shape, but the preserved failed-run profile did not attribute time to this
+loop, and the large owner-journal backup inspected nearby is not proven to be
+the exact mounted input. It is therefore a source-level candidate, not an
+established cause of the 21.273-second interval.
+
+A narrow implementation change now captures and strictly authenticates one
+owner-journal tuple, builds a first-match `decision_id → raw bytes` index, and
+uses the authenticated decisions for the join. The V3 early-return branches
+still perform a fresh owner-journal capture and snapshot comparison before
+success; the later legacy-path capture and checks remain in place. Thus the
+change removes per-decision rescans while retaining currentness checks. It
+does not introduce a cache across calls or change any deadline.
+
+Ruff passed. The focused test file reported 24 passed and two mounted tests
+failed before entering the target code because this sandbox denied AF_UNIX
+`bind` (`PermissionError: Operation not permitted`). This is an environment
+block, not a functional verdict. No before/after timing exists yet, so do not
+claim that this change materially reduces the writer read or resolves mandate
+expiry. The next valid measurement belongs inside the required R14.6 witness;
+do not run another multi-minute diagnostic-only scenario.
+
+#### Current-tree required two-seal witness after owner lookup reduction (2026-10-14)
+
+Command:
+`./.venv/bin/python -m pytest -xq tests/composition/test_r14_native_selected_accounting_source.py::test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay`
+
+It ran in an AF_UNIX-capable local environment, reached the second call's real
+writer admission, then failed: **1 failed in 594.53 s**. The refusal was
+`writer STALE: denying invocation is not currently authenticated
+(STALE:admission-expired)`. It did not reach the second terminal, the second
+V3 publication, reverse-order replay, or final reopen assertions. R14.6 remains
+open. Setup and reopen both use `native-v23-prepare.sqlite`; the earlier
+path-mismatch hypothesis is not present in this tree.
+
+Measured boundaries (wall time unless otherwise stated):
+
+| Boundary | Duration |
+|---|---:|
+| Preview call | 37.88 s wall / 37.66 s calling-thread CPU |
+| History reads inside preview | 18.53 s and 18.40 s, nested in preview |
+| Acceptance preparation | 19.21 s wall / 19.07 s calling-thread CPU |
+| History read inside preparation | 18.52 s, nested above |
+| Writer freshness guard | 20.98 s wall / 20.86 s calling-thread CPU |
+| History read inside writer guard | 20.64 s wall / 20.53 s calling-thread CPU |
+| Fresh dispatch capture after that read | 0.316 s wall / 0.316 s calling-thread CPU |
+
+Nested intervals overlap; they must not be summed. At writer refusal, the
+mandate had 0.186 s expired; the saved `loop_rpc` deadline was 17.284 s expired.
+The detailed `_check_live` frame was unavailable in the exception trace, so
+the trace identifies the admission-expired refusal and competing deadline
+values, not a uniquely proven winning predicate.
+
+The writer-read profile shows the next areas to inspect: two
+`validate_selected` calls took 13.97 s cumulative; two
+`authenticate_native_recovery_selected` calls took 12.33 s cumulative;
+`validate_selected_next_turn` took 8.60 s; selected-accounting decoding took
+6.86 s; JSON `raw_decode` took 6.62 s; and 21 `_pending()` calls took 6.18 s.
+These are overlapping cumulative times. Dispatch capture is not the dominant
+part of this refusal. The trace does not prove which selected-accounting bytes,
+prefixes or journal entries overlap between candidate validations.
+
+One exact context-loss path was confirmed by source inspection: outer
+`_read_call_history` builds and passes one authenticated loop-decision cut into
+`validate_selected_next_turn`, but `_validate_eligible_accounting_candidates`
+did not forward it to `validate_accounting_selected`. Each nested historical
+validation therefore rebuilt and parsed loop entries before selecting its
+`through_sequence` prefix. A narrow change now forwards that exact cut. It
+retains per-candidate historical validation, the same `through_sequence`, the
+current-journal comparison and the full unnamed-eligible-candidate walk.
+Three focused tests passed (cut propagation, unnamed bad candidate, and
+changed-current-loop-cut rejection); Ruff passed. This proves helper-level
+behavior only. No timing or mounted functional result exists for this change;
+the next required witness must show whether it shortens writer admission. Do
+not infer a pass from those unit tests or alter any horizon.
+
+The required witness was rerun once after that propagation change, using the
+same selector. It again failed at writer admission: **1 failed in 575.58 s**;
+the second terminal, V3 publication, replay and reopen remained unreached. Its
+writer history interval was 19.72 s wall / 19.68 s calling-thread CPU, the
+writer guard 20.18 s wall / 20.13 s CPU, and dispatch capture 0.435 s. The two
+`authenticate_native_recovery_selected` calls were 11.56 s cumulative;
+`validate_selected_next_turn` 7.97 s; candidate validation 6.68 s; and selected
+accounting decode 6.92 s. These remain overlapping profile figures. Relative
+to the preceding selector run, nested candidate/history values were somewhat
+lower, but independently generated fixtures and runtime variance prevent
+claiming that the loop-cut change caused the full difference. The specific
+confirmed loss of authenticated parsing context is fixed; the unchanged
+admission failure shows it is insufficient by itself.
+
+#### Owner-prefix scan candidate rejected on the mounted input (2026-10-14)
+
+The historical `through_sequence` path appeared to rebuild a growing owner
+journal prefix for each row. The cold-reviewed linear-boundary rewrite kept
+all selected-prefix checks but did not change the required two-seal witness:
+**1 failed in 581.69 s**, still at the second call's writer admission. The
+current failed fixture contains 6 owner-journal rows totaling 237,960 bytes
+(`wc -l -c`). Even if the old loop reached the last row, it would decode only
+the six-entry prefixes over this small image. This cannot plausibly account
+for the approximately 20 s writer-history interval in this witness. Revert the
+rewrite and do not count it as a performance fix for the current failure.
+
+The same writer-read cProfile gives stronger current leads: five
+`NativeOneCallScopeService.read_historical()` calls took 8.76 s cumulative;
+ten `read_historical_admitted_inbox()` calls took 6.74 s; 21 `_pending()` calls
+took 6.13 s; and 2,038 JSON `loads()` calls took 6.96 s. These figures overlap.
+The read itself took 20.004 s, almost entirely calling-thread CPU. This profile
+does not show which scope anchors, inbox records, or selected raw bytes repeat
+across the calls, so it does not yet justify sharing their results.
+
+Next differential step: identify the exact repeated identities and source cuts
+for the five historical-scope and ten admitted-inbox reads in this writer
+history. Keep each currentness and historical-prefix validation. Do not change
+deadlines, add a general cache, or run another full witness until source
+inspection finds a same-call repeat whose removal is material for this
+six-row fixture.
+
+#### Same-call historical inbox repeat confirmed (2026-10-14)
+
+Source inspection resolved the 5-to-10 call-count question. Each
+`NativeOneCallScopeService.read_historical()` invokes
+`CommonCliExecutionRuntime._validate_historical()`, which reads the historical
+admitted inbox, passes that observation into `_selected_input()`, and compares
+the decoded input with the retained request. The service then read the same
+inbox again to compare its canonical record bytes and physical record head
+with the selected scope. Both reads use the same command ID while the same
+runtime authority gate is held; no publication occurs between them. The later
+comparison adds no second freshness boundary, so retaining the already
+authenticated observation preserves both sets of predicates.
+
+The narrow change returns that `AdmittedInboxObservation` from
+`_validate_historical()` and reuses it for the canonical-bytes and physical-head
+comparisons. It adds no cache and leaves all comparisons and rejection paths
+in place. Ruff passed, and the two mounted historical-scope tests passed. The
+broader focused command passed 7 tests and had 3 failures elsewhere: one
+concurrent selected-ingress race and two strict-xfail terminal tests returning
+`EXECUTION_DRIVER_REJECTED_V1`. Those failure traces do not point to the changed
+reuse assertion; record them separately rather than attributing them to this
+change or treating them as evidence for it.
+
+This confirms one redundant authenticated source read per historical-scope
+call. The profile reports 6.74 s over ten inbox reads and 8.76 s over five
+whole scope reads, but inclusive timings overlap; it cannot be used to claim a
+specific saving for the five eliminated reads. The writer history has not yet
+been rerun, so admission impact and the required two-seal outcome are unknown.
+Next: use the next required mounted witness with the current source and
+low-volume counters to verify the inbox count falls from two to one per scope
+call, then check whether the writer history interval changes. Preserve every
+deadline and do not launch a separate long witness solely for this candidate.
+
+The two `authenticate_native_recovery_selected()` invocations are not a reuse
+candidate by function-name/count alone, but source inspection does not yet
+prove their actual work differs. One route is
+`validate_selected(..., through_sequence=None)` through
+`authenticate_selected_held()`; the other is the per-candidate route with a
+`through_sequence` value. Both reconstruct the retained original C at
+`cut.tenant_commit_sequence` and verify its publication delta. For the
+direct-terminal and accepted-open V3 branches, the helper returns before its
+later sequence-bounded owner-prefix branch, so the argument difference alone
+does not establish a different reconstruction. Conversely, the current profile
+does not establish identical evidence or inputs. Keep both until attribution
+records caller identity, retained recovery operation ID, selected branch,
+`through_sequence`, cut tenant/head/commitment and visited row counts. This
+will distinguish duplicate work from separate selected evidence without
+removing either validation speculatively.
+
+#### Live cross-seal native sample (2026-10-15)
+
+During the already-required three-member/cross-seal invocation, the first selector
+had passed and the second was still running. `sample 2601 2 10 -file
+/private/tmp/chiplog-r14-cross-seal-live-sample.txt` sampled the existing process
+without stopping it or altering source. The report lists 4.4G physical footprint
+and 6.0G peak footprint, and captures Python execution and native Pydantic frames.
+These are one-process observations, not a memory-growth curve or a leak diagnosis.
+The native sample does not expose the needed Python caller identities and cannot
+prove repeated authentication of the same source. It therefore justifies no
+validation removal or caching. The test continues with unchanged source; no target
+timeout was introduced. A Python-level attribution profile remains necessary
+before choosing any further reuse boundary.
+
+### Native SUSP phase attribution, 2026-10-15
+
+Original-code sys/threading observer (no callable/dispatch replacement):
+`/private/tmp/chiplog-r14-suspension-phase-observer-run.log`, 204.23s STALE;
+trace `chiplog-r14-suspension-phase-observer-trace.json` has no observer errors
+or incomplete synchronous frames. Source/profile manifest unchanged. Issued
+actor budget remains 30 seconds. Instrumented `_command` ~1.67s, guard-held cut
+collection ~41.50s, same cut sequence 19/commitment/run as initial acquisition.
+No production-latency estimate is inferred from profiled durations.
+
+After preserving the whole closed fixture, one original held collection after
+reopen (without actor issuance/publication/SEND) completed with the same cut.
+`chiplog-r14-suspension-collect.prof`: 37.212s instrumented; source manifest
+unchanged. Obtain attribution with `pstats.Stats(path).sort_stats('cumulative')`.
+The collector traverses `_read_call_history` 10 times (~25.55s cumulative),
+including `_selected_accepted_recovery_inputs` → public OPEN frontier reader
+(~20.33s), which independently reacquires source facts already present in the
+fresh subset. This identifies a candidate repeated acquisition, not permission
+to reuse across owner IPC or skip currentness/trust/physical validation.
+Next: inspect whether the continuously held subset already carries every fact
+required by that frontier's retained source and resolved-outcome checks.
+
+### Held-history reuse experiment, 2026-10-15
+
+Separate tree `/private/tmp/chiplog-r14-suspension-history-reuse`: HEAD `5d16f4c`
+plus five inherited source WIP files (manifest
+`chiplog-r14-suspension-history-inherited.json`) and the narrow three-module
+candidate. A fresh unresolved subset's exact authenticated history is forwarded
+through OPEN frontier validation to `_current_cut` and its historical builder,
+under the continuously held gate. Only two duplicate outer-history acquisitions
+are removed. Original Prepare/acceptance and source-sequence/locator selection,
+marker/envelope checks, cut equality, suspension preservation and pre/post
+currentness remain. No source facts are borrowed across owner IPC; each native
+cut acquisition rebuilds its subset. Closed/default paths retain their reads.
+
+Five focused boundary cases first reached RED (unexpected history argument),
+then passed: identical history object forwarded while original Prepare/outcome
+selection still runs; changed commitment/identity/tenant rejected before Run join.
+Three-file focused selection returned 170 passed in 1.48s. Ruff passed; cold
+actual review found no critical/blocking defect. This establishes plumbing and
+currentness boundaries, not a production timing result.
+
+Fresh uninstrumented native-clock selector is running via
+`chiplog-r14-history-reuse-native-runner.py`; log
+`chiplog-r14-history-reuse-native.log`, manifest
+`chiplog-r14-history-reuse-native-profile.json`. The same interpreter checks
+builtin clocks at test entry/teardown and source hashes before/after. This
+candidate is not integrated. An independent diagnostic-clock cross-seal
+continuation also runs on MAIN; do not interpret elapsed times as isolated-load
+benchmarks. A renewed STALE requires fresh attribution, not a budget increase.
+
+Result: `chiplog-r14-history-reuse-native.log` returned **1 passed in 209.62s**,
+execution session 12777 exit 0. The same interpreter's builtin-clock checks
+passed before pytest, at test entry and teardown. The before/after source
+manifest is identical (1207 tracked source/test/config files; obtain count with
+`len(json.load(open(profile))['after']['files'])`), and its pytest exit is 0.
+The four candidate source/test files additionally have retained SHA256 values in
+`chiplog-r14-history-reuse-candidate-hashes.json`. This is the isolated WIP source
+profile at HEAD `5d16f4c`, not clean HEAD or an elapsed-time speedup claim.
+
+The fresh before-COMMIT SUSP case passed its actual pending outer read, reopen,
+original-obligation/pair/baseline preservation and exact replay/one-transfer
+assertions with ordinary clocks and unchanged admission budget. A passing first
+slice does not close the production-clock multi-seal route or the full pending
+negative inventory. MAIN integration remains pending while its frozen cross-seal
+continuation runs; the successful isolated files stay unchanged.
