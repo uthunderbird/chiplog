@@ -869,3 +869,31 @@ not runtime admission. Root inspected the integration and independently ran
 artifact, runtime default foreign keys, WAL/lock behavior, complete receiver/domain
 closure, approved descriptor/CURRENT and mandatory startup admission remain open;
 `require_closed()` still refuses.
+
+SQL-acquisition slice (2026-10-16, private helper only): the new
+`tests/platform/test_readonly_sqlite_snapshot.py` witness constructs actual V1
+authority schema/content in committed WAL, proves a main-only copy misses it,
+forbids source-namespace SQLite connections, and requires the existing V1 AMR
+preimage on a private copy with unchanged source namespace/bytes/modes. Command
+`.venv/bin/python -m pytest -q -p no:timeout tests/platform/test_readonly_sqlite_snapshot.py --tb=short`
+first failed once in 0.08s because the acquisition module did not exist, after the
+fixture/control completed. The helper now performs native recovery only on its
+private copy. Root inspected the implementation and independently ran
+`.venv/bin/python -m pytest -q -p no:timeout tests/platform/test_readonly_sqlite_snapshot.py tests/platform/test_authority_gate.py tests/platform/test_authority_snapshot_commitment.py`:
+63 passed in 1.42s. Scoped Ruff and helper mypy passed. The helper's own 14 cases
+include valid uncommitted/reset tails, source replacement/content mutation,
+companion appearance, aliased/nonregular WAL, and cleanup on consumer/SQLite
+failure. These later negatives were added after implementation, not historical
+RED. Process-local main-only, source-opening and omitted-recheck mutants each
+failed the relevant regression. This is not a mounted startup result.
+
+Acquisition is a synchronous existing-gate-held observation, not admission or
+authentication of a recovered WAL prefix. Native private SQLite recovery owns
+committed/uncommitted/reset-tail interpretation; later authenticated content and
+complete-decision-prefix comparison must detect lost history. Any existing
+rollback journal is unsupported by this initial slice. Recheck main/WAL identity,
+bytes and sidecar presence before yielding and before successful context exit;
+source SHM is neither copied nor created. Before mounting this helper, gate
+coverage must include constructors, connection close/checkpoint and WAL cleanup:
+the current materializer `close()` does not establish that exclusion. A helper
+test does not discharge that lifecycle prerequisite or the startup RED controls.
