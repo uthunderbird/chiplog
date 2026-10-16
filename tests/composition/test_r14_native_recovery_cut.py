@@ -581,6 +581,98 @@ def test_v3_readback_routes_only_complete_direct_or_accepted_open_cuts():
     )
 
 
+@pytest.mark.parametrize(
+    "schema",
+    [
+        "chiplog.execution.accepted-open-recovery-opening.v1",
+        "chiplog.execution.accepted-open-terminal-disposition.v1",
+        "chiplog.loop.original-effect-evidence-reducer-policy.v1",
+        "chiplog.loop.original-obligation-closure.v1",
+        "chiplog.loop.original-resolution-basis.v1",
+        "chiplog.loop.original-resolver-authority-policy.v1",
+        "chiplog.loop.original-resolver-batch.v1",
+        "chiplog.loop.original-resolver-invocation.v1",
+        "chiplog.loop.recovered-call-outcome.v1",
+        "chiplog.loop.semantic-reduction.v1",
+    ],
+)
+def test_original_source_producer_joins_exact_selected_decision_head(schema):
+    """Real source constructor, not proof of journal or native authority."""
+    from chiplog.composition.r14_original_obligation_sources import selected_recovery_source
+    from chiplog.platform._sqlite import PhysicalRecord
+
+    raw = b'{"control":"selected-original"}'
+    digest = hashlib.sha256(raw).hexdigest()
+    decision = b'{"kind":"DECIDED","operation_id":"original-command"}'
+    physical = CallSubjectHead(
+        subject_id="original-record", revision=Present(head="record:" + digest, fingerprint=digest)
+    )
+    source = selected_recovery_source(
+        PhysicalRecord("original-record", "agent_loop", schema, raw, digest),
+        subject=physical,
+        selected_decision_id="selected-decision",
+        selected_decision_bytes=decision,
+    )
+    selected = CallSubjectHead(
+        subject_id="original-command",
+        revision=Present(
+            head="selected-decision", fingerprint=hashlib.sha256(decision).hexdigest()
+        ),
+    )
+    assert source.selected_decision.subject_id == selected.revision.head
+    assert _selected_decision_matches_source(source, selected)
+
+
+@pytest.mark.parametrize("damage", ["head", "fingerprint", "subject", "owner", "unknown"])
+def test_original_source_decision_alias_rejects_substitutions(damage):
+    selected = CallSubjectHead(
+        subject_id="original-command",
+        revision=Present(head="selected-decision", fingerprint="a" * 64),
+    )
+    source = SimpleNamespace(
+        owner="agent_loop",
+        schema_id="chiplog.execution.accepted-open-terminal-disposition.v1",
+        selected_decision=selected.model_copy(update={"subject_id": "selected-decision"}),
+    )
+    if damage in {"head", "fingerprint"}:
+        revision = source.selected_decision.revision.model_copy(
+            update={damage: "foreign-head" if damage == "head" else "b" * 64}
+        )
+        source.selected_decision = source.selected_decision.model_copy(
+            update={"revision": revision}
+        )
+    elif damage == "subject":
+        source.selected_decision = source.selected_decision.model_copy(
+            update={"subject_id": "foreign"}
+        )
+    elif damage == "owner":
+        source.owner = "effects"
+    else:
+        source.schema_id = "chiplog.unknown.record.v1"
+    assert not _selected_decision_matches_source(source, selected)
+
+
+def test_original_resolver_anchor_producer_joins_selected_command_decision():
+    from chiplog.composition.r14_loop_semantic_reduction_publication import _selected_anchor_sources
+    from chiplog.composition.r14_original_call_resolution_publication import command
+    from tests.composition.test_r14_original_call_resolution_publication import publication_evidence
+
+    retained = publication_evidence()
+    batch = command(retained)
+    raw = b'{"kind":"DECIDED","operation_id":"original-resolution"}'
+    selected = CallSubjectHead(
+        subject_id=batch.idempotency_key,
+        revision=Present(head="selected-resolution", fingerprint=hashlib.sha256(raw).hexdigest()),
+    )
+    sources = _selected_anchor_sources(
+        SimpleNamespace(), ("selected-resolution", raw, {}, batch), retained
+    )
+    assert len(sources) == 5
+    for source in sources[:-1]:
+        assert source.selected_decision.subject_id == selected.revision.head
+        assert _selected_decision_matches_source(source, selected)
+
+
 def test_r16_effect_source_joins_selected_decision_by_exact_head():
     journal_decision = CallSubjectHead(
         subject_id="dispatch-command",

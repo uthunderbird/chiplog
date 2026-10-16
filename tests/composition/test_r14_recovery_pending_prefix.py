@@ -1,5 +1,6 @@
 """Exact SQLite pending delta; synthetic wire never grants complete-cut authority."""
 
+import json
 import sqlite3
 import time
 from types import SimpleNamespace
@@ -160,6 +161,81 @@ async def test_exact_pending_delta_only_reopens_structural_prefix(tmp_path, comp
         assert not authenticate_selected_recovery_prefix_held(
             runtime, _hash(runtime._database), "0" * 64
         )
+
+
+@pytest.mark.parametrize("damaged_result", [False, True])
+@pytest.mark.parametrize("route", ["readiness", "registered", "unknown", "multiple"])
+async def test_open_effects_callback_uses_exact_pending_readiness_prefix(
+    tmp_path, monkeypatch, damaged_result, route
+):
+    """Real SQL prefix check; unrelated OPEN/effects authority is stubbed."""
+    from chiplog.composition import r14_historical_suffix as suffix
+    from chiplog.composition import r16_dispatch_history, r16_effects
+    from chiplog.platform.workspace_snapshot import read_connection
+
+    runtime, entry, batch, predecessor, _ = await _fixture(tmp_path, True)
+    entry.update(
+        kind="DECIDED",
+        operation_id=batch.idempotency_key,
+        expected_head=batch.expected_head,
+        fingerprint=batch.request_fingerprint,
+    )
+    if damaged_result:
+        entry["resulting"] = "0" * 64
+    if route in {"registered", "unknown"}:
+        entry["operation_kind"] = (
+            "agent_loop.original-resolver-invocation.v1"
+            if route == "registered"
+            else "agent_loop.unknown.v1"
+        )
+    elif route == "multiple":
+        runtime._pending = lambda: (entry, entry)
+    runtime._loop_decisions = lambda: SimpleNamespace(
+        entries=lambda: (("selected-readiness", None, json.dumps(entry).encode()),)
+    )
+    runtime._owner_decisions = lambda: "owner-journal-control"
+    actual = _hash(runtime._database)
+    original_pending = suffix.authenticate_selected_pending_r14_suffix_held
+    fallback_calls = []
+
+    def fallback(*args):
+        fallback_calls.append(args)
+        # A rejected exact prefix must not fall through to a broader success.
+        if route == "readiness":
+            return True if damaged_result else original_pending(*args)
+        if route == "multiple":
+            return original_pending(*args)
+        return not damaged_result
+
+    monkeypatch.setattr(suffix, "authenticate_selected_pending_r14_suffix_held", fallback)
+    monkeypatch.setattr(
+        suffix,
+        "native_open_physical_execution_history_held",
+        lambda *a, **kw: SimpleNamespace(records=()),
+    )
+    effects_reads = []
+
+    def read_effects(actual_runtime, journal, *, authenticate_later_suffix, **kwargs):
+        effects_reads.append(actual_runtime)
+        expected = False if route == "multiple" else not damaged_result
+        assert authenticate_later_suffix(actual_runtime, actual, predecessor) is expected
+        return SimpleNamespace(materialization_commitment=actual), journal
+
+    monkeypatch.setattr(r16_effects, "_read_materialized_effects_with_history", read_effects)
+    monkeypatch.setattr(r16_dispatch_history, "verify_dispatch_history", lambda *a: object())
+    with runtime._authority_gate().hold(), read_connection(runtime._database) as connection:
+        suffix.validate_native_open_sources_held(
+            runtime,
+            connection,
+            sources=(),
+            snapshot=SimpleNamespace(tenant_head=2),
+            selected=(),
+            expected_ids=(),
+            expected_publications=(),
+            acceptances=(),
+        )
+    assert effects_reads == [runtime]
+    assert len(fallback_calls) == (0 if route == "readiness" else 1)
 
 
 @pytest.mark.parametrize(

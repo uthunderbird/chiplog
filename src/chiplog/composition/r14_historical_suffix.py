@@ -577,6 +577,16 @@ def validate_native_open_sources_held(
             ):
                 native_anchor = (call_id, evidence.request.cut.current_run.subject_id)
                 return True
+        pending = runtime._pending()
+        if (
+            len(pending) == 1
+            and pending[0].get("operation_kind") == "agent_loop.execution-accounting-readiness.v1"
+        ):
+            from chiplog.composition.r14_recovery_publication import (
+                authenticate_selected_recovery_prefix_held,
+            )
+
+            return authenticate_selected_recovery_prefix_held(runtime, actual, anchored)
         return authenticate_selected_pending_r14_suffix_held(runtime, actual, anchored)
 
     effects_cut, journal = _read_materialized_effects_with_history(

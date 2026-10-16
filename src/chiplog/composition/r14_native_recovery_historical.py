@@ -155,14 +155,29 @@ def _v3_accepted_cut_route(cut) -> str | None:
 
 
 def _selected_decision_matches_source(item, selected_decision: CallSubjectHead) -> bool:
-    """Join R16 effect sources by decision head while preserving their semantic ID."""
+    """Join closed physical decision aliases without changing retained source IDs."""
     if item.selected_decision == selected_decision:
         return True
     if item.schema_id not in {
         "chiplog.effects.dispatch-record.v2",
         "chiplog.effects.dispatch-outcome-record.v2",
         "chiplog.effects.external-action-intent.v2",
-    }:
+    } and (
+        item.schema_id
+        not in {
+            "chiplog.execution.accepted-open-recovery-opening.v1",
+            "chiplog.execution.accepted-open-terminal-disposition.v1",
+            "chiplog.loop.original-effect-evidence-reducer-policy.v1",
+            "chiplog.loop.original-obligation-closure.v1",
+            "chiplog.loop.original-resolution-basis.v1",
+            "chiplog.loop.original-resolver-authority-policy.v1",
+            "chiplog.loop.original-resolver-batch.v1",
+            "chiplog.loop.original-resolver-invocation.v1",
+            "chiplog.loop.recovered-call-outcome.v1",
+            "chiplog.loop.semantic-reduction.v1",
+        }
+        or item.owner != "agent_loop"
+    ):
         return False
     revision = item.selected_decision.revision
     return (

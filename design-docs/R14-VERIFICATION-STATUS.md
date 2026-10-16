@@ -1587,3 +1587,51 @@ interval guard during actual saved-bundle startup. MCP then reached
 **`(True, False, None, False, 28)`**. Thus the bridge clears one observed barrier,
 while native historical readiness authentication still refuses. No successful
 reopen, finish, next Turn, second seal or R14 completion follows from this slice.
+
+Further MCP acquisition isolated `_authenticate_v3_accepted_cut:440`. For
+`chiplog.execution.accepted-open-terminal-disposition.v1`, owner, physical SHA256
+and selected record bytes matched; only selected-decision comparison failed.
+The source used decision head as its subject, while journal membership used the
+command identity. Their full revisions were equal. A bounded scan found exactly
+ten original/reduction schemas with this representation, all with equal revisions
+and source subject equal to decision head. Root read their actual producer paths.
+
+The closed alias repair preserves producer/retained bytes and existing physical
+membership checks, accepts only those ten schemas under `agent_loop`, and still
+requires the complete decision revision and subject=head. Unknown-schema,
+cross-owner, changed head/fingerprint and foreign subject aliases fail. Tests
+using the actual source constructor and actual original-resolver anchor projection
+were RED (**11 failed, 5 passed in 1.51s**). After repair, command
+`.venv/bin/pytest -q tests/composition/test_r14_native_recovery_cut.py
+tests/composition/test_r14_original_obligation_sources.py
+tests/composition/test_r14_original_call_resolution_publication.py
+-k 'not selected_native_cut_reopens' --tb=short` passed **66 tests in 1.35s**;
+two mounted scenarios were deselected. Scoped Ruff passed.
+
+In the next actual saved-bundle probe, the final readiness predicate became
+**`(True, True, None, False, 28)`**. The process nevertheless terminated exit1:
+the subsequent deferred OPEN causal-source fold reached the effects reader,
+whose later-suffix callback refused the still-pending physical readiness delta.
+SQL head29 and commitment stayed equal before/after; WAL/SHM and derivative gate
+cache changed. Thus native selected readiness authentication now passes this
+probe, while startup completion, finish and the two-seal scenario remain OPEN.
+
+The effects callback now dispatches exactly one pending readiness to the existing
+exact recovery-prefix verifier. This is local to deferred OPEN source validation;
+the shared pending wrapper and its second native-accounting consumer are unchanged.
+Cold review caught the initial incorrect sole-consumer assumption; root narrowed
+the repair accordingly and read the implementation review (no demonstrated P0/P1).
+The verifier's False is returned directly, with no generic-success fallback.
+It opens historical prefix access only; canonical readiness authentication and
+complete effects membership remain separate checks.
+
+Real-SQL routing controls were RED (**2 failed in 1.25s**) on the old callback:
+valid pending returned False, while a damaged result reached a generic True.
+After repair, prefix/historical-suffix/native-fast-path suites passed **182 tests
+in 3.88s**. The combined nine-file scope (native recovery cut, original source
+projections/publication, pending prefix, historical suffix, native fast path,
+resume interval, resolution source and semantic reduction) passed **293 tests,
+2 deselected in 5.97s**; the two omitted tests are mounted lifecycle scenarios.
+Scoped Ruff and diff checks passed. The new exact saved-bundle probe is still
+running; its logpoint has shown readiness command/authentication True/True.
+There is no terminal startup/reopen/continuation result for this candidate yet.
