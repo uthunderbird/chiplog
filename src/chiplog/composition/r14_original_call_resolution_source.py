@@ -148,8 +148,9 @@ def _authenticate_append_evidence_suffix(
 ) -> None:
     """Authenticate every selected publication between an R14 cut and its successor.
 
-    Same-intent R16 APPEND_EVIDENCE plus the registered R14 accounting/readiness
-    and next-Turn publications may advance this interval. Owner and loop journals
+    Same-intent R16 APPEND_EVIDENCE plus the registered R14 accounting/readiness,
+    next-Turn and exact same-obligation resume publications may advance this interval.
+    Owner and loop journals
     are stitched against the complete physical sequence under the authority gate.
     """
     from chiplog.capabilities.effects.dispatch_outcome_contracts import (
@@ -337,6 +338,20 @@ def _authenticate_append_evidence_suffix(
                     )
 
                     validate_selected_next_turn(runtime, entry, batch)
+                    continue
+                if batch.operation_kind == "agent_loop.execution-resume.v1":
+                    from chiplog.composition.r14_execution_resume import _validate_selected
+
+                    evidence = _validate_selected(runtime, entry, batch, check_history=False)
+                    originals = evidence.request.original_suspension.baseline.original_obligations
+                    if len(originals) != 1 or (
+                        originals[0].original_run_id != evidence.request.run.run_id
+                        or originals[0].evidence_stream_id
+                        != previous_outcome.snapshot.intent.intent_id
+                    ):
+                        raise LoopRejected(
+                            "R14 evidence interval resume changes its original cause"
+                        )
                     continue
                 raise LoopRejected("R14 evidence interval contains an unregistered R14 record")
             if family != "owner" or len(batch.records) != 1:

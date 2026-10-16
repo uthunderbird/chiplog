@@ -12,6 +12,7 @@ from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCHEMA
 from chiplog.composition.r14_loop_history import (
     read_execution_history,
     read_execution_recovery_history,
@@ -77,16 +78,57 @@ def build_accepted_open_recovery_cut(
                 if anchored != actual:
                     return None
                 snapshot = read_execution_history(runtime)
-            matches = [
-                item
-                for item in snapshot.records
-                if isinstance(item, ExecutionRunRecord)
-                and item.run_id == accepted_open.accepted.source.target_run_lineage[-1].subject_id
-                and item.head == accepted_open.accepted.source.target_run_lineage[-1].revision.head
-            ]
-            if len(matches) != 1:
+            runs = tuple(
+                item for item in snapshot.records if isinstance(item, ExecutionRunRecord)
+            )
+            lineage = accepted_open.accepted.source.target_run_lineage
+            if not lineage:
                 return None
-            run = matches[0]
+            if historical:
+                # Current membership remains fully authenticated above. Rebuild
+                # the OPEN's semantic Run at its original sequence, excluding
+                # a later suspension/resume or Turn from this historical cut.
+                target_runs = tuple(run for run in runs if run.run_id == lineage[-1].subject_id)
+                if not target_runs or len({run.head for run in target_runs}) != len(target_runs):
+                    return None
+                placeholders = ",".join("?" for _ in target_runs)
+                with read_connection(runtime._database) as connection:
+                    rows = connection.execute(
+                        "SELECT record_id,owner,schema_id,canonical_bytes,commit_sequence "
+                        "FROM records WHERE tenant_id=? AND commit_sequence<=? "
+                        f"AND record_id IN ({placeholders})",
+                        (runtime._tenant_id, source_tenant_commit_sequence,
+                         *(run.head for run in target_runs)),
+                    ).fetchall()
+                if not rows:
+                    return None
+                latest = max(row[4] for row in rows)
+                selected = [row for row in rows if row[4] == latest]
+                if len(selected) != 1:
+                    return None
+                record_id, owner, schema, raw, _ = selected[0]
+                matches = [run for run in target_runs if run.head == record_id]
+                if len(matches) != 1:
+                    return None
+                run = matches[0]
+                if (owner, schema, bytes(raw)) != (
+                    "agent_loop", EXECUTION_RUN_SCHEMA, run.canonical_bytes()
+                ):
+                    return None
+            else:
+                matches = [run for run in runs if (
+                    run.run_id == lineage[-1].subject_id
+                    and run.head == lineage[-1].revision.head
+                )]
+                if len(matches) != 1:
+                    return None
+                run = matches[0]
+            run_ref = CallSubjectHead(
+                subject_id=run.run_id,
+                revision=Present(head=run.head, fingerprint=run.digest()),
+            )
+            if lineage.count(run_ref) != 1:
+                return None
             matching_rows = tuple(
                 row
                 for row in accepted_open.accepted.source.target_inventory_rows

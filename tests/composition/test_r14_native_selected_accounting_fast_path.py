@@ -521,6 +521,20 @@ async def test_historical_open_cut_consumes_exact_history_proof_before_anchor_ga
             raise ValueError("unverified physical suffix")
         return snapshot, None, None, None, None, None
 
+    @contextmanager
+    def historical_connection(_database):
+        run = snapshot.records[-1]
+
+        def execute(sql, parameters):
+            assert "commit_sequence<=?" in sql
+            assert parameters == (runtime._tenant_id, 8, run.head)
+            return SimpleNamespace(fetchall=lambda: (
+                (run.head, "agent_loop", run.schema_id, run.canonical_bytes(), 1),
+            ))
+
+        yield SimpleNamespace(execute=execute)
+
+    monkeypatch.setattr(cuts, "read_connection", historical_connection)
     runtime._commitment_journal = SimpleNamespace(
         load=lambda _: "c" * 64 if acquired and damage == "anchor-after" else "b" * 64
     )

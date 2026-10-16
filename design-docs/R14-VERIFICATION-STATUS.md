@@ -914,3 +914,94 @@ terminated after source changed; its result cannot validate this implementation.
 Fresh mounted resumed-source test is running with basetemp
 `/private/tmp/r14-resume-proof-reuse-trust-20261016`; no successful mounted result
 or end-to-end speedup is claimed yet. R14 remains OPEN.
+
+
+### Resume publication passes; historical OPEN Run drifts on reopen (2026-10-16)
+
+The exact fresh command recorded above terminated with **1 failed in 873.06s**.
+It published resume at sequence 27, passed selected-resume read and same-runtime
+subset collection, then failed entering the reopened runtime. Startup rejected
+`accepted/open recovery selected source cut differs:
+current_run,current_run_bytes,cut_fingerprint`. This is a new downstream failure,
+not the earlier actor-budget rejection and not a successful mounted witness.
+
+Source inspection: historical accepted facts retain the entire authenticated
+current Run lineage. `build_accepted_open_recovery_cut` selected its final Run
+although the caller supplied the original source tenant sequence. A resumed Run
+therefore changed the rebuilt historical OPEN cut. The current repair selects
+the unique latest physical Run publication at or before that source sequence,
+requiring same authenticated Run lineage, exact row ID/owner/schema/bytes and
+full reference fingerprint. Current full physical commitment checks remain on
+both sides; live-cut selection remains current. No caller-supplied Run override,
+clearing of obligations, deadline change or permissive ACTIVE-baseline exception.
+
+`uv run pytest -q tests/composition/test_r14_open_cut_run_prefix.py --tb=short`
+first gave **3 failed, 1 passed in 0.64s**: the old builder selected the resumed Run
+for every bound, even before the first Run. Expanded source-prefix/identity
+negatives plus existing source fast paths now give **89 passed in 1.19s** via
+`uv run pytest -q tests/composition/test_r14_open_cut_run_prefix.py
+ tests/composition/test_r14_native_selected_accounting_fast_path.py --tb=short`.
+The new fixture uses real Run bytes and SQLite while isolating source-port
+acquisition; it grants no publication authority. A focused unchanged-path reopen
+of the terminal failed DB is running through
+`/private/tmp/r14_verify_resumed_reopen.py`; its result is not yet available and
+cannot substitute for a fresh complete mounted witness. R14 remains OPEN.
+
+
+### Reopen advances to reduction's later resume interval (2026-10-16)
+
+The focused saved-DB reopen passed the former OPEN-cut check, then failed at
+`r14_original_resolver_policy_publication._validate_startup_state`: its selected
+policy was physically COMPLETE and actual equalled the anchor, but shared suffix
+authentication returned false. Source trace shows shared suffix validation calls
+`validate_loop_semantic_reduction_startup`, whose later interval contained resume
+at sequence 27. `_authenticate_append_evidence_suffix` admitted readiness and
+next-Turn loop publications but rejected resume as unregistered, although the
+outer suffix family already admits it.
+
+New real-SQLite interval tests first gave **5 failed, 2 passed in 0.68s** with
+`uv run pytest -q tests/composition/test_r14_resume_evidence_interval.py --tb=short`.
+The positive hit the exact unregistered-family rejection; four negative cases
+also demonstrated the selected-resume validator was never reached. The repaired
+branch invokes the existing full selected-resume validator with
+`check_history=False`, retaining independent owner reconstruction, exact
+suspension/closure/reduction and physical checks. Exactly one frozen original
+obligation must match the resume Run and interval's original R16 evidence stream.
+Empty/foreign originals, invalid resume, unknown family and physical orphan
+reject. This helper fixture isolates the authority validator; it cannot establish
+mounted acceptance. A fresh focused reopen with both repairs is running; source
+is frozen for that process. R14 and the complete mounted witness remain OPEN.
+
+
+The second saved-DB probe passed `_prepare_startup` including the original
+policy/invocation/resolution/reduction checks, then failed starting agent_loop.
+The temporary runner lacked a `__main__` guard: multiprocessing spawn re-entered
+its top-level `asyncio.run(main())` (a second `REOPEN_START` was observed). This
+is a diagnostic-launcher defect, not a product restart verdict. The runner is now
+guarded; `runpy.run_path(..., run_name="__mp_main__")` completes without reopening.
+A corrected probe is running; no product source changed for this correction.
+Cold scoped reviews `/private/tmp/r14-open-run-prefix-redteam.md` and
+`/private/tmp/r14-resume-interval-redteam.md` report no confirmed P0/P1, with
+explicit helper-versus-mounted limits. Focused source/recovery/suffix suite:
+**265 passed in 2.65s** (the prior 258-test command plus
+`tests/composition/test_r14_resume_evidence_interval.py`). Existing resolver/source
+and semantic reduction modules: `uv run pytest -q
+ tests/composition/test_r14_loop_semantic_reduction_publication.py
+ tests/composition/test_r14_original_call_resolution_source.py
+ tests/composition/test_r14_original_resolver_policy_publication.py --tb=short`
+returned **26 passed in 36.12s**. Ruff and R8 structure/import passed.
+
+
+The corrected saved-workspace reopen probe terminated **exit 0**:
+`STARTUP_PASSED 166.967`, `SUBSET_PASSED 220.314`,
+`REOPEN_PASSED_NO_HEAD_ADVANCE_OR_RESEND 220.423` (seconds). Command:
+`uv run python /private/tmp/r14_verify_resumed_reopen.py
+ /private/tmp/r14-resume-proof-reuse-trust-20261016/test_source_subset_reopens_exa0/native-recovery-accepted-sources.sqlite`.
+It used actual persisted workspace/custody and unchanged product validators/clocks,
+read the exact ACTIVE resume, collected its subset, preserved tenant head 27 and
+compared the persisted provider transfer log before/after (one transfer, unchanged).
+This establishes the repaired restart boundary on that failed workspace, not a
+fresh complete two-seal witness. The next fresh acceptance discriminator is
+`test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator`;
+its readiness/next-Turn/second-seal/interrupted-recovery/substitution steps remain
+required. R14.6–R14.13 remain OPEN.
