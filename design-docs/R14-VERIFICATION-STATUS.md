@@ -1905,3 +1905,12 @@ tests/composition/test_r14_resolved_open_prior_context.py --tb=short` gave15 pas
 in26.38s. Ruff and diff checks passed. Cold bounded plan review:
 `/private/tmp/r14-two-seal-observer-plan-review.md`; source and installed patching
 implementations were read, but the reviewer executed no tests/runtime.
+
+Fresh corrected run: frozen full commit4f5357c51b34b5ed9def0b07eb1a38ee5d9daf9e
+at `/private/tmp/chiplog-r14-cross-seal-4f5357c`, fresh basetemp
+`/private/tmp/r14-fresh-cross-seal-4f5357c`. Exact single selector collected;
+pytest timeout disabled and PYTEST_ADDOPTS/PYTEST_PLUGINS empty. Handle62278 is
+RUNNING, confirmed by polling; no terminal result or pass is claimed. All1524
+tracked entries are pinned in the adjacent inputs.json; recheck hashes, modes and
+symlink wires after authoritative termination. Receipt:
+`/private/tmp/r14-fresh-cross-seal-4f5357c-receipt.md`. Frozen inputs stay unchanged.

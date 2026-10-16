@@ -654,3 +654,34 @@ inventory snapshots predate this verifier's own dynamic SQL sites, which require
 classification too. Expression-family extraction, exact instance-domain/caller
 closure, frozen graph/AMR/descriptor registration, CURRENT and public startup
 admission remain open. No source filename exemption or tuple registration is added.
+
+## Finite placeholder SQL families
+
+`verification/placeholder_sql_families.py` extracts the six current comma/question-mark
+families from their actual source: planning publications, derivative registration,
+accepted-open recovery, original-resolution absence/publication, and recovery-profile
+ordering. It retains receiver, syntactic call ordinal, template, iterable/binder
+shape, fixed parameters and source digest. Unsupported conversions, formatting,
+filtered generators, rebinding, foreign binders, opaque fixed-parameter calls and
+consumer frames refuse. Definition dominance follows enclosing statement lists.
+
+Disposable SQLite preparation covers cardinalities0,1,2 with independent expected
+actions and exact engine binding counts. Empty IN eliminates predicate reads on
+the current engine; positive cardinalities retain them. A real planning predicate
+mutation first exposes deletion_fences.frontier before graph comparison refuses.
+The actual recovery-profile family required adding MIN to the finite function set.
+
+The initial19 feature cases failed on the missing implementation. Two additional
+rebinding/opaque-prefix mutants reproduced DID NOT RAISE before their guards.
+Command `.venv/bin/pytest -q tests/verification/test_placeholder_sql_families.py
+tests/verification/test_sqlite_preparation.py
+tests/verification/test_authority_read_graph.py
+tests/verification/test_assembly_forwarding.py --tb=short` gave109 passed in14.70s;
+the new family file contributes21 cases. Ruff passed. Cold source-only review:
+`/private/tmp/r14-placeholder-sql-family-plan-review.md` found no confirmed P1
+within this expression-stage boundary and ran no tests.
+
+This proves supported syntax and selected preparation observations, not universal
+cardinality, repeatable iteration, property purity or runtime binder identity.
+Module producer closure, receiver/caller/domain closure, other SQL expressions,
+descriptor registration, CURRENT and public startup admission remain open.

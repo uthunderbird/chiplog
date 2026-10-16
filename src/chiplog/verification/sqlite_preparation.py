@@ -97,7 +97,7 @@ def _authorizer(actions: set[SqlAction], objects: frozenset[tuple[str, str]], *,
             elif name == "SELECT":
                 allowed = True
             elif name == "FUNCTION":
-                allowed = second in {"count", "max", "coalesce", "substr"}
+                allowed = second in {"count", "max", "min", "coalesce", "substr"}
             elif name == "TRANSACTION":
                 allowed = first == "BEGIN"
             elif name == "PRAGMA":
