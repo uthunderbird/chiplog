@@ -131,6 +131,40 @@ def test_count_star_preserves_table_level_dependency():
     assert observed[0].reads == (("main", "records", ""),)
 
 
+def test_schema_preparation_cannot_attach_and_create_external_file(tmp_path):
+    sentinel = tmp_path / "escaped.sqlite"
+    schema = SCHEMA_SQL + (
+        f"\nATTACH DATABASE '{sentinel}' AS escaped;"
+        " CREATE TABLE IF NOT EXISTS escaped.marker(value TEXT);"
+    )
+    rejected = False
+    try:
+        planning_read_graph(SOURCE.read_text(), schema)
+    except UnknownSqlExpression:
+        rejected = True
+    assert (rejected, sentinel.exists()) == (True, False)
+
+
+@pytest.mark.parametrize("sql", [
+    "UPDATE records SET owner=owner", "SELECT max(record_id) FROM records",
+    "PRAGMA user_version", "BEGIN",
+])
+def test_shared_engine_permissions_do_not_broaden_planning_read_policy(sql):
+    changed = _replace_first_query(SOURCE.read_text(), sql)
+    with pytest.raises(UnknownSqlExpression, match="prepare completely"):
+        planning_read_graph(changed, SCHEMA_SQL)
+
+
+@pytest.mark.parametrize("tail", [
+    "INSERT INTO store_metadata VALUES (1, 1);",
+    "CREATE TABLE store_metadata AS SELECT 1 AS value;",
+])
+def test_supplied_schema_rejects_business_dml_and_select(tail):
+    schema = SCHEMA_SQL + tail if tail.startswith("INSERT") else tail
+    with pytest.raises(UnknownSqlExpression):
+        planning_read_graph(SOURCE.read_text(), schema)
+
+
 @pytest.mark.parametrize("sql", [
     "SELECT missing FROM records", "SELECT load_extension(?)",
     "ATTACH DATABASE ? AS foreign_db", "PRAGMA user_version = 17",

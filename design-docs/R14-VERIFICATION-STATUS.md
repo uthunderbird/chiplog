@@ -1909,8 +1909,62 @@ implementations were read, but the reviewer executed no tests/runtime.
 Fresh corrected run: frozen full commit4f5357c51b34b5ed9def0b07eb1a38ee5d9daf9e
 at `/private/tmp/chiplog-r14-cross-seal-4f5357c`, fresh basetemp
 `/private/tmp/r14-fresh-cross-seal-4f5357c`. Exact single selector collected;
-pytest timeout disabled and PYTEST_ADDOPTS/PYTEST_PLUGINS empty. Handle62278 is
-RUNNING, confirmed by polling; no terminal result or pass is claimed. All1524
-tracked entries are pinned in the adjacent inputs.json; recheck hashes, modes and
-symlink wires after authoritative termination. Receipt:
+pytest timeout disabled and PYTEST_ADDOPTS/PYTEST_PLUGINS empty. Handle62278 reached
+terminal exit1:1 failed in3432.94s. All1524 tracked hashes/modes or symlink wires
+in adjacent inputs.json were rechecked after termination and matched. Receipt:
 `/private/tmp/r14-fresh-cross-seal-4f5357c-receipt.md`. Frozen inputs stay unchanged.
+
+The repaired workspace dispatch, prompt rendering and exact prior-Turn recovered
+result assertions passed. A distinct second seal was created; recovery history
+and second-call acceptance preview completed. The next accept_call failed in
+r14_call_publication.py:115 with `call acceptance rejected: writer STALE`.
+This aggregate result does not identify tenant-head/preimage mismatch versus
+the admission guard's LoopRejected, and does not establish an expiry diagnosis.
+Later second-call OPEN/interruption/reopen/substitution checks did not run.
+
+Failure artifacts were preserved without opening source SQLite or a runtime:
+`/private/tmp/r14-fresh-cross-seal-4f5357c-preserved-failure`, root0700;
+45 regular files plus1 opaque symlink,1,274,072,732 file bytes. Streaming SHA256
+before/after copy and copied modes matched every file; symlink wire was retained
+without following. Manifest:
+`/private/tmp/r14-fresh-cross-seal-4f5357c-failure-files.json`. The preservation
+command also checked every frozen manifest entry before copying. No restart,
+credential repin or production-clock change was made. R14.6 remains OPEN.
+
+Authenticated preserved-prefix inspection subsequently found no unsupported
+operation/schema prefix: loop50 entries and owner20 entries both satisfy their
+closed prefix allowlists. The audit held the existing authority gate, opened
+journal sources read-only, and rechecked nine source hashes/modes unchanged.
+Evidence: `/private/tmp/r14-second-acceptance-prefix-audit.json`. This rules out
+that specific optimization-refusal hypothesis for these archived prefixes; it
+does not recover the transient witness or identify the writer rejection branch.
+Call preparation also checks both owner deadlines before returning its exchange,
+so the existence of a five-second budget alone is not an expiry diagnosis.
+
+## Planning schema preparation confinement repair (worktree)
+
+The old planning graph helper ran supplied schema_sql through executescript
+before installing its read authorizer. A real tmp_path ATTACH + CREATE mutant
+returned successfully and created an external SQLite file: the RED observed
+(rejected=False, file_exists=True). A valid INSERT schema tail also failed its
+required-refusal assertion. Initial malformed fixture SQL was corrected before
+treating those outcomes as reproductions.
+
+The helper now delegates schema setup and EXPLAIN preparation to the existing
+authorized private-memory engine with independently registered seven main tables
+and six autoindexes, foreign_keys=False. Its adapter still rejects every action
+outside READ/main, SELECT and count; it normalizes only the registered-table
+READ(None, table, empty-column, no-source) callback used by count(*).
+Shared-engine permissions therefore do not admit DML, max, PRAGMA or BEGIN to the
+planning graph. The ATTACH mutant now refuses without creating its target file.
+This is supplied-schema confinement, not exact catalog identity, whole-source
+graph closure or startup version admission. No current malicious production
+schema input is claimed.
+
+Command `.venv/bin/python -m pytest -q
+tests/verification/test_authority_read_graph.py
+tests/verification/test_sqlite_preparation.py
+tests/verification/test_sql_expression_inventory.py --tb=short` gave92 passed
+in7.81s. Ruff passed after combining equivalent permission branches.
+Cold plan review: `/private/tmp/r14-planning-schema-preparation-plan-review.md`;
+the count-star compatibility correction was applied. R14 remains OPEN.

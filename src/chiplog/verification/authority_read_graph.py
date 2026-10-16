@@ -1,11 +1,10 @@
 """Finite SQL preparation evidence; not runtime or complete graph admission."""
 
 import ast
-import re
-import sqlite3
-from contextlib import closing
 from dataclasses import dataclass
 from itertools import product
+
+from chiplog.verification.sqlite_preparation import SqlPreparationRefused, observe_statement
 
 
 class UnknownSqlExpression(ValueError):
@@ -118,41 +117,42 @@ def planning_sql_alternatives(source: str) -> tuple[PlanningSqlAlternative, ...]
     return tuple(result)
 
 
+# Independently registered main-schema identities, not inferred from supplied SQL.
+_PLANNING_TABLES = (
+    "store_metadata", "tenant_heads", "publications", "records", "evidence_inbox",
+    "deletion_fences", "derivatives",
+)
+_PLANNING_OBJECTS = tuple(("table", name) for name in _PLANNING_TABLES) + tuple(
+    ("index", "sqlite_autoindex_" + name + "_1")
+    for name in _PLANNING_TABLES if name != "store_metadata"
+)
+
+
 def _prepare_reads(schema_sql: str, sql: str) -> tuple[tuple[str, str, str], ...]:
-    # Fresh engine and disabled statement cache isolate every site's callbacks.
-    with closing(sqlite3.connect(":memory:", cached_statements=0)) as connection:
-        connection.executescript(schema_sql)
-        reads: set[tuple[str, str, str]] = set()
-
-        def authorize(action, first, second, database, trigger):
-            if action == sqlite3.SQLITE_READ and database == "main" and trigger is None:
-                reads.add((database, first, second))
-                return sqlite3.SQLITE_OK
-            if action == sqlite3.SQLITE_SELECT:
-                return sqlite3.SQLITE_OK
-            if action == sqlite3.SQLITE_FUNCTION and second == "count":
-                return sqlite3.SQLITE_OK
-            return sqlite3.SQLITE_DENY
-
-        connection.set_authorizer(authorize)
-        try:
-            try:
-                connection.execute("EXPLAIN " + sql).fetchall()
-            except sqlite3.ProgrammingError as error:
-                # Let SQLite count bindings, including '?' inside literals/comments.
-                count = re.fullmatch(
-                    r"Incorrect number of bindings supplied\. The current statement uses "
-                    r"([0-9]+), and there are 0 supplied\.", str(error),
-                )
-                if count is None:
-                    raise
-                reads.clear()
-                connection.execute("EXPLAIN " + sql, (None,) * int(count[1])).fetchall()
-        except sqlite3.Error as error:
-            raise UnknownSqlExpression("SQL alternative did not prepare completely") from error
-        finally:
-            connection.set_authorizer(None)
-        return tuple(sorted(reads))
+    # The shared engine authorizes schema setup too, before any supplied statement.
+    try:
+        observed = observe_statement(
+            sql, registered_schema_sql=schema_sql,
+            registered_objects=_PLANNING_OBJECTS, foreign_keys=False,
+        )
+    except SqlPreparationRefused as error:
+        raise UnknownSqlExpression("SQL alternative did not prepare completely") from error
+    reads: set[tuple[str, str, str]] = set()
+    for action, first, second, database, source in observed.actions:
+        if (action == "READ" and database is None and second == ""
+                and first in _PLANNING_TABLES and source is None):
+            # SQLite's count(*) callback identifies only the table in private main.
+            database = "main"
+        if action == "READ" and database == "main" and source is None:
+            reads.add((database, first, second))
+        elif source is None and (action == "SELECT" or (
+            action == "FUNCTION" and second == "count"
+        )):
+            continue
+        else:
+            raise UnknownSqlExpression("SQL alternative did not prepare completely: "
+                                       "action outside planning read policy")
+    return tuple(sorted(reads))
 
 
 def verify_read_graph(
