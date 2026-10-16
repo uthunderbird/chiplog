@@ -598,3 +598,59 @@ tests/verification/test_canonical_database_routes.py
 tests/verification/test_authority_sql_corpus.py
 tests/verification/test_authority_read_graph.py --tb=short` gave73 passed in23.85s.
 The assembly file contributes17 tests; Ruff passed for its source and tests.
+
+## SQLite DML, metadata and schema preparation evidence
+
+`verification/sqlite_preparation.py` now observes supplied finite SQL in fresh
+in-memory connections with statement caching disabled. Ordinary candidates run
+only through EXPLAIN. Raw authorizer action sets retain READ (including predicate,
+rowid and empty-column table dependencies), INSERT/UPDATE/DELETE, SELECT,
+the current finite built-in functions, transaction and PRAGMA arguments. Explicit
+foreign_keys settings distinguish actual main/trust and ledger configurations.
+The profile is initial connection state; PRAGMA callbacks do not prove execution
+effects. Metadata names/arguments are restricted to current forms; named bindings
+are unsupported and refuse rather than return a partial graph.
+
+Schema observation is separate: guarded current CREATE TABLE/INDEX units execute
+sequentially only in disposable memory, allowing later index preparation to see
+earlier tables. Independently supplied table/index identities constrain creation;
+only required catalog writes, registered table reads and index callbacks are
+permitted. Business DML, SELECT, views/triggers/TEMP/virtual tables, ALTER/DROP,
+ATTACH/DETACH and extensions do not acquire this execution permission. Scripts
+split at SQLite complete_statement boundaries, preserving quoted/commented
+semicolons and checking the final unit; a later error returns no successful prefix.
+
+Actual main, trust, broker-authority, read-ledger, workspace and gate CREATE scripts
+cover empty and existing states. Bare main CREATE refuses existing state as the
+actual initializer expects; IF NOT EXISTS sidecars report the distinct no-op path,
+not body proof. The ledger partial index exposes its current-column dependency.
+Real records INSERT, tenant-head UPSERT and evidence UPDATE have independent
+expected actions. A real historical DELETE and UPDATE mutation each first expose
+an added deletion_fences.frontier read before graph comparison refuses it.
+Trust foreign-key ON additionally exposes its referenced decision-id read.
+
+Initial37 feature tests failed on the not-implemented API (0.32s). The first
+implementation exposed count(*) READ with database=None and Python3.14 named
+binding semantics (2 failed/35 passed in0.15s). The raw empty-column callback is
+now retained only for a registered table in the private main-only connection;
+named parameters remain an explicit unsupported form, absent from current SQL.
+Schema EXPLAIN CREATE variants reproduced2 DID NOT RAISE in0.07s and standalone
+REINDEX reproduced1 in0.06s. A shared leading-CREATE guard now covers both setup
+and candidate scripts. Valid CREATE AS SELECT still reaches authorizer denial;
+ordinary business DML is refused at the earlier schema-form guard.
+
+Command `.venv/bin/pytest -q tests/verification/test_sqlite_preparation.py
+tests/verification/test_authority_read_graph.py --tb=short` gave71 passed in0.36s
+(50 new preparation cases plus21 prior SELECT cases). Ruff passed. Cold design
+and scoped finite-form closure review:
+`/private/tmp/r14-sql-engine-graph-plan-review.md`; the reviewer ran no tests.
+
+This is an action set, not callback order/multiplicity or runtime row access.
+verify_sql_actions compares only actions; SQL text, input-schema hash, initial
+foreign-key state and engine identity require separate binding. The schema digest
+identifies supplied SQL, not an independently observed physical catalog. Existing
+IF NOT EXISTS evidence cannot replace empty-state proof. The former all-src
+inventory snapshots predate this verifier's own dynamic SQL sites, which require
+classification too. Expression-family extraction, exact instance-domain/caller
+closure, frozen graph/AMR/descriptor registration, CURRENT and public startup
+admission remain open. No source filename exemption or tuple registration is added.
