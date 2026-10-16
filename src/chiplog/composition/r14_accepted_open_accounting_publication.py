@@ -353,7 +353,9 @@ def _current_cut(
         facts,
         source_materialization_commitment=source_materialization_commitment,
         source_tenant_commit_sequence=source_tenant_commit_sequence,
-        authenticated_history=authenticated_history,
+        authenticated_history=(
+            history if selected_only and expected_source_cut is not None else authenticated_history
+        ),
     )
     if cut is None:
         return None

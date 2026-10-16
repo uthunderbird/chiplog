@@ -1329,6 +1329,145 @@ def test_open_current_cut_reuses_history_but_keeps_original_historical_selection
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supplied", [False, True])
+@pytest.mark.parametrize("damage", [None, "initial-sql", "final-sql", "final-anchor", "history"])
+async def test_current_cut_and_real_builder_read_historical_sources_once(
+    monkeypatch, supplied, damage
+):
+    """Real caller/builder seam; producer facts and physical rows are controls."""
+    from chiplog.composition import r14_accepted_open_accounting_publication as publication
+    from chiplog.composition import r14_native_accepted_open_cut as cuts
+
+    retained, _, call_id, facts, snapshot, *_ = await _open_cut_probe(monkeypatch, "second-member")
+    runtime = cuts.CommonCliExecutionRuntime()
+
+    class Gate:
+        depth = 0
+
+        def require_held(self):
+            assert self.depth > 0
+
+        @contextmanager
+        def hold(self):
+            self.depth += 1
+            try:
+                yield
+            finally:
+                self.depth -= 1
+
+    gate = Gate()
+    runtime._authority_gate = lambda: gate
+    runtime._pending = lambda: ()
+    seal = SimpleNamespace(response_seal_id="seal", digest=lambda: "a" * 64)
+    history = (
+        snapshot, None, None,
+        (SimpleNamespace(proposal=SimpleNamespace(fan_out=SimpleNamespace(
+            initialized_records=(SimpleNamespace(original_call_id=call_id),), response_seal=seal,
+        ))),), None, (),
+    )
+    reads, source_calls, builder_proofs = [], [], []
+
+    def acquire(actual_runtime, **kwargs):
+        gate.require_held()
+        assert actual_runtime is runtime
+        assert kwargs == {"selected_only": True, "exact_historical_sources": True}
+        reads.append(True)
+        if damage == "history":
+            raise ValueError("historical source refused")
+        return history
+
+    class PrepareSource:
+        def __init__(self, actual_runtime):
+            assert actual_runtime is runtime
+
+        def collect(self, seal_ref):
+            gate.require_held()
+            return SimpleNamespace(selected_response_seal=seal_ref)
+
+    class AccountingSource:
+        def __init__(self, *args):
+            pass
+
+        def collect_one_accepted_open_outcome(self, target, **kwargs):
+            gate.require_held()
+            assert kwargs["authenticated_recovery_history"] is history
+            assert target == retained.current_run
+            assert kwargs["expected_outcome_record_id"] == retained.selected_outcome_record_id
+            assert kwargs["expected_selected_decision"] == retained.selected_decision
+            source_calls.append(True)
+            return facts
+
+    @contextmanager
+    def connection(_path):
+        gate.require_held()
+        run = snapshot.records[-1]
+
+        def execute(sql, parameters):
+            assert "commit_sequence<=?" in sql
+            assert parameters == (runtime._tenant_id, 8, run.head)
+            return SimpleNamespace(fetchall=lambda: (
+                (run.head, "agent_loop", run.schema_id, run.canonical_bytes(), 1),
+            ))
+
+        yield SimpleNamespace(execute=execute)
+
+    hashes, anchors = [], []
+
+    def commitment(*args):
+        gate.require_held()
+        hashes.append(True)
+        changed = damage == "initial-sql" or (damage == "final-sql" and len(hashes) == 2)
+        return "c" * 64 if changed else facts.materialization_commitment
+
+    def anchor(*args):
+        gate.require_held()
+        anchors.append(True)
+        return "c" * 64 if damage == "final-anchor" and len(anchors) == 2 else "b" * 64
+
+    real_builder = cuts.build_accepted_open_recovery_cut
+
+    def build(*args, **kwargs):
+        gate.require_held()
+        builder_proofs.append(kwargs["authenticated_history"])
+        return real_builder(*args, **kwargs)
+
+    runtime._commitment_journal = SimpleNamespace(load=anchor)
+    monkeypatch.setattr(publication, "read_execution_recovery_history", acquire)
+    monkeypatch.setattr(cuts, "read_execution_recovery_history", acquire)
+    monkeypatch.setattr(publication, "R14OriginalNativePrepareSource", PrepareSource)
+    monkeypatch.setattr(publication, "R14NativeSelectedAccountingSource", AccountingSource)
+    monkeypatch.setattr(publication, "bind_native_execution_preparation_v2", lambda *_: object())
+    monkeypatch.setattr(publication, "build_accepted_open_recovery_cut", build)
+    monkeypatch.setattr(cuts, "read_connection", connection)
+    monkeypatch.setattr(cuts, "capture_authority_snapshot_commitment", commitment)
+    kwargs = dict(
+        selected_only=True, expected_source_cut=retained,
+        source_materialization_commitment="b" * 64, source_tenant_commit_sequence=8,
+        authenticated_history=history if supplied else None,
+    )
+    with gate.hold():
+        if damage == "history" and not supplied:
+            with pytest.raises(ValueError, match="historical source refused"):
+                publication._current_cut(runtime, **kwargs)
+            assert source_calls == builder_proofs == []
+            assert len(reads) == 1
+            return
+        result = publication._current_cut(runtime, **kwargs)
+    assert gate.depth == 0
+    assert len(reads) == (0 if supplied else 1)
+    assert builder_proofs == [history]
+    if damage in {None, "history"}:
+        assert result is not None
+        assert result[0] is facts
+        assert result[1].original_call_id == call_id
+        assert result[1].current_run == retained.current_run
+        assert result[1].tenant_commit_sequence == 8
+        assert result[1].materialization_commitment == "b" * 64
+    else:
+        assert result is None
+
+
 @pytest.mark.parametrize("damage", [None, "commitment", "identity", "tenant"])
 def test_open_builder_reuses_held_history_after_current_source_checks(monkeypatch, damage):
     from chiplog.composition import r14_native_accepted_open_cut as builder
