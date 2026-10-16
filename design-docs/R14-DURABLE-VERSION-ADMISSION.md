@@ -527,3 +527,38 @@ mutable constructors; missing/ghost mount controls must compare both directions.
 Separate registered per-domain schema/DDL/DML preparation and complete SQL-family
 extraction remain mandatory. The discovery layer does not extend the SELECT-only
 engine preparer, install a runtime authorizer or satisfy startup admission.
+
+## Canonical constructor path forwarding
+
+`verification/canonical_database_routes.py` extracts eight symbolic constructor
+argument routes from the actual canonical opener and verifies the finite
+ProductionPlanningStore path-holder source. The runtime database parameter is
+the fourth positional argument. Main, trust SQL, read SQL, broker SQL and the
+protected trust journal remain distinct. Both materializer factory alternatives
+are checked. An independently written expected-route tuple rejects foreign roles.
+
+The primary actual-source mutant changes ProductionPlanningStore(database) to
+the reads-sidecar expression. Extraction first observes that foreign path and
+retains it in the runtime's OR alternatives; policy comparison then refuses it.
+Unknown expressions, missing/duplicate consumers, constructor substitutions,
+rebinding and nested consumer frames refuse. Leaf import-time syntax is restricted
+to its actual declarative forms rather than silently ignoring executable code.
+
+The initial feature tests failed on the not-implemented API. Subsequent mutants
+exposed constructor shadowing, same-module import aliases, leaf export replacement,
+nested consumer frames, conditional class replacement and exception-target
+deletion; each was reproduced as a failing test before repair. Cold static review
+found two P1 defects (leaf export binding and nested consumers); its final bounded
+recheck found both closed. Report:
+`/private/tmp/r14-canonical-sql-domains-design-review.md`. The reviewer did not run
+tests and this was not a fresh whole-component review.
+
+Command `.venv/bin/pytest -q tests/verification/test_canonical_database_routes.py
+tests/verification/test_authority_sql_corpus.py
+tests/verification/test_authority_read_graph.py --tb=short` gave56 passed in9.79s,
+including23 constructor-route cases. This proves only the supported source-level
+forwarding slice. Callbacks, extra_leaves/supervisor effects, caller runtime and
+manifest binding, downstream constructors, inherited instances and filesystem
+identity remain unresolved. Broader global reflection/binding is unproved.
+`require_closed()` always refuses; no tuple is registered and the three public
+startup admission RED cases remain open.
