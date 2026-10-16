@@ -101,7 +101,6 @@ def load_existing_historical_custody(path: Path) -> HistoricalDispatchCustody:
         or type(scenarios) is not list
         or not scenarios
         or any(type(scenario) is not str or scenario not in _SCENARIOS for scenario in scenarios)
-        or len(set(scenarios)) != len(scenarios)
         or type(cap) is not int
         or not 1 <= cap <= len(scenarios)
     ):

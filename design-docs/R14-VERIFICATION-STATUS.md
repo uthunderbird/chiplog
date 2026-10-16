@@ -1074,3 +1074,104 @@ tests/composition/test_r14_native_sealed_accounting_records.py
 tests/capabilities/agent_loop/test_native_sealed_accounting_v3.py --tb=short`
 — 19 passed in 0.66s before formatting. Scoped Ruff check passed after formatting.
 R14.6 and the full R14 goal remain OPEN.
+
+### Post-resume readiness HOLD: debugger evidence (2026-10-16)
+
+Attached `$mcp-debugger` to the exact sequence-28 saved cross-seal workspace.
+Before arming breakpoints, `/private/tmp/r14-readiness-hold-debug-expectations.md`
+recorded expected reachability, values, next steps and stack for conditional
+breakpoints at `_collect_held` lines 1018 and 1019 (`run.state == 'ACTIVE'`).
+Both were reached as predicted. Stack: `_collect_held -> collect_held -> collect
+-> main` in `/private/tmp/r14_readiness_hold_debug.py`.
+
+Observed: ACTIVE latest Run, retained baseline present, one original obligation,
+zero no-retry references, no selected current suspension, accepted inputs with
+both closure and reduction present. Closure.original equals the retained
+obligation; closure/reduction IDs match; reduction is CONSUMABLE. The guard
+returned None solely because the baseline was present. A prior manual pause
+showed real history/owner validation preceding this guard, not actor deadline
+failure. Step-out stopped before the caller assigned its result (reading that
+local returned NameError); the runner's subsequent assertion independently
+confirmed None. No debug evaluation modified product state or clocks.
+
+Runner terminal exit 0 printed `R14_READINESS_SOURCE_NONE_CONFIRMED` and
+`R14_READINESS_DEBUG_DONE_NO_HEAD_ADVANCE_OR_SEND`, comparing persisted heads and
+transfers before/after. The debugger was closed; `list_debug_sessions` returned
+zero sessions. This attributes the first rejection and does not prove a repaired
+whole cut or readiness publication.
+
+The collector eligibility regression was red on the old guard. Current working
+tree authenticates exact selected resume and current closed original inputs,
+while preserving no-retry rejection. Fast eligibility/proof/transition/artifact
+command: `uv run pytest -q tests/composition/test_r14_resumed_cut_eligibility.py
+tests/composition/test_r14_resumed_cut_proof.py
+tests/capabilities/agent_loop/test_obligation_resume_transition.py
+tests/composition/test_r14_resume_artifacts.py --tb=short` — 44 passed in 1.51s.
+These isolated ports establish control/proof comparisons only. Cold design review
+found that retained suspension baseline/pair must additionally be joined into
+the complete physical classifier on the resumed path. A saved-workspace whole-cut
+check is running; neither these fast passes nor this diagnosis closes R14.6.
+
+The first saved-workspace whole-cut check (eligibility repair only) terminated
+exit 1: `resumed native cut remains unavailable`. The subsequent repair derives
+`provenance_suspension` from the exact selected resume and reuses the existing
+baseline/pair byte/schema/physical membership checks. State-specific suspended
+return handling is unchanged. Cold scoped follow-up found the missing join
+repaired by inspected code, with no additional confirmed P0/P1; this is not a
+mounted pass. The 44-test command above passed again in 1.38s and Ruff passed.
+
+Pending processes, observed live after this repair: saved-workspace check
+`uv run python /private/tmp/r14_resumed_cut_check.py
+/private/tmp/r14-cross-seal-open-resumed-prefix-20261016/test_accepted_open_recovery_re0/native-v23-prepare.sqlite`
+(exec session 69469), and `uv run pytest -q
+tests/composition/test_r14_execution_suspension.py --tb=short` (exec session 46787).
+Poll these exact handles; no verdict yet. The prior runner session 54597 is
+terminal, not a reason to relaunch either current process. Full two-seal and
+readiness/next-turn verification remain required after a valid whole cut.
+
+The existing mounted suspension/resume regression terminated successfully:
+`uv run pytest -q tests/composition/test_r14_execution_suspension.py --tb=short`
+— 2 passed in 86.41s. This preserves the current SUSPENDED publication/reopen
+behavior; it is not the accepted-original post-resume readiness witness.
+
+Cold review of the planned saved continuation found two additional fixture/read
+boundaries. The cross-seal test reopened two provider scenarios with cap 3,
+which the real constructor rejects before runtime startup. Its reopen now keeps
+the original cap 2. Separately, provisioning accepts repeated ordered provider
+scenarios, but historical custody loading rejected their duplication. Actual
+provision-to-historical-read tests for CONFIRM/CONFIRM and LOST/LOST were red
+(2 failed, 12 passed), then green after removing only the uniqueness predicate.
+The new tests retain issuer key/credential/grant/cap and byte equality, assert
+no live provider creation, and keep malformed scenario/type/cap controls.
+`uv run pytest -q tests/composition/test_r16_historical_dispatch_custody.py
+--tb=short` — 14 passed in 0.13s; scoped Ruff passed.
+
+Combined fast command: `uv run pytest -q
+tests/composition/test_r14_resumed_cut_eligibility.py
+tests/composition/test_r14_resumed_cut_proof.py
+tests/capabilities/agent_loop/test_obligation_resume_transition.py
+tests/composition/test_r14_resume_artifacts.py
+tests/composition/test_r16_historical_dispatch_custody.py --tb=short`
+— 58 passed in 1.45s. The same saved whole-cut process remains pending. It began
+before the custody-loader repair, so a subsequent fresh process must exercise
+the complete repaired code. No full readiness/two-seal verdict is claimed.
+
+Saved whole-cut session 69469 terminated **exit 0**:
+`R14_RESUMED_CUT_VALIDATED 352.007` and
+`R14_RESUMED_CUT_DONE_NO_HEAD_ADVANCE_OR_SEND`. It collected the real complete
+current cut, independently called `validate_native_recovery_cut`, required ACTIVE
+latest Run with one retained original and one closure/reduction, and compared
+tenant heads/provider transfers before/after. This proves the repaired source
+boundary on the saved workspace; it does not yet prove readiness publication.
+
+Prepared `/private/tmp/r14_saved_cross_seal_continue.py` retains the original
+test tail from readiness through second-seal acceptance/SEND, lost recovery ACK,
+reopen, three locator substitutions and idempotent replay. Cold plan/static
+review found no critical runner blocker after preserving cap 2 and providing
+only the second response to the fresh model adapter. `runpy.run_path(...,
+run_name='__mp_main__')` confirmed no main side effects. Before any publication
+the runner requires exactly head 28, one original OPEN/resume/V3, one transfer,
+no pending entry, one Turn and exact latest selected resumed Run. It is now
+running on the same saved DB/custody with current code, no product-clock or
+validator patches. The only fault injection is the original test's lost ACK
+after the second OPEN recovery COMMIT. No continuation verdict yet.

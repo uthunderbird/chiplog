@@ -1872,7 +1872,7 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
         assert first_open_result.accounting.kind == "RECOVERY_REQUIRED"
 
     resources = HermeticDispatchResources(
-        scenarios=scenarios, cap=3, custody_path=custody
+        scenarios=scenarios, cap=2, custody_path=custody
     )
     async with open_common_cli_execution_runtime(
         database,

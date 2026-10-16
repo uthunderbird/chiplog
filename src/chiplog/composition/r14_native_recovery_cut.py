@@ -1003,6 +1003,7 @@ class NativeRecoveryCutSource:
             return None
         run = lineage[-1]
         selected_suspension = None
+        selected_resume = None
         if run.state == "SUSPENDED":
             if not allow_suspended:
                 return None
@@ -1015,8 +1016,12 @@ class NativeRecoveryCutSource:
                 != run.original_obligations
             ):
                 return None
-        elif run.state != "ACTIVE" or run.suspension_baseline is not None:
+        elif run.state != "ACTIVE":
             return None
+        elif run.suspension_baseline is not None:
+            selected_resume = self._selected_resume_for_run(runtime, run, accepted_inputs)
+            if selected_resume is None:
+                return None
         if (
             selected_suspension is None
             and subset.accepted_closed_outcome is None
@@ -1037,7 +1042,11 @@ class NativeRecoveryCutSource:
         if (
             run.worker_session != scope.worker_session_id
             or run.root_binding != "NOT_APPLICABLE"
-            or (selected_suspension is None and run.original_obligations)
+            or (
+                selected_suspension is None
+                and selected_resume is None
+                and run.original_obligations
+            )
             or (selected_suspension is None and run.no_retry_references)
             or run.delivery_acceptance is not None
             or len(run.turns) != 1
@@ -1360,11 +1369,18 @@ class NativeRecoveryCutSource:
             return None
         known = set(native_sources) | {profile_source.physical_record.subject_id}
         known.update(accepted_open_ids)
-        if selected_suspension is not None:
+        provenance_suspension = (
+            selected_suspension
+            if selected_suspension is not None
+            else selected_resume.request.original_suspension
+            if selected_resume is not None
+            else None
+        )
+        if provenance_suspension is not None:
             from .r14_execution_suspension import BASELINE_SCHEMA, PAIR_SCHEMA
 
             if (
-                selected_suspension.baseline.bindings.no_retry_boundaries
+                provenance_suspension.baseline.bindings.no_retry_boundaries
                 != tuple(reference.revision for reference in run.no_retry_references)
                 or not _selected_no_retry_sources(
                     run.no_retry_references,
@@ -1376,14 +1392,14 @@ class NativeRecoveryCutSource:
 
             selected_members = (
                 (
-                    selected_suspension.baseline.baseline_id,
+                    provenance_suspension.baseline.baseline_id,
                     BASELINE_SCHEMA,
-                    selected_suspension.baseline.canonical_bytes(),
+                    provenance_suspension.baseline.canonical_bytes(),
                 ),
                 (
-                    selected_suspension.selected_pair.subject_id,
+                    provenance_suspension.selected_pair.subject_id,
                     PAIR_SCHEMA,
-                    selected_suspension.canonical_pair_bytes,
+                    provenance_suspension.canonical_pair_bytes,
                 ),
             )
             for record_id, schema_id, raw in selected_members:
@@ -1400,7 +1416,7 @@ class NativeRecoveryCutSource:
                         subject=_ref(record_id, raw),
                         schema_id=schema_id,
                         canonical_record_bytes=raw,
-                        selected_decision=selected_suspension.selected_decision,
+                        selected_decision=provenance_suspension.selected_decision,
                         physical_record=_ref(record_id, raw),
                     )
                 )
@@ -2330,6 +2346,52 @@ class NativeRecoveryCutSource:
             update={"complete_inventory_fingerprint": native_recovery_fingerprint("cut", value)}
         )
         return cut
+
+    @staticmethod
+    def _selected_resume_for_run(runtime, run: ExecutionRunRecord, accepted_inputs):
+        """Authenticate retained originals on this exact resumed ACTIVE Run."""
+        from .r14_execution_resume import OPERATION, _retained, _validate_selected
+
+        if accepted_inputs is None or len(run.original_obligations) != 1:
+            return None
+        call, closure, reduction, _ = accepted_inputs
+        disposition = call.disposition
+        if (
+            not isinstance(disposition, RecoveryRequiredResult)
+            or closure is None
+            or reduction is None
+            or not isinstance(disposition.recovered_outcome.outcome, Present)
+            or run.original_obligations != (disposition.obligation,)
+            or closure.original != disposition.obligation
+            or closure.terminal_disposition != disposition.terminal
+            or closure.recovered_outcome != disposition.recovered_outcome.outcome
+            or reduction.reduction_id != closure.reduction_id
+            or reduction.obligation_closure != closure.closure
+            or reduction.accepted_outcome != closure.recovered_outcome
+            or reduction.consumability != "CONSUMABLE"
+        ):
+            return None
+        selected = []
+        for _, _, raw in runtime._loop_decisions().entries():
+            entry = json.loads(raw)
+            if entry.get("kind") != "DECIDED" or entry.get("operation_kind") != OPERATION:
+                continue
+            evidence = _retained(entry)
+            if evidence.result.run != run:
+                continue
+            evidence = _validate_selected(
+                runtime, entry, runtime._publication(entry), check_history=False
+            )
+            suspension = evidence.request.original_suspension
+            if (
+                evidence.result.run != run
+                or run.suspension_baseline != suspension.pair.baseline
+                or run.original_obligations != suspension.baseline.original_obligations
+                or suspension.baseline.activation_blocking_predicates
+            ):
+                return None
+            selected.append(evidence)
+        return selected[0] if len(selected) == 1 else None
 
     @staticmethod
     def _selected_suspension_for_run(

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from chiplog.composition import r16_dispatch_registry as registry
 from chiplog.composition.r16_dispatch_custody import load_existing_historical_custody
 from chiplog.composition.r16_dispatch_registry import (
     HermeticDispatchResources,
@@ -96,3 +97,47 @@ def test_resources_retains_only_the_trusted_custody_locator(tmp_path: Path) -> N
     ephemeral = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1)
     assert durable._custody_path == custody_path
     assert ephemeral._custody_path is None
+
+
+@pytest.mark.parametrize("scenario", ["CONFIRM", "LOST_RESPONSE_AFTER_EFFECT"])
+def test_historical_custody_preserves_repeated_provider_attempts(tmp_path, monkeypatch, scenario):
+    path = tmp_path / "custody.json"
+    resources = HermeticDispatchResources(scenarios=(scenario, scenario), cap=2, custody_path=path)
+    resources.bind(AuthorityGate(tmp_path / "authority.db"))
+    observation = resources.observe()
+    before = path.read_bytes()
+    paths = tuple(sorted(tmp_path.iterdir()))
+
+    def no_live_provider(*args, **kwargs):
+        pytest.fail("historical read must not provision a live provider")
+
+    monkeypatch.setattr(registry, "HermeticEffectsProvider", no_live_provider)
+    custody = load_existing_historical_custody(path)
+    assert custody.issuer_key == resources._key
+    assert custody.credential_id == resources._credential_id
+    assert custody.grant_id == resources._grant_id
+    assert custody.cap == 2
+    assert verify_historical_observation(custody, observation)
+    assert path.read_bytes() == before
+    assert tuple(sorted(tmp_path.iterdir())) == paths
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("scenarios", []),
+        ("scenarios", "CONFIRM"),
+        ("scenarios", [1]),
+        ("scenarios", ["UNKNOWN"]),
+        ("cap", True),
+        ("cap", 0),
+        ("cap", 2),
+    ],
+)
+def test_historical_custody_rejects_invalid_provider_budget(tmp_path, field, value):
+    path, _ = _original_observation(tmp_path)
+    retained = json.loads(path.read_bytes())
+    retained[field] = value
+    path.write_text(json.dumps(retained, sort_keys=True, separators=(",", ":")))
+    with pytest.raises(ValueError, match="invalid historical schema"):
+        load_existing_historical_custody(path)

@@ -226,6 +226,10 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert resumed.state == "ACTIVE"
         assert resumed.predecessor == suspended_head
         assert reopened.read_selected_execution_resume() == resumed
+        resumed_cut = NativeRecoveryCutSource().collect(reopened)
+        assert resumed_cut is not None
+        assert resumed_cut.complete_ordered_run_lineage[-1] == resumed
+        assert len(resumed_cut.original_closures) == len(resumed_cut.current_reductions) == 1
         await reopened.publish_execution_accounting_readiness()
         next_run = await reopened.start_next_execution_turn(resumed.run_id, resumed.head)
         assert next_run.event == "TurnStarted"
