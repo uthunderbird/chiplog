@@ -1635,3 +1635,67 @@ resume interval, resolution source and semantic reduction) passed **293 tests,
 Scoped Ruff and diff checks passed. The new exact saved-bundle probe is still
 running; its logpoint has shown readiness command/authentication True/True.
 There is no terminal startup/reopen/continuation result for this candidate yet.
+
+### Further saved-bundle startup barriers and exact repeat count
+
+The preceding probe subsequently terminated at V3 request reconstruction. Actual
+MCP stopped in `r16_effects:501` with a present but False later-suffix callback,
+then in `prepare_sealed_accounting_v3:745` with accepted outcome None for the same
+original call and cut18. `136bde8` added the exact readiness-prefix route to this
+separate callback. Real-SQL routing/corruption controls were RED (4 failed in
+1.45s); after repair, actual MCP received the outcome at that same cut. This
+remained prefix-read permission, not complete selected-cut authority.
+
+The next probe refused the exact-history early pending gate. `0bcb6f7` explicitly
+routes readiness through the existing exact prefix verifier, then retains full
+selected validation. The real ABSENT/COMPLETE test was RED (2 failed, 2 passed in
+1.35s) after correcting noncanonical fixture JSON; that setup failure is not RED
+evidence. Actual MCP then observed authenticated=True, lifecycle-deferred=False,
+exact-history=True, one pending readiness and actual different from anchor.
+Startup progressed past V3/OPEN validation but terminated in resolver-policy
+startup: its old COMPLETE publication was refused while C29 was physical and C28
+remained anchored. SQL head29/commitment/transfers stayed unchanged; WAL/SHM and
+the derivative gate cache changed. Full startup still did not pass.
+
+During that acquisition, a breakpoint found a second sequential exact-history
+read from the real OPEN builder. `_current_cut` already had local history but
+forwarded its original None argument. `9e18a33` forwards the local tuple only on
+the existing held historical selected path. The real caller plus real builder
+test was RED (4 failed, 6 passed in 1.36s), including observed count 2 instead of
+1; after repair it requires exactly one read, or zero for a supplied tuple.
+Initial/final SQL, anchor and identity checks remain. Its checkpoint passed 15
+tests in 1.15s. This is an exact count result, not a measured native wall-time gain.
+
+The current startup repair keeps all validation before recovery writes. A cold
+design audit found that simply removing old equality guards would admit other
+pending families; the implemented wrapper instead requires one exact pending
+readiness and no owner/gate pending before generic target-to-current proof.
+Semantic reduction separately proves its interval only through the independently
+anchored predecessor, excluding pending readiness. Generic suffix and recovery
+startup retain full readiness source authentication. No lifecycle allowlist or
+startup write reordering is introduced.
+
+The new real-SQL seam was RED (5 failed, 17 passed in 2.79s): two COMPLETE
+reduction cases and three old-family caller barriers. The earlier fixture
+frontier/sequence mismatch was corrected before this RED. Four semantic cases
+exercise ABSENT/COMPLETE and an intermediate resume, using real retained reduction
+and readiness producers, interval/prefix proof and physical catalog; resolution,
+witness and resume-envelope authority are explicit controls. The real startup
+caller rejects structurally valid but source-unauthenticated readiness before any
+recovery call. Damage controls preserve SQL bytes, selected journal and anchor.
+Caller routing controls force generic success but still reject other registered,
+unknown, multiple, owner/gate and bad-prefix states; generic failure and the old
+anchored path are also checked. These do not prove full native source provenance.
+
+Command `.venv/bin/pytest -q tests/composition/test_r14_readiness_startup_suffix.py
+tests/composition/test_r14_recovery_pending_prefix.py
+tests/composition/test_r14_historical_suffix.py
+tests/composition/test_r14_resume_evidence_interval.py
+tests/composition/test_r14_loop_semantic_reduction_publication.py
+tests/composition/test_r14_original_call_resolution_publication.py
+tests/composition/test_r14_native_selected_accounting_fast_path.py --tb=short`
+passed **299 tests in 10.91s**. Ruff and diff checks passed. The new saved-bundle
+MCP acquisition (execution43577) is running on frozen repaired sources with no
+explicit SEND/publication or clock patch; there is no terminal native startup
+result yet. Fresh full two-seal production-clock verification, durable version
+admission and all remaining roadmap requirements stay OPEN.

@@ -448,7 +448,40 @@ def validate_loop_semantic_reduction_startup(runtime) -> None:
             and actual == resulting
             and current_sequence == batch.expected_head + 1
         ):
-            raise ValueError("selected semantic reduction has a partial current suffix")
+            pending = runtime._pending()
+            if (
+                len(pending) != 1
+                or pending[0].get("operation_kind")
+                != "agent_loop.execution-accounting-readiness.v1"
+                or runtime._pending_owners()
+                or runtime._pending_gate_publications()
+            ):
+                raise ValueError("selected semantic reduction has a partial current suffix")
+            from chiplog.composition.r14_recovery_publication import (
+                authenticate_selected_recovery_prefix_held,
+            )
+
+            if not authenticate_selected_recovery_prefix_held(runtime, actual, anchored):
+                raise ValueError("selected semantic reduction has an unverified readiness suffix")
+            pending_batch = runtime._publication(pending[0])
+            if (
+                pending_batch.expected_head < batch.expected_head + 1
+                or pending_batch.expected_head + 1 != current_sequence
+                or pending[0].get("predecessor") != anchored
+            ):
+                raise ValueError("selected semantic reduction readiness frontier differs")
+            # The structural proof admits historical reads only. Exclude pending
+            # readiness here; generic suffix/recovery validation proves its full cut.
+            _authenticate_append_evidence_suffix(
+                runtime,
+                base_sequence=batch.expected_head + 1,
+                base_commitment=resulting,
+                end_sequence=pending_batch.expected_head,
+                end_commitment=anchored,
+                base_witness=prior_request.request.complete_anchor_sources[-1],
+                owner_snapshot=owner_snapshot,
+                loop_entries=loop_entries,
+            )
         _validate_physical_catalog(runtime, tuple(item[3] for item in selected))
         return
     raise ValueError("selected semantic reduction has partial physical state")

@@ -1046,6 +1046,31 @@ def _validate_loop_entry(runtime, entry, command) -> None:
         raise ValueError("suffix contains an unregistered loop operation")
 
 
+def authenticate_selected_r14_startup_suffix_held(
+    runtime, actual: str, anchored: str, *, target_commitment: str
+) -> bool:
+    """Admit only exact pending readiness beyond the existing anchored startup path."""
+    runtime._authority_gate().require_held()
+    if actual != anchored:
+        pending = runtime._pending()
+        if (
+            len(pending) != 1
+            or pending[0].get("operation_kind") != "agent_loop.execution-accounting-readiness.v1"
+            or runtime._pending_owners()
+            or runtime._pending_gate_publications()
+        ):
+            return False
+        from chiplog.composition.r14_recovery_publication import (
+            authenticate_selected_recovery_prefix_held,
+        )
+
+        if not authenticate_selected_recovery_prefix_held(runtime, actual, anchored):
+            return False
+    return authenticate_selected_r14_suffix_held(
+        runtime, actual, anchored, target_commitment=target_commitment
+    )
+
+
 def authenticate_selected_r14_suffix_held(
     runtime, actual: str, anchored: str, *, target_commitment: str
 ) -> bool:

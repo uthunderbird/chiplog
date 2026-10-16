@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from chiplog.capabilities.agent_loop.call_acceptance_preparation import call_record_reference
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
@@ -59,7 +60,7 @@ def _insert(connection, batch):
     connection.execute("UPDATE tenant_heads SET head=? WHERE tenant_id=?", (sequence, "tenant"))
 
 
-async def _fixture(tmp_path, complete, *, with_fence=False):
+async def _fixture(tmp_path, complete, *, with_fence=False, prepare_prefix=None):
     database = tmp_path / "prefix.sqlite"
     with sqlite3.connect(database) as connection:
         connection.executescript(SCHEMA_SQL)
@@ -67,13 +68,31 @@ async def _fixture(tmp_path, complete, *, with_fence=False):
         connection.execute("INSERT INTO tenant_heads VALUES(?,?)", ("tenant", 1))
         if with_fence:
             connection.execute("INSERT INTO deletion_fences VALUES(?,?,?)", ("tenant", "r6", 0))
+    if prepare_prefix is not None:
+        prepare_prefix(database)
     predecessor = _hash(database)
-    cut = (await _cut()).model_copy(
-        update={"materialization_commitment": predecessor, "database_id": str(database)}
+    with sqlite3.connect(database) as connection:
+        expected_head = connection.execute(
+            "SELECT head FROM tenant_heads WHERE tenant_id='tenant'"
+        ).fetchone()[0]
+    original_cut = await _cut()
+    frontier = original_cut.frontier.model_copy(update={"tenant_commit_sequence": expected_head})
+    frontier_head = call_record_reference("recovery-frontier:" + frontier.run_id, frontier)
+    cut = original_cut.model_copy(
+        update={
+            "materialization_commitment": predecessor, "database_id": str(database),
+            "tenant_commit_sequence": expected_head,
+            "frontier": frontier,
+            "complete_ordered_responses": tuple(
+                view.model_copy(update={"frontier_head": frontier_head})
+                for view in original_cut.complete_ordered_responses
+            ),
+        }
     )
     identity = "execution-accounting-readiness:" + cut.digest()
     a = PrepareExecutionAccounting(command_id=identity, cut=cut)
     ar = prepare_execution_accounting(a)
+    assert hasattr(ar, "complete_accounting"), ar
     c = PrepareExecutionContinuation(
         command_id=identity, cut=cut, complete_accounting=ar.complete_accounting
     )
@@ -128,9 +147,12 @@ async def _fixture(tmp_path, complete, *, with_fence=False):
     resulting = _hash(database)
     if not complete:
         with sqlite3.connect(database) as connection:
-            connection.execute("DELETE FROM records")
-            connection.execute("DELETE FROM publications")
-            connection.execute("UPDATE tenant_heads SET head=1")
+            for record in batch.records:
+                connection.execute("DELETE FROM records WHERE record_id=?", (record.record_id,))
+            connection.execute(
+                "DELETE FROM publications WHERE idempotency_key=?", (batch.idempotency_key,)
+            )
+            connection.execute("UPDATE tenant_heads SET head=?", (batch.expected_head,))
     entry = {
         "operation_kind": batch.operation_kind,
         "predecessor": predecessor,
