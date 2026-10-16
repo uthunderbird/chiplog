@@ -17,9 +17,8 @@ from tests.composition.test_r14_recovery_pending_prefix import _fixture
 from tests.composition.test_r14_resume_artifacts import _evidence as resume_evidence
 
 
-@pytest.mark.parametrize("mutation", (None, "synthetic-actor-expiry", "same-head-tamper"))
-async def test_custom_source_keeps_final_collection_at_real_writer(
-    tmp_path, monkeypatch, mutation
+async def _exercise_custom_source_writer(
+    tmp_path, monkeypatch, mutation, *, witness_stage=None
 ):
     runtime, entry, _, _, _ = await _fixture(tmp_path, False)
     template = publication.retained(entry)
@@ -41,6 +40,7 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
         counts = Counter()
         selected = []
         written = []
+        input_reads = []
         receipt = (await resume_evidence()).actor_budget_v1
         actor = object()
         state = SimpleNamespace(now=1, issued=False, tampered_preimage=None)
@@ -56,6 +56,8 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
                 counts["collect"] += 1
                 if counts["collect"] == 2 and mutation == "synthetic-actor-expiry":
                     state.now += 31_000_000_000
+                if counts["collect"] == 2 and mutation == "semantic-change":
+                    return cut.model_copy(update={"materialization_commitment": "d" * 64})
                 return cut
 
             def authenticate_selected_held(self, *args):
@@ -146,6 +148,45 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
         monkeypatch.setattr(publication, "issue_execution_recovery_actor_v1", issue)
         monkeypatch.setattr(publication, "_finish", finish)
 
+        if witness_stage is not None:
+            from chiplog.composition import r14_call_history_witness as history
+
+            # Control boundary only: neither this custom cut nor these fabricated
+            # inputs authenticate a native runtime. The separate native test
+            # does not replace eligibility, inputs or collector results.
+            original_inputs, changed_inputs = object(), object()
+            runtime._trust = SimpleNamespace(capture_verified_observation=lambda: "trust")
+
+            def capture(actual_runtime):
+                assert actual_runtime is runtime
+                input_reads.append(len(input_reads) + 1)
+                position = input_reads[-1]
+                if witness_stage == "before-absent" and position == 1:
+                    return None
+                if witness_stage == "before-error" and position == 1:
+                    raise OSError("before capture failed")
+                if witness_stage == "after-absent" and position == 2:
+                    return None
+                if witness_stage == "after-error" and position == 2:
+                    raise ValueError("after capture failed")
+                if witness_stage == "after-changed" and position == 2:
+                    return changed_inputs
+                if witness_stage == "admission-changed-restored" and position == 3:
+                    return changed_inputs
+                if (
+                    witness_stage in ("decision-changed", "semantic-change", "slow-fallback")
+                    and position == 4
+                ):
+                    return changed_inputs
+                if witness_stage == "decision-error" and position == 4:
+                    raise OSError("decision capture failed")
+                return original_inputs
+
+            monkeypatch.setattr(history, "capture_call_history_journal_inputs", capture)
+            monkeypatch.setattr(
+                publication, "_resumed_original_readiness_cut", lambda cut: True, raising=False
+            )
+
         if mutation == "same-head-tamper":
             with pytest.raises(LoopRejected, match="recovery atomic publication STALE"):
                 await publication.publish_execution_accounting_readiness(runtime)
@@ -161,8 +202,12 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
                     snapshot.connection, runtime._tenant_id
                 ) == state.tampered_preimage
             return
-        if mutation == "synthetic-actor-expiry":
-            with pytest.raises(LoopRejected, match="STALE:authority-after-cut"):
+        if mutation in ("synthetic-actor-expiry", "semantic-change"):
+            expected_reason = (
+                "STALE:authority-after-cut" if mutation == "synthetic-actor-expiry"
+                else "STALE:recovery-cut-changed"
+            )
+            with pytest.raises(LoopRejected, match=expected_reason):
                 await publication.publish_execution_accounting_readiness(runtime)
             assert counts == {"collect": 2, "admission": 1, "decision": 1}
             assert not written and not selected
@@ -173,6 +218,8 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
                 assert capture_authority_snapshot_commitment(
                     snapshot.connection, runtime._tenant_id
                 ) == predecessor
+            if witness_stage is not None:
+                assert input_reads == [1, 2, 3, 4]
             return
         evidence = await publication.publish_execution_accounting_readiness(runtime)
         assert len(written) == len(selected) == 1
@@ -187,7 +234,21 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
         assert len(rows) == 2
         assert store._connection.execute("SELECT head FROM tenant_heads").fetchall() == [(2,)]
         assert evidence.accounting_request.cut == cut
-        assert counts == {"collect": 2, "admission": 1, "decision": 1}
+        expected_collections = 1 if witness_stage == "unchanged" else 2
+        assert counts == {"collect": expected_collections, "admission": 1, "decision": 1}
+        expected_input_reads = {
+            "unchanged": [1, 2, 3, 4],
+            "before-absent": [1],
+            "before-error": [1],
+            "after-absent": [1, 2],
+            "after-error": [1, 2],
+            "after-changed": [1, 2],
+            "admission-changed-restored": [1, 2, 3],
+            "decision-changed": [1, 2, 3, 4],
+            "decision-error": [1, 2, 3, 4],
+            None: [],
+        }
+        assert input_reads == expected_input_reads[witness_stage]
         public_batch = publication.command(evidence)
         assert public_batch.expected_preimage_commitment is None
         assert replace(
@@ -209,3 +270,23 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
     finally:
         await appender.close()
         store.close()
+
+
+@pytest.mark.parametrize("mutation", (None, "synthetic-actor-expiry", "same-head-tamper"))
+async def test_custom_source_keeps_final_collection_at_real_writer(
+    tmp_path, monkeypatch, mutation
+):
+    await _exercise_custom_source_writer(tmp_path, monkeypatch, mutation)
+
+
+@pytest.mark.parametrize("stage", (
+    "unchanged", "before-absent", "before-error", "after-absent", "after-error",
+    "after-changed", "admission-changed-restored", "decision-changed", "decision-error",
+    "semantic-change", "slow-fallback",
+))
+async def test_fabricated_witness_guard_wiring_at_real_writer(tmp_path, monkeypatch, stage):
+    mutation = {
+        "semantic-change": "semantic-change",
+        "slow-fallback": "synthetic-actor-expiry",
+    }.get(stage)
+    await _exercise_custom_source_writer(tmp_path, monkeypatch, mutation, witness_stage=stage)

@@ -511,6 +511,57 @@ async def _finish(runtime, entry):
     return evidence
 
 
+def _capture_readiness_inputs(runtime):
+    from .r14_call_history_witness import capture_call_history_journal_inputs
+
+    try:
+        journals = capture_call_history_journal_inputs(runtime)
+        if journals is None:
+            return None
+        return journals, runtime._trust.capture_verified_observation()
+    except OSError, ValueError, TypeError, RuntimeError:
+        # Missing optimization evidence restores the original full collector.
+        return None
+
+
+@dataclass(repr=False)
+class _ReadinessInputWitness:
+    inputs: tuple
+    valid: bool = True
+
+    def unchanged(self, runtime) -> bool:
+        if self.valid:
+            try:
+                self.valid = _capture_readiness_inputs(runtime) == self.inputs
+            except OSError, ValueError, TypeError, RuntimeError:
+                self.valid = False
+        return self.valid
+
+
+def _resumed_original_readiness_cut(cut: ExecutionRecoveryCut) -> bool:
+    profiles = tuple(
+        row.schema_id for row in cut.complete_sources
+        if row.schema_id.startswith("chiplog.execution.native-one-call-recovery-profile.")
+    )
+    if profiles != ("chiplog.execution.native-one-call-recovery-profile.v5",):
+        return False
+    if not cut.complete_ordered_run_lineage or len(cut.complete_ordered_responses) != 1:
+        return False
+    run = cut.complete_ordered_run_lineage[-1]
+    calls = cut.complete_ordered_responses[0].ordered_calls
+    return (
+        run.state == "ACTIVE"
+        and run.suspension_baseline is not None
+        and len(run.original_obligations) == 1
+        and len(run.turns) == 1
+        and len(cut.original_closures) == 1
+        and len(cut.current_reductions) == 1
+        and len(calls) == 1
+        and calls[0].acceptance.kind == "CONSEQUENTIAL_ACCEPTED"
+        and calls[0].disposition.kind == "RECOVERY_REQUIRED"
+    )
+
+
 async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress"):
     observed = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
@@ -522,9 +573,17 @@ async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress
             if (entry := json.loads(raw)).get("kind") == "DECIDED"
             and entry.get("operation_kind") == OPERATION
         ]
+        inputs_before = _capture_readiness_inputs(runtime)
         cut = source(runtime).collect_held(runtime)
         if cut is None or cut.tenant_id != runtime._tenant_id:
             raise LoopRejected("complete authenticated recovery cut unavailable; HOLD")
+        witness = None
+        if (
+            inputs_before is not None
+            and _resumed_original_readiness_cut(cut)
+            and _capture_readiness_inputs(runtime) == inputs_before
+        ):
+            witness = _ReadinessInputWitness(inputs_before)
         current_pairs = []
         for entry in prior:
             selected_batch = runtime._publication(entry)
@@ -580,7 +639,8 @@ async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress
                 runtime._check_execution_actor(observed)
             except ValueError, TypeError, RuntimeError:
                 return "STALE:authority-before-cut"
-            if check_cut:
+            reuse_cut = witness is not None and witness.unchanged(runtime)
+            if check_cut and not reuse_cut:
                 try:
                     current_cut = source(runtime).collect_held(runtime)
                 except ValueError, TypeError, RuntimeError:

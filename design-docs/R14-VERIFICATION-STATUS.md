@@ -1472,3 +1472,66 @@ The first tamper fixture needed correction to read its commitment inside a real
 transaction; that fixture error is not a product failure. Native input-witness
 reuse still has open dependency/eligibility and fallback/replay obligations;
 no second cut has been removed. Full cross-seal and R14 remain OPEN.
+
+### Actual resumed-native input acquisition and isolated reuse candidate (2026-10-16)
+
+Command: `.venv/bin/python -m debugpy --listen 127.0.0.1:5690
+--configure-subProcess false --wait-for-client
+/private/tmp/r14_native_readiness_inputs_probe.py`, attached through MCP debugger.
+Execution 99484 / PID 72056 is terminal, exit 0; the debugger session is closed.
+The probe used the unchanged saved head-28 workspace and HEAD4452ebb source.
+One conditional native-entry logpoint was reached. At the post-collection
+breakpoint the actual frame evaluated to
+`(False, True, True, True, 28, 'ACTIVE', 1, 34)` for absent-cut, available-before,
+journal/config equality, verified-trust equality, head, Run state, original count,
+and distinct audited event/target pairs. Final assertions additionally proved
+one V5 profile, response, turn, original closure and reduction, with a suspension
+baseline. This is source acquisition, not readiness publication.
+
+The report `/private/tmp/r14-native-readiness-inputs-probe-report.json` records
+the same SQL commitment/head, zero readiness publications and one custody transfer
+before startup and after acquisition; the script also asserted equality after
+runtime close. It does not claim all sidecars were unchanged. A manual debugger
+pause inside collection showed
+`_collect_held -> _selected_accepted_recovery_inputs -> capture_request ->
+read_selected_original_call_resolution -> _read_call_history ->
+validate_selected_command -> prepare_original_call_resolution -> reference`.
+Thus an actual full collection re-enters original-resolution preparation; this
+is not a measured whole-run cost attribution.
+
+Root and a cold, no-parent-context `gpt-6.1-sol` low swarm-red-team inspected the
+15 unmapped audit rows. Journal lock files coordinate authenticated readers;
+the gate journal/SQL are freshly authenticated by final `_require_no_pending`;
+commitment pathname/descriptor reads remain live anchor checks; the read-only
+SQL URI denotes the authority database covered by writer preimage CAS; in-memory
+databases derive historical copies. Checkpoint operation families remain excluded
+by the closed journal/owner allowlists. No P0/P1 omitted dependency was established
+for this exact subset. Open-event auditing is discovery, not exhaustive proof of
+stat/native/unreached dependencies, and this source audit is not mutation evidence.
+
+The invocation-local reuse candidate was developed in the isolated checkout
+`/private/tmp/chiplog-r14-readiness-witness-4452ebb` and transferred byte-for-byte
+to main after the actual acquisition and source dependency audit. Unavailable or changed
+auxiliary inputs permanently disable reuse for that call and restore the original
+full decision collector; all live guards and CAS remain. Root read the cold plan
+and fallback reviews. Initial missing-behavior tests were red (5 failures), then
+the candidate's expanded witness/custom-writer controls passed 13 tests in 1.47s.
+Additional real-writer controls explicitly fabricate eligibility and input pairs
+only to exercise guard wiring: the unchanged-input control was RED against main
+source (collect 2 instead of 1), then the candidate passed 24 witness/writer tests
+in 3.29s. Cases cover unavailable before/after capture, changed after/admission/
+decision inputs, permanent invalidation despite restored inputs, semantic-equal
+fallback acceptance, changed-cut rollback and actor expiry during fallback.
+Those fabricated controls grant no native authority. A fresh native
+cross-seal test with exact one-collector/two-guard assertions is running under
+ordinary product clocks (execution 57173); no native publication, resumed workflow
+or R14 completion result is claimed. Main now retains the full decision collection
+for every unsupported, unavailable or invalidated witness; only the closed native
+resumed-original subset with unchanged inputs may reuse its initial cut.
+
+After exact transfer, command `.venv/bin/pytest -q
+tests/composition/test_r14_readiness_guard_collection.py
+tests/composition/test_r14_readiness_input_witness.py
+tests/composition/test_r14_readiness_artifacts.py
+tests/composition/test_r14_recovery_publication.py --tb=short`
+passed **40 tests in 62.45s** on main. Scoped Ruff and diff checks passed.

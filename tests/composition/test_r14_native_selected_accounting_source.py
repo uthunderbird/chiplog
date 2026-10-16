@@ -1787,7 +1787,43 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
         resumed = await runtime.resume_execution(
             run_id, suspended_head, b"resume-first-open-before-next-turn"
         )
-        await runtime.publish_execution_accounting_readiness()
+        # Observe the real native collector and both actual writer callbacks.
+        # No source result, eligibility or authenticated input is substituted.
+        readiness_collects = []
+        readiness_guards = []
+        native_collect = NativeRecoveryCutSource.collect_held
+        original_submit = runtime._appender.submit
+
+        def count_readiness_collect(actual_source, actual_runtime):
+            readiness_collects.append((actual_source, actual_runtime))
+            return native_collect(actual_source, actual_runtime)
+
+        async def count_readiness_guards(batch):
+            if batch.operation_kind != "agent_loop.execution-accounting-readiness.v1":
+                return await original_submit(batch)
+
+            def admission():
+                readiness_guards.append("admission")
+                return batch.admission_guard()
+
+            def decision(resulting):
+                readiness_guards.append("decision")
+                return batch.decision_guard(resulting)
+
+            return await original_submit(replace(
+                batch, admission_guard=admission, decision_guard=decision,
+            ))
+
+        with monkeypatch.context() as readiness_patch:
+            readiness_patch.setattr(
+                NativeRecoveryCutSource, "collect_held", count_readiness_collect
+            )
+            readiness_patch.setattr(runtime._appender, "submit", count_readiness_guards)
+            try:
+                await runtime.publish_execution_accounting_readiness()
+            finally:
+                assert readiness_collects == [(recovery_source, runtime)]
+                assert readiness_guards == ["admission", "decision"]
         next_run = await runtime.start_next_execution_turn(resumed.run_id, resumed.head)
         captured = await runtime.capture_execution(
             "hermetic-ingress", next_run.run_id, next_run.head
