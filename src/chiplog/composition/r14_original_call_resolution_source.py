@@ -135,6 +135,63 @@ def _selected_resolution_anchor_is_valid(
     )
 
 
+def _selected_interval_steps(runtime, owner_before, loop_before, base_sequence, end_sequence):
+    """Gather exact selected physical steps; this grants no semantic authority."""
+    steps: dict[int, tuple[object, str, str, str, dict[str, object] | None]] = {}
+
+    def add_step(
+        sequence: int,
+        batch,
+        predecessor: str,
+        resulting: str,
+        family: str,
+        entry: dict[str, object] | None = None,
+    ) -> None:
+        if sequence in steps:
+            raise LoopRejected("R14 evidence interval has competing selected publications")
+        if batch.expected_head + 1 != sequence or batch.tenant_id != runtime._tenant_id:
+            raise LoopRejected("R14 evidence interval selected header differs from its sequence")
+        steps[sequence] = (batch, predecessor, resulting, family, entry)
+
+    for decision in owner_before.decisions:
+        sequence = decision.tenant_commit_sequence
+        if base_sequence < sequence <= end_sequence:
+            batch = runtime._owner_command(decision)
+            add_step(
+                sequence,
+                batch,
+                decision.prepared.predecessor_commitment,
+                decision.resulting_commitment,
+                "owner",
+            )
+
+    for _, _, raw in loop_before:
+        entry = json.loads(raw)
+        if entry.get("kind") != "DECIDED":
+            continue
+        expected_head = entry.get("expected_head")
+        if type(expected_head) is not int:
+            raise LoopRejected("R14 evidence interval loop decision lacks its sequence")
+        sequence = expected_head + 1
+        if base_sequence < sequence <= end_sequence:
+            batch = runtime._publication(entry)
+            if (
+                entry.get("operation_id") != batch.idempotency_key
+                or entry.get("operation_kind") != batch.operation_kind
+            ):
+                raise LoopRejected("R14 evidence interval loop identity differs")
+            add_step(
+                sequence,
+                batch,
+                str(entry.get("predecessor")),
+                str(entry.get("resulting")),
+                "loop",
+                entry,
+            )
+
+    return steps
+
+
 def _authenticate_append_evidence_suffix(
     runtime: CommonCliExecutionRuntime,
     *,
@@ -176,62 +233,16 @@ def _authenticate_append_evidence_suffix(
     if owner_before.tenant_id != runtime._tenant_id:
         raise LoopRejected("R14 evidence interval has a foreign owner journal")
     owner_ids = {
-        decision.prepared.request.identity.command_id
-        for decision in owner_before.decisions
+        decision.prepared.request.identity.command_id for decision in owner_before.decisions
     }
     if owner_ids != set(owner_before.materialized_command_ids):
         raise LoopRejected("R14 evidence interval has an unfinished owner publication")
     loop_journal = runtime._loop_decisions()
     loop_before = loop_entries if loop_entries is not None else loop_journal.entries()
 
-    steps: dict[int, tuple[object, str, str, str, dict[str, object] | None]] = {}
-
-    def add_step(
-        sequence: int,
-        batch,
-        predecessor: str,
-        resulting: str,
-        family: str,
-        entry: dict[str, object] | None = None,
-    ) -> None:
-        if sequence in steps:
-            raise LoopRejected("R14 evidence interval has competing selected publications")
-        if batch.expected_head + 1 != sequence or batch.tenant_id != runtime._tenant_id:
-            raise LoopRejected("R14 evidence interval selected header differs from its sequence")
-        steps[sequence] = (batch, predecessor, resulting, family, entry)
-
-    for decision in owner_before.decisions:
-        sequence = decision.tenant_commit_sequence
-        if base_sequence < sequence <= end_sequence:
-            batch = runtime._owner_command(decision)
-            add_step(
-                sequence,
-                batch,
-                decision.prepared.predecessor_commitment,
-                decision.resulting_commitment,
-                "owner",
-            )
-
-    for _, _, raw in loop_before:
-        entry = json.loads(raw)
-        if entry.get("kind") != "DECIDED":
-            continue
-        expected_head = entry.get("expected_head")
-        if type(expected_head) is not int:
-            raise LoopRejected("R14 evidence interval loop decision lacks its sequence")
-        sequence = expected_head + 1
-        if base_sequence < sequence <= end_sequence:
-            batch = runtime._publication(entry)
-            if entry.get("operation_id") != batch.idempotency_key:
-                raise LoopRejected("R14 evidence interval loop identity differs")
-            add_step(
-                sequence,
-                batch,
-                str(entry.get("predecessor")),
-                str(entry.get("resulting")),
-                "loop",
-                entry,
-            )
+    steps = _selected_interval_steps(
+        runtime, owner_before, loop_before, base_sequence, end_sequence
+    )
 
     _verify_selected_commitment_chain(
         base_sequence,
@@ -245,9 +256,7 @@ def _authenticate_append_evidence_suffix(
     )
     if previous_outcome.canonical_bytes() != base_witness.canonical_record_bytes:
         raise LoopRejected("R14 evidence interval base witness is noncanonical")
-    validate_selected_witness_at_cut(
-        runtime, base_witness, base_sequence, snapshot=owner_before
-    )
+    validate_selected_witness_at_cut(runtime, base_witness, base_sequence, snapshot=owner_before)
 
     with read_connection(runtime._database) as connection:
         runtime._check_database_identity()
@@ -286,28 +295,56 @@ def _authenticate_append_evidence_suffix(
                 and pending_entry.get("predecessor") == end_commitment
             )
             pending_is_interval_base = (
-                base_sequence == end_sequence == pending_sequence
-                and base_commitment == actual
+                base_sequence == end_sequence == pending_sequence and base_commitment == actual
             )
             if (
                 pending_sequence != current_sequence
                 or pending_entry.get("predecessor") != anchored
                 or pending_entry.get("resulting") != actual
-                or not (pending_follows_interval or pending_is_interval_base)
                 or inspect_publication(connection, pending_batch, pending_sequence) != "COMPLETE"
             ):
                 raise LoopRejected("R14 evidence interval pending publication is not exact")
+            if not (pending_follows_interval or pending_is_interval_base):
+                bridge_end = pending_batch.expected_head
+                if bridge_end <= end_sequence:
+                    raise LoopRejected("R14 evidence interval pending publication is not exact")
+                bridge = _selected_interval_steps(
+                    runtime, owner_before, loop_before, end_sequence, bridge_end
+                )
+                _verify_selected_commitment_chain(
+                    end_sequence,
+                    end_commitment,
+                    bridge_end,
+                    anchored,
+                    {sequence: (step[1], step[2]) for sequence, step in bridge.items()},
+                )
+                for sequence, (batch, _, _, family, _) in bridge.items():
+                    if family == "loop" and batch.operation_kind not in {
+                        "agent_loop.loop-semantic-reduction.v1",
+                        "agent_loop.execution-resume.v1",
+                        "agent_loop.execution-accounting-readiness.v1",
+                        "agent_loop.execution-next-turn.v1",
+                    }:
+                        raise LoopRejected(
+                            "R14 pending bridge contains an unregistered loop record"
+                        )
+                    if inspect_publication(connection, batch, sequence) != "COMPLETE":
+                        raise LoopRejected("R14 pending bridge differs from physical publication")
 
         for publication in publications:
             sequence = publication[3]
             batch, _, _, family, entry = steps[sequence]
-            if publication != (
-                batch.operation_kind,
-                batch.idempotency_key,
-                batch.request_fingerprint,
-                sequence,
-                "\n".join(record.record_id for record in batch.records),
-            ) or inspect_publication(connection, batch, sequence) != "COMPLETE":
+            if (
+                publication
+                != (
+                    batch.operation_kind,
+                    batch.idempotency_key,
+                    batch.request_fingerprint,
+                    sequence,
+                    "\n".join(record.record_id for record in batch.records),
+                )
+                or inspect_publication(connection, batch, sequence) != "COMPLETE"
+            ):
                 raise LoopRejected("R14 evidence interval differs from physical publication")
             physical = tuple(
                 connection.execute(
@@ -328,9 +365,7 @@ def _authenticate_append_evidence_suffix(
                 if batch.operation_kind == "agent_loop.execution-accounting-readiness.v1":
                     from chiplog.composition.r14_recovery_publication import validate_selected
 
-                    validate_selected(
-                        runtime, entry, batch, through_sequence=batch.expected_head
-                    )
+                    validate_selected(runtime, entry, batch, through_sequence=batch.expected_head)
                     continue
                 if batch.operation_kind == "agent_loop.execution-next-turn.v1":
                     from chiplog.composition.r14_next_turn_records import (
@@ -470,9 +505,11 @@ def _selected_resolution_preimage(runtime, expected_cut):
 
     if reductions:
         latest_entry = reductions[-1][2]
-        retained_reduction = (
+        retained_type = (
             r14_loop_semantic_reduction_publication.RetainedLoopSemanticReductionPublication
-            .model_validate_json(latest_entry[r14_loop_semantic_reduction_publication.EVIDENCE_FIELD])
+        )
+        retained_reduction = retained_type.model_validate_json(
+            latest_entry[r14_loop_semantic_reduction_publication.EVIDENCE_FIELD]
         )
         base_sequence = reductions[-1][3].expected_head + 1
         base_commitment = str(latest_entry["resulting"])
@@ -680,8 +717,7 @@ def capture_original_call_resolution_request(
             ) = selected_suffix
             if (
                 selected_actual != before
-                or selected_anchor
-                not in (before, expected_cut.materialization_commitment)
+                or selected_anchor not in (before, expected_cut.materialization_commitment)
                 or checked_sequence != tenant_commit_sequence
             ):
                 raise LoopRejected(

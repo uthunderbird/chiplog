@@ -1523,9 +1523,13 @@ in 3.29s. Cases cover unavailable before/after capture, changed after/admission/
 decision inputs, permanent invalidation despite restored inputs, semantic-equal
 fallback acceptance, changed-cut rollback and actor expiry during fallback.
 Those fabricated controls grant no native authority. A fresh native
-cross-seal test with exact one-collector/two-guard assertions is running under
-ordinary product clocks (execution 57173); no native publication, resumed workflow
-or R14 completion result is claimed. Main now retains the full decision collection
+cross-seal test with exact one-collector/two-guard assertions ran under
+ordinary product clocks (execution 57173). It is now terminal: **1 failed in
+2482.66s**, after SQL readiness publication at sequence 29 following resume28.
+`_finish -> validate_selected` refused the selected cut/exact publication at
+`r14_recovery_publication.py:431`. The post-publication count assertions were
+not reached, so neither exact native invocation counts nor resumed workflow
+completion are established. No next Turn/second seal or R14 completion is claimed. Main now retains the full decision collection
 for every unsupported, unavailable or invalidated witness; only the closed native
 resumed-original subset with unchanged inputs may reuse its initial cut.
 
@@ -1535,3 +1539,51 @@ tests/composition/test_r14_readiness_input_witness.py
 tests/composition/test_r14_readiness_artifacts.py
 tests/composition/test_r14_recovery_publication.py --tb=short`
 passed **40 tests in 62.45s** on main. Scoped Ruff and diff checks passed.
+
+After native57173 failed, root preserved the full 43-file head-29 bundle at
+`/private/tmp/r14-readiness-postcommit-preserved-head29` before diagnostic reopen.
+The runner used the exact frozen isolated sources and original custody/manifest,
+with no explicit SEND/publication or product-clock patch. Startup refused earlier
+than the original readiness predicate: historical semantic-reduction validation
+called `_authenticate_append_evidence_suffix` and rejected its pending publication.
+The SQL head and authority commitment stayed unchanged; SQLite WAL/SHM and the
+derivative gate cache changed, so universal sidecar immutability is not claimed.
+
+MCP debugger then reached both the precondition and exact rejection line under
+`current_sequence == 29`. The observed stack was startup ->
+`validate_selected_executions -> _read_call_history:778 ->
+_authenticate_append_evidence_suffix:299`. Scalars were base26/end26/current29,
+one pending readiness29, predecessor equal to anchor, resulting equal to actual,
+and physical `inspect_publication == COMPLETE`; both adjacency predicates were
+false. This diagnoses a historical-interval refusal during reopen. It does not
+yet prove the original `_finish` refusal has the same inner cause. Both debugger
+sessions were closed after terminal exit1. The original refusal remains an open mounted requirement.
+
+The bounded real-SQL control first failed specifically at that adjacency guard
+(**1 failed in 1.04s**, after correcting fixture setup errors). Root selected a
+separate structural bridge from the historical end to the current anchor. A cold
+design audit rejected bare adjacency deletion because an empty historical interval
+would accept substituted equal commitments without proving linkage. The bridge
+retains exact pending head/predecessor/result/COMPLETE checks, requires unique
+contiguous selected steps and exact physical membership, and grants no semantic
+evidence authority. The original interval semantic validators remain unchanged.
+Root read the narrow implementation review: 0 demonstrated P0/P1.
+
+Command `.venv/bin/pytest -q tests/composition/test_r14_resume_evidence_interval.py
+tests/composition/test_r14_original_call_resolution_source.py
+tests/composition/test_r14_loop_semantic_reduction_publication.py --tb=short`
+passed **45 tests in 1.80s**. The control suite includes the late pending positive,
+old adjacent/base/current-anchor branches, owner bridge, gap/duplicate/fork,
+forged empty commitment, foreign headers, unknown loop operation, changed/orphan/
+rival physical membership and exact pending negatives. It uses real SQLite and
+commitments but synthetic journal accessors and unrelated witness stubs: these
+checks are not native authority proof.
+
+A new frozen candidate checkout
+`/private/tmp/chiplog-r14-pending-bridge-0846538` progressed through the old
+interval guard during actual saved-bundle startup. MCP then reached
+`validate_selected:430` via `_read_call_history:1265`, with actual
+`(command_equal, authenticated, through_sequence, loop_cut_is_none, cut_head)`
+**`(True, False, None, False, 28)`**. Thus the bridge clears one observed barrier,
+while native historical readiness authentication still refuses. No successful
+reopen, finish, next Turn, second seal or R14 completion follows from this slice.
