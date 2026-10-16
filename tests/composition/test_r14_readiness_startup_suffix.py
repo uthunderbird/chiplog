@@ -3,7 +3,7 @@
 import hashlib
 import json
 import sqlite3
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -13,7 +13,7 @@ from tests.composition.test_r14_recovery_pending_prefix import _fixture, _hash, 
 
 def _entry(batch, predecessor, resulting, **evidence):
     return dict(
-        kind="DECIDED", operation_kind=batch.operation_kind,
+        version=1, kind="DECIDED", operation_kind=batch.operation_kind,
         operation_id=batch.idempotency_key, expected_head=batch.expected_head,
         fingerprint=batch.request_fingerprint, predecessor=predecessor,
         resulting=resulting, **evidence,
@@ -102,14 +102,31 @@ async def _semantic_prefix(tmp_path, monkeypatch, *, complete, bridge):
     pending.update(_entry(ready_batch, pending["predecessor"], pending["resulting"]))
     entries.append(pending)
     batches[ready_batch.idempotency_key] = ready_batch
-    runtime._loop_decisions = lambda: SimpleNamespace(entries=lambda: tuple(
-        (entry["operation_id"], None, json.dumps(entry, sort_keys=True, separators=(",", ":")))
-        for entry in entries
-    ))
+    def journal_entries():
+        # Persistence/authentication is controlled; marker sequencing is real.
+        values = []
+        for entry in entries:
+            values.append(entry)
+            if entry is not pending:
+                values.append(dict(
+                    version=1, kind="MATERIALIZED", operation_id=entry["operation_id"]
+                ))
+        return tuple(
+            (str(index), None, json.dumps(value, sort_keys=True, separators=(",", ":")))
+            for index, value in enumerate(values)
+        )
+
+    runtime._loop_decisions = lambda: SimpleNamespace(entries=journal_entries)
     owner_snapshot = SimpleNamespace(tenant_id="tenant", decisions=(), materialized_command_ids=())
     runtime._owner_decisions = lambda: SimpleNamespace(snapshot=lambda: owner_snapshot)
     runtime._publication = lambda entry: batches[entry["operation_id"]]
-    runtime._loop_decision_materialized = lambda identity, entry: entry is not pending
+    from chiplog.composition.r13_runtime import R13Runtime
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
+
+    for name in ("_pending", "_loop_decision_record", "_validate_h1_v2_durable_decision"):
+        setattr(runtime, name, MethodType(getattr(R13Runtime, name), runtime))
+    for name in ("_loop_decision_materialized", "_selected_physical_state"):
+        setattr(runtime, name, MethodType(getattr(R14PlanningRuntime, name), runtime))
     # Only these unrelated authority acquisitions are controlled. Reduction command,
     # interval chain, exact readiness prefix, physical catalog and SQL hashes are real.
     monkeypatch.setattr(resolution, "_selected_entries", lambda _: (
@@ -149,6 +166,13 @@ async def test_semantic_startup_proves_only_through_pending_readiness_predecesso
     monkeypatch.setattr(intervals, "_authenticate_append_evidence_suffix", interval)
     with runtime._authority_gate().hold():
         before = (runtime._database.read_bytes(), runtime._loop_decisions().entries(), predecessor)
+        if complete:
+            from chiplog.platform.owner_decision_journal import OwnerJournalIntegrityError
+
+            selected = reduction._selected_entries(runtime)[0]
+            # Recovery/writer lookup keeps its stricter anchored-cut contract.
+            with pytest.raises(OwnerJournalIntegrityError, match="recover_history_physical"):
+                runtime._loop_decision_materialized(selected[3].idempotency_key, selected[2])
         reduction.validate_loop_semantic_reduction_startup(runtime)
         assert calls[-1]["end_sequence"] == runtime._publication(pending).expected_head
         assert calls[-1]["end_commitment"] == predecessor
@@ -160,6 +184,90 @@ async def test_semantic_startup_proves_only_through_pending_readiness_predecesso
             recovery.validate_selected(runtime, pending, runtime._publication(pending))
         assert (runtime._database.read_bytes(), runtime._loop_decisions().entries(),
                 runtime._commitment_journal.load("tenant")) == before
+
+
+@pytest.mark.parametrize("physical", ["ABSENT", "COMPLETE"])
+@pytest.mark.parametrize("materialized", [False, True])
+async def test_semantic_startup_keeps_own_publication_crash_windows(
+    tmp_path, monkeypatch, physical, materialized
+):
+    from chiplog.composition import r14_loop_semantic_reduction_publication as reduction
+
+    runtime, pending, _ = await _semantic_prefix(
+        tmp_path, monkeypatch, complete=False, bridge=False
+    )
+    selected = reduction._selected_entries(runtime)[0]
+    entry, batch = selected[2:]
+    values = [json.loads(raw) for _, _, raw in runtime._loop_decisions().entries()]
+    values = [value for value in values if value["operation_id"] != pending["operation_id"]]
+    if not materialized:
+        values = [value for value in values if not (
+            value["operation_id"] == batch.idempotency_key and value["kind"] == "MATERIALIZED"
+        )]
+    runtime._loop_decisions = lambda: SimpleNamespace(entries=lambda: tuple(
+        (str(index), None, json.dumps(value, sort_keys=True, separators=(",", ":")))
+        for index, value in enumerate(values)
+    ))
+    if physical == "ABSENT":
+        with sqlite3.connect(runtime._database) as connection:
+            for record in batch.records:
+                connection.execute("DELETE FROM records WHERE record_id=?", (record.record_id,))
+            connection.execute("DELETE FROM publications WHERE idempotency_key=?",
+                               (batch.idempotency_key,))
+            connection.execute("UPDATE tenant_heads SET head=?", (batch.expected_head,))
+    anchor = entry["resulting"] if materialized else entry["predecessor"]
+    runtime._commitment_journal = SimpleNamespace(load=lambda _: anchor)
+    with runtime._authority_gate().hold():
+        before = (runtime._database.read_bytes(), runtime._loop_decisions().entries(), anchor)
+        if physical == "ABSENT" and materialized:
+            with pytest.raises(ValueError, match="unauthenticated current suffix"):
+                reduction.validate_loop_semantic_reduction_startup(runtime)
+        else:
+            reduction.validate_loop_semantic_reduction_startup(runtime)
+        assert (runtime._database.read_bytes(), runtime._loop_decisions().entries(),
+                runtime._commitment_journal.load("tenant")) == before
+
+
+@pytest.mark.parametrize("damage", ["orphan", "duplicate", "unknown-kind", "changed-exact"])
+async def test_semantic_startup_keeps_exact_marker_history(tmp_path, monkeypatch, damage):
+    from chiplog.capabilities.agent_loop.contracts import LoopRejected
+    from chiplog.composition import r14_loop_semantic_reduction_publication as reduction
+
+    runtime, _, _ = await _semantic_prefix(tmp_path, monkeypatch, complete=True, bridge=True)
+    values = [json.loads(raw) for _, _, raw in runtime._loop_decisions().entries()]
+    marker = next(value for value in values if value["kind"] == "MATERIALIZED")
+    if damage == "orphan":
+        marker["operation_id"] = "missing-decision"
+    elif damage == "duplicate":
+        values.insert(values.index(marker) + 1, marker.copy())
+    elif damage == "unknown-kind":
+        marker["kind"] = "UNKNOWN"
+    else:
+        exact_lookup = runtime._loop_decision_record
+
+        def changed_lookup(identity, expected):
+            # Mutate only the journal after selection; expected remains the old entry.
+            selected = next(value for value in values if value["kind"] == "DECIDED"
+                            and value["operation_id"] == identity)
+            selected["fingerprint"] = "0" * 64
+            return exact_lookup(identity, expected)
+
+        runtime._loop_decision_record = changed_lookup
+    runtime._loop_decisions = lambda: SimpleNamespace(entries=lambda: tuple(
+        (str(index), None, json.dumps(value, sort_keys=True, separators=(",", ":")))
+        for index, value in enumerate(values)
+    ))
+    with runtime._authority_gate().hold():
+        sql_before = runtime._database.read_bytes()
+        anchor = runtime._commitment_journal.load("tenant")
+        with pytest.raises(LoopRejected, match=(
+            "missing or changed exact" if damage == "changed-exact"
+            else "orphaned loop materialization" if damage in {"orphan", "duplicate"}
+            else "unknown loop publication disposition"
+        )):
+            reduction.validate_loop_semantic_reduction_startup(runtime)
+        assert runtime._database.read_bytes() == sql_before
+        assert runtime._commitment_journal.load("tenant") == anchor
 
 
 @pytest.mark.parametrize("damage", [

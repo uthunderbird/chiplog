@@ -424,7 +424,9 @@ def validate_loop_semantic_reduction_startup(runtime) -> None:
             "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
         ).fetchone()
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
-    materialized = runtime._loop_decision_materialized(batch.idempotency_key, entry)
+    # Read the exact durable marker here; this validator proves the physical
+    # state below, including the pending-readiness cut beyond the anchor.
+    _, materialized = runtime._loop_decision_record(batch.idempotency_key, entry)
     predecessor = str(entry["predecessor"])
     if state == "ABSENT" and not materialized and actual == predecessor and anchored == predecessor:
         _validate_physical_catalog(runtime, tuple(item[3] for item in selected[:-1]) or None)

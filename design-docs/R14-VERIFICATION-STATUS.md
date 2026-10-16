@@ -1726,3 +1726,36 @@ It bypasses earlier startup validators only to locate the rejected suffix seam;
 its result cannot establish ordinary startup success. The frozen candidate includes
 the effects forwarding change. Breakpoints observe the readiness-prefix rejection
 and generic suffix exception handler. All roadmap completion claims remain OPEN.
+
+That diagnostic reached the generic exception handler, not the readiness-prefix
+rejection. `sys.exception()` was `OwnerJournalIntegrityError`; its traceback was
+generic suffix1130 → semantic reduction startup427 → R14 runtime587. The old
+reduction was marked and physically COMPLETE, but the generic materialized helper
+required current actual C29 to equal anchor C28 before the startup validator could
+prove the pending-readiness interval. The diagnostic terminated with exit1 and its
+MCP session closed; SQL head29, commitment and custody transfers were unchanged.
+Only the derivative gate cache and SQLite sidecars changed.
+
+The startup reduction lookup now reads the exact marker using
+`_loop_decision_record(..., entry)`. Its physical inspection, historical interval,
+readiness-prefix and complete catalog checks remain independent. Generic
+`_loop_decision_materialized` and recovery/writer call sites are unchanged. Tests
+now bind real pending-marker parsing, exact decision lookup, R14 physical inspection
+and materialized lookup; persistence authentication, resolution/witness/resume
+authority remain explicitly controlled. The upgraded positive test was RED:
+**2 failed, 2 passed in 1.84s**, both COMPLETE-readiness cases throwing the same
+error. A preceding wrong class import was a setup error, not RED evidence.
+
+Command `.venv/bin/pytest -q tests/composition/test_r14_readiness_startup_suffix.py
+tests/composition/test_r14_loop_semantic_reduction_publication.py
+tests/composition/test_r14_recovery_pending_prefix.py
+tests/composition/test_r14_historical_suffix.py
+tests/composition/test_r14_resume_evidence_interval.py --tb=short` passed
+**209 tests in 10.23s**. Own ABSENT/COMPLETE and marked/unmarked crash windows,
+orphan/duplicate/unknown markers and a journal decision changed after selection
+are checked. The existing real startup caller still rejects synthetic source
+authority before recovery. An added assertion requires the generic R14 helper to
+retain its stricter C29/C28 rejection; the startup file then passed **48 tests in
+6.49s**. Cold bounded design audit found no P0/P1, with no claim of independent
+external verification. Ordinary native startup is being observed separately on
+frozen sources (execution5896); no successful terminal result is recorded yet.
