@@ -111,10 +111,17 @@ def test_partial_identifier_sources_keep_missing_dependency_reason():
 def test_dynamic_predicate_mutation_is_retained_in_joined_sql_before_engine_observation():
     source = (ROOT / PLANNING).read_text()
     marker = '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "'
-    assert source.count(marker) == 1
-    source = source.replace(marker,
+    broker, = [node for node in ast.parse(source).body
+               if isinstance(node, ast.ClassDef) and node.name == "BrokerAuthorityReader"]
+    leaf, = [node for node in broker.body if isinstance(node, ast.FunctionDef)
+             and node.name == "_execute_planning_read"]
+    segment = ast.get_source_segment(source, leaf)
+    assert segment.count(marker) == 1
+    changed = segment.replace(marker,
         '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "\n'
         '            "AND EXISTS (SELECT 1 FROM deletion_fences WHERE frontier >= 0) "')
+    assert source.count(segment) == 1
+    source = source.replace(segment, changed)
     inventory = _inspect(((PLANNING, source),))
     row, = [row for row in inventory.resolved if row.site.qualname ==
             "BrokerAuthorityReader._execute_planning_read" and
@@ -172,7 +179,12 @@ def test_current_tree_accounts_all_candidates_without_hiding_verifier_sql_or_unk
                (row.site.module.removeprefix("src/chiplog/"), row.site.qualname) in known and
                not isinstance(ast.parse(row.site.expression, mode="eval").body.args[0],
                               ast.Constant)]
-    assert len(dynamic) == 21
+    # The uniqueness statement now has an explicit SQL local, joining the other
+    # planning sites rather than remaining a literal execute argument.
+    assert len(dynamic) == 22
+    preparation, = [row for row in inventory.unresolved
+                    if row.site.qualname == "_prepared_planning_statement"]
+    assert preparation.site.expression == "connection.execute('EXPLAIN ' + sql, parameters)"
     for row in inventory.resolved:
         if row.site.qualname == "SQLitePlanningRepository.committed_publications" and (
             "placeholders" in row.site.expression
@@ -193,21 +205,21 @@ def test_named_route_refusal_keeps_each_dynamic_candidate_with_its_reason():
     inventory = _inspect(((PLANNING, source),))
     rows = [row for row in inventory.unresolved if row.site.qualname ==
             "BrokerAuthorityReader._execute_planning_read"]
-    assert len(rows) == 2
+    assert len(rows) == 3
     assert all(row.reason.startswith("UnknownSqlExpression:") for row in rows)
     inventory.require_exact_accounting()
 
 
 def test_nested_sql_keeps_its_nearest_scope_when_enclosing_family_refuses():
     source = (ROOT / PLANNING).read_text()
-    marker = "        duplicate_sequence = connection.execute(\n"
+    marker = "            duplicate_sequence = connection.execute(\n"
     assert source.count(marker) == 1
     source = source.replace(marker,
-        '        def inner():\n            connection.execute("SELECT 88")\n' + marker)
+        '            def inner():\n                connection.execute("SELECT 88")\n' + marker)
     inventory = _inspect(((PLANNING, source),))
     child, = [row for row in inventory.resolved if row.site.qualname ==
               "BrokerAuthorityReader._execute_planning_read.inner"]
     assert child.alternatives[0].sql == "SELECT 88"
     assert len([row for row in inventory.unresolved if row.site.qualname ==
-                "BrokerAuthorityReader._execute_planning_read"]) == 2
+                "BrokerAuthorityReader._execute_planning_read"]) == 3
     inventory.require_exact_accounting()

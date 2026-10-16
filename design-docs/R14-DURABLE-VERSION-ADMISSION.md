@@ -975,3 +975,62 @@ not clean: shadowing their pre-slice sources reports 349 errors. Five newly
 introduced untyped-helper diagnostics were removed by using typed direct frame
 selection; current sources now have the identical 349-message multiset after
 line-number normalization. No broad verifier type-clean claim.
+
+## Runtime preparation gap and closure scope (2026-10-16)
+
+Cold full swarm route `/private/tmp/r14-current-admission-next-executable-slice-v2.md`
+and design red team `/private/tmp/r14-admission-closure-scope-design-rt.md` ground
+the next obligation in NORMATIVE 42/44/274/276/290/677. Complete executable
+authority-read closure includes SQL and non-SQL origins, consumers, domains,
+assembly and capability confinement. It does not mean proving the semantics of
+every unrelated Python call. Keep the all-source corpus as independent
+anti-omission evidence; neither filename exemptions nor dropping unknown aliases
+can establish the authority boundary. No unconditional `require_closed` refusal
+has been changed into permission.
+
+The private preparation observer is not mounted runtime enforcement. The actual
+BrokerAuthorityReader currently compares a manually written `actual_edges` tuple,
+then executes three planning statements and emits proof after fetching. Root's
+new real-reader test mutates only publication SQL: an added
+`deletion_fences.frontier` predicate, or a missing `request_fingerprint` read
+replaced by an empty-string projection. With unchanged schema/content and
+hard-coded edges, both released canonical results. Command
+`.venv/bin/python -m pytest -q -p no:timeout tests/platform/test_authority_reads.py::test_actual_planning_edges_are_checked_before_step_and_release --tb=short`
+returned two failures in 0.10s. The trace matcher was corrected for SQLite's
+expanded parameters before this retained RED; both business statements were
+observed. Earlier full-AMR reads are expected and are not claimed absent.
+
+Selected implementation target: exact per-statement EXPLAIN/action/READ equality
+on the same open verified snapshot before business step; deny-default policy
+through fetch; no statement-cache bypass; typed refusal and policy cleanup.
+The existing V1 proof interpretation must remain distinct from a V2 proof
+binding all three statements, including uniqueness SQL omitted by V1. Source
+verification must join the guarded SQL/parameter/receiver paths rather than drop
+their corpus sites. This is a required runtime-mechanism slice, not complete
+manifest registration, CURRENT or V2 initialization. Implementation and positive
+runtime evidence were pending in that recorded RED snapshot.
+
+The runtime repair now mounts this policy on all three statements with
+`cached_statements=0`. Observed READ equality is checked before independently
+produced canonical SQL/parameter equality; the same deny-default authorizer stays
+installed through business execution/fetch and is cleared on success or failure.
+Two further genuine RED controls demonstrated that an added `AND 1=1` and a
+coherent foreign-tenant parameter substitution previously RELEASED despite equal
+READ sets (2 failed in 0.11s; `/private/tmp/r14-exact-query-red.out`). Those controls
+now refuse before the changed statement steps. V1 attestation bytes remain frozen;
+the distinct V2 fingerprint binds all three SQL/parameter pairs and snapshot ID.
+
+The source fragment explicitly joins each guarded caller to the helper EXPLAIN
+sink and tenant-main origin. Every raw leaf connection method call must be one
+of those three guarded executions; extra execute/rollback controls refuse. This
+is forwarding evidence, not universal helper/callback semantic closure, and the
+fragment still refuses global admission. Command `.venv/bin/python -m pytest -q
+-p no:timeout tests/platform/test_authority_reads.py
+tests/verification/test_authority_read_graph.py
+tests/verification/test_planning_descriptor_chain.py
+tests/verification/test_selected_engine_evidence.py
+tests/verification/test_sql_expression_inventory.py --tb=short` passed 301 tests
+in 122.07s. Root independently reran the platform module and three new runtime
+forwarding/raw-operation selectors: 54 passed in 1.97s. Scoped Ruff and runtime/
+test mypy pass. Same-command verifier mypy comparison reduced HEAD's 344 messages
+to 97, with zero new normalized diagnostics; this is not a type-clean full gate.

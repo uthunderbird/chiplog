@@ -32,6 +32,17 @@ def mutate(items, path, old, new):
     return tuple((p, text.replace(old, new) if p == path else text) for p, text in items)
 
 
+def mutate_reader_leaf(items, old, new):
+    text = dict(items)[READER]
+    broker, = [node for node in ast.parse(text).body
+               if isinstance(node, ast.ClassDef) and node.name == 'BrokerAuthorityReader']
+    leaf, = [node for node in broker.body if isinstance(node, ast.FunctionDef)
+             and node.name == '_execute_planning_read']
+    segment = ast.get_source_segment(text, leaf)
+    assert segment.count(old) == 1
+    return mutate(items, READER, segment, segment.replace(old, new))
+
+
 def mutate_preparation(items, scope, old, new):
     text = dict(items)[PREPARATION]
     method, = [node for node in ast.parse(text).body
@@ -292,12 +303,12 @@ def test_reader_database_substitution_refuses():
 
 
 def test_wrapper_added_downstream_read_requires_descriptor_edge():
-    changed = mutate(sources(), READER,
+    changed = mutate_reader_leaf(sources(),
         '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "',
         '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "\n'
         '            "AND EXISTS (SELECT 1 FROM deletion_fences WHERE frontier >= 0) "')
     sql = next(sql for name, ordinal, _, sql in EXPECTED_SQL
-               if name == 'BrokerAuthorityReader._execute_planning_read' and ordinal == 20)
+               if name == 'BrokerAuthorityReader._execute_planning_read' and ordinal == 44)
     sql = sql.replace('ORDER BY commit_sequence',
         'AND EXISTS (SELECT 1 FROM deletion_fences WHERE frontier >= 0) '
         'ORDER BY commit_sequence')
@@ -344,8 +355,9 @@ def test_partial_chain_cannot_admit_runtime():
 
 
 @pytest.mark.parametrize('old,new', [
-    ('sqlite3.connect(f"file:{self._database}?mode=ro", uri=True, isolation_level=None)',
-     'sqlite3.connect(":memory:")'),
+    ('f"file:{self._database}?mode=ro", uri=True,\n'
+     '                isolation_level=None, cached_statements=0',
+     '":memory:", cached_statements=0'),
     ('self._execute_planning_read(connection, operation, snapshot)',
      'self._execute_planning_read(other_connection, operation, snapshot)'),
     ('        publication_sql = (',
@@ -753,3 +765,62 @@ def test_selected_producer_imported_class_alias_cannot_replace_allocation(path):
             'LedgerAlias.__new__ = foreign\n')
     with pytest.raises(UnknownPlanningChain):
         build_planning_descriptor_fragment(mutate(items, path, text, text + tail))
+
+
+
+def test_runtime_preparation_retains_each_actual_sql_and_parameter_forwarding():
+    fragment = build_planning_descriptor_fragment(sources())
+    chains = fragment.runtime_preparation_chains
+    assert len(chains) == 3
+    assert tuple((row.sql_local, row.parameters_local) for row in chains) == (
+        ('uniqueness_sql', 'uniqueness_parameters'),
+        ('publication_sql', 'publication_parameters'),
+        ('record_sql', 'record_parameters'),
+    )
+    assert {row.database_domain for row in chains} == {'tenant_main'}
+    assert {row.sink.qualname for row in chains} == {'_prepared_planning_statement'}
+    assert {row.sink.expression for row in chains} == {
+        "connection.execute('EXPLAIN ' + sql, parameters)"}
+    assert {row.caller for row in chains} == {row.site for row in fragment.rows}
+    with pytest.raises(UnknownPlanningChain):
+        fragment.require_closed()
+
+
+@pytest.mark.parametrize('old,new', [
+    ('isolation_level=None, cached_statements=0',
+     'isolation_level=None, cached_statements=128'),
+    ('connection, publication_sql, publication_parameters, publication_reads,',
+     'connection, record_sql, publication_parameters, publication_reads,'),
+    ('canonical_statement=canonical_statements[1]',
+     'canonical_statement=canonical_statements[2]'),
+    ('canonical_statements = _canonical_planning_statements(operation)',
+     'canonical_statements = _canonical_planning_statements(foreign_operation)'),
+    ('connection.execute(publication_sql, publication_parameters)',
+     'connection.execute(publication_sql, foreign_parameters)'),
+    ('connection.execute(publication_sql, publication_parameters).fetchall()',
+     'connection.execute(publication_sql, publication_parameters)'),
+    ('connection.execute("EXPLAIN " + sql, parameters)',
+     'connection.execute("EXPLAIN " + sql, foreign_parameters)'),
+    ('connection.set_authorizer(None)', 'connection.set_authorizer(foreign)'),
+    ('connection.set_authorizer(authorize)', 'foreign(connection)'),
+    ('as publication_observed:\n            publications =',
+     'as publication_observed:\n            leak(connection)\n            publications ='),
+])
+def test_runtime_preparation_rejects_foreign_sql_parameters_policy_or_cursor_escape(old, new):
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(mutate(sources(), READER, old, new))
+
+
+@pytest.mark.parametrize('position', ['before', 'after', 'rollback'])
+def test_planning_fragment_refuses_raw_connection_operations_outside_guards(position):
+    items = sources()
+    if position == 'before':
+        old = '        canonical_statements = _canonical_planning_statements(operation)'
+        new = '        connection.execute("SELECT 17").fetchall()\n' + old
+    else:
+        old = '        observed = uniqueness_observed | publication_observed | record_observed'
+        action = ('connection.rollback()' if position == 'rollback' else
+                  'connection.execute("SELECT 17").fetchall()')
+        new = '        ' + action + '\n' + old
+    with pytest.raises(UnknownPlanningChain, match='unguarded raw connection'):
+        build_planning_descriptor_fragment(mutate(items, READER, old, new))

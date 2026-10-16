@@ -62,6 +62,22 @@ seconds-scale cost or a justification for another cache. Next diagnostic must
 discriminate growth/actual slow-path work rather than assume this tiny overhead
 explains the second-seal failure.
 
+Retained-prefix pure classifier control (2026-10-16): commands
+`.venv/bin/python /private/tmp/r14-retained-prefix-cost.py` and
+`.venv/bin/python /private/tmp/r14-retained-prefix-native-compare.py` read inert
+saved loop bytes only. Frozen c22afb0 classifier and its schema map came from
+the same source module, checked against the launch source manifest. The journal
+SHA matched the preservation manifest before and after; hex decoding/hashing
+were outside timing. All 50 raw entries (437604658 bytes; physical journal
+875222354 bytes) were traversed, proven by True returns. Two original classifier
+passes took 0.406–0.438s. Three alternating comparison pairs measured stdlib
+0.369–0.458s and the existing compatible orjson decoder 0.327–0.498s, with equal
+True results. Reports `/private/tmp/r14-retained-prefix-cost.json` and
+`/private/tmp/r14-retained-prefix-native-compare.json` retain separate wall/CPU
+values. This does not establish live cache eligibility, authority authenticity,
+phase attribution or a substantial native-decoder gain; no production replacement
+was made on this evidence. The original 39s/59s phase cost remains unresolved.
+
 | Requirement | Existing evidence or candidate check | Current conclusion / next action |
 | --- | --- | --- |
 | Mixed accepted/cancelled seal and per-seal V3 | `test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once` | Existing mounted baseline; retain, then verify current integrated tree. |
@@ -2507,3 +2523,24 @@ effects operand13668511bytes. Receipt:
 `/private/tmp/r14-verify-call-batch-compare.json`. This is a local cost reduction,
 not proof of removing the8.124s mandate overrun. A discriminating phase-timed
 fresh repeat is needed before assigning the remaining runtime cost.
+
+### Runtime planning preparation is enforced before business step
+
+The actual reader's hard-coded edge tuple was replaced with per-statement SQLite
+EXPLAIN observation and deny-default authorization retained through fetch. Genuine
+REDs covered added/missing READs and equal-READ-set SQL/parameter substitutions.
+Independent canonical statement comparison and a distinct V2 attestation now bind
+all three statements plus the verified snapshot. The source fragment retains and
+joins all guarded SQL sites, and refuses extra raw connection operations.
+The five affected test modules passed 301 tests in 122.07s; root's independent
+platform/new-forwarding selection passed 54 in 1.97s. Exact commands, scope and
+remaining type baseline are in R14-DURABLE-VERSION-ADMISSION.md. Global closure,
+registered descriptor, authenticated CURRENT and V2 initialization remain open.
+
+The fresh frozen-c22afb0 phase diagnostic is still running under execution handle
+58764, last authoritatively polled live after these checks. First preview/accept/
+authorize succeeded; second-seal outcome is pending. This is diagnostic evidence
+from a frozen earlier source, not final integrated-tree verification. Production
+clocks/TTLs remain unchanged and pytest timeout is disabled. Receipt and scalar
+phase records: `/private/tmp/r14-runtime-phase-v2-c22afb0-receipt.md` and
+`/private/tmp/r14-runtime-phase-v2-c22afb0-timings.jsonl`.

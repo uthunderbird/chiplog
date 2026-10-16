@@ -77,14 +77,14 @@ CREATE TABLE IF NOT EXISTS authority_read_releases (
 
 EXPECTED_SQL: tuple[tuple[str, int, str, str], ...] = (
     (
-        'BrokerAuthorityReader._execute_planning_read', 16, 'branch=0',
+        'BrokerAuthorityReader._execute_planning_read', 39, 'branch=0',
         (
             'SELECT 1 FROM publications WHERE tenant_id = ? GROUP BY commit_sequence HAVING '
             'COUNT(*) > 1 LIMIT 1'
         ),
     ),
     (
-        'BrokerAuthorityReader._execute_planning_read', 20, 'branch=0',
+        'BrokerAuthorityReader._execute_planning_read', 44, 'branch=0',
         (
             'SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, '
             'commit_sequence, record_ids FROM publications WHERE tenant_id = ? AND '
@@ -94,7 +94,7 @@ EXPECTED_SQL: tuple[tuple[str, int, str, str], ...] = (
         ),
     ),
     (
-        'BrokerAuthorityReader._execute_planning_read', 20, 'branch=1',
+        'BrokerAuthorityReader._execute_planning_read', 44, 'branch=1',
         (
             'SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, '
             'commit_sequence, record_ids FROM publications WHERE tenant_id = ? AND '
@@ -103,7 +103,7 @@ EXPECTED_SQL: tuple[tuple[str, int, str, str], ...] = (
         ),
     ),
     (
-        'BrokerAuthorityReader._execute_planning_read', 23, 'branch=0',
+        'BrokerAuthorityReader._execute_planning_read', 48, 'branch=0',
         (
             'SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence '
             'FROM records WHERE tenant_id = ? AND commit_sequence IN (SELECT commit_sequence '
@@ -114,7 +114,7 @@ EXPECTED_SQL: tuple[tuple[str, int, str, str], ...] = (
         ),
     ),
     (
-        'BrokerAuthorityReader._execute_planning_read', 23, 'branch=1',
+        'BrokerAuthorityReader._execute_planning_read', 48, 'branch=1',
         (
             'SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence '
             'FROM records WHERE tenant_id = ? AND commit_sequence IN (SELECT commit_sequence '
@@ -510,7 +510,7 @@ def expected_actions(
 ) -> tuple[SqlAction, ...]:
     """Independent finite semantic action contracts; no candidate SQL is parsed."""
     if qualname == "BrokerAuthorityReader._execute_planning_read":
-        if ordinal == 16:
+        if ordinal == 39:
             return ordered_actions(
                 (
                     SELECT,
@@ -518,9 +518,9 @@ def expected_actions(
                     *reads("publications", ("commit_sequence", "tenant_id")),
                 )
             )
-        if ordinal == 20:
+        if ordinal == 44:
             return ordered_actions((SELECT, *reads("publications", _PUBLICATION)))
-        if ordinal == 23:
+        if ordinal == 48:
             return ordered_actions(
                 (SELECT, *reads("publications", _SELECTION), *reads("records", _RECORD))
             )

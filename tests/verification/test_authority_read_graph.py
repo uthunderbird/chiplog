@@ -1,5 +1,6 @@
 """Observe real SQL before comparing its independently specified read graph."""
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -51,12 +52,18 @@ def test_actual_planning_source_has_exact_per_site_and_branch_reads():
 
 def test_predicate_subquery_changes_extracted_business_edges():
     source = SOURCE.read_text()
-    # This fragment belongs only to publication_sql, not record_sql or actual_edges.
-    changed = _replace(source,
+    # Mutate executable publication SQL, preserving the independent canonical literals.
+    broker, = [node for node in ast.parse(source).body
+               if isinstance(node, ast.ClassDef) and node.name == "BrokerAuthorityReader"]
+    leaf, = [node for node in broker.body if isinstance(node, ast.FunctionDef)
+             and node.name == "_execute_planning_read"]
+    segment = ast.get_source_segment(source, leaf)
+    changed_segment = _replace(segment,
         '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "',
         '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "\n'
         '            "AND EXISTS (SELECT 1 FROM deletion_fences WHERE frontier >= 0) "',
     )
+    changed = _replace(source, segment, changed_segment)
     observed = planning_read_graph(changed, SCHEMA_SQL)
     for row in observed:
         if row.site == 2:
@@ -99,9 +106,9 @@ def test_unsupported_expression_or_lexical_binding_refuses(mutation):
 def test_identical_sql_at_distinct_sites_has_independent_callbacks():
     source = SOURCE.read_text()
     changed = _replace(source,
-        '        duplicate_sequence = connection.execute(\n',
-        '        repeated = connection.execute(publication_sql)\n'
-        '        duplicate_sequence = connection.execute(\n',
+        '        with _prepared_planning_statement(\n            connection, uniqueness_sql',
+        '        repeated = connection.execute(publication_sql, publication_parameters)\n'
+        '        with _prepared_planning_statement(\n            connection, uniqueness_sql',
     )
     observed = planning_read_graph(changed, SCHEMA_SQL)
     first = [row.reads for row in observed if row.site == 1]

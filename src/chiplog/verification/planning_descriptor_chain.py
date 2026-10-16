@@ -6,8 +6,10 @@ and external class mutation remain outside this fragment and block global closur
 """
 
 import ast
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Any
 
 from chiplog.verification.assembly_forwarding import (
     AssemblyEdge,
@@ -87,6 +89,15 @@ class ReadLedgerOriginChain:
 
 
 @dataclass(frozen=True)
+class RuntimePlanningPreparationChain:
+    caller: CorpusNode
+    sink: CorpusNode
+    database_domain: str
+    sql_local: str
+    parameters_local: str
+
+
+@dataclass(frozen=True)
 class PlanningDescriptorFragment:
     corpus: CurrentSqlCorpus
     expressions: SqlExpressionInventory
@@ -95,6 +106,7 @@ class PlanningDescriptorFragment:
     wrapper_site: CorpusNode
     rows: tuple[PlanningDescriptorRow, ...]
     preparation_chains: tuple[PreparationOriginChain, ...]
+    runtime_preparation_chains: tuple[RuntimePlanningPreparationChain, ...]
     scanner_chains: tuple[ReaderScannerChain, ...]
     ledger_chains: tuple[ReadLedgerOriginChain, ...]
     domain_schemas: tuple[SelectedDomainSchemaEvidence, ...]
@@ -105,17 +117,17 @@ class PlanningDescriptorFragment:
         raise UnknownPlanningChain('partial planning fragment cannot grant admission')
 
 
-def _require(condition, message):
+def _require(condition: object, message: str) -> None:
     if not condition:
         raise UnknownPlanningChain(message)
 
 
-def _one(nodes, message):
+def _one[T](nodes: Sequence[T], message: str) -> T:
     _require(len(nodes) == 1, message)
     return nodes[0]
 
 
-def _scope(tree, *parts):
+def _scope(tree: Any, *parts: str) -> Any:
     for part in parts:
         tree = _one([n for n in tree.body if isinstance(
             n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == part],
@@ -123,11 +135,11 @@ def _scope(tree, *parts):
     return tree
 
 
-def _text(node):
+def _text(node: Any) -> str:
     return ast.unparse(node)
 
 
-def _signature(method, names):
+def _signature(method: ast.FunctionDef, names: tuple[str, ...]) -> None:
     args = method.args
     _require(isinstance(method, ast.FunctionDef)
              and [arg.arg for arg in args.args] == list(names)
@@ -204,6 +216,7 @@ def _prove_chain(runtime, reader):
     _imports(rd, 'chiplog.platform.authority_reads', {
         'BrokerAuthorityReader': 'chiplog.platform.authority_reads:BrokerAuthorityReader',
         'closing': 'contextlib:closing',
+        'contextmanager': 'contextlib:contextmanager',
     })
     for tree in (cls, broker):
         receiver_parents = {child: parent for parent in ast.walk(tree)
@@ -286,7 +299,9 @@ def _prove_chain(runtime, reader):
             parent = reader_parents[node]
             _require(isinstance(parent, ast.Attribute) and parent.value is node
                      and isinstance(parent.ctx, ast.Load)
-                     and parent.attr in {'connect', 'Connection', 'Error'},
+                     and parent.attr in {'connect', 'Connection', 'Error',
+                                         'SQLITE_OK', 'SQLITE_DENY',
+                                         'SQLITE_SELECT', 'SQLITE_READ', 'SQLITE_FUNCTION'},
                      'SQLite module escapes or is mutated')
             if parent.attr == 'connect':
                 call = reader_parents[parent]
@@ -302,7 +317,7 @@ def _prove_chain(runtime, reader):
     item = context.items[0]
     _require(_text(item.context_expr) == (
         "closing(sqlite3.connect(f'file:{self._database}?mode=ro', "
-        "uri=True, isolation_level=None))")
+        "uri=True, isolation_level=None, cached_statements=0))")
         and isinstance(item.optional_vars, ast.Name) and item.optional_vars.id == 'connection',
         'connection does not originate in selected tenant database')
     handoff = _one([n for n in ast.walk(context) if isinstance(n, ast.Call)
@@ -312,7 +327,93 @@ def _prove_chain(runtime, reader):
              'planning handoff substitutes connection')
     _connection_uses(execute, {'_schema_members', '_authority_commitment',
                               'self._execute_planning_read'}, binding=item.optional_vars)
-    _connection_uses(leaf, set())
+    _connection_uses(leaf, {'_prepared_planning_statement'})
+    _prove_runtime_planning_preparation(rd, leaf)
+
+
+def _prove_runtime_planning_preparation(reader: ast.Module, leaf: ast.FunctionDef) -> None:
+    """Finite source forwarding proof, not a certification of helper policy semantics."""
+    helper = _scope(reader, '_prepared_planning_statement')
+    _require([n for n in ast.walk(reader) if _binds(n, '_prepared_planning_statement')]
+             == [helper], 'planning preparation helper is rebound')
+    _require([_text(n) for n in helper.decorator_list] == ['contextmanager']
+             and [a.arg for a in helper.args.args]
+             == ['connection', 'sql', 'parameters', 'expected_reads']
+             and [a.arg for a in helper.args.kwonlyargs]
+             == ['canonical_statement', 'snapshot_id', 'count']
+             and not (helper.args.posonlyargs or helper.args.defaults
+                      or helper.args.vararg or helper.args.kwarg)
+             and helper.args.kw_defaults[:2] == [None, None]
+             and _text(helper.args.kw_defaults[2]) == 'False',
+             'planning preparation helper signature changed')
+    binding = helper.args.args[0]
+    _require([n for n in ast.walk(helper) if _binds(n, 'connection')] == [binding],
+             'planning preparation receiver is rebound')
+    parents = {child: node for node in ast.walk(helper) for child in ast.iter_child_nodes(node)}
+    uses = []
+    for node in ast.walk(helper):
+        if isinstance(node, ast.Name) and node.id == 'connection':
+            attribute = parents[node]
+            call = parents.get(attribute)
+            _require(isinstance(attribute, ast.Attribute) and attribute.value is node
+                     and isinstance(call, ast.Call) and call.func is attribute,
+                     'planning preparation connection escapes')
+            uses.append(_text(call))
+    _require(sorted(uses) == sorted([
+        'connection.set_authorizer(authorize)',
+        "connection.execute('EXPLAIN ' + sql, parameters)",
+        'connection.set_authorizer(None)',
+    ]), 'planning preparation raw receiver operations differ')
+    canonical = _scope(reader, '_canonical_planning_statements')
+    _signature(canonical, ('operation',))
+    _require([n for n in ast.walk(reader) if _binds(n, '_canonical_planning_statements')]
+             == [canonical], 'canonical planning producer is rebound')
+    producer = _one([n for n in leaf.body if isinstance(n, ast.Assign)
+                     and len(n.targets) == 1 and _text(n.targets[0]) == 'canonical_statements'],
+                    'canonical planning producer is missing or duplicated')
+    _require(_text(producer.value) == '_canonical_planning_statements(operation)',
+             'canonical planning producer uses foreign operation')
+    _require([n for n in ast.walk(leaf) if _binds(n, 'canonical_statements')]
+             == [producer.targets[0]], 'canonical planning statements are rebound')
+    frames = [n for n in leaf.body if isinstance(n, ast.With)]
+    expected: tuple[tuple[str, str, str, list[tuple[str, str]]], ...] = (
+        ('uniqueness_sql', 'uniqueness_parameters', 'uniqueness_reads', [('count', 'True')]),
+        ('publication_sql', 'publication_parameters', 'publication_reads', []),
+        ('record_sql', 'record_parameters', 'record_reads | selection_reads', []),
+    )
+    _require(len(frames) == len(expected), 'planning preparation frames changed')
+    guarded_calls: list[ast.Call] = []
+    for index, (frame, (sql, params, reads, keywords)) in enumerate(
+        zip(frames, expected, strict=True)
+    ):
+        _require(len(frame.items) == 1 and len(frame.body) == 1,
+                 'planning preparation frame is not immediate')
+        guard = frame.items[0].context_expr
+        _require(isinstance(guard, ast.Call)
+                 and _text(guard.func) == '_prepared_planning_statement'
+                 and [_text(n) for n in guard.args] == ['connection', sql, params, reads]
+                 and [(kw.arg, _text(kw.value)) for kw in guard.keywords] == [
+                     ('canonical_statement', f'canonical_statements[{index}]'),
+                     ('snapshot_id', 'snapshot.snapshot_id'), *keywords],
+                 'planning preparation forwards different SQL/params/policy')
+        calls = [n for n in ast.walk(frame.body[0]) if isinstance(n, ast.Call)
+                 and _text(n.func) == 'connection.execute']
+        call = _one(calls, 'planning guarded statement is missing or duplicated')
+        guarded_calls.append(call)
+        _require([_text(n) for n in call.args] == [sql, params] and not call.keywords,
+                 'planning prepared SQL/params differ from actual execution')
+        value = frame.body[0].value if isinstance(frame.body[0], ast.Assign) else None
+        _require(isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+                 and value.func.value is call and value.func.attr in {'fetchone', 'fetchall'}
+                 and not value.args and not value.keywords,
+                 'planning cursor escapes policy lifetime')
+    all_raw_calls = [node for node in ast.walk(leaf) if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Attribute)
+                     and isinstance(node.func.value, ast.Name)
+                     and node.func.value.id == 'connection']
+    _require(len(all_raw_calls) == len(guarded_calls)
+             and set(all_raw_calls) == set(guarded_calls),
+             'planning unguarded raw connection operation')
 
 
 def _preparation_origins(sources, corpus):
@@ -391,6 +492,7 @@ def _preparation_origins(sources, corpus):
             "closing(sqlite3.connect(':memory:', cached_statements=0, isolation_level=None))")
             and isinstance(item.optional_vars, ast.Name) and item.optional_vars.id == 'connection',
             'preparation connection is not private memory')
+        assert isinstance(item.context_expr, ast.Call)
         factories[name] = item.context_expr.args[0]
         bindings[name] = item.optional_vars
         contexts[name] = item.context_expr
@@ -618,7 +720,10 @@ def _reader_scanners(corpus, occurrences, expressions):
     context = _one([n for n in execute.body if isinstance(n, ast.With)],
                    'selected reader context changed')
     binding = context.items[0].optional_vars
-    factory = context.items[0].context_expr.args[0]
+    factory_context = context.items[0].context_expr
+    _require(isinstance(factory_context, ast.Call), 'selected reader factory is not a call')
+    assert isinstance(factory_context, ast.Call)
+    factory = factory_context.args[0]
 
     def site(scope, node):
         return _one([n for n in corpus.nodes if n.module == path and n.qualname == scope
@@ -1465,6 +1570,16 @@ def build_planning_descriptor_fragment(
         sites = [(site, call) for site, call, _ in occurrences if site.module == reader_path
                  and site.qualname == 'BrokerAuthorityReader._execute_planning_read']
         _require(len(sites) == 3, 'planning statement sites changed')
+        preparation_sink = _one([site for site, _, _ in occurrences
+            if site.module == reader_path and site.qualname == '_prepared_planning_statement'],
+            'runtime planning preparation SQL sink changed')
+        helper_call = _one([call for site, call, _ in occurrences if site == preparation_sink],
+                           'runtime planning preparation occurrence changed')
+        _require(_text(helper_call) == "connection.execute('EXPLAIN ' + sql, parameters)",
+                 'runtime preparation SQL/params changed')
+        runtime_preparation_chains = tuple(RuntimePlanningPreparationChain(
+            site, preparation_sink, 'tenant_main', _text(call.args[0]), _text(call.args[1]))
+            for site, call in sites)
         resolved = {row.site: row for row in expressions.resolved}
         rows = []
         for statement, (site, call) in enumerate(sites, 1):
@@ -1480,8 +1595,11 @@ def build_planning_descriptor_fragment(
             sources, corpus, expressions, rows, scanner_chains, ledger_chains, schema)
         return PlanningDescriptorFragment(corpus, expressions, edge,
             tuple(e for e in assembly.edges if e != edge), wrapper_site, tuple(rows),
-            preparation_chains, scanner_chains, ledger_chains, domain_schemas, engine_evidence, (
+            preparation_chains, runtime_preparation_chains, scanner_chains, ledger_chains,
+            domain_schemas, engine_evidence, (
                 'fragment only: supplied source set is not independently proven exhaustive',
+                'runtime planning preparation is a finite SQL/params/receiver forwarding join; '
+                'helper policy semantics, callbacks and external replacement remain residual',
                 'other assembly mounts and external class mutation are unproved',
                 'selected scanner origins are conditional; full helper semantics, other '
                 'incoming contexts and global engine graph/AMR remain unproved',

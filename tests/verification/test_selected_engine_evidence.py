@@ -131,7 +131,7 @@ def test_physical_cases_units_and_metadata_do_not_become_business_amr(selected):
     [
         (
             "BrokerAuthorityReader._execute_planning_read",
-            20,
+            44,
             "tenant_main",
             " AND EXISTS (SELECT 1 FROM deletion_fences WHERE frontier >= 0) ",
         ),

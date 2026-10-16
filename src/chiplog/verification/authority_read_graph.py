@@ -95,7 +95,24 @@ def planning_sql_alternatives(source: str) -> tuple[PlanningSqlAlternative, ...]
                         and node.func.attr in {"execute", "executemany", "executescript"}),
                        key=lambda node: (node.lineno, node.col_offset))
         for call in calls:
-            value = statement.value if isinstance(statement, (ast.Assign, ast.Expr)) else None
+            execution = statement
+            if isinstance(statement, ast.With):
+                if (len(statement.items) != 1 or len(statement.body) != 1
+                        or not isinstance(statement.items[0].context_expr, ast.Call)):
+                    raise UnknownSqlExpression("unsupported planning guard frame")
+                guard = statement.items[0].context_expr
+                if (not isinstance(guard.func, ast.Name)
+                        or guard.func.id != "_prepared_planning_statement"
+                        or len(guard.args) != 4
+                        or not isinstance(guard.args[0], ast.Name)
+                        or guard.args[0].id != "connection"
+                        or len(call.args) != 2
+                        or [ast.dump(arg) for arg in guard.args[1:3]]
+                        != [ast.dump(arg) for arg in call.args]):
+                    raise UnknownSqlExpression(
+                        "planning preparation/execution placement or identity differs")
+                execution = statement.body[0]
+            value = execution.value if isinstance(execution, (ast.Assign, ast.Expr)) else None
             direct = value is call or (
                 isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
                 and value.func.value is call and value.func.attr in {"fetchall", "fetchone"}

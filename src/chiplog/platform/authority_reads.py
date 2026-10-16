@@ -10,7 +10,8 @@ import os
 import sqlite3
 import stat
 import tempfile
-from contextlib import ExitStack, closing, nullcontext
+from collections.abc import Iterator
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from pathlib import Path
 from typing import Literal
 
@@ -222,6 +223,18 @@ class PreparedReadEdgeAttestation(_StrictModel):
     snapshot_id: str
 
 
+class PreparedReadEdgeAttestationV2(_StrictModel):
+    attestation_version: Literal[2] = 2
+    fingerprint_domain: Literal["planning-prepared-read/v2"] = "planning-prepared-read/v2"
+    read_attempt_id: str
+    query_variant: Literal["PLANNING_PUBLICATIONS", "PLANNING_PUBLICATIONS_R13"]
+    prepared_query_fingerprint: str
+    actual_edges: tuple[tuple[str, tuple[str, ...]], ...]
+    authority_surface_digest: str
+    read_graph_version: Literal[1]
+    snapshot_id: str
+
+
 class AuthorityReadResult(_StrictModel):
     disposition: Literal["RELEASED", "STALE_OR_INDETERMINATE_READ"]
     read_attempt_id: str
@@ -232,6 +245,124 @@ class AuthorityReadResult(_StrictModel):
 
 class AuthorityReadFailure(RuntimeError):
     pass
+
+
+def _canonical_planning_statements(
+    operation: ReadOperation,
+) -> tuple[tuple[str, tuple[str | int, ...]], ...]:
+    """Broker-owned V2 query contract, independent of executable SQL construction.
+
+    These complete literal templates and operation parameter recipes certify only
+    this mounted reader. They are not a global registered R14 descriptor.
+    """
+    queries = (
+        "SELECT 1 FROM publications WHERE tenant_id = ? "
+        "GROUP BY commit_sequence HAVING COUNT(*) > 1 LIMIT 1",
+        (
+            "SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, "
+            "commit_sequence, record_ids FROM publications WHERE tenant_id = ? "
+            "AND operation_kind = 'planning.create_intention_line' "
+            "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
+            "ORDER BY commit_sequence, operation_kind, idempotency_key LIMIT ?"
+            if operation.variant == "PLANNING_PUBLICATIONS_R13" else
+            "SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, "
+            "commit_sequence, record_ids FROM publications WHERE tenant_id = ? "
+            "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
+            "ORDER BY commit_sequence, operation_kind, idempotency_key LIMIT ?"
+        ),
+        (
+            "SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence "
+            "FROM records WHERE tenant_id = ? AND commit_sequence IN ("
+            "SELECT commit_sequence FROM publications WHERE tenant_id = ? "
+            "AND operation_kind = 'planning.create_intention_line' "
+            "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
+            "ORDER BY commit_sequence, operation_kind, idempotency_key LIMIT ?"
+            ") ORDER BY record_id LIMIT ?"
+            if operation.variant == "PLANNING_PUBLICATIONS_R13" else
+            "SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence "
+            "FROM records WHERE tenant_id = ? AND commit_sequence IN ("
+            "SELECT commit_sequence FROM publications WHERE tenant_id = ? "
+            "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
+            "ORDER BY commit_sequence, operation_kind, idempotency_key LIMIT ?"
+            ") ORDER BY record_id LIMIT ?"
+        ),
+    )
+    parameters = (
+        (operation.tenant_id,),
+        (operation.tenant_id, operation.after_commit_sequence, operation.after_operation_kind,
+         operation.after_idempotency_key, operation.max_rows),
+        (operation.tenant_id, operation.tenant_id, operation.after_commit_sequence,
+         operation.after_operation_kind, operation.after_idempotency_key,
+         operation.max_rows, operation.max_rows * 5 + 1),
+    )
+    return tuple(zip(queries, parameters, strict=True))
+
+
+def _planning_statement_fingerprint(
+    statement: tuple[str, tuple[str | int, ...]], snapshot_id: str,
+) -> str:
+    return hashlib.sha256(json.dumps({
+        "domain": "planning-prepared-statement/v2",
+        "query": statement[0], "parameters": statement[1], "snapshot_id": snapshot_id,
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+@contextmanager
+def _prepared_planning_statement(
+    connection: sqlite3.Connection,
+    sql: str,
+    parameters: tuple[str | int, ...],
+    expected_reads: frozenset[tuple[str, str, str]],
+    *,
+    canonical_statement: tuple[str, tuple[str | int, ...]],
+    snapshot_id: str,
+    count: bool = False,
+) -> Iterator[set[tuple[str, str, str]]]:
+    """Own the policy on a fresh private connection through complete consumption.
+
+    EXPLAIN prepares the same bound statement without stepping its business VM.
+    The private caller uses cache=0 and has no prior authorizer to restore.
+    """
+    observed: set[tuple[str, str, str]] = set()
+
+    def authorize(
+        action: int, first: str | None, second: str | None,
+        database: str | None, source: str | None,
+    ) -> int:
+        if source is not None:
+            return sqlite3.SQLITE_DENY
+        if action == sqlite3.SQLITE_SELECT and (first, second, database) == (None, None, None):
+            return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_READ and database == "main":
+            edge = (database, first, second)
+            if edge in expected_reads:
+                assert first is not None and second is not None
+                observed.add((database, first, second))
+                return sqlite3.SQLITE_OK
+        if (count and action == sqlite3.SQLITE_FUNCTION
+                and (first, second, database) == (None, "count", None)):
+            return sqlite3.SQLITE_OK
+        return sqlite3.SQLITE_DENY
+
+    try:
+        connection.set_authorizer(authorize)
+        with closing(connection.execute("EXPLAIN " + sql, parameters)) as prepared:
+            prepared.fetchall()
+        if observed != expected_reads:
+            raise ValueError("complete prepared READ set differs from authority read graph")
+        if not hmac.compare_digest(
+            _planning_statement_fingerprint((sql, parameters), snapshot_id),
+            _planning_statement_fingerprint(canonical_statement, snapshot_id),
+        ):
+            raise ValueError("canonical planning query/parameters fingerprint differs")
+        yield observed
+    except (sqlite3.Error, ValueError) as error:
+        raise AuthorityReadFailure("prepared query edge authorization failed") from error
+    finally:
+        try:
+            connection.set_authorizer(None)
+        except sqlite3.Error as error:
+            raise AuthorityReadFailure("prepared query authorizer cleanup failed") from error
 
 
 class AuthoritySnapshotIntegrityError(AuthorityReadFailure):
@@ -367,7 +498,10 @@ class BrokerAuthorityReader:
         self._validate_request_state(operation, state)
         self._ledger.begin(operation, state)
         with closing(
-            sqlite3.connect(f"file:{self._database}?mode=ro", uri=True, isolation_level=None)
+            sqlite3.connect(
+                f"file:{self._database}?mode=ro", uri=True,
+                isolation_level=None, cached_statements=0
+            )
         ) as connection:
             connection.execute("BEGIN")
             try:
@@ -464,7 +598,8 @@ class BrokerAuthorityReader:
         connection: sqlite3.Connection,
         operation: ReadOperation,
         snapshot: VerifiedAuthorityReadSnapshot,
-    ) -> tuple[bytes, PreparedReadEdgeAttestation]:
+    ) -> tuple[bytes, PreparedReadEdgeAttestationV2]:
+        canonical_statements = _canonical_planning_statements(operation)
         scope_sql = (
             "AND operation_kind = 'planning.create_intention_line' "
             if operation.variant == "PLANNING_PUBLICATIONS_R13"
@@ -502,47 +637,79 @@ class BrokerAuthorityReader:
             operation.max_rows,
             operation.max_rows * 5 + 1,
         )
-        actual_edges = (
-            (
-                "publications",
-                (
-                    "tenant_id",
-                    "operation_kind",
-                    "idempotency_key",
-                    "request_fingerprint",
-                    "commit_sequence",
-                    "record_ids",
-                ),
-            ),
-            (
-                "records",
-                (
-                    "tenant_id",
-                    "record_id",
-                    "owner",
-                    "schema_id",
-                    "canonical_bytes",
-                    "commit_sequence",
-                ),
-            ),
-        )
         declared = (
             R13_PLANNING_PUBLICATION_READ_EDGES
             if operation.variant == "PLANNING_PUBLICATIONS_R13"
             else PLANNING_PUBLICATION_READ_EDGES
         )
-        manifested_edges = tuple((item.table, item.columns) for item in declared)
-        if actual_edges != manifested_edges:
-            raise AuthorityReadFailure("prepared query edge differs from authority read graph")
-        duplicate_sequence = connection.execute(
+        canonical_columns = {member.table: member.columns for member in AUTHORITY_STORAGE_MEMBERS}
+        if (
+            tuple(edge.table for edge in declared) != ("publications", "records")
+            or any(edge.operation != operation.variant
+                   or edge.columns != canonical_columns[edge.table]
+                   or len(set(edge.columns)) != len(edge.columns) for edge in declared)
+        ):
+            error = ValueError("declared planning graph is not canonical")
+            raise AuthorityReadFailure(
+                "prepared query edge differs from authority read graph"
+            ) from error
+        publication_reads = frozenset(
+            ("main", declared[0].table, col) for col in declared[0].columns
+        )
+        record_reads = frozenset(("main", declared[1].table, col) for col in declared[1].columns)
+        selection_reads = frozenset(
+            edge for edge in publication_reads
+            if edge[2] in {"tenant_id", "operation_kind", "idempotency_key", "commit_sequence"}
+        )
+        uniqueness_reads = frozenset(
+            edge for edge in publication_reads if edge[2] in {"tenant_id", "commit_sequence"}
+        )
+        uniqueness_sql = (
             "SELECT 1 FROM publications WHERE tenant_id = ? "
-            "GROUP BY commit_sequence HAVING COUNT(*) > 1 LIMIT 1",
-            (operation.tenant_id,),
-        ).fetchone()
+            "GROUP BY commit_sequence HAVING COUNT(*) > 1 LIMIT 1"
+        )
+        uniqueness_parameters = (operation.tenant_id,)
+        prepared_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "domain": "planning-prepared-read/v2",
+                    "parameters": (
+                        uniqueness_parameters, publication_parameters, record_parameters,
+                    ),
+                    "queries": (uniqueness_sql, publication_sql, record_sql),
+                    "snapshot_id": snapshot.snapshot_id,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        with _prepared_planning_statement(
+            connection, uniqueness_sql, uniqueness_parameters, uniqueness_reads,
+            canonical_statement=canonical_statements[0], snapshot_id=snapshot.snapshot_id,
+            count=True,
+        ) as uniqueness_observed:
+            duplicate_sequence = connection.execute(
+                uniqueness_sql, uniqueness_parameters
+            ).fetchone()
         if duplicate_sequence is not None:
             raise AuthorityReadFailure("publication commit sequence is not unique")
-        publications = connection.execute(publication_sql, publication_parameters).fetchall()
-        records = connection.execute(record_sql, record_parameters).fetchall()
+        with _prepared_planning_statement(
+            connection, publication_sql, publication_parameters, publication_reads,
+            canonical_statement=canonical_statements[1], snapshot_id=snapshot.snapshot_id,
+        ) as publication_observed:
+            publications = connection.execute(publication_sql, publication_parameters).fetchall()
+        with _prepared_planning_statement(
+            connection, record_sql, record_parameters, record_reads | selection_reads,
+            canonical_statement=canonical_statements[2], snapshot_id=snapshot.snapshot_id,
+        ) as record_observed:
+            records = connection.execute(record_sql, record_parameters).fetchall()
+        observed = uniqueness_observed | publication_observed | record_observed
+        actual_edges = tuple(
+            (edge.table, tuple(
+                col for col in edge.columns if ("main", edge.table, col) in observed
+            ))
+            for edge in declared
+        )
         publication_record_ids = tuple(str(row[5]).split("\n") for row in publications)
         if any(
             len(record_ids) != 5 or len(set(record_ids)) != 5
@@ -557,17 +724,7 @@ class BrokerAuthorityReader:
         actual_records = {(str(row[0]), str(row[1]), int(row[5])) for row in records}
         if actual_records != expected_records:
             raise AuthorityReadFailure("publication page is not referentially closed")
-        prepared_fingerprint = hashlib.sha256(
-            json.dumps(
-                {
-                    "parameters": (publication_parameters, record_parameters),
-                    "queries": (publication_sql, record_sql),
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
-        attestation = PreparedReadEdgeAttestation(
+        attestation = PreparedReadEdgeAttestationV2(
             read_attempt_id=operation.read_attempt_id,
             query_variant=operation.variant,
             prepared_query_fingerprint=prepared_fingerprint,
@@ -592,6 +749,7 @@ __all__ = [
     "AuthoritySnapshotIntegrityError",
     "BrokerAuthorityReader",
     "PreparedReadEdgeAttestation",
+    "PreparedReadEdgeAttestationV2",
     "VerifiedAuthorityReadSnapshot",
     "capture_authority_snapshot_commitment",
     "capture_authority_storage_state",
