@@ -10,6 +10,12 @@ from typing import Literal, Protocol
 
 from chiplog.domain_primitives import PrincipalId, RecordId, TenantId
 
+from .genesis_contracts import (
+    DatabaseGenesisV2,
+    DatabaseVersionTuple,
+    UnsupportedSchemaVersion,
+)
+
 
 @dataclass(frozen=True)
 class AuthenticationRequest:
@@ -88,6 +94,8 @@ from .hermetic_output_scope_contracts import (  # noqa: E402
 __all__ = [
     "AuthenticationRequest",
     "CurrentHermeticExecutionScopeResultV1",
+    "DatabaseGenesisV2",
+    "DatabaseVersionTuple",
     "HermeticOutputScopeOwner",
     "IssueHermeticOutputScopeResultV1",
     "IssueHermeticOutputScopeV1",
@@ -100,4 +108,5 @@ __all__ = [
     "TrustReference",
     "TrustReferenceRevalidation",
     "TrustRevalidator",
+    "UnsupportedSchemaVersion",
 ]
