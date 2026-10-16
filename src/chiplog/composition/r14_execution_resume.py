@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
@@ -29,6 +29,7 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     RecoveryRequiredResult,
 )
+from chiplog.composition.r14_call_history_witness import capture_call_history_journal_inputs
 from chiplog.composition.r14_execution_suspension import (
     _command as suspension_command,
 )
@@ -82,16 +83,30 @@ class RetainedExecutionResume(RecoveryDTO):
     actor_budget_v1: RecoveryActorBudgetV1
 
 
-def _command(evidence: RetainedExecutionResume) -> PhysicalPublicationCommand:
-    request, result = evidence.request, evidence.result
-    call, reply = evidence.owner_call, evidence.owner_reply
+@dataclass(frozen=True, repr=False)
+class _ResumeArtifacts:
+    request_bytes: bytes
+    result_bytes: bytes
+    owner_call: PublicPortCall
+    owner_reply: PublicPortSuccess
+    run_raw: bytes
+    run_head: str
+    command_id: str
+    tenant_id: str
+    expected_head: int
+    preimage: str
+
+
+def _prepare_resume_artifacts(request, result, call, reply) -> _ResumeArtifacts:
+    """Validate exact owner semantics before issuing the short live actor budget."""
     if not isinstance(call, PublicPortCall) or not isinstance(reply, PublicPortSuccess):
         raise ValueError("resume owner exchange has the wrong wire variants")
-    validate_recovery_actor_budget(evidence.actor_budget_v1)
+    request_raw = request.canonical_bytes()
+    result_raw = result.canonical_bytes()
     if (
         call.operation_id not in (OWNER_OPERATION, OWNER_OBLIGATION_OPERATION)
         or call.schema_id != "chiplog.execution.recovery-request.v1"
-        or call.canonical_payload != request.canonical_bytes()
+        or call.canonical_payload != request_raw
         or call.caller.owner_id != "broker"
         or call.callee.owner_id != "agent_loop"
         or call.caller.tenant_id != request.cut.tenant_id
@@ -99,7 +114,7 @@ def _command(evidence: RetainedExecutionResume) -> PhysicalPublicationCommand:
         or reply.request_id != call.request_id
         or reply.responder != call.callee
         or reply.schema_id != "chiplog.execution.recovery-result.v1"
-        or reply.canonical_payload != result.canonical_bytes()
+        or reply.canonical_payload != result_raw
         or result.source_request_fingerprint != request.digest()
         or prepare_execution_resume(request) != result
         or result.run.state != "ACTIVE"
@@ -119,26 +134,54 @@ def _command(evidence: RetainedExecutionResume) -> PhysicalPublicationCommand:
     command_id = f"execution-resume:{request.run.run_id}:{request.run.head}"
     if request.command_id != command_id:
         raise ValueError("resume operation identity differs from selected suspended Run")
+    if classify_execution_resume(request, result).disposition != "SAME_RUN":
+        raise ValueError("resume owner result does not classify as SAME_RUN")
+    return _ResumeArtifacts(
+        request_raw, result_raw, call, reply, run_raw, result.run.head, command_id,
+        request.cut.tenant_id, request.cut.tenant_commit_sequence,
+        request.cut.materialization_commitment,
+    )
+
+
+def _bind_resume_artifacts(
+    evidence: RetainedExecutionResume, artifacts: _ResumeArtifacts,
+) -> PhysicalPublicationCommand:
+    """Bind the actual fresh actor receipt to this invocation's immutable proof bytes."""
+    validate_recovery_actor_budget(evidence.actor_budget_v1)
+    if (
+        evidence.request.canonical_bytes() != artifacts.request_bytes
+        or evidence.result.canonical_bytes() != artifacts.result_bytes
+        or evidence.owner_call != artifacts.owner_call
+        or evidence.owner_reply != artifacts.owner_reply
+    ):
+        raise ValueError("resume evidence differs from validated owner artifacts")
     return PhysicalPublicationCommand(
-        tenant_id=request.cut.tenant_id,
+        tenant_id=artifacts.tenant_id,
         operation_kind=OPERATION,
-        idempotency_key=command_id,
+        idempotency_key=artifacts.command_id,
         request_fingerprint=evidence.digest(),
-        expected_head=request.cut.tenant_commit_sequence,
-        expected_preimage_commitment=request.cut.materialization_commitment,
+        expected_head=artifacts.expected_head,
+        expected_preimage_commitment=artifacts.preimage,
         fence_generation="r6",
         expected_fence_frontier=0,
         minimum_fence_frontier=0,
         records=(
             PhysicalRecord(
-                result.run.head,
+                artifacts.run_head,
                 "agent_loop",
                 RUN_SCHEMA,
-                run_raw,
-                _sha(run_raw),
+                artifacts.run_raw,
+                _sha(artifacts.run_raw),
             ),
         ),
     )
+
+
+def _command(evidence: RetainedExecutionResume) -> PhysicalPublicationCommand:
+    artifacts = _prepare_resume_artifacts(
+        evidence.request, evidence.result, evidence.owner_call, evidence.owner_reply
+    )
+    return _bind_resume_artifacts(evidence, artifacts)
 
 
 def _selected_decision(entry: dict[str, object]) -> CallSubjectHead:
@@ -399,7 +442,9 @@ async def resume_execution(
             return await _finish(runtime, prior[2])
         with runtime._authority_gate().hold():
             runtime._require_no_pending()
+            trust_cut = runtime._trust.capture_verified_observation()
             port = source(runtime)
+            inputs_before = capture_call_history_journal_inputs(runtime)
             collect = getattr(port, "collect_for_resume_held", None)
             observation = collect(runtime) if callable(collect) else None
             if observation is None:
@@ -407,6 +452,24 @@ async def resume_execution(
                     "complete authenticated suspended recovery cut unavailable; HOLD"
                 )
             cut, suspension = observation
+            inputs_after = capture_call_history_journal_inputs(runtime)
+            if runtime._trust.capture_verified_observation() != trust_cut:
+                raise LoopRejected("resume trust source changed during authenticated collection")
+            if inputs_before is not None and inputs_after != inputs_before:
+                raise LoopRejected("resume source inputs changed during authenticated collection")
+            # Only this closed, canonical native prefix has no additional
+            # historical checkpoint/custody-file dependencies. Owner validation
+            # below proves the exact frozen original-obligation closure.
+            source_inputs = (
+                inputs_after
+                if inputs_before is not None
+                and suspension.baseline.original_obligations
+                and any(
+                    row.schema_id == "chiplog.execution.native-one-call-recovery-profile.v5"
+                    for row in cut.complete_sources
+                )
+                else None
+            )
             if (
                 cut.tenant_id != runtime._tenant_id
                 or cut.database_id != runtime._database_identity[0]
@@ -423,7 +486,6 @@ async def resume_execution(
             predecessor = runtime._commitment_journal.load(runtime._tenant_id)
             if predecessor != cut.materialization_commitment:
                 raise LoopRejected("resume source cut differs from current commitment")
-            trust_cut = runtime._trust.capture_verified_observation()
             worker = runtime.current_worker()
             session = runtime._supervisor.runtime().session("agent_loop")
             decisions = runtime._loop_decisions().entries()
@@ -459,6 +521,7 @@ async def resume_execution(
         result, owner_call, owner_reply = await _exchange(
             runtime, request, owner_operation, PreparedExecutionResume
         )
+        artifacts = _prepare_resume_artifacts(request, result, owner_call, owner_reply)
         refreshed, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)
         with runtime._authority_gate().hold():
             if not runtime._same_execution_actor_identity(actor, refreshed):
@@ -473,30 +536,47 @@ async def resume_execution(
             owner_reply=owner_reply,
             actor_budget_v1=actor_budget,
         )
-        batch = _command(evidence)
+        batch = _bind_resume_artifacts(evidence, artifacts)
+        if (
+            batch.expected_head != cut.tenant_commit_sequence
+            or batch.expected_preimage_commitment != cut.materialization_commitment
+        ):
+            raise LoopRejected("resume command does not bind its authenticated source preimage")
 
         def guard():
             with runtime._authority_gate().hold():
                 try:
                     runtime._check_execution_actor(actor)
-                    current_observation = source(runtime).collect_for_resume_held(runtime)
-                    if current_observation != (cut, suspension):
+                    if runtime._trust.capture_verified_observation() != trust_cut:
                         return "STALE"
-                    current_request = request.model_copy(
-                        update={
-                            "cut": current_observation[0],
-                            "original_suspension": current_observation[1],
-                        }
-                    )
-                    current_preparation = prepare_execution_resume(current_request)
-                    classification = classify_execution_resume(
-                        current_request, current_preparation
-                    )
-                    if (
-                        classification.disposition != "SAME_RUN"
-                        or current_preparation != result
-                    ):
-                        return "STALE"
+                    if source_inputs is not None:
+                        if capture_call_history_journal_inputs(runtime) != source_inputs:
+                            return "STALE"
+                        # The real writer checked the complete physical source
+                        # preimage before admission. Its decision guard runs in
+                        # that same transaction after inserting this candidate;
+                        # re-reading the source cut there would compare against
+                        # the candidate postimage. External journals/configuration
+                        # and every live fence remain checked in both phases.
+                    else:
+                        current_observation = source(runtime).collect_for_resume_held(runtime)
+                        if current_observation != (cut, suspension):
+                            return "STALE"
+                        current_request = request.model_copy(
+                            update={
+                                "cut": current_observation[0],
+                                "original_suspension": current_observation[1],
+                            }
+                        )
+                        current_preparation = prepare_execution_resume(current_request)
+                        classification = classify_execution_resume(
+                            current_request, current_preparation
+                        )
+                        if (
+                            classification.disposition != "SAME_RUN"
+                            or current_preparation != result
+                        ):
+                            return "STALE"
                     if runtime.current_worker() != worker:
                         return "STALE"
                     if runtime._supervisor.runtime().session("agent_loop") != session:

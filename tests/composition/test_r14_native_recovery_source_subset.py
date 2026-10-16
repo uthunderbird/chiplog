@@ -71,6 +71,7 @@ async def test_source_subset_requires_selected_accounting_and_reopens(tmp_path: 
 async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resend(
     tmp_path: Path,
     resume_before_reopen: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = tmp_path / "native-recovery-accepted-sources.sqlite"
     resources = HermeticDispatchResources(
@@ -200,9 +201,20 @@ async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resen
             await runtime.publish_original_resolver_invocation()
             await runtime.publish_original_call_resolution()
             await runtime.publish_loop_semantic_reduction()
-            resumed = await runtime.resume_execution(
-                sealed.run_id, suspended_run_head.revision.head, b"resume-closed-native-recovery"
-            )
+            collect_calls = []
+            original_collect = NativeRecoveryCutSource.collect_for_resume_held
+
+            def counted_collect(source, actual_runtime):
+                collect_calls.append(actual_runtime)
+                return original_collect(source, actual_runtime)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(NativeRecoveryCutSource, "collect_for_resume_held", counted_collect)
+                resumed = await runtime.resume_execution(
+                    sealed.run_id, suspended_run_head.revision.head,
+                    b"resume-closed-native-recovery"
+                )
+            assert collect_calls == [runtime]
             assert resumed.state == "ACTIVE"
             assert resumed.predecessor == suspended_run_head.revision.head
             assert runtime.read_selected_execution_resume() == resumed

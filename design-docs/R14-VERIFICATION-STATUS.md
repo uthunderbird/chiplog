@@ -1,6 +1,6 @@
 # R14 verification status
 
-Status: OPEN, 2026-10-15. Acceptance authority:
+Status: OPEN, 2026-10-16. Acceptance authority:
 `R14-REMAINING-ROADMAP.md` and original clauses in `R14-R17-COMPLETION.md`.
 This is an evidence ledger, not a replacement acceptance boundary.
 
@@ -9,10 +9,10 @@ This is an evidence ledger, not a replacement acceptance boundary.
 | Requirement | Existing evidence or candidate check | Current conclusion / next action |
 | --- | --- | --- |
 | Mixed accepted/cancelled seal and per-seal V3 | `test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once` | Existing mounted baseline; retain, then verify current integrated tree. |
-| Two seals in one Run, target-scoped terminal and Prepare | `test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay`; `R14-MCP-DEBUGGING.md` | Corrected original selector passed under diagnostic clocks; production admission budgets and accepted cross-seal interrupted recovery remain unverified. |
-| Per-seal replay and reopen without head advance | Same two-seal selector | Both V3 records, cross-order replay and reopen/head invariants passed in the corrected diagnostic run. |
-| Three accepted members with distinct dispositions | `test_v3_reads_three_accepted_members_across_delayed_dispatch_and_replay`; owner `test_v3_accounts_three_accepted_members_with_distinct_existing_outcomes` | Frozen mounted diagnostic-clock selector passed with SUCCEEDED / FAILED_DEFINITE / RECOVERY_REQUIRED and delayed dispatch; separate same-fixture V3 reopen/replay also passed. Candidate remains outside the integrated checkpoint; production-clock verification is still required. |
-| Dispatch after another member terminalizes | Three-member mounted selector closes first before accepting second | Frozen distinct-outcome selector passed with delayed dispatch. Integrating that candidate and verifying production admission remain required. |
+| Two seals in one Run, target-scoped terminal and Prepare | `test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay`; `R14-MCP-DEBUGGING.md` | Normal-clock sequential two-seal selector passed at `143b5c1` (1376.04s; evidence below). Its first seal is cancelled. Accepted OPEN cross-seal interrupted recovery remains unverified. |
+| Per-seal replay and reopen without head advance | Same two-seal selector | Both V3 records, cross-order replay and reopen/head invariants passed on normal clocks at `143b5c1`; verify the final integrated tree before closure. |
+| Three accepted members with distinct dispositions | `test_v3_reads_three_accepted_members_across_delayed_dispatch_and_replay`; owner `test_v3_accounts_three_accepted_members_with_distinct_existing_outcomes` | Normal-clock selector passed at `143b5c1` with SUCCEEDED / FAILED_DEFINITE / SUCCEEDED, delayed dispatch, replay and reopen (465.83s; evidence below). The earlier RECOVERY_REQUIRED combination has diagnostic-clock evidence only. |
+| Dispatch after another member terminalizes | Three-member mounted selector closes first before accepting second | Normal-clock three-member selector at `143b5c1` passed delayed dispatch after the first terminal. Preserve this observation in final integrated verification. |
 | Multi-seal member interleaving | Two-seal selector | Sequential Turns alone do not prove all required member interleavings; inspect exact observations before claiming closure. |
 | Complete physical membership / orphan detection after reopen | Mixed-seal selector has physical orphan damage; `test_r14_loop_history.py` | Existing candidates; inspect mutation scope and verify mounted rejection on current tree. |
 | Cross-call / cross-seal evidence substitution | Owner duplicate/cross-seal test; two-seal source rejects foreign call lookup | These narrow checks do not prove mounted accepted-evidence substitution rejection. Add discriminating test. |
@@ -20,7 +20,7 @@ This is an evidence ledger, not a replacement acceptance boundary.
 | Three independent A54 N/N+1 limits | `test_call_and_manifest_bounds_include_exact_boundary`, `test_response_and_complete_owner_output_boundaries`, new `test_complete_physical_envelope_enforces_its_own_exact_byte_boundary` | Owner and physical builder boundaries verified in focused tests. This does not prove mounted sole-writer admission/reopen for each limit; preserve that scope in final audit. |
 | No partial companions after rejection/interruption; no preaccept external call | Branch-competition and fanout mounted suites | Coverage audit and current execution needed. |
 | Per-slice writer registration and durable-version admission | `r7_runtime.py` V39 manifest; publication/readers | Verify exact registered routes and physical schemas, including negative unknown versions. Registration presence alone is insufficient. |
-| Production admission deadlines | Diagnostic clock deliberately scales `monotonic_ns`; production clocks unchanged | Relaxed tests prove function only. Separate real-clock mounted verification is required before closure. |
+| Production admission deadlines | Diagnostic clock deliberately scales `monotonic_ns`; production clocks unchanged | Normal-clock sequential two-seal and three-member selectors passed at `143b5c1`; accepted OPEN cross-seal recovery and the final integrated tree still require verification. |
 
 ## Remaining scope
 
@@ -843,3 +843,74 @@ The cold plan reviewer found no critical flaw in that mapping.
 
 The fast command above returns `253 passed, 2 deselected in 1.78s`; Ruff passes.
 The fresh mounted selector on this final mapping is still pending.
+
+The final-mapping production-clock selector completed with a new failure after
+820.58s: `execution resume publication STALE` at
+`r14_execution_resume.py:549`. It passed suspension, selected original resolution
+and semantic reduction (last committed sequence 26), and passed owner resume
+preparation; no resume was selected. This is stronger admission-path evidence,
+but still not a successful resume/reopen witness. Checkpoint `d784095` retains
+the fixes and explicit pending mounted status; its gate ran `213 passed in
+1.76s`. A subsequent cold alias-domain mechanism review found no scoped P0/P1
+and ran 35 focused tests; artifact `/private/tmp/r14-alias-domain-redteam.md`.
+
+The fresh same-runtime mcp-debugger run identified the first STALE branch:
+`r14_execution_resume.py:512`, fixed 30-second actor-budget expiry in the first
+admission guard. Actual stack: `guard -> platform/_sqlite.py:652 _publish`.
+All preceding predicates passed: current cut/suspension equal, classification
+`SAME_RUN`, current preparation equal to owner result, same worker/session and
+decision head. Store current/expected head were both 26, exact physical preimage
+matched, transaction was open and zero resume rows had been inserted. The later
+184.46-second elapsed reading included debugger pause time and is not an exact
+unpaused cost measurement. The non-debugger 820.58-second failure independently
+establishes this is not solely a debugger-induced timing problem.
+
+Expectations for every breakpoint were recorded before setup in
+`/private/tmp/r14-resume-guard-debug-expectations.md`. Initial attach occurred
+before fresh actor issuance; only rejection branches could subsequently pause.
+No product clock or deadline changed. The debug selector ended with the same
+STALE after 985.99s including pauses; the session was closed and the server
+reported zero remaining sessions.
+
+The failed frame also established restricted-witness eligibility for this exact
+fixture: canonical runtime/source/resources configuration, supported native loop
+prefix, no owner operations outside the existing closed allowlist, no top-level
+historical H1 checkpoint descriptor, and native profile V5. A cold full
+`$swarm-mode` audited transitive dependencies and proposed a typed invocation-local
+exact-journal/config witness, keeping live actor/trust/worker/session/pending and
+deadline checks in both guards and retaining the store's actual head/preimage
+comparison. Its artifact is `/private/tmp/r14-resume-guard-swarm.md`. General V5
+reuse is not justified: historical H1 custody/checkpoint files expand inputs for
+unsupported prefixes. Decision guards see the candidate postimage and must not
+compare it to the original source preimage. The optimization is not implemented;
+the next step is a fast red call-count/no-write guard test before that change.
+R14.6 and the full R14 milestone remain OPEN.
+
+
+### Resume proof reuse implementation — 2026-10-16, verification pending
+
+Implemented invocation-local journal/config input reuse for the closed native V5
+prefix and immutable prepared resume artifacts before fresh actor issuance.
+Successful fast-path tests require exactly one source collection, one preparation,
+and one classification; both writer guards retain live checks. Unsupported inputs
+retain full collection. A negative test exposed missing trust bracketing around
+initial collection; verified trust is now captured before collection and checked
+afterward, then retained through refresh and both guards. This is an input-binding
+repair, not a demonstrated production exploit.
+
+Validation command: `uv run pytest -q
+ tests/composition/test_r14_resume_publication_guards.py
+ tests/composition/test_r14_resume_artifacts.py
+ tests/composition/test_r14_resume_journal_inputs.py
+ tests/capabilities/agent_loop/test_execution_recovery_preparation.py
+ tests/capabilities/agent_loop/test_obligation_resume_transition.py
+ tests/capabilities/agent_loop/test_native_recovery_cut_validation.py
+ tests/composition/test_r14_historical_suffix.py
+ tests/composition/test_r14_native_recovery_cut.py
+ tests/composition/test_r14_native_selected_accounting_fast_path.py
+ -k 'not selected_native_cut_reopens'` — **285 passed, 2 deselected, 2.71s**.
+Ruff and `git diff --check` pass. The previous mounted process was explicitly
+terminated after source changed; its result cannot validate this implementation.
+Fresh mounted resumed-source test is running with basetemp
+`/private/tmp/r14-resume-proof-reuse-trust-20261016`; no successful mounted result
+or end-to-end speedup is claimed yet. R14 remains OPEN.

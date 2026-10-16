@@ -184,7 +184,7 @@ def _journal_inputs(journal: IndependentTenantDecisionJournal) -> JournalInputs:
 
 
 @dataclass(frozen=True, repr=False)
-class CallHistoryInputs:
+class CallHistoryJournalInputs:
     runtime: ExecutionDispatchRuntime
     configuration: tuple
     loop: JournalInputs
@@ -193,23 +193,15 @@ class CallHistoryInputs:
     h1_workspace: JournalInputs
     dashboard: JournalInputs
     database_identity: tuple[str, int, int]
-    authority_commitment: str
 
 
-def capture_call_history_inputs(runtime: ExecutionDispatchRuntime) -> CallHistoryInputs | None:
-    """Read exact authenticated inputs; opening auxiliary streams cannot provision them."""
+def capture_call_history_journal_inputs(
+    runtime: ExecutionDispatchRuntime,
+) -> CallHistoryJournalInputs | None:
+    """Authenticate the closed native prefix without reading a transaction postimage."""
     runtime._authority_gate().require_held()
     runtime._check_database_identity()
     database_identity = runtime._database_identity
-    try:
-        with workspace_snapshot(runtime._database) as snapshot:
-            authority_commitment = capture_authority_snapshot_commitment(
-                snapshot.connection, runtime._tenant_id
-            )
-    except AuthoritySnapshotIntegrityError:
-        return None
-    if runtime._commitment_journal.load(runtime._tenant_id) != authority_commitment:
-        return None
     configuration = _standard_configuration(runtime)
     if configuration is None:
         return None
@@ -233,7 +225,7 @@ def capture_call_history_inputs(runtime: ExecutionDispatchRuntime) -> CallHistor
             )
         ) as journal:
             extras.append(_journal_inputs(journal))
-    return CallHistoryInputs(
+    return CallHistoryJournalInputs(
         runtime,
         configuration,
         loop,
@@ -241,7 +233,31 @@ def capture_call_history_inputs(runtime: ExecutionDispatchRuntime) -> CallHistor
         preview,
         *extras,
         database_identity,
-        authority_commitment,
+    )
+
+
+@dataclass(frozen=True, repr=False)
+class CallHistoryInputs(CallHistoryJournalInputs):
+    authority_commitment: str
+
+
+def capture_call_history_inputs(runtime: ExecutionDispatchRuntime) -> CallHistoryInputs | None:
+    """Read exact authenticated inputs; opening auxiliary streams cannot provision them."""
+    runtime._authority_gate().require_held()
+    runtime._check_database_identity()
+    try:
+        with workspace_snapshot(runtime._database) as snapshot:
+            authority_commitment = capture_authority_snapshot_commitment(
+                snapshot.connection, runtime._tenant_id
+            )
+    except AuthoritySnapshotIntegrityError:
+        return None
+    if runtime._commitment_journal.load(runtime._tenant_id) != authority_commitment:
+        return None
+    journals = capture_call_history_journal_inputs(runtime)
+    return (
+        CallHistoryInputs(**vars(journals), authority_commitment=authority_commitment)
+        if journals is not None else None
     )
 
 

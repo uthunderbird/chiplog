@@ -357,7 +357,7 @@ async def test_first_suspension_profile_holds_with_activation_blocker():
     assert result.kind == "CALL_PREPARATION_REJECTED_V1"
 
 
-async def test_owner_prepares_same_run_resume_only_for_exact_suspension_frontier():
+async def _resume_request():
     cut = await _cut()
     run = cut.complete_ordered_run_lineage[-1]
     suspension = prepare_execution_suspension(
@@ -438,6 +438,14 @@ async def test_owner_prepares_same_run_resume_only_for_exact_suspension_frontier
         ),
     )
 
+    return request
+
+
+async def test_owner_prepares_same_run_resume_only_for_exact_suspension_frontier():
+    request = await _resume_request()
+    suspended = request.run
+    selected_pair = request.original_suspension.selected_pair
+    current_cut = request.cut
     result = prepare_execution_resume(request)
 
     assert result.kind == "PREPARED_EXECUTION_RESUME_V2"
