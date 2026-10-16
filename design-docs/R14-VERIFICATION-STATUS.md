@@ -10,6 +10,30 @@ Status: OPEN, 2026-10-17. Acceptance authority:
 `R14-REMAINING-ROADMAP.md` and `R14-R17-COMPLETION.md`.
 This is an evidence ledger, not a replacement acceptance boundary.
 
+Integration preparation: branch `feat/r14-postgres-integration` starts at
+`7e104b6` and checkpoint `b4f7a96` preserves the seven root-authored input files,
+including the three byte-identical formerly untracked read-only files. Its
+selected checkpoint passed **6 tests in 37.15 s** with R8 structure/import
+checks. The thirteen PG commits through `520dedf` applied without conflicts via
+`git cherry-pick --no-commit`; their original branch is retained. Combined
+native/reader/import-boundary verification remains pending at this entry.
+
+The lean SQLite two-seal selector is terminal, session 71321, exit 0:
+`.venv/bin/pytest -q -p no:timeout tests/composition/test_r14_native_selected_accounting_source.py::test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay`
+reported **1 passed in 827.13 s (13:47)** on the unchanged main worktree source.
+Together with terminal session 93380, this verifies both edited legacy client
+witnesses before PG integration; it does not assert that their old proof-heavy
+startup is the new native client's storage route.
+
+Requirement audit added the actual native adoption/cancellation two-order test
+`tests/composition/test_postgres_call_branch_competition.py`. It uses
+`adopt_effect`, not the forbidden generic consequential ACCEPT. Both orders
+retain exactly one branch, reject the opposite branch without publication,
+and replay the winning original request after reopen without SEND. Initial
+mounted run: **2 passed in 1.10 s**; the strengthened branch-specific refusal
+run: **2 passed in 1.03 s**. Focused mypy with `MYPYPATH=src` and Ruff passed.
+This is a sequential branch-selection witness, not a concurrent stress proof.
+
 ## Functional roadmap snapshot, 2026-10-17
 
 | Slice | Current evidence and remaining functional work |

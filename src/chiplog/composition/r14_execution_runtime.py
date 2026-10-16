@@ -1,4 +1,7 @@
-"""Hermetic executable initialization through the canonical journal and sole writer."""
+"""Legacy SQLite compatibility graph for historical callers and verification.
+
+New clients use chiplog.client.open_execution_client (native PostgreSQL).
+"""
 
 from __future__ import annotations
 

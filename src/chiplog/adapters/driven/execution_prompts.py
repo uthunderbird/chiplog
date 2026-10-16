@@ -14,6 +14,11 @@ from chiplog.capabilities.agent_loop.execution_contracts import (
     ExecutionContinue,
     ExecutionPromptArtifact,
 )
+from chiplog.capabilities.agent_loop.execution_history_contracts import (
+    EXECUTION_TOOLS_V3,
+    ExecutionPromptArtifactV3,
+    execution_response_schema_v3,
+)
 from chiplog.capabilities.agent_loop.execution_parsing import (
     EXECUTION_TOOLS,
     execution_response_adapter,
@@ -69,3 +74,18 @@ class ExecutionStaticPrompts:
         self, raw: bytes, artifact: ExecutionPromptArtifact
     ) -> ExecutionContinue | DeliveryCompletion:
         return parse_execution_response(raw, artifact)
+
+
+async def render_history_execution_prompt(context: str) -> ExecutionPromptArtifactV3:
+    template = (
+        "Return JSON matching the response schema. Tool calls request proposals, explicit "
+        "adoption, or a read of your own conversation history. They grant no external "
+        "action authority. Preserve call labels and exact arguments. Context: "
+    )
+    return ExecutionPromptArtifactV3(
+        content_hash=hashlib.sha256(template.encode()).hexdigest(),
+        library_version=version("promptstrings"),
+        tools=EXECUTION_TOOLS_V3,
+        response_schema_json=execution_response_schema_v3(),
+        rendered=template + context,
+    )

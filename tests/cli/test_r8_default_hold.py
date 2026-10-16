@@ -1,17 +1,30 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import subprocess
 import sys
-from pathlib import Path
+
+from chiplog.platform.postgres import PostgresServer
 
 
-def test_real_cli_has_no_development_entitlement_bypass(tmp_path: Path) -> None:
-    database = tmp_path / "cli.sqlite"
-    prefix = [sys.executable, "-m", "chiplog.cli", "--database", str(database)]
-    identity = ["--tenant", "t", "--principal", "p", "--credential", "c", "--session", "s"]
-    environment = {**os.environ, "CHIPLOG_R6_OPERATOR_SECRET": "isolated-cli-fixture"}
+def test_real_cli_has_no_development_entitlement_bypass(postgres_server: PostgresServer) -> None:
+    database = postgres_server.user_database("cli")
+    prefix = [sys.executable, "-m", "chiplog.cli"]
+    identity = [
+        "--tenant",
+        database.identity,
+        "--principal",
+        "p",
+        "--credential",
+        "c",
+        "--session",
+        "s",
+    ]
+    environment = {
+        **os.environ,
+        "CHIPLOG_R6_OPERATOR_SECRET": "isolated-cli-fixture",
+        "CHIPLOG_POSTGRES_DSN": postgres_server.conninfo,
+    }
     bootstrap = subprocess.run(
         [*prefix, "bootstrap", *identity, "--database-instance", "db", "--token", "token"],
         capture_output=True,
@@ -46,5 +59,4 @@ def test_real_cli_has_no_development_entitlement_bypass(tmp_path: Path) -> None:
         [*prefix, "show", *identity], capture_output=True, text=True, env=environment, check=False
     )
     assert show.returncode != 0 and "HOLD" in show.stderr and show.stdout == ""
-    with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM records").fetchone() == (0,)
+    assert database.snapshot().head == 0

@@ -1,4 +1,7 @@
-"""Explicit offline dispatch assembly; historical profile-7 remains unchanged."""
+"""Legacy SQLite dispatch compatibility assembly for historical callers.
+
+New clients use chiplog.client.open_execution_client (native PostgreSQL).
+"""
 
 from __future__ import annotations
 

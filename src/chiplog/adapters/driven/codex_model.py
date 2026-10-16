@@ -13,7 +13,10 @@ from chiplog.adapters.driven.codex_auth import (
     current_token,
 )
 from chiplog.capabilities.agent_loop.contracts import ModelAttempt, WorkerSessionPort
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionModelAttempt
+from chiplog.capabilities.agent_loop.execution_history_contracts import ExecutionModelAttemptV3
 from chiplog.capabilities.agent_loop.live_contract import CodexError, LiveModelBinding
+from chiplog.capabilities.agent_loop.model_custody_contracts import ModelAttemptCustody
 
 CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
 MAX_STREAM_BYTES = 2 * 1024 * 1024
@@ -23,8 +26,12 @@ class CodexModel:
     def __init__(self, storage: CodexTokenStorage, binding: LiveModelBinding) -> None:
         self.storage, self.binding = storage, binding
         self.session: WorkerSessionPort | None = None
+        self.custody: ModelAttemptCustody | None = None
 
-    async def invoke(self, attempt: ModelAttempt) -> tuple[bytes, str]:
+    async def invoke(
+        self,
+        attempt: ModelAttempt | ExecutionModelAttempt | ExecutionModelAttemptV3,
+    ) -> tuple[bytes, str]:
         label = attempt.manifest.joined_label
         if (
             attempt.state != "EMITTED_OUTCOME_UNKNOWN"
@@ -49,6 +56,8 @@ class CodexModel:
         # Check the worker again after token refresh, immediately before the model request.
         if attempt.worker_session != self.session.current_worker():
             raise CodexError("Model worker changed before transmission")
+        if self.custody is not None:
+            self.custody.start(attempt)
         body = {
             "model": self.binding.model,
             "store": False,
@@ -86,7 +95,10 @@ class CodexModel:
                     raise CodexError(
                         f"Codex returned HTTP {response.status_code}; attempt was not retried"
                     )
-                return await read_completion(response)
+                raw, receipt = await read_completion(response)
+                if self.custody is not None:
+                    self.custody.retain(attempt, raw, receipt)
+                return raw, receipt
         except httpx.HTTPError:
             raise CodexError(
                 "Codex transport failed; outcome is unknown and was not retried"

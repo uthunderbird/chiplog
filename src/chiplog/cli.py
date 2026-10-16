@@ -1,4 +1,4 @@
-"""Authenticated CLI over the canonical R8 gated broker composition."""
+"""Authenticated PostgreSQL CLI with exact deployment eligibility at disclosure."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from chiplog.capabilities.planning import CreateIntentionLine
-from chiplog.composition.r8 import open_r8_runtime
+from chiplog.composition.postgres_planning import open_postgres_planning_runtime
 from chiplog.domain_primitives import RecordId, TenantId
 
 
@@ -20,8 +20,8 @@ def _operator_secret() -> bytes:
 
 
 async def _bootstrap(args: argparse.Namespace) -> None:
-    async with open_r8_runtime(
-        Path(args.database), tenant_id=args.tenant, operator_secret=_operator_secret()
+    async with open_postgres_planning_runtime(
+        tenant_id=args.tenant, operator_secret=_operator_secret()
     ) as runtime:
         await runtime.bootstrap(
             database_instance_id=args.database_instance,
@@ -37,8 +37,8 @@ async def _create(args: argparse.Namespace) -> None:
     tenant = TenantId(args.tenant)
     outcome: object
     try:
-        async with open_r8_runtime(
-            Path(args.database), tenant_id=args.tenant, operator_secret=_operator_secret()
+        async with open_postgres_planning_runtime(
+            tenant_id=args.tenant, operator_secret=_operator_secret()
         ) as runtime:
             outcome = await runtime.create(
                 principal_id=args.principal,
@@ -63,8 +63,8 @@ async def _create(args: argparse.Namespace) -> None:
 
 
 async def _render(args: argparse.Namespace) -> None:
-    async with open_r8_runtime(
-        Path(args.database), tenant_id=args.tenant, operator_secret=_operator_secret()
+    async with open_postgres_planning_runtime(
+        tenant_id=args.tenant, operator_secret=_operator_secret()
     ) as runtime:
         try:
             rendered = await runtime.render(
@@ -86,7 +86,6 @@ def _identity_arguments(parser: argparse.ArgumentParser) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="chiplog")
-    parser.add_argument("--database", default="chiplog.sqlite3")
     sub = parser.add_subparsers(dest="action", required=True)
     from chiplog.codex_cli import add_commands, run_command
 
@@ -104,9 +103,18 @@ def main() -> None:
     create.add_argument("--authority-act", required=True)
     show = sub.add_parser("show")
     _identity_arguments(show)
+    migrate = sub.add_parser(
+        "migrate-sqlite-chat", help="Import an old local dialogue without changing its source"
+    )
+    migrate.add_argument("--tenant", required=True)
+    migrate.add_argument("--source", required=True, type=Path)
     args = parser.parse_args()
     if args.action in {"auth", "chat"}:
         run_command(args)
+    elif args.action == "migrate-sqlite-chat":
+        from chiplog.composition.postgres_import import import_local_chat
+
+        print(import_local_chat(args.source, args.tenant))
     elif args.action == "bootstrap":
         asyncio.run(_bootstrap(args))
     elif args.action == "create":

@@ -4,6 +4,8 @@ import hashlib
 
 from chiplog.capabilities.agent_loop.contracts import LoopRejected, ModelAttempt, WorkerSessionPort
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionModelAttempt
+from chiplog.capabilities.agent_loop.execution_history_contracts import ExecutionModelAttemptV3
+from chiplog.capabilities.agent_loop.model_custody_contracts import ModelAttemptCustody
 
 
 class HermeticModel:
@@ -21,9 +23,13 @@ class HermeticModel:
             raise LoopRejected("invalid hermetic matcher set")
         self._matches = matches
         self.session: WorkerSessionPort | None = None
-        self.requests: list[ModelAttempt | ExecutionModelAttempt] = []
+        self.custody: ModelAttemptCustody | None = None
+        self.requests: list[ModelAttempt | ExecutionModelAttempt | ExecutionModelAttemptV3] = []
 
-    async def invoke(self, attempt: ModelAttempt | ExecutionModelAttempt) -> tuple[bytes, str]:
+    async def invoke(
+        self,
+        attempt: ModelAttempt | ExecutionModelAttempt | ExecutionModelAttemptV3,
+    ) -> tuple[bytes, str]:
         if attempt.live_model is not None or attempt.provider_contract != "hermetic-model.v1":
             raise LoopRejected("live attempt cannot use the hermetic model")
         if attempt.state != "EMITTED_OUTCOME_UNKNOWN":
@@ -37,5 +43,10 @@ class HermeticModel:
             expected = self._matches[len(self.requests)]
             if expected != "turn " + attempt.manifest.turn_id.rsplit("/", 1)[-1]:
                 raise LoopRejected("fixture matcher did not match actual model request")
+        if self.custody is not None:
+            self.custody.start(attempt)
         self.requests.append(attempt)
-        return raw, "hermetic:" + hashlib.sha256(attempt.request.encode() + raw).hexdigest()
+        receipt = "hermetic:" + hashlib.sha256(attempt.request.encode() + raw).hexdigest()
+        if self.custody is not None:
+            self.custody.retain(attempt, raw, receipt)
+        return raw, receipt

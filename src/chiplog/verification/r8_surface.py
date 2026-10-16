@@ -20,11 +20,13 @@ class DeploymentSurface:
 
 
 SURFACES = (
-    DeploymentSurface("cli.render", "planning.read", "R8PlanningRuntime.render", ("cli._render",)),
+    DeploymentSurface(
+        "cli.render", "planning.read", "PostgresPlanningRuntime.render", ("cli._render",)
+    ),
     DeploymentSurface(
         "planning.create",
         "planning.create_intention_line",
-        "R8PlanningRuntime._publication_decision_guard",
+        "PostgresPlanningRuntime.create",
         ("cli._create",),
     ),
 )
@@ -53,8 +55,8 @@ def verify_r8_surfaces(root: Path, surfaces: tuple[DeploymentSurface, ...] = SUR
         if isinstance(node, ast.ImportFrom)
         for alias in node.names
     }
-    if ("chiplog.composition.r8", "open_r8_runtime") not in imports:
-        raise R8SurfaceViolation("canonical entrypoint bypasses R8")
+    if ("chiplog.composition.postgres_planning", "open_postgres_planning_runtime") not in imports:
+        raise R8SurfaceViolation("canonical entrypoint bypasses PostgreSQL deployment boundary")
     if any(
         module and ("r7" in module or "r6" in module or ".platform" in module)
         for module, _ in imports
@@ -70,12 +72,12 @@ def verify_r8_surfaces(root: Path, surfaces: tuple[DeploymentSurface, ...] = SUR
             "create",
             "planning.create",
             "planning.create_intention_line",
-            "R8PlanningRuntime._publication_decision_guard",
+            "PostgresPlanningRuntime.create",
         ),
-        ("_render", "render", "cli.render", "planning.read", "R8PlanningRuntime.render"),
+        ("_render", "render", "cli.render", "planning.read", "PostgresPlanningRuntime.render"),
     ):
         calls = _calls(cli_functions[name])
-        if operation not in calls or "open_r8_runtime" not in calls:
+        if operation not in calls or "open_postgres_planning_runtime" not in calls:
             raise R8SurfaceViolation("CLI operation lost its checked runtime boundary")
         runtime_calls = [
             node.func.attr
@@ -104,22 +106,20 @@ def verify_r8_surfaces(root: Path, surfaces: tuple[DeploymentSurface, ...] = SUR
         allowed_calls = {
             "_create": {
                 "CreateIntentionLine",
-                "Path",
                 "RecordId",
                 "SystemExit",
                 "TenantId",
                 "_operator_secret",
                 "create",
                 "getattr",
-                "open_r8_runtime",
+                "open_postgres_planning_runtime",
                 "print",
             },
             "_render": {
-                "Path",
                 "SystemExit",
                 "_operator_secret",
                 "join",
-                "open_r8_runtime",
+                "open_postgres_planning_runtime",
                 "print",
                 "render",
                 "str",
@@ -132,34 +132,22 @@ def verify_r8_surfaces(root: Path, surfaces: tuple[DeploymentSurface, ...] = SUR
         raise R8SurfaceViolation(
             "deployment surface inventory does not equal executable boundaries"
         )
-    runtime = ast.parse((root / "src/chiplog/composition/r8.py").read_text())
+    runtime = ast.parse((root / "src/chiplog/composition/postgres_planning.py").read_text())
     runtime_class = next(
         node
         for node in runtime.body
-        if isinstance(node, ast.ClassDef) and node.name == "R8PlanningRuntime"
+        if isinstance(node, ast.ClassDef) and node.name == "PostgresPlanningRuntime"
     )
     methods = {
         node.name: node
         for node in runtime_class.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    for boundary in ("_publication_decision_guard", "render"):
-        if "commit_handoff" not in _calls(methods[boundary]):
+    for boundary in ("create", "render"):
+        if not {"require", "crossed", "_context", "_transaction"} <= _calls(methods[boundary]):
             raise R8SurfaceViolation("real handoff has no final deployment gate")
-    if "_trace" not in _calls(methods["_publication_authority_guard"]):
-        raise R8SurfaceViolation("publication bypasses authority-trace reproduction")
-    declaration = next(
-        node
-        for node in runtime.body
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Name) and target.id == "R8_SURFACES" for target in node.targets
-        )
-    )
-    if ast.literal_eval(declaration.value) != tuple(
-        (row.surface_id, row.capability) for row in surfaces
-    ):
-        raise R8SurfaceViolation("broker registrations differ from independently observed surfaces")
+    if "execute" not in _calls(methods["create"]) or "rebuild" not in _calls(methods["render"]):
+        raise R8SurfaceViolation("planning owner or projection boundary missing")
 
 
 def _implementation_catalog(root: Path) -> dict[str, str]:
@@ -222,7 +210,7 @@ def verify_implementation_identity(root: Path) -> None:
 
 
 def verify_offline_import_boundary(root: Path) -> None:
-    """R8 contains local SQLite and authenticated Unix IPC, no external adapter.
+    """Register the exact reviewed storage, provider and transport leaves.
 
     This is a current executable-source check, not permission for a future adapter.
     A newly reachable SDK/transport requires new inventory and gate evidence.
@@ -254,6 +242,17 @@ def verify_offline_import_boundary(root: Path) -> None:
                 and tuple(alias.name for alias in node.names) == ("orjson",)
             ):
                 # Native JSON parsing only; this adds no transport or adapter surface.
+                continue
+            if relative == "chiplog/platform/postgres.py" and (
+                (isinstance(node, ast.Import) and modules == ("psycopg",))
+                or (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "psycopg"
+                    and {alias.name for alias in node.names} == {"sql"}
+                )
+            ):
+                # User-authorized PostgreSQL substrate; no arbitrary new driver
+                # imports or direct storage access from capability owners.
                 continue
             if (
                 relative

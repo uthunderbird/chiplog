@@ -12,6 +12,8 @@ from chiplog.capabilities.agent_loop.contracts import BudgetPolicy
 from chiplog.capabilities.agent_loop.live_contract import CodexError, LiveModelBinding
 from chiplog.composition.codex_chat import open_codex_chat
 
+pytestmark = pytest.mark.usefixtures("postgres_server")
+
 
 async def test_live_dialogue_uses_durable_loop_and_exact_model_binding(
     tmp_path: Path,

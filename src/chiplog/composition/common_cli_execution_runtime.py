@@ -1,4 +1,8 @@
-"""One H0 runtime: selected retained CLI custody to a native created Run."""
+"""Legacy SQLite installed H1 compatibility runtime and historical custody.
+
+These versioned factories retain their original contracts for existing callers.
+New clients use chiplog.client.open_execution_client (native PostgreSQL).
+"""
 
 from __future__ import annotations
 

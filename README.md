@@ -10,6 +10,17 @@
 
 Диалог через Codex OAuth (без установленного Codex CLI):
 
+Нужен запущенный PostgreSQL. Задайте операторское подключение к одному инстансу;
+его роль должна уметь создавать базы. Для каждого пользователя приложение
+создаёт отдельную database по фиксированному отображению идентичности:
+
+```sh
+export CHIPLOG_POSTGRES_DSN='host=localhost dbname=postgres'
+```
+
+Пароль храните в защищённом PostgreSQL service/passfile либо локальной
+конфигурации, без добавления в репозиторий.
+
 ```sh
 uv run chiplog auth login
 uv run chiplog auth status
@@ -29,8 +40,9 @@ uv run chiplog auth logout
 `chat` запускает существующий цикл Chiplog с прямым Codex Responses адаптером.
 Контекст текущего диалога отправляется в OpenAI. `/exit` завершает сеанс.
 История внутри сеанса включается в следующие сообщения; новая команда `chat`
-начинает новый диалог. Run/Turn и принятые ответы сохраняются в отдельной SQLite
-в каталоге Chiplog. После обрыва запроса попытка не повторяется автоматически.
+начинает новый диалог. Run/Turn и принятые ответы сохраняются в PostgreSQL-базе
+пользователя; refresh OAuth сохраняет ту же базу. После обрыва запроса попытка
+не повторяется автоматически.
 Этот вход поддерживает разговор и предложения; применение планов, Calendar и
 Telegram через него пока не подключены. OAuth не разрешает старые операции R8.
 
@@ -48,8 +60,39 @@ uv run chiplog show --help
 ```
 
 Операции требуют `CHIPLOG_R6_OPERATOR_SECRET` и параметров идентичности.
-CLI использует гейт R8: успешный `bootstrap` сам по себе не разрешает `create`.
+CLI использует PostgreSQL и deployment gate: успешный `bootstrap` сам по себе не разрешает `create`.
 Без соответствующего deployment entitlement операция возвращает `HOLD`.
+
+Существующая локальная SQLite-история диалога требует явного переноса. Остановите
+старые writer-процессы и выполните команду из сообщения `chat`, например:
+
+```sh
+uv run chiplog migrate-sqlite-chat --tenant 'cli:ACCOUNT_IDENTITY' --source '/path/to/chat-ACCOUNT_IDENTITY.sqlite3'
+```
+
+Перенос сохраняет исходные record bytes, идентификаторы и batch sequence в пустой
+PostgreSQL target одной транзакцией. SQLite-источник остаётся на месте и открывается
+только для чтения. Повтор того же импорта возвращает `REPLAY`. Неперенесённая
+история не подменяется пустым диалогом. Команда принимает только прежний local-chat
+формат: planning/R14 authority bundles и их sidecars требуют отдельного пути
+миграции и целиком отклоняются.
+
+## Программный native client
+
+Новый default entrypoint для V2/V3 execution —
+`from chiplog.client import open_execution_client`. Он открывает PostgreSQL-базу
+пользователя через `CHIPLOG_POSTGRES_DSN` и текущую доверенную идентичность;
+SQLite fallback и параметра выбора backend нет. Этот клиент монтирует model
+custody/recovery, history/read-only successor, original effects, continuation,
+CompleteAcceptance и durable delivery. SEND требует отдельно подписанного
+актуального deployment entitlement и зарегистрированного transport.
+
+Прежние versioned SQLite factories в `r14_execution_runtime`,
+`r16_dispatch_runtime` и `common_cli_execution_runtime` сохранены как legacy
+compatibility для существующих callers и исторических verifier fixtures. Они
+не являются новым default client route. Источники данных не удаляются;
+planning/R14 authority bundles не принимаются local-chat importer.
+Точная граница: [POSTGRES-SURFACE-INVENTORY.md](design-docs/POSTGRES-SURFACE-INVENTORY.md).
 
 ## Тесты
 
@@ -57,6 +100,16 @@ CLI использует гейт R8: успешный `bootstrap` сам по �
 uv run pytest
 sh .harness/scripts/test.sh
 ```
+
+Focused PostgreSQL integration запускается на отдельном тестовом инстансе:
+
+```sh
+CHIPLOG_TEST_POSTGRES_DSN='host=localhost dbname=postgres' uv run pytest -q tests/platform/test_postgres.py tests/composition/test_postgres_execution.py tests/platform/test_sqlite_chat_import.py
+```
+
+Fixture создаёт уникальные базы и удаляет только их. Без этой переменной
+PostgreSQL integration помечается как skipped. Старые SQLite assurance-сценарии
+пока остаются отдельными offline regression fixtures.
 
 Полный pytest выполняет настоящий stage0. Тесты, которые stage0 запускает в дочерних
 pytest, не повторяются во внешнем процессе. Строка `stage0: … coverage confirmed`

@@ -55,7 +55,9 @@ def test_reached_executable_mutants_reject(tmp_path: Path, mutant: str) -> None:
     cli = source / "cli.py"
     if mutant == "old-runtime":
         cli.write_text(
-            cli.read_text().replace("chiplog.composition.r8", "chiplog.composition.r7_planning")
+            cli.read_text().replace(
+                "chiplog.composition.postgres_planning", "chiplog.composition.r7_planning"
+            )
         )
     elif mutant == "independent-replay":
         cli.write_text(
@@ -159,8 +161,7 @@ def test_offline_gate_accepts_only_registered_scheduler_version_query(tmp_path: 
 
 def test_offline_gate_accepts_exact_operator_policy_ed25519_import(tmp_path: Path) -> None:
     target = (
-        tmp_path
-        / "src/chiplog/capabilities/deployment_trust/operator_policy_command_verifier.py"
+        tmp_path / "src/chiplog/capabilities/deployment_trust/operator_policy_command_verifier.py"
     )
     target.parent.mkdir(parents=True)
     target.write_text(
