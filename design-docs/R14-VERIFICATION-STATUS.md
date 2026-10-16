@@ -1408,3 +1408,28 @@ Command: `uv run pytest -q tests/composition/test_call_history_witness_mounted.p
 -k 'pending_json_decoder or r8_registers_native_json or public_accept_seeds_exact'`
 — **27 passed, 17 deselected in 23.09s** after the fix. Scoped Ruff and diff checks
 passed. Full R14 and the repeated full-cut readiness guard remain OPEN.
+
+### Readiness custom-source writer baseline (2026-10-16)
+
+Command: `uv run pytest -q
+tests/composition/test_r14_readiness_guard_collection.py --tb=short`
+— **2 passed in 1.39s** on the main checkout. The fixture uses genuine pure
+owner preparations and closed wire evidence, inert source/actor ports, and the
+actual SQLiteMaterializer/EventAppender. It grants no native source authority;
+its in-memory decision list and stubbed finish do not prove durable recovery.
+
+For this custom source, two full collections are required: initial collection
+and final decision collection. Both writer guards run once; the positive case
+commits both exact records and advances head 1 to 2. The negative case advances
+only a synthetic actor clock during the second collection, gets exactly
+`STALE:authority-after-cut`, and verifies complete SQL rollback: no candidate
+records/publication/decision, head 1 and unchanged physical commitment. This is
+not a measurement of real collection latency or a red test for native reuse.
+
+The proposed one-collection contract remains unimplemented and must first be
+tested on an actually eligible native V5 resumed-originals path. A custom-source
+test expecting one collection would incorrectly weaken the required fallback.
+Root also ran `.venv/bin/python /private/tmp/r14-writer-snapshot-visibility.py`:
+separate workspace read connections see the committed preimage in both writer
+phases, while the writer connection sees its candidate postimage at decision.
+Thus postimage visibility is not a reason to remove the final full cut.
