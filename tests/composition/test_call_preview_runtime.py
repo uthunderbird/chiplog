@@ -3,6 +3,7 @@
 import json
 import time
 from collections.abc import AsyncIterator
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -386,7 +387,33 @@ async def test_adopted_preview_prepares_both_real_owners_without_publication_or_
     # Issuing an invocation and constructing a batch do not publish or grant SEND.
     authority = DispatchPublicationAuthority(runtime, prepared.observed)
     invocation = authority.invocation(call_identity(value))
-    batch = call_batch(value, invocation)
+    targets = (value, value.retained.loop_request, value.retained.effects_request)
+    # Preserve each owner's existing encoding domain before observing this call.
+    expected_bytes = tuple(target.canonical_bytes() for target in targets)
+    canonical_calls = [0, 0, 0]
+    with monkeypatch.context() as patch:
+        for operand in targets:
+            original_canonical = type(operand).canonical_bytes
+
+            def counted_canonical(instance, original=original_canonical):
+                for index, selected in enumerate(targets):
+                    if instance is selected:
+                        canonical_calls[index] += 1
+                return original(instance)
+
+            patch.setattr(type(operand), "canonical_bytes", counted_canonical)
+        batch = call_batch(value, invocation)
+    assert canonical_calls == [1, 1, 1]
+    assert (
+        batch.authentication.applicability_bytes,
+        batch.loop_command.canonical_bytes,
+        batch.effects_command.canonical_bytes,
+    ) == expected_bytes
+    assert (
+        batch.authentication.applicability_fingerprint,
+        batch.loop_command.fingerprint,
+        batch.effects_command.fingerprint,
+    ) == tuple(sha256(raw).hexdigest() for raw in expected_bytes)
     assert validate_call_issuance(batch, runtime) == value
     receipt = call_receipt(batch, value)
     assert receipt.original_call_id == target.original_call_id

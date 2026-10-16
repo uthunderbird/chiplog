@@ -51,26 +51,29 @@ def call_batch(value: CallAcceptanceIssuance, invocation: InvocationProofRef) ->
     """Mechanical untrusted envelope; only the private writer authority can admit it."""
     records = acceptance_records(value.retained)
     loop, effects = value.retained.loop_request, value.retained.effects_request
+    issuance_bytes = value.canonical_bytes()
+    loop_bytes = loop.canonical_bytes()
+    effects_bytes = effects.canonical_bytes()
     return CallEffectBatch(
         identity=call_identity(value),
         authentication=WorkerAuthentication(
             invocation=invocation,
             applicability_schema=SCHEMA,
-            applicability_bytes=value.canonical_bytes(),
-            applicability_fingerprint=digest(value.canonical_bytes()),
+            applicability_bytes=issuance_bytes,
+            applicability_fingerprint=digest(issuance_bytes),
         ),
         expected=call_read_manifest(value),
         loop_command=OwnerCommandBytes(
             owner="agent_loop",
             schema_id=LOOP_PREPARATION_SCHEMA,
-            canonical_bytes=loop.canonical_bytes(),
-            fingerprint=digest(loop.canonical_bytes()),
+            canonical_bytes=loop_bytes,
+            fingerprint=digest(loop_bytes),
         ),
         effects_command=OwnerCommandBytes(
             owner="effects",
             schema_id=effects.schema_id,
-            canonical_bytes=effects.canonical_bytes(),
-            fingerprint=digest(effects.canonical_bytes()),
+            canonical_bytes=effects_bytes,
+            fingerprint=digest(effects_bytes),
         ),
         planning=NoPlanningParticipant(),
         complete_records=records,

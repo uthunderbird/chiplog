@@ -1968,3 +1968,89 @@ tests/verification/test_sql_expression_inventory.py --tb=short` gave92 passed
 in7.81s. Ruff passed after combining equivalent permission branches.
 Cold plan review: `/private/tmp/r14-planning-schema-preparation-plan-review.md`;
 the count-star compatibility correction was applied. R14 remains OPEN.
+
+The CTAS negative was strengthened after review: replace only store_metadata's
+DDL in the otherwise complete valid schema with CREATE TABLE ... AS SELECT of
+its two valid columns. The frozen pre-repair helper accepts all five planning
+alternatives on this schema; the repaired helper refuses during schema setup
+(chained cause: schema script did not complete under its policy). Thus this
+negative no longer relies on a missing later business table. The two supplied
+schema negatives pass; Ruff passed. The frozen comparison used a separately
+named import of the inert verifier module and private in-memory databases only.
+
+## Live second-acceptance STALE diagnostic
+
+MCP session `072d2186-e7df-4f72-a46f-dcacd00e114f` runs the exact cross-seal
+selector against unchanged frozen4f5357c, fresh absent basetemp
+`/private/tmp/r14-stale-debug-4f5357c`. All1524 manifest inputs were rechecked
+before launch. Driver and ongoing receipt:
+`/private/tmp/r14-stale-debug-4f5357c-driver.py`,
+`/private/tmp/r14-stale-debug-4f5357c-receipt.md`.
+Production clocks remain unchanged; pytest timeout is disabled. No credential
+repin, authority bypass or reuse of saved runtime credentials occurred.
+
+Two observations: conditional nonpausing head logpoint at _sqlite.py639 for
+call-acceptance commands, and conditional first-bad stop at
+r14_call_authority.py167 while sys.exception() is still live. The coordinator
+constructs these commands without expected_preimage_commitment and its decision
+guard returns None; physical head mismatch and admission LoopRejected are the
+remaining STALE paths. First logpoint observed current=13, expected=13,
+no_preimage=True. Session remains RUNNING on authoritative MCP polling; this is
+not a failure result, a latency measurement, or grounds for a restart.
+
+Cold fixture-route review read in full:
+`/private/tmp/r14-second-accept-guard-fixture-route.md`. Existing saved prior-turn
+fixture lacks the live second-seal issuance/witness; archived durable evidence
+cannot recover the rejected private _issued tuple. Preserve exact exception and
+numeric deadline operands at the first bad stop before selecting a RED test.
+
+Fresh expression export after confinement repair:
+`/private/tmp/r14-sql-expression-inventory-71870f8-candidate.json`,42290677 bytes,
+SHA256 `5b16dd21add856da0ec80806f71d723c461255cf504255fd6c55fa2e0bc3429f`.
+Generation read sorted src/**/*.py, ran inspect_sources then
+extract_sql_expression_inventory/require_exact_accounting, serialized asdict and
+rechecked every source SHA before exclusive output creation. It contains584
+sources,109313 corpus nodes,351 resolved candidates and7 unresolved: four lexical
+owner/reader execute calls and three shared private-engine parameter SQL sites.
+The old three planning preparation candidates are removed by delegation to the
+guarded engine; this does not classify the remaining callers or close the global
+graph. No approved descriptor or startup admission is claimed.
+
+## Exact call-batch operand serialization reuse
+
+Actual mounted preparation reproduced redundant canonicalization in call_batch:
+the exact issuance, loop request and effects request each serialized twice,
+observed counts [2,2,2] versus required [1,1,1]. The fix retains three local byte
+values and derives both stored bytes and their fingerprints from those values;
+it adds no cross-call cache and removes no authentication, validation or writer
+guard. The test preserves each unchanged owner's encoder output before wrapping
+only this operation, compares exact result bytes and independent hashlib SHA256,
+then runs existing retained issuance validation and altered-input negatives.
+Distinct deserialized objects are not counted as the original operands.
+
+Cold plan review `/private/tmp/r14-call-batch-canonical-reuse-plan-review.md`
+caught the loop request's discriminant-first encoding domain; using the existing
+unchanged encoders as the before/after byte reference avoids substituting the
+incorrect uniform global sort. No encoder changes were made. Initial GREEN
+attempt exposed a test-loop variable shadowing the acceptance target; renamed
+it before rerunning the same checks.
+
+Command `.venv/bin/python -m pytest -p no:timeout -q
+tests/composition/test_call_preview_runtime.py::test_adopted_preview_prepares_both_real_owners_without_publication_or_send
+tests/composition/test_call_batch.py
+tests/verification/test_authority_read_graph.py --tb=short` gave41 passed in6.02s.
+This establishes three original-operand serializations instead of six, not a
+global JSON call count, full-flow speedup or second-accept STALE repair. The
+frozen debugger run is unchanged and remains separate. The71870f8 expression
+candidate above describes its own source snapshot, predating this main-checkout
+issuance edit; it is not a current descriptor.
+
+Cold full swarm-mode next-step route (source inspection only):
+`/private/tmp/r14-admission-next-executable-slice.md`, read in full. It selects
+the actual _open_runtime → R7PlanningRuntime._reader → BrokerAuthorityReader
+tenant_main SQL chain joined to exact corpus/assembly/domain/preparation rows
+and independently specified descriptor-fragment edges. Expression resolution
+alone cannot clear receiver/caller/domain closure. Exact path normalization,
+field rebinding/database substitution/leaf mutation/ghost and missing edge
+negatives are required. This is the next implementation route, not an admitted
+fragment, registered tuple, V2 initializer, CURRENT or startup gate.

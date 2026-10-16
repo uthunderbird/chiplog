@@ -157,10 +157,18 @@ def test_shared_engine_permissions_do_not_broaden_planning_read_policy(sql):
 
 @pytest.mark.parametrize("tail", [
     "INSERT INTO store_metadata VALUES (1, 1);",
-    "CREATE TABLE store_metadata AS SELECT 1 AS value;",
+    "CREATE TABLE store_metadata AS SELECT 1 AS singleton, 1 AS store_version;",
 ])
 def test_supplied_schema_rejects_business_dml_and_select(tail):
-    schema = SCHEMA_SQL + tail if tail.startswith("INSERT") else tail
+    if tail.startswith("INSERT"):
+        schema = SCHEMA_SQL + tail
+    else:
+        original = (
+            "CREATE TABLE store_metadata (\n"
+            "    singleton INTEGER PRIMARY KEY CHECK (singleton = 1), "
+            "store_version INTEGER NOT NULL\n);"
+        )
+        schema = _replace(SCHEMA_SQL, original, tail)
     with pytest.raises(UnknownSqlExpression):
         planning_read_graph(SOURCE.read_text(), schema)
 
