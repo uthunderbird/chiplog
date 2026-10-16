@@ -1672,6 +1672,42 @@ async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_orde
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("observer_raises", [False, True])
+async def test_readiness_submit_observer_restores_real_workspace_dispatch(
+    tmp_path: Path, observer_raises: bool,
+) -> None:
+    from chiplog.capabilities.projections.r9_boundary import WorkspaceRejected
+    from tests.support.workspace_batch import workspace
+
+    async with workspace(tmp_path) as (workspace_runtime, _):
+        appender = workspace_runtime._appender
+        assert "submit" not in vars(appender)
+        original_submit = appender.submit
+
+        async def observe_submit(batch):
+            return await original_submit(batch)
+
+        workspace_runtime._check_dispatch()
+        try:
+            with patch.object(appender, "submit", observe_submit):
+                if observer_raises:
+                    raise RuntimeError("observer scope interrupted")
+        except RuntimeError as error:
+            assert observer_raises and str(error) == "observer scope interrupted"
+        # Same real guard as the second native Turn's workspace read.
+        workspace_runtime._check_dispatch()
+        assert "submit" not in vars(appender)
+        # The same bound function is still a forbidden instance override while
+        # installed; cleanup must preserve ownership, not relax the guard.
+        with (
+            patch.object(appender, "submit", original_submit),
+            pytest.raises(WorkspaceRejected, match="unregistered workspace instance dispatch"),
+        ):
+            workspace_runtime._check_dispatch()
+        assert "submit" not in vars(appender)
+
+
+@pytest.mark.asyncio
 async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1814,16 +1850,19 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
                 batch, admission_guard=admission, decision_guard=decision,
             ))
 
-        with monkeypatch.context() as readiness_patch:
+        assert "submit" not in vars(runtime._appender)
+        with monkeypatch.context() as readiness_patch, patch.object(
+            runtime._appender, "submit", count_readiness_guards
+        ):
             readiness_patch.setattr(
                 NativeRecoveryCutSource, "collect_held", count_readiness_collect
             )
-            readiness_patch.setattr(runtime._appender, "submit", count_readiness_guards)
             try:
                 await runtime.publish_execution_accounting_readiness()
             finally:
                 assert readiness_collects == [(recovery_source, runtime)]
                 assert readiness_guards == ["admission", "decision"]
+        assert "submit" not in vars(runtime._appender)
         next_run = await runtime.start_next_execution_turn(resumed.run_id, resumed.head)
         from chiplog.composition import r14_execution_runtime
 

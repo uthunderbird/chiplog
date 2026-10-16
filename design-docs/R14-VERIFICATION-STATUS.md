@@ -1834,7 +1834,7 @@ files `test_execution_next_turn_preparation.py`, `test_resumed_next_turn_prepara
 and `test_original_continuation_witness.py`:88 passed in26.25s. The new13 cases
 exercise the real retained parser/projection, not current live admission.
 
-The complete native selector is now running once at frozen `4acbc4f` in
+The complete native selector ran once at frozen `4acbc4f` in
 `/private/tmp/chiplog-r14-cross-seal-4acbc4f`, exec handle55741. The before-input
 manifest covers1368 tracked source/test/config/harness files:
 `/private/tmp/r14-fresh-cross-seal-4acbc4f-inputs.json`. Import path was verified
@@ -1846,10 +1846,9 @@ PYTEST_ADDOPTS='' PYTEST_PLUGINS='' PYTHONPATH=/private/tmp/chiplog-r14-cross-se
 
 Stdout is `/private/tmp/r14-fresh-cross-seal-4acbc4f.out`; receipt is
 `/private/tmp/r14-fresh-cross-seal-4acbc4f-receipt.md`. Production clocks/TTLs are
-unchanged, timeout plugin disabled. Frozen inputs must remain unchanged until
-authoritative terminal, then all hashes must be rechecked. Observation expiry
-does not authorize restart. No terminal verdict yet; V1 genesis still excludes
-version-admission evidence even if this lifecycle passes.
+unchanged, timeout plugin disabled. Handle55741 is now authoritatively terminal:
+exit1,1 failed in4552.51s (1:15:52). All1368 pinned inputs were rehashed after
+terminal and matched. V1 genesis still excludes version-admission evidence.
 
 At `4acbc4f`, `.venv/bin/pytest -q tests/composition/test_r14_startup_version_admission.py --tb=short`
 reconfirmed3 failures in2.31s (stdout `/private/tmp/r14-startup-version-admission-4acbc4f-red.out`).
@@ -1858,3 +1857,51 @@ and read-ledger SQL instead of typed refusal; missing-lock startup also recreate
 the lock; fresh public startup yielded without INITIALIZE. These are executable
 admission failures, not merely missing shape coverage. The owned RED file remains
 outside the projection checkpoint and has no xfail or weakened expectation.
+
+### Two-seal observer ownership repair
+
+The 4acbc4f run passed original resolution/reduction/resume, readiness's exact
+one-collection/two-guard assertions and next-Turn publication. Turn2 capture
+passed the repaired prior-turn context projection, then stopped in
+R13Workspace.context → R12Workspace.read_batch → _check_dispatch with
+`unregistered workspace instance dispatch`. Prompt rendering, second seal and
+later reopening/substitution assertions did not run; this is not a two-seal pass.
+
+All45 failure files,1 opaque pytest-current symlink and source modes were preserved
+under700 directory `/private/tmp/r14-fresh-cross-seal-4acbc4f-preserved-failure`.
+File contents total1,159,394,854 bytes; each source/copy SHA256 and mode matched.
+Manifest: `/private/tmp/r14-fresh-cross-seal-4acbc4f-failure-files.json`.
+The first copy attempt stopped on pytest's symlink; the second preserved its
+link wire without following it and verified the already copied regular files.
+No source runtime or source SQLite connection was opened for this preservation.
+
+Root reproduced the actual guard failure with a real R12 workspace/EventAppender.
+The first fixture tried a full legacy workspace read and stopped at the unrelated
+H1 original-dashboard requirement; that was setup evidence, not the desired RED.
+The focused actual dispatch guard then gave2 failures in1.17s, covering normal
+observer exit and an exception inside its scope. pytest.MonkeyPatch restored the
+inherited submit bound method as an own instance attribute, which correctly
+violates the pinned workspace dispatch contract.
+
+MCP session2f2f569d-4302-4389-92aa-6317d7e6eab1 confirmed before observation
+`(owns_submit=False,bound_to_instance=True,class_function=True)`; at rejection
+the offending instance was EventAppender and its sole dispatch override was
+submit, still bound to the same class function. After changing only the test
+observer to unittest.mock.patch.object, the real cleanup guard passed. A
+deliberately active override by the original bound method still hit the guard
+inside pytest.raises. The same MCP session reached terminal exit1 before repair,
+then exit0 after restart, and was closed. Receipt:
+`/private/tmp/r14-observer-dispatch-probe-report.json`; debugger elapsed times are
+not latency evidence. Production guard, clocks and authority checks are unchanged.
+
+Both fast ownership cases pass, including exception cleanup; the long native
+test now asserts no own submit before and after its real readiness observer.
+The real collector and both admission/decision guards still execute through the
+observer. Full corrected two-seal execution remains pending a fresh frozen run.
+
+Command `.venv/bin/pytest -q
+tests/composition/test_r14_native_selected_accounting_source.py::test_readiness_submit_observer_restores_real_workspace_dispatch
+tests/composition/test_r14_resolved_open_prior_context.py --tb=short` gave15 passed
+in26.38s. Ruff and diff checks passed. Cold bounded plan review:
+`/private/tmp/r14-two-seal-observer-plan-review.md`; source and installed patching
+implementations were read, but the reviewer executed no tests/runtime.
