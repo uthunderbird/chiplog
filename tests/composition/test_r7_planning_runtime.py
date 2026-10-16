@@ -320,13 +320,9 @@ def test_default_pages_cross_1000_and_1001_predecessor_boundaries(tmp_path: Path
         async with open_r7_runtime(
             database, tenant_id=tenant.value, operator_secret=secret
         ) as runtime:
-            await runtime.bootstrap(
-                database_instance_id="database-1",
-                principal_id="principal-1",
-                credential_id="credential-1",
-                session_id="session-1",
-                token="bootstrap-token-1",
-            )
+            state = runtime._trust.verify()
+            assert state is not None and state.phase == "ACTIVE"
+            assert runtime._supervisor.runtime().session("planning").owner_id == "planning"
             outcome = await runtime.create(
                 principal_id="principal-1",
                 credential_id="credential-1",

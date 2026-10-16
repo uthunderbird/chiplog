@@ -1024,10 +1024,25 @@ def _read_ledger_origins(sources, corpus, occurrences, expressions):
         "ledger handoff parameter rebound",
     )
     canonical = _scope(runtime, "_open_runtime")
+    resources = _one(
+        [n for n in canonical.body
+         if isinstance(n, ast.With) and len(n.items) == 1
+         and _text(n.items[0].context_expr) == "ExitStack()"
+         and n.items[0].optional_vars is not None
+         and _text(n.items[0].optional_vars) == "resources"],
+        "canonical ledger resources frame changed",
+    )
+    startup = _one(
+        [n for n in resources.body
+         if isinstance(n, ast.With) and len(n.items) == 1
+         and _text(n.items[0].context_expr) == "startup_scope"
+         and n.items[0].optional_vars is None],
+        "canonical ledger startup frame changed",
+    )
     declaration = _one(
         [
             n
-            for n in canonical.body
+            for n in startup.body
             if isinstance(n, ast.Assign) and [_text(t) for t in n.targets] == ["read_ledger"]
         ],
         "canonical ledger constructor missing",

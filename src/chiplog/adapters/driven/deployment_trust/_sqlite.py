@@ -167,5 +167,10 @@ class SQLiteTrustMaterializer:
         )
 
     def close(self) -> None:
-        with self._lock:
+        gate = (
+            nullcontext() if self._authority_gate is None else self._authority_gate.hold_existing()
+        )
+        # Last close may checkpoint/delete WAL. Cleanup needs exclusion, not
+        # admission of the original materializer inode after a replacement.
+        with gate, self._lock:
             self._connection.close()

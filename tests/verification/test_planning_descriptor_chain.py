@@ -67,6 +67,39 @@ def test_actual_planning_reader_chain_reaches_descriptor_fragment():
     assert fragment.residual_obligations
 
 
+@pytest.mark.parametrize('old,new', [
+    ('with ExitStack() as resources:', 'with foreign() as resources:'),
+    ('with ExitStack() as resources:', 'with ExitStack() as resources, foreign():'),
+    ('with ExitStack() as resources:', 'async with ExitStack() as resources:'),
+    ('with startup_scope:', 'with foreign_scope:'),
+    ('with startup_scope:', 'with startup_scope, foreign():'),
+    ('with startup_scope:', 'with startup_scope as foreign:'),
+    ('with startup_scope:', 'async with startup_scope:'),
+])
+def test_ledger_startup_requires_exact_direct_sync_frames(old, new):
+    items = sources()
+    build_planning_descriptor_fragment(items)
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(mutate(items, RUNTIME, old, new))
+
+
+@pytest.mark.parametrize('wrapper', ['if False:', 'def later():'])
+def test_ledger_constructor_cannot_be_conditional_or_deferred(wrapper):
+    items = sources()
+    build_planning_descriptor_fragment(items)
+    text = dict(items)[RUNTIME]
+    tree = ast.parse(text)
+    declaration, = [node for node in ast.walk(tree)
+                    if isinstance(node, ast.Assign)
+                    and [ast.unparse(t) for t in node.targets] == ['read_ledger']]
+    lines = text.splitlines(keepends=True)
+    old = ''.join(lines[declaration.lineno - 1:declaration.end_lineno])
+    new = '            ' + wrapper + '\n' + ''.join(
+        '    ' + line for line in old.splitlines(keepends=True))
+    with pytest.raises(UnknownPlanningChain, match='canonical ledger constructor missing'):
+        build_planning_descriptor_fragment(mutate(items, RUNTIME, old, new))
+
+
 def test_preparation_paths_join_all_metadata_and_statement_sinks_to_private_factories():
     fragment = build_planning_descriptor_fragment(sources())
     chains = fragment.preparation_chains
@@ -559,7 +592,7 @@ def test_selected_read_ledger_origin_and_escape_mutations_refuse(path, old, new)
 @pytest.mark.parametrize(
     "path,old,new",
     [
-        (RUNTIME, "                    read_ledger,", "                    other_ledger,"),
+        (RUNTIME, "                read_ledger,", "                other_ledger,"),
         (
             RUNTIME,
             'BrokerAuthorityReader(database, "planning-database", read_ledger)',

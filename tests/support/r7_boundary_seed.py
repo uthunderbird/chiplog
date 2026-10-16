@@ -1,4 +1,4 @@
-"""Reusable, private copies of the real 1001-command R6 boundary fixture."""
+"""Reusable, private copies of the genuine 1001-command R7 authority bundle."""
 
 from __future__ import annotations
 
@@ -10,17 +10,14 @@ import os
 import platform
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 from pathlib import Path
 
 from chiplog.capabilities.planning import CreateIntentionLine
-from chiplog.composition.r6 import open_r6_runtime
+from chiplog.composition.r7_planning import open_r7_runtime
 from chiplog.domain_primitives import RecordId, TenantId
-from chiplog.platform.authority_reads import (
-    AuthorityCommitmentJournal,
-    capture_authority_storage_state,
-)
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -41,12 +38,15 @@ def _seed_key() -> str:
     return digest.hexdigest()
 
 
-def _files(directory: Path) -> dict[str, str]:
-    result = {}
+def _files(directory: Path) -> dict[str, dict[str, str | int]]:
+    result: dict[str, dict[str, str | int]] = {}
     for path in directory.iterdir():
         if path.is_symlink() or not path.is_file():
             raise ValueError("boundary snapshot must contain only ordinary files")
-        result[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        result[path.name] = {
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "mode": stat.S_IMODE(path.stat().st_mode),
+        }
     if "chiplog.sqlite3" not in result:
         raise ValueError("boundary snapshot database is missing")
     return result
@@ -96,7 +96,7 @@ def prepare_boundary_database(database: Path) -> None:
                 staging.rename(snapshot)
         expected = manifest["files"]
         for path in (snapshot / "data").iterdir():
-            shutil.copyfile(path, database.parent / path.name)
+            shutil.copy2(path, database.parent / path.name)
         if _files(database.parent) != expected:
             raise RuntimeError("boundary fixture copy differs from its recorded snapshot")
 
@@ -106,10 +106,11 @@ def _build_boundary_seed(directory: Path) -> None:
     tenant = TenantId("tenant-1")
     secret = b"boundary-secret"
 
-    async def seed_r6() -> None:
-        async with open_r6_runtime(database, operator_secret=secret) as runtime:
+    async def seed_r7() -> None:
+        async with open_r7_runtime(
+            database, tenant_id=tenant.value, operator_secret=secret
+        ) as runtime:
             await runtime.bootstrap(
-                tenant_id=tenant.value,
                 database_instance_id="database-1",
                 principal_id="principal-1",
                 credential_id="credential-1",
@@ -118,7 +119,6 @@ def _build_boundary_seed(directory: Path) -> None:
             )
             for index in range(1, 1002):
                 outcome = await runtime.create(
-                    tenant_id=tenant.value,
                     principal_id="principal-1",
                     credential_id="credential-1",
                     session_id="session-1",
@@ -132,14 +132,4 @@ def _build_boundary_seed(directory: Path) -> None:
                 )
                 assert outcome.disposition == "COMMITTED"
 
-    asyncio.run(seed_r6())
-    for suffix in (
-        ".trust-journal",
-        ".trust-journal.head",
-        ".trust-journal.key",
-        ".trust-journal.lock",
-    ):
-        database.with_suffix(database.suffix + suffix).unlink(missing_ok=True)
-    database.with_suffix(database.suffix + ".trust.sqlite3").unlink(missing_ok=True)
-    commitment, _ = capture_authority_storage_state(database)
-    AuthorityCommitmentJournal(database, secret).commit(tenant.value, commitment)
+    asyncio.run(seed_r7())

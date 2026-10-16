@@ -238,35 +238,12 @@ class BrokerTrustDurability:
         """Authenticate the complete source before exposing any historical cut."""
         sources = (*self._journal.physical_sources(), self._materializer.physical_identity())
         entries = self._journal.entries()
-        if not entries:
-            raise RuntimeError("historical trust journal is empty")
+        logical_entries = authenticate_trust_entries(entries, self._operator_secret)
         expected_all: list[bytes] = []
-        logical_entries: list[tuple[str, str | None, bytes]] = []
-        physical_predecessor: str | None = None
-        logical_predecessor: str | None = None
-        first_envelope: dict[str, object] | None = None
-        for index, (decision_id, predecessor, raw) in enumerate(entries):
-            if predecessor != physical_predecessor:
-                raise RuntimeError("historical physical predecessor differs")
-            if (
-                decision_id
-                != hashlib.sha256((predecessor or "GENESIS").encode() + b"\x00" + raw).hexdigest()
-            ):
-                raise RuntimeError("historical physical decision id differs")
-            envelope = self._strict_historical_envelope(raw)
-            if index == 0:
-                first_envelope = envelope
-            kind = envelope["kind"]
-            payload = envelope["payload"]
-            assert isinstance(kind, str)
-            assert isinstance(payload, dict)
-            self._validate_historical_payload(kind, payload)
-            unsigned = {"kind": kind, "payload": payload, "predecessor": envelope["predecessor"]}
-            if envelope["predecessor"] != logical_predecessor:
-                raise RuntimeError("historical logical predecessor differs")
-            logical_id = hashlib.sha256(
-                (logical_predecessor or "GENESIS").encode() + b"\x00" + _canonical(unsigned)
-            ).hexdigest()
+        for decision_id, _, raw in entries:
+            envelope = strict_trust_envelope(raw, self._operator_secret)
+            kind, payload = envelope["kind"], envelope["payload"]
+            assert isinstance(kind, str) and isinstance(payload, dict)
             expected = self._expected_records(decision_id, kind, payload)
             actual = tuple(
                 self._materializer.record(decision_id, ordinal) for ordinal in range(len(expected))
@@ -279,9 +256,6 @@ class BrokerTrustDurability:
                     "historical trust materialization differs from authenticated journal"
                 )
             expected_all.extend(expected)
-            logical_entries.append((logical_id, logical_predecessor, _canonical(unsigned)))
-            physical_predecessor = decision_id
-            logical_predecessor = logical_id
         if self._materializer.records() != tuple(expected_all):
             raise RuntimeError(
                 "historical trust materialization differs from authenticated journal"
@@ -290,8 +264,6 @@ class BrokerTrustDurability:
             raise RuntimeError(
                 "historical trust materialization decisions differ from authenticated journal"
             )
-        assert first_envelope is not None
-        self._verify_historical_genesis(first_envelope)
         if entries != self._journal.entries() or sources != (
             *self._journal.physical_sources(),
             self._materializer.physical_identity(),
@@ -300,32 +272,7 @@ class BrokerTrustDurability:
         return entries, tuple(logical_entries)
 
     def _strict_historical_envelope(self, raw: bytes) -> dict[str, object]:
-        try:
-            envelope = json.loads(raw)
-        except (TypeError, json.JSONDecodeError) as error:
-            raise RuntimeError("historical trust envelope is malformed") from error
-        if (
-            not isinstance(envelope, dict)
-            or set(envelope) != {"kind", "operator_authentication", "payload", "predecessor"}
-            or _canonical(envelope) != raw
-            or not isinstance(envelope["kind"], str)
-            or envelope["kind"] not in _TYPES
-            or not isinstance(envelope["payload"], dict)
-            or (
-                envelope["predecessor"] is not None and not isinstance(envelope["predecessor"], str)
-            )
-            or not isinstance(envelope["operator_authentication"], str)
-        ):
-            raise RuntimeError("historical trust envelope is incomplete")
-        unsigned = {
-            "kind": envelope["kind"],
-            "payload": envelope["payload"],
-            "predecessor": envelope["predecessor"],
-        }
-        expected = hmac.new(self._operator_secret, _canonical(unsigned), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(envelope["operator_authentication"], expected):
-            raise RuntimeError("historical trust decision authentication failed")
-        return envelope
+        return strict_trust_envelope(raw, self._operator_secret)
 
     @staticmethod
     def _validate_historical_payload(kind: str, payload: dict[str, object]) -> None:
@@ -476,19 +423,7 @@ class BrokerTrustDurability:
             raise RuntimeError("historical trust payload kind is unsupported")
 
     def _verify_historical_genesis(self, envelope: dict[str, object]) -> None:
-        if envelope["kind"] != "INITIALIZE":
-            raise RuntimeError("historical trust journal lacks INITIALIZE genesis")
-        payload = envelope["payload"]
-        assert isinstance(payload, dict)
-        binding, genesis = payload["binding"], payload["genesis"]
-        assert isinstance(binding, dict)
-        assert isinstance(genesis, dict)
-        unsigned = {key: value for key, value in binding.items() if key != "signature"}
-        expected = hmac.new(self._operator_secret, _canonical(unsigned), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(str(binding["signature"]), expected):
-            raise RuntimeError("historical trust binding authentication failed")
-        if binding["genesis_digest"] != hashlib.sha256(_canonical(genesis)).hexdigest():
-            raise RuntimeError("historical trust genesis binding mismatch")
+        verify_trust_genesis(envelope, self._operator_secret)
 
     def capture_verified_observation(self) -> FrozenTrustObservation:
         gate = self._authority_gate
@@ -1556,3 +1491,80 @@ class BrokerTrustDurability:
             if any(json.loads(raw)["kind"] == "BOOTSTRAP" for _, _, raw in entries)
             else "BOOTSTRAP_REQUIRED",
         )
+
+
+def strict_trust_envelope(raw: bytes, operator_secret: bytes) -> dict[str, object]:
+    try:
+        envelope = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError("historical trust envelope is malformed") from error
+    if (
+        not isinstance(envelope, dict)
+        or set(envelope) != {"kind", "operator_authentication", "payload", "predecessor"}
+        or _canonical(envelope) != raw
+        or not isinstance(envelope["kind"], str)
+        or envelope["kind"] not in _TYPES
+        or not isinstance(envelope["payload"], dict)
+        or (envelope["predecessor"] is not None and not isinstance(envelope["predecessor"], str))
+        or not isinstance(envelope["operator_authentication"], str)
+    ):
+        raise RuntimeError("historical trust envelope is incomplete")
+    unsigned = {
+        "kind": envelope["kind"],
+        "payload": envelope["payload"],
+        "predecessor": envelope["predecessor"],
+    }
+    expected = hmac.new(operator_secret, _canonical(unsigned), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(envelope["operator_authentication"], expected):
+        raise RuntimeError("historical trust decision authentication failed")
+    return envelope
+
+
+def verify_trust_genesis(envelope: dict[str, object], operator_secret: bytes) -> None:
+    if envelope["kind"] != "INITIALIZE":
+        raise RuntimeError("historical trust journal lacks INITIALIZE genesis")
+    payload = envelope["payload"]
+    assert isinstance(payload, dict)
+    binding, genesis = payload["binding"], payload["genesis"]
+    assert isinstance(binding, dict)
+    assert isinstance(genesis, dict)
+    unsigned = {key: value for key, value in binding.items() if key != "signature"}
+    expected = hmac.new(operator_secret, _canonical(unsigned), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(str(binding["signature"]), expected):
+        raise RuntimeError("historical trust binding authentication failed")
+    if binding["genesis_digest"] != hashlib.sha256(_canonical(genesis)).hexdigest():
+        raise RuntimeError("historical trust genesis binding mismatch")
+
+
+def authenticate_trust_entries(
+    entries: tuple[tuple[str, str | None, bytes], ...], operator_secret: bytes
+) -> tuple[tuple[str, str | None, bytes], ...]:
+    """Pure frozen producer decoding, physical/logical chains and genesis authentication."""
+    if not entries:
+        raise RuntimeError("historical trust journal is empty")
+    logical_entries: list[tuple[str, str | None, bytes]] = []
+    physical_predecessor: str | None = None
+    logical_predecessor: str | None = None
+    for index, (decision_id, predecessor, raw) in enumerate(entries):
+        if predecessor != physical_predecessor:
+            raise RuntimeError(f"decision={decision_id}: historical physical predecessor differs")
+        if (
+            decision_id
+            != hashlib.sha256((predecessor or "GENESIS").encode() + b"\x00" + raw).hexdigest()
+        ):
+            raise RuntimeError(f"decision={decision_id}: historical physical decision id differs")
+        envelope = strict_trust_envelope(raw, operator_secret)
+        kind, payload = envelope["kind"], envelope["payload"]
+        assert isinstance(kind, str) and isinstance(payload, dict)
+        BrokerTrustDurability._validate_historical_payload(kind, payload)
+        if index == 0:
+            verify_trust_genesis(envelope, operator_secret)
+        if envelope["predecessor"] != logical_predecessor:
+            raise RuntimeError(f"decision={decision_id}: historical logical predecessor differs")
+        unsigned = {"kind": kind, "payload": payload, "predecessor": envelope["predecessor"]}
+        logical_id = hashlib.sha256(
+            (logical_predecessor or "GENESIS").encode() + b"\x00" + _canonical(unsigned)
+        ).hexdigest()
+        logical_entries.append((logical_id, logical_predecessor, _canonical(unsigned)))
+        physical_predecessor, logical_predecessor = decision_id, logical_id
+    return tuple(logical_entries)

@@ -1,6 +1,6 @@
 # R14.6 durable-version admission preparation
 
-Status: **context/contracts only; startup gate and mounted evidence HOLD**.
+Status: **mounted trust-prefix consistency; complete version admission HOLD**.
 This is the existing per-slice requirement in `R14-REMAINING-ROADMAP.md`, not a
 migration capability or permission to recreate user data.
 
@@ -26,10 +26,11 @@ Actual current code:
 * `platform/_sqlite.py::_admit` checks physical table/column/schema structure,
   `store_metadata.store_version`, and registered persisted record owner/schema.
   This is necessary physical admission, not the six-member startup gate.
-* `composition/r7_planning.py::_open_runtime` constructs trust journal/materializer,
-  planning store, read ledger and supervisor before store admission and trust
-  recovery. The version check must precede those mutating constructors and replay.
-  Read-only authority validation primitives remain necessary to authenticate it.
+* `composition/r7_planning.py::_open_runtime` now inspects an existing bundle's
+  authenticated trust journal and exact materialization prefix before trust,
+  planning, ledger and supervisor constructors, under the existing authority gate.
+  This consistency check does not compare the complete running version tuple;
+  unsupported-version refusal and fresh V2 initialization remain unimplemented.
 * The current INITIALIZE companion set in `deployment_trust/_records.py` is
   tenant decision, current database state, database genesis, deployment tenant
   binding and tenant registry entry. A tuple label cannot substitute for exact
@@ -49,8 +50,9 @@ unregistered integer in a DTO is not policy registration.
 
 ## Requirement-to-evidence map
 
-All runtime evidence below is **HOLD** until executed. Planned tests live in
-`tests/composition/test_r14_startup_version_admission.py`; this is a future path.
+Complete-version runtime evidence below remains **HOLD**. Executable RED controls
+live in `tests/composition/test_r14_startup_version_admission.py`; bounded
+trust-prefix evidence lives in `tests/composition/test_r14_startup_trust_prefix.py`.
 
 | Claim | Owned decision/data | Independent observable | Forbidden substitute | Boundary fixture / planned evidence |
 |---|---|---|---|---|
@@ -914,3 +916,45 @@ passed 53 tests in 1.46s. The last-close witness additionally reopens independen
 and checks the committed row after actual WAL cleanup (1 passed in 0.06s).
 Scoped Ruff passes. Other source-connection lifecycle paths, complete startup
 admission, CURRENT and the three public startup REDs remain open.
+
+Mounted trust-prefix refusal RED (2026-10-16): the preserved authentic legacy
+fixture has two materialized decisions, each with five records. The owned
+`test_incomplete_trust_companions_refuse_before_startup_constructors` removes only
+INITIALIZE ordinal 4 in its private test fixture, leaving the authenticated
+journal/signatures unchanged. Command
+`.venv/bin/python -m pytest -q -p no:timeout tests/composition/test_r14_startup_version_admission.py::test_incomplete_trust_companions_refuse_before_startup_constructors --tb=short`
+failed once in 0.44s: refusal occurred after genuine journal, trust materializer
+and supervisor constructors. The earlier three version/fresh/no-lock RED cases
+were retained separately; the partial-batch control now lives in
+`test_r14_startup_trust_prefix.py`. The mounted implementation rejects partial
+batches before those effects, while preserving recovery of whole missing trust
+materialization and complete decision prefixes. MAIN/TRUST acquisition uses private
+WAL copies, retained source descriptors and final source rechecks. The entire
+physical/logical/operator-authenticated journal suffix is checked; both trust tables
+are enumerated for exact record bytes, ordinal/order and decision digest equality.
+The existing gate remains held through constructors and store_setup, then releases
+before asynchronous appender work. Successful resources are registered with
+ExitStack for cleanup if a later constructor fails. Trust materializer close now
+also uses the existing gate, without provisioning or an ungated fallback.
+
+Root command
+`.venv/bin/python -m pytest -q -p no:timeout tests/composition/test_r7_planning_runtime.py tests/platform/test_h1_historical_trust_reader.py tests/composition/test_r14_legacy_genesis_fixture.py tests/composition/test_r14_startup_trust_prefix.py tests/platform/test_readonly_sqlite_snapshot.py tests/platform/test_deployment_authority_gate.py tests/tooling/test_boundary_seed_cache.py --tb=short`
+passed 75 tests in 22.42s. These include authenticated historical V1 interpretation,
+missing/partial/extra/foreign trust contents, source mutation at the observation cut,
+recovery/reopen and constructor exclusion. Later negatives are not historical RED.
+
+The old R7 boundary seed intentionally stripped trust roots and synthesized an
+anchor. It now uses the genuine R7 producer and retains roots; copy2 and the cache
+manifest preserve and verify protected file modes. The mode regression first
+failed (0644 instead of 0600), then the four cache tests passed in 0.65s. The
+boundary test observes the seeded ACTIVE owner instead of attempting a forbidden
+second bootstrap. Its unchanged create-1002/render-5010 checks passed in 169.70s
+(command: `.venv/bin/python -m pytest -q -p no:timeout tests/composition/test_r7_planning_runtime.py::test_default_pages_cross_1000_and_1001_predecessor_boundaries --tb=short`;
+terminal output: `/private/tmp/r14-r7-current-boundary-reopen.out`).
+
+Current complete-version controls were rerun with
+`.venv/bin/python -m pytest -q -p no:timeout tests/composition/test_r14_startup_version_admission.py --tb=short`:
+2 failed, 1 passed in 0.68s. Missing authority lock refuses without constructors;
+authentic legacy V1 still enters runtime rather than UnsupportedSchemaVersion, and
+fresh startup still yields without INITIALIZE. No complete version gate, approved
+registry/descriptor, CURRENT or V2 initializer is claimed by this consistency slice.

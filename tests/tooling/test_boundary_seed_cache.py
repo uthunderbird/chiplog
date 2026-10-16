@@ -11,6 +11,35 @@ import pytest
 from tests.support import r7_boundary_seed as seed
 
 
+def test_protected_modes_survive_copy_and_corrupt_cached_modes_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHIPLOG_BOUNDARY_SEED_CACHE", str(tmp_path / "cache"))
+    monkeypatch.delenv("CHIPLOG_FRESH_BOUNDARY_SEED", raising=False)
+    monkeypatch.setattr(seed, "_seed_key", lambda: "protected-modes")
+    calls = []
+
+    def build(directory: Path) -> None:
+        calls.append(directory)
+        (directory / "chiplog.sqlite3").write_bytes(b"fixture database")
+        key = directory / "chiplog.sqlite3.trust-journal.key"
+        key.write_bytes(b"fixture key")
+        key.chmod(0o600)
+
+    monkeypatch.setattr(seed, "_build_boundary_seed", build)
+    for number in (1, 2):
+        target = tmp_path / str(number)
+        target.mkdir()
+        seed.prepare_boundary_database(target / "chiplog.sqlite3")
+        assert (target / "chiplog.sqlite3.trust-journal.key").stat().st_mode & 0o777 == 0o600
+        if number == 1:
+            cached_key = next(
+                (tmp_path / "cache").glob("*/snapshot/data/chiplog.sqlite3.trust-journal.key")
+            )
+            cached_key.chmod(0o644)
+    assert len(calls) == 2
+
+
 def test_copies_are_private_and_corrupt_or_outdated_cache_is_rebuilt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

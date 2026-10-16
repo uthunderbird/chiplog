@@ -225,3 +225,87 @@ def test_replaced_authority_lock_after_lost_ack_is_indeterminate(
         assert len(entries) == 2
         assert b'"kind":"HANDOFF"' in entries[-1][2]
         assert f'"payload":"{PAYLOAD.hex()}"'.encode() in entries[-1][2]
+
+
+def test_trust_wal_last_close_holds_existing_authority_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import closing
+
+    from chiplog.adapters.driven.deployment_trust import SQLiteTrustMaterializer
+
+    authority = AuthorityGate.for_database(tmp_path / "main.sqlite3")
+    database = tmp_path / "main.sqlite3.trust.sqlite3"
+    observed: list[str] = []
+    original = sqlite3.connect
+
+    class RealConnection(sqlite3.Connection):
+        def close(self) -> None:
+            authority.require_held()
+            observed.append("before")
+            super().close()
+            authority.require_held()
+            observed.append("after")
+
+    def connect(*args, **kwargs):
+        return original(*args, factory=RealConnection, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    store = SQLiteTrustMaterializer.for_authority_bundle(database, authority_gate=authority)
+    with authority.hold_existing():
+        assert store._connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        store._connection.execute("PRAGMA wal_autocheckpoint=0")
+    store.materialize("decision", (b"durable-record",))
+    wal = Path(str(database) + "-wal")
+    assert wal.stat().st_size > 0
+    store.close()
+    assert observed == ["before", "after"]
+    assert not wal.exists()
+    with closing(original(database)) as connection:
+        assert connection.execute("SELECT canonical_bytes FROM trust_records").fetchall() == [
+            (b"durable-record",)
+        ]
+
+
+def test_trust_close_missing_lock_refuses_without_close_and_can_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from chiplog.adapters.driven.deployment_trust import SQLiteTrustMaterializer
+    from chiplog.platform.authority_gate import AuthorityGateError
+
+    authority = AuthorityGate.for_database(tmp_path / "main.sqlite3")
+    database = tmp_path / "trust.sqlite3"
+    closed = []
+    original = sqlite3.connect
+
+    class RealConnection(sqlite3.Connection):
+        def close(self) -> None:
+            closed.append(True)
+            super().close()
+
+    def connect(*args, **kwargs):
+        return original(*args, factory=RealConnection, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    store = SQLiteTrustMaterializer.for_authority_bundle(database, authority_gate=authority)
+    saved_lock = authority.path.with_suffix(".saved")
+    authority.path.rename(saved_lock)
+    with pytest.raises(AuthorityGateError):
+        store.close()
+    assert closed == []
+    assert not authority.path.exists()
+    saved_lock.rename(authority.path)
+    # Cleanup intentionally does not require the original materializer inode.
+    _replace(database)
+    store.close()
+    store.close()
+    assert closed == [True, True]
+
+
+def test_unbound_trust_close_keeps_original_behavior(tmp_path: Path) -> None:
+    from chiplog.adapters.driven.deployment_trust import SQLiteTrustMaterializer
+
+    store = SQLiteTrustMaterializer(tmp_path / "trust.sqlite3")
+    store.close()
+    store.close()
+    assert not (tmp_path / "trust.sqlite3.authority.lock").exists()

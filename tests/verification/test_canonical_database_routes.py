@@ -37,6 +37,35 @@ def test_actual_canonical_constructor_routes_remain_distinct_and_unresolved():
         observed.require_closed()
 
 
+@pytest.mark.parametrize("old,new", [
+    ("with ExitStack() as resources:", "with foreign() as resources:"),
+    ("with ExitStack() as resources:", "with ExitStack() as resources, foreign():"),
+    ("with ExitStack() as resources:", "async with ExitStack() as resources:"),
+    ("with startup_scope:", "with foreign_scope:"),
+    ("with startup_scope:", "with startup_scope, foreign():"),
+    ("with startup_scope:", "with startup_scope as foreign:"),
+    ("with startup_scope:", "async with startup_scope:"),
+    ("store = resources.enter_context(factory(database, **materializer_kwargs))",
+     "store = foreign.enter_context(factory(database, **materializer_kwargs))"),
+    ("store = resources.enter_context(factory(database, **materializer_kwargs))",
+     "store = resources.enter_context(factory(database, **materializer_kwargs), foreign)"),
+    ("store = resources.enter_context(factory(database, **materializer_kwargs))",
+     "store = alias = resources.enter_context(factory(database, **materializer_kwargs))"),
+    ("            store = resources.enter_context(factory(database, **materializer_kwargs))",
+     "            if False:\n"
+     "                store = resources.enter_context(factory(database, **materializer_kwargs))"),
+    ("            planning_store = ProductionPlanningStore(database)",
+     "            def later():\n"
+     "                planning_store = ProductionPlanningStore(database)"),
+])
+def test_startup_frames_and_direct_context_entry_cannot_be_substituted(old, new):
+    source, leaf = _sources()
+    extract_canonical_database_routes(source, leaf)
+    changed = _replace(source, old, new)
+    with pytest.raises(UnknownDatabaseRoute):
+        extract_canonical_database_routes(changed, leaf)
+
+
 def test_main_path_substitution_is_observed_before_domain_comparison():
     source, leaf = _sources()
     changed = _replace(source, "planning_store = ProductionPlanningStore(database)",
@@ -77,20 +106,20 @@ def test_unrecognized_path_expression_is_unknown_not_main(replacement):
 def test_non_dominating_rebound_or_unknown_producer_has_no_route_proof(mutation):
     source, leaf = _sources()
     if mutation == "rebind":
-        changed = _replace(source, "    planning_store = ProductionPlanningStore(database)",
-                           "    database = other_database\n"
-                           "    planning_store = ProductionPlanningStore(database)")
+        changed = _replace(source, "            planning_store = ProductionPlanningStore(database)",
+                           "            database = other_database\n"
+                           "            planning_store = ProductionPlanningStore(database)")
     elif mutation == "conditional":
-        changed = _replace(source, "    planning_store = ProductionPlanningStore(database)",
-                           "    if manifest:\n"
-                           "        planning_store = ProductionPlanningStore(database)")
+        changed = _replace(source, "            planning_store = ProductionPlanningStore(database)",
+                           "            if manifest:\n"
+                           "                planning_store = ProductionPlanningStore(database)")
     elif mutation == "foreign_import":
         changed = _replace(source,
             "from chiplog.platform.r7_leaves import ProductionClock, ProductionPlanningStore",
             "from somewhere_else import ProductionClock, ProductionPlanningStore")
     else:
-        changed = _replace(source, "        else SQLiteMaterializer\n",
-                           "        else OtherMaterializer\n")
+        changed = _replace(source, "                else SQLiteMaterializer\n",
+                           "                else OtherMaterializer\n")
     with pytest.raises(UnknownDatabaseRoute):
         extract_canonical_database_routes(changed, leaf)
 
@@ -111,9 +140,9 @@ def test_leaf_constructor_must_really_forward_its_path_parameter():
 def test_imported_constructor_name_cannot_be_shadowed(placement):
     source, leaf = _sources()
     if placement == "local":
-        changed = _replace(source, "    planning_store = ProductionPlanningStore(database)",
-                           "    ProductionPlanningStore = OtherStore\n"
-                           "    planning_store = ProductionPlanningStore(database)")
+        changed = _replace(source, "            planning_store = ProductionPlanningStore(database)",
+                           "            ProductionPlanningStore = OtherStore\n"
+                           "            planning_store = ProductionPlanningStore(database)")
     elif placement == "module":
         changed = source + "\nProductionPlanningStore = OtherStore\n"
     else:
@@ -146,8 +175,8 @@ def test_leaf_module_cannot_rebind_the_inspected_class_before_import(replacement
 def test_nested_function_database_parameter_is_not_the_canonical_database():
     source, leaf = _sources()
     changed = _replace(source,
-        "        with factory(database, **materializer_kwargs) as store:",
-        "        with other_factory(database, **materializer_kwargs) as store:")
+        "            store = resources.enter_context(factory(database, **materializer_kwargs))",
+        "            store = resources.enter_context(other_factory(database, **materializer_kwargs))")
     changed = _replace(changed, "    runtime: R7PlanningRuntime | None = None\n",
         "    def unused(database):\n"
         "        with factory(database, **materializer_kwargs):\n"
@@ -162,8 +191,8 @@ def test_missing_duplicate_or_unknown_consumer_route_refuses(mutation):
     source, leaf = _sources()
     if mutation == "missing":
         changed = _replace(source,
-            "with factory(database, **materializer_kwargs) as store:",
-            "with other_factory(database, **materializer_kwargs) as store:")
+            "store = resources.enter_context(factory(database, **materializer_kwargs))",
+            "store = resources.enter_context(other_factory(database, **materializer_kwargs))")
     elif mutation == "duplicate":
         changed = _replace(source, "    runtime: R7PlanningRuntime | None = None\n",
             "    extra = factory(database, **materializer_kwargs)\n"

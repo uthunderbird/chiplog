@@ -15,7 +15,7 @@ from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 from chiplog.platform.authority_gate import (
     AuthorityGate,
@@ -90,7 +90,7 @@ def _present(path: Path) -> bool:
 
 @contextmanager
 def readonly_authority_sql_snapshot(
-    database: Path, *, authority_gate: AuthorityGate
+    database: Path, *, authority_gate: AuthorityGate, role: Literal["MAIN", "TRUST"] = "MAIN"
 ) -> Iterator[sqlite3.Connection]:
     """Yield a private active read transaction; refuse changes at both cuts.
 
@@ -104,7 +104,12 @@ def readonly_authority_sql_snapshot(
     journal = Path(str(database) + "-journal")
     with ExitStack() as stack:
         try:
-            if database != authority_gate.database:
+            canonical = authority_gate.database
+            if role == "TRUST":
+                canonical = canonical.with_suffix(canonical.suffix + ".trust.sqlite3")
+            elif role != "MAIN":
+                raise AuthorityGateError("unsupported canonical SQL role")
+            if database != canonical:
                 raise AuthorityGateError("database does not match canonical gate binding")
             authority_gate.require_held()
             if _present(journal):

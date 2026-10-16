@@ -21,13 +21,15 @@ def _files(directory: Path):
     }
 
 
+@pytest.mark.parametrize("role", ["MAIN", "TRUST"])
 def test_existing_only_copy_reads_committed_wal_without_source_sqlite_or_sidecar_writes(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, role
 ):
     producer = tmp_path / "producer.sqlite"
     source_directory = tmp_path / "source"
     source_directory.mkdir()
-    database = source_directory / "authority.sqlite"
+    main = source_directory / "authority.sqlite"
+    database = main if role == "MAIN" else main.with_suffix(main.suffix + ".trust.sqlite3")
     with closing(sqlite3.connect(producer, isolation_level=None)) as writer:
         assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
         writer.execute("PRAGMA wal_autocheckpoint=0")
@@ -46,7 +48,7 @@ def test_existing_only_copy_reads_committed_wal_without_source_sqlite_or_sidecar
     with closing(sqlite3.connect(control)) as connection:
         assert connection.execute("SELECT name FROM sqlite_master").fetchall() == []
 
-    gate = AuthorityGate.for_database(database)
+    gate = AuthorityGate.for_database(main)
     with gate.hold():
         pass  # Fixture provisioning ends before the observed existing-only operation.
     before = _files(source_directory)
@@ -62,7 +64,7 @@ def test_existing_only_copy_reads_committed_wal_without_source_sqlite_or_sidecar
 
     with (
         gate.hold_existing(),
-        readonly_authority_sql_snapshot(database, authority_gate=gate) as connection,
+        readonly_authority_sql_snapshot(database, authority_gate=gate, role=role) as connection,
     ):
         assert connection.execute("SELECT * FROM store_metadata").fetchall() == [(1, 1)]
         assert connection.in_transaction
@@ -296,3 +298,39 @@ def test_same_inode_content_mutation_during_copy_refuses(tmp_path, monkeypatch):
         snapshot.readonly_authority_sql_snapshot(database, authority_gate=gate),
     ):
         pytest.fail("mutated source yielded")
+
+
+def test_trust_role_is_limited_to_exact_companion_of_matching_gate(tmp_path):
+    from chiplog.platform.readonly_sqlite_snapshot import (
+        AuthoritySQLSnapshotIntegrityError,
+        readonly_authority_sql_snapshot,
+    )
+
+    database, gate = _clean_source(tmp_path)
+    trust = database.with_suffix(database.suffix + ".trust.sqlite3")
+    with closing(sqlite3.connect(trust)) as connection:
+        connection.execute("CREATE TABLE trust_sentinel(value)")
+    before = _files(database.parent)
+    with gate.hold_existing():
+        with readonly_authority_sql_snapshot(trust, authority_gate=gate, role="TRUST") as private:
+            assert private.execute("SELECT * FROM trust_sentinel").fetchall() == []
+        for wrong in (database, database.parent / "other.trust.sqlite3"):
+            with (
+                pytest.raises(AuthoritySQLSnapshotIntegrityError),
+                readonly_authority_sql_snapshot(wrong, authority_gate=gate, role="TRUST"),
+            ):
+                pytest.fail("wrong trust path yielded")
+        with (
+            pytest.raises(AuthoritySQLSnapshotIntegrityError),
+            readonly_authority_sql_snapshot(trust, authority_gate=gate),
+        ):
+            pytest.fail("TRUST accepted as MAIN")
+    other = AuthorityGate.for_database(database.parent / "other.sqlite")
+    with (
+        other.hold(),
+        pytest.raises(AuthoritySQLSnapshotIntegrityError),
+        readonly_authority_sql_snapshot(trust, authority_gate=other, role="TRUST"),
+    ):
+        pytest.fail("wrong gate yielded")
+    other.path.unlink()
+    assert _files(database.parent) == before

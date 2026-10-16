@@ -11,7 +11,7 @@ import secrets
 import sqlite3
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import asynccontextmanager, closing
+from contextlib import ExitStack, asynccontextmanager, closing, nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
@@ -70,6 +70,10 @@ from chiplog.platform.r7_leaves import ProductionClock, ProductionPlanningStore
 from chiplog.platform.r7_trust import TrustOwnerCall, TrustOwnerResult, encode_trust_journal
 from chiplog.platform.r7_trust_durability import BrokerTrustDurability, FrozenTrustObservation
 from chiplog.platform.read_ledger import BrokerReadLedger, BrokerReadState, ReadOperation
+from chiplog.platform.startup_trust_prefix import (
+    has_existing_bundle,
+    inspect_startup_trust_prefix,
+)
 
 from .r7_supervisor import R4RuntimeAdmission, R7RuntimeSupervisor
 
@@ -1013,78 +1017,90 @@ async def _open_runtime(
     # This must run before any runtime-owned sidecar constructor.  Installed
     # mounts use it to deny an absent/foreign evidence role without repair.
     preflight_result = preflight(authority_gate) if preflight is not None else None
-    journal = IndependentTenantDecisionJournal.for_authority_bundle(
-        database.with_suffix(database.suffix + ".trust-journal"), authority_gate=authority_gate
-    )
-    trust_store = SQLiteTrustMaterializer.for_authority_bundle(
-        database.with_suffix(database.suffix + ".trust.sqlite3"), authority_gate=authority_gate
-    )
-    trust = BrokerTrustDurability(journal, trust_store, operator_secret)
-    planning_store = ProductionPlanningStore(database)
-    read_ledger = BrokerReadLedger(
-        database.with_suffix(database.suffix + ".reads.sqlite3"), authority_gate=authority_gate
-    )
-    supervisor = R7RuntimeSupervisor(
-        tenant_id,
-        database.with_suffix(database.suffix + ".broker.sqlite3"),
-        manifest,
-        R4RuntimeAdmission(trust, journal),
-        {"clock": ProductionClock(), "planning_store": planning_store, **(extra_leaves or {})},
-        authority_gate=authority_gate,
-        read_ledger=read_ledger,
-        trust=trust,
-        execution_identity=execution_identity,
-        source_root=source_root if execution_identity is not None else None,
-    )
-    materializer_kwargs = {
-        "record_contracts": runtime_type._record_contracts,
-        "authority_gate": authority_gate,
-        "record_schema_variants": runtime_type._record_schema_variants,
-        "derivative_contracts": runtime_type._derivative_contracts,
-        "managed_derivative_sinks": runtime_type._derivative_contracts,
-    }
-    factory: Any = (
-        SQLiteMaterializer._open_for_broker_bootstrap
-        if runtime_type._checkpoint_bundle_admission
-        else SQLiteMaterializer
-    )
     runtime: R7PlanningRuntime | None = None
-    try:
-        with factory(database, **materializer_kwargs) as store:
+    with ExitStack() as resources:
+        existing = has_existing_bundle(authority_gate)
+        startup_scope = authority_gate.hold_existing() if existing else nullcontext()
+        with startup_scope:
+            if existing:
+                inspect_startup_trust_prefix(
+                    authority_gate, tenant_id=tenant_id, operator_secret=operator_secret
+                )
+            journal = IndependentTenantDecisionJournal.for_authority_bundle(
+                database.with_suffix(database.suffix + ".trust-journal"),
+                authority_gate=authority_gate,
+            )
+            trust_store = SQLiteTrustMaterializer.for_authority_bundle(
+                database.with_suffix(database.suffix + ".trust.sqlite3"),
+                authority_gate=authority_gate,
+            )
+            resources.callback(trust_store.close)
+            trust = BrokerTrustDurability(journal, trust_store, operator_secret)
+            planning_store = ProductionPlanningStore(database)
+            read_ledger = BrokerReadLedger(
+                database.with_suffix(database.suffix + ".reads.sqlite3"),
+                authority_gate=authority_gate,
+            )
+            supervisor = R7RuntimeSupervisor(
+                tenant_id,
+                database.with_suffix(database.suffix + ".broker.sqlite3"),
+                manifest,
+                R4RuntimeAdmission(trust, journal),
+                {
+                    "clock": ProductionClock(),
+                    "planning_store": planning_store,
+                    **(extra_leaves or {}),
+                },
+                authority_gate=authority_gate,
+                read_ledger=read_ledger,
+                trust=trust,
+                execution_identity=execution_identity,
+                source_root=source_root if execution_identity is not None else None,
+            )
+            resources.callback(
+                lambda: runtime.close() if runtime is not None else supervisor.close()
+            )
+            materializer_kwargs = {
+                "record_contracts": runtime_type._record_contracts,
+                "authority_gate": authority_gate,
+                "record_schema_variants": runtime_type._record_schema_variants,
+                "derivative_contracts": runtime_type._derivative_contracts,
+                "managed_derivative_sinks": runtime_type._derivative_contracts,
+            }
+            factory: Any = (
+                SQLiteMaterializer._open_for_broker_bootstrap
+                if runtime_type._checkpoint_bundle_admission
+                else SQLiteMaterializer
+            )
+            store = resources.enter_context(factory(database, **materializer_kwargs))
             if store_setup is not None:
                 store_setup(store, authority_gate, preflight_result)
-            async with EventAppender(store, capacity=4) as appender:
-                commitment_journal = AuthorityCommitmentJournal(
-                    database, operator_secret, authority_gate=authority_gate
+        async with EventAppender(store, capacity=4) as appender:
+            commitment_journal = AuthorityCommitmentJournal(
+                database, operator_secret, authority_gate=authority_gate
+            )
+            runtime = runtime_type(
+                tenant_id,
+                trust,
+                journal,
+                planning_store.path or database,
+                read_ledger,
+                commitment_journal,
+                appender,
+                supervisor,
+            )
+            runtime._bind_appender()
+            if runtime_setup is not None:
+                runtime_setup(runtime)
+            trust.recover_materialization()
+            trust_state = trust.verify()
+            if trust_state is not None and trust_state.phase == "ACTIVE":
+                await appender.advance_fence(
+                    FenceAdvanceCommand(tenant_id, _FENCE, 0, allow_exact_replay=True)
                 )
-                runtime = runtime_type(
-                    tenant_id,
-                    trust,
-                    journal,
-                    planning_store.path or database,
-                    read_ledger,
-                    commitment_journal,
-                    appender,
-                    supervisor,
-                )
-                runtime._bind_appender()
-                if runtime_setup is not None:
-                    runtime_setup(runtime)
-                trust.recover_materialization()
-                trust_state = trust.verify()
-                if trust_state is not None and trust_state.phase == "ACTIVE":
-                    await appender.advance_fence(
-                        FenceAdvanceCommand(tenant_id, _FENCE, 0, allow_exact_replay=True)
-                    )
-                    await runtime._prepare_startup()
-                    runtime.restart_generation()
-                yield runtime
-    finally:
-        if runtime is not None:
-            runtime.close()
-        else:
-            supervisor.close()
-        trust_store.close()
+                await runtime._prepare_startup()
+                runtime.restart_generation()
+            yield runtime
 
 
 __all__ = ["R7PlanningRuntime", "open_r7_runtime"]

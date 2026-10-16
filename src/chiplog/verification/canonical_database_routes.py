@@ -39,9 +39,25 @@ def extract_canonical_database_routes(
         raise UnknownDatabaseRoute("expected one canonical opener")
     method, = methods
     parents = {child: node for node in ast.walk(method) for child in ast.iter_child_nodes(node)}
+    resources_frames = [node for node in method.body
+                        if isinstance(node, ast.With) and len(node.items) == 1
+                        and ast.unparse(node.items[0].context_expr) == "ExitStack()"
+                        and node.items[0].optional_vars is not None
+                        and ast.unparse(node.items[0].optional_vars) == "resources"]
+    if len(resources_frames) != 1:
+        raise UnknownDatabaseRoute("unknown resources frame")
+    resources, = resources_frames
+    startup_frames = [node for node in resources.body
+                      if isinstance(node, ast.With) and len(node.items) == 1
+                      and ast.unparse(node.items[0].context_expr) == "startup_scope"
+                      and node.items[0].optional_vars is None]
+    if len(startup_frames) != 1:
+        raise UnknownDatabaseRoute("unknown startup frame")
+    startup, = startup_frames
 
     def definition(name: str) -> ast.Assign | ast.AnnAssign:
-        definitions = [node for node in method.body if (
+        body = method.body if name in {"authority_gate", "database"} else startup.body
+        definitions = [node for node in body if (
             isinstance(node, ast.Assign) and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name
         ) or (
@@ -110,8 +126,13 @@ def extract_canonical_database_routes(
         raise UnknownDatabaseRoute("materializer does not receive the selected gate")
     materializer = _one_call(method, "factory")
     _call(materializer, "factory", 1)
+    enter_context = parents.get(materializer)
+    store = definition("store")
     if (
-        not isinstance(parents.get(materializer), ast.withitem)
+        not isinstance(enter_context, ast.Call)
+        or ast.unparse(enter_context.func) != "resources.enter_context"
+        or enter_context.args != [materializer] or enter_context.keywords
+        or store.value is not enter_context
         or factory.lineno >= materializer.lineno or kwargs.lineno >= materializer.lineno
         or canonical.lineno >= materializer.lineno
         or len(materializer.keywords) != 1 or materializer.keywords[0].arg is not None

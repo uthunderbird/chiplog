@@ -6,6 +6,46 @@ This is an evidence ledger, not a replacement acceptance boundary.
 
 ## Current R14.6 audit
 
+Latest accepted-OPEN two-seal repeat (2026-10-16): **FAILED**, not a live job.
+Command `.venv/bin/python /private/tmp/r14-phase-timing-631/driver.py` ran the
+original `test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator`
+on frozen c22afb0 sources with pytest timeouts disabled and unchanged production
+clocks/TTLs: one failure in 2910.46s. Diagnostic status is valid with no faults;
+all 1541 frozen tracked inputs and both observer/driver hashes/modes rechecked
+with zero mismatches. Second preview took 39.247s, second accept succeeded in
+59.381s, and second authorize refused in 3.135s at `require_dispatch_scope`.
+Inclusive observer seams overlap; they cannot be summed as exclusive attribution.
+
+Retained owner SELECTED line 21 contains the same mandate in command and snapshot:
+not-before 1441003441845000, expiry 1441063441845000, observed capture
+1441071422994416. The 60-second horizon was exceeded by 7981149416ns. This is a
+sufficient failing operand, not proof that every other predicate passed. Evidence
+was preserved without replay or cryptographic reauthentication: 45 regular files,
+1576151779 bytes, no symlinks, matching source-before/source-after/copy hashes and
+modes. Receipt `/private/tmp/r14-timed-c22afb0-receipt.md` and adjacent extraction,
+source-recheck and failure-files manifests record commands and exact identities.
+
+Inert probes against the frozen source and extracted 33,583,204-byte preview
+refute two proposed dominant single-component explanations: native outer parsing
+took 0.014238s and the complete outer roundtrip approximately 0.091s; selected
+fanout envelope computation took 0.020695s cold and approximately 1 microsecond
+warm. Its input/output pair is 1,383,080 bytes, inside the existing 4MiB limit.
+Normative-generation computation took 0.023013s. These are component witnesses,
+not whole-phase attribution. Reports `/private/tmp/r14-timed-c22afb0-preview-stage-cost.json`,
+`/private/tmp/r14-timed-c22afb0-preview-fanout-cost.json` and
+`/private/tmp/r14-timed-c22afb0-preview-pure-cluster-cost.json` preserve exact
+measurements. Runtime/history/resource-validation repetition remains to diagnose.
+
+The existing `orjson` pending decoder was independently verified with
+`.venv/bin/python -m pytest -q -p no:timeout tests/composition/test_pure_history_reuse.py tests/composition/test_call_history_witness_mounted.py::test_public_accept_seeds_exact_history_cache_and_main_commitment_change_misses --tb=short`:
+3 passed in 11.47s. MCP logpoints observed exactly seven pure-compute entries in
+the bounded cache test and exactly 20 native decoder entries for 20 journal rows.
+The mounted debugger test passed in 11.93s with `subProcess=False`; its earlier
+default-child-debugging launch failed at the owner's five-second startup wait,
+before reaching the decoder. Both sessions were closed. Disabling pure reuse in
+a process-local negative control makes the exact-count assertion fail; no source
+or production clocks were changed by these probes.
+
 | Requirement | Existing evidence or candidate check | Current conclusion / next action |
 | --- | --- | --- |
 | Mixed accepted/cancelled seal and per-seal V3 | `test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once` | Existing mounted baseline; retain, then verify current integrated tree. |
