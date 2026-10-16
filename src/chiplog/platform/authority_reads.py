@@ -263,18 +263,22 @@ def _file_wal_observation(path: Path) -> str:
 
 def _schema_members(connection: sqlite3.Connection) -> tuple[tuple[str, tuple[str, ...]], ...]:
     rows = connection.execute(
-        "SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' "
+        "SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' "
         "ORDER BY name"
     ).fetchall()
+    if tuple(row[0] for row in rows) != tuple(member.table for member in AUTHORITY_STORAGE_MEMBERS):
+        raise ValueError("authority storage tables differ from registered schema")
     return tuple(
         (
-            str(row[0]),
+            member.table,
             tuple(
                 str(column[1])
-                for column in connection.execute(f'PRAGMA main.table_info("{row[0]}")').fetchall()
+                for column in connection.execute(
+                    f'PRAGMA main.table_info("{member.table}")'
+                ).fetchall()
             ),
         )
-        for row in rows
+        for member in AUTHORITY_STORAGE_MEMBERS
     )
 
 
@@ -366,7 +370,12 @@ class BrokerAuthorityReader:
             sqlite3.connect(f"file:{self._database}?mode=ro", uri=True, isolation_level=None)
         ) as connection:
             connection.execute("BEGIN")
-            observed_schema = _schema_members(connection)
+            try:
+                observed_schema = _schema_members(connection)
+            except ValueError as error:
+                raise AuthorityReadFailure(
+                    "authority storage surface differs from physical schema"
+                ) from error
             expected_schema = tuple(
                 (item.table, item.columns) for item in AUTHORITY_STORAGE_MEMBERS
             )

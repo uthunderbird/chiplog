@@ -152,6 +152,18 @@ def test_verified_snapshot_releases_only_frozen_canonical_dto(tmp_path: Path) ->
     assert ledger.dequeue(operation) is None
 
 
+@pytest.mark.parametrize("table", ["sqliteXauthority", "unknown_authority"])
+def test_unknown_main_table_refuses_typed_before_read_release(tmp_path: Path, table: str) -> None:
+    reader, ledger, _, database = _reader(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(f'CREATE TABLE "{table}" (value TEXT)')
+    operation = _operation("unknown-table")
+    with pytest.raises(AuthorityReadFailure, match="storage surface") as caught:
+        reader.execute(operation)
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert ledger.dequeue(operation) is None
+
+
 def test_same_head_raw_content_substitution_fails_full_amr_recomputation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

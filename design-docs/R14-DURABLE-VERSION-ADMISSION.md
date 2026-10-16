@@ -373,3 +373,52 @@ extension fingerprint into the complete registered descriptor and authenticated
 CURRENT remains open (handoff 58, continuing 56). The three startup RED tests,
 full SQL/non-SQL authority graph and running six-member tuple are still pending;
 this registry grants no startup admission.
+
+## Executable SQL inventory: closed snapshot table names
+
+The candidate scan exposed a separate existing consumer gap in
+`platform/authority_reads.py::_schema_members`: `NOT LIKE 'sqlite_%'` hid an extra
+`sqliteXauthority` table, and observed names reached dynamic PRAGMA construction
+before exact membership validation. The prior materializer observer repair did
+not fix this reader. Actual SQLite tests against both snapshot APIs first gave
+8 failures/1 passing V1-preimage control (`.venv/bin/pytest -q
+tests/platform/test_authority_snapshot_commitment.py -k 'unknown_names or missing_registered or closed_schema'
+--tb=short`,0.15s). Both APIs incorrectly admitted the lookalike table; other
+failures demonstrated pre-validation schema introspection or wrong cause type.
+
+The reader now uses the literal reserved prefix via GLOB, validates the complete
+ordered table-name tuple before any table_info, then constructs PRAGMAs only from
+the fixed authority storage members. BrokerAuthorityReader retains typed refusal
+and no read-result release. The immutable V1 preimage/digest encoder is unchanged;
+a literal vocabulary control covers BLOB, null, string and integer content.
+Command `.venv/bin/pytest -q tests/platform/test_authority_snapshot_commitment.py
+tests/platform/test_authority_reads.py tests/platform/test_authority_checkpoint_admission.py
+--tb=short` passed31 tests in0.30s. This is table/column admission only; it does not
+prove complete DDL/constraint/read-graph/AMR equality or mount startup admission.
+
+Adding `tests/platform/test_scheduler_reads.py` exposed17 source-registration
+failures alongside54 passing tests. A separate unmodified901aaaa worktree with
+its own src on PYTHONPATH reproduced17 failed/23 passed in1.30s for that file;
+its first refusal is historical V2b evaluator dependency changed for
+`chiplog.capabilities.agent_loop.contracts`. Baseline stdout:
+`/private/tmp/r14-schema-scheduler-baseline-901aaaa.out`. Handoff60 preserves
+this separate integration failure; no historical pin was changed or bypassed.
+
+The refreshed candidate inventory is
+`/private/tmp/r14-sql-callsite-inventory-901aaaa.json`, SHA256
+dab8392fc47247737891a507a92dfa422f183b8b31006198fee0c29a299dc34b.
+Generator command `.venv/bin/python /private/tmp/r14_inventory_build.py` found507
+candidates:350 actual SQL calls (329 literal/21 dynamic),53 SQLite factories,
+97 snapshot-wrapper calls and7 domain/socket calls. Root independently compared
+every source_files entry with SHA256 of current bytes:574 match, including this
+working authority_reads repair;901aaaa alone does not identify that dirty source.
+Root also inspected every dynamic site expression. Report:
+`/private/tmp/r14-sql-current-inventory-route.md`.
+
+This is complete only for the enumerated candidate AST names, not closed SQL
+authority discovery. Caller-to-instance provenance, alias/reflection/import
+closure, actual SQLite authorizer edges and exact assembly reachability remain
+unproved. No RUNNING tuple or descriptor is registered. The next discriminating
+negative is a real publication_sql predicate mutation adding a deletion_fences
+subquery: extraction must observe the new frontier read before frozen graph
+comparison rejects it. A source-hash mismatch alone cannot satisfy that test.
