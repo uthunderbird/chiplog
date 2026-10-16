@@ -540,6 +540,14 @@ def _read_call_history(
                             authenticated = authenticate_selected_resolution_prefix_held(
                                 runtime, actual, anchor
                             )
+                        elif operation == "agent_loop.execution-accounting-readiness.v1":
+                            from chiplog.composition.r14_recovery_publication import (
+                                authenticate_selected_recovery_prefix_held,
+                            )
+
+                            authenticated = authenticate_selected_recovery_prefix_held(
+                                runtime, actual, anchor
+                            )
                         else:
                             authenticated = False
                         from chiplog.composition.r14_historical_suffix import (

@@ -59,12 +59,14 @@ def _insert(connection, batch):
     connection.execute("UPDATE tenant_heads SET head=? WHERE tenant_id=?", (sequence, "tenant"))
 
 
-async def _fixture(tmp_path, complete):
+async def _fixture(tmp_path, complete, *, with_fence=False):
     database = tmp_path / "prefix.sqlite"
     with sqlite3.connect(database) as connection:
         connection.executescript(SCHEMA_SQL)
         connection.execute("INSERT INTO store_metadata VALUES(1,1)")
         connection.execute("INSERT INTO tenant_heads VALUES(?,?)", ("tenant", 1))
+        if with_fence:
+            connection.execute("INSERT INTO deletion_fences VALUES(?,?,?)", ("tenant", "r6", 0))
     predecessor = _hash(database)
     cut = (await _cut()).model_copy(
         update={"materialization_commitment": predecessor, "database_id": str(database)}
@@ -236,6 +238,55 @@ async def test_open_effects_callback_uses_exact_pending_readiness_prefix(
         )
     assert effects_reads == [runtime]
     assert len(fallback_calls) == (0 if route == "readiness" else 1)
+
+
+@pytest.mark.parametrize("complete", [False, True])
+@pytest.mark.parametrize("damaged_result", [False, True])
+async def test_exact_history_checks_pending_readiness_prefix_before_selected_authority(
+    tmp_path, monkeypatch, complete, damaged_result
+):
+    """Real pending SQL delta; full selected-authority validation is a sentinel."""
+    from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
+    from chiplog.composition import r14_loop_history as history
+    from chiplog.composition import r14_native_recovery_historical as historical
+    from chiplog.composition import r14_recovery_publication as publication
+
+    class ReachedSelectedAuthority(BaseException):
+        pass
+
+    runtime, entry, batch, _, _ = await _fixture(tmp_path, complete, with_fence=True)
+    entry.update(
+        kind="DECIDED", operation_id=batch.idempotency_key,
+        expected_head=batch.expected_head, fingerprint=batch.request_fingerprint,
+    )
+    if damaged_result:
+        entry["resulting"] = "0" * 64
+    runtime._loop_decisions = lambda: SimpleNamespace(
+        entries=lambda: (
+            (batch.idempotency_key, None, json.dumps(entry, sort_keys=True, separators=(",", ":"))),
+        )
+    )
+    runtime._owner_decisions = lambda: SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(decisions=())
+    )
+    monkeypatch.setattr(historical, "_make_authenticated_loop_decision_cut", lambda *a: a[1])
+    selected_calls = []
+
+    def selected_authority(actual_runtime, selected_entry, selected_batch, **kwargs):
+        runtime._authority_gate().require_held()
+        assert actual_runtime is runtime and selected_entry == entry and selected_batch == batch
+        selected_calls.append(selected_entry)
+        raise ReachedSelectedAuthority
+
+    monkeypatch.setattr(publication, "validate_selected", selected_authority)
+    if damaged_result:
+        with pytest.raises(LoopIntegrityError, match="unverified pending write"):
+            history._read_call_history(runtime, selected_only=True, exact_historical_sources=True)
+        assert selected_calls == []
+    else:
+        with pytest.raises(ReachedSelectedAuthority):
+            history._read_call_history(runtime, selected_only=True, exact_historical_sources=True)
+        assert selected_calls == [entry]
 
 
 @pytest.mark.parametrize("damaged_result", [False, True])
