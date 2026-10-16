@@ -139,6 +139,67 @@ initialization, current binding/root publication, unsupported refusal and curren
 exact-prefix recovery remain required. No all-startup-HOLD shortcut or migration
 branch is the intended product result.
 
+## Read-only journal acquisition and unresolved admission design
+
+The private adapter now provides `read_authenticated_journal_snapshot` without
+constructing an append-capable journal or SQLite materializer. It requires the
+caller's already-held gate before opening anything, takes a shared lock on the
+existing journal lock, opens body/key/head/lock O_RDONLY with no provisioning,
+pins the actual decoded head descriptor, and rechecks identities and bytes before
+returning immutable entries/source identities/key fingerprint/body digest. Partial
+acquisition closes every opened descriptor. The physical decoder and HMAC formulas
+are shared with the existing writer; exact-body cache hits still check the head.
+This observes the protected physical chain, not operator authorization or CURRENT.
+It cannot defeat coherent replacement of all protected anchors or adversarial
+change-and-restore between observation cuts; those stronger claims are not made.
+
+Command `.venv/bin/pytest -q tests/platform/test_readonly_decision_journal.py
+--tb=short` was RED: **2 failed in 0.51s**, because the new API was absent. After
+implementation, the new 21 cases plus existing journal/cache, historical trust
+reader and deployment-gate tests passed: command `.venv/bin/pytest -q
+tests/platform/test_readonly_decision_journal.py
+tests/platform/test_existing_only_decision_journal.py
+tests/platform/test_journal_exact_body.py
+tests/platform/test_h1_historical_trust_reader.py
+tests/platform/test_deployment_authority_gate.py --tb=short` gave **70 passed in
+1.42s**. This includes authentic V1 bytes with all writer factories and SQLite
+opening forbidden, missing/corrupt/aliased sources, interrupted head publication,
+in-place changes, replaced head and resource cleanup. Package exports stay intact;
+the helper is private pending its eventual registered consumer.
+
+A wider seven-file check found **3 failed, 107 passed in 1.88s**. The same three
+selectors on unchanged `2e7c27f` also failed (**3 failed in 0.21s**): the R4/R5
+freeze does not enumerate current trust exports and two already-added record
+types. These baseline failures remain integration obligations; do not repin or
+weaken the old freeze merely to accept current bytes. The two actual startup
+admission RED cases also remain open and outside this primitive checkpoint.
+
+The cold design audit `/private/tmp/r14-version-route-design-redteam.md` found four
+P1 issues in the larger proposed route, not in this independent journal primitive:
+
+1. `_open_runtime` has no database-instance input while `bootstrap` first starts
+   a quarantined owner and only then emits INITIALIZE. Freeze a sole initializer
+   and identity contract before mounting the pre-constructor version gate; retain
+   the existing bootstrap workflow through an explicit, tested split.
+2. Missing mandatory CURRENT/keys/head must HOLD without synthesis. Published
+   CURRENT plus authentic current absent/exact-prefix materialization must instead
+   recover exact bytes. Freeze the mandatory-anchor versus recoverable-materialization
+   partition and initialization fsync/rename crash cuts; blanket partial rejection
+   or silent initial companion synthesis is insufficient.
+3. A thread-reentrant gate cannot protect across await. Consume admitted sources
+   in a synchronous cut before the first await, then require a fresh protected
+   check before later startup effects; test competing same-loop substitution.
+4. CURRENT may bind the INITIALIZE decision, but INITIALIZE cannot also embed
+   final CURRENT digest. Freeze a forward-only registry-instance → INITIALIZE →
+   CURRENT graph with exact five-companion output and no digest placeholders.
+
+These P1s must be resolved before executing that larger route. Existing
+`architecture/r7_storage_surface.py`, `r7_read_registry.py`, `verification/r7_read_surface.py`
+and `platform/authority_reads.py::AMR_FINGERPRINT` supply real descriptors to reuse;
+there is no basis to invent a parallel storage/read manifest. Full actual graph
+coverage, tuple registration and all no-write/current recovery evidence are still
+required, not inferred from the existence of those constants.
+
 ## Frozen authentic legacy input
 
 Before changing the initializer, the real R7 runtime at revision

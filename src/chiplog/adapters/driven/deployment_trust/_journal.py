@@ -6,7 +6,8 @@ import json
 import os
 import stat
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal
@@ -31,6 +32,144 @@ def _lock(path: Path, operation: int) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
+def _entry_authentication(
+    key: bytes, decision_id: str, predecessor: str | None, decision: bytes
+) -> str:
+    payload = (predecessor or "GENESIS").encode() + b"\x00" + decision_id.encode()
+    return hmac.new(key, payload + b"\x00" + decision, sha256).hexdigest()
+
+
+def _decode_authenticated_entries(
+    body: bytes, key: bytes, anchored_head: str
+) -> tuple[tuple[str, str | None, bytes], ...]:
+    result: list[tuple[str, str | None, bytes]] = []
+    predecessor: str | None = None
+    for raw in body.splitlines():
+        try:
+            item = json.loads(raw)
+            decision = bytes.fromhex(item["decision"])
+            decision_id = str(item["decision_id"])
+            observed_predecessor = item["predecessor"]
+            authentication = str(item["authentication"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError("journal entry is unauthentic") from error
+        expected = sha256((predecessor or "GENESIS").encode() + b"\x00" + decision).hexdigest()
+        if (
+            expected != decision_id
+            or observed_predecessor != predecessor
+            or not hmac.compare_digest(
+                authentication, _entry_authentication(key, decision_id, predecessor, decision)
+            )
+        ):
+            raise RuntimeError("journal prefix or predecessor mismatch")
+        result.append((decision_id, observed_predecessor, decision))
+        predecessor = decision_id
+    if anchored_head != (result[-1][0] if result else ""):
+        raise RuntimeError("journal rollback or incomplete head publication")
+    return tuple(result)
+
+
+def _checked_journal_source(
+    path: Path, parent_descriptor: int, descriptor: int, expected: FileIdentity | None = None
+) -> FileIdentity:
+    actual = os.fstat(descriptor)
+    named = os.stat(path.name, dir_fd=parent_descriptor, follow_symlinks=False)
+    identity = (str(path), actual.st_dev, actual.st_ino)
+    if (
+        not stat.S_ISREG(actual.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or actual.st_nlink != 1
+        or named.st_nlink != 1
+        or actual.st_uid != os.geteuid()
+        or stat.S_IMODE(actual.st_mode) != 0o600
+        or (actual.st_dev, actual.st_ino) != (named.st_dev, named.st_ino)
+        or (expected is not None and identity != expected)
+    ):
+        raise RuntimeError("journal source identity, ownership or permissions differ")
+    return identity
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedJournalSnapshot:
+    """Physical chain observation; this grants no CURRENT or operator authority."""
+
+    entries: tuple[tuple[str, str | None, bytes], ...]
+    source_identities: tuple[FileIdentity, ...]
+    key_fingerprint: str
+    body_digest: str
+
+
+def read_authenticated_journal_snapshot(
+    path: Path, *, authority_gate: AuthorityGate
+) -> AuthenticatedJournalSnapshot:
+    """Read provisioned physical journal sources under the caller's existing gate."""
+    authority_gate.require_held()
+    try:
+        parent = path.parent.resolve(strict=True)
+        path = parent / path.name
+        paths = (path, *(path.with_name(path.name + suffix)
+                         for suffix in (".key", ".head", ".lock")))
+        with ExitStack() as stack:
+            parent_descriptor = stack.enter_context(_descriptor(
+                parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            ))
+
+            def check_parent() -> None:
+                opened, named = os.fstat(parent_descriptor), parent.stat()
+                if parent.resolve(strict=True) != parent or (
+                    opened.st_dev, opened.st_ino
+                ) != (named.st_dev, named.st_ino):
+                    raise RuntimeError("journal parent identity changed")
+
+            def open_source(source: Path) -> int:
+                descriptor = os.open(
+                    source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_descriptor,
+                )
+                stack.callback(os.close, descriptor)
+                return descriptor
+
+            def check_head_publication() -> None:
+                try:
+                    os.stat(path.name + ".head.new", dir_fd=parent_descriptor,
+                            follow_symlinks=False)
+                except FileNotFoundError:
+                    return
+                raise RuntimeError("journal has an interrupted head publication")
+
+            check_parent()
+            lock = open_source(paths[-1])
+            lock_identity = _checked_journal_source(paths[-1], parent_descriptor, lock)
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            stack.callback(fcntl.flock, lock, fcntl.LOCK_UN)
+            _checked_journal_source(paths[-1], parent_descriptor, lock, lock_identity)
+            check_head_publication()
+            descriptors = (*(open_source(source) for source in paths[:-1]), lock)
+            identities = tuple(
+                _checked_journal_source(source, parent_descriptor, descriptor)
+                for source, descriptor in zip(paths, descriptors, strict=True)
+            )
+            raw = tuple(IndependentTenantDecisionJournal._read_descriptor(descriptor)
+                        for descriptor in descriptors[:-1])
+            body, key, head = raw
+            if len(key) != 32:
+                raise RuntimeError("journal authentication key is invalid")
+            entries = _decode_authenticated_entries(body, key, head.decode("ascii"))
+            if raw != tuple(IndependentTenantDecisionJournal._read_descriptor(descriptor)
+                            for descriptor in descriptors[:-1]):
+                raise RuntimeError("journal sources changed during snapshot")
+            for source, descriptor, identity in zip(paths, descriptors, identities, strict=True):
+                _checked_journal_source(source, parent_descriptor, descriptor, identity)
+            check_head_publication()
+            check_parent()
+            authority_gate.require_held()
+            return AuthenticatedJournalSnapshot(
+                entries, identities, sha256(key).hexdigest(), sha256(body).hexdigest()
+            )
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError("journal source is unavailable or malformed") from error
 
 
 class IndependentTenantDecisionJournal:
@@ -191,24 +330,8 @@ class IndependentTenantDecisionJournal:
         descriptor = self._existing_descriptors.get(component) if descriptor is None else descriptor
         if descriptor is None:
             raise RuntimeError("journal descriptor is unavailable")
-        actual = os.fstat(descriptor)
-        named = os.stat(
-            self._existing_name(component), dir_fd=self._parent_descriptor, follow_symlinks=False
-        )
         path = getattr(self, f"_{component}_path", self._path)
-        identity = (str(path), actual.st_dev, actual.st_ino)
-        if (
-            not stat.S_ISREG(actual.st_mode)
-            or not stat.S_ISREG(named.st_mode)
-            or actual.st_nlink != 1
-            or named.st_nlink != 1
-            or actual.st_uid != os.geteuid()
-            or stat.S_IMODE(actual.st_mode) != 0o600
-            or (actual.st_dev, actual.st_ino) != (named.st_dev, named.st_ino)
-            or (expected is not None and identity != expected)
-        ):
-            raise RuntimeError("journal source identity, ownership or permissions differ")
-        return identity
+        return _checked_journal_source(path, self._parent_descriptor, descriptor, expected)
 
     @contextmanager
     def _existing_lock(self, operation: int) -> Iterator[None]:
@@ -388,34 +511,7 @@ class IndependentTenantDecisionJournal:
             if anchored_head != actual_head:
                 raise RuntimeError("journal rollback or incomplete head publication")
             return cached[1]
-        result: list[tuple[str, str | None, bytes]] = []
-        predecessor: str | None = None
-        for raw in body.splitlines():
-            try:
-                item = json.loads(raw)
-                decision = bytes.fromhex(item["decision"])
-                decision_id = str(item["decision_id"])
-                observed_predecessor = item["predecessor"]
-                authentication = str(item["authentication"])
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-                raise RuntimeError("journal entry is unauthentic") from error
-            expected = sha256((predecessor or "GENESIS").encode() + b"\x00" + decision).hexdigest()
-            expected_authentication = self._authenticate(
-                decision_id, observed_predecessor, decision
-            )
-            if (
-                expected != decision_id
-                or observed_predecessor != predecessor
-                or not hmac.compare_digest(authentication, expected_authentication)
-            ):
-                raise RuntimeError("journal prefix or predecessor mismatch")
-            result.append((decision_id, observed_predecessor, decision))
-            predecessor = decision_id
-        anchored_head = self._read_head()
-        actual_head = result[-1][0] if result else ""
-        if anchored_head != actual_head:
-            raise RuntimeError("journal rollback or incomplete head publication")
-        decoded = tuple(result)
+        decoded = _decode_authenticated_entries(body, self._key, self._read_head())
         self._decoded = (body, decoded)
         return decoded
 
@@ -433,9 +529,7 @@ class IndependentTenantDecisionJournal:
             os.close(descriptor)
 
     def _authenticate(self, decision_id: str, predecessor: str | None, decision: bytes) -> str:
-        payload = (predecessor or "GENESIS").encode() + b"\x00" + decision_id.encode()
-        payload += b"\x00" + decision
-        return hmac.new(self._key, payload, sha256).hexdigest()
+        return _entry_authentication(self._key, decision_id, predecessor, decision)
 
     def observation(self, decision_id: str) -> Literal["DECIDED", "NO_DECISION", "AMBIGUOUS"]:
         try:

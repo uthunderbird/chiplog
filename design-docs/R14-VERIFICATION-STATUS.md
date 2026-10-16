@@ -1759,3 +1759,38 @@ retain its stricter C29/C28 rejection; the startup file then passed **48 tests i
 6.49s**. Cold bounded design audit found no P0/P1, with no claim of independent
 external verification. Ordinary native startup is being observed separately on
 frozen sources (execution5896); no successful terminal result is recorded yet.
+
+Execution5896 subsequently finished with **exit0**. MCP reached the ordinary
+runner's STARTUP_PASSED breakpoint after `__aenter__`; pending was empty and the
+authority anchor was C29. The generic suffix exception breakpoint did not fire.
+The same process continued through explicit full selected-readiness validation
+and closed successfully; its MCP session is closed. The before/after report
+`/private/tmp/r14-after-marker-repair-probe-report.json` preserves SQL head29,
+authority commitment and custody-transfer digest. Recovery advanced the anchor
+C28→C29 and appended the materialized marker; journal/head, anchor, broker,
+read-ledger, gate cache and SQLite sidecars changed. This is saved-bundle startup
+and readiness evidence, not universal file invariance or fresh two-seal completion.
+
+A new detached worktree at `2e7c27f25fba522083c8f16835347b2d26b0667c`,
+`/private/tmp/chiplog-r14-cross-seal-2e7c27f`, freezes source, tests and config.
+The exact input SHA256 manifest is
+`/private/tmp/r14-fresh-cross-seal-2e7c27f-inputs.json`; chiplog imports from that
+worktree's src. Collection found exactly one requested test. No inherited pytest
+options/plugins were set; installed plugins are asyncio and anyio, with no timeout
+plugin. The fresh production-clock command is the original interpreter's
+`python -m pytest -q
+tests/composition/test_r14_native_selected_accounting_source.py::test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator
+--basetemp=/private/tmp/r14-fresh-cross-seal-2e7c27f`, run in that worktree with its
+src on PYTHONPATH. Execution6529 is running; stdout is
+`/private/tmp/r14-fresh-cross-seal-2e7c27f.out`. Product clocks/TTLs are unchanged;
+there is no terminal result yet. Its fixture still uses the pre-gate V1 genesis,
+so even success would not establish durable-version admission.
+
+Checkpoint `2e7c27f` adds only existing-lock acquisition without provisioning;
+33 lock/process/thread/fork checks and 18 neighboring consumer tests passed.
+Two actual R7 legacy startup admission tests remain RED in the owned worktree
+file `test_r14_startup_version_admission.py`, outside that primitive checkpoint.
+They show constructors/runtime admission and broker/read-ledger writes, plus
+recreation of an absent lock. Handoff54 preserves the missing mandatory
+authenticated CURRENT/tuple/initializer/content/recovery implementation. Cadence
+retro `de5ecfe` records these evidence boundaries; all remaining R14 stays OPEN.
