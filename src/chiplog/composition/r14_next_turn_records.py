@@ -29,7 +29,9 @@ from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
 from chiplog.capabilities.agent_loop.recovery_contracts import Present, RecoveryDTO
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
+    ConsequentialAcceptedCall,
     InitializedCall,
+    RecoveryRequiredResult,
     TerminalCallFrontier,
 )
 from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
@@ -133,6 +135,16 @@ def selected_prior_turn_context(
         AcceptedDirectTerminalDispositionV1,
         AcceptedDirectTerminalResultV1,
     )
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        AcceptedOpenTerminalDispositionV1,
+    )
+    from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+        _continuation_closures,
+    )
+    from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+        RecoveredCallOutcomeRecord,
+    )
+    from chiplog.capabilities.agent_loop.recovery_domain import sealed_call_accounting
 
     candidates: list[RetainedNextTurnPublication] = []
     for _, _, raw in runtime._loop_decisions().entries():
@@ -263,6 +275,61 @@ def selected_prior_turn_context(
                     "result": result.model_dump(mode="json"),
                 }
             )
+            continue
+        if isinstance(call.disposition, RecoveryRequiredResult):
+            if not isinstance(call.acceptance, ConsequentialAcceptedCall):
+                raise ValueError("recovered prior-turn call lacks consequential acceptance")
+            accounting = sealed_call_accounting(
+                response.seal.response_seal_id,
+                response.seal.digest(),
+                tuple(ref.subject_id for ref in response.seal.complete_ordered_initialized),
+                response.ordered_calls,
+            )
+            # This joins the actual terminal/opening, basis, resolver batch,
+            # witness, closure, outcome and consumable reduction; a call-id
+            # lookup alone cannot justify the recovered result.
+            _continuation_closures(cut, accounting)
+            terminal_matches = [
+                source for source in cut.complete_sources
+                if source.owner == "agent_loop"
+                and source.schema_id == "chiplog.execution.accepted-open-terminal-disposition.v1"
+                and source.subject.subject_id == call.original_call_id
+                and source.subject.revision == call.disposition.terminal
+            ]
+            outcome_matches = [
+                source for source in cut.complete_sources
+                if source.owner == "agent_loop"
+                and source.schema_id == "chiplog.loop.recovered-call-outcome.v1"
+                and source.physical_record.revision == call.disposition.recovered_outcome.outcome
+            ]
+            if len(terminal_matches) != 1 or len(outcome_matches) != 1:
+                raise ValueError("recovered prior-turn terminal or outcome is missing or duplicate")
+            terminal_source, = terminal_matches
+            outcome_source, = outcome_matches
+            terminal = AcceptedOpenTerminalDispositionV1.model_validate_json(
+                terminal_source.canonical_record_bytes
+            )
+            outcome = RecoveredCallOutcomeRecord.model_validate_json(
+                outcome_source.canonical_record_bytes
+            )
+            if (
+                terminal.canonical_bytes() != terminal_source.canonical_record_bytes
+                or outcome.canonical_bytes() != outcome_source.canonical_record_bytes
+                or terminal.response_id != response.selected_seal.subject_id
+                or terminal.accepted.revision != call.acceptance.accepted
+                or terminal.external_effect_intent.revision
+                != call.acceptance.external_effect_intent
+                or outcome.original != call.disposition.obligation
+                or outcome.original.original_run_id != before.run_id
+            ):
+                raise ValueError(
+                    "recovered prior-turn result differs from selected response or call"
+                )
+            results.append({
+                "original_call_id": call.original_call_id,
+                "terminal": terminal.model_dump(mode="json"),
+                "result": outcome.model_dump(mode="json"),
+            })
             continue
         terminal_sources = [
             source

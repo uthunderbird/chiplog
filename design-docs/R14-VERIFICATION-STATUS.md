@@ -1781,14 +1781,44 @@ plugin. The fresh production-clock command is the original interpreter's
 `python -m pytest -q
 tests/composition/test_r14_native_selected_accounting_source.py::test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator
 --basetemp=/private/tmp/r14-fresh-cross-seal-2e7c27f`, run in that worktree with its
-src on PYTHONPATH. Execution6529 is running; stdout is
-`/private/tmp/r14-fresh-cross-seal-2e7c27f.out`. Product clocks/TTLs are unchanged;
-there is no terminal result yet. Its fixture still uses the pre-gate V1 genesis,
-so even success would not establish durable-version admission.
+src on PYTHONPATH. Execution6529 terminated with exit1: one failure in4554.71s.
+Stdout is `/private/tmp/r14-fresh-cross-seal-2e7c27f.out`. All1236 frozen input
+hashes were rechecked after termination. Product clocks/TTLs were unchanged.
+Its fixture uses the pre-gate V1 genesis and cannot establish durable-version
+admission.
+
+The first OPEN recovery, resolver resolution, semantic reduction, same-Run resume,
+and next-Turn publication passed. The second capture failed in
+`selected_prior_turn_context`: the projection required a direct-terminal
+disposition for an original RECOVERY_REQUIRED call with a selected recovered
+outcome. Second seal, reopen, and foreign-locator rejection were not reached.
+The complete45-file failure bundle is preserved separately at
+`/private/tmp/r14-fresh-cross-seal-2e7c27f-preserved-failure`; streaming SHA256
+confirmed each copy matches its source. Neither bundle was reopened for repair.
+
+The repair adds the recovered-OPEN projection variant, reusing the existing exact
+original-continuation proof join. It preserves the original OPEN terminal and
+selected `RecoveredCallOutcomeRecord`, including canonical recovered status.
+The compressed fixture `tests/composition/fixtures/r14_resolved_open_next_turn_v1.json.xz`
+contains the actual failed next-Turn publication, not synthesized proof. Its
+compressed SHA256 is ad7f65de88ea2d739679918d59a4872f508ee1a958c1194ea8f5a538409c053b;
+decompressed SHA256 is451f8e8fecb82e960bdb093168ef3ac2e8e69e6c8f362ca8660eb90bf3869901.
+It proves retained projection behavior, not live source authority or startup admission.
+
+The actual retained input reproduced the failure before repair. MCP session
+ca73e531-1d68-4139-865f-71339d403aef observed zero direct-terminal matches,
+two legitimate physical/logical OPEN aliases, and one recovered outcome.
+After repair, the isolated probe reached the projected-result breakpoint with
+one result, original RECOVERY_REQUIRED terminal and R14_EFFECT_CONFIRMED outcome;
+the old failure breakpoint was not reached. The process terminated exit0 and
+the debugger session was closed. Report:
+`/private/tmp/r14-resolved-open-context-probe-result.json`.
+The native two-seal test now additionally checks the actual rendered prior-Turn
+result envelope; that complete scenario has not yet been rerun after this repair.
 
 Checkpoint `2e7c27f` adds only existing-lock acquisition without provisioning;
 33 lock/process/thread/fork checks and 18 neighboring consumer tests passed.
-Two actual R7 legacy startup admission tests remain RED in the owned worktree
+Three actual R7 startup admission tests remain RED in the owned worktree
 file `test_r14_startup_version_admission.py`, outside that primitive checkpoint.
 They show constructors/runtime admission and broker/read-ledger writes, plus
 recreation of an absent lock. Handoff54 preserves the missing mandatory

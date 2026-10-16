@@ -1782,7 +1782,7 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
         ).snapshot.state == "CONFIRMED"
         await runtime.publish_original_resolver_authority_policy()
         await runtime.publish_original_resolver_invocation()
-        await runtime.publish_original_call_resolution()
+        first_resolution = await runtime.publish_original_call_resolution()
         await runtime.publish_loop_semantic_reduction()
         resumed = await runtime.resume_execution(
             run_id, suspended_head, b"resume-first-open-before-next-turn"
@@ -1825,9 +1825,26 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
                 assert readiness_collects == [(recovery_source, runtime)]
                 assert readiness_guards == ["admission", "decision"]
         next_run = await runtime.start_next_execution_turn(resumed.run_id, resumed.head)
-        captured = await runtime.capture_execution(
-            "hermetic-ingress", next_run.run_id, next_run.head
-        )
+        from chiplog.composition import r14_execution_runtime
+
+        rendered_contexts = []
+        original_render = r14_execution_runtime.render_execution_prompt
+
+        def observe_render(content):
+            rendered_contexts.append(json.loads(content))
+            return original_render(content)
+
+        with monkeypatch.context() as capture_patch:
+            capture_patch.setattr(r14_execution_runtime, "render_execution_prompt", observe_render)
+            captured = await runtime.capture_execution(
+                "hermetic-ingress", next_run.run_id, next_run.head
+            )
+        assert len(rendered_contexts) == 1
+        assert rendered_contexts[0]["prior_turns"][0]["results"] == [{
+            "original_call_id": first_open_call_id,
+            "terminal": first_open_result.terminal.model_dump(mode="json"),
+            "result": first_resolution.recovered_outcome.model_dump(mode="json"),
+        }]
         second_run = await runtime.seal_execution(
             "hermetic-ingress", captured.run_id, captured.head
         )
