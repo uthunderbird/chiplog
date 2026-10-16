@@ -225,3 +225,80 @@ validate public immutable shapes, required explicit members, numeric types and
 the fixed failure code/adoption status. No startup behavior is implemented or
 claimed by this preparation. The V2/no-defaulting choice is recorded through
 `decide.sh`; no running-tuple values were inferred from the fixture's integers.
+
+## Refined initialization and recovery route (not implemented)
+
+The actual fresh public R7 opener now has a third RED lifecycle witness in
+`tests/composition/test_r14_startup_version_admission.py`. Command
+`.venv/bin/pytest -q tests/composition/test_r14_startup_version_admission.py::test_fresh_public_opener_initializes_before_owner_and_reopens_without_bootstrap --tb=short`
+failed **1 test in 0.64s**: `trust.verify()` is None before yielding. The test
+requires INITIALIZE-only BOOTSTRAP_REQUIRED, exact eight-key V2 genesis, no real
+supervisor start or owner call, and stable journal/AMR-anchor bytes on reopen.
+Its later assertions are not reached yet. It does not prove tuple registration,
+CURRENT validation or no-write refusal. All three startup tests remain RED WIP.
+
+The selected sole broker initializer lives inside the canonical opener's proven
+fully absent branch, before owner/epoch effects. An explicit initialization
+database identity is forwarded by existing fixed-id CLI/hermetic callers; the
+default fresh opener generates and retains one identity. On existing state the
+same input is only an equality constraint. Bootstrap checks authenticated identity
+and BOOTSTRAP_REQUIRED before starting quarantine; owner emits BOOTSTRAP only.
+Convenience wrappers must replace their `verify() is None` bootstrap heuristics
+with the exact initialized phase. Historical R6 producers and V1 fixture bytes
+retain their original interpretation.
+
+The initial main image includes exactly `(tenant_id, "r6", 0)` in deletion_fences
+before publishing initial commitment C0/CURRENT. Full AMR includes this row;
+the local bootstrap binding's own-fence exclusion does not remove it from AMR.
+Thus bootstrap's fence is exact no-mutation replay and initial anchor remains
+unchanged. A metadata-only C0 followed by a new fence would violate the existing
+full commitment check. The fresh-image constructor must not call writer-only
+`_install_fence`, attach a writer early or bypass its token. Missing/changed
+baseline on an existing bundle is not permission to provision it again.
+
+NORMATIVE paragraphs 64/66/163/677 distinguish an exact prefix of complete
+decision batches from incomplete companions. Missing trust materialization or
+whole complete-decision prefixes can replay the authenticated exact batches;
+1..4 of the five INITIALIZE companions, gaps, extras, orphan rows or wrong
+digests must HOLD without repair. Do not broaden the existing partial-companion
+rejection. A global decision-prefix/content proof must precede live replay.
+
+CURRENT is downstream of immutable registry identity, genesis/signed binding,
+INITIALIZE physical decision id and five companions. INITIALIZE never embeds
+the final CURRENT digest. CURRENT publishes last after durable journal, SQL and
+initial commitment; interrupted provisioning without CURRENT holds without
+automatic adoption. A visible authentic CURRENT after rename uncertainty is
+classified from the actual protected namespace. Protected anchors are mandatory;
+recoverable SQL is distinct. The trust journal can reconstruct its own exact
+records; a main authority hash alone cannot recreate arbitrary lost R14 data.
+Published fresh-state reconstruction requires the exact registered initial image;
+later main recovery requires complete authenticated replay bytes and a verified
+predecessor. Full main/WAL loss with insufficient recovery bytes must HOLD.
+
+Admission, constructor consumption and permitted recovery form a synchronous
+gate-held cut before await. After suspension, fresh short protected checks must
+precede each actual startup authority effect or generation. Do not move generic
+full-readiness admission ahead of exact fence replay: pending recovery can need
+that no-mutation replay before readiness. Revalidate the current admission
+receipt/full commitment after replay and before subsequent consumers instead.
+Private WAL-aware SQLite copies permit content inspection without opening source
+SQLite or writing source SHM; immutable=1 would omit WAL and is unsuitable.
+
+These source-grounded route refinements resolve design choices, not runtime
+obligations. The exact registered descriptor, protected CURRENT implementation,
+crash/recovery state matrix and all async startup consumers still require
+implementation and mounted evidence. Detailed cold route artifacts are
+`/private/tmp/r14-initialization-split-route.md` and
+`/private/tmp/r14-current-crash-route.md`; neither is empirical verification.
+
+The subsequent cold design audit
+`/private/tmp/r14-refined-admission-design-redteam.md` found no new confirmed
+P0/P1 contradiction in this initial-root protocol. It explicitly retained the
+implementation obligations: exact receipt successor operations, authenticated
+database id in owner snapshot, full executable read-graph/descriptor registration
+and applicable CURRENT transition scope. This is a bounded design result, not
+full R14 closure. Command `.venv/bin/pytest -q
+tests/composition/test_r14_startup_version_admission.py --tb=short` confirmed
+**3 failed in 2.66s**: authentic V1 was still admitted with sidecar writes,
+missing-lock input still recreated its lock, and fresh opener still yielded
+without INITIALIZE. Those are the implementation targets, not accepted behavior.
