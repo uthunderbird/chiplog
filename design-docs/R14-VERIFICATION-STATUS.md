@@ -2537,10 +2537,38 @@ platform/new-forwarding selection passed 54 in 1.97s. Exact commands, scope and
 remaining type baseline are in R14-DURABLE-VERSION-ADMISSION.md. Global closure,
 registered descriptor, authenticated CURRENT and V2 initialization remain open.
 
-The fresh frozen-c22afb0 phase diagnostic is still running under execution handle
-58764, last authoritatively polled live after these checks. First preview/accept/
-authorize succeeded; second-seal outcome is pending. This is diagnostic evidence
-from a frozen earlier source, not final integrated-tree verification. Production
-clocks/TTLs remain unchanged and pytest timeout is disabled. Receipt and scalar
-phase records: `/private/tmp/r14-runtime-phase-v2-c22afb0-receipt.md` and
-`/private/tmp/r14-runtime-phase-v2-c22afb0-timings.jsonl`.
+The fresh frozen-c22afb0 phase diagnostic (handle 58764) is now TERMINAL exit 1:
+1 failed in 3044.08s. Driver diagnostic_valid is true and diagnostic faults empty.
+First preview/accept/authorize succeeded; second preview succeeded in
+73.275279875s, then second accept failed in 15.507485416s with `writer STALE`.
+No second authorization or complete cross-seal/recovery verdict was reached.
+This is diagnostic evidence from frozen c22afb0, not final integrated-tree
+verification. Production clocks/TTLs were unchanged and pytest timeout disabled.
+The rejection reason alone does not identify the expired fence or stale operand.
+
+Second preview recorded one cache miss and two hits, one public full-history
+read (56.528395208s), one history projection (56.329122042s), two held preview
+reads and five preview validations (0.239008624s inclusive). Second accept had
+one cache hit and no full-history read. Across the run there were 271 history
+projection calls (268 outside the timed public phases), totaling
+2444.577089072s inclusive. Inclusive spans overlap; these are not exclusive CPU
+shares or evidence that every repeated projection is safely removable. This
+discriminates the next investigation toward repeated authenticated history
+projection rather than attributing the whole delay to preview validation or
+SQLite. Exact counts/times come from the phase/terminal JSONL records.
+
+Root rechecked frozen source and all observer/driver hashes/modes, then copied
+the terminal fixture with copy2. Recursive manifests matched source before,
+source after and copy: 45 regular files, 1274120788 bytes, zero symlinks;
+`/private/tmp/r14-runtime-phase-v2-c22afb0-observed/failure-files.json` records
+SHA256/modes/mtime. Retained credentials are inert evidence, not replay authority.
+Receipt and scalar records: `/private/tmp/r14-runtime-phase-v2-c22afb0-receipt.md`,
+`/private/tmp/r14-runtime-phase-v2-c22afb0-exit.json`, and
+`/private/tmp/r14-runtime-phase-v2-c22afb0-timings.jsonl`. Launch metadata records
+concurrent main-tree work: this was not an isolated performance benchmark.
+
+Checkpoint eab840c joins the finite protected-anchor/reconciliation/state/release
+source chain, preserves whole-corpus accounting and unconditional global refusal.
+Its independent root and checkpoint selections each passed 31 tests; fuller
+RED/GREEN scope is in R14-DURABLE-VERSION-ADMISSION.md. Registration, CURRENT,
+startup V2 and full R14 remain OPEN.
