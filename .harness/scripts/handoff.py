@@ -173,6 +173,15 @@ def main(argv):
         for k, v in counts(root).items():
             print(f"handoff_{k}={v}")
         return 0
+    elif cmd == "summary":
+        entries = parse(root)
+        if not entries:
+            print("журнал пуст — за человека ничего не решено и ничего не отложено")
+        for entry in entries:
+            parts = [str(entry["id"]), entry["kind"], entry["when"], entry["status"]]
+            parts.extend(f"{key}: {value}" for key, value in entry["fields"].items())
+            print(" · ".join(part for part in parts if part))
+        return 0
     else:
         return 2
     print(n)
