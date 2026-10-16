@@ -1699,3 +1699,30 @@ MCP acquisition (execution43577) is running on frozen repaired sources with no
 explicit SEND/publication or clock patch; there is no terminal native startup
 result yet. Fresh full two-seal production-clock verification, durable version
 admission and all remaining roadmap requirements stay OPEN.
+
+The acquisition43577 subsequently terminated with exit1 at the same resolver-policy
+startup barrier. It did not reach either startup-success breakpoint. Its report
+keeps SQL head29, authority commitment and custody transfers unchanged; derivative
+gate cache and SQLite sidecars changed. The MCP session is closed. The generic
+suffix predicate is still refusing this native history; the preceding local
+startup tests do not prove that predicate on the saved bundle.
+
+That run also exposed another sequential history acquisition, this time from
+effects Run reconstruction during the historical OPEN fold. `_current_cut` had
+history but passed no effects snapshot for pending readiness. The new route adds
+only readiness to the existing no-Run OPEN cases, preserving selected-source
+suffix verification and exact physical Run/frontier checks. Command
+`.venv/bin/pytest -q tests/composition/test_r14_native_selected_accounting_fast_path.py
+-k 'open_historical_cut_selects or effects_run_snapshot_reuse' --tb=short` was
+RED: **1 failed, 12 passed in 1.49s**. After repair, the complete fast-path file
+passed **97 tests in 2.51s**. Real SQLite Run reconstruction asserts exactly zero
+history acquisitions with a supplied snapshot and one without it, and rejects
+missing Run, changed bytes and stale frontier. This is a local count improvement;
+there is no new native wall-time or full startup PASS.
+
+The next diagnostic acquisition runs only policy startup in a labelled diagnostic
+process against the same head29 bundle, then aborts before R14 recovery writes.
+It bypasses earlier startup validators only to locate the rejected suffix seam;
+its result cannot establish ordinary startup success. The frozen candidate includes
+the effects forwarding change. Breakpoints observe the readiness-prefix rejection
+and generic suffix exception handler. All roadmap completion claims remain OPEN.

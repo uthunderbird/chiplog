@@ -304,13 +304,15 @@ def _current_cut(
         if (
             len(pending) == 1
             and pending[0].get("operation_kind") in (
-                ACCEPTED_OPEN_ACCOUNTING_OPERATION, ACCEPTED_OPEN_RECOVERY_OPERATION
+                ACCEPTED_OPEN_ACCOUNTING_OPERATION,
+                ACCEPTED_OPEN_RECOVERY_OPERATION,
+                "agent_loop.execution-accounting-readiness.v1",
             )
             and not runtime._pending_owners()
             and not runtime._pending_gate_publications()
         ):
-            # These canonical OPEN batches add no Runs. The exact outer fold
-            # already authenticated this snapshot; effects rechecks physical bytes.
+            # These canonical OPEN/readiness batches add no Runs. Effects still
+            # checks physical Run bytes; the source still verifies the suffix.
             physical_history = snapshot
         elif (
             len(pending) == 1

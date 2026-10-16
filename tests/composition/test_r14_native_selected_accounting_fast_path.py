@@ -870,7 +870,7 @@ async def test_open_outer_fold_reads_effects_once_with_physical_history(monkeypa
 @pytest.mark.parametrize(
     "pending_operation",
     [None, "agent_loop.accepted-open-accounting.v1", "agent_loop.accepted-open-recovery.v1",
-     "agent_loop.execution-suspension.v1"],
+     "agent_loop.execution-suspension.v1", "agent_loop.execution-accounting-readiness.v1"],
 )
 async def test_open_historical_cut_selects_call_seal_among_two_native_executions(
     monkeypatch, pending_operation
@@ -922,7 +922,8 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
         assert kwargs["expected_outcome_record_id"] == cut.selected_outcome_record_id
         assert kwargs.get("authenticated_effects_history") is (
             snapshot if pending_operation in (
-                "agent_loop.accepted-open-accounting.v1", "agent_loop.accepted-open-recovery.v1"
+                "agent_loop.accepted-open-accounting.v1", "agent_loop.accepted-open-recovery.v1",
+                "agent_loop.execution-accounting-readiness.v1",
             ) else physical_snapshot if pending_operation == "agent_loop.execution-suspension.v1"
             else None
         )
@@ -950,6 +951,68 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
         authenticated_history=recovery_history,
     ) == (facts, cut)
     assert projections == [cut.response_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supplied", [False, True])
+@pytest.mark.parametrize("damage", [None, "missing-run", "run-bytes", "frontier"])
+async def test_effects_run_snapshot_reuse_keeps_exact_sql_checks(
+    tmp_path, monkeypatch, supplied, damage
+):
+    """Real Run reconstruction and SQL; outer history acquisition is a counted control."""
+    import sqlite3
+
+    from chiplog.composition import r14_loop_history as history
+    from chiplog.composition import r16_effects as effects
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
+    from chiplog.platform._sqlite import SCHEMA_SQL
+    from tests.capabilities.agent_loop.test_execution_recovery_preparation import _cut
+
+    cut = await _cut()
+    runs = cut.complete_ordered_run_lineage
+    assert len(runs) >= 2
+    snapshot = history.ExecutionHistorySnapshot(tenant_head=1, records=runs)
+    database = tmp_path / "effects-runs.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(SCHEMA_SQL)
+        for run in runs:
+            connection.execute("INSERT INTO records VALUES(?,?,?,?,?,?)", (
+                cut.tenant_id, run.head, "agent_loop", run.schema_id, run.canonical_bytes(), 1,
+            ))
+        if damage == "missing-run":
+            connection.execute("DELETE FROM records WHERE record_id=?", (runs[0].head,))
+        elif damage == "run-bytes":
+            connection.execute("UPDATE records SET canonical_bytes=? WHERE record_id=?",
+                               (b"changed", runs[0].head))
+        elif damage == "frontier":
+            snapshot = snapshot.model_copy(update={"tenant_head": 2})
+        runtime = object.__new__(R14PlanningRuntime)
+        runtime._record_schema_variants = {("agent_loop", runs[0].schema_id): object()}
+        reads = []
+
+        def acquire(actual_runtime, **kwargs):
+            assert actual_runtime is runtime
+            assert kwargs == {"selected_only": True, "exact_historical_sources": True}
+            reads.append(True)
+            return snapshot, None, None, (), (), ()
+
+        monkeypatch.setattr(history, "read_execution_recovery_history", acquire)
+        kwargs = dict(
+            historical=True, authenticated_execution_history=snapshot if supplied else None
+        )
+        journal = SimpleNamespace(decisions=())
+        if damage is None:
+            assert effects._reconstruct_registered_runs(
+                runtime, connection, cut.tenant_id, journal, 1, **kwargs
+            ) == (runs[-1],)
+        else:
+            with pytest.raises(
+                ValueError, match="execution selected history and effects physical cut"
+            ):
+                effects._reconstruct_registered_runs(
+                    runtime, connection, cut.tenant_id, journal, 1, **kwargs
+                )
+        assert len(reads) == (0 if supplied else 1)
 
 
 def test_open_unqualified_cut_holds_for_multiple_accepted_calls(monkeypatch):
