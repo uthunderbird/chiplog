@@ -100,6 +100,21 @@ requires stable reviewed source, strict catalog reconciliation and full tests.
 Contract shape checks and cheap preflight do not prove runtime version admission,
 full architecture compliance, R14.6 completion or release/adoption readiness.
 
+## Frozen authentic legacy input
+
+Before changing the initializer, the real R7 runtime at revision
+`08465384aa9127909909de49d9a9eb560a8b3cd4` produced a bootstrap-only V1 bundle.
+The fixture `tests/composition/fixtures/r14_legacy_genesis_v1.json.gz` preserves
+all ten closed files, including authenticated journal/key/head and exact trust
+materialization. Its adjacent Markdown file records the reproduction command,
+public fixture credentials and artifact SHA256; the capture script lives at
+`tests/support/r14_legacy_genesis_capture.py` and requires that producer revision.
+No test regenerates the historical fixture. Command `.venv/bin/pytest -q
+tests/composition/test_r14_legacy_genesis_fixture.py --tb=short` passed one test
+in 0.76s: complete historical authentication succeeded and every restored file
+remained byte-identical. This supplies preserved V1 input for the future startup
+refusal test; it does not implement version admission or its no-write guarantee.
+
 ## Executed preparation checks
 
 Before and after changes, `sh .harness/scripts/test.sh --preflight` exited 0.
