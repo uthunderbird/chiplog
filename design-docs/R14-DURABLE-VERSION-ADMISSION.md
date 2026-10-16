@@ -737,3 +737,52 @@ tests/verification/test_authority_read_graph.py --tb=short` gave124 passed in0.5
 Ruff passed after formatting fixes. Cold plan:
 `/private/tmp/r14-cutoff-sql-family-plan-review.md` (no tests executed by reviewer).
 Runtime identities, domains, complete SQL closure and startup admission remain open.
+
+## Finite identifier, member and scalar producers
+
+`verification/identifier_sql_families.py` takes the exact five consumer/producer
+source paths without importing them. It extracts seven named current sites:
+materializer metadata and checkpoint PRAGMA, R7 reconciliation's table generator,
+R12 table loop, registered-member metadata, and both full-authority scanners.
+Independent test literals require33 alternatives with exact ordered names/columns.
+STORE_COLUMNS is a direct literal dictionary, checkpoint profile a direct int;
+StorageMember requires its exact inert frozen dataclass declaration, absolute
+stdlib decorator import and constructor-before-manifest order. The two imported
+registries require their exact unaliased source origin. Relevant source digests
+retain both consumer and producer provenance.
+
+Current generator frames have narrow explicit templates, not a general permission
+for comprehension bodies. Column/order producers and authority filters have exact
+grammar; dynamic identifiers occur once without conversion/format. Rebinding,
+explicit producer stores, direct aliases/argument escapes and unknown methods
+refuse. The exact existing len(member.columns) producer remains supported.
+Metadata requires the preceding observed-name equality rejection. Arbitrary source
+aliases, indirect mutation/reflection, runtime globals/property purity, loop
+short-circuit coverage and physical connection domains remain unproved.
+
+Actual R12 literal-predicate mutation extracts successfully, then SQLite exposes
+deletion_fences.frontier before the independent records-only graph refuses. Raw
+unqualified table_info callbacks have database=None; main-qualified callbacks have
+database=main. Both are retained separately, not normalized to an inferred domain.
+
+Initial16 failures included15 missing-API failures and one setup replacement that
+matched both dataclass decorators; the latter was narrowed before implementation.
+Then source binding checks exposed metadata's independent member generator, and
+the independent PRAGMA expectation exposed the raw database distinction. Five
+global mutation/escape cases, two constructor-origin/order cases and two local
+argument escapes each reproduced DID NOT RAISE before their repairs. The cold
+red-team independently ratified the local direct-escape P1 and statically inspected
+its repair; final scoped verdict is zero open P0/P1, not runtime verification.
+Reviews: `/private/tmp/r14-identifier-sql-families-plan-review.md` and
+`/private/tmp/r14-identifier-sql-implementation-review.md`.
+
+Command `.venv/bin/pytest -q tests/verification/test_identifier_sql_families.py
+tests/verification/test_cutoff_sql_families.py
+tests/verification/test_constant_sql_scripts.py
+tests/verification/test_placeholder_sql_families.py
+tests/verification/test_sqlite_preparation.py
+tests/verification/test_authority_read_graph.py --tb=short` gave152 passed in2.77s;
+28 cases belong to the new identifier file. Ruff passed. These finite forms do not
+resolve the whole corpus: verifier-owned SQL sites also need classification, with
+no filename exemption. Complete caller/instance/domain/assembly joins, approved
+graph/AMR/descriptor, CURRENT and public startup admission remain open.
