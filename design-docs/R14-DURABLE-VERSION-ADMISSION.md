@@ -710,3 +710,30 @@ tests/verification/test_placeholder_sql_families.py --tb=short` gave89 passed in
 The source digest binds provenance, not runtime immutability. External monkeypatch,
 reflection, arbitrary module side effects, receiver/domain/assembly identity and
 whole-method SQL closure are not established. CURRENT/startup admission remain open.
+
+## H1 finite cutoff branches
+
+`verification/cutoff_sql_families.py` retains exactly the real H1 publications and
+records consumers (SQL-named sites2/3, connection receiver). It extracts both literal
+cutoff alternatives and their exact tuple-parameter syntax. Limit/params producers
+must be consecutive in the same statement list and dominate both consumers; explicit
+boundary writes during evaluation/use and global/nonlocal boundary declarations
+refuse. No boundary value/provenance or property-purity claim follows.
+
+Both SQL alternatives reach disposable SQLite with independently expected full
+column actions and binding counts1/2. An actual publications EXISTS mutation exposes
+deletion_fences.frontier in both branches before graph comparison refuses. Missing
+one expected consumer, unknown fragments, mismatched branch predicates/parameters,
+rebinding, conditional producers and nested consumer frames refuse.
+
+Initial12 cases failed on the absent implementation in0.05s. An added lambda-frame
+case then reproduced a leaked helper exception type (1 failed/13 passed); the public
+cutoff boundary now translates it to UnknownCutoffSql with cause. Command
+`.venv/bin/pytest -q tests/verification/test_cutoff_sql_families.py
+tests/verification/test_constant_sql_scripts.py
+tests/verification/test_placeholder_sql_families.py
+tests/verification/test_sqlite_preparation.py
+tests/verification/test_authority_read_graph.py --tb=short` gave124 passed in0.55s.
+Ruff passed after formatting fixes. Cold plan:
+`/private/tmp/r14-cutoff-sql-family-plan-review.md` (no tests executed by reviewer).
+Runtime identities, domains, complete SQL closure and startup admission remain open.
