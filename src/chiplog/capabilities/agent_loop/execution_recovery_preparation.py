@@ -2024,10 +2024,13 @@ def prepare_execution_suspension(
         return _rejected(request.command_id, error)
 
 
+CURRENT_ACTOR_RESUME_DISPOSITION = "r14-same-run-current-actor.v2"
+
+
 def prepare_execution_resume(
     request: PrepareExecutionResume,
 ) -> PreparedExecutionResume | CallPreparationRejected:
-    """Prepare equality-only same-Run resume over the selected suspension."""
+    """Prepare a version-selected resume; live actor authority remains external."""
     try:
         request = PrepareExecutionResume.model_validate_json(request.canonical_bytes())
         if not isinstance(request.fence, NonSchedulerFence):
@@ -2038,6 +2041,12 @@ def prepare_execution_resume(
         selected = request.original_suspension
         baseline = selected.baseline
         pair = selected.pair
+        current_actor = request.disposition_version == CURRENT_ACTOR_RESUME_DISPOSITION
+        if current_actor and (
+            len(baseline.original_obligations) != 1
+            or sum(source.schema_id == SCHEMA_V5 for source in request.cut.complete_sources) != 1
+        ):
+            raise RecoveryHold("current-actor resume requires one V5 profile and frozen obligation")
         if not isinstance(current, ExecutionRunRecord):
             raise RecoveryHold("same-Run resume requires the selected V2 execution record")
         current_ref = _run_ref(current)
@@ -2045,7 +2054,7 @@ def prepare_execution_resume(
             current != request.run
             or current_ref != request.cut.current_run
             or current.state != "SUSPENDED"
-            or current.worker_session != request.fence.worker_session_id
+            or (not current_actor and current.worker_session != request.fence.worker_session_id)
             or current.run_id != request.fence.run_id
             or current.head != request.fence.run_head
             or current.root_binding != "NOT_APPLICABLE"
@@ -2059,7 +2068,9 @@ def prepare_execution_resume(
             or _run_ref(lineage[-2]) != baseline.predecessor_run
         ):
             raise RecoveryHold("resume Run, frozen baseline, or selected suspension differs")
-        if request.disposition_version != "r14-same-run-equality.v1":
+        if request.disposition_version not in (
+            "r14-same-run-equality.v1", CURRENT_ACTOR_RESUME_DISPOSITION,
+        ):
             raise RecoveryHold("unsupported same-Run disposition version")
         if request.command_id != f"execution-resume:{current.run_id}:{current.head}":
             raise RecoveryHold("resume command identity differs from selected suspended Run")

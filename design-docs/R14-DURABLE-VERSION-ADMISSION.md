@@ -1,5 +1,10 @@
 # R14.6 durable-version admission preparation
 
+**Priority update, 2026-10-17:** complete global admission/descriptor/image proof
+is backlog B-R14-A01 under the user's [functional scope](R14-FUNCTIONAL-SCOPE.md).
+The HOLD below describes the unproved assurance claim; it does not block ordinary
+R14 implementation. Existing data and supported-version decoding are preserved.
+
 Status: **mounted trust-prefix consistency; complete version admission HOLD**.
 This is the existing per-slice requirement in `R14-REMAINING-ROADMAP.md`, not a
 migration capability or permission to recreate user data.

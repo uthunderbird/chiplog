@@ -1,5 +1,10 @@
 # R14 verification status
 
+**Acceptance update, 2026-10-17:** use
+[R14 functional scope](R14-FUNCTIONAL-SCOPE.md). Earlier global assurance and
+exhaustive matrix gaps below are deferred where listed in its backlog; observed
+functional failures remain open. No new runtime pass is claimed by this update.
+
 Status: OPEN, 2026-10-16. Acceptance authority:
 `R14-REMAINING-ROADMAP.md` and original clauses in `R14-R17-COMPLETION.md`.
 This is an evidence ledger, not a replacement acceptance boundary.
@@ -45,6 +50,163 @@ default-child-debugging launch failed at the owner's five-second startup wait,
 before reaching the decoder. Both sessions were closed. Disabling pure reuse in
 a process-local negative control makes the exact-count assertion fail; no source
 or production clocks were changed by these probes.
+
+Current-tree native pending-decoder recheck (2026-10-16, caad934):
+`.venv/bin/pytest -q tests/composition/test_call_history_witness_mounted.py::test_public_accept_seeds_exact_history_cache_and_main_commitment_change_misses`
+passed in 22.27s. The real mounted journal contains exactly 20 entries and the
+assertion observes exactly 20 calls to the installed native decoder, with the
+same decoded pending result. This verifies the existing narrow replacement;
+it does not establish a whole-history or whole-scenario speedup.
+
+On 2026-10-17, `.venv/bin/pytest -q tests/composition/test_call_history_witness_mounted.py::test_pending_json_decoder_preserves_stdlib_duplicate_nan_and_large_integer_values tests/composition/test_call_history_witness_mounted.py::test_pending_json_decoder_preserves_numeric_value_and_type`
+also passed: 25 cases in 1.09s. These retain the pending reader's historical
+duplicate-key, NaN, exact-integer and numeric-type behavior; they do not weaken
+the separate duplicate-key rejection required by strict selected-history reads.
+
+Selected original-resolution repeat (2026-10-17):
+`.venv/bin/pytest -q tests/composition/test_r14_original_resolution_mounted.py::test_original_resolution_publishes_closed_outcome_and_reopens_without_resend`
+produced an actual RED in 1337.44s: the one reopened public read after semantic
+reduction entered the real `_read_call_history` twice instead of the expected
+once. Log `/private/tmp/r14-original-resolution-fold-count-red.log` records the
+exact `assert 2 == 1`, not a timing threshold. The candidate retains the recovery
+history already authenticated by `_validate_current_sources` and removes the
+second fold within that same held read. Physical completeness, commitment and
+catalog checks remain. The test also corrupts the exact physical reduction row,
+requires typed refusal after one fold entry and restores its bytes in `finally`.
+Publication/reduction unit tests passed: 21 in 1.58s; scoped Ruff passed. Scoped
+mypy has the same one optional-anchor diagnostic in the HEAD shadow (line328)
+and candidate (line329), rather than a clean type result. Root invoked canonical
+`checkpoint.py::r8_development_preflight` with staged Git paths: structure/import
+checks passed; strict catalog/release admission was not tested. The mounted probe
+is **RUNNING**, with no final GREEN yet: MCP session
+`5cb8c25a-24c0-4e85-9629-26eda9691a4f` has two adapter-verified nonpausing scalar
+logpoints and unchanged production clocks/TTLs. Receipt and source-freeze manifest:
+`/private/tmp/r14-resolution-single-fold-green-receipt.md` and
+`/private/tmp/r14-resolution-single-fold-green-inputs.json`. This does not resolve
+the separate second-accept writer STALE or close R14.
+
+The same live MCP probe has now reached output seq2–4: two scalar
+`fold entry index=1 selected_only=True` events and the post-finally marker
+`corrupt-fold rejected and bytes restored; entries=1`. Thus the initial successful
+read passed the exact-one check, and the corrupted read passed typed refusal and
+its exact-one check; restoration reached the following readback assertion.
+That marker precedes the restored positive assertion, so neither that readback
+nor the remaining scenario tail is yet claimed passed. Exact events are saved in
+`/private/tmp/r14-resolution-single-fold-green-counts.json`. The pinned 1245-input
+source/test/config manifest recheck reported zero hash/mode mismatches. Session
+was RUNNING at that observation; the terminal result follows below.
+
+Terminal result for the same MCP session: exit 1, one failure in 2736.66s.
+Exact-one valid/corrupt fold assertions, restored positive readback, compatible
+late evidence, refined reduction and another reopen all passed. The scenario
+then failed at resume with `RECOVERY_HOLD:
+RESUME_FRONTIER_UNSUPPORTED_OR_INCOMPLETE`; resumed-cut, readiness, next-turn
+and final rival-HOLD assertions were not reached. The full selector remains RED;
+neither whole-scenario speedup nor repair of second-accept STALE is established.
+Full output: `/private/tmp/r14-resolution-single-fold-terminal-output.json`.
+Before editing Python, all 1245 original pinned inputs were checked again:
+zero SHA256/mode mismatches; the debugger session was then closed.
+
+Post-run typing-only correction annotates the public resolution reader's actual
+return type and the test's dynamic counting proxy. Bodies are AST-identical to
+the observed version. Actual scoped mypy matches the checked shadows: runtime
+38 and test 21 existing diagnostics, with zero new messages against HEAD shadows
+(39 and 23). This is not a type-clean claim. Ruff passed; the publication and
+reduction selection passed 21 tests in 2.01s on the annotated tree. The mounted
+terminal evidence belongs to the original frozen hashes, before annotations.
+
+The subsequent unchanged-body diagnostic terminated exit 1 in 2888.93s.
+The temporary parent-side probe ran pure preparation on the actual resume
+request, then delegated the owner exchange unchanged. Its original rejection
+was `resume Run, frozen baseline, or selected suspension differs` at
+`execution_recovery_preparation.py:2061`, before obligation-frontier validation.
+The genuine owner returned the same generic recovery HOLD. Read-only inspection
+of that fixture's execution-record rows shows the suspended Run's historical
+worker in epoch 2; the actual request fence uses current worker epoch 4 after
+reopen, violating the equality predicate at line2048. This identifies one false
+predicate, not exhaustive proof of every predicate or permission to remove fencing.
+All 1247 pinned inputs (including the external diagnostic runner/plugin) matched
+hashes/modes before session close. Full output and receipt:
+`/private/tmp/r14-resume-reason-terminal-output.json` and
+`/private/tmp/r14-resume-reason-receipt.md`.
+
+`PYTHONPATH=src:. .venv/bin/pytest -q -c pyproject.toml /private/tmp/test_r14_current_actor_resume_red.py`
+reproduces the proposed explicit-version current-actor resume expectation:
+1 failed, 1 passed in 0.95s. The historical equality-version negative passes.
+Cold review subsequently rejected that positive's broad no-obligation fixture:
+the new route must remain restricted to V5/one closed original obligation.
+Its failure is a rejected proposal diagnostic, not the accepted new regression
+contract. The genuine mounted restart failure remains the actual RED.
+This external test is not a registered contract or caller-authentication proof;
+at that diagnostic point the fresh-actor route was not implemented. Existing
+next-turn preparation explicitly selects its current worker while preserving
+historical Turns, so automatic rewriting of the resumed historical worker is
+not presumed necessary. Cold mechanism review is recorded in
+`/private/tmp/r14-resume-worker-boundary-rt.md`: require distinct operation and
+disposition with strict pairing, exact admitted-owner fence correspondence and
+existing writer session/generation guards. Old routes must not inherit new
+semantics. The component result cannot establish global old-worker termination:
+`r7_runtime.close()` does not recheck `is_alive()` after final terminate/join.
+That existing normative restart prerequisite remains OPEN with global admission.
+Full R14 stays OPEN.
+
+The candidate now implements an additive V40 manifest with exact
+`agent_loop.prepare_execution_resume_current_actor.v2` /
+`r14-same-run-current-actor.v2` pairing. It preserves old operation semantics,
+requires one genuine V5 profile and one frozen original obligation, and retains
+the full existing cut/closure/reduction validation. Resume preserves historical
+worker/Turns; the existing next-turn producer selects the fresh worker. Retained
+wire validation binds the new fence to the admitted callee; writer guards still
+check live actor, worker, generation/session and exact source/preimage.
+Missing capability refuses without fallback. Global version/CURRENT/owner OS
+admission and old-worker termination are not established by this component.
+
+Before implementation, the new routing tests produced 4 failed and
+2 passed in0.61s (`/private/tmp/r14-current-actor-routing-red.log`): missing route,
+old operations reaching new-version preparation and wrong scope rejection.
+They are currently added to the index, not yet committed. Root's full focused
+command selecting the new route, execution preparation/obligation transition,
+manifest, resume artifacts/guards and original-resolution/reduction modules
+passed113 tests in19.19s. Ruff passed. Scoped HEAD-shadow type comparison found
+187 before and178 after, zero new normalized messages; two new test modules are
+type-clean. Old debt remains. Canonical staged13-path R8 development preflight
+passed structure/import checks, not strict catalog or production admission.
+
+Pure validation of a genuine authenticated historical V5 resume request, without
+using it as live authority, discriminates HEAD and candidate: HEAD refuses at the
+old worker predicate; candidate prepares the explicit new version, keeps worker
+and Turns unchanged, and still prepares the old original request. Fixture heads,
+transfers and journal identities/sizes/mtimes were unchanged. Script/output:
+`/private/tmp/r14-current-actor-saved-pure-check.py` and matching `.out`.
+The initial cold mechanism review ran34 bounded tests and missed the actual
+launcher selector prerequisite, corrected below;
+report `/private/tmp/r14-current-actor-resume-impl-rt.md`. No mounted success is
+claimed yet. The actual scenario now opts into V40 and explicitly checks worker
+preservation at resume and fresh-worker adoption at next Turn.
+
+Exact root focused command:
+```sh
+.venv/bin/pytest -q tests/capabilities/agent_loop/test_current_actor_resume_route.py tests/capabilities/agent_loop/test_execution_recovery_preparation.py tests/capabilities/agent_loop/test_obligation_resume_transition.py tests/architecture/test_current_actor_resume_manifest.py tests/architecture/test_runtime_manifest.py tests/composition/test_r14_resume_artifacts.py tests/composition/test_r14_resume_publication_guards.py tests/composition/test_r14_original_call_resolution_publication.py tests/composition/test_r14_loop_semantic_reduction_publication.py
+```
+
+The first V40 mounted debugger attempt terminated early: 1 failed in8.18s at
+owner startup, `_owner_module` unknown agent-loop capability partition. The
+manifest and nested dispatchers were registered, but the launcher still matched
+only capability partitions through V39. Output:
+`/private/tmp/r14-current-actor-v40-startup-red-output.json`. Original1247 pinned
+inputs were rechecked unchanged before closing the debugger and editing source.
+The cold review withdrew its original verdict and recorded this actual P1.
+
+`.venv/bin/pytest -q tests/platform/test_r14_current_actor_owner_partition.py::test_v40_owner_partition_is_exact_and_preserves_v37`
+reproduced the exact refusal before repair (1 failed in0.58s). The repair adds
+only the exact V40 tuple import/equality branch; no subset or generic fallback.
+`.venv/bin/pytest -q tests/platform/test_r14_current_actor_owner_partition.py`
+then passed2 tests in3.18s: V37 remains unchanged, a foreign extra capability
+refuses, and a real spawned V40 owner receives the new operation and returns typed
+recovery HOLD for a scope-negative cancellation request. This proves mount and
+scope refusal, not the closed-obligation positive journey. Ruff and new test
+mypy passed; reviewer inspected the correction and closed that P1, preserving the
+original erroneous verdict in the audit trail. Full mounted success remains open.
 
 Fresh two-preview runtime control (2026-10-16): command
 `.venv/bin/python -m pytest -c /Users/thunderbird/Projects/chiplog/pyproject.toml -q -p no:timeout /private/tmp/test_r14_preview_repeat_witness.py --tb=short`

@@ -35,6 +35,7 @@ from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+    from chiplog.composition.r14_loop_history import ExecutionRecoveryHistory
 
 
 class OriginalResolutionHistoryRuntime(Protocol):
@@ -221,7 +222,7 @@ def _validate_physical_catalog(
 def _validate_current_sources(
     runtime: CommonCliExecutionRuntime,
     evidence: RetainedOriginalCallResolutionPublication,
-) -> None:
+) -> ExecutionRecoveryHistory | None:
     from chiplog.composition import r14_loop_semantic_reduction_publication
 
     if r14_loop_semantic_reduction_publication._selected_entries(runtime):
@@ -229,8 +230,7 @@ def _validate_current_sources(
         # reader verifies that it extends this exact selected resolver batch.
         from chiplog.composition.r14_loop_history import read_execution_recovery_history
 
-        read_execution_recovery_history(runtime, selected_only=True)
-        return
+        return read_execution_recovery_history(runtime, selected_only=True)
     current = capture_original_call_resolution_request(
         runtime,
         allow_selected_resolution=True,
@@ -248,6 +248,7 @@ def _validate_current_sources(
     )
     if current != evidence.request:
         raise ValueError("selected original resolution differs from current source cut")
+    return None
 
 
 def validate_selected_command(
@@ -348,21 +349,16 @@ def _read_selected_original_call_resolution_evidence_held(
         _validate_physical_catalog(runtime, None)
         return None
     _, _, entry, batch = selected[0]
-    evidence = validate_selected(runtime, entry, batch)
+    evidence = validate_selected_command(runtime, entry, batch)
+    authenticated_suffix = _validate_current_sources(runtime, evidence)
     with read_connection(runtime._database) as connection:
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
     if state != "COMPLETE" or actual != anchored:
         raise ValueError("selected original resolution selected/physical mismatch")
-    if actual != entry.get("resulting"):
-        from chiplog.composition import r14_loop_semantic_reduction_publication
-
-        if not r14_loop_semantic_reduction_publication._selected_entries(runtime):
-            raise ValueError("selected original resolution has an unknown later suffix")
-        from chiplog.composition.r14_loop_history import read_execution_recovery_history
-
-        read_execution_recovery_history(runtime, selected_only=True)
+    if actual != entry.get("resulting") and authenticated_suffix is None:
+        raise ValueError("selected original resolution has an unknown later suffix")
     _validate_physical_catalog(runtime, batch)
     return evidence
 

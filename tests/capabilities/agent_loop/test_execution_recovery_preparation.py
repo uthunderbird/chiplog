@@ -357,7 +357,7 @@ async def test_first_suspension_profile_holds_with_activation_blocker():
     assert result.kind == "CALL_PREPARATION_REJECTED_V1"
 
 
-async def _resume_request():
+async def _resume_request() -> PrepareExecutionResume:
     cut = await _cut()
     run = cut.complete_ordered_run_lineage[-1]
     suspension = prepare_execution_suspension(

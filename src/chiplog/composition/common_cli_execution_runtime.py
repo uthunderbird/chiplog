@@ -16,6 +16,9 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+        PreparedOriginalCallResolution,
+    )
     from chiplog.composition.r14_loop_history import ExecutionRecoveryHistory
 
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
@@ -1009,7 +1012,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await publish_original_call_resolution(self, peer)
 
-    def read_selected_original_call_resolution(self):
+    def read_selected_original_call_resolution(self) -> PreparedOriginalCallResolution | None:
         from chiplog.composition.r14_original_call_resolution_publication import (
             read_selected_original_call_resolution_source_held,
         )

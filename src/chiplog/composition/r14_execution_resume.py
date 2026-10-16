@@ -17,6 +17,7 @@ from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PrepareExecutionResume,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+    CURRENT_ACTOR_RESUME_DISPOSITION,
     classify_execution_resume,
     prepare_execution_resume,
 )
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
 OPERATION = "agent_loop.execution-resume.v1"
 OWNER_OPERATION = "agent_loop.prepare_execution_resume.v1"
 OWNER_OBLIGATION_OPERATION = "agent_loop.prepare_execution_resume_with_obligation.v1"
+OWNER_CURRENT_ACTOR_OPERATION = "agent_loop.prepare_execution_resume_current_actor.v2"
 RUN_SCHEMA = "chiplog.agent-loop.execution-record.v2"
 EVIDENCE_FIELD = "execution_resume_evidence"
 
@@ -101,10 +103,22 @@ def _prepare_resume_artifacts(request, result, call, reply) -> _ResumeArtifacts:
     """Validate exact owner semantics before issuing the short live actor budget."""
     if not isinstance(call, PublicPortCall) or not isinstance(reply, PublicPortSuccess):
         raise ValueError("resume owner exchange has the wrong wire variants")
+    current_actor = request.disposition_version == CURRENT_ACTOR_RESUME_DISPOSITION
+    if (call.operation_id == OWNER_CURRENT_ACTOR_OPERATION) != current_actor:
+        raise ValueError("resume operation and disposition version differ")
+    if current_actor and (
+        not isinstance(request.fence, NonSchedulerFence)
+        or request.fence.worker_session_id
+        != f"{call.callee.broker_epoch}:{call.callee.generation_id}:{call.callee.session_id}"
+        or request.fence.runtime_generation != call.callee.generation_id
+    ):
+        raise ValueError("current-actor resume fence differs from owner exchange")
     request_raw = request.canonical_bytes()
     result_raw = result.canonical_bytes()
     if (
-        call.operation_id not in (OWNER_OPERATION, OWNER_OBLIGATION_OPERATION)
+        call.operation_id not in (
+            OWNER_OPERATION, OWNER_OBLIGATION_OPERATION, OWNER_CURRENT_ACTOR_OPERATION,
+        )
         or call.schema_id != "chiplog.execution.recovery-request.v1"
         or call.canonical_payload != request_raw
         or call.caller.owner_id != "broker"
@@ -488,6 +502,21 @@ async def resume_execution(
                 raise LoopRejected("resume source cut differs from current commitment")
             worker = runtime.current_worker()
             session = runtime._supervisor.runtime().session("agent_loop")
+            owner_capabilities = next(
+                row.capability_ids
+                for row in runtime._supervisor.runtime().graph_generation().owners
+                if row.owner_id == "agent_loop"
+            )
+            current_actor = current.worker_session != worker
+            if current_actor and OWNER_CURRENT_ACTOR_OPERATION not in owner_capabilities:
+                raise LoopRejected("current-actor resume capability unavailable; HOLD")
+            owner_operation = (
+                OWNER_CURRENT_ACTOR_OPERATION
+                if current_actor
+                else OWNER_OBLIGATION_OPERATION
+                if OWNER_OBLIGATION_OPERATION in owner_capabilities
+                else OWNER_OPERATION
+            )
             decisions = runtime._loop_decisions().entries()
             decision_head = decisions[-1][:1] if decisions else ()
             request = PrepareExecutionResume(
@@ -495,7 +524,10 @@ async def resume_execution(
                 run=current,
                 original_suspension=suspension,
                 cut=cut,
-                disposition_version="r14-same-run-equality.v1",
+                disposition_version=(
+                    CURRENT_ACTOR_RESUME_DISPOSITION
+                    if current_actor else "r14-same-run-equality.v1"
+                ),
                 activation_payload=activation_payload,
                 fence=NonSchedulerFence(
                     lineage=NotApplicable(),
@@ -508,16 +540,6 @@ async def resume_execution(
                     runtime_generation=session.generation_id,
                 ),
             )
-        owner_capabilities = next(
-            row.capability_ids
-            for row in runtime._supervisor.runtime().graph_generation().owners
-            if row.owner_id == "agent_loop"
-        )
-        owner_operation = (
-            OWNER_OBLIGATION_OPERATION
-            if OWNER_OBLIGATION_OPERATION in owner_capabilities
-            else OWNER_OPERATION
-        )
         result, owner_call, owner_reply = await _exchange(
             runtime, request, owner_operation, PreparedExecutionResume
         )

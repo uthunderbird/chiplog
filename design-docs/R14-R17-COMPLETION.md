@@ -1,5 +1,11 @@
 # R14–R17 completion ledger
 
+**R14 scope update, 2026-10-17:** the user's simplification instruction supersedes
+the full-assurance R14 completion demands below. Use
+[functional scope and backlog](R14-FUNCTIONAL-SCOPE.md) for current acceptance.
+Old evidence remains historical; deferred assurance is neither completed nor a
+functional R14 blocker. R15–R17 scope is not changed by this update.
+
 Status: OPEN. Baseline `5b38362120c1223b019ea9ec3b099e017b455364`.
 The user requested full completion after the bounded continuations were published.
 The subsequent scope is every R14–R17 requirement in IMPLEMENTATION-ROADMAP.md,

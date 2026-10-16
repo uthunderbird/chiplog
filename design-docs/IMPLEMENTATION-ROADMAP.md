@@ -396,6 +396,11 @@ convergence check for that item.
 
 ### R14 — Recovery frontier and call accounting
 
+**2026-10-17 user scope override:** implement and accept the client functionality
+in [R14-FUNCTIONAL-SCOPE.md](R14-FUNCTIONAL-SCOPE.md). Its backlog supersedes the
+exhaustive proof/mutation/registry requirements below as R14 release blockers;
+the functional recovery features remain required.
+
 **Depends on:** R3, R7, R13. Work on R15–R17 begins only after R14 is complete and verified.
 
 Implement closed recovery-frontier membership, immutable suspension baselines, `TERMINAL | READ_ONLY_RETRY_PENDING`, sealed fan-out, acceptance branches, terminal accounting versus continuation-ready joins, recovered outcomes, successor classification/publication, original-stream obligations and post-terminal recovery work.

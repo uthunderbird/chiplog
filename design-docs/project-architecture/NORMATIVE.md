@@ -2,6 +2,12 @@
 
 ## Status and authority
 
+R14 implementation scope was narrowed by direct user instruction on 2026-10-17:
+[functional scope and deferred assurance](../R14-FUNCTIONAL-SCOPE.md) governs its
+current acceptance. Requirements below for exhaustive historical reconstruction,
+global verification closure and mutation completeness are deferred for R14,
+without changing existing durable formats or granting deployment readiness.
+
 This document records the implementation architecture accepted through architecture interview round R06. It is subordinate to [`VISION.md`](../VISION.md), `VisionVersion: 2026-08-22.2`, whose assurance status is **bounded-incomplete**. Where this document selects a mechanism, that mechanism is a realization of the product contract, not a new product-semantic source. A stage that does not yet implement a long-term capability does not weaken or waive that capability.
 
 The architecture inherits, and cannot clear, the VISION's explicit assurance holds: the repaired Plan/Fact/Journal and commitment/reliance material has not been independently re-cleared; natural-language interaction, external-information handling, and institutional/governance design have not received dedicated terminal attacks; and neither a whole-document canonical-parent coverage audit nor a full regression sweep exists. Acceptance of an architectural mechanism, a passing local fixture, or a row in the cross-reference below does not independently verify the VISION or change `HOLD_ADOPTION`. Only a successor VISION acting as product authority, or the exact independent readiness and release processes governed by the current VISION, may change those statuses.

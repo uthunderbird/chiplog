@@ -1,5 +1,13 @@
 # Remaining R14 implementation roadmap
 
+**Scope update, 2026-10-17:** [functional scope and backlog](R14-FUNCTIONAL-SCOPE.md)
+governs current R14 implementation and acceptance by direct user instruction.
+The detailed assurance obligations below are historical planning context where
+they exceed that scope; they must not re-enter as functional release blockers.
+R14.6 is now readable per-seal accounting with ordinary reopen/replay/continuation.
+Full physical-prefix reconstruction, historical owner re-derivation, global
+closure and exhaustive mutation/interleaving matrices are deferred there.
+
 Status: OPEN. Planning snapshot: `3715201` (2026-10-13). This document plans only
 remaining R14 work. It does not change normative requirements, discharge a ledger
 row, authorize R15–R17 implementation, or choose a retry budget.

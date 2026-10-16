@@ -2,7 +2,10 @@
 
 import pytest
 
-from chiplog.capabilities.agent_loop.execution_recovery_preparation import prepare_execution_resume
+from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+    CURRENT_ACTOR_RESUME_DISPOSITION,
+    prepare_execution_resume,
+)
 from chiplog.composition import r14_execution_resume as resume
 from chiplog.composition.r14_recovery_publication import RecoveryActorBudgetV1
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
@@ -32,7 +35,7 @@ def _reply(call, schema, payload):
                              schema_id=schema, canonical_payload=payload)
 
 
-async def _evidence():
+async def _evidence() -> resume.RetainedExecutionResume:
     request = await _resume_request()
     result = prepare_execution_resume(request)
     assert result.kind == "PREPARED_EXECUTION_RESUME_V2"
@@ -106,3 +109,40 @@ async def test_resume_artifacts_reject_one_sided_evidence_change(damage):
     field, value = changes[damage]
     with pytest.raises(ValueError, match=r"differs|differ"):
         resume._bind_resume_artifacts(evidence.model_copy(update={field: value}), artifacts)
+
+
+@pytest.mark.parametrize("damage", ["worker", "generation"])
+async def test_current_actor_resume_rejects_fence_not_bound_to_owner_exchange(damage: str) -> None:
+    evidence = await _evidence()
+    callee = evidence.owner_call.callee
+    fence = evidence.request.fence.model_copy(update={
+        "worker_session_id": f"{callee.broker_epoch}:{callee.generation_id}:{callee.session_id}",
+        "runtime_generation": callee.generation_id,
+    })
+    fence = fence.model_copy(update={
+        "worker_session_id" if damage == "worker" else "runtime_generation": "foreign",
+    })
+    request = evidence.request.model_copy(update={
+        "disposition_version": CURRENT_ACTOR_RESUME_DISPOSITION, "fence": fence,
+    })
+    call = evidence.owner_call.model_copy(update={
+        "operation_id": resume.OWNER_CURRENT_ACTOR_OPERATION,
+        "canonical_payload": request.canonical_bytes(),
+    })
+    with pytest.raises(ValueError, match="fence differs from owner exchange"):
+        resume._prepare_resume_artifacts(request, evidence.result, call, evidence.owner_reply)
+
+
+@pytest.mark.parametrize("new_operation", [False, True])
+async def test_retained_resume_rejects_mixed_operation_and_disposition(new_operation: bool) -> None:
+    evidence = await _evidence()
+    request = evidence.request
+    call = evidence.owner_call
+    if new_operation:
+        call = call.model_copy(update={"operation_id": resume.OWNER_CURRENT_ACTOR_OPERATION})
+    else:
+        request = request.model_copy(update={
+            "disposition_version": CURRENT_ACTOR_RESUME_DISPOSITION,
+        })
+    with pytest.raises(ValueError, match="operation and disposition version differ"):
+        resume._prepare_resume_artifacts(request, evidence.result, call, evidence.owner_reply)

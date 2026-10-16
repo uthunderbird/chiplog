@@ -9,6 +9,9 @@ from types import SimpleNamespace as NS
 import pytest
 
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
+from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
+    CURRENT_ACTOR_RESUME_DISPOSITION,
+)
 from chiplog.composition import r14_execution_resume as resume
 from chiplog.platform._sqlite import (
     EventAppender,
@@ -36,6 +39,7 @@ class _Value(NS):
     "decision-pending", "physical-preimage",
     "unsupported-prefix", "legacy-profile",
     "collection-trust",
+    "current-actor", "current-actor-no-capability", "current-actor-decision-session",
 ])
 async def test_resume_validates_once_and_preserves_both_writer_guards(
     tmp_path, monkeypatch, mutation,
@@ -76,12 +80,16 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
     session = NS(generation_id="test-generation")
     state.session = session
     state.worker = suspended.worker_session
+    if mutation and mutation.startswith("current-actor"):
+        state.worker = "fresh-current-worker"
     state.trust = "exact-trust"
     state.pending = False
     engine = NS(
         session=lambda _: state.session,
         graph_generation=lambda: NS(owners=(NS(owner_id="agent_loop", capability_ids=(
             resume.OWNER_OBLIGATION_OPERATION,
+            *((resume.OWNER_CURRENT_ACTOR_OPERATION,)
+              if mutation != "current-actor-no-capability" else ()),
         )),)),
     )
     actor = NS()
@@ -149,7 +157,12 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
             expected_preimage_commitment=preimage,
         )
 
-    async def exchange(*_):
+    async def exchange(_, request, operation, result_type):
+        if mutation and mutation.startswith("current-actor"):
+            assert operation == resume.OWNER_CURRENT_ACTOR_OPERATION
+            assert request.disposition_version == CURRENT_ACTOR_RESUME_DISPOSITION
+            assert request.run.worker_session == suspended.worker_session
+            assert request.fence.worker_session_id == "fresh-current-worker"
         return result, "inert-owner-call", "inert-owner-reply"
 
     async def finish(*_):
@@ -181,7 +194,7 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
                 state.now = state.issued + 30_000_000_000 - 1
             if mutation == "decision-worker":
                 state.worker = "rival-worker"
-            if mutation == "decision-session":
+            if mutation in ("decision-session", "current-actor-decision-session"):
                 state.session = NS(generation_id="rival-generation")
             if mutation == "decision-trust":
                 state.trust = "changed-trust"
@@ -217,7 +230,7 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
 
     monkeypatch.setattr(resume.time, "monotonic_ns", lambda: state.now)
     try:
-        if mutation in (None, "decision-before-deadline"):
+        if mutation in (None, "decision-before-deadline", "current-actor"):
             assert await resume.resume_execution(runtime, "peer", suspended.run_id,
                                                  suspended.head, b"activate") == active
             assert counts == {"collect": 1, "prepare": 1, "classify": 1,
@@ -231,9 +244,13 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
             assert not any(row[1] == "resumed" for row in store.durable_records())
             assert state.selected is None
             assert counts["admission"] == int(
-                mutation not in ("physical-preimage", "collection-trust")
+                mutation not in (
+                    "physical-preimage", "collection-trust", "current-actor-no-capability",
+                )
             )
             if mutation == "collection-trust":
+                assert counts["prepare"] == counts["classify"] == counts["decision"] == 0
+            if mutation == "current-actor-no-capability":
                 assert counts["prepare"] == counts["classify"] == counts["decision"] == 0
             if mutation.startswith("decision"):
                 assert counts["decision"] == 1
