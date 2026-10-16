@@ -51,10 +51,16 @@ class CurrentSqlCorpus:
 
 
 def inspect_sources(sources: tuple[tuple[str, str], ...]) -> CurrentSqlCorpus:
+    return _inspect_sources_with_occurrences(sources)[0]
+
+
+def _inspect_sources_with_occurrences(sources):
+    """Keep exact AST occurrences for the expression join; public accounting is unchanged."""
     if not sources or len({module for module, _ in sources}) != len(sources):
         raise UnresolvedSqlCorpus("source accounting requires unique nonempty input files")
     nodes: list[CorpusNode] = []
     digests = []
+    occurrences = []
     for module, source in sorted(sources):
         if not module:
             raise UnresolvedSqlCorpus("source accounting cannot contain an unnamed file")
@@ -94,9 +100,12 @@ def inspect_sources(sources: tuple[tuple[str, str], ...]) -> CurrentSqlCorpus:
             events, key=lambda event: event[:4]
         ):
             ordinals[qualname] = ordinals.get(qualname, 0) + 1
-            nodes.append(CorpusNode(module, qualname, ordinals[qualname], kind,
-                                    ast.unparse(node), _shape(node), scope_digest))
-    return CurrentSqlCorpus(tuple(nodes), tuple(digests))
+            evidence = CorpusNode(module, qualname, ordinals[qualname], kind,
+                                  ast.unparse(node), _shape(node), scope_digest)
+            nodes.append(evidence)
+            if kind == "sql_call_candidate":
+                occurrences.append((evidence, node, tree))
+    return CurrentSqlCorpus(tuple(nodes), tuple(digests)), tuple(occurrences)
 
 
 _SQL_NAMES = frozenset({

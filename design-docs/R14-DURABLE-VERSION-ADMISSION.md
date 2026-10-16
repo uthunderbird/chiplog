@@ -786,3 +786,67 @@ tests/verification/test_authority_read_graph.py --tb=short` gave152 passed in2.7
 resolve the whole corpus: verifier-owned SQL sites also need classification, with
 no filename exemption. Complete caller/instance/domain/assembly joins, approved
 graph/AMR/descriptor, CURRENT and public startup admission remain open.
+
+## Corpus-to-expression occurrence accounting
+
+`verification/sql_expression_inventory.py` now joins expression evidence to the
+canonical all-source corpus. The collector shares each exact AST occurrence and
+its CorpusNode; family ordinals select that occurrence before using its corpus
+event identity. Repeated calls remain separate. Complete source/corpus equality
+includes digest values, unlike the older inventory-shape comparator. Each lexical
+candidate has exactly one resolved row or a nonempty unresolved reason. Internal
+accounting rejects omission, duplication, overlap, ghost/altered nodes, ordering
+and dependency-snapshot mismatch. This checker does not establish SQL truth or
+authorize a supplied evidence DTO.
+
+Planning expression extraction is now inert and separate from its existing engine
+wrapper; receiver/placement/rebinding guards remain. Named finite producers compose
+with literal/Add/IfExp syntax. Materializer admission's script and identifier forms
+dispatch per AST call, not one cache entry per method. Placeholder n=0/1/2 strings
+are explicitly PLACEHOLDER_REPRESENTATIVES, not exhaustive SQL enumeration. No
+receiver/callee/argument/reachability/domain proof follows from FINITE_SYNTAX.
+
+Command `.venv/bin/pytest -q tests/verification/test_sql_expression_inventory.py
+tests/verification/test_authority_sql_corpus.py
+tests/verification/test_authority_read_graph.py --tb=short` gave47 passed in14.09s
+(14 new ledger cases). Initial11 failures included missing implementation and a
+predicate-mutant fixture marker that did not match real source; that setup was
+corrected. The first implementation exposed the shared-method route conflict.
+The actual dynamic planning predicate now reaches engine observation through the
+joined ledger, exposes deletion_fences.frontier, and fails the independent graph.
+Current-tree tests require all21 original dynamic sites to retain evidence, while
+unsupported verifier SQL stays explicit. Ruff passed. Cold plan/review:
+`/private/tmp/r14-sql-expression-inventory-plan-review.md` and
+`/private/tmp/r14-sql-expression-join-review.md`; no open scoped P0/P1, no tests run
+by either reviewer.
+
+Candidate export `/private/tmp/r14-sql-expression-inventory-b475626-candidate.json`
+is42,295,562 bytes, SHA256
+`145b96460a40225cbee7129251e2cb10df1059369108fbc0aa0b853b7c82a818`.
+The generation command read every src Python file, ran inspect_sources followed
+by extract_sql_expression_inventory, serialized dataclasses.asdict(result) and
+rechecked every source digest against file bytes before exclusive output creation.
+It contains584 source identities and109326 corpus nodes,351 resolved candidates
+(345 finite syntax,6 placeholder representative families) and10 unresolved rows.
+Base HEAD is b475626; source digests identify the actual working snapshot, not
+that commit alone. This is candidate evidence, not an approved descriptor.
+
+Count recheck command (prints584,109326,351,10):
+
+```sh
+.venv/bin/python - <<'PY'
+import json
+from pathlib import Path
+p = Path('/private/tmp/r14-sql-expression-inventory-b475626-candidate.json')
+x = json.loads(p.read_bytes())['inventory']
+print(len(x['corpus']['source_digests']), len(x['corpus']['nodes']),
+      len(x['resolved']), len(x['unresolved']))
+PY
+```
+
+Remaining10 rows are four lexical owner/reader execute calls needing callee
+classification, and six parameter-driven verifier SQL sites needing caller and
+private-connection provenance. No filename exemption removed them. Noncandidate
+calls/aliases remain in the full corpus; global require_closed still refuses.
+Complete receiver/domain/caller/assembly joins, approved graph/AMR/descriptor,
+CURRENT and public startup admission remain required.

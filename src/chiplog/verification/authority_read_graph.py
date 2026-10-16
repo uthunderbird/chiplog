@@ -23,7 +23,19 @@ class StatementReads:
     reads: tuple[tuple[str, str, str], ...]
 
 
+@dataclass(frozen=True)
+class PlanningSqlAlternative:
+    site: int
+    alternative: int
+    sql: str
+
+
 def planning_read_graph(source: str, schema_sql: str) -> tuple[StatementReads, ...]:
+    return tuple(StatementReads(item.site, item.alternative, _prepare_reads(schema_sql, item.sql))
+                 for item in planning_sql_alternatives(source))
+
+
+def planning_sql_alternatives(source: str) -> tuple[PlanningSqlAlternative, ...]:
     """Inspect the current planning method only; other source forms remain unproved."""
     tree = ast.parse(source)
     classes = [node for node in tree.body
@@ -100,7 +112,7 @@ def planning_read_graph(source: str, schema_sql: str) -> tuple[StatementReads, .
             site += 1
             sqls = alternatives(call.args[0], call.lineno, frozenset())
             for alternative, sql in enumerate(sqls):
-                result.append(StatementReads(site, alternative, _prepare_reads(schema_sql, sql)))
+                result.append(PlanningSqlAlternative(site, alternative, sql))
     if not result:
         raise UnknownSqlExpression("planning method contains no SQL execution")
     return tuple(result)
