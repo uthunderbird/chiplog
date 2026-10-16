@@ -2054,3 +2054,65 @@ alone cannot clear receiver/caller/domain closure. Exact path normalization,
 field rebinding/database substitution/leaf mutation/ghost and missing edge
 negatives are required. This is the next implementation route, not an admitted
 fragment, registered tuple, V2 initializer, CURRENT or startup gate.
+
+## Joined R7 planning descriptor candidate
+
+verification/planning_descriptor_chain.py now builds the bounded R7 base-opener
+fragment from one source snapshot: canonical database route, literal runtime and
+manifest assembly edge, reader constructor/field, readonly SQLite connection,
+direct planning handoff, exact corpus occurrences, finite SQL alternatives and
+real private-engine READ sets. Five alternatives at three business SQL sites
+are compared bidirectionally to independent literal expected READ tuples.
+The wrapper is a forwarding edge, never invented as a SQL leaf. Strict src/
+normalization rejects ambiguous source keys. Other mounts remain represented.
+
+The supported local grammar rejects constructor and method signature changes,
+field/method/import/decorator rebinding, connection escape, non-None implicit
+callback defaults and database substitutions. Real leaf predicate mutation
+reaches SQLite and changes observed READ edges before descriptor mismatch.
+No filename exemption, running tuple registration or admission token was added.
+Schema/commitment helpers, separate ledger calls, other assemblies, source-set
+exhaustiveness, external mutation and downstream effects remain explicit residual
+obligations. Both fragment and corpus global require_closed still refuse.
+
+Delegated RED began with the absent module. Subsequent actual-source REDs caught
+connect replacement/escape and wrapper property (3 DID NOT RAISE), then positional
+signature reorders (3 DID NOT RAISE). Root read the code and independently found
+container receiver aliases (3 RED), class/def/import connection/database bindings
+(6 RED), and opener/canonical/default-callback binding holes (5 RED). Each was
+repaired and rechecked. One initial class-binding mutant hit an unrelated guard;
+it was corrected before treating its failure as evidence of this gap.
+
+Cold swarm route/implementation ledger:
+`/private/tmp/r14-admission-next-executable-slice.md`.
+Cold design red-team produced two concrete mechanism candidates but was
+interrupted before its final report; no completed zero-findings review claimed.
+Root reproduced and repaired those mechanisms; review/evidence:
+`/private/tmp/r14-planning-chain-root-review.md`.
+
+Root command `.venv/bin/python -m pytest -q
+tests/verification/test_planning_descriptor_chain.py
+tests/verification/test_authority_read_graph.py
+tests/verification/test_sql_expression_inventory.py
+tests/verification/test_assembly_forwarding.py
+tests/verification/test_canonical_database_routes.py
+tests/verification/test_constant_sql_scripts.py --tb=short` gave148 passed in22.43s.
+Ruff and diff-check passed. This is focused verifier evidence, not runtime proof.
+
+Full-source candidate build read sorted src/**/*.py, built the fragment, checked
+independent READ tuples and require_closed refusal, then rechecked every source
+SHA and the source path set. Export:
+`/private/tmp/r14-planning-descriptor-fragment-d4874b3-candidate.json`,89235 bytes,
+SHA256 `91579eaeb225c7998c95ab6440ebe728083057657a0d79702a0b329a09addcde`.
+It binds585 sources and109664 corpus nodes,5 planning rows and18 other mounts.
+Base HEAD d4874b3; source digests bind the actual candidate snapshot. No approved
+descriptor, physical schema/AMR closure, CURRENT, V2 initialization or public
+startup admission exists yet; the three startup RED controls remain open.
+
+Separate preserved-preview audit:
+`/private/tmp/r14-second-acceptance-preview-deadlines.json` authenticated two
+entries (1370687 and33583766 raw bytes), each with a60000000000ns mandate horizon
+from capture; all five input SHA/modes unchanged. This does not reconstruct the
+failed in-memory loop/effects preparation or prove expiry. The frozen debugger
+session072d2186-e7df-4f72-a46f-dcacd00e114f remains RUNNING on authoritative poll;
+no restart or second-acceptance diagnosis is claimed.
