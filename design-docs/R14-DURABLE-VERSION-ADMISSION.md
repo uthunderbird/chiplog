@@ -685,3 +685,28 @@ This proves supported syntax and selected preparation observations, not universa
 cardinality, repeatable iteration, property purity or runtime binder identity.
 Module producer closure, receiver/caller/domain closure, other SQL expressions,
 descriptor registration, CURRENT and public startup admission remain open.
+
+## Module-literal SQL scripts
+
+`verification/constant_sql_scripts.py` extracts the four actual module-constant
+script consumers: main reference schema and materializer admission, broker authority
+ledger and read ledger. It accepts only one direct module literal assignment with
+one syntactic binding throughout the source. This deliberately rejects even harmless
+same-named bindings in unrelated scopes; local assignment after the call also
+refuses. No module import or expression execution is used. Nested consumer frames,
+foreign expressions and noncanonical call arguments refuse. SQL-named call ordinals
+retain the preceding execute in materializer admission (script ordinal2).
+
+The real read-ledger literal mutation adds a table. Extraction retains the changed
+SQL; disposable schema preparation observes CREATE_TABLE unexpected_table before
+the independent baseline-action comparison refuses. It is not merely a hash refusal.
+Initial18 cases failed on the absent implementation in0.08s. Command
+`.venv/bin/pytest -q tests/verification/test_constant_sql_scripts.py
+tests/verification/test_sqlite_preparation.py
+tests/verification/test_placeholder_sql_families.py --tb=short` gave89 passed in0.42s
+(18 new cases). Ruff passed. Cold plan review:
+`/private/tmp/r14-constant-sql-script-plan-review.md`; reviewer ran no tests.
+
+The source digest binds provenance, not runtime immutability. External monkeypatch,
+reflection, arbitrary module side effects, receiver/domain/assembly identity and
+whole-method SQL closure are not established. CURRENT/startup admission remain open.
