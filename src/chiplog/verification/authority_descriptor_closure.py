@@ -175,6 +175,12 @@ def _classifications(
         add(scanner.sink, "READER_SCANNER", "tenant_main", scanner.role)
         for forward in scanner.forwards:
             add(forward, "SCANNER_FORWARD", "tenant_main", scanner.role)
+    for ledger in fragment.ledger_chains:
+        add(ledger.origin, "LEDGER_ORIGIN", "broker_read_ledger", "selected base runtime only")
+        add(ledger.factory, "LEDGER_FACTORY", "broker_read_ledger", ledger.role)
+        add(ledger.sink, "LEDGER_SQL", "broker_read_ledger", ledger.role)
+        for forward in ledger.forwards:
+            add(forward, "LEDGER_FORWARD", "broker_read_ledger", ledger.role)
     for mount in mounts:
         if mount.edge == fragment.assembly:
             add(mount.site, "BASE_ASSEMBLY", None, "base runtime/manifest forwarding only")

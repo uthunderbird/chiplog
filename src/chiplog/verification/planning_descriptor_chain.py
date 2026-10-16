@@ -1,8 +1,8 @@
 """Joined R7 base planning fragment; explicitly not an admission credential.
 
-Only the direct planning-method connection handoff is proved. Other inputs to
-BrokerAuthorityReader.execute, other assemblies, module import effects and
-external class mutation remain outside this fragment and block global closure.
+Selected planning, scanner, preparation and ledger handoffs have conditional
+source-local evidence. Other assemblies, module import effects, helper semantics
+and external class mutation remain outside this fragment and block global closure.
 """
 
 import ast
@@ -71,6 +71,17 @@ class ReaderScannerChain:
 
 
 @dataclass(frozen=True)
+class ReadLedgerOriginChain:
+    origin: CorpusNode
+    factory: CorpusNode
+    forwards: tuple[CorpusNode, ...]
+    sink: CorpusNode
+    role: str
+    domain: str
+    expression: SqlExpressionResolution
+
+
+@dataclass(frozen=True)
 class PlanningDescriptorFragment:
     corpus: CurrentSqlCorpus
     expressions: SqlExpressionInventory
@@ -80,6 +91,7 @@ class PlanningDescriptorFragment:
     rows: tuple[PlanningDescriptorRow, ...]
     preparation_chains: tuple[PreparationOriginChain, ...]
     scanner_chains: tuple[ReaderScannerChain, ...]
+    ledger_chains: tuple[ReadLedgerOriginChain, ...]
     residual_obligations: tuple[str, ...]
 
     def require_closed(self) -> None:
@@ -666,6 +678,645 @@ def _reader_scanners(corpus, occurrences, expressions):
     return tuple(chains)
 
 
+def _read_ledger_origins(sources, corpus, occurrences, expressions):
+    "Selected base-runtime ledger provenance; other users and semantics stay residual."
+    texts = dict(sources)
+    path = "src/chiplog/platform/read_ledger.py"
+    tree = _one(
+        [tree for site, _, tree in occurrences if site.module == path][:1],
+        "missing ledger source tree",
+    )
+    runtime = ast.parse(texts["src/chiplog/composition/r7_planning.py"])
+    reader = ast.parse(texts["src/chiplog/platform/authority_reads.py"])
+    cls = _scope(tree, "BrokerReadLedger")
+    _require(
+        not cls.bases and not cls.keywords and not cls.decorator_list,
+        "unsupported ledger class behavior",
+    )
+    _imports(
+        runtime,
+        "chiplog.composition.r7_planning",
+        {"BrokerReadLedger": "chiplog.platform.read_ledger:BrokerReadLedger"},
+    )
+    _imports(
+        tree,
+        "chiplog.platform.read_ledger",
+        {
+            "BrokerReadLedger": "chiplog.platform.read_ledger:BrokerReadLedger",
+            "checked_file_identity": "chiplog.platform.authority_gate:checked_file_identity",
+        },
+    )
+    for module in ("contextlib", "sqlite3"):
+        imported = [
+            n
+            for n in tree.body
+            if isinstance(n, ast.Import)
+            and any(a.name == module and a.asname is None for a in n.names)
+        ]
+        _require(
+            len(imported) == 1 and [n for n in ast.walk(tree) if _binds(n, module)] == imported,
+            "ledger module binding changed: " + module,
+        )
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    protected = {
+        "_path",
+        "_authority_gate",
+        "_identity",
+        "__init__",
+        "current_state",
+        "current_state_or_none",
+        "begin",
+        "release",
+        "dequeue",
+        "_authority_scope",
+    }
+    def namespace_nodes(node):
+        # Class assignments bind through Name targets; method-local row names do not.
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            return
+        for child in ast.iter_child_nodes(node):
+            yield from namespace_nodes(child)
+
+    for name in protected:
+        bindings = [n for n in namespace_nodes(cls) if _binds(n, name)]
+        if name.startswith("_") and name in {"_path", "_authority_gate", "_identity"}:
+            _require(not bindings, "ledger field has class binding: " + name)
+        else:
+            _require(
+                len(bindings) == 1 and isinstance(bindings[0], ast.FunctionDef),
+                "ledger method is rebound: " + name,
+            )
+    for node in ast.walk(tree):
+        _require(
+            not (
+                isinstance(node, ast.Name)
+                and node.id
+                in {
+                    "getattr",
+                    "setattr",
+                    "delattr",
+                    "globals",
+                    "locals",
+                    "vars",
+                    "eval",
+                    "exec",
+                    "__import__",
+                    "__builtins__",
+                }
+            ),
+            "reflective ledger access is unsupported",
+        )
+        _require(
+            not (
+                isinstance(node, ast.Attribute)
+                and node.attr
+                in {
+                    "__dict__",
+                    "__class__",
+                    "__getattribute__",
+                    "__setattr__",
+                    "__code__",
+                    "__globals__",
+                    "__defaults__",
+                }
+            ),
+            "indirect ledger mutation is unsupported",
+        )
+        if isinstance(node, ast.Name) and node.id in {"sqlite3", "contextlib"}:
+            parent = parents[node]
+            _require(
+                isinstance(parent, ast.Attribute)
+                and parent.value is node
+                and isinstance(parent.ctx, ast.Load),
+                "ledger module escapes or is rebound",
+            )
+            if node.id == "sqlite3":
+                _require(
+                    parent.attr in {"connect", "IntegrityError"}, "unknown ledger SQLite member"
+                )
+            else:
+                _require(
+                    parent.attr in {"contextmanager", "nullcontext"},
+                    "unknown ledger context member",
+                )
+            if parent.attr in {"connect", "nullcontext"}:
+                call = parents[parent]
+                _require(
+                    isinstance(call, ast.Call) and call.func is parent,
+                    "ledger factory callable escapes",
+                )
+        if isinstance(node, ast.Name) and node.id == "self" and isinstance(node.ctx, ast.Load):
+            parent = parents[node]
+            _require(
+                isinstance(parent, ast.Attribute) and parent.value is node,
+                "ledger receiver escapes direct attribute positions",
+            )
+        if (isinstance(node, ast.Attribute) and node.attr in protected
+                and isinstance(node.ctx, (ast.Store, ast.Del))):
+            _require(
+                _text(node) in {"self._path", "self._authority_gate", "self._identity"},
+                "ledger method is replaced",
+            )
+    init = _scope(cls, "__init__")
+    args = init.args
+    _require(
+        [a.arg for a in args.args] == ["self", "path"]
+        and [a.arg for a in args.kwonlyargs] == ["authority_gate"]
+        and len(args.kw_defaults) == 1
+        and _text(args.kw_defaults[0]) == "None"
+        and not (args.posonlyargs or args.defaults or args.vararg or args.kwarg)
+        and not init.decorator_list,
+        "ledger constructor signature changed",
+    )
+    _field(cls, "self._path", "path", init)
+    _field(cls, "self._authority_gate", "authority_gate", init)
+    path_writes = [n for n in ast.walk(init) if _binds(n, "path")]
+    normalization = _one(
+        [
+            n
+            for n in init.body
+            if isinstance(n, ast.Assign) and [_text(t) for t in n.targets] == ["path"]
+        ],
+        "ledger path normalization missing",
+    )
+    _require(
+        _text(normalization.value)
+        == ("path.resolve(strict=False) if authority_gate is not None else path")
+        and path_writes == [args.args[1], normalization.targets[0]],
+        "ledger path normalization or binding changed",
+    )
+    _require(
+        [n for n in ast.walk(init) if _binds(n, "authority_gate")] == [args.kwonlyargs[0]],
+        "ledger authority gate rebound",
+    )
+    identity_writes = [
+        n
+        for n in ast.walk(cls)
+        if isinstance(n, ast.Attribute)
+        and _text(n) == "self._identity"
+        and isinstance(n.ctx, (ast.Store, ast.Del))
+    ]
+    _require(
+        len(identity_writes) == 2
+        and all(n in list(ast.walk(init)) for n in identity_writes)
+        and [_text(parents[n]) for n in identity_writes]
+        == [
+            "self._identity: FileIdentity | None = None",
+            "self._identity = checked_file_identity(path, prior)",
+        ],
+        "ledger identity producer changed",
+    )
+    path_field = _one(
+        [
+            n
+            for n in init.body
+            if isinstance(n, ast.Assign) and [_text(t) for t in n.targets] == ["self._path"]
+        ],
+        "ledger path field missing",
+    )
+    gate_field = _one(
+        [
+            n
+            for n in init.body
+            if isinstance(n, ast.Assign)
+            and [_text(t) for t in n.targets] == ["self._authority_gate"]
+        ],
+        "ledger gate field missing",
+    )
+    _require(
+        init.body.index(gate_field) < init.body.index(normalization) < init.body.index(path_field),
+        "ledger path/gate assignment order changed",
+    )
+    for method in cls.body:
+        if (
+            isinstance(method, ast.FunctionDef)
+            and method.args.args
+            and method.args.args[0].arg == "self"
+        ):
+            _require(
+                [n for n in ast.walk(method) if _binds(n, "self")] == [method.args.args[0]],
+                "ledger self receiver rebound",
+            )
+    scope = _scope(cls, "_authority_scope")
+    _signature(scope, ("self",))
+    _require(
+        [_text(n) for n in scope.decorator_list] == ["contextlib.contextmanager"]
+        and [_text(n) for n in scope.body]
+        == [
+            (
+                "gate = contextlib.nullcontext() if self._authority_gate is N"
+                "one else self._authority_gate.hold()"
+            ),
+            (
+                "with gate:\n    if self._identity is not None:\n        checke"
+                "d_file_identity(self._path, self._identity)\n    try:\n       "
+                " yield\n    finally:\n        if self._identity is not None:\n "
+                "           checked_file_identity(self._path, self._identity)"
+            ),
+        ],
+        "ledger authority context shape changed",
+    )
+    rt = _scope(runtime, "R7PlanningRuntime")
+    broker = _scope(reader, "BrokerAuthorityReader")
+    selected_classes = {'BrokerReadLedger', 'BrokerAuthorityReader', 'R7PlanningRuntime'}
+    reflective_names = {'getattr', 'setattr', 'delattr', 'globals', 'locals', 'vars',
+                        'eval', 'exec', '__import__', '__builtins__'}
+    for module_tree in (tree, runtime, reader):
+        module_parents = {child: parent for parent in ast.walk(module_tree)
+                          for child in ast.iter_child_nodes(parent)}
+        annotations = set()
+        for node in ast.walk(module_tree):
+            annotation = (node.annotation if isinstance(node, (ast.arg, ast.AnnAssign))
+                          else node.returns if isinstance(
+                              node, (ast.FunctionDef, ast.AsyncFunctionDef)) else None)
+            if annotation is not None:
+                annotations.update(ast.walk(annotation))
+        for node in ast.walk(module_tree):
+            if isinstance(node, ast.ImportFrom):
+                _require(not any(alias.name in selected_classes and alias.asname
+                                 and alias.asname != alias.name for alias in node.names),
+                         'selected producer class has an imported alias')
+            _require(not (isinstance(node, ast.Name) and node.id in reflective_names),
+                     'selected ledger producer uses direct reflection')
+            if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                    and node.value.id in selected_classes):
+                _require(not isinstance(node.ctx, (ast.Store, ast.Del)),
+                         'selected producer class is mutated')
+            if (isinstance(node, ast.Name) and node.id in selected_classes
+                    and isinstance(node.ctx, ast.Load) and node not in annotations):
+                parent = module_parents[node]
+                _require((isinstance(parent, ast.Call) and parent.func is node)
+                         or (node.id == 'R7PlanningRuntime' and isinstance(parent, ast.keyword)
+                             and parent.arg == 'runtime_type'
+                             and _text(module_parents[parent].func) == '_open_runtime'),
+                         'selected producer class escapes direct constructor/type positions')
+    for owner in (cls, rt, broker):
+        for node in ast.walk(owner):
+            name = (node.name if isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else
+                node.id if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) else "")
+            _require(not (name.startswith("__") and name.endswith("__")
+                          and name != "__init__"),
+                     "selected ledger chain has unsupported object-model hook")
+    rt_init = _scope(rt, "__init__")
+    broker_init = _scope(broker, "__init__")
+    _require(
+        not any(_binds(n, "_read_ledger") for n in ast.walk(rt))
+        and not any(_binds(n, "_ledger") for n in ast.walk(broker)),
+        "ledger handoff field has a descriptor/class binding",
+    )
+    _field(rt, "self._read_ledger", "read_ledger", rt_init)
+    _field(broker, "self._ledger", "ledger", broker_init)
+    _require(
+        [n for n in ast.walk(rt_init) if _binds(n, "read_ledger")] == [rt_init.args.args[5]]
+        and [n for n in ast.walk(broker_init) if _binds(n, "ledger")] == [broker_init.args.args[3]],
+        "ledger handoff parameter rebound",
+    )
+    canonical = _scope(runtime, "_open_runtime")
+    declaration = _one(
+        [
+            n
+            for n in canonical.body
+            if isinstance(n, ast.Assign) and [_text(t) for t in n.targets] == ["read_ledger"]
+        ],
+        "canonical ledger constructor missing",
+    )
+    _require(
+        _text(declaration.value)
+        == (
+            "BrokerReadLedger(database.with_suffix(database.suffix + '.re"
+            "ads.sqlite3'), authority_gate=authority_gate)"
+        )
+        and [n for n in ast.walk(canonical) if _binds(n, "read_ledger")] == declaration.targets,
+        "canonical ledger origin changed",
+    )
+
+    def find_call(scope, expression):
+        return _one(
+            [n for n in ast.walk(scope) if isinstance(n, ast.Call) and _text(n) == expression],
+            "ledger forward changed: " + expression,
+        )
+
+    runtime_call = _one(
+        [
+            n
+            for n in ast.walk(canonical)
+            if isinstance(n, ast.Call) and _text(n.func) == "runtime_type"
+        ],
+        "runtime ledger handoff missing",
+    )
+    _require(
+        len(runtime_call.args) == 8
+        and not runtime_call.keywords
+        and _text(runtime_call.args[4]) == "read_ledger",
+        "runtime ledger argument changed",
+    )
+    supervisor = _one(
+        [
+            n
+            for n in ast.walk(canonical)
+            if isinstance(n, ast.Call) and _text(n.func) == "R7RuntimeSupervisor"
+        ],
+        "supervisor handoff missing",
+    )
+    supervisor_kw = _one(
+        [n for n in supervisor.keywords if n.arg == "read_ledger"],
+        "supervisor ledger alias changed",
+    )
+    _require(_text(supervisor_kw.value) == "read_ledger", "supervisor ledger argument changed")
+    for node in ast.walk(canonical):
+        if (
+            isinstance(node, ast.Name)
+            and node.id == "read_ledger"
+            and isinstance(node.ctx, ast.Load)
+        ):
+            _require(
+                node is runtime_call.args[4] or node is supervisor_kw.value,
+                "canonical ledger escapes known runtime/supervisor positions",
+            )
+    reader_call = find_call(
+        rt_init, "BrokerAuthorityReader(database, 'planning-database', read_ledger)"
+    )
+    execute = _scope(broker, "execute")
+    direct = {
+        name: find_call(execute, text)
+        for name, text in {
+            "current_state": "self._ledger.current_state(operation.tenant_id)",
+            "begin": "self._ledger.begin(operation, state)",
+            "release": "self._ledger.release(operation, state, proof_fingerprint, result_bytes)",
+            "dequeue": "self._ledger.dequeue(operation)",
+        }.items()
+    }
+    reader_parents = {c: p for p in ast.walk(broker) for c in ast.iter_child_nodes(p)}
+    for node in ast.walk(broker):
+        if (
+            isinstance(node, ast.Attribute)
+            and _text(node) == "self._ledger"
+            and isinstance(node.ctx, ast.Load)
+        ):
+            parent = reader_parents[node]
+            _require(
+                reader_parents.get(parent) in direct.values(),
+                "reader ledger escapes selected calls",
+            )
+    current = _scope(cls, "current_state")
+    _signature(current, ("self", "tenant_id"))
+    _require(
+        not current.decorator_list
+        and not any(
+            isinstance(n, (ast.Yield, ast.YieldFrom, ast.Await, ast.Lambda))
+            or (
+                n is not current
+                and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            )
+            for n in ast.walk(current)
+        ),
+        "ledger current_state execution is indirect",
+    )
+    current_forward = find_call(current, "self.current_state_or_none(tenant_id)")
+
+    def site(module, qualname, call):
+        return _one(
+            [
+                n
+                for n in corpus.nodes
+                if n.module == module and n.qualname == qualname and n.expression == _text(call)
+            ],
+            "ledger lacks unique canonical occurrence",
+        )
+
+    origin = site("src/chiplog/composition/r7_planning.py", "_open_runtime", declaration.value)
+    prefix = (
+        site("src/chiplog/composition/r7_planning.py", "_open_runtime", runtime_call),
+        site("src/chiplog/composition/r7_planning.py", "R7PlanningRuntime.__init__", reader_call),
+    )
+    expected = {
+        "__init__": (("SCHEMA_SCRIPT",), ("self", "path")),
+        "current_state_or_none": (("AUTHORITY_STATE_READ",), ("self", "tenant_id")),
+        "begin": (("RELEASE_CREATE",), ("self", "operation", "state")),
+        "release": (
+            (
+                "TRANSACTION_BEGIN",
+                "AUTHORITY_STATE_READ",
+                "RELEASE_STATE_READ",
+                "RELEASE_UPDATE",
+                "RELEASE_UPDATE",
+            ),
+            ("self", "operation", "expected_state", "proof_fingerprint", "result_bytes"),
+        ),
+        "dequeue": (
+            ("TRANSACTION_BEGIN", "RELEASE_STATE_READ", "RELEASE_UPDATE"),
+            ("self", "operation"),
+        ),
+    }
+    # Exact source SQL role shapes; expression inventory independently supplies payloads.
+    sql_templates = {
+        '__init__': (
+            None,  # constant script producer is joined by expression inventory
+        ),
+        'current_state_or_none': (
+            (
+                'SELECT canonical_state, state_fingerprint FROM authority_read_state WHERE '
+                'tenant_id = ?'
+            ),
+        ),
+        'begin': (
+            (
+                'INSERT INTO authority_read_releases VALUES\n'
+                "                       (?, ?, ?, ?, 'PENDING', NULL, NULL, ?, NULL, 0, 0)"
+            ),
+        ),
+        'release': (
+            'BEGIN IMMEDIATE',
+            'SELECT state_fingerprint FROM authority_read_state WHERE tenant_id = ?',
+            (
+                'SELECT request_fingerprint, initial_state_fingerprint, state,\n'
+                '                          result_digest, recipient_fingerprint, '
+                'proof_fingerprint,\n'
+                '                          enqueued, dequeued\n'
+                '                   FROM authority_read_releases\n'
+                '                   WHERE tenant_id = ? AND read_attempt_id = ?'
+            ),
+            (
+                "UPDATE authority_read_releases SET state = 'RELEASED',\n"
+                '                       result_digest = ?, result_bytes = ?, '
+                'proof_fingerprint = ?, enqueued = 1\n'
+                '                       WHERE tenant_id = ? AND read_attempt_id = ? AND '
+                "state = 'PENDING'"
+            ),
+            (
+                'UPDATE authority_read_releases\n'
+                "                       SET state = 'STALE_OR_INDETERMINATE_READ', "
+                'proof_fingerprint = ?\n'
+                '                       WHERE tenant_id = ? AND read_attempt_id = ? AND '
+                "state = 'PENDING'"
+            ),
+        ),
+        'dequeue': (
+            'BEGIN IMMEDIATE',
+            (
+                'SELECT result_bytes, recipient_fingerprint, state, enqueued, dequeued\n'
+                '                   FROM authority_read_releases\n'
+                '                   WHERE tenant_id = ? AND read_attempt_id = ?'
+            ),
+            (
+                'UPDATE authority_read_releases SET dequeued = 1\n'
+                '                   WHERE tenant_id = ? AND read_attempt_id = ? AND '
+                'dequeued = 0'
+            ),
+        ),
+    }
+    resolved = {row.site: row for row in expressions.resolved}
+    chains = []
+    for name, (roles, signature) in expected.items():
+        method = _scope(cls, name)
+        if name != "__init__":
+            _signature(method, signature)
+        _require(
+            not method.decorator_list
+            and not any(
+                isinstance(n, (ast.Yield, ast.YieldFrom, ast.Await, ast.Lambda))
+                or (
+                    n is not method
+                    and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                )
+                for n in ast.walk(method)
+            ),
+            "ledger selected method execution is indirect",
+        )
+        factories = [
+            n
+            for n in ast.walk(method)
+            if isinstance(n, ast.Call) and _text(n.func) == "sqlite3.connect"
+        ]
+        factory = _one(factories, "ledger selected factory count changed")
+        _require(
+            _text(factory)
+            == ("sqlite3.connect(path)" if name == "__init__" else "sqlite3.connect(self._path)"),
+            "ledger factory path changed",
+        )
+        item = parents[factory]
+        _require(
+            isinstance(item, ast.withitem)
+            and item.context_expr is factory
+            and isinstance(item.optional_vars, ast.Name)
+            and item.optional_vars.id == "connection",
+            "ledger factory not in direct connection context",
+        )
+        if name == "__init__":
+            ancestor = parents[factory]
+            while parents.get(ancestor) is not init:
+                ancestor = parents[ancestor]
+            _require(
+                init.body.index(path_field) < init.body.index(ancestor),
+                "ledger factory precedes normalized path field",
+            )
+        binding = item.optional_vars
+        _require(
+            [n for n in ast.walk(method) if _binds(n, "connection")] == [binding],
+            "ledger connection rebound",
+        )
+        sinks = [
+            (n, c)
+            for n, c, _ in occurrences
+            if n.module == path and n.qualname == "BrokerReadLedger." + name
+        ]
+        _require(len(sinks) == len(roles), "ledger SQL site count changed")
+        allowed = set()
+        for index, ((sink, call), role) in enumerate(zip(sinks, roles, strict=True)):
+            terminal = "executescript" if role == "SCHEMA_SCRIPT" else "execute"
+            _require(
+                _text(call.func) == "connection." + terminal
+                and not call.keywords
+                and len(call.args) == (1 if role in {"SCHEMA_SCRIPT", "TRANSACTION_BEGIN"} else 2),
+                "ledger SQL receiver/argument shape changed",
+            )
+            template = sql_templates[name][index]
+            _require(
+                (_text(call.args[0]) == "_SCHEMA" if template is None else
+                 isinstance(call.args[0], ast.Constant) and call.args[0].value == template),
+                "ledger SQL role shape changed",
+            )
+            parent = parents[call]
+            if role in {"AUTHORITY_STATE_READ", "RELEASE_STATE_READ"}:
+                consume = parents.get(parent)
+                _require(
+                    isinstance(parent, ast.Attribute)
+                    and parent.value is call
+                    and parent.attr == "fetchone"
+                    and isinstance(consume, ast.Call)
+                    and consume.func is parent
+                    and not consume.args
+                    and not consume.keywords,
+                    "ledger cursor escapes immediate fetchone",
+                )
+            else:
+                _require(isinstance(parent, ast.Expr), "ledger ignored cursor escapes")
+            expression = resolved.get(sink)
+            _require(
+                expression is not None and expression.kind == "FINITE_SYNTAX",
+                "ledger SQL lacks same-snapshot finite expression",
+            )
+            forwards = () if name == "__init__" else prefix
+            if name != "__init__":
+                direct_name = "current_state" if name == "current_state_or_none" else name
+                forwards += (
+                    site(
+                        "src/chiplog/platform/authority_reads.py",
+                        "BrokerAuthorityReader.execute",
+                        direct[direct_name],
+                    ),
+                )
+                if name == "current_state_or_none":
+                    forwards += (site(path, "BrokerReadLedger.current_state", current_forward),)
+            chains.append(
+                ReadLedgerOriginChain(
+                    origin,
+                    site(path, "BrokerReadLedger." + name, factory),
+                    forwards,
+                    sink,
+                    role,
+                    "broker_read_ledger",
+                    expression,
+                )
+            )
+            allowed.add(call)
+        for node in ast.walk(method):
+            if not isinstance(node, ast.Name) or node.id != "connection" or node is binding:
+                continue
+            ancestor = parents[node]
+            while ancestor is not method:
+                _require(
+                    not isinstance(
+                        ancestor,
+                        (
+                            ast.GeneratorExp,
+                            ast.ListComp,
+                            ast.SetComp,
+                            ast.DictComp,
+                            ast.FunctionDef,
+                            ast.AsyncFunctionDef,
+                            ast.ClassDef,
+                            ast.Lambda,
+                        ),
+                    ),
+                    "ledger connection enters nested frame",
+                )
+                ancestor = parents[ancestor]
+            parent = parents[node]
+            call = parents.get(parent)
+            _require(
+                isinstance(node.ctx, ast.Load)
+                and isinstance(parent, ast.Attribute)
+                and parent.value is node
+                and call in allowed
+                and call.func is parent,
+                "ledger connection escapes exact SQL receiver position",
+            )
+    return tuple(chains)
+
+
 def build_planning_descriptor_fragment(
     sources: tuple[tuple[str, str], ...],
 ) -> PlanningDescriptorFragment:
@@ -689,6 +1340,7 @@ def build_planning_descriptor_fragment(
         expressions = extract_sql_expression_inventory(sources, corpus)
         expressions.require_exact_accounting()
         scanner_chains = _reader_scanners(corpus, occurrences, expressions)
+        ledger_chains = _read_ledger_origins(sources, corpus, occurrences, expressions)
         assembly = inspect_assembly_forwarding(tuple((p[4:], s) for p, s in sources))
         edge = _one([e for e in assembly.edges if e.module == runtime_path[4:]
                      and e.caller == 'open_r7_runtime'], 'missing base R7 mount')
@@ -761,15 +1413,19 @@ def build_planning_descriptor_fragment(
                     expression.sql, 'tenant_main', _prepare_reads(schema, expression.sql)))
         return PlanningDescriptorFragment(corpus, expressions, edge,
             tuple(e for e in assembly.edges if e != edge), wrapper_site, tuple(rows),
-            preparation_chains, scanner_chains, (
+            preparation_chains, scanner_chains, ledger_chains, (
                 'fragment only: supplied source set is not independently proven exhaustive',
                 'other assembly mounts and external class mutation are unproved',
                 'selected scanner origins are conditional; full helper semantics, other '
                 'incoming contexts, metadata/engine graph and AMR remain unproved',
                 'preparation origins are source-local only; authorizer policy and external '
                 'runtime mutation/indirect reflective access require independent evidence',
-                'execute ledger current_state/begin/release/dequeue '
-                'use separate read-ledger authority',
+                'selected broker_read_ledger provenance only; runtime._read_ledger and '
+                'supervisor aliases and their other users remain residual',
+                'ledger SQLite transaction contexts do not prove connection lifetime/closure; '
+                'begin/release/dequeue do not enter _authority_scope',
+                'ledger release->_release_from_row, model/fingerprint/identity helper '
+                'semantics and all external mutation remain residual',
                 'module import effects, runtime callbacks and all downstream constructor effects',
                 'global receiver/domain closure, physical schema/AMR, '
                 'CURRENT and V2 startup admission',

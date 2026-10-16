@@ -22,6 +22,7 @@ PATHS = (
     "src/chiplog/verification/sqlite_preparation.py",
     "src/chiplog/architecture/r7_storage_surface.py",
     "src/chiplog/composition/r12.py",
+    "src/chiplog/platform/read_ledger.py",
 )
 CALL_KINDS = {
     "sql_call_candidate", "factory_or_wrapper_call_candidate", "mount_call_candidate",
@@ -59,6 +60,11 @@ def test_actual_tree_joins_every_call_and_mount_but_cannot_grant_admission(actua
     assert {row.site for row in actual.calls if row.role == "READER_SCANNER"} == {
         row.sink for row in actual.fragment.scanner_chains
     }
+    ledger_rows = [row for row in actual.calls if row.role == "LEDGER_SQL"]
+    assert {row.site for row in ledger_rows} == {
+        row.sink for row in actual.fragment.ledger_chains}
+    assert len(ledger_rows) == 11
+    assert {row.domain for row in ledger_rows} == {"broker_read_ledger"}
     actual.recheck_source_tree(ROOT)
     with pytest.raises(DescriptorClosureIncomplete):
         actual.require_closed()
@@ -213,3 +219,42 @@ def test_source_capture_refuses_hidden_symlink_subtrees_and_unreadable_python(tm
         (package / "hidden.py").write_bytes(b"\xff")
     with pytest.raises(SourceTreeChanged):
         inspect_authority_descriptor_closure(tmp_path.resolve())
+
+
+@pytest.mark.parametrize(
+    "mutation", ["domain", "role", "factory", "origin", "drop", "duplicate", "forward"]
+)
+def test_forged_selected_ledger_provenance_cannot_self_certify(mutation):
+    result = _from_sources(sources())
+    chains = list(result.fragment.ledger_chains)
+    row = chains[-1]
+    if mutation == "drop":
+        chains.pop()
+    elif mutation == "duplicate":
+        chains.append(row)
+    else:
+        changes = {
+            "domain": {"domain": "tenant_main"},
+            "role": {"role": "SCHEMA_SCRIPT"},
+            "factory": {"factory": chains[0].factory},
+            "origin": {"origin": row.factory},
+            "forward": {"forwards": ()},
+        }
+        chains[-1] = replace(row, **changes[mutation])
+    forged = replace(result, fragment=replace(result.fragment, ledger_chains=tuple(chains)))
+    with pytest.raises(DescriptorClosureRefused):
+        forged.require_exact_accounting()
+
+
+def test_ledger_replay_dto_helper_semantics_stay_unresolved():
+    items = sources()
+    path = 'src/chiplog/platform/read_ledger.py'
+    old = 'return self._release_from_row(operation, release)'
+    assert dict(items)[path].count(old) == 1
+    changed = tuple((name, text.replace(old, 'return self.foreign_replay(operation, release)')
+                     if name == path else text) for name, text in items)
+    result = _from_sources(changed)
+    row, = [row for row in result.calls if row.site.module == path
+            and row.site.expression == 'self.foreign_replay(operation, release)']
+    assert row.disposition == 'UNRESOLVED' and row.domain is None
+    assert any('_release_from_row' in item for item in result.fragment.residual_obligations)

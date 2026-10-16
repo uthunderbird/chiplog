@@ -2304,3 +2304,116 @@ INCOMPLETE. Next actual receiver group is `_ledger` -> `BrokerReadLedger`
 current_state/begin/release/dequeue with its separate protected database path.
 Global semantic closure, engine graph/schema/AMR, descriptor/tuple, CURRENT,
 initializer and public startup admission remain mandatory OPEN work.
+
+### Fresh two-seal replay: second acceptance reached; dispatch scope still fails
+
+The frozen run at `/private/tmp/chiplog-r14-cross-seal-2858-json` completed
+with exit1: the exact selector
+`tests/composition/test_r14_native_selected_accounting_source.py::test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator`
+reported1 failed in2932.21s (48:52). Command:
+`.venv/bin/python /private/tmp/r14-cross-seal-2858-json-driver.py`;
+the driver clears inherited pytest options/plugins and runs the selector with
+`-p no:timeout -q`. No debugger or production-clock/TTL changes were used.
+
+This run passed second-seal preview and `accept_call`, then failed at the second
+`authorize_dispatch`. The traceback identifies
+`r16_dispatch_publication.py::publish_dispatch` ->
+`r16_dispatch_inputs.py::require_dispatch_scope`, whose aggregate refusal is
+`current dispatch differs from immutable registered self-only mandate`.
+Captured frontier36 and observed_time_ns1436292557761583 are printed in the
+traceback. This does not identify the failing predicate or prove mandate expiry;
+an original-preparation validity field is not the mandate horizon. Exact operand
+diagnosis remains OPEN. Second OPEN/reopen/substitution assertions were not reached.
+
+After authoritative handle62642 termination, a Python SHA256/mode comparison
+against `/private/tmp/r14-cross-seal-2858-json-inputs.json` checked all1539 frozen
+inputs with zero mismatches, recorded in the adjacent source-recheck.json.
+The run captured base2858b73 plus the native transition parsing change and
+then-existing preparation tests; later verification-only changes are outside it.
+
+Failure preservation used streaming SHA256 before/after copying each file and
+compared destination hashes/modes. The private
+`/private/tmp/r14-cross-seal-2858-json-observed/failure` contains45 regular files,
+one symlink and1576142936 regular bytes; adjacent failure-files.json records
+every path/hash/mode or symlink target. Terminal log, exit marker, source manifest and recheck are retained
+alongside. These are expired inert evidence, never live authority or repinning
+inputs. The same handle was observed until terminal; no timeout-triggered restart.
+
+Subsequent inert stdlib extraction independently recovered the exact second
+mandate from the retained SELECTED owner entry at line21, enclosing command
+`call-acceptance/9f5c16371738f49ed876936e60550d7ba98eaa4c94d880596d383e4cb5af5058`.
+Its horizon is1436224434200291..1436284434200291; captured time exceeds expiry by
+8123561292ns. Thus horizon failure is established as a sufficient refusal operand,
+not merely inferred from the original-source deadline. Other predicates and the
+stage consuming this68.124s interval remain unproven. No runtime/SQLite was opened.
+Decoder route and cold review: `/private/tmp/r14-second-authorize-scope-diagnosis-plan.md`;
+root extraction output: `/private/tmp/r14-second-authorize-mandate-extraction.json`.
+The source journal SHA256 is
+`97fb78f273110a17cd7cd04eb4f869d276e8e10262c828e8c8e0b90cff76f650`.
+
+### Selected read-ledger provenance joins the same global evidence
+
+The existing planning fragment now retains eleven selected ledger SQL-site
+chains and five factories, joined to the same canonical corpus and finite
+expression inventory. The actual path is `_open_runtime`'s `.reads.sqlite3`
+constructor, runtime/reader argument handoffs, then reader current_state,
+begin, release and dequeue; current_state forwards to current_state_or_none.
+Constructor SQL has no future runtime/reader forwards. Its one executescript
+site contains two CREATE statements. The domain is `broker_read_ledger`, never
+tenant_main. Global classifications retain exact origin/factory/forward/sink
+identities and rederive them from captured bytes to reject mutually forged rows.
+
+The new guards constrain normalization and field order, signatures/bindings,
+exact SQL-role expressions, connection/cursor consumption and nested/deferred
+captures. Cold mechanism review found local allocation/attribute hooks could
+replace the selected object despite unchanged constructor SQL. Actual REDs
+covered synchronous and async hooks, explicit class mutation, aliases and direct
+producer reflection; repairs cover the three selected producer modules only.
+Root inspection also corrected future-directed constructor forwards and six
+structural loopholes. Those six were fixed before their dedicated regressions;
+isolated controlled guard-removal replays subsequently demonstrated each test
+fails without its guard. They are not claimed as historical RED-first evidence.
+
+Evidence: `/private/tmp/r14-ledger-provenance-implementation.md`,
+`/private/tmp/r14-ledger-guard-replay.log`,
+`/private/tmp/r14-ledger-origin-mechanism-redteam.md`.
+Command `.venv/bin/pytest -q tests/verification/test_planning_descriptor_chain.py
+tests/verification/test_authority_descriptor_closure.py` reported178 passed
+in102.81s before the final explicit ImportFrom alias repair. That repair first
+reproduced three failing producer-module mutants. Final staged checks must cover it.
+The subsequent command selecting
+`test_selected_producer_imported_class_alias_cannot_replace_allocation` and
+`test_actual_tree_joins_every_call_and_mount_but_cannot_grant_admission` in those
+same modules passed4 tests in13.06s. Root scoped mypy found and repaired a loop
+variable type-name collision in global classification; scoped mypy and Ruff pass.
+The original cold hook-family blocker is closed by source inspection, including
+AsyncFunctionDef; that inspection ran no tests and is not global certification.
+
+Known runtime/supervisor users and other ledger instances remain residual.
+Path normalization and identity-helper shapes do not authenticate live file
+identity or prevent races. SQLite connection contexts transact but do not prove
+connection closure; begin/release/dequeue do not enter _authority_scope.
+release->_release_from_row and model/fingerprint/identity helper semantics remain
+unproved. Engine/schema/metadata/AMR, all shipped callers/mounts, registered
+descriptor/tuple, CURRENT and startup admission remain OPEN.
+
+Next engine plan `/private/tmp/r14-selected-engine-evidence-next-plan.md` requires
+independent two-domain schema/action goldens consumed by this same fragment.
+A disposable-memory preparation of the actual catalog query currently refuses
+its GLOB function; no source authority database was opened. Separately, the fresh
+dispatch-horizon failure above requires a measured cost repair. The cold route
+`/private/tmp/r14-second-authorize-latency-next-route.md` identifies duplicate
+loop/effects operand serialization in verify_call_batch for an exact count RED;
+existing owner semantic and unchanged raw-body decode caches must be preserved.
+
+Command `.venv/bin/python /private/tmp/r14-global-ledger-descriptor-inspection.py`
+on the final source bytes produced
+`/private/tmp/r14-global-descriptor-inspection-a5882be-ledger-candidate.json`:
+586 sources,110482 corpus nodes,58667 call/reference rows,358 lexical SQL
+candidates and19 mounts. There are49 conditional-local rows, including eleven
+ledger SQL sinks, five ledger factories, one ledger origin and seven distinct
+ledger forward calls. The58618 unresolved call/reference rows include ordinary
+calls; they are not an unknown-SQL count. Candidate size27303653bytes, SHA256
+`15627f9d0b73bea27094d43702aaa2e27583fc352be770870afa05b378bdeb5b`.
+Source paths/bytes were rechecked after derivation. This is unregistered inert
+partial evidence, with global closure still unconditionally refused.

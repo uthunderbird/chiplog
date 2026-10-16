@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = 'src/chiplog/composition/r7_planning.py'
 READER = 'src/chiplog/platform/authority_reads.py'
 PREPARATION = 'src/chiplog/verification/sqlite_preparation.py'
-PATHS = (RUNTIME, READER, 'src/chiplog/platform/_sqlite.py',
+LEDGER = 'src/chiplog/platform/read_ledger.py'
+PATHS = (RUNTIME, READER, LEDGER, 'src/chiplog/platform/_sqlite.py',
          'src/chiplog/platform/r7_leaves.py', PREPARATION,
          'src/chiplog/architecture/r7_storage_surface.py',
          'src/chiplog/composition/r12.py')
@@ -428,3 +429,272 @@ def test_staticmethod_builtin_shadow_refuses():
 def test_positional_domain_parameter_reorder_refuses(path, old, new):
     with pytest.raises(UnknownPlanningChain):
         build_planning_descriptor_fragment(mutate(sources(), path, old, new))
+
+
+def test_selected_read_ledger_has_five_factories_eleven_sinks_and_same_expressions():
+    fragment = build_planning_descriptor_fragment(sources())
+    chains = fragment.ledger_chains
+    assert len(chains) == len({row.sink for row in chains}) == 11
+    assert len({row.factory for row in chains}) == 5
+    from collections import Counter
+
+    assert Counter(row.role for row in chains) == {
+        "SCHEMA_SCRIPT": 1,
+        "TRANSACTION_BEGIN": 2,
+        "AUTHORITY_STATE_READ": 2,
+        "RELEASE_STATE_READ": 2,
+        "RELEASE_CREATE": 1,
+        "RELEASE_UPDATE": 3,
+    }
+    assert {row.factory.qualname for row in chains} == {
+        "BrokerReadLedger." + name
+        for name in ("__init__", "current_state_or_none", "begin", "release", "dequeue")
+    }
+    for row in chains:
+        assert row.origin.module == RUNTIME and row.origin.qualname == "_open_runtime"
+        assert row.origin.expression == (
+            "BrokerReadLedger(database.with_suffix(database.suffix + "
+            "'.reads.sqlite3'), authority_gate=authority_gate)"
+        )
+        if row.factory.qualname.endswith(".__init__"):
+            assert row.forwards == ()
+        else:
+            assert tuple(site.qualname for site in row.forwards[:2]) == (
+                "_open_runtime",
+                "R7PlanningRuntime.__init__",
+            )
+            assert row.forwards[2].qualname == "BrokerAuthorityReader.execute"
+            assert len(row.forwards) == (
+                4 if row.factory.qualname.endswith(".current_state_or_none") else 3
+            )
+    assert {row.domain for row in chains} == {"broker_read_ledger"}
+    expressions = {row.site: row for row in fragment.expressions.resolved}
+    for row in chains:
+        assert row.expression == expressions[row.sink]
+        assert row.factory in fragment.corpus.nodes
+        assert all(site in fragment.corpus.nodes for site in row.forwards)
+        assert row.origin in fragment.corpus.nodes
+    assert chains[0].expression.alternatives[0].sql.count("CREATE TABLE") == 2
+    assert any("lifetime" in item for item in fragment.residual_obligations)
+
+
+@pytest.mark.parametrize(
+    "path,old,new",
+    [
+        (RUNTIME, 'database.with_suffix(database.suffix + ".reads.sqlite3")', "database"),
+        (RUNTIME, "        self._read_ledger = read_ledger", "        self._read_ledger = foreign"),
+        (READER, "        self._ledger = ledger", "        self._ledger = foreign"),
+        (READER, "self._ledger.begin(operation, state)", "self._ledger.begin(operation, foreign)"),
+        (
+            LEDGER,
+            "path.resolve(strict=False) if authority_gate is not None else path",
+            "path.resolve(strict=False) if authority_gate is None else path",
+        ),
+        (LEDGER, "        self._path = path", "        self._path = foreign"),
+        (LEDGER, "sqlite3.connect(path)", "sqlite3.connect(other_path)"),
+        (LEDGER, "    def begin(self, operation:", "    @property\n    def begin(self, operation:"),
+        (
+            LEDGER,
+            "    def begin(self, operation:",
+            "    begin = foreign\n    def begin(self, operation:",
+        ),
+        (
+            LEDGER,
+            "        result_digest = hashlib.sha256(result_bytes).hexdigest()",
+            (
+                "        leaked = self\n        result_digest = "
+                "hashlib.sha256(result_bytes).hexdigest()"
+            ),
+        ),
+        (
+            LEDGER,
+            "            connection.executescript(_SCHEMA)",
+            "            leaked = connection\n            connection.executescript(_SCHEMA)",
+        ),
+        (
+            LEDGER,
+            "            connection.executescript(_SCHEMA)",
+            "            leaked = connection.executescript(_SCHEMA)",
+        ),
+        (
+            LEDGER,
+            "            connection.executescript(_SCHEMA)",
+            (
+                "            connection.executescript(_SCHEMA)\n            "
+                'connection.execute("SELECT 1")'
+            ),
+        ),
+        (LEDGER, "    @contextlib.contextmanager", "    @foreign.contextmanager"),
+        (LEDGER, "import contextlib", "import contextlib\nfrom foreign import contextlib"),
+        (LEDGER, "import sqlite3", "import sqlite3\nsqlite3.connect = foreign"),
+    ],
+)
+def test_selected_read_ledger_origin_and_escape_mutations_refuse(path, old, new):
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(mutate(sources(), path, old, new))
+
+
+@pytest.mark.parametrize(
+    "path,old,new",
+    [
+        (RUNTIME, "                    read_ledger,", "                    other_ledger,"),
+        (
+            RUNTIME,
+            'BrokerAuthorityReader(database, "planning-database", read_ledger)',
+            'BrokerAuthorityReader(database, "planning-database", other_ledger)',
+        ),
+        (
+            READER,
+            "class BrokerAuthorityReader:",
+            "class BrokerAuthorityReader:\n    _ledger = property(lambda self: foreign)",
+        ),
+        (
+            RUNTIME,
+            "class R7PlanningRuntime:",
+            "class R7PlanningRuntime:\n    _read_ledger = property(lambda self: foreign)",
+        ),
+        (
+            LEDGER,
+            "state = self.current_state_or_none(tenant_id)",
+            "state = self.other_state(tenant_id)",
+        ),
+        (
+            LEDGER,
+            "    def current_state(self, tenant_id:",
+            "    @property\n    def current_state(self, tenant_id:",
+        ),
+        (
+            LEDGER,
+            "        result_digest = hashlib.sha256(result_bytes).hexdigest()",
+            (
+                "        self = foreign\n        result_digest = "
+                "hashlib.sha256(result_bytes).hexdigest()"
+            ),
+        ),
+        (
+            LEDGER,
+            (
+                "        path = path.resolve(strict=False) if authority_gate is "
+                "not None else path\n        self._path = path"
+            ),
+            (
+                "        self._path = path\n        path = "
+                "path.resolve(strict=False) if authority_gate is not None else "
+                "path"
+            ),
+        ),
+        (
+            LEDGER,
+            "            connection.executescript(_SCHEMA)",
+            "            delayed = (connection.executescript(_SCHEMA) for _ in [0])",
+        ),
+        (
+            LEDGER,
+            "            connection.executescript(_SCHEMA)",
+            "            eager = [connection.executescript(_SCHEMA) for _ in [0]]",
+        ),
+        (
+            LEDGER,
+            "            connection.executescript(_SCHEMA)",
+            "            connection.executescript(_SCHEMA).connection",
+        ),
+        (
+            LEDGER,
+            '"SELECT state_fingerprint FROM authority_read_state WHERE tenant_id = ?"',
+            '"SELECT state_fingerprint FROM foreign_state WHERE tenant_id = ?"',
+        ),
+    ],
+)
+def test_selected_ledger_forwarding_and_nested_capture_refuse(path, old, new):
+    # These input mutations exercise the provenance proof, without executing their SQL.
+    items = mutate(sources(), path, old, new)
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(items)
+
+
+@pytest.mark.parametrize(
+    "hook", ["__new__", "__getattribute__", "__getattr__", "__setattr__", "__delattr__"]
+)
+def test_selected_ledger_object_model_hooks_refuse(hook):
+    changed = mutate(
+        sources(),
+        LEDGER,
+        "class BrokerReadLedger:",
+        "class BrokerReadLedger:\n"
+        f"    def {hook}(self, *args, **kwargs):\n        return ForeignLedger()\n",
+    )
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(changed)
+
+
+@pytest.mark.parametrize(
+    "path,klass", [(RUNTIME, "R7PlanningRuntime"), (READER, "BrokerAuthorityReader")]
+)
+@pytest.mark.parametrize("hook", ["__new__", "__getattribute__", "__setattr__"])
+def test_selected_handoff_object_model_hooks_refuse(path, klass, hook):
+    changed = mutate(
+        sources(),
+        path,
+        f"class {klass}:",
+        f"class {klass}:\n"
+        f"    def {hook}(self, *args, **kwargs):\n        return receiver_members[args[0]]\n",
+    )
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(changed)
+
+
+def test_selected_ledger_local_constructor_replacement_refuses():
+    items = sources()
+    text = dict(items)[LEDGER]
+    changed = mutate(items, LEDGER, text, text + "\nBrokerReadLedger.__new__ = foreign\n")
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(changed)
+
+
+@pytest.mark.parametrize('comprehension', ['({sql} for _ in [0])', '[{sql} for _ in [0]]'])
+def test_selected_ledger_select_connection_cannot_enter_comprehension_frame(comprehension):
+    text = dict(sources())[LEDGER]
+    tree = ast.parse(text)
+    klass = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                 and n.name == 'BrokerReadLedger')
+    method = next(n for n in klass.body if isinstance(n, ast.FunctionDef)
+                  and n.name == 'current_state_or_none')
+    row = next(n for n in ast.walk(method) if isinstance(n, ast.Assign)
+               and ast.unparse(n.targets[0]) == 'row')
+    sql = ast.get_source_segment(text, row.value)
+    with pytest.raises(UnknownPlanningChain, match='nested frame'):
+        build_planning_descriptor_fragment(mutate(sources(), LEDGER, sql,
+                                                  comprehension.format(sql=sql)))
+
+
+@pytest.mark.parametrize('path,tail', [
+    (RUNTIME, '\nglobals()["BrokerReadLedger"] = foreign\n'),
+    (RUNTIME, '\nsetattr(BrokerReadLedger, "__new__", foreign)\n'),
+    (RUNTIME, '\nBrokerReadLedger.__new__ = foreign\n'),
+    (RUNTIME, '\nLedgerAlias = BrokerReadLedger\nLedgerAlias.__new__ = foreign\n'),
+    (READER, '\nglobals()["BrokerAuthorityReader"] = foreign\n'),
+    (LEDGER, '\nLedgerAlias = BrokerReadLedger\nLedgerAlias.__new__ = foreign\n'),
+])
+def test_selected_producer_module_reflection_and_class_aliases_refuse(path, tail):
+    items = sources()
+    text = dict(items)[path]
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(mutate(items, path, text, text + tail))
+
+
+def test_selected_ledger_async_allocation_hook_refuses():
+    changed = mutate(sources(), LEDGER, 'class BrokerReadLedger:',
+        'class BrokerReadLedger:\n'
+        '    async def __new__(cls, *args, **kwargs):\n        return ForeignLedger()\n')
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(changed)
+
+
+@pytest.mark.parametrize('path', [RUNTIME, READER, LEDGER])
+def test_selected_producer_imported_class_alias_cannot_replace_allocation(path):
+    items = sources()
+    text = dict(items)[path]
+    tail = ('\nfrom chiplog.platform.read_ledger import BrokerReadLedger as LedgerAlias\n'
+            'LedgerAlias.__new__ = foreign\n')
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(mutate(items, path, text, text + tail))
