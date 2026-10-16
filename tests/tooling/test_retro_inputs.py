@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -211,3 +212,94 @@ def test_missing_frontmatter_status_does_not_fall_back_to_body(repository: Path)
     line = inventory_line(output, entry)
     assert any(marker in line.lower() for marker in ("неизвест", "отсутств", "missing", "unknown"))
     assert "body-only-sentinel" not in output
+
+
+def source_failure_environment(repository: Path, source: str) -> dict[str, str]:
+    directory = repository / "fault-bin"
+    directory.mkdir()
+    executable, predicate = {
+        "rev-list": ("git", '[ "$1" = rev-list ]'),
+        "initial-revision": ("git", '[ "$1" = rev-list ] && [ "$2" = --max-parents=0 ]'),
+        "status": ("git", '[ "$1" = status ]'),
+        "diff": ("git", '[ "$1" = diff ]'),
+        "log": ("git", '[ "$1" = log ]'),
+        "retro_due": ("python3", 'case "$1" in */retro_due.py) true;; *) false;; esac'),
+        "handoff_pending": ("python3", 'case "$1" in */handoff_pending.py) true;; *) false;; esac'),
+        "rules_have_reproducers": (
+            "python3",
+            'case "$1" in */rules_have_reproducers.py) true;; *) false;; esac',
+        ),
+        "grep": ("grep", 'case "$*" in *observations.md*) true;; *) false;; esac'),
+    }[source]
+    actual = shutil.which(executable)
+    assert actual is not None
+    shim = directory / executable
+    shim.write_text(
+        f'#!/bin/sh\nif {predicate}; then echo "injected-{source}" >&2; exit 2; fi\n'
+        f'exec {shlex.quote(actual)} "$@"\n'
+    )
+    shim.chmod(0o755)
+    environment = clean_environment()
+    environment["PATH"] = str(directory) + os.pathsep + environment["PATH"]
+    return environment
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "rev-list",
+        "initial-revision",
+        "status",
+        "diff",
+        "log",
+        "retro_due",
+        "handoff_pending",
+        "rules_have_reproducers",
+        "grep",
+    ],
+)
+def test_actual_collector_source_failure_prevents_retro_publication(
+    repository: Path, source: str
+) -> None:
+    records = repository / ".harness/retro"
+    if source == "initial-revision":
+        for record in records.glob("*.md"):
+            if record.name not in {"TEMPLATE.md", "README.md"}:
+                record.unlink()
+    if source == "handoff_pending":
+        command(repository, "sh", ".harness/scripts/decide.sh", "sentinel", "fixture")
+    before = {p.name: p.read_bytes() for p in records.iterdir() if p.is_file()}
+    environment = source_failure_environment(repository, source)
+    for arguments in (
+        ["sh", ".harness/scripts/retro-inputs.sh"],
+        ["sh", ".harness/scripts/new-retro.sh", "--id", "source-failure"],
+    ):
+        result = subprocess.run(
+            arguments,
+            cwd=repository,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0, result.stdout
+        assert "RETRO_INPUTS_COMPLETE=1" not in result.stdout
+        assert f"injected-{source}" in result.stderr
+        assert {p.name: p.read_bytes() for p in records.iterdir() if p.is_file()} == before
+    healthy = command(repository, "sh", ".harness/scripts/new-retro.sh", "--id", "source-failure")
+    assert "RETRO_INPUTS_COMPLETE=1" in healthy
+    created = set(p.name for p in records.iterdir()) - before.keys()
+    assert len(created) == 1
+    assert next(iter(created)).endswith("-source-failure.md")
+
+
+def test_actual_collector_healthy_zero_counts_and_empty_diff(repository: Path) -> None:
+    (repository / ".harness/observations.md").write_text("# Empty observations\n")
+    for case in (repository / ".harness/reproducers").rglob("case.md"):
+        case.unlink()
+    output = collect(repository)
+    assert "записей: 0 " in output
+    assert "кейсов: 0 " in output
+    assert "объём: нет изменений" in output
+    assert "? команда" not in output
+    assert "RETRO_INPUTS_COMPLETE=1" in output

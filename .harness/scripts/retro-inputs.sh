@@ -15,6 +15,16 @@
 # Полный гейт с адаптерами отработает на коммите. Самотест отдельно запускает
 # harness-пары и ограниченные тесты fast/контрактов адаптеров, не полный набор.
 set -eu
+# POSIX sh has no pipeline failure propagation; preserve the sh entrypoint.
+if ! (set -o pipefail) 2>/dev/null; then
+    exec bash "$0" "$@"
+fi
+set -o pipefail
+source_failed() {
+    echo "→ сделай: устрани ошибку источника выше и повтори sh .harness/scripts/retro-inputs.sh" >&2
+    echo "✓ сборщик завершился успешно и напечатал RETRO_INPUTS_COMPLETE=1" >&2
+}
+trap source_failed ERR
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
@@ -24,8 +34,15 @@ C=.harness/scripts/checks
 # Пустой вывод не оставляем пустым местом: пробел на позиции числа читается как
 # число, которого никто не заметил.
 num() {
-    _v=$(eval "$2" 2>/dev/null || echo '? команда упала')
-    [ -z "$_v" ] && _v='? команда ничего не вернула'
+    _v=$(eval "$2")
+    if [ -z "$_v" ]; then
+        if [ "$#" -lt 3 ]; then
+            echo "→ сделай: восстанови непустой вывод источника: $2" >&2
+            echo "✓ команда источника завершилась успешно с непустым stdout" >&2
+            exit 1
+        fi
+        _v=$3
+    fi
     printf '   %s%s   (%s)\n' "$1" "$_v" "$2"
 }
 # Поле из вывода `--status` чека.
@@ -44,14 +61,10 @@ done
 # того же пути, поэтому diff-вход использует тот же baseline. Инцидентная ретро
 # датируется задним числом штатно.
 LAST=""
-[ -n "$RECORDS" ] && LAST=$(git log -1 --format=%h -- .harness/retro 2>/dev/null || true)
+[ -n "$RECORDS" ] && LAST=$(git log -1 --format=%h -- .harness/retro)
 
-S_T=$(python3 "$C/retro_due.py" --status 2>/dev/null || echo BROKEN)
-if [ "$S_T" = BROKEN ]; then
-    NOTE="  (retro_due.py не отвечает — период определён по файлам, сверь сам)"
-else
-    NOTE=""
-fi
+S_T=$(python3 "$C/retro_due.py" --status)
+NOTE=""
 
 if [ -n "$LAST" ]; then
     RANGE="$LAST..HEAD"; SINCE="с последней ретро ($LAST)$NOTE"
@@ -69,8 +82,8 @@ echo
 echo "1. КОПИЛКА  .harness/observations.md"
 if [ -f .harness/observations.md ]; then
     PAT='^- 2[0-9][0-9][0-9]-'
-    CMD="grep -c '$PAT' .harness/observations.md"
-    N=$(eval "$CMD" 2>/dev/null || echo 0)
+    CMD="grep -c '$PAT' .harness/observations.md || [ \$? -eq 1 ]"
+    N=$(eval "$CMD")
     num "записей: " "$CMD"
     if [ "$N" -gt 0 ]; then
         grep "$PAT" .harness/observations.md | sed 's/^/   /'
@@ -87,11 +100,12 @@ echo
 # --- 2. диффы за период ------------------------------------------------------
 echo "2. ДИФФЫ  ${RANGE:-вся история}"
 if [ -n "$RANGE" ]; then
-    git log --oneline "$RANGE" 2>/dev/null | sed 's/^/   /' || true
-    num "объём: " "git diff --shortstat $RANGE | sed 's/^ *//' | grep . || echo 'нет изменений'"
+    git log --oneline "$RANGE" | sed 's/^/   /'
+    num "объём: " "git diff --shortstat $RANGE | sed 's/^ *//'" "нет изменений"
 else
-    git log --oneline 2>/dev/null | sed 's/^/   /' || true
-    num "объём: " "git diff --shortstat \$(git rev-list --max-parents=0 HEAD)..HEAD | sed 's/^ *//' | grep . || echo 'нет изменений'"
+    git log --oneline | sed 's/^/   /'
+    INITIAL=$(git rev-list --max-parents=0 HEAD)
+    num "объём: " "git diff --shortstat $INITIAL..HEAD | sed 's/^ *//'" "нет изменений"
 fi
 num "незакоммиченного сейчас (в период НЕ входит): " "git status --porcelain | wc -l | tr -d ' '"
 num "коммитов периода: " "git rev-list --count $MEASURE_RANGE"
@@ -102,7 +116,7 @@ echo
 echo "3. ХВОСТЫ  .harness/handoff.md"
 if [ -f .harness/handoff.md ]; then
     num "записей: " "python3 $C/handoff_pending.py --status | sed -n 's/^handoff_total=//p'"
-    grep '^- что:' .harness/handoff.md 2>/dev/null | sed 's/^- что:/   ·/' || true
+    { grep '^- что:' .harness/handoff.md || [ $? -eq 1 ]; } | sed 's/^- что:/   ·/'
     echo "   вопрос: попадала ли сюда одна формулировка дважды"
 else
     echo "   файла нет — текущий журнал handoff отсутствует"
@@ -131,13 +145,14 @@ echo
 
 # --- 4. регрессия кейсов -----------------------------------------------------
 echo "4. КЕЙСЫ  .harness/reproducers/*/case.md"
-CMD="find .harness/reproducers -name case.md 2>/dev/null | wc -l | tr -d ' '"
-CASES=$(eval "$CMD" || echo 0)
+CMD="find .harness/reproducers -name case.md | wc -l | tr -d ' '"
+CASES=$(eval "$CMD")
 num "кейсов: " "$CMD"
 if [ "$CASES" -gt 0 ]; then
-    find .harness/reproducers -name case.md 2>/dev/null | while IFS= read -r c; do
+    find .harness/reproducers -name case.md | while IFS= read -r c; do
         d=${c%/case.md}
-        printf '   · %s  repro: %s\n' "${d##*/}" "$(sed -n 's/^repro: *//p' "$c" | head -1)"
+        REPRO=$(sed -n 's/^repro: *//p' "$c" | head -1)
+        printf '   · %s  repro: %s\n' "${d##*/}" "$REPRO"
     done
     echo "   прогон: ./.harness/scripts/replay.sh <id> --harness <ветка>; доля, а не флаг"
 else
@@ -147,13 +162,13 @@ echo
 
 # --- 5. инварианты и долги ---------------------------------------------------
 echo "5. ИНВАРИАНТЫ И ДОЛГИ"
-S_R=$(python3 "$C/rules_have_reproducers.py" --status 2>/dev/null || true)
+S_R=$(python3 "$C/rules_have_reproducers.py" --status)
 num "правил-файлов: " "python3 $C/rules_have_reproducers.py --status | sed -n 's/^rules_total=//p'"
 [ "$(st "$S_R" rules_total)" = 0 ] &&
     echo "     инвариант 1 истинен пусто — «нечего проверять», а не «держится»"
 
 if [ -f AGENTS.md ]; then
-    num "разделов AGENTS.md: " "grep -c '^## [0-9]' AGENTS.md"
+    num "разделов AGENTS.md: " "grep -c '^## [0-9]' AGENTS.md || [ \$? -eq 1 ]"
     echo "     это левая половина инварианта 2: у каждого раздела должен быть"
     echo "     гейт или пометка [без гейта] — правую половину читай глазами"
 else
@@ -161,8 +176,8 @@ else
 fi
 
 if [ -f .harness/scripts/gate.sh ]; then
-    num "строк run в gate.sh: " "grep -c '^run ' .harness/scripts/gate.sh"
-    num "из них адаптеров: " "grep -c '^run .*/\\(lint\\|test\\)\\.sh' .harness/scripts/gate.sh"
+    num "строк run в gate.sh: " "grep -c '^run ' .harness/scripts/gate.sh || [ \$? -eq 1 ]"
+    num "из них адаптеров: " "grep -c '^run .*/\\(lint\\|test\\)\\.sh' .harness/scripts/gate.sh || [ \$? -eq 1 ]"
 else
     echo "   gate.sh отсутствует — инвариант 3 проверять не на чем"
 fi
@@ -172,14 +187,19 @@ echo "   тесты fast/контрактов адаптеров. Досрочн
 echo "   долги:"
 if [ ! -f .harness/HARNESS_MODEL.md ]; then
     echo "   · .harness/HARNESS_MODEL.md отсутствует — список долгов читать негде"
-elif grep -q '^| D[0-9]' .harness/HARNESS_MODEL.md; then
-    grep '^| D[0-9]' .harness/HARNESS_MODEL.md | while IFS='|' read -r _ id _ hook _; do
-        printf '   · %s — крючок: %s\n' "$(echo "$id" | xargs)" "$(echo "$hook" | xargs)"
-    done
-    echo "     (grep '^| D' .harness/HARNESS_MODEL.md)"
-    echo "     вопрос: сработал ли крючок. Сработал и не закрыт — исход обязателен"
 else
-    echo "   · нет открытых   (grep '^| D' .harness/HARNESS_MODEL.md)"
+    DEBTS=$(grep '^| D[0-9]' .harness/HARNESS_MODEL.md || [ $? -eq 1 ])
+    if [ -n "$DEBTS" ]; then
+        printf '%s\n' "$DEBTS" | while IFS='|' read -r _ id _ hook _; do
+            ID=$(echo "$id" | xargs)
+            HOOK=$(echo "$hook" | xargs)
+            printf '   · %s — крючок: %s\n' "$ID" "$HOOK"
+        done
+        echo "     (grep '^| D' .harness/HARNESS_MODEL.md)"
+        echo "     вопрос: сработал ли крючок. Сработал и не закрыт — исход обязателен"
+    else
+        echo "   · нет открытых   (grep '^| D' .harness/HARNESS_MODEL.md)"
+    fi
 fi
 echo
 echo "Этот снимок автоматически встраивается в запись при запуске через new-retro.sh."

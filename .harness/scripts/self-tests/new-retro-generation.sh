@@ -131,4 +131,11 @@ fi
 grep -Fxq 'raced target' "$RACE_FILE"
 assert_no_temporary_files "$RACE_ROOT/.harness/retro"
 
+# Exercise the real producer too: fake collector fixtures cannot expose masked
+# failures inside its Git/Python pipelines. These tests never invoke this script.
+(
+    cd "$SOURCE_ROOT"
+    uv run pytest -q tests/tooling/test_retro_inputs.py -k actual_collector
+)
+
 echo "new-retro generation checks passed"
