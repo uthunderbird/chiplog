@@ -562,3 +562,39 @@ manifest binding, downstream constructors, inherited instances and filesystem
 identity remain unresolved. Broader global reflection/binding is unproved.
 `require_closed()` always refuses; no tuple is registered and the three public
 startup admission RED cases remain open.
+
+## Direct assembly forwarding inventory
+
+`verification/assembly_forwarding.py` parses all src Python files without imports
+or execution and retains each supported direct canonical/helper call. Rows bind
+source module, top-level asynchronous caller, occurrence ordinal, exact callee,
+runtime symbol origin/kind and manifest symbol origin/kind. Required manifest
+parameters remain distinct from defaults. Both installed-wrapper to helper and
+helper to canonical edges are retained. Canonical local definitions, absolute
+and relative imports, and the actual dominating R13 local class import are
+supported; unknown aliases, callable escapes, nested consumer frames and
+unsupported rebinding refuse rather than acquire a canonical identity.
+
+Tests independently freeze the19 direct edges, including complete symbol origins,
+callee identities, parameter/default tags and ordinals. Actual-source manifest
+and runtime swaps are observed before comparison refusal. Missing and added
+mounts fail both directions; an identical second call remains a separate ordinal.
+A same-spelling foreign manifest import has its foreign origin observed before
+the independent expected inventory refuses it. Parameter import, function, class,
+global and pattern bindings initially produced5 DID NOT RAISE failures in3.01s;
+shared binding detection repaired them. The initial11 feature tests failed on
+the not-implemented API, not a mounted product failure.
+
+Cold review `/private/tmp/r14-assembly-forwarding-plan-review.md` corrected the
+local-definition premise, then identified incomplete independent origins and
+parameter shadowing. Its bounded static recheck closes those two findings; it
+ran no tests and provides no runtime admission evidence. The collector reports
+lexical forwarding only. It does not resolve indirect aliases, broader reflection,
+effective inherited contracts, manifest contents or public argument restrictions.
+`require_closed()` refuses; CURRENT and startup admission remain open.
+
+Command `.venv/bin/pytest -q tests/verification/test_assembly_forwarding.py
+tests/verification/test_canonical_database_routes.py
+tests/verification/test_authority_sql_corpus.py
+tests/verification/test_authority_read_graph.py --tb=short` gave73 passed in23.85s.
+The assembly file contributes17 tests; Ruff passed for its source and tests.
