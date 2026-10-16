@@ -46,6 +46,22 @@ before reaching the decoder. Both sessions were closed. Disabling pure reuse in
 a process-local negative control makes the exact-count assertion fail; no source
 or production clocks were changed by these probes.
 
+Fresh two-preview runtime control (2026-10-16): command
+`.venv/bin/python -m pytest -c /Users/thunderbird/Projects/chiplog/pyproject.toml -q -p no:timeout /private/tmp/test_r14_preview_repeat_witness.py --tb=short`
+passed in 7.63s. Two unchanged-cut reads produced exactly four preview/database
+validations, four resource verifications, four recipient derivations, eight
+historical HMAC verifications, two cached-history hits and two input captures;
+full-history fallback was never entered. The observer filtered code objects
+without replacing checked resource methods; standard configuration remained
+eligible, the authenticated input cut remained equal and results matched.
+The pair took 122838375ns profiled versus 68544417ns unprofiled. Nested inclusive
+spans overlap and profiling overhead is material. Report
+`/private/tmp/r14-preview-repeat-witness-result.json` retains scalar counts and
+spans. This establishes repetition and a faithful small-fixture observer, not
+seconds-scale cost or a justification for another cache. Next diagnostic must
+discriminate growth/actual slow-path work rather than assume this tiny overhead
+explains the second-seal failure.
+
 | Requirement | Existing evidence or candidate check | Current conclusion / next action |
 | --- | --- | --- |
 | Mixed accepted/cancelled seal and per-seal V3 | `test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once` | Existing mounted baseline; retain, then verify current integrated tree. |

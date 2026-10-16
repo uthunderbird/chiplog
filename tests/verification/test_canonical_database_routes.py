@@ -176,7 +176,8 @@ def test_nested_function_database_parameter_is_not_the_canonical_database():
     source, leaf = _sources()
     changed = _replace(source,
         "            store = resources.enter_context(factory(database, **materializer_kwargs))",
-        "            store = resources.enter_context(other_factory(database, **materializer_kwargs))")
+        "            store = resources.enter_context("
+        "other_factory(database, **materializer_kwargs))")
     changed = _replace(changed, "    runtime: R7PlanningRuntime | None = None\n",
         "    def unused(database):\n"
         "        with factory(database, **materializer_kwargs):\n"

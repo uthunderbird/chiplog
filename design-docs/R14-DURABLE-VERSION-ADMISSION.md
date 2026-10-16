@@ -958,3 +958,20 @@ Current complete-version controls were rerun with
 authentic legacy V1 still enters runtime rather than UnsupportedSchemaVersion, and
 fresh startup still yields without INITIALIZE. No complete version gate, approved
 registry/descriptor, CURRENT or V2 initializer is claimed by this consistency slice.
+
+Startup slice committed as `cd61322`. The source-origin verifiers now recognize
+only the actual direct synchronous ExitStack/startup frames and the direct
+`store = resources.enter_context(factory(...))` construction. Existing global
+binding/constructor/forwarding/escape guards remain; conditional/deferred,
+foreign/async/multi-item frames and foreign context-entry mutants refuse. These
+are lexical provenance facts, not proof of arbitrary context-manager behavior.
+Command `.venv/bin/python -m pytest -q -p no:timeout tests/verification/test_canonical_database_routes.py tests/verification/test_planning_descriptor_chain.py tests/verification/test_selected_engine_evidence.py tests/verification/test_authority_read_graph.py --tb=short`
+passed 268 tests in 95.89s. Final runtime/historical/cache selection passed 63
+tests in 5.54s; the checkpoint selected 108 tests, passing in 18.45s, with R8
+structure/import checks. The single E501 left by the file-count edit guard was
+immediately corrected after that checkpoint; scoped Ruff now passes. Mypy over
+the five runtime files passes. Broad manual mypy of the two verifier files is
+not clean: shadowing their pre-slice sources reports 349 errors. Five newly
+introduced untyped-helper diagnostics were removed by using typed direct frame
+selection; current sources now have the identical 349-message multiset after
+line-number normalization. No broad verifier type-clean claim.

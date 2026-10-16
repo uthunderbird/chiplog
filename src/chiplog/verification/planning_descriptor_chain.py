@@ -1024,21 +1024,21 @@ def _read_ledger_origins(sources, corpus, occurrences, expressions):
         "ledger handoff parameter rebound",
     )
     canonical = _scope(runtime, "_open_runtime")
-    resources = _one(
-        [n for n in canonical.body
+    resources_frames = [n for n in canonical.body
          if isinstance(n, ast.With) and len(n.items) == 1
-         and _text(n.items[0].context_expr) == "ExitStack()"
+         and ast.unparse(n.items[0].context_expr) == "ExitStack()"
          and n.items[0].optional_vars is not None
-         and _text(n.items[0].optional_vars) == "resources"],
-        "canonical ledger resources frame changed",
-    )
-    startup = _one(
-        [n for n in resources.body
+         and ast.unparse(n.items[0].optional_vars) == "resources"]
+    if len(resources_frames) != 1:
+        raise UnknownPlanningChain("canonical ledger resources frame changed")
+    resources, = resources_frames
+    startup_frames = [n for n in resources.body
          if isinstance(n, ast.With) and len(n.items) == 1
-         and _text(n.items[0].context_expr) == "startup_scope"
-         and n.items[0].optional_vars is None],
-        "canonical ledger startup frame changed",
-    )
+         and ast.unparse(n.items[0].context_expr) == "startup_scope"
+         and n.items[0].optional_vars is None]
+    if len(startup_frames) != 1:
+        raise UnknownPlanningChain("canonical ledger startup frame changed")
+    startup, = startup_frames
     declaration = _one(
         [
             n
