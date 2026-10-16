@@ -894,6 +894,23 @@ complete-decision-prefix comparison must detect lost history. Any existing
 rollback journal is unsupported by this initial slice. Recheck main/WAL identity,
 bytes and sidecar presence before yielding and before successful context exit;
 source SHM is neither copied nor created. Before mounting this helper, gate
-coverage must include constructors, connection close/checkpoint and WAL cleanup:
-the current materializer `close()` does not establish that exclusion. A helper
-test does not discharge that lifecycle prerequisite or the startup RED controls.
+coverage must include constructors, connection close/checkpoint and WAL cleanup.
+A helper test does not discharge that lifecycle prerequisite or the startup RED
+controls.
+
+Materializer close exclusion (2026-10-16): the real last-close test first stopped
+on an empty-WAL fixture assertion; that setup failure was not the bug RED. After
+a committed write, two genuine RED controls observed `[False, False]` for gate
+ownership around physical close and no refusal with a missing lock (2 failed in
+0.08s). `SQLiteMaterializer.close()` now uses the optional matching existing gate
+directly, without materializer inode admission or lock provisioning. Gate failure
+has no ungated fallback; the missing-lock test restores the original lock and
+retries cleanup. Repeated close after main removal and context-body error after
+regular-file replacement remain covered; this is not a general guarantee about
+every invalid cleanup namespace or a global lifecycle audit.
+
+Command `.venv/bin/python -m pytest -q -p no:timeout tests/platform/test_writer_authority_gate.py tests/platform/test_sqlite_substrate.py tests/platform/test_readonly_sqlite_snapshot.py --tb=short`
+passed 53 tests in 1.46s. The last-close witness additionally reopens independently
+and checks the committed row after actual WAL cleanup (1 passed in 0.06s).
+Scoped Ruff passes. Other source-connection lifecycle paths, complete startup
+admission, CURRENT and the three public startup REDs remain open.

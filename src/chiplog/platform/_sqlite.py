@@ -1119,7 +1119,15 @@ class SQLiteMaterializer:
         return None if row is None else str(row[0])
 
     def close(self) -> None:
-        self._connection.close()
+        # Last-close checkpoint/WAL cleanup mutates the bundle. Cleanup needs
+        # exclusion, not the materializer's original database-inode admission.
+        gate = (
+            contextlib.nullcontext()
+            if self._authority_gate is None
+            else self._authority_gate.hold_existing()
+        )
+        with gate:
+            self._connection.close()
 
     def _bind_authority_mutation_admission(
         self, callback: Callable[[AuthorityMutationKind, _AuthorityRecoveryContext | None], None]

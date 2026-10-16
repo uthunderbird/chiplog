@@ -5,6 +5,7 @@ import hashlib
 import json
 import sqlite3
 import sys
+from contextlib import closing
 from multiprocessing import get_context
 from pathlib import Path
 from subprocess import Popen, TimeoutExpired
@@ -177,3 +178,93 @@ def test_bound_read_ledger_rejects_identical_copied_file(tmp_path: Path) -> None
     replacement.replace(path)
     with pytest.raises(AuthorityGateError, match="replaced or aliased"):
         ledger.invalidate_credential_session("tenant", state.fingerprint(), "new")
+
+
+def test_materializer_last_close_holds_authority_gate_through_wal_cleanup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from chiplog.platform.authority_gate import AuthorityGateError
+
+    database = tmp_path / "main.sqlite3"
+    wal = Path(str(database) + "-wal")
+    gate = AuthorityGate.for_database(database)
+    observed: list[bool] = []
+
+    def observe_gate() -> None:
+        try:
+            gate.require_held()
+        except AuthorityGateError:
+            observed.append(False)
+        else:
+            observed.append(True)
+
+    class ObservedConnection(sqlite3.Connection):
+        def close(self) -> None:
+            observe_gate()
+            super().close()
+            observe_gate()
+
+    original_connect = sqlite3.connect
+
+    def connect(target, *args, **kwargs):
+        if target == database:
+            kwargs["factory"] = ObservedConnection
+        return original_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    with SQLiteMaterializer(database, record_contracts={}, authority_gate=gate) as store:
+        with gate.hold_existing():
+            store._connection.execute("INSERT INTO tenant_heads VALUES ('tenant', 0)")
+            store._connection.commit()
+        assert wal.exists() and wal.stat().st_size > 0
+    assert not wal.exists(), "fixture must exercise last-connection WAL cleanup"
+    assert observed == [True, True]
+    with closing(original_connect(database)) as connection:
+        assert connection.execute("SELECT tenant_id, head FROM tenant_heads").fetchall() == [
+            ("tenant", 0)
+        ]
+
+
+def test_materializer_close_missing_lock_refuses_without_recreating_it(tmp_path: Path) -> None:
+    from chiplog.platform.authority_gate import AuthorityGateError
+
+    database = tmp_path / "main.sqlite3"
+    gate = AuthorityGate.for_database(database)
+    with SQLiteMaterializer(database, record_contracts={}, authority_gate=gate) as store:
+        retained = tmp_path / "retained.lock"
+        gate.path.rename(retained)
+        try:
+            with pytest.raises(AuthorityGateError):
+                store.close()
+            assert not gate.path.exists()
+        finally:
+            retained.rename(gate.path)
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_materializer_repeated_close_after_main_removal_is_harmless(
+    tmp_path: Path, bound: bool
+) -> None:
+    database = tmp_path / "main.sqlite3"
+    gate = AuthorityGate.for_database(database) if bound else None
+    with SQLiteMaterializer(database, record_contracts={}, authority_gate=gate) as store:
+        pass
+    database.unlink()
+    store.close()
+
+
+def test_materializer_cleanup_does_not_mask_body_error_after_regular_file_replacement(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "main.sqlite3"
+    gate = AuthorityGate.for_database(database)
+    with (
+        pytest.raises(ValueError, match="body sentinel"),
+        SQLiteMaterializer(database, record_contracts={}, authority_gate=gate) as store,
+    ):
+        replacement = tmp_path / "replacement.sqlite3"
+        replacement.write_bytes(database.read_bytes())
+        replacement.replace(database)
+        raise ValueError("body sentinel")
+    with pytest.raises(sqlite3.ProgrammingError):
+        store._connection.execute("SELECT 1")
