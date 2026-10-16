@@ -2233,3 +2233,74 @@ Origins are conditional on source-local entrypoint paths; arbitrary indirect
 reflection/external runtime mutation, authorizer policy, exhaustive global
 receiver/domain closure, schema/AMR/CURRENT and startup admission remain open.
 This proof does not assert all possible incoming helper connections are private.
+
+### Whole-tree consumer and selected reader scanners (2026-10-16)
+
+`authority_descriptor_closure.inspect_authority_descriptor_closure(root)` now
+captures the complete filesystem Python source set and joins the existing corpus,
+SQL-expression inventory, conditional local proofs and all lexical assembly
+mounts. Explicit lstat traversal refuses symlink subtrees/files and unreadable
+UTF-8; recheck compares exact complete path/byte maps. This is observational
+equality, not atomic identity or an independently registered shipment membership.
+
+Every call/reference-kind corpus event has exactly one disposition. All other
+imports/bindings/parameters remain in the underlying corpus. Known chains are
+`CONDITIONAL_LOCAL`, never global closure. Unknown receivers/callees, ordinary
+calls, reflection and aliases remain explicit unresolved occurrences. Canonical
+verification rebuilds the entire result from captured source strings; mutually
+forged fragment/rows do not certify themselves. Independent base READ goldens
+reject a new subquery dependency; unchanged SQL with another receiver refuses.
+`require_closed()` still unconditionally refuses, including forged empty rows.
+
+The same fragment now retains its expression inventory and five selected-reader
+scanner chains: BEGIN, frontier read, catalog metadata, column metadata and full
+authority-member commitment scan. Three distinct forwards have path lengths
+0,0,1,1,2 across those five chains. All sites/factory/forwards are canonical
+corpus identities and each scanner retains its exact finite expression resolution
+and source dependencies. The selected factory is tenant_main; this does not
+assign tenant_main to the separate ledger or other incoming helper contexts.
+
+RED-first evidence: consumer API initially absent;14 actual receiver/eagerness
+mutants accepted before scanner implementation, plus a missing positive field.
+Root corrected two ambiguous fixture markers rather than counting their setup
+errors as proof. Additional genuine REDs exposed three role-SQL substitutions,
+reflective tuple rebinding and unreachable-yield deferral. Exact role SQL AST
+templates, eager unshadowed tuple consumption, no deferred helper frames,
+sink-specific cursor consumption and exact connection forwards now refuse them.
+Scanner/consumer forgery tests cover missing/duplicate chains, wrong domain/role,
+reversed forwards, altered alternatives, mount omission/ghost and statement labels.
+
+Cold plan/review artifacts read in full:
+`/private/tmp/r14-global-closure-consumer-plan-review.md`,
+`/private/tmp/r14-global-descriptor-join-redteam.md`,
+`/private/tmp/r14-reader-scanner-chain-plan-review.md`,
+`/private/tmp/r14-reader-scanner-mechanism-redteam.md`.
+The two cold red-team mechanism reviews found no confirmed critical/blocking
+bypass in their partial scopes. They were static inspections, not independent
+executed test verdicts or global admission certification.
+
+Command `.venv/bin/pytest -p no:timeout -q
+tests/verification/test_authority_descriptor_closure.py
+tests/verification/test_planning_descriptor_chain.py
+tests/verification/test_sql_expression_inventory.py
+tests/verification/test_identifier_sql_families.py
+tests/verification/test_authority_sql_corpus.py
+tests/verification/test_assembly_forwarding.py
+tests/verification/test_canonical_database_routes.py
+tests/verification/test_authority_read_graph.py
+tests/verification/test_sqlite_preparation.py --tb=short`:292 passed in88.94s.
+Scoped Ruff/diff pass; targeted mypy of the new consumer passes.
+
+Command `.venv/bin/python /private/tmp/r14-global-descriptor-inspection.py`
+produced `/private/tmp/r14-global-descriptor-inspection-7e22daa-candidate.json`,
+27,145,384 bytes, SHA256
+`cf913f3224cea547eb7ae24f315380425fe9ffa684e1bacdbade89d5c53a806d`.
+Actual captured worktree (base7e22daa plus this implementation):586 sources,
+110129 corpus nodes,58405 call/reference rows,358 lexical SQL candidates,
+19 mounts,25 conditional-local rows and58380 unresolved call/reference rows.
+The latter includes ordinary calls; it is not a count of unknown SQL sinks.
+Source paths/bytes rechecked after derivation. Candidate is unregistered and
+INCOMPLETE. Next actual receiver group is `_ledger` -> `BrokerReadLedger`
+current_state/begin/release/dequeue with its separate protected database path.
+Global semantic closure, engine graph/schema/AMR, descriptor/tuple, CURRENT,
+initializer and public startup admission remain mandatory OPEN work.

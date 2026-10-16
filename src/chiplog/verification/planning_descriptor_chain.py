@@ -27,7 +27,11 @@ from chiplog.verification.canonical_database_routes import (
     verify_forwarded_database_roles,
 )
 from chiplog.verification.constant_sql_scripts import extract_constant_sql_scripts
-from chiplog.verification.sql_expression_inventory import extract_sql_expression_inventory
+from chiplog.verification.sql_expression_inventory import (
+    SqlExpressionInventory,
+    SqlExpressionResolution,
+    extract_sql_expression_inventory,
+)
 
 
 class UnknownPlanningChain(ValueError):
@@ -57,13 +61,25 @@ class PreparationOriginChain:
 
 
 @dataclass(frozen=True)
+class ReaderScannerChain:
+    factory: CorpusNode
+    forwards: tuple[CorpusNode, ...]
+    sink: CorpusNode
+    role: str
+    domain: str
+    expression: SqlExpressionResolution
+
+
+@dataclass(frozen=True)
 class PlanningDescriptorFragment:
     corpus: CurrentSqlCorpus
+    expressions: SqlExpressionInventory
     assembly: AssemblyEdge
     other_mounts: tuple[AssemblyEdge, ...]
     wrapper_site: CorpusNode
     rows: tuple[PlanningDescriptorRow, ...]
     preparation_chains: tuple[PreparationOriginChain, ...]
+    scanner_chains: tuple[ReaderScannerChain, ...]
     residual_obligations: tuple[str, ...]
 
     def require_closed(self) -> None:
@@ -496,7 +512,163 @@ def _preparation_origins(sources, corpus):
     return tuple(chains)
 
 
-def build_planning_descriptor_fragment(sources) -> PlanningDescriptorFragment:
+def _reader_scanners(corpus, occurrences, expressions):
+    """Conditional origins for the selected reader's five scanner/transaction sites."""
+    path = 'src/chiplog/platform/authority_reads.py'
+    tree = _one([tree for site, _, tree in occurrences if site.module == path][:1],
+                'missing reader source tree')
+    parents = {child: parent for parent in ast.walk(tree)
+               for child in ast.iter_child_nodes(parent)}
+    execute = _scope(tree, 'BrokerAuthorityReader', 'execute')
+    helpers = {name: _scope(tree, name) for name in (
+        '_schema_members', '_authority_commitment', '_authority_snapshot_bytes')}
+    _require(not any(_binds(n, 'tuple') for n in ast.walk(tree)),
+             'scanner eager tuple builtin is rebound')
+    for name, helper in helpers.items():
+        _signature(helper, ('connection',))
+        _require(not helper.decorator_list
+                 and [n for n in ast.walk(tree) if _binds(n, name)] == [helper],
+                 'scanner helper definition is rebound')
+    for node in ast.walk(tree):
+        _require(not (isinstance(node, ast.Name) and node.id in {
+            'globals', 'locals', 'vars', 'getattr', 'setattr', 'delattr', 'eval', 'exec',
+            '__import__', '__builtins__',
+        }), 'reflective scanner binding is unsupported')
+        _require(not (isinstance(node, ast.Attribute) and (
+            node.attr in {'__dict__', '__setattr__', '__getattribute__'}
+            or (node.attr == 'tuple' and isinstance(node.ctx, (ast.Store, ast.Del)))
+        )), 'indirect scanner binding mutation is unsupported')
+        if isinstance(node, ast.Name) and node.id in helpers:
+            parent = parents[node]
+            _require(isinstance(parent, ast.Call) and parent.func is node,
+                     'scanner helper callable escapes its direct call positions')
+
+    def call(scope, expression):
+        return _one([n for n in ast.walk(scope) if isinstance(n, ast.Call)
+                     and _text(n) == expression], 'scanner forward changed: ' + expression)
+
+    schema_forward = call(execute, '_schema_members(connection)')
+    commitment_forward = call(execute, '_authority_commitment(connection)')
+    snapshot_forward = call(helpers['_authority_commitment'],
+                            '_authority_snapshot_bytes(connection)')
+    planning_forward = call(execute,
+                            'self._execute_planning_read(connection, operation, snapshot)')
+    context = _one([n for n in execute.body if isinstance(n, ast.With)],
+                   'selected reader context changed')
+    binding = context.items[0].optional_vars
+    factory = context.items[0].context_expr.args[0]
+
+    def site(scope, node):
+        return _one([n for n in corpus.nodes if n.module == path and n.qualname == scope
+                     and n.expression == _text(node)], 'scanner lacks unique corpus occurrence')
+
+    scopes = {'BrokerAuthorityReader.execute': execute, **helpers}
+    forwards = {
+        'BrokerAuthorityReader.execute': (schema_forward, commitment_forward),
+        '_authority_commitment': (snapshot_forward,),
+    }
+    expected = {
+        'BrokerAuthorityReader.execute': (
+            ('TRANSACTION_BEGIN', (), None, 1),
+            ('SNAPSHOT_FRONTIER_READ', (), 'fetchone', 2),
+        ),
+        '_schema_members': (
+            ('SCHEMA_CATALOG_METADATA', (schema_forward,), 'fetchall', 1),
+            ('SCHEMA_COLUMN_METADATA', (schema_forward,), 'fetchall', 1),
+        ),
+        '_authority_snapshot_bytes': (
+            ('AUTHORITY_COMMITMENT_SCAN', (commitment_forward, snapshot_forward), 'fetchall', 1),
+        ),
+        '_authority_commitment': (),
+    }
+    sql_templates = {
+        'TRANSACTION_BEGIN': repr('BEGIN'),
+        'SNAPSHOT_FRONTIER_READ': repr('SELECT head FROM tenant_heads WHERE tenant_id = ?'),
+        'SCHEMA_CATALOG_METADATA': repr(
+            "SELECT name FROM main.sqlite_master WHERE type = 'table' "
+            "AND name NOT GLOB 'sqlite_*' ORDER BY name"),
+        'SCHEMA_COLUMN_METADATA': 'f\'PRAGMA main.table_info("{member.table}")\'',
+        'AUTHORITY_COMMITMENT_SCAN':
+            'f\'SELECT {columns} FROM main."{member.table}" ORDER BY {order}\'',
+    }
+    resolved = {row.site: row for row in expressions.resolved}
+    chains = []
+    for name, scope in scopes.items():
+        _require(not any(isinstance(n, (ast.Yield, ast.YieldFrom, ast.Await))
+                         for n in ast.walk(scope)), 'scanner helper execution is deferred')
+        sinks = [(node, sql_call) for node, sql_call, _ in occurrences
+                 if node.module == path and node.qualname == name]
+        _require(len(sinks) == len(expected[name]), 'reader scanner SQL sites changed')
+        allowed = set(forwards.get(name, ()))
+        for (sink, sql_call), (role, path_calls, fetch_method, argc) in zip(
+            sinks, expected[name], strict=True
+        ):
+            _require(_text(sql_call.func) == 'connection.execute' and not sql_call.keywords
+                     and len(sql_call.args) == argc,
+                     'scanner uses a foreign SQL receiver/arguments')
+            _require(ast.dump(sql_call.args[0]) == ast.dump(
+                ast.parse(sql_templates[role], mode='eval').body),
+                'scanner SQL no longer has its registered role shape')
+            parent = parents[sql_call]
+            if fetch_method is None:
+                _require(isinstance(parent, ast.Expr) and parent.value is sql_call,
+                         'scanner transaction cursor escapes')
+            else:
+                consume = parents.get(parent)
+                _require(isinstance(parent, ast.Attribute) and parent.value is sql_call
+                         and parent.attr == fetch_method and isinstance(consume, ast.Call)
+                         and consume.func is parent and not consume.args and not consume.keywords,
+                         'scanner cursor escapes immediate consumption')
+            expression = resolved.get(sink)
+            _require(expression is not None and expression.kind == 'FINITE_SYNTAX',
+                     'scanner SQL lacks finite same-snapshot expression evidence')
+            forward_sites = tuple(site(
+                '_authority_commitment' if forward is snapshot_forward
+                else 'BrokerAuthorityReader.execute', forward
+            ) for forward in path_calls)
+            chains.append(ReaderScannerChain(site('BrokerAuthorityReader.execute', factory),
+                forward_sites, sink, role, 'tenant_main', expression))
+            allowed.add(sql_call)
+        if scope is execute:
+            allowed.add(call(scope, 'connection.rollback()'))
+            allowed.add(planning_forward)
+            declaration = binding
+        else:
+            declaration = scope.args.args[0]
+        _require([n for n in ast.walk(scope) if _binds(n, 'connection')] == [declaration],
+                 'scanner connection is rebound')
+        for node in ast.walk(scope):
+            if not isinstance(node, ast.Name) or node.id != 'connection' or node is declaration:
+                continue
+            _require(isinstance(node.ctx, ast.Load), 'scanner connection is rebound')
+            ancestor = parents[node]
+            while ancestor is not scope:
+                _require(not isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef,
+                    ast.ClassDef, ast.Lambda, ast.ListComp, ast.DictComp, ast.SetComp)),
+                    'scanner connection enters an unsupported nested frame')
+                if isinstance(ancestor, ast.GeneratorExp):
+                    consumer = parents[ancestor]
+                    _require(isinstance(consumer, ast.Call)
+                             and _text(consumer.func) == 'tuple' and consumer.args == [ancestor]
+                             and not consumer.keywords
+                             and all(not part.is_async for part in ancestor.generators),
+                             'scanner connection escapes through a lazy generator')
+                ancestor = parents[ancestor]
+            parent = parents[node]
+            receiver_call = parents.get(parent) if isinstance(parent, ast.Attribute) else parent
+            _require(receiver_call in allowed and (
+                (isinstance(parent, ast.Attribute) and receiver_call.func is parent
+                 and parent.value is node) or
+                (isinstance(parent, ast.Call) and not parent.keywords and (
+                    parent.args == [node] or
+                    (parent is planning_forward and parent.args[0] is node)))),
+                'scanner connection escapes its exact forwarding/receiver position')
+    return tuple(chains)
+
+
+def build_planning_descriptor_fragment(
+    sources: tuple[tuple[str, str], ...],
+) -> PlanningDescriptorFragment:
     """Join all evidence from one supplied snapshot, leaving global closure false."""
     try:
         sources = tuple(sources)
@@ -516,6 +688,7 @@ def build_planning_descriptor_fragment(sources) -> PlanningDescriptorFragment:
         preparation_chains = _preparation_origins(sources, corpus)
         expressions = extract_sql_expression_inventory(sources, corpus)
         expressions.require_exact_accounting()
+        scanner_chains = _reader_scanners(corpus, occurrences, expressions)
         assembly = inspect_assembly_forwarding(tuple((p[4:], s) for p, s in sources))
         edge = _one([e for e in assembly.edges if e.module == runtime_path[4:]
                      and e.caller == 'open_r7_runtime'], 'missing base R7 mount')
@@ -586,12 +759,13 @@ def build_planning_descriptor_fragment(sources) -> PlanningDescriptorFragment:
             for alternative, expression in enumerate(row.alternatives):
                 rows.append(PlanningDescriptorRow(site, statement, alternative, expression.label,
                     expression.sql, 'tenant_main', _prepare_reads(schema, expression.sql)))
-        return PlanningDescriptorFragment(corpus, edge,
+        return PlanningDescriptorFragment(corpus, expressions, edge,
             tuple(e for e in assembly.edges if e != edge), wrapper_site, tuple(rows),
-            preparation_chains, (
+            preparation_chains, scanner_chains, (
                 'fragment only: supplied source set is not independently proven exhaustive',
                 'other assembly mounts and external class mutation are unproved',
-                'execute schema/commitment helper domains and callees remain unproved',
+                'selected scanner origins are conditional; full helper semantics, other '
+                'incoming contexts, metadata/engine graph and AMR remain unproved',
                 'preparation origins are source-local only; authorizer policy and external '
                 'runtime mutation/indirect reflective access require independent evidence',
                 'execute ledger current_state/begin/release/dequeue '
@@ -606,7 +780,10 @@ def build_planning_descriptor_fragment(sources) -> PlanningDescriptorFragment:
         raise UnknownPlanningChain('planning fragment proof failed: ' + str(error)) from error
 
 
-def verify_planning_descriptor_fragment(fragment, expected):
+def verify_planning_descriptor_fragment(
+    fragment: PlanningDescriptorFragment,
+    expected: tuple[tuple[int, int, tuple[tuple[str, str, str], ...]], ...],
+) -> None:
     """Exact independent READ rows; success certifies this fragment only."""
     observed = tuple((row.statement, row.alternative, row.reads) for row in fragment.rows)
     if observed != expected:

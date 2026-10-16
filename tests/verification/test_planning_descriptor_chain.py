@@ -15,7 +15,9 @@ RUNTIME = 'src/chiplog/composition/r7_planning.py'
 READER = 'src/chiplog/platform/authority_reads.py'
 PREPARATION = 'src/chiplog/verification/sqlite_preparation.py'
 PATHS = (RUNTIME, READER, 'src/chiplog/platform/_sqlite.py',
-         'src/chiplog/platform/r7_leaves.py', PREPARATION)
+         'src/chiplog/platform/r7_leaves.py', PREPARATION,
+         'src/chiplog/architecture/r7_storage_surface.py',
+         'src/chiplog/composition/r12.py')
 
 
 def sources():
@@ -82,6 +84,75 @@ def test_preparation_paths_join_all_four_sinks_to_exact_private_factories():
             assert row.forward in fragment.corpus.nodes
         assert row.source_digests == tuple(
             pair for pair in fragment.corpus.source_digests if pair[0] == PREPARATION)
+
+
+def test_selected_reader_scanners_retain_five_exact_paths_and_finite_expressions():
+    fragment = build_planning_descriptor_fragment(sources())
+    chains = fragment.scanner_chains
+    assert len(chains) == 5
+    assert {(row.role, len(row.forwards)) for row in chains} == {
+        ('TRANSACTION_BEGIN', 0), ('SNAPSHOT_FRONTIER_READ', 0),
+        ('SCHEMA_CATALOG_METADATA', 1), ('SCHEMA_COLUMN_METADATA', 1),
+        ('AUTHORITY_COMMITMENT_SCAN', 2),
+    }
+    assert len({row.sink for row in chains}) == 5
+    assert len({row.factory for row in chains}) == 1
+    assert len({site for row in chains for site in row.forwards}) == 3
+    expressions = {row.site: row for row in fragment.expressions.resolved}
+    for row in chains:
+        assert row.factory in fragment.corpus.nodes and row.sink in fragment.corpus.nodes
+        assert all(site in fragment.corpus.nodes for site in row.forwards)
+        assert row.domain == 'tenant_main'
+        assert row.expression == expressions[row.sink]
+
+
+@pytest.mark.parametrize('old,new', [
+    ('observed_schema = _schema_members(connection)',
+     'observed_schema = _schema_members(other_connection)'),
+    ('            commitment = _authority_commitment(connection)',
+     '            commitment = _authority_commitment(other_connection)'),
+    ('return hashlib.sha256(_authority_snapshot_bytes(connection)).hexdigest()',
+     'return hashlib.sha256(_authority_snapshot_bytes(other_connection)).hexdigest()'),
+    ('def _authority_commitment(connection: sqlite3.Connection)',
+     'def _authority_commitment(connection: sqlite3.Connection, extra=None)'),
+    ('    rows = connection.execute(\n        "SELECT name FROM main.sqlite_master',
+     '    connection = foreign\n    rows = connection.execute(\n'
+     '        "SELECT name FROM main.sqlite_master'),
+    ('    rows = connection.execute(\n        "SELECT name FROM main.sqlite_master',
+     '    def later():\n        return connection.execute("SELECT 1")\n'
+     '    rows = connection.execute(\n        "SELECT name FROM main.sqlite_master'),
+    ('    materialized: list[dict[str, object]] = []',
+     '    leaked = connection\n    materialized: list[dict[str, object]] = []'),
+    ('    materialized: list[dict[str, object]] = []',
+     '    connection.execute("SELECT 1")\n    materialized: list[dict[str, object]] = []'),
+    ('            connection.execute("BEGIN")',
+     '            leaked = connection.execute("BEGIN").connection'),
+    ('    return tuple(\n        (\n            member.table,',
+     '    return (\n        (\n            member.table,'),
+    ('    return tuple(\n        (\n            member.table,',
+     '    return unknown(\n        (\n            member.table,'),
+    ('    rows = connection.execute(\n        "SELECT name FROM main.sqlite_master',
+     '    tuple = unknown\n    rows = connection.execute(\n'
+     '        "SELECT name FROM main.sqlite_master'),
+    ('    rows = connection.execute(\n        "SELECT name FROM main.sqlite_master',
+     '    if False:\n        yield None\n    rows = connection.execute(\n'
+     '        "SELECT name FROM main.sqlite_master'),
+    ('import sqlite3', 'import sqlite3\ntuple = unknown'),
+    ('import sqlite3', 'import sqlite3\nglobals()["tuple"] = unknown'),
+    ('    rows = connection.execute(\n        "SELECT name FROM main.sqlite_master',
+     '    return connection.execute("SELECT 1")\n'
+     '    rows = connection.execute(\n        "SELECT name FROM main.sqlite_master'),
+    ('            connection.execute("BEGIN")', '            connection.execute("SELECT 1")'),
+    ('"SELECT head FROM tenant_heads WHERE tenant_id = ?"',
+     '"SELECT frontier FROM deletion_fences WHERE tenant_id = ?"'),
+    ('f\'PRAGMA main.table_info("{member.table}")\'',
+     'f\'SELECT * FROM main."{member.table}"\''),
+    ('f\'SELECT {columns} FROM main."{member.table}" ORDER BY {order}\'',
+     'f\'SELECT {columns} FROM temp."{member.table}" ORDER BY {order}\''),
+])
+def test_scanner_connection_forwarding_and_eager_consumption_mutants_refuse(old, new):
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(mutate(sources(), READER, old, new))
 
 
 @pytest.mark.parametrize('scope,old,new', [
