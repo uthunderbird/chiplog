@@ -325,3 +325,51 @@ tests/platform/test_authority_checkpoint_admission.py --tb=short` passed
 passed again (**6 passed in 0.09s**); Ruff and diff checks passed.
 This strengthens existing constructor admission; it does not move that check
 before constructors, register a tuple/read graph or prove source-SHM invariance.
+
+## Existing current contract extensions registered separately
+
+The three baseline convergence failures were reproduced on `0aa05a1`: command
+`.venv/bin/pytest -q tests/capabilities/deployment_trust/test_trust.py::test_durable_record_discriminators_equal_the_freeze
+tests/architecture/test_r4_r5_convergence.py::test_runtime_exports_equal_the_frozen_r4_r5_set
+tests/architecture/test_r4_r5_convergence.py::test_runtime_record_schema_and_projection_sets_equal_freeze --tb=short`
+gave **3 failed in 0.19s**. Runtime contained nine additional public exports and
+the prepared external-grant/self-policy record kinds. There were no missing
+historical exports or record kinds.
+
+`architecture/current_contract_extensions.py` now declares only these existing
+additions, representation kinds, full nested schema fingerprints, field order
+and evidence selectors. Its literal registry fingerprint binds exact declaration
+bytes. Current convergence requires the exact historical-plus-extension export
+set, sorted disjoint record IDs and complete ownership union. No prefix/subset
+exception or runtime discovery adds declarations. Historical R4/R5 shapes,
+records, digests and R7 predecessor universe are unchanged.
+
+Seven candidate JSON schemas were produced by TypeAdapter, then their required
+fields, constraints, variants and nested definitions were reviewed against the
+actual declarations and existing negative contract cases before freezing the
+golden file. Protocol and exception expectations were written explicitly. Tests
+compare full fixed schema bytes/digests, exported-model config, field order,
+protocol parameter/return identities and read-only typed failure properties;
+they do not regenerate expected values. JSON schema is not proof of behavioral
+validators; those retain their own tests/evidence. No external verification or
+running database-version authority follows from these shape fingerprints.
+
+The new registry test was RED on its absent module (**1 collection error in
+0.13s**). After implementation, the registry, current convergence and trust
+files passed **58 tests in 0.87s**. Adding unchanged historical freeze, genesis,
+H1 scope, grant-contract tests, actual policy reopen and unsupported-owner-route
+controls gave **118 passed in 0.87s** with command `.venv/bin/pytest -q
+tests/architecture/test_current_contract_extensions.py
+tests/architecture/test_r4_r5_convergence.py tests/architecture/test_r4_r5_freeze.py
+tests/capabilities/deployment_trust/test_trust.py
+tests/capabilities/deployment_trust/test_genesis_contracts.py
+tests/capabilities/deployment_trust/test_hermetic_output_scope_contracts.py
+tests/capabilities/deployment_trust/test_prepared_external_delivery_grant_v2_contracts.py
+tests/platform/test_prepared_self_delivery_policy_lineage.py::test_issued_policy_is_physically_anchored_current_and_survives_reopen
+tests/capabilities/deployment_trust/test_output_scope_owner_seam.py::test_real_owner_route_remains_unsupported --tb=short`.
+
+This closes the three historical/current convergence mismatches. Binding the
+extension fingerprint into the complete registered descriptor and authenticated
+CURRENT remains open (handoff 58, continuing 56). The three startup RED tests,
+full SQL/non-SQL authority graph and running six-member tuple are still pending;
+this registry grants no startup admission.

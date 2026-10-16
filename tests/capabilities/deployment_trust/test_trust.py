@@ -13,7 +13,7 @@ from chiplog.adapters.driven.deployment_trust import (
     IndependentTenantDecisionJournal,
     SQLiteTrustMaterializer,
 )
-from chiplog.architecture.r4_r5_freeze import R4_R5_RECORDS
+from chiplog.architecture.current_contract_extensions import current_record_ids
 from chiplog.capabilities.deployment_trust import (
     AuthenticationRequest,
     TenantDecisionJournalPort,
@@ -87,10 +87,7 @@ def test_boundaries_are_protocols_and_adapters_are_structural(tmp_path: Path) ->
 
 
 def test_durable_record_discriminators_equal_the_freeze() -> None:
-    frozen = tuple(
-        item.record_type_id for item in R4_R5_RECORDS if item.owner == "deployment_trust"
-    )
-    assert frozen == RECORD_TYPE_IDS
+    assert current_record_ids("deployment_trust") == RECORD_TYPE_IDS
 
 
 def test_genesis_is_immutable_and_cross_tenant_relabel_is_denied(tmp_path: Path) -> None:

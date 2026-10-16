@@ -12,6 +12,11 @@ import chiplog.capabilities.planning as planning
 import chiplog.capabilities.projections as projections
 from chiplog.adapters.driven import deployment_trust as trust_adapters
 from chiplog.architecture import verify_manifest
+from chiplog.architecture.current_contract_extensions import (
+    CURRENT_RECORD_EXTENSIONS,
+    current_export_references,
+    current_record_ids,
+)
 from chiplog.architecture.manifests import signature_digest
 from chiplog.architecture.r4_r5_freeze import (
     R4_R5_ARCHITECTURE,
@@ -115,7 +120,7 @@ def _observed_export_shape(reference: str, value: object) -> tuple[tuple[str, st
 def test_runtime_exports_equal_the_frozen_r4_r5_set() -> None:
     verify_r4_r5_freeze()
     assert verify_manifest(R4_R5_ARCHITECTURE, R4_R5_ARCHITECTURE)
-    assert set(_public_runtime_exports()) == {item.reference for item in R4_R5_EXPORTS}
+    assert set(_public_runtime_exports()) == current_export_references()
     assert (
         tuple(
             (module, owner)
@@ -179,7 +184,7 @@ def test_runtime_record_schema_and_projection_sets_equal_freeze() -> None:
         owner: tuple(item.record_type_id for item in R4_R5_RECORDS if item.owner == owner)
         for owner in ("deployment_trust", "planning")
     }
-    assert tuple(RECORD_TYPE_IDS) == frozen_by_owner["deployment_trust"]
+    assert tuple(RECORD_TYPE_IDS) == current_record_ids("deployment_trust")
     assert tuple(PLANNING_RECORD_TYPES) == frozen_by_owner["planning"]
     assert {item.schema_id for item in R4_R5_RECORDS if item.owner == "deployment_trust"} == {
         SCHEMA_ID
@@ -195,7 +200,8 @@ def test_runtime_record_schema_and_projection_sets_equal_freeze() -> None:
         for record_type in PLANNING_RECORD_TYPES
     }
     assert {
-        (item.record_type_id, item.owner, item.commit_boundary) for item in R4_R5_RECORDS
+        (item.record_type_id, item.owner, item.commit_boundary)
+        for item in (*R4_R5_RECORDS, *CURRENT_RECORD_EXTENSIONS)
     } == runtime_ownership
     assert (
         RECORD_COMMIT_BOUNDARY,

@@ -1,0 +1,1141 @@
+{
+  "CurrentHermeticExecutionScopeResultV1": {
+    "$defs": {
+      "CurrentHermeticExecutionScopeV1": {
+        "additionalProperties": false,
+        "description": "Untrusted observation until authenticated by the owner at the consuming fence.",
+        "properties": {
+          "disposition": {
+            "const": "CURRENT",
+            "title": "Disposition",
+            "type": "string"
+          },
+          "ordered_current_source_refs": {
+            "items": {
+              "$ref": "#/$defs/ExactHead"
+            },
+            "minItems": 1,
+            "title": "Ordered Current Source Refs",
+            "type": "array"
+          },
+          "scope_ref": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "selector_generation": {
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "title": "Selector Generation",
+            "type": "integer"
+          },
+          "source_anchor": {
+            "$ref": "#/$defs/HermeticOutputScopeAnchorV1"
+          }
+        },
+        "required": [
+          "disposition",
+          "scope_ref",
+          "source_anchor",
+          "selector_generation",
+          "ordered_current_source_refs"
+        ],
+        "title": "CurrentHermeticExecutionScopeV1",
+        "type": "object"
+      },
+      "ExactHead": {
+        "additionalProperties": false,
+        "properties": {
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "head": {
+            "minLength": 1,
+            "title": "Head",
+            "type": "string"
+          },
+          "identity": {
+            "minLength": 1,
+            "title": "Identity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "head",
+          "fingerprint"
+        ],
+        "title": "ExactHead",
+        "type": "object"
+      },
+      "HermeticOutputScopeAnchorV1": {
+        "additionalProperties": false,
+        "description": "Locator for trust_records(decision_id, ordinal), not main records.record_id.\n\nDecision fingerprint hashes journal envelope bytes; record fingerprint hashes\nthe full materialized record envelope, not merely its nested scope payload.\nOwner validation resolves both byte strings and checks revision/predecessor.",
+        "properties": {
+          "decision": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "owner_id": {
+            "const": "deployment_trust",
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "predecessor": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExactHead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "record": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "record_ordinal": {
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "title": "Record Ordinal",
+            "type": "integer"
+          },
+          "record_type_id": {
+            "const": "chiplog.deployment_trust.hermetic_output_scope",
+            "title": "Record Type Id",
+            "type": "string"
+          },
+          "schema_id": {
+            "const": "chiplog.deployment_trust.record.v1",
+            "title": "Schema Id",
+            "type": "string"
+          },
+          "scope_revision": {
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "title": "Scope Revision",
+            "type": "integer"
+          },
+          "selected_resource_observation_ref": {
+            "$ref": "#/$defs/SelectedHermeticResourceObservationRefV1"
+          }
+        },
+        "required": [
+          "owner_id",
+          "decision",
+          "record_ordinal",
+          "record_type_id",
+          "schema_id",
+          "record",
+          "scope_revision",
+          "predecessor",
+          "selected_resource_observation_ref"
+        ],
+        "title": "HermeticOutputScopeAnchorV1",
+        "type": "object"
+      },
+      "NonCurrentHermeticExecutionScopeV1": {
+        "additionalProperties": false,
+        "properties": {
+          "disposition": {
+            "enum": [
+              "STALE",
+              "UNSUPPORTED",
+              "DENIED"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          }
+        },
+        "required": [
+          "disposition"
+        ],
+        "title": "NonCurrentHermeticExecutionScopeV1",
+        "type": "object"
+      },
+      "SelectedHermeticResourceObservationRefV1": {
+        "additionalProperties": false,
+        "description": "Locator for the selected R16 observation in retained inbox initialization.\n\nFingerprint is SHA256 of canonical JSON [grant.hex(), credential.hex(),\nendpoint.hex(), clock_epoch, signature], using UTF-8, ensure_ascii=False and\nseparators=(',', ':'). It binds exact bytes, not their authenticity. The\nregistered reader must authenticate selection and R16 historical/current\nsignatures under the shared gate. No dispatch grant becomes a disclosure or\nSEND permit by inclusion here.",
+        "properties": {
+          "selected_initialization": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "signature_domain": {
+            "const": "dispatch-resources.v1",
+            "title": "Signature Domain",
+            "type": "string"
+          },
+          "signed_observation_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Signed Observation Fingerprint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signature_domain",
+          "selected_initialization",
+          "signed_observation_fingerprint"
+        ],
+        "title": "SelectedHermeticResourceObservationRefV1",
+        "type": "object"
+      }
+    },
+    "discriminator": {
+      "mapping": {
+        "CURRENT": "#/$defs/CurrentHermeticExecutionScopeV1",
+        "DENIED": "#/$defs/NonCurrentHermeticExecutionScopeV1",
+        "STALE": "#/$defs/NonCurrentHermeticExecutionScopeV1",
+        "UNSUPPORTED": "#/$defs/NonCurrentHermeticExecutionScopeV1"
+      },
+      "propertyName": "disposition"
+    },
+    "oneOf": [
+      {
+        "$ref": "#/$defs/CurrentHermeticExecutionScopeV1"
+      },
+      {
+        "$ref": "#/$defs/NonCurrentHermeticExecutionScopeV1"
+      }
+    ]
+  },
+  "DatabaseGenesisV2": {
+    "additionalProperties": false,
+    "description": "Distinct complete genesis shape; legacy V1 bytes are never defaulted here.",
+    "properties": {
+      "canonicalization_version": {
+        "minimum": 1,
+        "title": "Canonicalization Version",
+        "type": "integer"
+      },
+      "companion_manifest_version": {
+        "minimum": 1,
+        "title": "Companion Manifest Version",
+        "type": "integer"
+      },
+      "database_instance_id": {
+        "minLength": 1,
+        "title": "Database Instance Id",
+        "type": "string"
+      },
+      "genesis_version": {
+        "maximum": 2,
+        "minimum": 2,
+        "title": "Genesis Version",
+        "type": "integer"
+      },
+      "journal_schema_version": {
+        "minimum": 1,
+        "title": "Journal Schema Version",
+        "type": "integer"
+      },
+      "registry_version": {
+        "minimum": 1,
+        "title": "Registry Version",
+        "type": "integer"
+      },
+      "schema_version": {
+        "minimum": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      },
+      "tenant_id": {
+        "minLength": 1,
+        "title": "Tenant Id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "genesis_version",
+      "schema_version",
+      "journal_schema_version",
+      "canonicalization_version",
+      "registry_version",
+      "companion_manifest_version",
+      "tenant_id",
+      "database_instance_id"
+    ],
+    "title": "DatabaseGenesisV2",
+    "type": "object"
+  },
+  "DatabaseVersionTuple": {
+    "additionalProperties": false,
+    "description": "All members are explicit; representing a version does not register it.",
+    "properties": {
+      "canonicalization_version": {
+        "minimum": 1,
+        "title": "Canonicalization Version",
+        "type": "integer"
+      },
+      "companion_manifest_version": {
+        "minimum": 1,
+        "title": "Companion Manifest Version",
+        "type": "integer"
+      },
+      "genesis_version": {
+        "minimum": 1,
+        "title": "Genesis Version",
+        "type": "integer"
+      },
+      "journal_schema_version": {
+        "minimum": 1,
+        "title": "Journal Schema Version",
+        "type": "integer"
+      },
+      "registry_version": {
+        "minimum": 1,
+        "title": "Registry Version",
+        "type": "integer"
+      },
+      "schema_version": {
+        "minimum": 1,
+        "title": "Schema Version",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "genesis_version",
+      "schema_version",
+      "journal_schema_version",
+      "canonicalization_version",
+      "registry_version",
+      "companion_manifest_version"
+    ],
+    "title": "DatabaseVersionTuple",
+    "type": "object"
+  },
+  "HermeticOutputScopeOwner": {
+    "kind": "protocol",
+    "methods": [
+      {
+        "name": "issue_hermetic_output_scope",
+        "parameters": [
+          {
+            "annotation": null,
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "chiplog.capabilities.deployment_trust:IssueHermeticOutputScopeV1",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "request",
+            "required": true
+          }
+        ],
+        "returns": "chiplog.capabilities.deployment_trust:IssueHermeticOutputScopeResultV1"
+      },
+      {
+        "name": "read_current_hermetic_output_scope",
+        "parameters": [
+          {
+            "annotation": null,
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "self",
+            "required": true
+          },
+          {
+            "annotation": "chiplog.capabilities.deployment_trust:ReadCurrentHermeticExecutionScopeV1",
+            "kind": "POSITIONAL_OR_KEYWORD",
+            "name": "request",
+            "required": true
+          }
+        ],
+        "returns": "chiplog.capabilities.deployment_trust:CurrentHermeticExecutionScopeResultV1"
+      }
+    ]
+  },
+  "IssueHermeticOutputScopeResultV1": {
+    "$defs": {
+      "ExactHead": {
+        "additionalProperties": false,
+        "properties": {
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "head": {
+            "minLength": 1,
+            "title": "Head",
+            "type": "string"
+          },
+          "identity": {
+            "minLength": 1,
+            "title": "Identity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "head",
+          "fingerprint"
+        ],
+        "title": "ExactHead",
+        "type": "object"
+      },
+      "HermeticOutputScopeAnchorV1": {
+        "additionalProperties": false,
+        "description": "Locator for trust_records(decision_id, ordinal), not main records.record_id.\n\nDecision fingerprint hashes journal envelope bytes; record fingerprint hashes\nthe full materialized record envelope, not merely its nested scope payload.\nOwner validation resolves both byte strings and checks revision/predecessor.",
+        "properties": {
+          "decision": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "owner_id": {
+            "const": "deployment_trust",
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "predecessor": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExactHead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "record": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "record_ordinal": {
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "title": "Record Ordinal",
+            "type": "integer"
+          },
+          "record_type_id": {
+            "const": "chiplog.deployment_trust.hermetic_output_scope",
+            "title": "Record Type Id",
+            "type": "string"
+          },
+          "schema_id": {
+            "const": "chiplog.deployment_trust.record.v1",
+            "title": "Schema Id",
+            "type": "string"
+          },
+          "scope_revision": {
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "title": "Scope Revision",
+            "type": "integer"
+          },
+          "selected_resource_observation_ref": {
+            "$ref": "#/$defs/SelectedHermeticResourceObservationRefV1"
+          }
+        },
+        "required": [
+          "owner_id",
+          "decision",
+          "record_ordinal",
+          "record_type_id",
+          "schema_id",
+          "record",
+          "scope_revision",
+          "predecessor",
+          "selected_resource_observation_ref"
+        ],
+        "title": "HermeticOutputScopeAnchorV1",
+        "type": "object"
+      },
+      "IssuedHermeticOutputScopeV1": {
+        "additionalProperties": false,
+        "description": "Inert result shape; constructing it never proves issuance.",
+        "properties": {
+          "anchor": {
+            "$ref": "#/$defs/HermeticOutputScopeAnchorV1"
+          },
+          "disposition": {
+            "enum": [
+              "ISSUED",
+              "REPLAY"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "revision": {
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "scope_head": {
+            "$ref": "#/$defs/ExactHead"
+          }
+        },
+        "required": [
+          "disposition",
+          "anchor",
+          "scope_head",
+          "revision"
+        ],
+        "title": "IssuedHermeticOutputScopeV1",
+        "type": "object"
+      },
+      "NonIssuedHermeticOutputScopeV1": {
+        "additionalProperties": false,
+        "properties": {
+          "disposition": {
+            "enum": [
+              "STALE",
+              "DENIED",
+              "UNSUPPORTED"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          }
+        },
+        "required": [
+          "disposition"
+        ],
+        "title": "NonIssuedHermeticOutputScopeV1",
+        "type": "object"
+      },
+      "SelectedHermeticResourceObservationRefV1": {
+        "additionalProperties": false,
+        "description": "Locator for the selected R16 observation in retained inbox initialization.\n\nFingerprint is SHA256 of canonical JSON [grant.hex(), credential.hex(),\nendpoint.hex(), clock_epoch, signature], using UTF-8, ensure_ascii=False and\nseparators=(',', ':'). It binds exact bytes, not their authenticity. The\nregistered reader must authenticate selection and R16 historical/current\nsignatures under the shared gate. No dispatch grant becomes a disclosure or\nSEND permit by inclusion here.",
+        "properties": {
+          "selected_initialization": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "signature_domain": {
+            "const": "dispatch-resources.v1",
+            "title": "Signature Domain",
+            "type": "string"
+          },
+          "signed_observation_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Signed Observation Fingerprint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signature_domain",
+          "selected_initialization",
+          "signed_observation_fingerprint"
+        ],
+        "title": "SelectedHermeticResourceObservationRefV1",
+        "type": "object"
+      }
+    },
+    "discriminator": {
+      "mapping": {
+        "DENIED": "#/$defs/NonIssuedHermeticOutputScopeV1",
+        "ISSUED": "#/$defs/IssuedHermeticOutputScopeV1",
+        "REPLAY": "#/$defs/IssuedHermeticOutputScopeV1",
+        "STALE": "#/$defs/NonIssuedHermeticOutputScopeV1",
+        "UNSUPPORTED": "#/$defs/NonIssuedHermeticOutputScopeV1"
+      },
+      "propertyName": "disposition"
+    },
+    "oneOf": [
+      {
+        "$ref": "#/$defs/IssuedHermeticOutputScopeV1"
+      },
+      {
+        "$ref": "#/$defs/NonIssuedHermeticOutputScopeV1"
+      }
+    ]
+  },
+  "IssueHermeticOutputScopeV1": {
+    "$defs": {
+      "ExactHead": {
+        "additionalProperties": false,
+        "properties": {
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "head": {
+            "minLength": 1,
+            "title": "Head",
+            "type": "string"
+          },
+          "identity": {
+            "minLength": 1,
+            "title": "Identity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "head",
+          "fingerprint"
+        ],
+        "title": "ExactHead",
+        "type": "object"
+      },
+      "HermeticTrustObservationV1": {
+        "additionalProperties": false,
+        "description": "Distinct physical journal envelope and logical owner snapshot heads.\n\nPhysical identity/head are the actual journal decision_id, fingerprint hashes\nits authenticated envelope. Logical head is owner_snapshot_entries()'s final\nID, never substituted for a physical materialized decision locator.",
+        "properties": {
+          "logical_snapshot_head": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Logical Snapshot Head",
+            "type": "string"
+          },
+          "physical_journal_head": {
+            "$ref": "#/$defs/ExactHead"
+          }
+        },
+        "required": [
+          "physical_journal_head",
+          "logical_snapshot_head"
+        ],
+        "title": "HermeticTrustObservationV1",
+        "type": "object"
+      },
+      "PrincipalId": {
+        "properties": {
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "PrincipalId",
+        "type": "object"
+      },
+      "SelectedHermeticResourceObservationRefV1": {
+        "additionalProperties": false,
+        "description": "Locator for the selected R16 observation in retained inbox initialization.\n\nFingerprint is SHA256 of canonical JSON [grant.hex(), credential.hex(),\nendpoint.hex(), clock_epoch, signature], using UTF-8, ensure_ascii=False and\nseparators=(',', ':'). It binds exact bytes, not their authenticity. The\nregistered reader must authenticate selection and R16 historical/current\nsignatures under the shared gate. No dispatch grant becomes a disclosure or\nSEND permit by inclusion here.",
+        "properties": {
+          "selected_initialization": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "signature_domain": {
+            "const": "dispatch-resources.v1",
+            "title": "Signature Domain",
+            "type": "string"
+          },
+          "signed_observation_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Signed Observation Fingerprint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signature_domain",
+          "selected_initialization",
+          "signed_observation_fingerprint"
+        ],
+        "title": "SelectedHermeticResourceObservationRefV1",
+        "type": "object"
+      },
+      "TenantId": {
+        "properties": {
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "TenantId",
+        "type": "object"
+      },
+      "TrustReference": {
+        "properties": {
+          "contour": {
+            "title": "Contour",
+            "type": "string"
+          },
+          "credential_head": {
+            "title": "Credential Head",
+            "type": "string"
+          },
+          "freshness_sequence": {
+            "title": "Freshness Sequence",
+            "type": "integer"
+          },
+          "materialization_head": {
+            "title": "Materialization Head",
+            "type": "string"
+          },
+          "peer_credential": {
+            "title": "Peer Credential",
+            "type": "string"
+          },
+          "principal_id": {
+            "$ref": "#/$defs/PrincipalId"
+          },
+          "session_head": {
+            "title": "Session Head",
+            "type": "string"
+          },
+          "source_head": {
+            "title": "Source Head",
+            "type": "string"
+          },
+          "tenant_id": {
+            "$ref": "#/$defs/TenantId"
+          },
+          "trust_head": {
+            "title": "Trust Head",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "principal_id",
+          "contour",
+          "credential_head",
+          "session_head",
+          "source_head",
+          "trust_head",
+          "materialization_head",
+          "freshness_sequence",
+          "peer_credential"
+        ],
+        "title": "TrustReference",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "Intent only: selected R17 provenance must be verified by the future issuer.",
+    "properties": {
+      "admitted_authentication_ref": {
+        "$ref": "#/$defs/ExactHead"
+      },
+      "authenticated_cli_ref": {
+        "$ref": "#/$defs/TrustReference"
+      },
+      "database_id": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Database Id",
+        "type": "string"
+      },
+      "expected_revision": {
+        "maximum": 18446744073709551615,
+        "minimum": 0,
+        "title": "Expected Revision",
+        "type": "integer"
+      },
+      "expected_scope_predecessor": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ExactHead"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "expected_trust_observation": {
+        "$ref": "#/$defs/HermeticTrustObservationV1"
+      },
+      "schema_id": {
+        "const": "chiplog.deployment-trust.issue-hermetic-output-scope.v1",
+        "default": "chiplog.deployment-trust.issue-hermetic-output-scope.v1",
+        "title": "Schema Id",
+        "type": "string"
+      },
+      "scope_id": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Scope Id",
+        "type": "string"
+      },
+      "selected_resource_observation_ref": {
+        "$ref": "#/$defs/SelectedHermeticResourceObservationRefV1"
+      },
+      "slot_id": {
+        "const": "h1-cli-effects-origin",
+        "title": "Slot Id",
+        "type": "string"
+      },
+      "worker_session_id": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Worker Session Id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "slot_id",
+      "database_id",
+      "scope_id",
+      "expected_trust_observation",
+      "expected_scope_predecessor",
+      "expected_revision",
+      "authenticated_cli_ref",
+      "admitted_authentication_ref",
+      "selected_resource_observation_ref",
+      "worker_session_id"
+    ],
+    "title": "IssueHermeticOutputScopeV1",
+    "type": "object"
+  },
+  "ReadCurrentHermeticExecutionScopeV1": {
+    "$defs": {
+      "ExactHead": {
+        "additionalProperties": false,
+        "properties": {
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "head": {
+            "minLength": 1,
+            "title": "Head",
+            "type": "string"
+          },
+          "identity": {
+            "minLength": 1,
+            "title": "Identity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "head",
+          "fingerprint"
+        ],
+        "title": "ExactHead",
+        "type": "object"
+      },
+      "HermeticOutputScopeAnchorV1": {
+        "additionalProperties": false,
+        "description": "Locator for trust_records(decision_id, ordinal), not main records.record_id.\n\nDecision fingerprint hashes journal envelope bytes; record fingerprint hashes\nthe full materialized record envelope, not merely its nested scope payload.\nOwner validation resolves both byte strings and checks revision/predecessor.",
+        "properties": {
+          "decision": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "owner_id": {
+            "const": "deployment_trust",
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "predecessor": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ExactHead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "record": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "record_ordinal": {
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "title": "Record Ordinal",
+            "type": "integer"
+          },
+          "record_type_id": {
+            "const": "chiplog.deployment_trust.hermetic_output_scope",
+            "title": "Record Type Id",
+            "type": "string"
+          },
+          "schema_id": {
+            "const": "chiplog.deployment_trust.record.v1",
+            "title": "Schema Id",
+            "type": "string"
+          },
+          "scope_revision": {
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "title": "Scope Revision",
+            "type": "integer"
+          },
+          "selected_resource_observation_ref": {
+            "$ref": "#/$defs/SelectedHermeticResourceObservationRefV1"
+          }
+        },
+        "required": [
+          "owner_id",
+          "decision",
+          "record_ordinal",
+          "record_type_id",
+          "schema_id",
+          "record",
+          "scope_revision",
+          "predecessor",
+          "selected_resource_observation_ref"
+        ],
+        "title": "HermeticOutputScopeAnchorV1",
+        "type": "object"
+      },
+      "HermeticTrustObservationV1": {
+        "additionalProperties": false,
+        "description": "Distinct physical journal envelope and logical owner snapshot heads.\n\nPhysical identity/head are the actual journal decision_id, fingerprint hashes\nits authenticated envelope. Logical head is owner_snapshot_entries()'s final\nID, never substituted for a physical materialized decision locator.",
+        "properties": {
+          "logical_snapshot_head": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Logical Snapshot Head",
+            "type": "string"
+          },
+          "physical_journal_head": {
+            "$ref": "#/$defs/ExactHead"
+          }
+        },
+        "required": [
+          "physical_journal_head",
+          "logical_snapshot_head"
+        ],
+        "title": "HermeticTrustObservationV1",
+        "type": "object"
+      },
+      "PrincipalId": {
+        "properties": {
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "PrincipalId",
+        "type": "object"
+      },
+      "SelectedHermeticResourceObservationRefV1": {
+        "additionalProperties": false,
+        "description": "Locator for the selected R16 observation in retained inbox initialization.\n\nFingerprint is SHA256 of canonical JSON [grant.hex(), credential.hex(),\nendpoint.hex(), clock_epoch, signature], using UTF-8, ensure_ascii=False and\nseparators=(',', ':'). It binds exact bytes, not their authenticity. The\nregistered reader must authenticate selection and R16 historical/current\nsignatures under the shared gate. No dispatch grant becomes a disclosure or\nSEND permit by inclusion here.",
+        "properties": {
+          "selected_initialization": {
+            "$ref": "#/$defs/ExactHead"
+          },
+          "signature_domain": {
+            "const": "dispatch-resources.v1",
+            "title": "Signature Domain",
+            "type": "string"
+          },
+          "signed_observation_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Signed Observation Fingerprint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "signature_domain",
+          "selected_initialization",
+          "signed_observation_fingerprint"
+        ],
+        "title": "SelectedHermeticResourceObservationRefV1",
+        "type": "object"
+      },
+      "TenantId": {
+        "properties": {
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "TenantId",
+        "type": "object"
+      },
+      "TrustReference": {
+        "properties": {
+          "contour": {
+            "title": "Contour",
+            "type": "string"
+          },
+          "credential_head": {
+            "title": "Credential Head",
+            "type": "string"
+          },
+          "freshness_sequence": {
+            "title": "Freshness Sequence",
+            "type": "integer"
+          },
+          "materialization_head": {
+            "title": "Materialization Head",
+            "type": "string"
+          },
+          "peer_credential": {
+            "title": "Peer Credential",
+            "type": "string"
+          },
+          "principal_id": {
+            "$ref": "#/$defs/PrincipalId"
+          },
+          "session_head": {
+            "title": "Session Head",
+            "type": "string"
+          },
+          "source_head": {
+            "title": "Source Head",
+            "type": "string"
+          },
+          "tenant_id": {
+            "$ref": "#/$defs/TenantId"
+          },
+          "trust_head": {
+            "title": "Trust Head",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "principal_id",
+          "contour",
+          "credential_head",
+          "session_head",
+          "source_head",
+          "trust_head",
+          "materialization_head",
+          "freshness_sequence",
+          "peer_credential"
+        ],
+        "title": "TrustReference",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "admitted_authentication_ref": {
+        "$ref": "#/$defs/ExactHead"
+      },
+      "authenticated_cli_ref": {
+        "$ref": "#/$defs/TrustReference"
+      },
+      "database_id": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Database Id",
+        "type": "string"
+      },
+      "expected_revision": {
+        "maximum": 18446744073709551615,
+        "minimum": 0,
+        "title": "Expected Revision",
+        "type": "integer"
+      },
+      "expected_scope_ref": {
+        "$ref": "#/$defs/ExactHead"
+      },
+      "expected_trust_observation": {
+        "$ref": "#/$defs/HermeticTrustObservationV1"
+      },
+      "expected_worker_session_id": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Expected Worker Session Id",
+        "type": "string"
+      },
+      "schema_id": {
+        "const": "chiplog.deployment-trust.read-current-hermetic-output-scope.v1",
+        "default": "chiplog.deployment-trust.read-current-hermetic-output-scope.v1",
+        "title": "Schema Id",
+        "type": "string"
+      },
+      "scope_id": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Scope Id",
+        "type": "string"
+      },
+      "selected_resource_observation_ref": {
+        "$ref": "#/$defs/SelectedHermeticResourceObservationRefV1"
+      },
+      "source_anchor": {
+        "$ref": "#/$defs/HermeticOutputScopeAnchorV1"
+      },
+      "tenant_id": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "title": "Tenant Id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "expected_trust_observation",
+      "source_anchor",
+      "expected_revision",
+      "admitted_authentication_ref",
+      "authenticated_cli_ref",
+      "tenant_id",
+      "database_id",
+      "scope_id",
+      "expected_scope_ref",
+      "expected_worker_session_id",
+      "selected_resource_observation_ref"
+    ],
+    "title": "ReadCurrentHermeticExecutionScopeV1",
+    "type": "object"
+  },
+  "SelectedHermeticResourceObservationRefV1": {
+    "$defs": {
+      "ExactHead": {
+        "additionalProperties": false,
+        "properties": {
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "head": {
+            "minLength": 1,
+            "title": "Head",
+            "type": "string"
+          },
+          "identity": {
+            "minLength": 1,
+            "title": "Identity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "head",
+          "fingerprint"
+        ],
+        "title": "ExactHead",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "description": "Locator for the selected R16 observation in retained inbox initialization.\n\nFingerprint is SHA256 of canonical JSON [grant.hex(), credential.hex(),\nendpoint.hex(), clock_epoch, signature], using UTF-8, ensure_ascii=False and\nseparators=(',', ':'). It binds exact bytes, not their authenticity. The\nregistered reader must authenticate selection and R16 historical/current\nsignatures under the shared gate. No dispatch grant becomes a disclosure or\nSEND permit by inclusion here.",
+    "properties": {
+      "selected_initialization": {
+        "$ref": "#/$defs/ExactHead"
+      },
+      "signature_domain": {
+        "const": "dispatch-resources.v1",
+        "title": "Signature Domain",
+        "type": "string"
+      },
+      "signed_observation_fingerprint": {
+        "pattern": "^[0-9a-f]{64}$",
+        "title": "Signed Observation Fingerprint",
+        "type": "string"
+      }
+    },
+    "required": [
+      "signature_domain",
+      "selected_initialization",
+      "signed_observation_fingerprint"
+    ],
+    "title": "SelectedHermeticResourceObservationRefV1",
+    "type": "object"
+  },
+  "UnsupportedSchemaVersion": {
+    "base": "builtins:RuntimeError",
+    "properties": {
+      "adoption": {
+        "literal": [
+          "HOLD_ADOPTION"
+        ]
+      },
+      "code": {
+        "literal": [
+          "UNSUPPORTED_SCHEMA_VERSION"
+        ]
+      }
+    }
+  }
+}
