@@ -19,6 +19,8 @@ from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.deployment_gate import DeploymentGateRequest
 from chiplog.platform.r8_gate import BrokerDeploymentGate, canonical_request
+from chiplog.verification.r8_surface import verify_offline_import_boundary, verify_r8_surfaces
+
 from .r7_planning import R7PlanningRuntime, _open_runtime
 
 R8_SURFACES = (

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 
 from pydantic import ValidationError
 
@@ -85,7 +86,6 @@ from .recovery_contracts import (
     RecoveryDTO,
 )
 from .recovery_domain import (
-    RecoveredClosure,
     RecoveryHold,
     RecoveryIntegrityFault,
     SealedAccounting,
@@ -413,9 +413,7 @@ def _expected_suspended_frontier(
     frontier_value = expected.model_dump(mode="json")
     del frontier_value["fingerprint"]
     return expected.model_copy(
-        update={
-            "fingerprint": native_recovery_fingerprint("frontier", frontier_value)
-        }
+        update={"fingerprint": native_recovery_fingerprint("frontier", frontier_value)}
     )
 
 
@@ -427,9 +425,7 @@ def _validate_obligation_resume_successor(
     """Prove the one registered open-obligation → closed-resume frontier path."""
     from .execution_recovery_contracts import AcceptedOpenRecoveryOpeningV1
 
-    profiles = tuple(
-        source for source in cut.complete_sources if source.schema_id == SCHEMA_V5
-    )
+    profiles = tuple(source for source in cut.complete_sources if source.schema_id == SCHEMA_V5)
     if len(profiles) != 1 or len(baseline.original_obligations) != 1:
         raise RecoveryHold("obligation resume requires one V5 profile and one frozen obligation")
     if len(baseline.frontier.ordered_calls) != 1 or len(cut.frontier.ordered_calls) != 1:
@@ -537,9 +533,8 @@ def _validate_obligation_resume_successor(
             ):
                 raise RecoveryHold("obligation resume changed the opening or closure shape")
         elif family == "SEMANTIC_REDUCTION":
-            if (
-                before.ordered_heads != (Absent(),)
-                or after.ordered_heads != (reduction.current_reduction,)
+            if before.ordered_heads != (Absent(),) or after.ordered_heads != (
+                reduction.current_reduction,
             ):
                 raise RecoveryHold("obligation resume has an unexpected reduction transition")
         elif family == "AUTHORITY":
@@ -556,8 +551,7 @@ def _validate_obligation_resume_successor(
             reducer_policies = tuple(
                 source
                 for source in cut.complete_sources
-                if source.schema_id
-                == "chiplog.loop.original-effect-evidence-reducer-policy.v1"
+                if source.schema_id == "chiplog.loop.original-effect-evidence-reducer-policy.v1"
             )
             if len(resolver_policies) != 1 or len(invocations) != 1 or len(reducer_policies) != 1:
                 raise RecoveryHold(
@@ -591,8 +585,7 @@ def _validate_obligation_resume_successor(
             terminal_sources = tuple(
                 source
                 for source in cut.complete_sources
-                if source.schema_id
-                == "chiplog.execution.accepted-open-terminal-disposition.v1"
+                if source.schema_id == "chiplog.execution.accepted-open-terminal-disposition.v1"
                 and source.subject.subject_id == current_call.original_call_id
                 and source.subject.revision == current_disposition.terminal
             )
@@ -618,8 +611,7 @@ def _validate_obligation_resume_successor(
                 source
                 for source in cut.complete_sources
                 if source.schema_id.startswith("chiplog.loop.original-resolver-")
-                or source.schema_id
-                == "chiplog.loop.original-effect-evidence-reducer-policy.v1"
+                or source.schema_id == "chiplog.loop.original-effect-evidence-reducer-policy.v1"
             )
             if after.ordered_heads != (
                 *before.ordered_heads,
@@ -774,9 +766,8 @@ def _validate_direct_terminal(
     mismatches = tuple(name for name, matched in checks if not matched)
     if mismatches:
         raise RecoveryIntegrityFault(
-            "direct terminal does not join its exact accepted R16 outcome: "
-            + ",".join(mismatches)
-    )
+            "direct terminal does not join its exact accepted R16 outcome: " + ",".join(mismatches)
+        )
     for evidence in classification.ordered_evidence:
         refs = _selected_direct_evidence_sources(cut.complete_sources, evidence)
         if len(refs) != 1:
@@ -813,8 +804,7 @@ def _selected_direct_evidence_sources(
         if row.owner == "effects"
         and row.schema_id == "chiplog.effects.dispatch-outcome-record.v2"
         and row.subject.subject_id == evidence.subject_id
-        and row.subject.revision
-        == Present(head=evidence.head, fingerprint=evidence.fingerprint)
+        and row.subject.revision == Present(head=evidence.head, fingerprint=evidence.fingerprint)
     )
     unique: dict[tuple[bytes, CallSubjectHead, CallSubjectHead], RecoverySourceRecord] = {}
     for row in matches:
@@ -1054,33 +1044,303 @@ def _validate_accepted_recovery(
         raise RecoveryHold("accepted witness source is missing")
 
 
+@dataclass(frozen=True)
+class _OriginalContinuationJoin:
+    closure: OriginalRecoveredClosure
+    reduction: EvidenceReduction
+
+
+def _original_continuation_join(
+    cut: ExecutionRecoveryCut,
+    summary: OriginalRecoveredClosure,
+    reduction: EvidenceReduction,
+) -> _OriginalContinuationJoin:
+    """Check real source domains; selection authority remains with the cut publisher."""
+    from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
+    from chiplog.capabilities.effects.dispatch_outcomes import evidence_head
+    from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
+
+    from .direct_effect_terminal_contracts import translate_selected_outcome_v1
+    from .original_recovery_contracts import (
+        LoopSemanticReductionRecord,
+        OriginalObligationClosureRecord,
+        OriginalResolutionBasis,
+        OriginalResolverBatchRecord,
+        RecoveredCallOutcomeRecord,
+    )
+
+    def exact[T](
+        ref: CallSubjectHead,
+        schema: str,
+        type_: type[T],
+        *,
+        physical: bool = False,
+        owner: str = "agent_loop",
+    ) -> tuple[RecoverySourceRecord, T]:
+        rows = [
+            row
+            for row in cut.complete_sources
+            if row.owner == owner
+            and row.schema_id == schema
+            and (
+                (row.subject == ref or row.physical_record == ref)
+                if owner == "effects"
+                else (row.physical_record if physical else row.subject) == ref
+            )
+        ]
+        if len(rows) != 1:
+            raise RecoveryHold("original join source is missing or duplicate")
+        row = rows[0]
+        value = _record(row, type_)
+        if owner == "effects":
+            embedded = value.record
+            body_ref = CallSubjectHead(
+                subject_id=embedded.subject_id,
+                revision=Present(head=embedded.head, fingerprint=embedded.fingerprint),
+            )
+            digest = _sha(row.canonical_record_bytes)
+            carrier_ref = CallSubjectHead(
+                subject_id=schema + ":" + digest,
+                revision=Present(head="record:" + digest, fingerprint=digest),
+            )
+            child_ref = None
+            if value.command.evidence is not None:
+                child = evidence_head(value.command.evidence)
+                child_ref = CallSubjectHead(
+                    subject_id=child.subject_id,
+                    revision=Present(head=child.head, fingerprint=child.fingerprint),
+                )
+            if (
+                ref != body_ref
+                or row.subject not in (body_ref, child_ref)
+                or row.physical_record not in (body_ref, carrier_ref)
+            ):
+                raise RecoveryIntegrityFault("original effects carrier differs")
+        else:
+            _source(cut, schema, row.subject, row.canonical_record_bytes)
+            identifier = next(
+                getattr(value, field)
+                for field in ("basis_id", "closure_id", "outcome_id", "batch_id", "reduction_id")
+                if hasattr(value, field)
+            )
+            if isinstance(value, LoopSemanticReductionRecord):
+                identifier = schema + ":" + _sha(value.canonical_bytes())
+            expected = CallSubjectHead(
+                subject_id=identifier,
+                revision=Present(
+                    head="record:" + _sha(value.canonical_bytes()),
+                    fingerprint=_sha(value.canonical_bytes()),
+                ),
+            )
+            if row.subject != expected:
+                raise RecoveryIntegrityFault("original source body identity differs")
+        return row, value
+
+    rs = _source_for_revision(
+        cut, reduction.current_reduction, "chiplog.loop.semantic-reduction.v1"
+    )
+    _, record = exact(rs.subject, "chiplog.loop.semantic-reduction.v1", LoopSemanticReductionRecord)
+    anchor = record.anchor
+    if anchor.kind != "RESOLVED" or record.disposition.kind != "CONSUMABLE":
+        raise RecoveryHold("original current reduction is not resolved and consumable")
+    cs, closure = exact(
+        anchor.closure,
+        "chiplog.loop.original-obligation-closure.v1",
+        OriginalObligationClosureRecord,
+        physical=True,
+    )
+    os, outcome = exact(
+        anchor.recovered_outcome,
+        "chiplog.loop.recovered-call-outcome.v1",
+        RecoveredCallOutcomeRecord,
+        physical=True,
+    )
+    bs, batch = exact(
+        anchor.resolver_batch,
+        "chiplog.loop.original-resolver-batch.v1",
+        OriginalResolverBatchRecord,
+        physical=True,
+    )
+    basis_source, basis = exact(
+        closure.basis, "chiplog.loop.original-resolution-basis.v1", OriginalResolutionBasis
+    )
+    original = summary.original
+    if (
+        closure.original != original
+        or outcome.original != original
+        or basis.original != original
+        or anchor.original != original
+        or outcome.basis != basis_source.subject
+        or batch.basis != basis_source.subject
+        or outcome.closure != cs.subject
+        or batch.closure != cs.subject
+        or batch.recovered_outcome != os.subject
+        or basis.selected_witness != closure.accepted_witness
+        or basis.selected_witness != outcome.accepted_witness
+        or basis.selected_witness != anchor.accepted_witness
+        or basis.original_terminal.revision != summary.terminal_disposition
+        or basis.reduction_id != record.reduction_id
+        or summary.reduction_id != record.reduction_id
+        or record.stream.stream_id != original.evidence_stream_id
+        or record.stream.subject.subject_id != original.obligation_id
+        or (record.reducer_id, record.reducer_version)
+        != (original.reducer_id, original.reducer_version)
+        or summary.recovered_outcome != os.physical_record.revision
+        or summary.closure != cs.physical_record.revision
+        or summary.resolver_batch != bs.physical_record.revision
+        or summary.accepted_evidence != basis.selected_witness.revision
+        or len(set(record.complete_ordered_evidence)) != len(record.complete_ordered_evidence)
+        or len({item.head for item in reduction.ordered_consumed_evidence})
+        != len(reduction.ordered_consumed_evidence)
+        or record.complete_ordered_evidence[: len(basis.complete_evidence_manifest)]
+        != basis.complete_evidence_manifest
+        or len(set(basis.complete_evidence_manifest)) != len(basis.complete_evidence_manifest)
+        or any(
+            value != basis.accepted_semantic_class
+            for value in (
+                outcome.accepted_semantic_class,
+                anchor.accepted_semantic_class,
+                record.disposition.semantic_class,
+                summary.accepted_semantic_class,
+                reduction.semantic_class,
+            )
+        )
+        or reduction.stream_id != record.stream.stream_id
+        or reduction.reduction_id != record.reduction_id
+        or (reduction.reducer_id, reduction.reducer_version)
+        != (record.reducer_id, record.reducer_version)
+        or reduction.consumability != "CONSUMABLE"
+        or reduction.accepted_witness != anchor.accepted_witness.revision
+        or reduction.accepted_outcome != anchor.recovered_outcome.revision
+        or reduction.obligation_closure != anchor.closure.revision
+        or reduction.resolver_batch != anchor.resolver_batch.revision
+        or reduction.ordered_consumed_evidence
+        != tuple(item.revision for item in record.complete_ordered_evidence)
+    ):
+        raise RecoveryIntegrityFault("original continuation chain or projection differs")
+    _, witness = exact(
+        basis.selected_witness,
+        "chiplog.effects.dispatch-outcome-record.v2",
+        DispatchOutcomeRecordV2,
+        physical=True,
+        owner="effects",
+    )
+    if (
+        witness.command.operation != "RESOLVE_OBLIGATION"
+        or len(witness.snapshot.evidence) != len(basis.complete_evidence_manifest)
+        or len(witness.snapshot.evidence_heads) != len(basis.complete_evidence_manifest)
+        or translate_selected_outcome_v1(witness).semantic_class != basis.accepted_semantic_class
+    ):
+        raise RecoveryIntegrityFault("original accepted witness snapshot differs")
+    intent = effects_reference(
+        witness.snapshot.intent.intent_id, witness.snapshot.intent.canonical_bytes()
+    )
+    from .execution_recovery_contracts import (
+        AcceptedOpenRecoveryOpeningV1,
+        AcceptedOpenTerminalDispositionV1,
+    )
+
+    terminal_rows = [
+        row
+        for row in cut.complete_sources
+        if row.owner == "agent_loop"
+        and row.schema_id == "chiplog.execution.accepted-open-terminal-disposition.v1"
+        and row.physical_record == basis.original_terminal
+    ]
+    opening_rows = [
+        row
+        for row in cut.complete_sources
+        if row.owner == "agent_loop"
+        and row.schema_id == "chiplog.execution.accepted-open-recovery-opening.v1"
+        and row.physical_record == closure.prior_obligation
+    ]
+    if len(terminal_rows) != 1 or len(opening_rows) != 1:
+        raise RecoveryHold("original immutable terminal or opening source missing or duplicate")
+    terminal_source, opening_source = terminal_rows[0], opening_rows[0]
+    terminal = _record(terminal_source, AcceptedOpenTerminalDispositionV1)
+    opening = _record(opening_source, AcceptedOpenRecoveryOpeningV1)
+    for row in (terminal_source, opening_source):
+        _source(cut, row.schema_id, row.subject, row.canonical_record_bytes)
+    if (
+        terminal.kind != "RECOVERY_REQUIRED"
+        or terminal.original_call_id != original.original_call_id
+        or terminal.obligation_opening != opening_source.physical_record
+        or opening.original != original
+        or opening_source.subject.subject_id != original.obligation_id
+        or opening_source.subject.revision.head != original.obligation_head
+        or terminal.external_effect_intent
+        != CallSubjectHead(
+            subject_id=intent.subject_id,
+            revision=Present(head=intent.head, fingerprint=intent.fingerprint),
+        )
+    ):
+        raise RecoveryIntegrityFault("original witness does not bind immutable terminal intent")
+    if witness.command.intent != intent:
+        raise RecoveryIntegrityFault("original witness command intent differs")
+    for index, ref in enumerate(record.complete_ordered_evidence):
+        _, evidence = exact(
+            ref,
+            "chiplog.effects.dispatch-outcome-record.v2",
+            DispatchOutcomeRecordV2,
+            physical=True,
+            owner="effects",
+        )
+        if (
+            evidence.kind != "EVIDENCE_RECORDED"
+            or evidence.command.operation != "APPEND_EVIDENCE"
+            or evidence.command.evidence is None
+            or evidence.snapshot.intent != witness.snapshot.intent
+            or evidence.command.intent != intent
+        ):
+            raise RecoveryIntegrityFault("original evidence carrier or intent differs")
+        if index < len(basis.complete_evidence_manifest) and (
+            evidence.command.evidence != witness.snapshot.evidence[index]
+            or evidence_head(evidence.command.evidence) != witness.snapshot.evidence_heads[index]
+        ):
+            raise RecoveryIntegrityFault("original accepted evidence inventory differs")
+    return _OriginalContinuationJoin(summary, reduction)
+
+
 def _continuation_closures(
     cut: ExecutionRecoveryCut, accounting: SealedAccounting
 ) -> tuple[tuple[OriginalRecoveredClosure, ...], tuple[EvidenceReduction, ...]]:
-    closures = tuple(
-        RecoveredClosure(
-            original_call_id=item.original.original_call_id,
-            obligation_id=item.original.obligation_id,
-            original_obligation_head=item.original.obligation_head,
-            terminal_disposition=item.terminal_disposition,
-            outcome=item.recovered_outcome,
-            accepted_evidence=item.accepted_evidence,
-            closure=item.closure,
-            resolver_batch=item.resolver_batch,
-            resolver_id=item.original.resolver_id,
-            resolver_version=item.original.resolver_version,
-            reducer_id=item.original.reducer_id,
-            reducer_version=item.original.reducer_version,
-            reduction_id=item.reduction_id,
-            accepted_semantic_class=item.accepted_semantic_class,
+    required = {
+        call.original_call_id: call
+        for call in accounting.calls
+        if call.disposition.kind == "RECOVERY_REQUIRED"
+    }
+    closures = {item.original.original_call_id: item for item in cut.original_closures}
+    reductions = {item.reduction_id: item for item in cut.current_reductions}
+    if len(closures) != len(cut.original_closures) or len(reductions) != len(
+        cut.current_reductions
+    ):
+        raise RecoveryIntegrityFault("duplicate recovery closure or semantic reduction")
+    if set(closures) != set(required):
+        raise RecoveryHold("recovered closure membership is incomplete or contains extra subjects")
+    joined: list[_OriginalContinuationJoin] = []
+    for call_id, call in required.items():
+        summary = closures[call_id]
+        disposition = call.disposition
+        reduction = reductions.get(summary.reduction_id)
+        if (
+            reduction is None
+            or disposition.recovered_outcome.outcome.kind != "PRESENT"
+            or summary.original != disposition.obligation
+            or summary.terminal_disposition != disposition.terminal
+            or summary.recovered_outcome != disposition.recovered_outcome.outcome
+        ):
+            raise RecoveryHold("original recovered frontier differs")
+        joined.append(_original_continuation_join(cut, summary, reduction))
+    if set(reductions) != {item.reduction_id for item in closures.values()}:
+        raise RecoveryHold("extra current semantic reduction")
+    if required:
+        # Return the unchanged projections carried by freshly constructed proofs.
+        closure_proofs = {proof.closure: proof for proof in joined}
+        reduction_proofs = {proof.reduction: proof for proof in joined}
+        return (
+            tuple(closure_proofs[item].closure for item in cut.original_closures),
+            tuple(reduction_proofs[item].reduction for item in cut.current_reductions),
         )
-        for item in cut.original_closures
-    )
-    if any(call.disposition.kind == "RECOVERY_REQUIRED" for call in accounting.calls):
-        model_continuation_ready(accounting, closures, cut.current_reductions)
-        return cut.original_closures, cut.current_reductions
-    if closures or cut.current_reductions:
-        raise RecoveryHold("cancellation readiness contains recovery closure or reduction")
     model_continuation_ready(accounting, (), ())
     return (), ()
 
@@ -1423,8 +1683,7 @@ def prepare_execution_successor_start(
             or initialization.predecessor_run != edge.predecessor_before
             or initialization.command_id != source.command_id
             or initialization.execution_fence != source.fence
-            or request.command_id
-            != f"execution-successor-start:{created.run_id}:{created.head}"
+            or request.command_id != f"execution-successor-start:{created.run_id}:{created.head}"
         ):
             raise RecoveryHold("successor start does not select the exact CREATED successor")
         from .execution_lifecycle import start_successor_execution_turn
@@ -1686,9 +1945,7 @@ def prepare_execution_suspension(
         selected_call = request.cut.frontier.ordered_calls[0]
         if isinstance(selected_call.disposition, RecoveryRequiredResult):
             profiles_v5 = tuple(
-                source
-                for source in request.cut.complete_sources
-                if source.schema_id == SCHEMA_V5
+                source for source in request.cut.complete_sources if source.schema_id == SCHEMA_V5
             )
             if len(profiles_v5) != 1:
                 raise RecoveryHold("open-obligation suspension requires native profile V5")
@@ -1713,8 +1970,7 @@ def prepare_execution_suspension(
             bindings=request.cut.current_bindings,
             original_obligations=suspension_obligations,
             activation_blocking_predicates=tuple(
-                predicate.revision
-                for predicate in request.activation_blocking_predicates
+                predicate.revision for predicate in request.activation_blocking_predicates
             ),
         )
         baseline_raw = baseline.canonical_bytes()

@@ -1175,3 +1175,105 @@ no pending entry, one Turn and exact latest selected resumed Run. It is now
 running on the same saved DB/custody with current code, no product-clock or
 validator patches. The only fault injection is the original test's lost ACK
 after the second OPEN recovery COMMIT. No continuation verdict yet.
+
+Continuation session 3585 terminated exit 1 before runtime yielded, at owner
+attestation identity mismatch during restart generation. The temporary runner
+imported the test module at top level; spawn reimported its foreign deployment-
+trust policy modules into other owners. This was a diagnostic-runner error,
+not evidence of a readiness failure. Main guard alone did not prevent import
+pollution. A minimal real V39 start/attest reproduced the identity rejection;
+moving every project import inside guarded main and using explicit imports
+produced `ATTEST_SMOKE_PASSED 5`, exit 0, with the actual repaired runner's
+`--attest-smoke` path. All five expected owners were attested, so this is not an
+empty-connection success. No product verifier or clock was altered. SQL tenant
+head remains 28 and persisted provider transfers remain 1 after the failed
+startup; unchanged startup sidecars are not claimed. Repaired continuation
+requires a new process; do not treat session 3585 as live or its failure as a
+two-seal verdict.
+
+The READ_ONLY audit found executable-history V3 is currently DTO-only; the real
+V2 fanout cannot select a legitimate READ_ONLY member. Unregistered-response
+rejection is not the required selected-member whole-seal HOLD witness. Keep that
+conditional R14.6 clause OPEN until the real R14.7 registered lineage path exists;
+its fixture must terminalize all accepted/cancelled siblings first to ensure a
+nonterminal sibling cannot mask improper READ_ONLY filtering. No synthetic row
+or mocked selection is accepted as mounted evidence.
+
+Repaired continuation is live as exec session **53458**, last output
+`SAVED_CROSS_SEAL_STARTUP`. Poll this exact handle. The superseded session 3585
+and red/green attestation smoke processes are terminal. Current product source
+is checkpoint `ed4b8bf`; only this ledger and the one-off harness observation
+are subsequently modified. No readiness or second-seal pass yet.
+
+Session **53458 is now terminal, exit 1**. Startup and selected resumed-target
+checks passed; actual accounting preparation succeeded, but the isolated
+continuation owner returned HOLD: `recovered pair, closure, witness or reducer
+binding differs`. Readiness was not published and the second seal was not reached.
+This supersedes the live status above; do not restart this terminal handle.
+
+Direct typed reads of the saved physical closure/reduction established that
+closure.accepted_witness equals reduction.anchor.accepted_witness, but is absent
+from reduction.complete_ordered_evidence: the former is an R16 RESOLVE_OBLIGATION
+record, while consumed evidence comprises the APPEND_EVIDENCE records. The generic
+domain join requires witness membership in that append manifest. The producer
+requires an APPEND-only manifest plus a separate resolved anchor. New
+`test_original_continuation_witness.py` reproduces the same HOLD in 0.33s using
+actual resolver/reducer producer outputs at the explicitly isolated post-cut-
+validation projection boundary. It is RED, not mounted authority evidence.
+Existing generic omission/duplicate negatives must remain effective. A cold
+full swarm is evaluating the typed original-resolver join; no producer bytes,
+source manifest or generic predicate have been changed to force a pass.
+
+R14.7 context/contracts preparation is in `R14-7-IMPLEMENTATION-CONTEXT.md`.
+Its 44 public contract tests passed in 0.41s and cold scoped design review found
+zero confirmed P0/P1, with every runtime guarantee explicitly HOLD. Preflight
+found a separate real R8 open regression: commit 58de358 removed both verifier
+imports while leaving their canonical open calls. A malformed-source/no-storage
+test was red with NameError, then green in 0.24s after restoring imports.
+`sh .harness/scripts/test.sh --preflight` and the actual corruption reproducer
+both exited 0; no catalog repin or verifier replacement occurred. The R8 import
+repair happened while the diagnostic continuation process was alive; its native
+collector/join code was unchanged, and this is not a final frozen-source/full
+regression result. Handoff 42 retains the remaining original-witness join work.
+
+Continuation follow-up: the producer regression and unchanged generic negative
+were rerun together with `uv run pytest -q
+tests/capabilities/agent_loop/test_original_continuation_witness.py
+tests/capabilities/agent_loop/test_recovery_accounting.py::test_reduction_cannot_change_semantic_class_or_omit_accepted_witness
+--tb=short`: 1 failed, 1 passed in 0.31s. The failure remains the exact witness
+membership HOLD. Cold implementation-plan review also found the independent
+generic join in `execution_next_turn_preparation.py`; the repair must establish
+the source-aware original proof at both readiness and next-Turn consumers.
+Read-only SQL inspection of the saved fixture still returns tenant head 28;
+its persisted transfer journal has one row. No continuation runner is live.
+The source-aware repair is in progress, with generic validation unchanged.
+
+The owner-local original continuation join now validates the canonical basis,
+closure/outcome/batch, original terminal/opening, separate accepted RESOLVE
+witness, and current APPEND manifest in their distinct body/carrier domains.
+Both readiness and next-Turn preparation use it; generic witness membership and
+durable producer bytes remain unchanged. Tests include exact-source mutations,
+native-shaped aliases and a real-producer compatible APPEND successor preserving
+the immutable accepted witness. The structural next-Turn fixture now uses these
+actual producer anchors rather than invented closure/witness references.
+
+Command: `uv run pytest -q
+tests/capabilities/agent_loop/test_original_continuation_witness.py
+tests/capabilities/agent_loop/test_recovery_accounting.py
+tests/capabilities/agent_loop/test_execution_next_turn_preparation.py
+tests/capabilities/agent_loop/test_original_semantic_reduction_preparation.py
+tests/capabilities/agent_loop/test_original_call_resolution_preparation.py
+tests/capabilities/agent_loop/test_execution_recovery_preparation.py
+tests/capabilities/agent_loop/test_execution_recovery_contracts.py
+tests/composition/test_r8_open_verification.py --tb=short`
+— **110 passed in 1.66s**. Scoped Ruff and `git diff --check` passed.
+Cold implementation red-team found no confirmed P0/P1 in this scoped repair;
+its independent compatible-append test passed in 0.36s. This is structural
+evidence, not selected native authority or successful mounted publication.
+
+Saved continuation process **90670** is live, last observed startup, using the
+same head-28/one-transfer fixture. It began before the final tuple-order-only
+source edit (final helper blob `93547c685a1ea1886a13abe9e2622f04b1e1f715`), so it
+is diagnostic evidence rather than a final frozen-source integration run.
+Poll this exact process; no readiness/next-Turn/two-seal verdict is claimed yet.
+Handoff 42 remains open for mounted readiness and the rest of that lifecycle.

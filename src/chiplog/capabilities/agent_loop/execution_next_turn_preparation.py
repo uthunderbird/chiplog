@@ -424,7 +424,12 @@ def _check_source(request: PrepareNextExecutionTurn) -> ExecutionRunRecord:
         tuple(call.subject_id for call in view.seal.complete_ordered_initialized),
         view.ordered_calls,
     )
-    model_continuation_ready(recomputed, closures, reductions)
+    if isinstance(terminal.disposition, RecoveryRequiredResult):
+        from .execution_recovery_preparation import _continuation_closures
+
+        _continuation_closures(cut, recomputed)
+    else:
+        model_continuation_ready(recomputed, closures, reductions)
     _require(
         recomputed.calls == ready.accounting.complete_ordered_calls,
         "current cut no longer supports selected historical accounting",
@@ -497,12 +502,8 @@ def verify_next_native_execution_turn(
         and after.predecessor == before.head
         and after.event == "TurnStarted"
         and after.worker_session == request.fence.worker_session_id
-        and after.model_dump(
-            exclude={"head", "predecessor", "event", "turns", "worker_session"}
-        )
-        == before.model_dump(
-            exclude={"head", "predecessor", "event", "turns", "worker_session"}
-        )
+        and after.model_dump(exclude={"head", "predecessor", "event", "turns", "worker_session"})
+        == before.model_dump(exclude={"head", "predecessor", "event", "turns", "worker_session"})
         and after.turns[:-1] == before.turns
         and len(after.turns) == len(before.turns) + 1,
         "next Turn proposal changed frozen Run or historical Turn fields",

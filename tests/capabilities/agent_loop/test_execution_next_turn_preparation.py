@@ -25,7 +25,6 @@ from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
 from chiplog.capabilities.agent_loop.execution_recovery_observations import (
     ContinuationReadyRecord,
     ExecutionRecoveryCut,
-    OriginalRecoveredClosure,
     RecoverySourceRecord,
     SealedAccountingRecord,
     SealedResponseRecoveryView,
@@ -37,9 +36,7 @@ from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     native_recovery_fingerprint,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import (
-    Absent,
     NotApplicable,
-    OriginalObligationBinding,
     Present,
 )
 from chiplog.capabilities.agent_loop.recovery_domain import sealed_call_accounting
@@ -47,13 +44,10 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
     ConsequentialAcceptedCall,
     DefiniteFailureResult,
-    EvidenceReduction,
     FrontierMember,
     FrozenRunBindings,
     InitializedCall,
-    RecoveredOutcomeSubject,
     RecoveryFrontier,
-    RecoveryRequiredResult,
     SuccessResult,
     TerminalCallFrontier,
 )
@@ -87,21 +81,36 @@ async def _request(
 ) -> PrepareNextExecutionTurn:
     """Build a coherent inert shape, not a selected or physical-source witness."""
     fanout = await fixture()
+    recovered_cut = recovered_accounting = None
+    if recovered:
+        from tests.capabilities.agent_loop.test_original_continuation_witness import (
+            _original_cut_accounting,
+        )
+
+        recovered_cut, recovered_accounting = _original_cut_accounting()
     captured = fanout.captured_run
+    if recovered_cut is not None:
+        captured = captured.model_copy(
+            update={"run_id": recovered_cut.original_closures[0].original.original_run_id}
+        )
     capture_turn = captured.turns[-1]
-    capture_turn = capture_turn.model_copy(update={"turn_id": "run/turn/1", "head": "pending"})
+    capture_turn = capture_turn.model_copy(
+        update={"turn_id": f"{captured.run_id}/turn/1", "head": "pending"}
+    )
     capture_turn = capture_turn.model_copy(
         update={"head": "execution-turn:" + capture_turn.digest()}
     )
     captured = _seal_run(captured.model_copy(update={"turns": (capture_turn,), "head": "pending"}))
     original = fanout.request.ordered_calls[-1].original
     call_id = "call:" + original.digest()
+    if recovered_cut is not None:
+        call_id = recovered_cut.original_closures[0].original.original_call_id
     initialized = CallSubjectHead(
         subject_id=call_id,
         revision=Present(head="record:initialized", fingerprint="a" * 64),
     )
     seal = SealedResponseRecord(
-        response_seal_id="seal:run/turn/1",
+        response_seal_id=f"seal:{captured.run_id}/turn/1",
         tenant_id=captured.tenant,
         original_run_id=captured.run_id,
         original_turn_id=capture_turn.turn_id,
@@ -139,80 +148,21 @@ async def _request(
             }
         )
     )
+    recovery_sources = ()
     if recovered:
-        obligation = OriginalObligationBinding(
-            original_run_id=sealed.run_id,
-            original_call_id=call_id,
-            obligation_id="obligation",
-            obligation_stream_id="stream",
-            obligation_head="obligation-head",
-            closure_predicate_id="closure-predicate",
-            closure_predicate_version="v1",
-            resolver_id="resolver",
-            resolver_version="v1",
-            reducer_id="reducer",
-            reducer_version="v1",
-            evidence_stream_id="evidence-stream",
-            evidence_head=Present(head="evidence", fingerprint="7" * 64),
-        )
-        terminal_head = Present(head="terminal", fingerprint="b" * 64)
-        outcome_head = Present(head="outcome", fingerprint="c" * 64)
-        witness = Present(head="witness", fingerprint="d" * 64)
-        closure_head = Present(head="closure", fingerprint="e" * 64)
-        resolver_batch = Present(head="resolver-batch", fingerprint="f" * 64)
-        reduction_head = Present(head="reduction", fingerprint="1" * 64)
-        terminal = TerminalCallFrontier(
-            original_call_id=call_id,
-            response_id=seal.response_seal_id,
-            acceptance=ConsequentialAcceptedCall(
-                initialized=initialized.revision,
-                accepted=Present(head="accepted", fingerprint="2" * 64),
-                execution_intent=Present(head="execution-intent", fingerprint="3" * 64),
-                external_effect_intent=NotApplicable(),
-                complete_acceptance_manifest=(
-                    Present(head="accepted", fingerprint="2" * 64),
-                    Present(head="execution-intent", fingerprint="3" * 64),
+        assert recovered_cut is not None and recovered_accounting is not None
+        recovered_call = recovered_accounting.calls[0]
+        terminal = recovered_call.model_copy(
+            update={
+                "response_id": seal.response_seal_id,
+                "acceptance": recovered_call.acceptance.model_copy(
+                    update={"initialized": initialized.revision}
                 ),
-            ),
-            disposition=RecoveryRequiredResult(
-                terminal=terminal_head,
-                obligation=obligation,
-                result=Absent(),
-                recovered_outcome=RecoveredOutcomeSubject(
-                    original_call_id=call_id,
-                    recovery_obligation_id=obligation.obligation_id,
-                    outcome=outcome_head,
-                ),
-            ),
+            }
         )
-        closures = (
-            OriginalRecoveredClosure(
-                original=obligation,
-                terminal_disposition=terminal_head,
-                recovered_outcome=outcome_head,
-                accepted_evidence=witness,
-                closure=closure_head,
-                resolver_batch=resolver_batch,
-                reduction_id="reduction-id",
-                accepted_semantic_class="CONFIRMED",
-            ),
-        )
-        reductions = (
-            EvidenceReduction(
-                stream_id="evidence-stream",
-                reduction_id="reduction-id",
-                reducer_id="reducer",
-                reducer_version="v1",
-                current_reduction=reduction_head,
-                ordered_consumed_evidence=(witness,),
-                accepted_witness=witness,
-                accepted_outcome=outcome_head,
-                obligation_closure=closure_head,
-                resolver_batch=resolver_batch,
-                semantic_class="CONFIRMED",
-                consumability="CONSUMABLE",
-            ),
-        )
+        closures = recovered_cut.original_closures
+        reductions = recovered_cut.current_reductions
+        recovery_sources = recovered_cut.complete_sources
         if direct_terminal is not None:
             accepted = Present(head="accepted", fingerprint="2" * 64)
             execution_intent = Present(head="execution-intent", fingerprint="3" * 64)
@@ -351,6 +301,7 @@ async def _request(
         original_closures=closures,
         current_reductions=reductions,
         complete_sources=(
+            *recovery_sources,
             RecoverySourceRecord(
                 owner="agent_loop",
                 subject=_ref(sealed.run_id, sealed, head=sealed.head),
