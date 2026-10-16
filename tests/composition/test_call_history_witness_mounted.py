@@ -613,6 +613,21 @@ def test_pending_json_decoder_preserves_stdlib_duplicate_nan_and_large_integer_v
     assert r13_runtime._decode_pending_json(large_integer) == json.loads(large_integer)
 
 
+@pytest.mark.parametrize("number", (-(2**63) - 1, -(2**63), 2**64 - 1, 2**64, 2**80 + 1, 1.25))
+@pytest.mark.parametrize("nested", (False, True))
+@pytest.mark.parametrize("byte_input", (False, True))
+def test_pending_json_decoder_preserves_numeric_value_and_type(number, nested, byte_input):
+    value = {"items": [number]} if nested else number
+    raw = json.dumps(value)
+    if byte_input:
+        raw = raw.encode()
+    actual = r13_runtime._decode_pending_json(raw)
+    expected = json.loads(raw)
+    actual_number = actual["items"][0] if nested else actual
+    assert actual == expected
+    assert type(actual_number) is type(number)
+
+
 def test_r8_registers_native_json_dependency_only_at_pending_reader(tmp_path) -> None:
     composition = tmp_path / "src/chiplog/composition"
     composition.mkdir(parents=True)

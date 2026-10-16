@@ -48,11 +48,24 @@ _orjson_loads = orjson.loads
 def _decode_pending_json(raw: bytes | str) -> object:
     """Use the native decoder for pending rows, preserving stdlib edge behavior."""
     try:
-        return _orjson_loads(raw)
+        result = _orjson_loads(raw)
     except orjson.JSONDecodeError:
         # The stdlib accepts a few non-standard forms (notably NaN) and UTF-16/32
         # byte input. Preserve those historical semantics on the cold path.
         return json.loads(raw)
+    # orjson silently converts integers outside its native range to float.
+    # Reparse any float-bearing value with stdlib to preserve exact integers;
+    # ordinary integer/string journal entries keep the native decoder path.
+    pending: list[object] = [result]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, float):
+            return json.loads(raw)
+        if isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return result
 
 
 class R13Runtime(R8PlanningRuntime):

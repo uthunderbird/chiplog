@@ -1376,3 +1376,35 @@ tests/composition/test_r14_recovery_pending_prefix.py --tb=short`
 without confirmed P0/P1. Full-cut decision recollection remains expensive; this
 does not establish production-deadline passage. A new stable-source mounted
 continuation is required; 23827 is terminal and must not be polled as live.
+
+### Native JSON decoder compatibility and exact repeat count (2026-10-16)
+
+The pending-row decoder already uses `orjson` since `06b597a`; Pydantic JSON
+validation and canonical serialization are separate paths. A fresh MCP debugger
+probe of `test_public_accept_seeds_exact_history_cache_and_main_commitment_change_misses`
+observed exactly 20 decoder calls (logpoint counters 0 through 19) for 20 journal
+entries. At the post-loop breakpoint, `(len(decoded_rows), len(expected_entries),
+decoded_rows == [payload for _, _, payload in expected_entries])` was
+`(20, 20, True)`. Parent-only debugpy attachment avoided child-owner debugger
+startup interference; product deadlines were not changed. The test passed in
+43.67s under the debugger; this is call-count evidence, not latency evidence.
+
+The decoder compatibility check exposed silent oversized-integer conversion:
+`1208925819614629174706177` became a float. The new numeric value/type regression
+was RED with 12 failed and 12 passed cases. The decoder now iteratively checks
+its result for floats and reparses float-bearing values with stdlib, preserving
+exact oversized integers and float behavior. Integer/string-only records retain
+the native path. No canonical bytes, validation or authentication are changed.
+
+Read-only benchmark command:
+`.venv/bin/python /private/tmp/r14-json-compat-benchmark.py`.
+Three largest payloads from the authenticated saved 36-entry journal were
+78,746,139, 55,155,708 and 25,271,460 bytes. Median calling-thread CPU over three
+passes: stdlib 0.30189s, native decoder 0.19950s, candidate float guard 0.20345s.
+A conservative digit-regex guard took 0.35426s and was rejected. These are local
+parse-only measurements on exact saved bytes, not end-to-end R14 speedups.
+
+Command: `uv run pytest -q tests/composition/test_call_history_witness_mounted.py
+-k 'pending_json_decoder or r8_registers_native_json or public_accept_seeds_exact'`
+— **27 passed, 17 deselected in 23.09s** after the fix. Scoped Ruff and diff checks
+passed. Full R14 and the repeated full-cut readiness guard remain OPEN.
