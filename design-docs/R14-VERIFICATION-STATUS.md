@@ -1005,3 +1005,72 @@ fresh complete two-seal witness. The next fresh acceptance discriminator is
 `test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator`;
 its readiness/next-Turn/second-seal/interrupted-recovery/substitution steps remain
 required. R14.6–R14.13 remain OPEN.
+
+
+### R14.6 clause/body audit on f8a6844 (2026-10-16)
+
+This audit reread R14.6 in `R14-REMAINING-ROADMAP.md`, the original completion
+ledger, and the actual test/source bodies below. Commands used to locate checks:
+`rg -n '^def test_|^async def test_' <named test files>` followed by `sed -n`
+on their bodies. A candidate selector is not an executed pass. Existing executed
+normal-clock results remain recorded above at their original source revision;
+final integrated verification is still required.
+
+| Clause / observable | Inspected mechanism or candidate | Remaining evidence/action |
+|---|---|---|
+| Exact initialized bytes and complete ordered fanout; no preaccept emission | `test_execution_fanout_runtime.py::test_real_fanout_retains_owner_bytes_and_never_executes_initialized_calls` reads actual retained response and initialized inventory; `test_execution_fanout_records.py::test_resigned_initialized_set_mutations_reject` covers omit/add/duplicate/reorder/manifest/classification | Retain mounted producer→physical read plus fast negative builders in final integrated checks; builders alone do not prove no-write admission |
+| Fanout interruption publishes all or none, no owner reissue | `test_execution_fanout_runtime.py::test_selected_fanout_recovers_all_members_without_owner_reissue` faults before COMMIT, asserts zero rows for the pending sequence, forbids owner reissue on startup, compares every recovered physical byte | Run current integrated selector; preserves five-member atomic envelope, not arbitrary stress matrix |
+| Both accept/cancel orders with a sibling and no partial companions | `test_execution_call_branch_competition.py::test_selected_acceptance_and_native_cancellation_compete_on_one_initialized_cut`; `test_selected_unmaterialized_cross_family_winner_recovers_before_rival_replays` | Both parameter values required; inspect actual no-partial member sets and zero transfer observations, not only race exception |
+| Complete mixed terminal V3 and orphan rejection after reopen | `test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once` inserts a same-owner/schema orphan at sequence zero after reopen, updates anchor, then requires canonical reader membership rejection, unchanged head/decisions, one V3 | This deliberately reaches full reader beyond selected-only preflight. Retain current-tree execution; no inferred pass from test existence |
+| V3 waits for every seal member | `test_v3_interleaves_two_sequentially_accepted_members_across_replay_and_reopen` requires early V3 HOLD, zero V3 publications and unchanged head, then second terminal permits full V3 | Preserve full mounted observations; current test has two accepted members within one seal |
+| Three accepted calls / delayed dispatch / distinct outcomes | `test_v3_reads_three_accepted_members_across_delayed_dispatch_and_replay` closes first before accepting second; normal-clock recorded pass at 143b5c1 is SUCCEEDED/FAILED_DEFINITE/SUCCEEDED | This is one seal and two outcome kinds. Owner test additionally covers SUCCEEDED/FAILED_DEFINITE/RECOVERY_REQUIRED; that three-kind combination has only earlier diagnostic mounted evidence |
+| Two seals and seal-scoped cross-order replay | `test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay` normal-clock pass at 143b5c1 | Its first seal is cancelled; it does not prove two accepted OPEN causes or interleaved late evidence across seals |
+| Accepted OPEN cross-seal interruption/substitution | Running `test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator` closes/resumes first cause, creates second seal, loses second recovery COMMIT ack, rejects first outcome ID/decision/sequence substituted into second | Still pending. Even a pass must be compared with the required multi-seal interleaving; do not equate this sequential flow with every interleaving |
+| Per-call writer/read/replay qualification; all marked envelopes validated before filtering | `test_public_open_api_forwards_exact_original_call`, `test_open_writer_replays_requested_call_after_validating_all_marked_envelopes`, `test_open_historical_cut_selects_call_seal_among_two_native_executions`, unqualified ambiguity controls in fast_path | Narrow fast tests are green in prior checkpoint evidence; final mounted multi-call OPEN lifecycle remains separate |
+| Physical suffix chain, finite families, causal per-terminal semantic prefixes, complete current physical snapshot | `test_r14_historical_suffix.py`; fast_path `test_open_causal_source_joins_captured_prefix_and_excludes_future_closure`, `test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_seals` | Isolated proof boundaries are explicit in test docstrings. Preserve omitted sequence/fork/unknown-family/changed physical row and foreign historical locator negatives plus mounted lifecycle |
+| SEND consumption bound to prior SEND/ticket/intent/child | `test_consumption_source_validation_binds_exact_prior_send_without_history_reentry` covers missing/late/duplicate SEND, ticket and intent substitution with real retained body validation | Journal acquisition is isolated in that fixture; retain actual mounted SEND→consumption and physical pending recovery evidence |
+| Three distinct A54 limits N/N+1 | `test_call_and_manifest_bounds_include_exact_boundary` checks count and manifest; `test_response_and_complete_owner_output_boundaries` checks owner output; `test_complete_physical_envelope_enforces_its_own_exact_byte_boundary` keeps owner proposal below the total envelope limit in both cases | These are owner/builder tests. Mounted no-write admission/reopen for each independent limit is not yet established by this audit |
+| Selected read-only member cannot be filtered or partially accounted | Source frontier returns no complete V3 for an InitializedCall lacking terminal; inspected mounted fixtures contain consequential/proposal members | Need explicit selected read-only whole-seal HOLD/no-write witness. R14.7 retry bound decision is 3, but executable allocation is still unimplemented; do not claim lineage safety from consequential fixtures |
+| External source stamp, post-IPC fresh history, actor/worker/session/source admission and CAS | V3 writer keeps stamp outside owner request, reacquires history/projection/facts/request and compares head/commitment after IPC; final guard checks actor/worker/session/anchor/selection | Actual transaction source binding under review: V3 command currently has no expected_preimage_commitment and final guard does not read current physical snapshot. Requires a grounded negative test before accepting this invariant |
+| Durable-version and writer admission before execution | Static owner manifests and physical schema variants exist; operation-registry tests explicitly call their declarations inert | This audit found no mounted unsupported-version-tuple/HOLD_ADOPTION witness or complete slice command/handler/record/applicability no-write witness. Inspect/mount these before claiming per-slice admission; broad discovery remains R14.10/13 work |
+
+Specific candidate defects to reproduce after the live run: V3 writer helper
+`_authenticated_accepted_open_recoveries` still rejects `len(found)>1` globally,
+though its consumer filters by response/call; this conflicts with the intended
+multi-seal/multi-call history. `NativeRecoveryCutSource._collect_held` still rejects
+an ACTIVE Run retaining suspension_baseline/original_obligations, so readiness
+after an authenticated obligation resume needs a discriminating red witness.
+These code observations are not yet claimed as mounted failure attribution.
+The running test's current code is frozen. Full R14 remains OPEN.
+
+### V3 transaction source and recovery membership (2026-10-16, working tree)
+
+The cross-seal discriminator terminated with `1 failed in 1215.60s` at first
+post-resume readiness: `complete authenticated recovery cut unavailable; HOLD`.
+The persisted last publication is execution-resume at sequence 28. No second
+seal or interrupted second recovery was reached; this is not a two-seal pass.
+An attached debugger is inspecting that exact saved workspace without changing
+the native recovery collector or product clocks.
+
+`test_r14_v3_writer_preimage.py` uses the actual V3 publication function and
+SQLite writer, with source/actor/IPC ports explicitly isolated. Its untampered
+control passed. After a raw physical insertion at unchanged tenant head, the
+red test observed `('COMMITTED', 1, True, (1,))` instead of
+`('STALE', 0, False, (0,))`. The live submit now carries the captured physical
+preimage commitment into the existing transactional writer check. The durable
+command builder and retained wire format remain unchanged. This proves the
+transaction boundary, not mounted source authentication or a cooperative CAS
+exploit.
+
+The V3 recovery-envelope extractor now permits distinct (response, call) pairs
+across one or multiple seals, rejects duplicate pairs, and parses every marked
+envelope before filtering. The isolated extraction test was red on the old
+global singleton check and now covers empty/single/multiple/duplicate/malformed
+histories. Whole-history and mounted multi-seal authority remain separate.
+
+Command: `uv run pytest -q tests/composition/test_r14_v3_writer_preimage.py
+tests/composition/test_r14_v3_open_recovery_membership.py
+tests/composition/test_r14_native_sealed_accounting_records.py
+tests/capabilities/agent_loop/test_native_sealed_accounting_v3.py --tb=short`
+— 19 passed in 0.66s before formatting. Scoped Ruff check passed after formatting.
+R14.6 and the full R14 goal remain OPEN.

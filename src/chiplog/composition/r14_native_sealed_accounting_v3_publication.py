@@ -69,8 +69,12 @@ def _authenticated_accepted_open_recoveries(runtime) -> tuple:
         if (entry := json.loads(raw)).get("kind") == "DECIDED"
         and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
     )
-    if len(found) > 1:
-        raise LoopRejected("ambiguous accepted/open recovery selection")
+    keys = tuple(
+        (evidence.request.cut.response_id, evidence.request.cut.original_call_id)
+        for evidence in found
+    )
+    if len(set(keys)) != len(keys):
+        raise LoopRejected("duplicate accepted/open recovery for selected call and seal")
     return found
 
 
@@ -315,7 +319,12 @@ async def publish_native_sealed_accounting_v3(
             )
 
     submitted = await runtime._appender.submit(
-        replace(command, admission_guard=guard, decision_guard=decide)
+        replace(
+            command,
+            expected_preimage_commitment=stamp.authority_materialization_commitment,
+            admission_guard=guard,
+            decision_guard=decide,
+        )
     )
     if submitted.disposition not in ("COMMITTED", "REPLAY"):
         raise LoopRejected("native sealed accounting V3 publication " + submitted.disposition)
