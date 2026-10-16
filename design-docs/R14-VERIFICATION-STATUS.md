@@ -5,9 +5,122 @@
 exhaustive matrix gaps below are deferred where listed in its backlog; observed
 functional failures remain open. No new runtime pass is claimed by this update.
 
-Status: OPEN, 2026-10-16. Acceptance authority:
-`R14-REMAINING-ROADMAP.md` and original clauses in `R14-R17-COMPLETION.md`.
+Status: OPEN, 2026-10-17. Acceptance authority:
+`R14-FUNCTIONAL-SCOPE.md`, with retained clauses from
+`R14-REMAINING-ROADMAP.md` and `R14-R17-COMPLETION.md`.
 This is an evidence ledger, not a replacement acceptance boundary.
+
+## Functional roadmap snapshot, 2026-10-17
+
+| Slice | Current evidence and remaining functional work |
+|---|---|
+| R14.6 | Ordinary two-seal/reopen/replay and corrected OPEN closure/resume/readiness/next-Turn scenario passed on SQLite. Native read-only completion passed; integrated acceptance remains open. |
+| R14.7 | PostgreSQL max-3, reopen, pending HOLD, successor retry and terminal-lineage completion passed at `6a64a06`. Integrated acceptance remains open. |
+| R14.8 | Native pending read-only HOLD and all-seal current effects reduction/late-rival HOLD passed. PostgreSQL CompleteAcceptance/delivery cases passed; integrated acceptance remains open. |
+| R14.9 | Read-only lineage inheritance, actual nonempty effect obligation/no-retry lifecycle, and the repaired late-RIVAL new-attempt HOLD passed on PostgreSQL. Integrated acceptance remains open. |
+| R14.10 | Native stale-worker, takeover-before-model-SEND, wrong-peer replay and current actor/gate checks on effects/model recovery passed. Integrated acceptance remains open. |
+| R14.11 | Durable EMITTED, retained response recovery, late response after takeover/abort and fenced replacement passed on PostgreSQL, including explicit zero replacement budget rejection. Integrated acceptance remains open. |
+| R14.12 | Native original-stream recovery after abort passed on PostgreSQL without Run resurrection or repeated SEND. Integrated acceptance remains open. |
+| R14.13 | Full retained functional convergence and final integration checks remain open. |
+
+Commands and evidence boundaries for these partial results follow below. No row
+in this snapshot declares the entire slice or R14 complete.
+
+### Independent PostgreSQL convergence check at `e2f6f96`
+
+Root executed from `/Users/thunderbird/Projects/chiplog-postgres`:
+`CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' .venv/bin/pytest -q -p no:timeout tests/platform/test_postgres.py tests/composition/test_postgres_completion.py tests/composition/test_postgres_model_recovery.py tests/composition/test_postgres_model_replacement.py tests/composition/test_postgres_two_seals.py tests/composition/test_postgres_client.py`:
+**35 passed in 19.05 s**. An initial command named the nonexistent
+`test_postgres_model_custody.py` and collected no tests; the command above uses
+the actual recovery module.
+
+The two-seal witness now contains two actually accepted consequential actions,
+one lost-response recovery, a cancelled sibling, retained nonempty original
+obligations/no-retry references, reopen and a third CompleteAcceptance with
+exactly two original SENDs. Completion tests exercise current old-seal rival
+HOLD at acceptance and delivery claim. This supersedes the earlier proposal-only
+witness's limitation, without claiming integrated or exhaustive acceptance.
+
+Root also ran from the PostgreSQL worktree:
+`CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' .venv/bin/pytest -q -p no:timeout tests/platform/test_sqlite_chat_import.py tests/composition/test_codex_chat.py tests/composition/test_postgres_planning.py tests/cli/test_corrupt_store.py tests/cli/test_r8_default_hold.py tests/capabilities/agent_loop/test_readonly_runtime.py`:
+**14 passed in 5.82 s**. This covers supported chat migration, existing chat,
+planning, actual CLI default HOLD/corrupt-store behavior and pure retry semantics.
+It does not constitute full regression or authority-bundle migration evidence.
+
+Main remains at `7e104b6`; PostgreSQL is not merged. Live legacy pytest session
+93380 remains nonterminal at this check (PID 70631, CPU-active). Its corrected
+readiness/next-Turn assertions have no passing verdict yet. The new read-only
+admission repair must finish before the final functional verdict.
+
+Read-only SQL inspection of that live fixture subsequently observed publication
+28 `agent_loop.execution-accounting-readiness.v1` and publication 29
+`agent_loop.execution-next-turn.v1`, following resume at 27. The scenario has
+advanced beyond the old assertion failure; its final replay assertions and pytest
+verdict remain pending. The lean ordinary two-seal test is now running separately
+as session 71321, with `-p no:timeout` and unchanged production clocks.
+
+Focused Ruff on PostgreSQL source/tests and focused mypy on execution, lifecycle,
+completion and model recovery passed. Whole-tree mypy is **not green**: main
+reported 4216 errors in 294 files (1250 checked), PostgreSQL reported 4243 in 294
+files (1291 checked, including in-progress tests). Commands were `.venv/bin/mypy`
+in each worktree; logs are `/private/tmp/r14-main-mypy-baseline.log` and
+`/private/tmp/r14-pg-full-mypy.log`. Counts alone do not attribute the difference:
+PG branches from the older reader/test state and contains active WIP. Isolate
+new-path errors and rerun on the integrated state before drawing a regression
+conclusion; do not claim a whole-tree typing pass.
+
+Three root-authored untracked read-only files in main were compared byte-for-byte
+with the committed PostgreSQL versions and are identical. Preserve/resolve these
+paths explicitly before merge; a tracked-only checkpoint does not save them.
+
+Native checkpoint `6a64a06` repairs a demonstrated admission bug: both same-Run
+and successor retry had admitted another read after a late RIVAL made an older
+carried effect unresolved. Mounted RED was two `DID NOT RAISE LoopHold` failures.
+The repair uses current crossed-work validation only at new acceptance; two
+controls still retain the result of an already accepted read after late RIVAL.
+Successful and max-3-exhausted successors now have actual CompleteAcceptance,
+reopen and no-new-read/counter/publication replay witnesses.
+
+Root independently ran the following complete native selection on that committed
+source, session 75087, terminal exit 0: **88 passed in 101.29 s**:
+
+```sh
+CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' .venv/bin/pytest -q -p no:timeout tests/platform/test_postgres.py tests/platform/test_sqlite_chat_import.py tests/composition/test_postgres_execution.py tests/composition/test_postgres_planning.py tests/composition/test_postgres_readonly.py tests/composition/test_postgres_readonly_successor.py tests/composition/test_postgres_readonly_carried_work.py tests/composition/test_postgres_readonly_completion.py tests/composition/test_postgres_continuation.py tests/composition/test_postgres_effects.py tests/composition/test_postgres_completion.py tests/composition/test_postgres_model_recovery.py tests/composition/test_postgres_model_replacement.py tests/composition/test_postgres_run_recovery.py tests/composition/test_postgres_two_seals.py tests/composition/test_postgres_client.py tests/composition/test_codex_chat.py tests/capabilities/agent_loop/test_readonly_runtime.py tests/cli/test_corrupt_store.py tests/cli/test_r8_default_hold.py
+```
+
+This is the native functional selection, not whole-repository regression or main
+integration. Cold whole-native design review ratified one P1: unrelated Run
+reductions invalidate an already accepted delivery through the global
+provider-query frontier. Actual `commit_delivery_send` RED: **1 failed in
+10.77 s**, unchanged selected A query except frontier after genuine B SEND and
+resolution. Witness `/private/tmp/test_r14_unrelated_frontier.py`, retained log
+`/private/tmp/r14-unrelated-frontier-result.txt`, full review
+`/private/tmp/r14-native-whole-diff-rt.md`. Repair and verification remain required;
+no final clean-review claim is made.
+
+Repair checkpoint `520dedfc4672e79eee1b0ee80b01e66332d44a44` now derives the
+shared provider-query frontier solely from the current reduction heads used by
+the selected Run. Current selected-effect result/evidence checks and all-seal
+RIVAL checks remain. Root read the production diff and retained typed test.
+The typed in-repository witness first failed at real delivery commit in 2.98 s.
+Root independently reran the original external RED witness: **1 passed in
+6.34 s** with explicit PG `PYTHONPATH`. Root then executed:
+`CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' .venv/bin/pytest -q -p no:timeout tests/composition/test_postgres_completion_frontier.py tests/composition/test_postgres_completion.py tests/composition/test_postgres_two_seals.py`:
+**15 passed in 15.53 s**. This includes actual A commit/claim, provider reopen,
+no-repeat replay and existing selected-RIVAL negatives. The isolated reviewer
+also ran its original witness and three selected-RIVAL controls: **4 passed in
+11.64 s**. Root read the final review repair appendix: commit pin and both source
+hashes were independently checked, with zero remaining ratified P0/P1 in the
+bounded native scope. Main integration remains required before a whole-R14
+completion claim.
+
+Legacy session 93380 is now terminal, exit 0:
+`.venv/bin/pytest -q -p no:timeout tests/composition/test_r14_original_resolution_mounted.py::test_original_resolution_publishes_closed_outcome_and_reopens_without_resend`
+reported **1 passed in 3251.48 s (54:11)**. It includes actual closure, reopen,
+current-reduction-gated resume, readiness, next Turn and unchanged replay with
+one original SEND. This supersedes the earlier missing-attribute test failure;
+production clocks were unchanged. Session 71321 (lean two-seal variant) remains
+live and unproven at this update.
 
 ## Functional simplification, 2026-10-17
 
@@ -41,8 +154,80 @@ The original-resolution client scenario now retains lost-response OPEN closure,
 one-fold readback, reopen, reduction-gated resume, next Turn and one SEND. Its
 physical corruption and compatible/rival late-evidence matrix tails are outside
 this minimal witness; prior results below retain their historical scope.
-Ordinary two-seal and shortened OPEN continuation checks are currently pending.
-No comparative speedup or resolution of the old writer-STALE failure is claimed.
+The combined ordinary two-seal and shortened OPEN run is terminal:
+`.venv/bin/pytest -q tests/composition/test_r14_native_selected_accounting_source.py::test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay tests/composition/test_r14_original_resolution_mounted.py::test_original_resolution_publishes_closed_outcome_and_reopens_without_resend`
+reported **1 passed, 1 failed in 1795.55 s** with normal production clocks.
+The two-seal case passed: both selected accounting results, reopen and cross-order
+replay were exercised. Its diagnostic timing/profiling instrumentation was removed
+after this result; that shortened variant has not yet been rerun.
+
+The OPEN case completed closure, reopen, reduction-gated resume and selected an
+ACTIVE Run. It then failed on the test's nonexistent `suspension.run` attribute,
+before readiness and next-Turn assertions. The assertion now compares the resumed
+worker session with `sealed.worker_session`; this correction is not a passing
+end-to-end result. Readiness and next Turn remain unverified by this run.
+No comparative speedup or full R14.6 completion is claimed.
+
+## Native PostgreSQL functional slice, 2026-10-17
+
+Separate worktree `/Users/thunderbird/Projects/chiplog-postgres`, branch
+`feat/postgres-per-user`, checkpoint `b1470f5`; not yet integrated into this
+branch. Root independently ran:
+`CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' .venv/bin/pytest -p no:timeout -q tests/platform/test_sqlite_chat_import.py tests/composition/test_postgres_execution.py tests/composition/test_postgres_continuation.py tests/composition/test_postgres_readonly.py tests/cli/test_corrupt_store.py tests/cli/test_r8_default_hold.py`
+from that worktree: **20 passed in 8.49 s**.
+
+This covers actual per-user PostgreSQL execution/capture/seal/reopen, model
+emission-before-SEND, unknown model attempt HOLD, current worker fencing,
+read-only acceptance persisted before the read, shared max-3 budget after reopen,
+pending continuation HOLD, stable selected history, and a real PostgreSQL
+lock-timeout read failure followed by a successful retry on the same snapshot.
+The two-seal PostgreSQL witness uses local proposal-only calls; it is not evidence
+for two accepted consequential seals. Explicit chat import retains supported
+SQLite chat bytes; planning/R14 authority-bundle import remains unsupported.
+Read-only successor routing, accepted-OPEN resolution/current-reduction joining,
+and native delivery/effects integration remain open. These passes do not close
+R14.6 or R14.7.
+
+Follow-up checkpoint `b5f0671` mounts native read-only successors. Root ran
+`CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' .venv/bin/pytest -q -p no:timeout tests/composition/test_postgres_readonly_successor.py tests/composition/test_postgres_readonly.py tests/composition/test_postgres_continuation.py --tb=short`
+in the PostgreSQL worktree: **13 passed in 10.47 s**. After retaining two cold
+review discriminators in the successor tests, their six-case module passed in
+7.41 s; the checkpoint's complete 13-test selection passed in 11.25 s.
+Evidence includes atomic source supersession/successor activation/edge/acceptance,
+max-3 shared attempts through reopen, actual model continuation with inherited
+original seals, four ancestry edges across two independent lineages, interrupted
+accepted retry HOLD/no reread, stale actor/peer rejection and pending sibling HOLD.
+Explicit same-Run retry remains supported under the functional scope; neither
+route resets the counter or allows pending work to satisfy continuation.
+
+Cold Swarm red-team `/private/tmp/r14-pg-readonly-successor-rt.md` found no confirmed
+P0/P1 within this slice, running 25 existing tests and three independent probes on
+its frozen source copy. Root inspected the full artifact. Effects and completion
+consumers were outside that review and remain open; this is not full R14 closure.
+
+Native effects checkpoint `418c188` was independently checked by root:
+`CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' .venv/bin/pytest -q -p no:timeout tests/composition/test_postgres_effects.py tests/composition/test_postgres_execution.py tests/composition/test_postgres_readonly_successor.py tests/composition/test_postgres_readonly.py tests/composition/test_postgres_continuation.py tests/composition/test_postgres_planning.py`
+reported **29 passed in 17.17 s**. This mounts the existing durable hermetic
+provider, exact preview/adoption, signed default-HOLD deployment gate, durable
+claim before SEND, lost-response reconciliation, fresh original resolver and
+current semantic reduction. Claim rechecks current gate/actor; caller-supplied
+terminal flags cannot bypass the actual self-effect path. Late rival evidence
+in an older seal holds continuation even when the newest seal is closed. Root
+read the claim, resolver and current-result implementations; completion remains
+outside this evidence.
+
+Native model custody checkpoint `8577c8f` was independently checked by root:
+`CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' .venv/bin/pytest -q -p no:timeout tests/composition/test_postgres_model_recovery.py tests/composition/test_postgres_effects.py tests/composition/test_postgres_execution.py tests/composition/test_codex_chat.py`
+reported **23 passed in 9.60 s**. The eight model cases include V2/V3 capture loss
+and lost capture acknowledgement, actual Codex adapter/mock-HTTP recovery with
+one POST, late actual HTTP response retained after worker takeover, STARTED with
+no response remaining HOLD, and lost start acknowledgement causing no transport
+or repeat permit. Registration shares the emit transaction; a sender capability
+does not appear in model input or selected Run bytes. Current-authorized recovery
+consumes the original immutable emitted binding. Responses lost before custody
+commit remain unknown; no provider retrieval is claimed. Fenced replacement and
+new worker ownership adoption are the next functional slice, not implemented by
+this checkpoint.
 
 ## Current R14.6 audit
 

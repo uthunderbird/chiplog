@@ -195,7 +195,7 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert resumed.run_id == sealed.run_id
         assert resumed.state == "ACTIVE"
         assert resumed.predecessor == suspended_head
-        assert resumed.worker_session == suspension.run.worker_session
+        assert resumed.worker_session == sealed.worker_session
         assert resumed.worker_session != reopened.current_worker()
         assert reopened.read_selected_execution_resume() == resumed
         resumed_cut = NativeRecoveryCutSource().collect(reopened)

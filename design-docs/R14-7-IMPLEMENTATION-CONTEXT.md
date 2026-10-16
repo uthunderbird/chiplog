@@ -7,9 +7,30 @@ new native PostgreSQL execution runtime, reusing V3 tool/Run DTOs. Keep max 3,
 atomic acceptance before reading, stable original snapshot/cursor across reopen,
 current authorization and pending-accounting HOLD. Do not fabricate V1 proof
 objects or require a parallel SQLite/R7 V3 mount. Source-backed implementation
-plan: `/private/tmp/r14-readonly-minimal-plan.md`; runtime remains unimplemented.
+plan: `/private/tmp/r14-readonly-minimal-plan.md`.
 
-Status: **contracts/context only; runtime allocation and execution HOLD**.
+Status: **native PostgreSQL runtime partially mounted; R14.7 remains OPEN**.
+Checkpoint `b1470f5` in the separate `feat/postgres-per-user` worktree mounts
+actual V3 history reads, atomic accepted attempts, a max-3 counter across reopen,
+stable snapshots, definite retryable PostgreSQL read failures and pending
+continuation HOLD. Root's independent 20-test checkpoint selection passed in
+8.49 s; exact command and limits are in `R14-VERIFICATION-STATUS.md`.
+Follow-up checkpoint `b5f0671` mounts shared-counter successors, inherited sealed
+Turns and ordinary model continuation after retry terminalization. Its 13-test
+checkpoint selection passed in 11.25 s; cold functional red-team found no confirmed
+P0/P1. Exact commands, independent checks and their limits are recorded in the
+verification ledger. At PostgreSQL checkpoint `e2f6f96`, completion/delivery,
+abort/suspend/resume and model recovery are mounted. Root's independent native
+35-case convergence selection passed in 19.05 s. Checkpoint `6a64a06` fixes the
+carried-old-effect late-RIVAL admission regression after mounted RED on both
+retry routes, and adds terminal-lineage CompleteAcceptance/reopen coverage.
+Root's complete native selection passed 88 tests in 101.29 s. Cold review and
+final integrated acceptance remain open. Do not read the historical preparation below
+as evidence that these native routes are absent.
+The proof-heavy preparation and planned
+HOLD matrix below are historical context, superseded where the functional scope
+defers them; they do not negate the mounted native slice.
+
 Prepared on `ed4b8bf` plus the separate R8 open-verifier import repair. This
 document adds no policy beyond the user's frozen `max_attempts=3`, including the
 initial attempt. Budget-version registration is still required before allocation.
