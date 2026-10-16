@@ -7,6 +7,7 @@ recompute strong continuation readiness at the publication transaction.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 
 from .call_acceptance_contracts import CallSubjectHead
 from .contracts import Frozen
@@ -19,6 +20,8 @@ from .execution_recovery_contracts import (
 from .execution_recovery_observations import (
     ContinuationReadyRecord,
     ExecutionRecoveryCut,
+    ExecutionSuspensionBaseline,
+    ExecutionSuspensionPair,
     RecoverySourceRecord,
     SealedAccountingRecord,
 )
@@ -236,6 +239,150 @@ def _check_publication_bridge(request: PrepareNextExecutionTurn) -> None:
     )
 
 
+def _resumed_sealed_predecessor(request: PrepareNextExecutionTurn) -> ExecutionRunRecord:
+    """Recognize exact retained producer deltas, without inferring selection authority."""
+    cut, run = request.cut, request.run
+    lineage = cut.complete_ordered_run_lineage
+    _require(len(lineage) >= 4, "resumed Run lacks captured/sealed/suspended lineage")
+    references = tuple(_reference(row.run_id, row, head=row.head) for row in lineage)
+    _require(
+        len(set(ref.canonical_bytes() for ref in references)) == len(references),
+        "resumed Run lineage repeats a revision",
+    )
+    for index, row in enumerate(lineage):
+        _require(
+            isinstance(row, ExecutionRunRecord)
+            and row.run_id == run.run_id
+            and row.tenant == run.tenant
+            and row.head == "loop:" + row.model_copy(update={"head": "pending"}).digest()
+            and (index == 0 or row.predecessor == lineage[index - 1].head),
+            "resumed Run lineage identity, self head or adjacency differs",
+        )
+        sources = tuple(
+            source
+            for source in cut.complete_sources
+            if source.schema_id == row.schema_id and source.subject == references[index]
+        )
+        _require(
+            len(sources) == 1
+            and sources[0].owner == "agent_loop"
+            and sources[0].canonical_record_bytes == row.canonical_bytes(),
+            "resumed Run lineage exact source missing or repeated",
+        )
+    captured, sealed, suspended, resumed = lineage[-4:]
+    _require(bool(captured.turns) and bool(sealed.turns), "resumed seal lacks Turn preimages")
+    captured_turn, sealed_turn = captured.turns[-1], sealed.turns[-1]
+    _require(
+        captured.model_dump(exclude={"head", "predecessor", "event", "turns"})
+        == sealed.model_dump(exclude={"head", "predecessor", "event", "turns"})
+        and captured.turns[:-1] == sealed.turns[:-1]
+        and captured_turn.model_dump(
+            exclude={"head", "state", "attempts", "response_seal", "initialized_calls"}
+        )
+        == sealed_turn.model_dump(
+            exclude={"head", "state", "attempts", "response_seal", "initialized_calls"}
+        )
+        and len(captured_turn.attempts) == len(sealed_turn.attempts)
+        and captured_turn.attempts[:-1] == sealed_turn.attempts[:-1],
+        "captured-to-sealed transition changed immutable fields",
+    )
+    view = cut.complete_ordered_responses[-1]
+    _require(
+        view.original_run == references[-4]
+        and sum(ref == view.original_run for ref in references) == 1,
+        "resumed selected capture is not the exact adjacent preimage",
+    )
+
+    def physical_record[T: ExecutionSuspensionBaseline | ExecutionSuspensionPair](
+        type_: type[T], identity: Callable[[T], bool]
+    ) -> T:
+        candidates = []
+        for source in cut.complete_sources:
+            if source.schema_id != type_.model_fields["schema_id"].default:
+                continue
+            value = type_.model_validate_json(source.canonical_record_bytes)
+            if identity(value):
+                candidates.append((source, value))
+        _require(len(candidates) == 1, "resumed baseline or pair missing or repeated")
+        source, value = candidates[0]
+        subject = (
+            value.baseline_id
+            if isinstance(value, ExecutionSuspensionBaseline)
+            else value.schema_id + ":" + value.digest()
+        )
+        expected = _reference(subject, value, head="record:" + value.digest())
+        _require(
+            source.owner == "agent_loop"
+            and source.subject == expected
+            and source.physical_record == expected
+            and source.canonical_record_bytes == value.canonical_bytes(),
+            "resumed baseline or pair canonical physical source differs",
+        )
+        return value
+
+    baseline = physical_record(
+        ExecutionSuspensionBaseline,
+        lambda value: (
+            run.suspension_baseline is not None
+            and value.baseline_id == run.suspension_baseline.subject_id
+        ),
+    )
+    baseline_ref = _reference(baseline.baseline_id, baseline, head=baseline.baseline_id)
+    pair = physical_record(ExecutionSuspensionPair, lambda value: value.baseline == baseline_ref)
+    _require(
+        run.suspension_baseline == baseline_ref
+        and baseline.run_id == run.run_id
+        and baseline.predecessor_run == references[-3]
+        and baseline.bindings == cut.current_bindings
+        and tuple(item.original for item in cut.original_closures) == baseline.original_obligations
+        and baseline.frontier.registry == cut.frontier.registry
+        and not baseline.activation_blocking_predicates
+        and pair.suspension_command_id == baseline.suspension_command_id
+        and pair.source_cut_fingerprint == baseline.source_cut_fingerprint
+        and pair.predecessor_run == baseline.predecessor_run
+        and pair.suspended_run == references[-2]
+        and baseline.baseline_id
+        == "suspension-baseline:"
+        + hashlib.sha256(
+            b"chiplog.execution.suspension-baseline.v2\0"
+            + baseline.suspension_command_id.encode()
+            + b"\0"
+            + baseline.source_cut_fingerprint.encode()
+        ).hexdigest(),
+        "resumed frozen baseline or pair joins differ",
+    )
+    expected = sealed.model_copy(
+        update={
+            "state": "SUSPENDED",
+            "original_obligations": baseline.original_obligations,
+            "predecessor": sealed.head,
+            "suspension_baseline": baseline_ref,
+            "event": baseline.suspension_command_id,
+            "head": "pending",
+        }
+    )
+    expected = expected.model_copy(update={"head": "loop:" + expected.digest()})
+    _require(
+        suspended == expected
+        and sealed.state == "ACTIVE"
+        and sealed.event == "ModelResponseSealed"
+        and not sealed.original_obligations
+        and sealed.suspension_baseline is None,
+        "suspension changed fields outside exact producer delta",
+    )
+    expected = suspended.model_copy(
+        update={
+            "state": "ACTIVE",
+            "predecessor": suspended.head,
+            "event": f"execution-resume:{run.run_id}:{suspended.head}",
+            "head": "pending",
+        }
+    )
+    expected = expected.model_copy(update={"head": "loop:" + expected.digest()})
+    _require(resumed == expected, "resume changed fields outside exact producer delta")
+    return sealed
+
+
 def _check_source(request: PrepareNextExecutionTurn) -> ExecutionRunRecord:
     """Check necessary structural joins; this does not authenticate selection."""
     run = request.run
@@ -250,11 +397,8 @@ def _check_source(request: PrepareNextExecutionTurn) -> ExecutionRunRecord:
     )
     _require(
         run.state == "ACTIVE"
-        and run.event == "ModelResponseSealed"
         and run.delivery_acceptance is None
-        and run.suspension_baseline is None
-        and run.root_binding == "NOT_APPLICABLE"
-        and not run.original_obligations,
+        and run.root_binding == "NOT_APPLICABLE",
         "next Turn requires an active sealed non-scheduler Run",
     )
     _require(bool(run.turns), "next Turn has no immediately preceding Turn")
@@ -319,13 +463,27 @@ def _check_source(request: PrepareNextExecutionTurn) -> ExecutionRunRecord:
             "sealed response inventory or original call lineage differs",
         )
     view = cut.complete_ordered_responses[-1]
+    if run.suspension_baseline is not None:
+        sealed = _resumed_sealed_predecessor(request)
+        captured = cut.complete_ordered_run_lineage[-4]
+    else:
+        _require(
+            run.event == "ModelResponseSealed" and not run.original_obligations,
+            "next Turn requires an active sealed non-scheduler Run",
+        )
+        sealed = run
+        captured = (
+            cut.complete_ordered_run_lineage[-2]
+            if len(cut.complete_ordered_run_lineage) >= 2
+            else None
+        )
     _require(
         len(cut.complete_ordered_run_lineage) >= 2
-        and cut.complete_ordered_run_lineage[-2].head == run.predecessor
-        and isinstance(cut.complete_ordered_run_lineage[-2], ExecutionRunRecord),
+        and captured is not None
+        and captured.head == sealed.predecessor
+        and isinstance(captured, ExecutionRunRecord),
         "sealed Run lacks exact captured predecessor",
     )
-    captured = cut.complete_ordered_run_lineage[-2]
     assert isinstance(captured, ExecutionRunRecord)
     captured_attempt = captured.turns[-1].attempts[captured.turns[-1].selector]
     sealed_attempt = prior.attempts[prior.selector]

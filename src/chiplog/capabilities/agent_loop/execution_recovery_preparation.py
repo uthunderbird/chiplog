@@ -1100,7 +1100,7 @@ def _original_continuation_join(
             )
             digest = _sha(row.canonical_record_bytes)
             carrier_ref = CallSubjectHead(
-                subject_id=schema + ":" + digest,
+                subject_id=embedded.head,
                 revision=Present(head="record:" + digest, fingerprint=digest),
             )
             child_ref = None
@@ -1246,6 +1246,11 @@ def _original_continuation_join(
         if row.owner == "agent_loop"
         and row.schema_id == "chiplog.execution.accepted-open-terminal-disposition.v1"
         and row.physical_record == basis.original_terminal
+        and row.subject
+        == CallSubjectHead(
+            subject_id=original.original_call_id,
+            revision=summary.terminal_disposition,
+        )
     ]
     opening_rows = [
         row
@@ -1253,6 +1258,14 @@ def _original_continuation_join(
         if row.owner == "agent_loop"
         and row.schema_id == "chiplog.execution.accepted-open-recovery-opening.v1"
         and row.physical_record == closure.prior_obligation
+        and row.subject
+        == CallSubjectHead(
+            subject_id=original.obligation_id,
+            revision=Present(
+                head=original.obligation_head,
+                fingerprint=closure.prior_obligation.revision.fingerprint,
+            ),
+        )
     ]
     if len(terminal_rows) != 1 or len(opening_rows) != 1:
         raise RecoveryHold("original immutable terminal or opening source missing or duplicate")

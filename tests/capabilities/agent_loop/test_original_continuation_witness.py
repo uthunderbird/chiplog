@@ -130,12 +130,11 @@ def test_original_resolver_witness_is_independent_of_consumed_append_evidence():
     )
 
 
-def test_native_body_aliases_keep_physical_carriers_separate():
-    import hashlib
-
+def _native_cut_accounting():
     from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
     from chiplog.capabilities.agent_loop.recovery_contracts import Present
     from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
+    from chiplog.composition.r16_dispatch_outcomes import _row
 
     cut, accounting = _original_cut_accounting()
     sources = []
@@ -144,11 +143,16 @@ def test_native_body_aliases_keep_physical_carriers_separate():
             sources.append(source)
             continue
         record = DispatchOutcomeRecordV2.model_validate_json(source.canonical_record_bytes)
-        digest = hashlib.sha256(source.canonical_record_bytes).hexdigest()
+        physical_row = _row(record)
+        assert physical_row.canonical_bytes == source.canonical_record_bytes
         physical = CallSubjectHead(
-            subject_id=source.schema_id + ":" + digest,
-            revision=Present(head="record:" + digest, fingerprint=digest),
+            subject_id=physical_row.record_id,
+            revision=Present(
+                head="record:" + physical_row.fingerprint,
+                fingerprint=physical_row.fingerprint,
+            ),
         )
+        assert physical.revision.fingerprint != record.record.fingerprint
         body = CallSubjectHead(
             subject_id=record.record.subject_id,
             revision=Present(head=record.record.head, fingerprint=record.record.fingerprint),
@@ -157,10 +161,96 @@ def test_native_body_aliases_keep_physical_carriers_separate():
         if source.subject != body:
             sources.append(source.model_copy(update={"physical_record": physical}))
     cut.complete_sources = tuple(sources)
+    return cut, accounting
+
+
+def test_native_body_aliases_keep_physical_carriers_separate():
+    cut, accounting = _native_cut_accounting()
     assert _continuation_closures(cut, accounting) == (
         cut.original_closures,
         cut.current_reductions,
     )
+
+
+@pytest.mark.parametrize("mutation", ("schema-digest-id", "foreign-id", "fingerprint"))
+def test_native_effect_carrier_must_match_actual_writer_projection(mutation):
+    cut, accounting = _native_cut_accounting()
+    sources = list(cut.complete_sources)
+    index = next(i for i, row in enumerate(sources) if row.owner == "effects")
+    source = sources[index]
+    physical = source.physical_record
+    if mutation == "fingerprint":
+        physical = physical.model_copy(
+            update={"revision": physical.revision.model_copy(update={"fingerprint": "0" * 64})}
+        )
+    else:
+        physical = physical.model_copy(
+            update={
+                "subject_id": (
+                    source.schema_id + ":" + physical.revision.fingerprint
+                    if mutation == "schema-digest-id"
+                    else "foreign-carrier"
+                )
+            }
+        )
+    sources[index] = source.model_copy(update={"physical_record": physical})
+    cut.complete_sources = tuple(sources)
+    with pytest.raises(RecoveryIntegrityFault, match="original effects carrier differs"):
+        _continuation_closures(cut, accounting)
+
+
+def _cut_with_opening_terminal_aliases():
+    cut, accounting = _native_cut_accounting()
+    aliases = tuple(
+        source.model_copy(update={"subject": source.physical_record})
+        for source in cut.complete_sources
+        if source.schema_id
+        in (
+            "chiplog.execution.accepted-open-terminal-disposition.v1",
+            "chiplog.execution.accepted-open-recovery-opening.v1",
+        )
+    )
+    assert len(aliases) == 2
+    assert all(alias not in cut.complete_sources for alias in aliases)
+    cut.complete_sources += aliases
+    return cut, accounting
+
+
+def test_native_opening_terminal_physical_aliases_are_not_duplicate_logical_sources():
+    cut, accounting = _cut_with_opening_terminal_aliases()
+    assert _continuation_closures(cut, accounting) == (
+        cut.original_closures,
+        cut.current_reductions,
+    )
+
+
+@pytest.mark.parametrize("family", ("terminal-disposition", "recovery-opening"))
+@pytest.mark.parametrize("mutation", ("duplicate", "subject", "body"))
+def test_native_logical_opening_terminal_source_remains_exact(family, mutation):
+    cut, accounting = _cut_with_opening_terminal_aliases()
+    sources = list(cut.complete_sources)
+    index = next(
+        i
+        for i, row in enumerate(sources)
+        if family in row.schema_id and row.subject != row.physical_record
+    )
+    source = sources[index]
+    if mutation == "duplicate":
+        sources.append(source)
+    elif mutation == "subject":
+        sources[index] = source.model_copy(
+            update={"subject": source.subject.model_copy(update={"subject_id": "foreign"})}
+        )
+    else:
+        sources[index] = source.model_copy(update={"canonical_record_bytes": b"{}"})
+    cut.complete_sources = tuple(sources)
+    message = (
+        "invalid recovery source bytes"
+        if mutation == "body"
+        else "original immutable terminal or opening source missing or duplicate"
+    )
+    with pytest.raises((RecoveryHold, RecoveryIntegrityFault), match=message):
+        _continuation_closures(cut, accounting)
 
 
 @pytest.mark.parametrize(

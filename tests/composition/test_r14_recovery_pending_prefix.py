@@ -209,10 +209,12 @@ async def test_stale_final_complete_scan_prevents_decision(tmp_path, monkeypatch
     """Synthetic port remains untrusted; exercise refusal before any selection."""
     from chiplog.capabilities.agent_loop.contracts import LoopRejected
     from chiplog.composition import r14_recovery_publication as publication
+    from tests.composition.test_r14_resume_artifacts import _evidence as resume_evidence
 
     runtime, entry, _batch, _predecessor, _result = await _fixture(tmp_path, False)
     original_hash = _hash(runtime._database)
     evidence = publication.retained(entry)
+    closed_receipt = (await resume_evidence()).actor_budget_v1
     cut = evidence.accounting_request.cut
     clock = {"now": 1, "scans": 0}
     deadline = 1 + publication.RECOVERY_ACTOR_BUDGET_NS
@@ -228,7 +230,7 @@ async def test_stale_final_complete_scan_prevents_decision(tmp_path, monkeypatch
             raise LoopRejected("execution caller authentication unavailable or stale")
 
     async def issue(runtime, peer):
-        return actor, None
+        return actor, closed_receipt
 
     async def exchange(runtime, request, operation, result_type):
         if operation == "agent_loop.prepare_execution_accounting.v1":

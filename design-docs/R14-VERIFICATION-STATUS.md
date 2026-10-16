@@ -1277,3 +1277,102 @@ source edit (final helper blob `93547c685a1ea1886a13abe9e2622f04b1e1f715`), so i
 is diagnostic evidence rather than a final frozen-source integration run.
 Poll this exact process; no readiness/next-Turn/two-seal verdict is claimed yet.
 Handoff 42 remains open for mounted readiness and the rest of that lifecycle.
+
+Process **90670 terminated exit 1 before runtime yielded**: startup rejected
+`runtime source drift detected; restart from a stable tree`. The runner began
+before the final source edit; this was a root scheduling mistake, and the
+startup guard correctly rejected mixed source identities. It is not a
+continuation-join failure. Source is now committed as `b12d81a`; read-only SQL
+and transfer-journal checks still require head 28 and one transfer. A fresh
+stable-source run is required; never poll/restart terminal handle 90670.
+Fresh process **23827** is live on committed `b12d81a`, last output
+`SAVED_CROSS_SEAL_STARTUP`. `git diff --quiet HEAD -- src` succeeded before
+launch. Do not edit source while it is running; poll this exact handle.
+
+Process 23827 has now printed `SAVED_RESUME_AUTHENTICATED_TARGETS`: startup and
+the exact saved resumed Run guards passed. Readiness is still pending.
+
+A second owner-boundary regression is now RED:
+`uv run pytest -q
+tests/capabilities/agent_loop/test_resumed_next_turn_preparation.py --tb=short`
+— 1 failed in 0.32s, specifically `next Turn requires an active sealed
+non-scheduler Run`. Its suspension and resume are produced by the real owners
+and both return PREPARED; the selected-readiness structural bridge passes before
+that rejection. This test is cancellation-only with empty original obligations,
+not mounted selection or original-obligation continuation evidence. Product
+source is still unchanged while the live saved run proceeds.
+
+Prepared the resumed next-Turn repair in isolated worktree
+`/private/tmp/chiplog-r14-resumed-next-turn-b12d81a`, leaving the live runtime's
+`src/chiplog` unchanged. Its exact suffix proof binds canonical Run preimages,
+baseline/pair body-versus-physical references, producer suspension/resume deltas,
+frozen originals and current closure identities. The old sealed route and fresh
+original continuation proof remain. Root command, run from that worktree:
+`PYTHONPATH=/private/tmp/chiplog-r14-resumed-next-turn-b12d81a/src:/private/tmp/chiplog-r14-resumed-next-turn-b12d81a
+/Users/thunderbird/Projects/chiplog/.venv/bin/python -m pytest -q
+tests/capabilities/agent_loop/test_resumed_next_turn_preparation.py
+tests/capabilities/agent_loop/test_execution_next_turn_preparation.py --tb=short`
+— **45 passed in 2.76s**; scoped Ruff and diff checks passed. Cold scoped
+implementation review found no confirmed P0/P1. Positive producer evidence is
+cancellation-only; nonempty accepted recovery and mounted publication remain
+OPEN. This candidate has not been transferred to the main worktree.
+
+Natural-run low-volume sample: `/usr/bin/sample 84209 1 10 -file
+/private/tmp/r14-readiness-23827-native-sample.txt`, exit 0. In the main active
+90-sample stack, 57 samples enter the stdlib JSON encoder, 13 UTF-8 encoding,
+10 Pydantic and 8 SHA-256. This one-second native sample establishes active
+serialization/hashing at that instant, not an exact Python call site, repeat
+count, whole-run profile or SQLite/IPC time attribution. A cold narrow swarm is
+selecting a discriminating count-test/debugger acquisition; no global canonical
+serializer change has been made from this sample.
+
+Process **23827 terminated exit 1** before readiness publication. Accounting
+preparation succeeded; continuation returned `INTEGRITY_FAULT: original effects
+carrier differs`. The purported native-shaped test had invented `schema:sha`
+as the effects carrier ID. Actual `_row(record)` uses `record.record.head`;
+inventory adds `record:sha(raw)` and raw fingerprint separately from the embedded
+body marker. Replacing the test projection with the real writer made it RED
+(0.85s), then the corrected carrier formula passed. Wrong schema-digest ID,
+foreign ID and fingerprint remain negative cases.
+
+The authenticated historical resume cut then exposed a second real shape:
+opening and terminal each have a physical and a logical alias of one carrier.
+The new alias test was RED in 0.69s. The join now selects the full required
+logical reference alongside its existing physical reference; duplicate logical
+sources and selected-byte/subject substitution still reject. Outer native
+validation remains responsible for the complete inventory and alias consistency.
+Actual R16 history/issuance still independently recomputes the outcome marker.
+
+The reviewed next-Turn candidate has now been transferred to the main worktree.
+Root ran `uv run python /private/tmp/r14-saved-original-join-check.py`, exit 0:
+36 authenticated journal entries, one retained resume at source cut 27;
+accounting 1, closure 1 and reduction 1. Appending its exact selected resume
+Run/source to that historical cut lets the new suffix recognizer accept lineage
+10 with one retained original obligation and return the sealed predecessor.
+Head 28, one transfer, transfer bytes and journal sidecars remain unchanged.
+This is genuine nonempty historical structural evidence, not authentication of
+a current cut, selected readiness or successful mounted next-Turn publication.
+
+Readiness pure command derivation now runs before fresh actor issuance and is
+bound using exact invocation-local immutable evidence bytes. Binding still
+validates the closed receipt and tenant. Public `command()` and all replay/
+restart paths still independently reconstruct owner results; live cut/actor/
+worker/session/commitment guards remain. The red count test observed one extra
+accounting and continuation preparation after issuance. Its green expectation
+is now **2/2 before issuance** (exchange plus local validation), **0/0 after**.
+Binding adds zero preparations; independent public reconstruction adds one each.
+One-sided corruption, a separately valid foreign exchange, foreign tenant and
+invalid/missing receipt reject. Existing stale final scan tests use a valid
+closed receipt and still reject both changed-cut and expired-actor cases.
+
+Command: `uv run pytest -q
+tests/capabilities/agent_loop/test_original_continuation_witness.py
+tests/capabilities/agent_loop/test_resumed_next_turn_preparation.py
+tests/capabilities/agent_loop/test_execution_next_turn_preparation.py
+tests/capabilities/agent_loop/test_recovery_accounting.py
+tests/composition/test_r14_readiness_artifacts.py
+tests/composition/test_r14_recovery_pending_prefix.py --tb=short`
+— **117 passed in 5.31s**. Scoped Ruff/diff checks and cold bounded reviews passed
+without confirmed P0/P1. Full-cut decision recollection remains expensive; this
+does not establish production-deadline passage. A new stable-source mounted
+continuation is required; 23827 is terminal and must not be polled as live.

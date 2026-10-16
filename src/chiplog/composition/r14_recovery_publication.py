@@ -11,7 +11,7 @@ import hashlib
 import json
 import secrets
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallPreparationRejected
@@ -284,6 +284,37 @@ def command(evidence: RetainedRecoveryPublication) -> PhysicalPublicationCommand
     )
 
 
+@dataclass(frozen=True, repr=False)
+class _ReadinessArtifacts:
+    evidence_bytes: bytes
+    base_command: PhysicalPublicationCommand
+
+
+def _prepare_readiness_artifacts(evidence: RetainedRecoveryPublication) -> _ReadinessArtifacts:
+    """Validate pure owner derivation before issuing the live actor receipt."""
+    if evidence.actor_budget_v1 is not None:
+        raise ValueError("readiness artifacts require pre-issuance evidence")
+    base_command = command(evidence)
+    return _ReadinessArtifacts(evidence.canonical_bytes(), base_command)
+
+
+def _bind_readiness_artifacts(
+    evidence: RetainedRecoveryPublication, artifacts: _ReadinessArtifacts
+) -> PhysicalPublicationCommand:
+    receipt = evidence.actor_budget_v1
+    if receipt is None:
+        raise ValueError("readiness binding requires a closed actor receipt")
+    validate_recovery_actor_budget(receipt)
+    if receipt.request.callee.tenant_id != evidence.accounting_request.cut.tenant_id:
+        raise ValueError("recovery actor budget tenant differs from original cut")
+    if (
+        evidence.model_copy(update={"actor_budget_v1": None}).canonical_bytes()
+        != artifacts.evidence_bytes
+    ):
+        raise ValueError("readiness evidence differs from validated artifacts")
+    return replace(artifacts.base_command, request_fingerprint=evidence.digest())
+
+
 def retained(entry):
     raw = entry.get("execution_recovery_evidence")
     if not isinstance(raw, str):
@@ -359,7 +390,11 @@ def validate_selected(
                 runtime, entry, authenticated_loop_decisions
             )
         authenticated = _authenticate_native_recovery_selected(
-            cut_source, runtime, evidence, entry, derived_command,
+            cut_source,
+            runtime,
+            evidence,
+            entry,
+            derived_command,
             through_sequence=through_sequence,
             authenticated_loop_decisions=authenticated_loop_decisions,
             verified_h1_prepares=verified_h1_prepares,
@@ -375,9 +410,7 @@ def validate_selected(
                     verified_h1_prepares=verified_h1_prepares,
                 )
             else:
-                authenticated = cut_source.authenticate_selected_held(
-                    runtime, evidence, entry
-                )
+                authenticated = cut_source.authenticate_selected_held(runtime, evidence, entry)
         else:
             authenticated = cut_source.authenticate_selected_held(runtime, evidence, entry)
     else:
@@ -452,8 +485,7 @@ async def _exchange(
             if classified.source_request_fingerprint != request.digest():
                 raise LoopRejected("recovery owner classification request differs") from error
             raise LoopRejected(
-                "recovery owner classified "
-                f"{classified.disposition}: {classified.reason}"
+                f"recovery owner classified {classified.disposition}: {classified.reason}"
             ) from error
         detail = f"recovery owner preparation {rejected.code}: {rejected.reason}"
         if rejected.code == "HOLD":
@@ -523,11 +555,6 @@ async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress
     cr, cc, cp = await _exchange(
         runtime, c, "agent_loop.prepare_execution_continuation.v1", PreparedExecutionContinuation
     )
-    observed_v26, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)
-    with runtime._authority_gate().hold():
-        if not runtime._same_execution_actor_identity(observed, observed_v26):
-            raise LoopRejected("recovery authenticated actor changed before publication")
-        observed = observed_v26
     evidence = RetainedRecoveryPublication(
         accounting_request=a,
         accounting_result=ar,
@@ -537,44 +564,50 @@ async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress
         continuation_result=cr,
         continuation_call=cc,
         continuation_reply=cp,
-        actor_budget_v1=actor_budget,
     )
-    batch = command(evidence)
+    artifacts = _prepare_readiness_artifacts(evidence)
+    observed_v26, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)
+    with runtime._authority_gate().hold():
+        if not runtime._same_execution_actor_identity(observed, observed_v26):
+            raise LoopRejected("recovery authenticated actor changed before publication")
+        observed = observed_v26
+    evidence = evidence.model_copy(update={"actor_budget_v1": actor_budget})
+    batch = _bind_readiness_artifacts(evidence, artifacts)
 
     def guard(*, check_cut: bool = True):
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(observed)
-            except (ValueError, TypeError, RuntimeError):
+            except ValueError, TypeError, RuntimeError:
                 return "STALE:authority-before-cut"
             if check_cut:
                 try:
                     current_cut = source(runtime).collect_held(runtime)
-                except (ValueError, TypeError, RuntimeError):
+                except ValueError, TypeError, RuntimeError:
                     return "STALE:recovery-cut-read"
                 if current_cut != cut:
                     return "STALE:recovery-cut-changed"
             try:
                 current_worker = runtime.current_worker()
-            except (ValueError, TypeError, RuntimeError):
+            except ValueError, TypeError, RuntimeError:
                 return "STALE:worker-read"
             if current_worker != worker:
                 return "STALE:worker-generation"
             try:
                 current_session = runtime._supervisor.runtime().session("agent_loop")
-            except (ValueError, TypeError, RuntimeError):
+            except ValueError, TypeError, RuntimeError:
                 return "STALE:owner-session-read"
             if current_session != session:
                 return "STALE:owner-session"
             try:
                 current_predecessor = runtime._commitment_journal.load(runtime._tenant_id)
-            except (ValueError, TypeError, RuntimeError):
+            except ValueError, TypeError, RuntimeError:
                 return "STALE:commitment-journal-read"
             if current_predecessor != predecessor:
                 return "STALE:commitment-journal"
             try:
                 runtime._check_execution_actor(observed)
-            except (ValueError, TypeError, RuntimeError):
+            except ValueError, TypeError, RuntimeError:
                 return "STALE:authority-after-cut"
         return None
 
