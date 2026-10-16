@@ -629,14 +629,6 @@ def _read_call_history(
                 acceptances: list[RetainedAcceptancePreparationV2] = []
                 native_accounting_count = 0
                 native_sealed_accounting_seals: set[str] = set()
-                deferred_native_sealed_accounting: list[
-                    tuple[
-                        PhysicalPublicationCommand,
-                        dict[str, object],
-                        ExecutionRecoveryHistory,
-                        tuple,
-                    ]
-                ] = []
                 accepted_open_recoveries = []
                 deferred_native_open_sources = []
                 captured_heads: set[str] = set()
@@ -1362,34 +1354,8 @@ def _read_call_history(
                             raise ValueError(
                                 "duplicate V3 native accounting for selected response seal"
                             )
-                        snapshot = ExecutionHistorySnapshot(
-                            tenant_head=command.expected_head,
-                            records=tuple(mixed_records),
-                        )
-                        current_inventory = execution_inventory(
-                            tenant,
-                            snapshot,
-                            tuple(preparations),
-                            tuple(cancellations),
-                            tuple(execution_preparations),
-                            tuple(execution_cancellations),
-                            tuple(acceptances),
-                        )
-                        authenticated_history: ExecutionRecoveryHistory = (
-                            snapshot,
-                            current_inventory,
-                            tuple(preparations),
-                            tuple(execution_preparations),
-                            tuple(execution_cancellations),
-                            tuple(acceptances),
-                        )
-                        deferred_native_sealed_accounting.append(
-                            (
-                                command,
-                                entry,
-                                authenticated_history,
-                                tuple(accepted_open_recoveries),
-                            )
+                        decode_selected_native_sealed_accounting_v3(
+                            runtime, connection, command, entry, execution_preparations
                         )
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
@@ -1483,12 +1449,11 @@ def _read_call_history(
                         ):
                             raise ValueError("selected accepted/open recovery differs")
                         from chiplog.composition.r14_historical_suffix import (
-                            validate_native_open_selected_source_stamp_held,
+                            validate_native_open_selected_source_stamp,
                         )
 
-                        validate_native_open_selected_source_stamp_held(
+                        validate_native_open_selected_source_stamp(
                             runtime,
-                            connection,
                             command=command,
                             entry=entry,
                             cut=evidence.request.cut,
@@ -1600,12 +1565,11 @@ def _read_call_history(
                         ):
                             raise ValueError("selected accepted/open accounting differs")
                         from chiplog.composition.r14_historical_suffix import (
-                            validate_native_open_selected_source_stamp_held,
+                            validate_native_open_selected_source_stamp,
                         )
 
-                        validate_native_open_selected_source_stamp_held(
+                        validate_native_open_selected_source_stamp(
                             runtime,
-                            connection,
                             command=command,
                             entry=entry,
                             cut=evidence.request.cut,
@@ -2160,35 +2124,6 @@ def _read_call_history(
                         pending_publication=deferred_open_pending_publication,
                         authenticated_source_prefix=authenticated_source_prefix,
                     )
-                if deferred_native_sealed_accounting:
-                    current_snapshot = ExecutionHistorySnapshot(
-                        tenant_head=0 if head is None else head[0],
-                        records=tuple(mixed_records),
-                    )
-                    from chiplog.composition.r14_native_sealed_accounting_v3_history import (
-                        decode_selected_native_sealed_accounting_v3,
-                    )
-
-                    for (
-                        command,
-                        entry,
-                        authenticated_history,
-                        open_recoveries,
-                    ) in deferred_native_sealed_accounting:
-                        decode_selected_native_sealed_accounting_v3(
-                            runtime,
-                            connection,
-                            command,
-                            entry,
-                            loop_decision_bytes_by_id,
-                            authenticated_history,
-                            current_snapshot,
-                            execution_preparations,
-                            execution_cancellations,
-                            mixed_records,
-                            verified_h1_prepares=verified_h1_prepares,
-                            accepted_open_recoveries=open_recoveries,
-                        )
                 runtime._check_database_identity()
                 return (
                     LoopSnapshot(

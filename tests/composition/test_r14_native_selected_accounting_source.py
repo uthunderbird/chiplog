@@ -8,7 +8,6 @@ import io
 import json
 import pstats
 import secrets
-import sqlite3
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,8 +21,6 @@ import pytest
 import chiplog.composition.r14_loop_history as loop_history
 import chiplog.composition.r14_native_selected_accounting_source as selected_source
 import chiplog.composition.r14_original_prepare_source as original_source
-import chiplog.composition.r16_effects as effects
-from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
 from chiplog.architecture.r7_runtime import (
     R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
     R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
@@ -33,7 +30,6 @@ from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.execution_contracts import (
     ConsequentialToolCall,
     ExecutionContinue,
-    ExecutionRunRecord,
     SelfEffectArguments,
 )
 from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_contracts import (
@@ -76,7 +72,6 @@ from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._owner_publication_contracts import (
     JournalSelectedPublication,
 )
-from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.broker import (
     BrokerSession,
     CallBudget,
@@ -653,68 +648,11 @@ async def test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once(
         assert read_selected_native_sealed_accounting_v3(
             reopened, seal.revision.fingerprint
         ) == record
-        current_history = loop_history.read_execution_recovery_history(reopened)[0]
-        with read_connection(reopened._database) as connection:
-            frontier = connection.execute(
-                "SELECT head FROM tenant_heads WHERE tenant_id=?", (reopened._tenant_id,)
-            ).fetchone()[0]
-            with pytest.raises(
-                ValueError, match="execution selected history and effects physical cut differ"
-            ):
-                effects._reconstruct_registered_runs(
-                    reopened,
-                    connection,
-                    reopened._tenant_id,
-                    reopened._owner_decisions().snapshot(),
-                    frontier,
-                    authenticated_execution_history=current_history.model_copy(
-                        update={
-                            "records": tuple(
-                                item
-                                for item in current_history.records
-                                if not isinstance(item, ExecutionRunRecord)
-                            )
-                        }
-                    ),
-                )
         before = len(reopened._loop_decisions().entries())
+        before_head = read_execution_history(reopened).tenant_head
         assert await publish_native_sealed_accounting_v3(reopened, seal) == record
         assert len(reopened._loop_decisions().entries()) == before
-        before_head = read_execution_history(reopened).tenant_head
-        before_decisions = reopened._loop_decisions().entries()
-        with sqlite3.connect(database) as connection:
-            selected_row = connection.execute(
-                "SELECT owner, schema_id, canonical_bytes, commit_sequence FROM records "
-                "WHERE tenant_id=? AND record_id=?",
-                (reopened._tenant_id, record.record_id),
-            ).fetchone()
-            assert selected_row is not None
-            connection.execute(
-                "INSERT INTO records(tenant_id, record_id, owner, schema_id, canonical_bytes, "
-                "commit_sequence) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    reopened._tenant_id,
-                    "orphan:" + record.record_id,
-                    *selected_row[:3],
-                    0,
-                ),
-            )
-        reopened._commitment_journal.commit(
-            reopened._tenant_id, capture_authority_storage_state(database)[0]
-        )
-        # Isolate the full reader check from startup's earlier selected-only preflight.
-        with pytest.raises(LoopIntegrityError) as rejected:
-            read_selected_native_sealed_accounting_v3(
-                reopened, seal.revision.fingerprint
-            )
-        assert "orphaned, missing or unknown loop publication members" in str(
-            rejected.value.__cause__
-        )
-        assert reopened._loop_decisions().entries() == before_decisions
-        with read_connection(reopened._database) as connection:
-            assert connection.execute(
-                "SELECT head FROM tenant_heads WHERE tenant_id=?", (reopened._tenant_id,)
-            ).fetchone() == (before_head,)
+        assert read_execution_history(reopened).tenant_head == before_head
         with read_connection(reopened._database) as connection:
             count = connection.execute(
                 "SELECT count(*) FROM publications WHERE tenant_id=? "

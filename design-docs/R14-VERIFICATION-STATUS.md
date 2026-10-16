@@ -9,6 +9,41 @@ Status: OPEN, 2026-10-16. Acceptance authority:
 `R14-REMAINING-ROADMAP.md` and original clauses in `R14-R17-COMPLETION.md`.
 This is an evidence ledger, not a replacement acceptance boundary.
 
+## Functional simplification, 2026-10-17
+
+Checkpoint `25eaef0` preserves the current-actor resume and single-fold resolution
+fixes plus the user's narrowed acceptance scope. Its explicit checkpoint selection
+passed 46 tests in 2.80 s; it is not a full mounted completion claim.
+
+The old V40 debugger run `0b9052cd-4a7a-4d41-b8b7-ab8a93c8cb91` was deliberately
+cancelled while RUNNING to implement the requested simplification. It produced
+no functional verdict. Original 1248 launch inputs were unchanged before closing;
+output is `/private/tmp/r14-current-actor-v40-mounted-v2-cancelled-output.json`.
+This cancellation is a priority decision, not a failing test or an inferred hang.
+
+The working reader cut removes historical OPEN physical-prefix backup/hash
+reconstruction and V3 historical source recollection/preparation. Selected seal,
+publication envelope, present physical batch and current writer checks remain.
+Historical corruption/source reconstruction guarantees are explicitly deferred.
+Cold review `/private/tmp/r14-reader-simplification-rt.md` found no P0/P1 within
+that scope, without executing integration tests.
+
+Executed on this working cut:
+
+- `.venv/bin/pytest -q tests/composition/test_r14_historical_suffix.py`:
+  **77 passed in 0.76 s** after deleting obsolete historical-prefix proof cases.
+- `.venv/bin/pytest -q tests/composition/test_r14_native_selected_accounting_source.py::test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once`:
+  **1 passed in 28.15 s**. Normal mixed accounting, reopen, unchanged-head replay
+  and one selected V3 publication passed; bundled corruption attacks were removed
+  from this client scenario under B-R14-A03/A05.
+
+The original-resolution client scenario now retains lost-response OPEN closure,
+one-fold readback, reopen, reduction-gated resume, next Turn and one SEND. Its
+physical corruption and compatible/rival late-evidence matrix tails are outside
+this minimal witness; prior results below retain their historical scope.
+Ordinary two-seal and shortened OPEN continuation checks are currently pending.
+No comparative speedup or resolution of the old writer-STALE failure is claimed.
+
 ## Current R14.6 audit
 
 Latest accepted-OPEN two-seal repeat (2026-10-16): **FAILED**, not a live job.

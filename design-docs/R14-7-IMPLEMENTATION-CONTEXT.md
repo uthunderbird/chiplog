@@ -1,5 +1,14 @@
 # R14.7 preparation: executable read-only lineage
 
+**Route/scope update, 2026-10-17:** the user's
+[functional scope](R14-FUNCTIONAL-SCOPE.md) supersedes the full-proof prerequisites
+below. Mount lean, distinctly versioned accepted/pending/counter semantics in the
+new native PostgreSQL execution runtime, reusing V3 tool/Run DTOs. Keep max 3,
+atomic acceptance before reading, stable original snapshot/cursor across reopen,
+current authorization and pending-accounting HOLD. Do not fabricate V1 proof
+objects or require a parallel SQLite/R7 V3 mount. Source-backed implementation
+plan: `/private/tmp/r14-readonly-minimal-plan.md`; runtime remains unimplemented.
+
 Status: **contracts/context only; runtime allocation and execution HOLD**.
 Prepared on `ed4b8bf` plus the separate R8 open-verifier import repair. This
 document adds no policy beyond the user's frozen `max_attempts=3`, including the

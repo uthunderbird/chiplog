@@ -685,72 +685,8 @@ def test_consumption_source_validation_binds_exact_prior_send_without_history_re
             outbox.validate_consumptions(runtime, journal)
 
 
-@pytest.mark.parametrize("damage", [None, "commitment", "earlier-row", "future-bound", "fence"])
-def test_open_source_commitment_is_proved_against_physical_prefix_without_changing_current(
-    tmp_path, damage
-):
-    from chiplog.platform._sqlite import SQLiteMaterializer
-    from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
-    from chiplog.platform.workspace_snapshot import read_connection
-
-    database = tmp_path / "open-source-prefix.sqlite"
-    with SQLiteMaterializer(database, record_contracts={"agent_loop": "chiplog.loop.test.v1"}):
-        pass
-    with sqlite3.connect(database) as db:
-        db.execute("INSERT INTO tenant_heads VALUES ('tenant', 1)")
-        db.execute(
-            "INSERT INTO records VALUES "
-            "('tenant', 'r1', 'agent_loop', 'chiplog.loop.test.v1', ?, 1)",
-            (b"first",),
-        )
-        db.execute("INSERT INTO publications VALUES ('tenant', 'source', 'c1', 'f1', 1, 'r1')")
-    with read_connection(database) as db:
-        original_commitment = capture_authority_snapshot_commitment(db, "tenant")
-    with sqlite3.connect(database) as db:
-        db.execute("UPDATE tenant_heads SET head=2 WHERE tenant_id='tenant'")
-        db.execute(
-            "INSERT INTO records VALUES "
-            "('tenant', 'r2', 'agent_loop', 'chiplog.loop.test.v1', ?, 2)",
-            (b"later",),
-        )
-        db.execute("INSERT INTO publications VALUES ('tenant', 'later', 'c2', 'f2', 2, 'r2')")
-        if damage == "earlier-row":
-            db.execute("UPDATE records SET canonical_bytes=? WHERE record_id='r1'", (b"changed",))
-        elif damage == "fence":
-            db.execute("INSERT INTO deletion_fences VALUES ('tenant', 'r6', 1)")
-    runtime = SimpleNamespace(
-        _tenant_id="tenant",
-        _authority_gate=lambda: SimpleNamespace(require_held=lambda: None),
-        _check_database_identity=lambda: None,
-    )
-    expected_head = 3 if damage == "future-bound" else 1
-    expected_commitment = "f" * 64 if damage == "commitment" else original_commitment
-    with read_connection(database) as db:
-        before = capture_authority_snapshot_commitment(db, "tenant")
-        if damage is None:
-            suffix.validate_native_open_physical_source_prefix_held(
-                runtime, db, expected_head=expected_head, expected_commitment=expected_commitment
-            )
-        else:
-            with pytest.raises(ValueError, match="OPEN source"):
-                suffix.validate_native_open_physical_source_prefix_held(
-                    runtime,
-                    db,
-                    expected_head=expected_head,
-                    expected_commitment=expected_commitment,
-                )
-        assert capture_authority_snapshot_commitment(db, "tenant") == before
-        assert db.execute("SELECT head FROM tenant_heads").fetchone()[0] == 2
-        assert db.execute("SELECT record_id FROM records ORDER BY record_id").fetchall() == [
-            ("r1",),
-            ("r2",),
-        ]
-
-
 @pytest.mark.parametrize("damage", [None, "source-head", "predecessor", "tenant"])
-def test_selected_open_source_stamp_matches_header_before_physical_prefix_validation(
-    monkeypatch, damage
-):
+def test_selected_open_source_stamp_matches_publication_header(damage):
     cut = SimpleNamespace(
         tenant_id="foreign" if damage == "tenant" else "tenant",
         tenant_commit_sequence=2 if damage == "source-head" else 1,
@@ -758,24 +694,16 @@ def test_selected_open_source_stamp_matches_header_before_physical_prefix_valida
     )
     entry = {"predecessor": "different" if damage == "predecessor" else "source-commitment"}
     command = SimpleNamespace(expected_head=1, tenant_id="tenant")
-    checked = []
-    monkeypatch.setattr(
-        suffix,
-        "validate_native_open_physical_source_prefix_held",
-        lambda runtime, connection, **kwargs: checked.append(kwargs),
-    )
     runtime = SimpleNamespace(_tenant_id="tenant")
     if damage is None:
-        suffix.validate_native_open_selected_source_stamp_held(
-            runtime, object(), command=command, entry=entry, cut=cut
+        suffix.validate_native_open_selected_source_stamp(
+            runtime, command=command, entry=entry, cut=cut
         )
-        assert checked == [{"expected_head": 1, "expected_commitment": "source-commitment"}]
     else:
         with pytest.raises(ValueError, match="OPEN source stamp"):
-            suffix.validate_native_open_selected_source_stamp_held(
-                runtime, object(), command=command, entry=entry, cut=cut
+            suffix.validate_native_open_selected_source_stamp(
+                runtime, command=command, entry=entry, cut=cut
             )
-        assert not checked
 
 
 @pytest.mark.parametrize(
@@ -960,9 +888,9 @@ def test_lifecycle_physical_validation_keeps_default_strict_and_reaches_pending_
     "family", ["suspension", "successor", "accepted-open-accounting", "accepted-open-recovery"]
 )
 @pytest.mark.parametrize(
-    "damage", [None, "anchor-advanced", "predecessor", "unselected", "orphan", "source-bytes"]
+    "damage", [None, "anchor-advanced", "predecessor", "unselected", "orphan"]
 )
-def test_completed_pending_lifecycle_requires_exact_final_batch_and_real_source_prefix(
+def test_completed_pending_lifecycle_requires_exact_final_batch_and_current_anchor(
     tmp_path, monkeypatch, family, damage
 ):
     import hashlib
@@ -1025,10 +953,6 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_real_source_
                 "('tenant','orphan','agent_loop','chiplog.loop.test.v1',?,2)",
                 (b"orphan",),
             )
-        elif damage == "source-bytes":
-            connection.execute(
-                "UPDATE records SET canonical_bytes=? WHERE record_id='first'", (b"changed",)
-            )
     with read_connection(database) as connection:
         actual = capture_authority_snapshot_commitment(connection, "tenant")
     anchored = actual if damage == "anchor-advanced" else predecessor
@@ -1056,20 +980,14 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_real_source_
     selected = () if damage == "unselected" else ((command, entry),)
     with gate.hold(), read_connection(database) as connection:
         kwargs = dict(pending_publication=entry, selected=selected, frontier=2)
-        if damage == "source-bytes":
-            with pytest.raises(ValueError, match="OPEN source commitment"):
-                suffix.authenticate_native_open_pending_lifecycle_held(
-                    runtime, connection, actual, anchored, **kwargs
-                )
-        else:
-            assert suffix.authenticate_native_open_pending_lifecycle_held(
-                runtime, connection, actual, anchored, **kwargs
-            ) is (damage in (None, "anchor-advanced"))
+        assert suffix.authenticate_native_open_pending_lifecycle_held(
+            runtime, connection, actual, anchored, **kwargs
+        ) is (damage in (None, "anchor-advanced"))
     if (
         family in ("suspension", "accepted-open-accounting", "accepted-open-recovery")
         and damage != "unselected"
     ):
-        # Canonical owner acquisition is inert; the prefix proof uses real SQLite.
+        # Canonical owner acquisition is inert; final-batch checks use real SQLite.
         from chiplog.composition import r14_accepted_open_accounting_records as records
         from chiplog.composition.r14_recovery_publication import (
             authenticate_selected_recovery_prefix_held,

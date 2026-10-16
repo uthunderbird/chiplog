@@ -52,47 +52,10 @@ NATIVE_OPEN_PENDING_LIFECYCLE_OPERATIONS = frozenset(
 )
 
 
-def validate_native_open_physical_source_prefix_held(
-    runtime, connection: sqlite3.Connection, *, expected_head: int, expected_commitment: str
+def validate_native_open_selected_source_stamp(
+    runtime, *, command, entry, cut
 ) -> None:
-    """Prove an OPEN source stamp on the bounded append-only native path.
-
-    The caller authenticates complete current membership and selected provenance.
-    This check additionally proves the source commitment against actual prefix
-    bytes. Other authority surfaces remain intact: an unsupported mutation holds.
-    Only the private backup is changed, never the current physical cut.
-    """
-    runtime._authority_gate().require_held()
-    runtime._check_database_identity()
-    tenant = runtime._tenant_id
-    before = capture_authority_snapshot_commitment(connection, tenant)
-    head = connection.execute(
-        "SELECT head FROM tenant_heads WHERE tenant_id=?", (tenant,)
-    ).fetchone()
-    if head is None or not 0 < expected_head <= head[0]:
-        raise ValueError("OPEN source frontier is outside the current physical history")
-    with closing(sqlite3.connect(":memory:")) as prefix:
-        connection.backup(prefix)
-        prefix.execute("BEGIN")
-        prefix.execute(
-            "DELETE FROM records WHERE tenant_id=? AND commit_sequence>?", (tenant, expected_head)
-        )
-        prefix.execute(
-            "DELETE FROM publications WHERE tenant_id=? AND commit_sequence>?",
-            (tenant, expected_head),
-        )
-        prefix.execute("UPDATE tenant_heads SET head=? WHERE tenant_id=?", (expected_head, tenant))
-        if capture_authority_snapshot_commitment(prefix, tenant) != expected_commitment:
-            raise ValueError("OPEN source commitment differs from the physical prefix")
-    runtime._check_database_identity()
-    if capture_authority_snapshot_commitment(connection, tenant) != before:
-        raise ValueError("OPEN source physical acquisition changed during prefix validation")
-
-
-def validate_native_open_selected_source_stamp_held(
-    runtime, connection: sqlite3.Connection, *, command, entry, cut
-) -> None:
-    """Bind retained OPEN source metadata to its selected and physical prefix."""
+    """Bind retained OPEN source metadata to the selected publication header."""
     if (
         cut.tenant_id != runtime._tenant_id
         or command.tenant_id != runtime._tenant_id
@@ -100,12 +63,6 @@ def validate_native_open_selected_source_stamp_held(
         or cut.materialization_commitment != entry.get("predecessor")
     ):
         raise ValueError("OPEN source stamp differs from selected publication header")
-    validate_native_open_physical_source_prefix_held(
-        runtime,
-        connection,
-        expected_head=command.expected_head,
-        expected_commitment=cut.materialization_commitment,
-    )
 
 
 def validate_native_open_causal_source_prefix(
@@ -465,17 +422,9 @@ def authenticate_native_open_pending_lifecycle_held(
         "WHERE tenant_id=? AND commit_sequence=? ORDER BY rowid",
         (runtime._tenant_id, sequence),
     ).fetchall()
-    if publications != [(command.operation_kind, command.idempotency_key)] or rows != [
+    return publications == [(command.operation_kind, command.idempotency_key)] and rows == [
         (row.record_id, row.owner, row.schema_id, row.canonical_bytes) for row in command.records
-    ]:
-        return False
-    validate_native_open_physical_source_prefix_held(
-        runtime,
-        connection,
-        expected_head=command.expected_head,
-        expected_commitment=str(entry["predecessor"]),
-    )
-    return True
+    ]
 
 
 def validate_native_open_sources_held(
