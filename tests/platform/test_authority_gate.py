@@ -132,10 +132,15 @@ def test_separate_handles_share_same_thread_reentrant_ownership(tmp_path: Path) 
         inner.require_held()
 
 
-def test_independent_process_enters_only_after_outermost_release(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scope_name", ["hold", "hold_existing"])
+def test_independent_process_enters_only_after_outermost_release(
+    tmp_path: Path, scope_name: str
+) -> None:
     database = tmp_path / "tenant.sqlite"
     gate = AuthorityGate.for_database(database)
-    scope = gate.hold()
+    with gate.hold():
+        pass
+    scope = getattr(gate, scope_name)()
     scope.__enter__()
     released = False
     try:
@@ -240,9 +245,10 @@ def test_hard_linked_database_cannot_create_split_bundle_locks(tmp_path: Path) -
             AuthorityGate.for_database(path)
 
 
+@pytest.mark.parametrize("scope_name", ["hold", "hold_existing"])
 @pytest.mark.parametrize("mutation", ["mode", "symlink", "hardlink", "directory"])
 def test_invalid_existing_gate_file_rejects_before_protected_action(
-    tmp_path: Path, mutation: str
+    tmp_path: Path, mutation: str, scope_name: str
 ) -> None:
     database = tmp_path / "tenant.sqlite"
     lock = Path(str(database) + ".authority.lock")
@@ -260,12 +266,14 @@ def test_invalid_existing_gate_file_rejects_before_protected_action(
         lock.write_bytes(b"")
         lock.chmod(0o644)
     entered = False
-    with pytest.raises(AuthorityGateError), AuthorityGate.for_database(database).hold():
+    scope = getattr(AuthorityGate.for_database(database), scope_name)()
+    with pytest.raises(AuthorityGateError), scope:
         entered = True
     assert not entered
 
 
-def test_replaced_gate_inode_is_not_silently_reopened(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scope_name", ["hold", "hold_existing"])
+def test_replaced_gate_inode_is_not_silently_reopened(tmp_path: Path, scope_name: str) -> None:
     gate = AuthorityGate.for_database(tmp_path / "tenant.sqlite")
     with gate.hold():
         original_inode = gate.path.stat().st_ino
@@ -274,9 +282,10 @@ def test_replaced_gate_inode_is_not_silently_reopened(tmp_path: Path) -> None:
     replacement.chmod(0o600)
     replacement.replace(gate.path)
     assert gate.path.stat().st_ino != original_inode
-    with pytest.raises(AuthorityGateError), gate.hold():
+    with pytest.raises(AuthorityGateError), getattr(gate, scope_name)():
         pytest.fail("replaced gate identity reached protected action")
-    with pytest.raises(AuthorityGateError), AuthorityGate.for_database(gate.database).hold():
+    other = AuthorityGate.for_database(gate.database)
+    with pytest.raises(AuthorityGateError), getattr(other, scope_name)():
         pytest.fail("a second handle silently adopted the replaced gate identity")
 
 
@@ -342,9 +351,14 @@ def _fork_worker(
         connection.close()
 
 
-def test_fork_resets_handle_state_without_unlocking_parent_scope(tmp_path: Path) -> None:
+@pytest.mark.parametrize("scope_name", ["hold", "hold_existing"])
+def test_fork_resets_handle_state_without_unlocking_parent_scope(
+    tmp_path: Path, scope_name: str
+) -> None:
     gate = AuthorityGate.for_database(tmp_path / "tenant.sqlite")
-    scope = gate.hold()
+    with gate.hold():
+        pass
+    scope = getattr(gate, scope_name)()
     scope.__enter__()
     released = False
     context = get_context("fork")
@@ -372,12 +386,14 @@ def test_fork_resets_handle_state_without_unlocking_parent_scope(tmp_path: Path)
         child.close()
 
 
+@pytest.mark.parametrize("scope_name", ["hold", "hold_existing"])
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("error_type", [PermissionError, OSError])
 def test_caller_oserror_escapes_unchanged_and_releases_process_lock(
     tmp_path: Path,
     error_type: type[OSError],
     nested: bool,
+    scope_name: str,
 ) -> None:
     database = tmp_path / "caller-error.sqlite3"
     gate = AuthorityGate.for_database(database)
@@ -385,6 +401,8 @@ def test_caller_oserror_escapes_unchanged_and_releases_process_lock(
     caught: BaseException | None = None
     try:
         with gate.hold():
+            pass
+        with getattr(gate, scope_name)():
             gate.require_held()
             if nested:
                 with AuthorityGate.for_database(database).hold():
@@ -399,3 +417,34 @@ def test_caller_oserror_escapes_unchanged_and_releases_process_lock(
         assert _receive(connection) == "entered"
         _normal_exit(process, connection)
     assert caught is original
+
+
+@pytest.mark.parametrize("parent_exists", [False, True])
+def test_existing_scope_never_provisions_lock_and_recovers_after_failed_open(
+    tmp_path: Path, parent_exists: bool
+) -> None:
+    parent = tmp_path / "bundle"
+    if parent_exists:
+        parent.mkdir()
+    gate = AuthorityGate.for_database(parent / "tenant.sqlite")
+    with pytest.raises(AuthorityGateError), gate.hold_existing():
+        pytest.fail("missing lock reached protected action")
+    assert parent.exists() is parent_exists
+    assert not gate.path.exists()
+    with pytest.raises(AuthorityGateError):
+        gate.require_held()
+    parent.mkdir(exist_ok=True)
+    gate.path.write_bytes(b"existing lock")
+    gate.path.chmod(0o600)
+    before = (gate.path.read_bytes(), gate.path.stat())
+    with gate.hold_existing():
+        with AuthorityGate.for_database(gate.database).hold():
+            gate.require_held()
+        gate.require_held()
+    after = (gate.path.read_bytes(), gate.path.stat())
+    assert after[0] == before[0]
+    assert (after[1].st_dev, after[1].st_ino, after[1].st_mode) == (
+        before[1].st_dev, before[1].st_ino, before[1].st_mode
+    )
+    with gate.hold(), AuthorityGate.for_database(gate.database).hold_existing():
+        gate.require_held()

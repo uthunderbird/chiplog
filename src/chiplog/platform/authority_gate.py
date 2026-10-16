@@ -136,6 +136,17 @@ class AuthorityGate:
 
     @contextmanager
     def hold(self) -> Iterator[None]:
+        with self._hold(create=True):
+            yield
+
+    @contextmanager
+    def hold_existing(self) -> Iterator[None]:
+        """Lock a provisioned bundle without creating its lock or parent directory."""
+        with self._hold(create=False):
+            yield
+
+    @contextmanager
+    def _hold(self, *, create: bool) -> Iterator[None]:
         entered_pid = os.getpid()
         state = _state(self.path)
         state.thread_lock.acquire()
@@ -145,13 +156,12 @@ class AuthorityGate:
         try:
             self._check_database()
             if outermost:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
+                flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+                if create:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    flags |= os.O_CREAT
                 with _registry_lock:
-                    state.descriptor = os.open(
-                        self.path,
-                        os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
-                        0o600,
-                    )
+                    state.descriptor = os.open(self.path, flags, 0o600)
                 state.identity = self._check_descriptor(state.descriptor, state.identity)
                 fcntl.flock(state.descriptor, fcntl.LOCK_EX)
                 self._check_descriptor(state.descriptor, state.identity)

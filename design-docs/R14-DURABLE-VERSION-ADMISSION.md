@@ -100,6 +100,45 @@ requires stable reviewed source, strict catalog reconciliation and full tests.
 Contract shape checks and cheap preflight do not prove runtime version admission,
 full architecture compliance, R14.6 completion or release/adoption readiness.
 
+## Observed startup gap and existing-only exclusion
+
+The authentic V1 fixture now drives the actual R7 public opener in the pending
+`tests/composition/test_r14_startup_version_admission.py` worktree test. Both
+ordinary legacy input and the same input with only its authority lock removed
+were admitted: journal, trust materializer and supervisor constructors ran.
+Command `.venv/bin/pytest -q tests/composition/test_r14_startup_version_admission.py
+--tb=short` was RED, **2 failed in 2.68s**. The test observes real constructors,
+not replacement implementations, and captures all file names, bytes and modes.
+These tests remain RED work in progress; they are not completion evidence for
+the primitive below.
+
+`AuthorityGate.hold_existing()` now shares the existing lock implementation while
+omitting parent creation and O_CREAT. It keeps exact file identity/mode/owner,
+cross-process exclusion, nesting and fork checks. A nested ordinary hold reuses
+the existing descriptor. This is lock acquisition without provisioning, not a
+read-only transaction or admission credential. The missing-parent/lock tests
+were RED because the method was absent; after implementation, command
+`.venv/bin/pytest -q tests/platform/test_authority_gate.py --tb=short` passed
+**33 tests in 2.31s**, including independent-process exclusion and fork cleanup.
+No startup caller is wired to this primitive yet.
+
+Cold route inspection found further upstream work: the existing historical trust
+verifier requires a materializer constructor; verification authenticates the
+INITIALIZE binding but does not resolve an independent protected CURRENT registry
+head after binding/root changes. Live SQLite mode=ro can also modify/create SHM,
+while immutable=1 would ignore live WAL. The selected design route is a pure
+authenticated journal snapshot under existing-only exclusion, a protected current
+binding/root registry and SQL content verification on a disposable WAL-aware copy.
+It must preserve the lock through constructor consumption and retain all original
+sources byte-for-byte on refusal. This route is not implemented or admitted.
+
+The candidate tuple `(2,1,1,1,1,1)` remains a proposal until exact schema/read-graph,
+registry, canonicalization/digest and companion descriptors plus golden bytes are
+frozen. No constant is registered from a list of integers alone. Canonical empty
+initialization, current binding/root publication, unsupported refusal and current
+exact-prefix recovery remain required. No all-startup-HOLD shortcut or migration
+branch is the intended product result.
+
 ## Frozen authentic legacy input
 
 Before changing the initializer, the real R7 runtime at revision
