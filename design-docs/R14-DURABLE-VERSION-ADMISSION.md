@@ -467,3 +467,63 @@ private-schema/EXPLAIN SQL sites. A fresh all-src AST scan over the same seven
 candidate names now finds511 calls (execute348, executemany1, executescript8,
 connect57, read_connection80, workspace_snapshot10, join_workspace_snapshot7).
 Those meta-verifier sites must be classified too; no filename exemption is made.
+
+## Full-src discovery accounting and instance-role correction
+
+`verification/authority_sql_corpus.py` makes source accounting executable across
+all `src/**/*.py`, without imports or source execution. Every ast.Call is retained;
+terminal SQL names are review tags only. Imports, assignments/stores, parameters,
+known bound-method references and opener declarations remain separate records.
+Each record binds module, AST-enclosing class/function name, ordinal among all
+recorded events in that scope, expression/shape and enclosing AST shape. Repeated
+identical calls remain distinct; blank lines preserve structural identity while
+changing separately retained byte digests. These are AST enclosure labels, not
+proven Python lexical binding, lambda/comprehension or runtime call semantics.
+
+Exact accounting compares both semantic records and source filenames, including
+empty files, in both directions. Missing/added mounts/sites, changed binding,
+renamed imports, callback aliases and dynamic callables cannot disappear from
+the inventory merely because they lack a known SQL terminal name. That is not
+alias resolution: every semantic receiver/instance/assembly obligation remains
+unproved and require_closed has no acceptance path. Incomplete/duplicate/orphan
+accounting also refuses; no caller-provided classification grants admission.
+
+Initial9 feature tests failed on the explicit not-implemented API (0.15s), not a
+mounted product bug. Two additional accounting cases exposed empty-file omission
+and orphan source references (2 failed in0.04s), then were repaired. Cold design
+review found the initial src/chiplog-only boundary; a temporary sibling package
+with real SQLite calls reproduced DID NOT RAISE (1 failed in0.05s). The corrected
+full-src walk passes with that negative. Review and closure:
+`/private/tmp/r14-sql-corpus-accounting-design-review.md`.
+Command `.venv/bin/pytest -q tests/verification/test_authority_sql_corpus.py
+tests/verification/test_authority_read_graph.py --tb=short` gave33 passed in9.02s.
+
+The root-generated current_sql_corpus export at base506a59a plus this working
+source is `/private/tmp/r14-current-sql-corpus-506a59a.json`,41,457,057 bytes,
+SHA256 b1f67a472b4c1280d3a185b4a8c23d1a842e81ce4c52f34c3912cbef628672d1.
+Its command iterated corpus.source_digests and compared every entry with SHA256
+of the current file:576 match. It contains107777 records, including56844 calls;
+357 SQL-name candidates,154 factory/wrapper candidates,19 mount candidates and
+670 reflection calls remain syntactic tags. No approved descriptor is generated
+from those counts or hashes, and no tuple is registered.
+
+The separate domain/mount audit is
+`/private/tmp/r14-sql-domain-mounts-506a59a.json`, SHA256
+3288fd8a56670fe4c386dda9d096a9236299a1ee2e85fa534197ef6bc8d78016,
+with report `/private/tmp/r14-sql-domain-mount-route.md`. Root verified all575
+source hashes in that earlier snapshot and read canonical opener routes plus
+the actual CalendarReadLedger inheritance. Reproduction is
+`python3 /private/tmp/r14-domain-map.py`:54 factories,97 wrapper calls,19 direct
+mount forwards and44 connection-annotated helpers. Exact parameter/caller and
+dynamic-import closure remains open, not inferred from those annotations.
+
+Two concrete registration constraints follow from actual code: CalendarReadLedger
+inherits factory-bearing BrokerReadLedger methods, so one SQL site has different
+instance roles and cannot be assigned a domain solely by defining file/class.
+Common CLI forwards a manifest parameter, so the runtime class/default does not
+close its accepted assembly pairs. Next controls must discriminate an actual
+main-path→reads-sidecar substitution and an existing manifest override before
+mutable constructors; missing/ghost mount controls must compare both directions.
+Separate registered per-domain schema/DDL/DML preparation and complete SQL-family
+extraction remain mandatory. The discovery layer does not extend the SELECT-only
+engine preparer, install a runtime authorizer or satisfy startup admission.
