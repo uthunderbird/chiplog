@@ -13,6 +13,7 @@ from chiplog.verification.assembly_forwarding import (
     AssemblyEdge,
     _bindings,
     _binds,
+    _import_module,
     inspect_assembly_forwarding,
 )
 from chiplog.verification.authority_read_graph import _prepare_reads
@@ -45,12 +46,24 @@ class PlanningDescriptorRow:
 
 
 @dataclass(frozen=True)
+class PreparationOriginChain:
+    entrypoint: str
+    factory: CorpusNode
+    forward: CorpusNode | None
+    sink: CorpusNode
+    role: str
+    domain: str
+    source_digests: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class PlanningDescriptorFragment:
     corpus: CurrentSqlCorpus
     assembly: AssemblyEdge
     other_mounts: tuple[AssemblyEdge, ...]
     wrapper_site: CorpusNode
     rows: tuple[PlanningDescriptorRow, ...]
+    preparation_chains: tuple[PreparationOriginChain, ...]
     residual_obligations: tuple[str, ...]
 
     def require_closed(self) -> None:
@@ -267,6 +280,222 @@ def _prove_chain(runtime, reader):
     _connection_uses(leaf, set())
 
 
+def _preparation_origins(sources, corpus):
+    """Prove only the closed source-local memory receiver chains, not SQL policy."""
+    path = 'src/chiplog/verification/sqlite_preparation.py'
+    origin = 'chiplog.verification.sqlite_preparation'
+    tree = ast.parse(dict(sources)[path])
+    parents = {child: parent for parent in ast.walk(tree)
+               for child in ast.iter_child_nodes(parent)}
+    scopes = {name: _scope(tree, name) for name in (
+        '_configure', '_schema_steps', 'observe_statement', 'observe_schema_script')}
+    for name, scope in scopes.items():
+        _require([n for n in ast.walk(tree) if _binds(n, name)] == [scope]
+                 and not scope.decorator_list, 'preparation callable is rebound: ' + name)
+    _signature(scopes['_configure'], ('connection', 'foreign_keys'))
+    _signature(scopes['_schema_steps'],
+               ('connection', 'script', 'objects', 'foreign_keys', 'initial_schema_sql'))
+    for name, argument, keywords in (
+        ('observe_statement', 'sql',
+         ['registered_schema_sql', 'registered_objects', 'foreign_keys']),
+        ('observe_schema_script', 'script',
+         ['initial_schema_sql', 'registered_objects', 'foreign_keys']),
+    ):
+        args = scopes[name].args
+        _require([a.arg for a in args.args] == [argument]
+                 and [a.arg for a in args.kwonlyargs] == keywords
+                 and args.kw_defaults == [None] * 3
+                 and not (args.posonlyargs or args.defaults or args.vararg or args.kwarg),
+                 'unsupported preparation entrypoint signature')
+    for name, module, symbol in (
+        ('sqlite3', 'sqlite3', None), ('closing', 'contextlib', 'closing'),
+    ):
+        imports = [n for n in tree.body if (
+            isinstance(n, ast.Import) and symbol is None
+            and len(n.names) == 1 and n.names[0].name == module and n.names[0].asname is None
+        ) or (
+            isinstance(n, ast.ImportFrom) and n.module == module and not n.level
+            and len(n.names) == 1 and n.names[0].name == symbol and n.names[0].asname is None
+        )]
+        declaration = _one(imports, 'unknown preparation import: ' + name)
+        _require([n for n in ast.walk(tree) if _binds(n, name)] == [declaration],
+                 'preparation import is rebound: ' + name)
+
+    def frame(node):
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                                 ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
+                                 ast.GeneratorExp)):
+                return node
+        return None
+
+    def exact_call(scope, expression):
+        return _one([n for n in ast.walk(scope) if isinstance(n, ast.Call)
+                     and frame(n) is scope and _text(n) == expression],
+                    'missing or ambiguous preparation call: ' + expression)
+
+    factories = {}
+    bindings = {}
+    contexts = {}
+    for name in ('observe_statement', 'observe_schema_script'):
+        scope = scopes[name]
+        context = _one([n for n in scope.body if isinstance(n, ast.With)],
+                       'expected direct private preparation context')
+        _require(len(context.items) == 1, 'unsupported preparation context')
+        item = context.items[0]
+        _require(_text(item.context_expr) == (
+            "closing(sqlite3.connect(':memory:', cached_statements=0, isolation_level=None))")
+            and isinstance(item.optional_vars, ast.Name) and item.optional_vars.id == 'connection',
+            'preparation connection is not private memory')
+        factories[name] = item.context_expr.args[0]
+        bindings[name] = item.optional_vars
+        contexts[name] = item.context_expr
+    forwards = {
+        'observe_statement': (
+            exact_call(scopes['observe_statement'], '_configure(connection, foreign_keys)'),
+            exact_call(scopes['observe_statement'],
+                       '_schema_steps(connection, registered_schema_sql, objects, '
+                       "foreign_keys, '')"),
+        ),
+        'observe_schema_script': (
+            exact_call(scopes['observe_schema_script'], '_configure(connection, foreign_keys)'),
+            exact_call(scopes['observe_schema_script'],
+                       "_schema_steps(connection, initial_schema_sql, objects, foreign_keys, '')"),
+            exact_call(scopes['observe_schema_script'],
+                       '_schema_steps(connection, script, objects, foreign_keys, '
+                       'initial_schema_sql)'),
+        ),
+    }
+    sinks = {
+        '_configure': (("connection.execute('PRAGMA foreign_keys = ' + "
+                        "('ON' if foreign_keys else 'OFF'))",
+                        'FOREIGN_KEYS_PROFILE'),),
+        '_schema_steps': (('connection.execute(sql)', 'SCHEMA_UNIT'),),
+        'observe_statement': (("connection.execute('EXPLAIN ' + sql)", 'EXPLAIN_FIRST'),
+                              ("connection.execute('EXPLAIN ' + sql, (None,) * bindings)",
+                               'EXPLAIN_BINDING_RETRY')),
+        'observe_schema_script': (),
+    }
+    actual_sinks = {name: tuple((exact_call(scopes[name], expression), role)
+                               for expression, role in entries) for name, entries in sinks.items()}
+    for name, entries in actual_sinks.items():
+        for call, _ in entries:
+            parent = parents[call]
+            if name == '_configure':
+                _require(isinstance(parent, ast.Expr) and parent.value is call,
+                         'preparation profile cursor escapes')
+            else:
+                fetch = parents.get(parent)
+                statement = parents.get(fetch)
+                _require(isinstance(parent, ast.Attribute) and parent.value is call
+                         and parent.attr == 'fetchall' and isinstance(fetch, ast.Call)
+                         and fetch.func is parent and not fetch.args and not fetch.keywords
+                         and isinstance(statement, ast.Expr) and statement.value is fetch,
+                         'preparation execute cursor escapes')
+    allowed_forwards = {call for calls in forwards.values() for call in calls}
+    for name, scope in scopes.items():
+        binding = bindings[name] if name in bindings else scope.args.args[0]
+        _require([n for n in ast.walk(scope) if _binds(n, 'connection')] == [binding],
+                 'preparation connection is rebound')
+        allowed = {call for call, _ in actual_sinks[name]}
+        allowed.update(forwards.get(name, ()))
+        if name in {'_schema_steps', 'observe_statement'}:
+            schema_argument = 'schema=True))' if name == '_schema_steps' else 'schema=False))'
+            allowed.add(exact_call(scope, 'connection.set_authorizer(_authorizer(actions, objects, '
+                                   + schema_argument))
+        for node in ast.walk(scope):
+            if not isinstance(node, ast.Name) or node.id != 'connection' or node is binding:
+                continue
+            _require(isinstance(node.ctx, ast.Load) and frame(node) is scope,
+                     'preparation connection escapes or enters a nested frame')
+            parent = parents[node]
+            call = parents.get(parent) if isinstance(parent, ast.Attribute) else parent
+            _require(call in allowed and ((isinstance(parent, ast.Attribute)
+                     and call.func is parent and parent.value is node)
+                     or (isinstance(parent, ast.Call) and parent.args[0] is node)),
+                     'preparation connection escapes registered call positions')
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in scopes:
+            _require(parents.get(node) in allowed_forwards
+                     and parents[node].func is node, 'private preparation helper escapes')
+        if isinstance(node, ast.Name) and node.id == 'closing':
+            _require(parents.get(node) in contexts.values() and parents[node].func is node,
+                     'private closing callable escapes')
+        if isinstance(node, ast.Name) and node.id == 'sqlite3':
+            parent = parents[node]
+            _require(isinstance(parent, ast.Attribute) and parent.value is node
+                     and isinstance(parent.ctx, ast.Load) and parent.attr in {
+                'connect', 'complete_statement', 'Error', 'ProgrammingError', 'sqlite_version',
+                'SQLITE_READ', 'SQLITE_SELECT', 'SQLITE_INSERT', 'SQLITE_UPDATE', 'SQLITE_DELETE',
+                'SQLITE_FUNCTION', 'SQLITE_PRAGMA', 'SQLITE_TRANSACTION', 'SQLITE_CREATE_TABLE',
+                'SQLITE_CREATE_INDEX', 'SQLITE_REINDEX', 'SQLITE_DENY', 'SQLITE_OK'},
+                'preparation SQLite module escapes or mutates')
+            if parent.attr == 'connect':
+                _require(parents.get(parent) in factories.values()
+                         and parents[parent].func is parent, 'preparation factory escapes')
+        _require(not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                      and node.func.id in {'getattr', 'setattr', 'delattr', 'globals', 'locals',
+                                          'vars', 'exec', 'eval', '__import__'}),
+                 'reflective preparation lookup is unsupported')
+    for other_path, source in sources:
+        if other_path == path:
+            continue
+        module = other_path[4:].removesuffix('.py').replace('/', '.')
+        other_tree = ast.parse(source)
+        other_parents = {child: parent for parent in ast.walk(other_tree)
+                         for child in ast.iter_child_nodes(parent)}
+        for node in ast.walk(other_tree):
+            if isinstance(node, ast.Import):
+                _require(not any(a.name == origin for a in node.names),
+                         'private preparation module is imported')
+            if isinstance(node, ast.ImportFrom):
+                imported = _import_module(module, node)
+                _require(not (imported == origin and any(
+                    a.name in {'*', '_configure', '_schema_steps'} for a in node.names))
+                    and not (imported == 'chiplog.verification' and any(
+                        a.name == 'sqlite_preparation' for a in node.names)),
+                    'private preparation helper is imported')
+                if imported == origin:
+                    for alias in node.names:
+                        name = alias.asname or alias.name
+                        _require(alias.name in {'observe_statement', 'observe_schema_script',
+                                                'SqlPreparation', 'SqlPreparationRefused'},
+                                 'unsupported preparation import exposure')
+                        _require([n for n in ast.walk(other_tree) if _binds(n, name)] == [node],
+                                 'imported preparation binding is rebound')
+                        for use in ast.walk(other_tree):
+                            if not isinstance(use, ast.Name) or use.id != name:
+                                continue
+                            parent = other_parents[use]
+                            if alias.name.startswith('observe_'):
+                                _require(isinstance(parent, ast.Call) and parent.func is use,
+                                         'preparation observer callable escapes')
+                            else:
+                                _require(not isinstance(parent, (ast.Attribute, ast.Call)),
+                                         'preparation type exposes module internals')
+            _require(not (isinstance(node, ast.Attribute) and node.attr == 'sqlite_preparation'),
+                     'indirect preparation module reference')
+
+    def site(name, call):
+        return _one([n for n in corpus.nodes if n.module == path and n.qualname == name
+                     and n.expression == _text(call)], 'preparation call lacks unique corpus node')
+
+    digests = tuple(pair for pair in corpus.source_digests if pair[0] == path)
+    chains = []
+    for entrypoint in factories:
+        factory = site(entrypoint, factories[entrypoint])
+        for forward in forwards[entrypoint]:
+            helper = forward.func.id
+            for sink, role in actual_sinks[helper]:
+                chains.append(PreparationOriginChain(entrypoint, factory, site(entrypoint, forward),
+                    site(helper, sink), role, 'private_memory', digests))
+        for sink, role in actual_sinks[entrypoint]:
+            chains.append(PreparationOriginChain(entrypoint, factory, None,
+                site(entrypoint, sink), role, 'private_memory', digests))
+    return tuple(chains)
+
+
 def build_planning_descriptor_fragment(sources) -> PlanningDescriptorFragment:
     """Join all evidence from one supplied snapshot, leaving global closure false."""
     try:
@@ -284,6 +513,7 @@ def build_planning_descriptor_fragment(sources) -> PlanningDescriptorFragment:
         runtime, reader = texts[runtime_path], texts[reader_path]
         _prove_chain(runtime, reader)
         corpus, occurrences = _inspect_sources_with_occurrences(sources)
+        preparation_chains = _preparation_origins(sources, corpus)
         expressions = extract_sql_expression_inventory(sources, corpus)
         expressions.require_exact_accounting()
         assembly = inspect_assembly_forwarding(tuple((p[4:], s) for p, s in sources))
@@ -357,10 +587,13 @@ def build_planning_descriptor_fragment(sources) -> PlanningDescriptorFragment:
                 rows.append(PlanningDescriptorRow(site, statement, alternative, expression.label,
                     expression.sql, 'tenant_main', _prepare_reads(schema, expression.sql)))
         return PlanningDescriptorFragment(corpus, edge,
-            tuple(e for e in assembly.edges if e != edge), wrapper_site, tuple(rows), (
+            tuple(e for e in assembly.edges if e != edge), wrapper_site, tuple(rows),
+            preparation_chains, (
                 'fragment only: supplied source set is not independently proven exhaustive',
                 'other assembly mounts and external class mutation are unproved',
                 'execute schema/commitment helper domains and callees remain unproved',
+                'preparation origins are source-local only; authorizer policy and external '
+                'runtime mutation/indirect reflective access require independent evidence',
                 'execute ledger current_state/begin/release/dequeue '
                 'use separate read-ledger authority',
                 'module import effects, runtime callbacks and all downstream constructor effects',

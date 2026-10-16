@@ -3,8 +3,10 @@
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic import TypeAdapter
 
 from chiplog.adapters.driven.execution_prompts import render_execution_prompt
 from chiplog.capabilities.agent_loop.contracts import (
@@ -21,10 +23,12 @@ from chiplog.capabilities.agent_loop.execution_transition_contracts import (
 )
 from chiplog.capabilities.agent_loop.execution_transitions import prepare_execution_transition
 from chiplog.capabilities.projections.r9_boundary import WorkspaceRejected
+from chiplog.composition import r14_execution_transition_records as transitions
 from chiplog.composition.r14_execution_runtime import open_execution_runtime
 from chiplog.composition.r14_execution_transition_records import (
     ExecutionHistorySnapshot,
     RetainedExecutionTransition,
+    RetainedExecutionTransitionEvidence,
     RetainedExecutionTransitionV3,
     transition_command,
 )
@@ -188,6 +192,75 @@ async def test_v3_retained_envelope_accepts_only_native_prepare_and_changes_fing
         == v2.canonical_bytes()
     )
     assert transition_command(v3).request_fingerprint != transition_command(v2).request_fingerprint
+
+
+@pytest.mark.parametrize("version", (2, 3))
+async def test_transition_command_parses_retained_envelope_once(
+    version: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, proposal = await _prepare()
+    caller, callee = _sessions(request.run.tenant, request.run.worker_session)
+    fields: dict[str, Any] = dict(
+        request=request,
+        proposal=proposal,
+        expected_head=4,
+        predecessor_commitment="a" * 64,
+        expected_snapshot_fingerprint=ExecutionHistorySnapshot(tenant_head=4, records=()).digest(),
+        caller=caller,
+        callee=callee,
+        request_id="request",
+        deadline_ns=1,
+    )
+    evidence: RetainedExecutionTransitionEvidence
+    if version == 3:
+        evidence = RetainedExecutionTransitionV3(
+            **fields,
+            workspace_issuance=H1WorkspaceIssuanceRefV1(
+                tenant=request.run.tenant,
+                batch_id="batch",
+                entry_id="b" * 64,
+                payload_digest="c" * 64,
+            ),
+        )
+    else:
+        evidence = RetainedExecutionTransition(**fields)
+    raw = evidence.canonical_bytes()
+    expected = transition_command(evidence)
+    envelope_parses: list[str] = []
+    loads = json.loads
+    validate_json = TypeAdapter.validate_json
+    model_validate_json = type(evidence).model_validate_json
+
+    def counted_loads(value: Any, *args: Any, **kwargs: Any) -> Any:
+        if value == raw:
+            envelope_parses.append("stdlib")
+        return loads(value, *args, **kwargs)
+
+    def counted_adapter(self: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+        if value == raw:
+            envelope_parses.append("native")
+        return validate_json(self, value, *args, **kwargs)
+
+    def counted_model(cls: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+        if value == raw:
+            envelope_parses.append("model")
+        return model_validate_json(value, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", counted_loads)
+    monkeypatch.setattr(TypeAdapter, "validate_json", counted_adapter)
+    monkeypatch.setattr(type(evidence), "model_validate_json", classmethod(counted_model))
+    actual = transitions.transition_command(evidence)
+    assert actual == expected
+    assert envelope_parses == ["native"]
+    # Unchecked copies still have to cross JSON-mode validation on every call.
+    for damaged in (
+        evidence.model_copy(update={"kind": "UNREGISTERED"}),
+        evidence.model_copy(update={"expected_head": -1}),
+        evidence.model_copy(update={"request": request.model_copy(update={"command_id": ""})}),
+    ):
+        with pytest.raises(ValueError):
+            transitions.transition_command(damaged)
 
 
 async def test_v3_retained_envelope_rejects_non_prepare_request() -> None:

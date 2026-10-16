@@ -1,8 +1,9 @@
 """Retained transition exchange and exact physical command, without write authority."""
 
 import hashlib
-import json
-from typing import Literal
+from typing import Annotated, Literal
+
+from pydantic import Field, TypeAdapter
 
 from chiplog.capabilities.agent_loop.contracts import RunRecord
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
@@ -81,24 +82,21 @@ class RetainedExecutionTransitionV4(RetainedExecutionTransitionV3):
 RetainedExecutionTransitionEvidence = (
     RetainedExecutionTransition | RetainedExecutionTransitionV3 | RetainedExecutionTransitionV4
 )
+_TRANSITION_EVIDENCE: TypeAdapter[RetainedExecutionTransitionEvidence] = TypeAdapter(
+    Annotated[RetainedExecutionTransitionEvidence, Field(discriminator="kind")]
+)
 
 
 def transition_command(evidence: RetainedExecutionTransitionEvidence) -> PhysicalPublicationCommand:
     raw = evidence.canonical_bytes()
-    kind = json.loads(raw).get("kind")
-    if kind == "R14_SELECTED_EXECUTION_TRANSITION_V2":
-        evidence = RetainedExecutionTransition.model_validate_json(raw)
-    elif kind == "R14_SELECTED_EXECUTION_TRANSITION_V3":
-        evidence = RetainedExecutionTransitionV3.model_validate_json(raw)
-        if not isinstance(evidence.request, PrepareExecutionRequest):
-            raise ValueError("V3 retained execution transition must prepare")
-    elif kind == "R14_SELECTED_EXECUTION_TRANSITION_V4":
-        evidence = RetainedExecutionTransitionV4.model_validate_json(raw)
+    evidence = _TRANSITION_EVIDENCE.validate_json(raw)
+    if isinstance(evidence, RetainedExecutionTransitionV4):
         if not isinstance(evidence.request, PrepareExecutionRequest):
             raise ValueError("V4 retained execution transition must prepare")
         evidence.native_scope_binding.verify_request(evidence.request)
-    else:
-        raise ValueError("unregistered retained execution transition")
+    elif isinstance(evidence, RetainedExecutionTransitionV3):
+        if not isinstance(evidence.request, PrepareExecutionRequest):
+            raise ValueError("V3 retained execution transition must prepare")
     verify_execution_transition(evidence.request, evidence.proposal)
     run = evidence.proposal.run
     caller, callee = evidence.caller, evidence.callee

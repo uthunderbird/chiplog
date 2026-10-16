@@ -1978,9 +1978,9 @@ negative no longer relies on a missing later business table. The two supplied
 schema negatives pass; Ruff passed. The frozen comparison used a separately
 named import of the inert verifier module and private in-memory databases only.
 
-## Live second-acceptance STALE diagnostic
+## Second-acceptance STALE diagnostic (terminal)
 
-MCP session `072d2186-e7df-4f72-a46f-dcacd00e114f` runs the exact cross-seal
+MCP session `072d2186-e7df-4f72-a46f-dcacd00e114f` ran the exact cross-seal
 selector against unchanged frozen4f5357c, fresh absent basetemp
 `/private/tmp/r14-stale-debug-4f5357c`. All1524 manifest inputs were rechecked
 before launch. Driver and ongoing receipt:
@@ -1995,8 +1995,8 @@ r14_call_authority.py167 while sys.exception() is still live. The coordinator
 constructs these commands without expected_preimage_commitment and its decision
 guard returns None; physical head mismatch and admission LoopRejected are the
 remaining STALE paths. First logpoint observed current=13, expected=13,
-no_preimage=True. Session remains RUNNING on authoritative MCP polling; this is
-not a failure result, a latency measurement, or grounds for a restart.
+no_preimage=True. The second acceptance also matched35=35, no_preimage=True.
+The session is terminal exit1 and closed; details below supersede running polls.
 
 Cold fixture-route review read in full:
 `/private/tmp/r14-second-accept-guard-fixture-route.md`. Existing saved prior-turn
@@ -2114,5 +2114,122 @@ Separate preserved-preview audit:
 entries (1370687 and33583766 raw bytes), each with a60000000000ns mandate horizon
 from capture; all five input SHA/modes unchanged. This does not reconstruct the
 failed in-memory loop/effects preparation or prove expiry. The frozen debugger
-session072d2186-e7df-4f72-a46f-dcacd00e114f remains RUNNING on authoritative poll;
-no restart or second-acceptance diagnosis is claimed.
+session072d2186-e7df-4f72-a46f-dcacd00e114f subsequently reached terminal exit1.
+
+### Exact second-acceptance expiry observed (2026-10-16)
+
+The first-bad stop preserved `LoopRejected("call acceptance original authority
+or owner preparation expired")`, traceback `check_prepared:164 -> _check_live:154`.
+The witness was present; witness/current cut, predecessor inventory and dispatch
+scope checks passed. Both physical head checks matched. Capture was
+1432017886255250ns, fresh observation1432022812046250ns, minimum deadline
+1432022886255250ns:74,209,000ns remained at fresh observation, but the subsequent
+actual monotonic deadline check rejected. All11 source deadlines equal original
+capture+5,000,000,000ns, created at `r14_call_preparation.py:205-207`.
+
+Authoritative result:1 failed in3247.28s, including debugger pause/evaluations;
+this is not performance evidence. All1524 frozen manifest inputs matched after
+terminal; MCP session closed. This diagnoses this repeat, not the earlier
+uninstrumented aggregate STALE. Production clocks and source TTLs remain unchanged.
+
+Private preserved evidence: `/private/tmp/r14-stale-debug-4f5357c-observed/`:
+`guard.json`, `debugger-output.json`, `issuance.json.xz` (expired inert JSON,
+96,222,422 bytes decompressed), `failure/` and `failure-files.json`.
+The runtime copy has45 regular files,0 symlinks,1,274,039,389 bytes; streaming
+source-before/source-after/copy SHA256 and modes match. Receipt:
+`/private/tmp/r14-stale-debug-4f5357c-receipt.md`. Saved bytes confer no authority.
+Repeated large serialization is a next hypothesis, not yet established attribution.
+
+### One native parse per retained transition envelope (2026-10-16)
+
+`transition_command` previously parsed the full retained envelope with stdlib
+only to select `kind`, then parsed it again with Pydantic JSON validation.
+A module-level discriminated `TypeAdapter.validate_json` now performs selection
+and validation in one native parse. V3/V4 Prepare-only checks remain; V4 is
+checked before its V3 superclass so scope verification still executes. Owner
+journal duplicate-key rejection and canonical serialization are unchanged.
+
+Command: `.venv/bin/pytest -p no:timeout -q
+tests/composition/test_execution_transition_records.py -k parses_retained_envelope_once
+--tb=short` was RED for V2 and V3: observed `["stdlib", "model"]`, expected
+`["native"]`. The focused final command `.venv/bin/pytest -p no:timeout -q
+tests/composition/test_execution_transition_records.py
+tests/composition/test_execution_transition_verification.py
+tests/composition/test_r14_native_scope_binding.py --tb=short` passed13 tests
+in22.27s, including unchecked unknown-tag, negative-head and nested-command
+corruption refusals. Ruff and diff checks pass. Targeted mypy retains exactly
+the two pre-existing errors (V4 Literal override and existing request.run access),
+confirmed against HEAD with `--shadow-file`; no new targeted errors remain.
+
+MCP session `6c20d6cb-14c6-48f3-a6c2-5c17383adc0f`, expectations written before
+launch in `/private/tmp/r14-transition-json-debug-expectations.md`: one nonpausing
+native parse logpoint and one post-call assertion breakpoint. Observed exactly
+one hit, then `(["native"], True, 68480, 2)` for parse list, command equality,
+raw byte size and version. Authoritative exit0; session closed. Debugger timing
+is not latency evidence.
+
+Read-only comparison command:
+`.venv/bin/python /private/tmp/r14-transition-json-compare.py`.
+It extracted the old function AST from verified HEAD2858b73, using current
+dependencies, and compared expired inert V4 evidence from the preserved archive.
+Input981060 bytes, SHA256
+`b25be2eee33f709567d0661d32dfe8041b4edcb6fec04a78dab286c0781bfc2f`.
+Three alternating pairs produced equal physical commands: old wall13.81–14.75ms,
+new12.15–12.60ms. Archive SHA matched before and after. Full receipt:
+`/private/tmp/r14-transition-json-comparison.json`. This establishes a small local
+saving, not a material end-to-end R14 speedup or a fix for second-acceptance expiry.
+
+### Large issuance serialization discriminator and fresh repeat (2026-10-16)
+
+Command `.venv/bin/python /private/tmp/r14-large-issuance-cost.py` compared the
+4f5357c call_batch function AST with the current implementation, using current
+dependencies and the expired inert96,222,422-byte issuance. Decode took34.9ms;
+canonical issuance232.5ms; retained canonical32.6ms; envelope computation178.7ms.
+Retained16,154,333 + envelope3,214,852 bytes exceed the4MiB exact-pair cache bound:
+both arms are uncached. Three alternating pairs: old818.6/861.5/845.3ms,
+current610.6/592.1/582.9ms. Complete DTOs and canonical batch bytes matched in all
+pairs (149,837,381 bytes, SHA256
+`7e67f280a76e96a1a97168b0a04e51530c342db6074b2b47b2acb510ca1cff4e`).
+Receipt `/private/tmp/r14-large-issuance-cost.json`. This supports the existing
+canonical-operand reuse, not original runtime attribution or deadline admission.
+
+Fresh production-clock cross-seal selector launched without debugger from
+`/private/tmp/chiplog-r14-cross-seal-2858-json`, containing the current tracked
+worktree bytes (base2858b73 plus transition parser change and existing WIP tests).
+1539 input SHA/modes recorded in `/private/tmp/r14-cross-seal-2858-json-inputs.json`.
+Driver `/private/tmp/r14-cross-seal-2858-json-driver.py`; output
+`/private/tmp/r14-cross-seal-2858-json.out`; terminal marker
+`/private/tmp/r14-cross-seal-2858-json-exit.txt`. Execution handle62642 remains live
+at this checkpoint. Inputs remain frozen until authoritative terminal, then
+must be rechecked. Main preparation-origin edits are outside that snapshot.
+
+### Preparation origins joined to the same descriptor corpus (2026-10-16)
+
+`PlanningDescriptorFragment.preparation_chains` now joins seven conditional
+entrypoint paths to the two private-memory factory sites and four distinct SQL
+sink occurrences. Both public signatures, both helper signatures, exact direct
+forward positions, imports, connection bindings and lexical frames are checked.
+Factories/forwards/sinks are the original supplied corpus nodes with producer
+source SHA, not reconstructed ordinals or a second discovery universe.
+
+Previously19 new tests were RED (missing positive field and18 accepted source
+mutants). Root additionally reproduced public observer code/default mutation.
+Cold full swarm design/mechanism review found execute-cursor capability escape
+and imported observer.__globals__ helper access. Root reproduced three RED
+mutants, then required exact ignored/fetchall result consumption and direct
+observer import use. Producer callable exposure now refuses. Review:
+`/private/tmp/r14-preparation-origin-design-redteam.md`; review is of the
+pre-repair tree, not a claim of independent certification of the repaired tree.
+
+Command `.venv/bin/pytest -p no:timeout -q
+tests/verification/test_planning_descriptor_chain.py
+tests/verification/test_sqlite_preparation.py
+tests/verification/test_authority_read_graph.py
+tests/verification/test_placeholder_sql_families.py --tb=short`:
+171 passed in9.97s, including72 chain tests. Scoped Ruff/diff checks pass.
+Full supplied src corpus builds with585 sources, seven preparation chains and
+five planning READ rows; other18 assembly mounts remain visible and residual.
+Origins are conditional on source-local entrypoint paths; arbitrary indirect
+reflection/external runtime mutation, authorizer policy, exhaustive global
+receiver/domain closure, schema/AMR/CURRENT and startup admission remain open.
+This proof does not assert all possible incoming helper connections are private.

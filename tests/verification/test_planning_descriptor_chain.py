@@ -1,4 +1,5 @@
 """The R7 base planning fragment joins proofs but never grants admission."""
+import ast
 from pathlib import Path
 
 import pytest
@@ -12,8 +13,9 @@ from chiplog.verification.planning_descriptor_chain import (
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = 'src/chiplog/composition/r7_planning.py'
 READER = 'src/chiplog/platform/authority_reads.py'
+PREPARATION = 'src/chiplog/verification/sqlite_preparation.py'
 PATHS = (RUNTIME, READER, 'src/chiplog/platform/_sqlite.py',
-         'src/chiplog/platform/r7_leaves.py')
+         'src/chiplog/platform/r7_leaves.py', PREPARATION)
 
 
 def sources():
@@ -23,6 +25,15 @@ def sources():
 def mutate(items, path, old, new):
     assert dict(items)[path].count(old) == 1
     return tuple((p, text.replace(old, new) if p == path else text) for p, text in items)
+
+
+def mutate_preparation(items, scope, old, new):
+    text = dict(items)[PREPARATION]
+    method, = [node for node in ast.parse(text).body
+               if isinstance(node, ast.FunctionDef) and node.name == scope]
+    segment = ast.get_source_segment(text, method)
+    assert segment.count(old) == 1
+    return mutate(items, PREPARATION, segment, segment.replace(old, new))
 
 
 def expected():
@@ -49,6 +60,94 @@ def test_actual_planning_reader_chain_reaches_descriptor_fragment():
     assert fragment.wrapper_site.qualname == 'R7PlanningRuntime._verified_publications'
     assert fragment.other_mounts == ()
     assert fragment.residual_obligations
+
+
+def test_preparation_paths_join_all_four_sinks_to_exact_private_factories():
+    fragment = build_planning_descriptor_fragment(sources())
+    chains = fragment.preparation_chains
+    assert len(chains) == 7
+    assert {(row.sink.qualname, row.sink.ordinal, row.role) for row in chains} == {
+        ('_configure', 5, 'FOREIGN_KEYS_PROFILE'),
+        ('_schema_steps', 18, 'SCHEMA_UNIT'),
+        ('observe_statement', 17, 'EXPLAIN_FIRST'),
+        ('observe_statement', 25, 'EXPLAIN_BINDING_RETRY'),
+    }
+    assert {row.entrypoint for row in chains} == {'observe_statement', 'observe_schema_script'}
+    assert {row.factory.qualname for row in chains} == {
+        'observe_statement', 'observe_schema_script'}
+    for row in chains:
+        assert row.factory in fragment.corpus.nodes and row.sink in fragment.corpus.nodes
+        assert row.domain == 'private_memory'
+        if row.forward is not None:
+            assert row.forward in fragment.corpus.nodes
+        assert row.source_digests == tuple(
+            pair for pair in fragment.corpus.source_digests if pair[0] == PREPARATION)
+
+
+@pytest.mark.parametrize('scope,old,new', [
+    ('observe_statement', '":memory:"', '"tenant.sqlite"'),
+    ('observe_schema_script', '":memory:"', '"tenant.sqlite"'),
+    ('observe_statement', '        _configure(connection, foreign_keys)',
+     '        leak = [connection]\n        _configure(connection, foreign_keys)'),
+    ('observe_statement', '        _configure(connection, foreign_keys)',
+     '        return connection\n        _configure(connection, foreign_keys)'),
+    ('observe_statement', '        _configure(connection, foreign_keys)',
+     '        def later():\n            return connection.execute("SELECT 1")\n'
+     '        _configure(connection, foreign_keys)'),
+    ('observe_statement', '        _configure(connection, foreign_keys)',
+     '        def connection(): pass\n        _configure(connection, foreign_keys)'),
+    ('observe_statement', '        _configure(connection, foreign_keys)',
+     '        class connection: pass\n        _configure(connection, foreign_keys)'),
+    ('observe_statement', '        _configure(connection, foreign_keys)',
+     '        from foreign import connection\n        _configure(connection, foreign_keys)'),
+    ('observe_statement', '        _configure(connection, foreign_keys)',
+     '        try: pass\n        except Exception as connection: pass\n'
+     '        _configure(connection, foreign_keys)'),
+    ('observe_statement', '        _configure(connection, foreign_keys)',
+     '        match None:\n            case connection: pass\n'
+     '        _configure(connection, foreign_keys)'),
+    ('_schema_steps', 'connection, script, objects, foreign_keys, initial_schema_sql',
+     'script, connection, objects, foreign_keys, initial_schema_sql'),
+    ('_configure', '"PRAGMA foreign_keys = " + ("ON" if foreign_keys else "OFF")',
+     '"PRAGMA user_version"'),
+    ('observe_statement', 'connection.execute("EXPLAIN " + sql).fetchall()',
+     'leaked = connection.execute("EXPLAIN " + sql).connection'),
+    ('_schema_steps', 'connection.execute(sql).fetchall()',
+     '(escaped := connection.execute(sql)).fetchall()'),
+])
+def test_private_preparation_source_substitutions_refuse(scope, old, new):
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(mutate_preparation(sources(), scope, old, new))
+
+
+@pytest.mark.parametrize('tail', [
+    '\nhelper_alias = _schema_steps\n',
+    '\ndef other(tenant_connection):\n'
+    '    return _schema_steps(tenant_connection, "", (), False, "")\n',
+    '\nconnect_alias = sqlite3.connect\n',
+    '\nfrom foreign import closing\n',
+    '\nobserve_statement.__code__ = foreign.__code__\n',
+    '\nobserve_schema_script.__defaults__ = (foreign,)\n',
+])
+def test_preparation_helper_and_factory_exposures_refuse(tail):
+    items = sources()
+    original = dict(items)[PREPARATION]
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment(mutate(items, PREPARATION, original, original + tail))
+
+
+@pytest.mark.parametrize('source', [
+    'from chiplog.verification.sqlite_preparation import _schema_steps\n',
+    'import chiplog.verification.sqlite_preparation as prep\n'
+    'def other(connection):\n    return prep._schema_steps(connection, "", (), False, "")\n',
+    'from chiplog.verification.sqlite_preparation import observe_statement as observe\n'
+    'def other(connection):\n'
+    '    return observe.__globals__["_schema_steps"](connection, "", (), False, "")\n',
+])
+def test_supplied_other_module_cannot_supply_tenant_preparation_connection(source):
+    with pytest.raises(UnknownPlanningChain):
+        build_planning_descriptor_fragment((*sources(),
+            ('src/chiplog/composition/other_preparation.py', source)))
 
 
 @pytest.mark.parametrize('old,new', [
