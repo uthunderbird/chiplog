@@ -1824,3 +1824,37 @@ They show constructors/runtime admission and broker/read-ledger writes, plus
 recreation of an absent lock. Handoff54 preserves the missing mandatory
 authenticated CURRENT/tuple/initializer/content/recovery implementation. Cadence
 retro `de5ecfe` records these evidence boundaries; all remaining R14 stays OPEN.
+
+### Repaired prior-Turn projection checkpoint and fresh rerun
+
+Checkpoint `4acbc4f` preserves the recovered-OPEN projection, actual retained
+fixture and native rendered-envelope assertion. The checkpoint command selected
+`tests/composition/test_r14_resolved_open_prior_context.py` plus the three owner
+files `test_execution_next_turn_preparation.py`, `test_resumed_next_turn_preparation.py`
+and `test_original_continuation_witness.py`:88 passed in26.25s. The new13 cases
+exercise the real retained parser/projection, not current live admission.
+
+The complete native selector is now running once at frozen `4acbc4f` in
+`/private/tmp/chiplog-r14-cross-seal-4acbc4f`, exec handle55741. The before-input
+manifest covers1368 tracked source/test/config/harness files:
+`/private/tmp/r14-fresh-cross-seal-4acbc4f-inputs.json`. Import path was verified
+inside that worktree; collection found exactly one test. Command:
+
+```sh
+PYTEST_ADDOPTS='' PYTEST_PLUGINS='' PYTHONPATH=/private/tmp/chiplog-r14-cross-seal-4acbc4f/src /Users/thunderbird/Projects/chiplog/.venv/bin/python -m pytest -p no:timeout -q tests/composition/test_r14_native_selected_accounting_source.py::test_accepted_open_recovery_reopens_across_seals_and_rejects_each_foreign_locator --basetemp=/private/tmp/r14-fresh-cross-seal-4acbc4f
+```
+
+Stdout is `/private/tmp/r14-fresh-cross-seal-4acbc4f.out`; receipt is
+`/private/tmp/r14-fresh-cross-seal-4acbc4f-receipt.md`. Production clocks/TTLs are
+unchanged, timeout plugin disabled. Frozen inputs must remain unchanged until
+authoritative terminal, then all hashes must be rechecked. Observation expiry
+does not authorize restart. No terminal verdict yet; V1 genesis still excludes
+version-admission evidence even if this lifecycle passes.
+
+At `4acbc4f`, `.venv/bin/pytest -q tests/composition/test_r14_startup_version_admission.py --tb=short`
+reconfirmed3 failures in2.31s (stdout `/private/tmp/r14-startup-version-admission-4acbc4f-red.out`).
+Authentic V1 startup entered journal/materializer/supervisor and modified broker
+and read-ledger SQL instead of typed refusal; missing-lock startup also recreated
+the lock; fresh public startup yielded without INITIALIZE. These are executable
+admission failures, not merely missing shape coverage. The owned RED file remains
+outside the projection checkpoint and has no xfail or weakened expectation.
