@@ -18,6 +18,10 @@ from chiplog.verification.planning_descriptor_chain import (
     build_planning_descriptor_fragment,
     verify_planning_descriptor_fragment,
 )
+from chiplog.verification.protected_anchor_chain import (
+    ProtectedAnchorChain,
+    build_protected_anchor_chains,
+)
 
 
 class DescriptorClosureRefused(ValueError):
@@ -76,6 +80,7 @@ class AuthorityDescriptorInspection:
     fragment: PlanningDescriptorFragment
     calls: tuple[CallDisposition, ...]
     mounts: tuple[AssemblyCall, ...]
+    protected_anchor_chains: tuple[ProtectedAnchorChain, ...]
 
     def require_exact_accounting(self) -> None:
         # Recompute from bytes: mutually forged fragment and rows are not truth.
@@ -148,6 +153,7 @@ def _assembly_calls(fragment: PlanningDescriptorFragment) -> tuple[AssemblyCall,
 
 def _classifications(
     fragment: PlanningDescriptorFragment, mounts: tuple[AssemblyCall, ...],
+    anchors: tuple[ProtectedAnchorChain, ...],
 ) -> tuple[CallDisposition, ...]:
     local: dict[CorpusNode, tuple[str, str | None, list[str]]] = {}
 
@@ -184,6 +190,21 @@ def _classifications(
     for mount in mounts:
         if mount.edge == fragment.assembly:
             add(mount.site, "BASE_ASSEMBLY", None, "base runtime/manifest forwarding only")
+    for preparation in fragment.runtime_preparation_chains:
+        add(preparation.sink, "RUNTIME_PREPARATION_SQL", preparation.database_domain,
+            "selected planning caller: " + preparation.caller.expression)
+    for anchor in anchors:
+        for stage in anchor.stages:
+            # Shared consumer occurrences retain their existing narrower role.
+            if stage.site in local:
+                role, domain, _ = local[stage.site]
+                add(stage.site, role, domain, "protected anchor chain: " + stage.role)
+            else:
+                role = ("PLANNING_EXECUTION_FORWARD" if stage.role == "PLANNING_READ"
+                        else stage.role)
+                add(stage.site, role, stage.domain, "selected base runtime only")
+        for site in anchor.publication_sql:
+            add(site, "STATE_PUBLICATION_SQL", "broker_read_ledger", "protected anchor chain")
     result = []
     for site in fragment.corpus.nodes:
         if site.kind not in _CALL_KINDS:
@@ -204,8 +225,9 @@ def _from_sources(sources: tuple[tuple[str, str], ...]) -> AuthorityDescriptorIn
         fragment = build_planning_descriptor_fragment(sources)
         verify_planning_descriptor_fragment(fragment, _BASE_READS)
         mounts = _assembly_calls(fragment)
-        calls = _classifications(fragment, mounts)
-        return AuthorityDescriptorInspection(sources, fragment, calls, mounts)
+        anchors = build_protected_anchor_chains(sources, fragment)
+        calls = _classifications(fragment, mounts, anchors)
+        return AuthorityDescriptorInspection(sources, fragment, calls, mounts, anchors)
     except UnknownPlanningChain as error:
         raise DescriptorClosureRefused("local descriptor proof refused: " + str(error)) from error
 

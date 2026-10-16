@@ -1034,3 +1034,81 @@ in 122.07s. Root independently reran the platform module and three new runtime
 forwarding/raw-operation selectors: 54 passed in 1.97s. Scoped Ruff and runtime/
 test mypy pass. Same-command verifier mypy comparison reduced HEAD's 344 messages
 to 97, with zero new normalized diagnostics; this is not a type-clean full gate.
+
+## Protected anchor provenance: observed gaps (2026-10-16)
+
+The next required source chain is the selected protected commitment anchor through
+runtime reconciliation and persisted BrokerReadState to reader snapshot/release.
+Cold route `/private/tmp/r14-post-runtime-guard-admission-next-step.md` and cold
+design review `/private/tmp/r14-protected-anchor-authority-chain-plan-review.md`
+retain global admission refusal. Neither an anchor occurrence label nor the
+existing ledger consumer rows prove the missing reconcile_generation producer.
+Absent-anchor creation is a separate existing bootstrap branch, not evidence of
+an authenticated persisted root.
+
+Whole-tree REDs before the new anchor verifier accepted a foreign descriptor
+consumer and the actual anchor constructor's internal suffix substitution to
+`.reads.sqlite3`. The latter produced `DID NOT RAISE DescriptorClosureRefused`
+in 27.15s (`/private/tmp/r14-protected-anchor-domain-red.log`). By contrast, a
+changed database argument at the canonical opener already refused correctly;
+an overly specific diagnostic regex was corrected and is not a new mechanism gap.
+
+Root's review of the provisional verifier then produced real additional REDs:
+`raise ... from foreign(descriptor)` and a foreign journal consumer in the
+reconciliation mismatch branch were accepted. The three-probe run returned
+2 failed/1 passed in 52.69s
+(`/private/tmp/r14-protected-anchor-failure-escape-red.log`); the reader's foreign
+ledger exception was already refused by the existing ledger receiver-use proof.
+Repairs must cover evaluated exception causes, all selected carrier uses, visible
+class dispatch hooks, authentication guards and the exact state producer/consumer
+joins. Final implementation/GREEN evidence is pending; this section records the
+observed gaps rather than declaring the chain or full R14 closed.
+
+The subsequent whole-tree forwarding controls also returned real RED:
+adding `AuthorityCommitmentJournal.__getattribute__` and substituting
+`BrokerReadLedger.current_state`'s returned state with `foreign()` were accepted
+(2 failed in 43.80s; `/private/tmp/r14-protected-anchor-forwarding-red.log`).
+Reproduction selectors, run with `.venv/bin/python -m pytest -q -p no:timeout`
+and `--tb=short`, are respectively
+`tests/verification/test_authority_descriptor_closure.py::test_anchor_selected_file_domain_substitution_refuses`,
+`tests/verification/test_authority_descriptor_closure.py::test_selected_anchor_carriers_cannot_escape_in_failure_paths`,
+and `tests/verification/test_authority_descriptor_closure.py::test_selected_anchor_object_model_and_persisted_state_forwarding_refuse`.
+These distinguish visible object-model and persisted-state semantics from merely
+finding the earlier SQL occurrence. The results below supersede that pending
+implementation status; global R14 admission remains OPEN.
+
+The finite selected chain now reconstructs descriptor/name identity and HMAC/
+tenant checks, exact reconciliation state publication/decode/return, snapshot
+comparison and release/dequeue forwarding. It joins the existing ledger/scanner
+proofs and all three runtime preparation callers. Extra allowed journal commits
+in the rejection branch also produced genuine RED (1 failed in 0.88s) before
+exact receiver-call multiplicity enforcement. Final self-review separated added
+call/ordinal refusal from semantic control refusal: no-new-call early return and
+executable documentary-expression probes gave 2 failed/2 passed in 3.30s, then
+were repaired with exact permitted Return nodes and a literal-string docstring.
+
+Initial affected command `uv run pytest -q
+tests/verification/test_authority_descriptor_closure.py
+tests/verification/test_planning_descriptor_chain.py` returned 242 passed/1 failed
+in 294.88s. The original consumer caught a role collision between an outer reader
+forward and the three SQL sites. Its assertion was retained; the outer call now
+has PLANNING_EXECUTION_FORWARD. The repair selection passed 4 tests in 28.12s.
+Final closure selection (`uv run pytest -q
+tests/verification/test_authority_descriptor_closure.py -k
+'base_read_authority_graph_contains_protected_anchor or actual_tree_joins_every_call or anchor_security_guards or anchor_chain_cannot or wrong_receiver_and_new_read'`)
+passed 34 in 58.67s; the subsequent typed forgery-test repair passed its 7 cases
+in 12.81s. Root independently ran `.venv/bin/python -m pytest -q -p no:timeout`
+with selectors in that module `::test_base_read_authority_graph_contains_protected_anchor_to_release_chain`,
+`::test_anchor_security_guards_and_exact_state_edges_refuse` and
+`::test_anchor_chain_cannot_certify_forged_evidence`: 31 passed in 60.79s.
+Scoped Ruff and diff checks pass. New verifier/closure source mypy is clean;
+same-command normalized comparisons show no new diagnostics: the existing two
+verifiers reduce 97 to 85, and the source/test selection reduces HEAD-test
+baseline 24 to 11 old test definition errors. Full typing is not claimed.
+
+The chain is conditional source provenance, not registered admission. Existing
+absent-anchor bootstrap, commit durability, registry latestness, ledger identity,
+capture/trust/model helper semantics, other assemblies/import effects and external
+replacement retain their explicit limits. Global require_closed remains an
+unconditional refusal. Full commands, RED/GREEN distinction and terminal logs:
+`/private/tmp/r14-protected-anchor-authority-chain-implementation.md`.

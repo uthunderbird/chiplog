@@ -148,7 +148,7 @@ def _signature(method: ast.FunctionDef, names: tuple[str, ...]) -> None:
              'unsupported positional chain signature: ' + method.name)
 
 
-def _field(tree, target, value, constructor):
+def _field(tree: ast.AST, target: str, value: str, constructor: ast.FunctionDef) -> None:
     uses = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute)
             and _text(n) == target and isinstance(n.ctx, (ast.Store, ast.Del))]
     write = _one(uses, 'field is missing or rebound: ' + target)
@@ -158,7 +158,7 @@ def _field(tree, target, value, constructor):
     _require(_text(declaration.value) == value, 'foreign field producer: ' + target)
 
 
-def _imports(tree, module, names):
+def _imports(tree: ast.Module, module: str, names: dict[str, str]) -> None:
     for name, origin in names.items():
         _require(_bindings(tree, module, name) == origin, 'foreign binding: ' + name)
 
