@@ -302,3 +302,26 @@ tests/composition/test_r14_startup_version_admission.py --tb=short` confirmed
 **3 failed in 2.66s**: authentic V1 was still admitted with sidecar writes,
 missing-lock input still recreated its lock, and fresh opener still yielded
 without INITIALIZE. Those are the implementation targets, not accepted behavior.
+
+## Physical schema observer gap closed (constructor scope only)
+
+The existing materializer schema manifest omitted view/trigger objects and used
+`LIKE 'sqlite_%'`: its underscore also excluded user objects named sqliteXhidden.
+Six real closed-store reopen cases now cover ordinary and lookalike names for
+index/view/trigger. Command `.venv/bin/pytest -q
+tests/platform/test_sqlite_substrate.py::test_unregistered_schema_objects_reject_existing_store_without_repair --tb=short`
+was RED: **5 failed, 1 passed in 0.26s**. The observer now includes all four
+SQLite schema object kinds and excludes only the literal internal `sqlite_`
+prefix with GLOB. All six reject while preserving original main-file bytes.
+Expected fresh schema/DDL and the V1 AMR encoding are unchanged.
+
+An existing substrate test helper also passed its fault value positionally into
+the later-added expected_preimage_commitment slot. The ordinary atomic-publication
+test was RED (**1 failed in 0.15s**, unexpected STALE); passing `fault=fault`
+restores the intended fault/replay tests. Command `.venv/bin/pytest -q
+tests/platform/test_sqlite_substrate.py
+tests/platform/test_authority_checkpoint_admission.py --tb=short` passed
+**36 tests in 0.69s**. After a context-manager lint correction, the six new cases
+passed again (**6 passed in 0.09s**); Ruff and diff checks passed.
+This strengthens existing constructor admission; it does not move that check
+before constructors, register a tuple/read graph or prove source-SHM invariance.

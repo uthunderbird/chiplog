@@ -46,7 +46,7 @@ def command(
         0,
         0,
         records or (record("record-1", b"one"), record("record-2", b"two")),
-        fault,  # type: ignore[arg-type]
+        fault=fault,  # type: ignore[arg-type]
     )
 
 
@@ -154,6 +154,37 @@ def test_weakened_primary_key_and_not_null_schema_rejects_startup(tmp_path: Path
     connection.close()
     with pytest.raises(StoreAdmissionError, match="canonical schema mismatch"):
         SQLiteMaterializer(path, record_contracts={})
+
+
+@pytest.mark.parametrize("kind", ("index", "view", "trigger"))
+@pytest.mark.parametrize("name", ("unregistered_object", "sqliteXhidden"))
+def test_unregistered_schema_objects_reject_existing_store_without_repair(
+    tmp_path: Path, kind: str, name: str
+) -> None:
+    path = tmp_path / "store.sqlite3"
+    with SQLiteMaterializer(path, record_contracts={}):
+        pass
+    statements = {
+        "index": f"CREATE INDEX {name} ON records(owner)",
+        "view": f"CREATE VIEW {name} AS SELECT canonical_bytes FROM records",
+        "trigger": (
+            f"CREATE TRIGGER {name} AFTER INSERT ON tenant_heads "
+            "BEGIN UPDATE store_metadata SET store_version = 99; END"
+        ),
+    }
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(statements[kind])
+        connection.commit()
+    finally:
+        connection.close()
+    before = path.read_bytes()
+    with (
+        pytest.raises(StoreAdmissionError, match="canonical schema mismatch"),
+        SQLiteMaterializer(path, record_contracts={}),
+    ):
+        pass
+    assert path.read_bytes() == before
 
 
 def test_forged_writer_token_cannot_mutate(tmp_path: Path) -> None:

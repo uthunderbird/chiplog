@@ -372,7 +372,7 @@ class _WriterToken:
 def _schema_manifest(connection: sqlite3.Connection) -> tuple[tuple[object, ...], ...]:
     rows = connection.execute(
         """SELECT type, name, tbl_name, sql FROM sqlite_master
-           WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%'
+           WHERE type IN ('table', 'index', 'view', 'trigger') AND name NOT GLOB 'sqlite_*'
            ORDER BY type, name"""
     ).fetchall()
     return tuple(tuple(row) for row in rows)
