@@ -401,6 +401,11 @@ in [R14-FUNCTIONAL-SCOPE.md](R14-FUNCTIONAL-SCOPE.md). Its backlog supersedes th
 exhaustive proof/mutation/registry requirements below as R14 release blockers;
 the functional recovery features remain required.
 
+**Functional status, 2026-10-17: CLOSED** at integrated runtime `b514e8a`.
+See `R14-VERIFICATION-STATUS.md` for the retained requirement/evidence audit,
+combined checkpoint and cold review. This does not close R15–R17, deferred
+assurance, full-repository integration gates or deployment eligibility.
+
 **Depends on:** R3, R7, R13. Work on R15–R17 begins only after R14 is complete and verified.
 
 Implement closed recovery-frontier membership, immutable suspension baselines, `TERMINAL | READ_ONLY_RETRY_PENDING`, sealed fan-out, acceptance branches, terminal accounting versus continuation-ready joins, recovered outcomes, successor classification/publication, original-stream obligations and post-terminal recovery work.

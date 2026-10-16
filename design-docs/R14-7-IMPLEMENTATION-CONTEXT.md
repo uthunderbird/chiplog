@@ -9,7 +9,13 @@ current authorization and pending-accounting HOLD. Do not fabricate V1 proof
 objects or require a parallel SQLite/R7 V3 mount. Source-backed implementation
 plan: `/private/tmp/r14-readonly-minimal-plan.md`.
 
-Status: **native PostgreSQL runtime partially mounted; R14.7 remains OPEN**.
+Current status: **R14.7 functional acceptance CLOSED** in integrated runtime
+`b514e8a`. The combined checkpoint passed 235 tests in 63.75 s; successful and
+max-3-exhausted successor lineages reach actual CompleteAcceptance/reopen.
+Current carried-RIVAL admission and pending HOLD checks passed. Exact commands,
+scope and retained backlog are in `R14-VERIFICATION-STATUS.md`.
+
+Earlier mounting evidence:
 Checkpoint `b1470f5` in the separate `feat/postgres-per-user` worktree mounts
 actual V3 history reads, atomic accepted attempts, a max-3 counter across reopen,
 stable snapshots, definite retryable PostgreSQL read failures and pending

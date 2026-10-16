@@ -8,7 +8,12 @@ R14.6 is now readable per-seal accounting with ordinary reopen/replay/continuati
 Full physical-prefix reconstruction, historical owner re-derivation, global
 closure and exhaustive mutation/interleaving matrices are deferred there.
 
-Status: OPEN. Planning snapshot: `3715201` (2026-10-13). This document plans only
+Current functional status: **CLOSED**, integrated runtime `b514e8a`, verified in
+`R14-VERIFICATION-STATUS.md`. R14.6–R14.13 satisfy the user-approved functional
+scope; deferred assurance remains backlog, not implemented. R15–R17 are not
+closed by this result.
+
+Historical status: OPEN. Planning snapshot: `3715201` (2026-10-13). This document plans only
 remaining R14 work. It does not change normative requirements, discharge a ledger
 row, authorize R15–R17 implementation, or choose a retry budget.
 

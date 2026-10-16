@@ -8,8 +8,13 @@ mechanisms. It changes neither stored record bytes nor deployment eligibility.
 
 ## Current acceptance
 
-R14 remains OPEN until its functional flows pass. Historical green checks retain
-their original meaning; deferred assurance is not reported as implemented.
+Functional R14 is CLOSED at integrated runtime commit `b514e8a` (2026-10-17).
+The retained scenarios passed on the combined source; the main workspace was
+fast-forwarded to that commit and its native public-client smoke passed.
+Requirement-by-requirement evidence is in `R14-VERIFICATION-STATUS.md`.
+Historical green checks retain their original meaning; deferred assurance is
+not reported as implemented. This does not declare the whole repository ready
+to merge into main/master or grant deployment eligibility.
 
 | Slice | Functional completion criterion |
 |---|---|
@@ -77,6 +82,7 @@ named pressure is present; these items do not hold intermediate R14 work.
 | B-R14-A05 | Independent A54 N/N+1 matrices; exhaustive missing/extra/duplicate/reordered/orphan histories, including repinned materialization attacks. | Demonstrated size/corruption pressure; retain normal bounds and batch checks now. |
 | B-R14-A06 | Simplifying runtime EXPLAIN/exact-read-graph/SQL-fingerprint proof. Do not issue false V2 attestations while removing it. | Next scoped performance cut after the two reader cuts. |
 | B-R14-A07 | Exhaustive writer applicability inventory, lifecycle/rollover matrices and final OS-owner termination proof (handoff 69). | Scheduler/takeover integration or an observed surviving-owner failure. |
+| B-R14-A08 | Separate durable terminal-recovery-fault recipe and exhaustive fault classification (handoff 23). Normal unresolved work remains HOLD and explicit abort is available. | A concrete client workflow needs a durable terminal fault distinct from HOLD/abort. |
 
 Investigation: cold full Swarm artifact
 `/private/tmp/r14-simplification-swarm.md`; source-backed recommendations, no

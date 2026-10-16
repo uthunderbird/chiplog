@@ -6,6 +6,16 @@ the full-assurance R14 completion demands below. Use
 Old evidence remains historical; deferred assurance is neither completed nor a
 functional R14 blocker. R15–R17 scope is not changed by this update.
 
+**R14 functional completion, 2026-10-17:** integrated runtime `b514e8a` passes
+the retained R14.6–R14.13 client criteria. R14.1 maps to call accounting/branches
+(R14.6), R14.2 to current reduction consumers (R14.8), R14.3 to durable retry and
+resume/successor (R14.7/9), R14.4 to current writer and post-terminal original
+work (R14.10/12), and R14.5 to model custody/replacement (R14.11). The combined
+235-test checkpoint, cold reviews and main-workspace smoke are recorded in
+`R14-VERIFICATION-STATUS.md`. R14 is CLOSED under the explicit user scope;
+the ledger as a whole remains OPEN for R15–R17. Historical full-assurance rows
+below retain their old scope and do not assert those deferred proofs passed.
+
 Status: OPEN. Baseline `5b38362120c1223b019ea9ec3b099e017b455364`.
 The user requested full completion after the bounded continuations were published.
 The subsequent scope is every R14–R17 requirement in IMPLEMENTATION-ROADMAP.md,

@@ -2,13 +2,99 @@
 
 **Acceptance update, 2026-10-17:** use
 [R14 functional scope](R14-FUNCTIONAL-SCOPE.md). Earlier global assurance and
-exhaustive matrix gaps below are deferred where listed in its backlog; observed
-functional failures remain open. No new runtime pass is claimed by this update.
+exhaustive matrix gaps below are deferred where listed in its backlog.
+Historical observations retain their original date and scope; the final audit
+below supersedes their old OPEN status only where completion is demonstrated.
 
-Status: OPEN, 2026-10-17. Acceptance authority:
+Status: **functional R14 CLOSED**, 2026-10-17. Acceptance authority:
 `R14-FUNCTIONAL-SCOPE.md`, with retained clauses from
 `R14-REMAINING-ROADMAP.md` and `R14-R17-COMPLETION.md`.
 This is an evidence ledger, not a replacement acceptance boundary.
+
+## Final integrated acceptance audit
+
+Verified runtime: `b514e8a591b3f62661a351049912d6072b9686f1`. The main workspace
+branch `feat/r14-r17-integrated` was fast-forwarded to this exact commit after
+both old SQLite processes became terminal. Main input files were checked against
+the saved seven-file SHA manifest before moving them to stash
+`125e91ee9d694c710298780c3318373a562316b0`; their contents are retained in
+checkpoint `b4f7a96` and the combined tree. Other untracked files were preserved.
+`git diff --exit-code feat/r14-postgres-integration -- src tests pyproject.toml uv.lock`
+returned 0. The original `feat/postgres-per-user` branch remains at `520dedf`.
+
+Root's integrated checkpoint, session 68264, exited 0: **235 passed in 63.75 s**,
+no skips. It verified the exact staged source plus R8 structure/import boundaries.
+Its pytest selection is reproduced below (the hook runs `uv run pytest -q` with
+this selection and `PYTEST_ADDOPTS='-p no:timeout'`):
+
+```sh
+CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' \
+PYTEST_ADDOPTS='-p no:timeout' uv run pytest -q \
+  tests/platform/test_postgres.py tests/platform/test_sqlite_chat_import.py \
+  tests/composition/test_postgres_execution.py tests/composition/test_postgres_planning.py \
+  tests/composition/test_postgres_readonly.py tests/composition/test_postgres_readonly_successor.py \
+  tests/composition/test_postgres_readonly_carried_work.py tests/composition/test_postgres_readonly_completion.py \
+  tests/composition/test_postgres_continuation.py tests/composition/test_postgres_effects.py \
+  tests/composition/test_postgres_completion.py tests/composition/test_postgres_completion_frontier.py \
+  tests/composition/test_postgres_model_recovery.py tests/composition/test_postgres_model_replacement.py \
+  tests/composition/test_postgres_run_recovery.py tests/composition/test_postgres_two_seals.py \
+  tests/composition/test_postgres_client.py tests/composition/test_postgres_call_branch_competition.py \
+  tests/composition/test_codex_chat.py tests/capabilities/agent_loop/test_readonly_runtime.py \
+  tests/cli/test_corrupt_store.py tests/cli/test_r8_default_hold.py \
+  tests/composition/test_r14_historical_suffix.py tests/verification/test_r8_surface.py \
+  tests/verification/test_postgres_import_boundary.py
+```
+
+The dedicated PostgreSQL 18 fixture provisions UUID-owned user databases on one
+test server and drops only those databases. These are actual PG executions,
+not skipped fixture collections. Tests observe persisted records/batches,
+reopened selected state, recorded model requests and durable hermetic provider
+transfers; no real external exposure or deployment eligibility is asserted.
+
+| Criterion | Integrated observable and executed witness |
+|---|---|
+| R14.6 | Mixed accepted/cancelled members, two actual accepted effect seals, current selected results in later model input, reopen and no-repeat replay: `test_postgres_two_seals.py`. Both actual adoption/cancellation orders: `test_postgres_call_branch_competition.py`. Pending selected read-only members hold continuation: `test_postgres_continuation.py`. |
+| R14.7 | Durable max-3 attempts, same selected history/query, restart and successor counter continuity, real PG transient read failure, successful/exhausted successor reaching CompleteAcceptance: `test_postgres_readonly.py`, `test_postgres_readonly_successor.py`, `test_postgres_continuation.py`, `test_postgres_readonly_completion.py`. |
+| R14.8 | Resolver closure plus current reduction; stale/late RIVAL holds ordinary continuation, CompleteAcceptance and delivery claim, including older seals: `test_postgres_effects.py`, `test_postgres_completion.py`. Unrelated Run no longer invalidates accepted delivery: `test_postgres_completion_frontier.py`. |
+| R14.9 | Actual pending work drives resume/successor; nonempty original obligations/no-retry claims retained, shared read-only lineage preserved, unresolved carried work prevents a new attempt: `test_postgres_run_recovery.py`, `test_postgres_readonly_successor.py`, `test_postgres_readonly_carried_work.py`. |
+| R14.10 | Current worker publishes; stale worker/wrong peer/rotated credential and expired or revoked first-send authority do not grant publication/SEND: `test_postgres_execution.py`, `test_postgres_model_replacement.py`, `test_postgres_effects.py`, `test_postgres_completion.py`. |
+| R14.11 | Durable emission-before-transport, retained actual Codex response recovered without resend, unknown response HOLD, atomic NEVER_STARTED fence/replacement in the same attempt lineage, STARTED/budget-zero rejection: `test_postgres_model_recovery.py`, `test_postgres_model_replacement.py`. |
+| R14.12 | Original effect recovery after abort closes its original stream without Run resurrection or another SEND; late actual model facts survive takeover/abort: `test_postgres_run_recovery.py`, `test_postgres_model_recovery.py`. |
+| R14.13 | The entire retained native selection above passed on combined source. Actual public PG factory disables SQLite I/O, completes and reopens; two consequential seals converge to CompleteAcceptance: `test_postgres_client.py`, `test_postgres_two_seals.py`. |
+
+The original R14.1–R14.5 map respectively to R14.6, R14.8, R14.7/9,
+R14.10/12 and R14.11. All retained functional requirements are covered above;
+no row is discharged by a proposed DTO, source existence or test count alone.
+Per-user DB identity/isolation, atomic rollback/CAS and explicit lossless chat
+import are additionally exercised by the platform/import modules in this set.
+
+Cold full native Swarm review found and reproduced the unrelated-frontier P1;
+its original RED, narrow repair and independent selected-RIVAL replay are retained
+in `/private/tmp/r14-native-whole-diff-rt.md`. Final reviewed native pin `520dedf`
+has zero remaining ratified P0/P1. The separate cold integration-delta Swarm
+review pinned `b514e8a`, inspected the three legacy reader changes and unchanged
+native/shared-adapter bytes, and independently ran **82 tests in 2.68 s**:
+`CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' .venv/bin/pytest -q -p no:timeout tests/composition/test_postgres_client.py tests/composition/test_postgres_call_branch_competition.py tests/composition/test_postgres_model_recovery.py::test_actual_codex_response_custody_survives_lost_capture tests/composition/test_postgres_model_replacement.py::test_started_transport_forbids_replacement_and_retained_response_recovers tests/composition/test_r14_historical_suffix.py`.
+It found zero confirmed integration P0/P1. Root read its full protocol/mechanism
+audit at `/private/tmp/r14-integration-delta-rt.md`; same-model independence
+limitations remain, and neither report certifies the whole repository.
+
+After fast-forward, root ran `uv sync --dev --inexact` in the main workspace,
+retaining existing debugger extras. Actual module paths resolved under
+`/Users/thunderbird/Projects/chiplog/src`. Main-workspace smoke command:
+`CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' .venv/bin/pytest -q -p no:timeout tests/composition/test_postgres_client.py tests/composition/test_postgres_call_branch_competition.py tests/composition/test_postgres_completion_frontier.py`:
+**4 passed in 4.21 s**, exit 0. Focused strict native typing also passed.
+
+Completion boundaries: deferred assurance in `R14-FUNCTIONAL-SCOPE.md` is still
+backlog; accepted read interruption without an outcome remains explicit HOLD.
+Old library SQLite writers and unsupported planning/R14 authority-bundle import
+remain the documented compatibility boundary, with sources retained. Full
+repository pytest, strict whole-catalog/canonical-profile certification and
+whole-tree mypy are not claimed green; known scheduler/typing baseline issues
+remain recorded for main/master integration. R15–R17 and deployment eligibility
+are not completed by this functional R14 result.
+
+## Chronological preparation evidence
 
 Integration preparation: branch `feat/r14-postgres-integration` starts at
 `7e104b6` and checkpoint `b4f7a96` preserves the seven root-authored input files,
@@ -36,19 +122,20 @@ This is a sequential branch-selection witness, not a concurrent stress proof.
 
 ## Functional roadmap snapshot, 2026-10-17
 
-| Slice | Current evidence and remaining functional work |
+| Slice | Final functional status at `b514e8a` |
 |---|---|
-| R14.6 | Ordinary two-seal/reopen/replay and corrected OPEN closure/resume/readiness/next-Turn scenario passed on SQLite. Native read-only completion passed; integrated acceptance remains open. |
-| R14.7 | PostgreSQL max-3, reopen, pending HOLD, successor retry and terminal-lineage completion passed at `6a64a06`. Integrated acceptance remains open. |
-| R14.8 | Native pending read-only HOLD and all-seal current effects reduction/late-rival HOLD passed. PostgreSQL CompleteAcceptance/delivery cases passed; integrated acceptance remains open. |
-| R14.9 | Read-only lineage inheritance, actual nonempty effect obligation/no-retry lifecycle, and the repaired late-RIVAL new-attempt HOLD passed on PostgreSQL. Integrated acceptance remains open. |
-| R14.10 | Native stale-worker, takeover-before-model-SEND, wrong-peer replay and current actor/gate checks on effects/model recovery passed. Integrated acceptance remains open. |
-| R14.11 | Durable EMITTED, retained response recovery, late response after takeover/abort and fenced replacement passed on PostgreSQL, including explicit zero replacement budget rejection. Integrated acceptance remains open. |
-| R14.12 | Native original-stream recovery after abort passed on PostgreSQL without Run resurrection or repeated SEND. Integrated acceptance remains open. |
-| R14.13 | Full retained functional convergence and final integration checks remain open. |
+| R14.6 | CLOSED: selected mixed/two-seal accounting, real branch competition, reopen/replay and pending HOLD. |
+| R14.7 | CLOSED: max-3 lineage across reopen/resume/successor and terminal completion. |
+| R14.8 | CLOSED: both continuation consumers use current reductions; rival HOLD and unrelated-Run isolation verified. |
+| R14.9 | CLOSED: actual pending frontier and retained nonempty obligation/retry references. |
+| R14.10 | CLOSED: current-writer positive and ordinary stale/unauthorized negative paths. |
+| R14.11 | CLOSED: response custody/recovery and independently fenced, budgeted replacement without blind resend. |
+| R14.12 | CLOSED: original-stream post-terminal work without repeated original SEND. |
+| R14.13 | CLOSED: integrated retained selection and main-workspace smoke passed. |
 
-Commands and evidence boundaries for these partial results follow below. No row
-in this snapshot declares the entire slice or R14 complete.
+The final audit above supplies current evidence and scope. Earlier partial
+results below preserve their original meaning and are not additional release
+requirements or claims of deferred assurance.
 
 ### Independent PostgreSQL convergence check at `e2f6f96`
 
