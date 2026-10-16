@@ -4,11 +4,13 @@ from pathlib import Path
 
 import pytest
 
+from chiplog.verification.authority_read_graph import _prepare_reads
 from chiplog.verification.planning_descriptor_chain import (
     UnknownPlanningChain,
     build_planning_descriptor_fragment,
     verify_planning_descriptor_fragment,
 )
+from chiplog.verification.selected_engine_contracts import EXPECTED_SQL, schema_contract
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = 'src/chiplog/composition/r7_planning.py'
@@ -65,19 +67,25 @@ def test_actual_planning_reader_chain_reaches_descriptor_fragment():
     assert fragment.residual_obligations
 
 
-def test_preparation_paths_join_all_four_sinks_to_exact_private_factories():
+def test_preparation_paths_join_all_metadata_and_statement_sinks_to_private_factories():
     fragment = build_planning_descriptor_fragment(sources())
     chains = fragment.preparation_chains
-    assert len(chains) == 7
+    assert len(chains) == 17
     assert {(row.sink.qualname, row.sink.ordinal, row.role) for row in chains} == {
         ('_configure', 5, 'FOREIGN_KEYS_PROFILE'),
+        ('_configure', 8, 'FOREIGN_KEYS_OBSERVATION'),
+        ('_physical_schema', 7, 'PHYSICAL_CATALOG'),
+        ('_physical_schema', 16, 'PHYSICAL_COLUMNS'),
+        ('_physical_schema', 21, 'PHYSICAL_INDEXES'),
+        ('_physical_schema', 26, 'PHYSICAL_INDEX_COLUMNS'),
         ('_schema_steps', 18, 'SCHEMA_UNIT'),
         ('observe_statement', 17, 'EXPLAIN_FIRST'),
         ('observe_statement', 25, 'EXPLAIN_BINDING_RETRY'),
     }
-    assert {row.entrypoint for row in chains} == {'observe_statement', 'observe_schema_script'}
+    assert {row.entrypoint for row in chains} == {
+        'observe_statement', 'observe_schema_script', 'observe_registered_schema'}
     assert {row.factory.qualname for row in chains} == {
-        'observe_statement', 'observe_schema_script'}
+        'observe_statement', 'observe_schema_script', 'observe_registered_schema'}
     for row in chains:
         assert row.factory in fragment.corpus.nodes and row.sink in fragment.corpus.nodes
         assert row.domain == 'private_memory'
@@ -159,6 +167,12 @@ def test_scanner_connection_forwarding_and_eager_consumption_mutants_refuse(old,
 @pytest.mark.parametrize('scope,old,new', [
     ('observe_statement', '":memory:"', '"tenant.sqlite"'),
     ('observe_schema_script', '":memory:"', '"tenant.sqlite"'),
+    ('observe_registered_schema', '":memory:"', '"tenant.sqlite"'),
+    ('_configure', 'connection.execute("PRAGMA foreign_keys").fetchall()',
+     'connection.execute("PRAGMA user_version").fetchall()'),
+    ('_physical_schema',
+     'connection.execute(f\'PRAGMA main.index_xinfo("{name}")\').fetchall()',
+     'connection.execute(f\'PRAGMA main.table_info("{name}")\').fetchall()'),
     ('observe_statement', '        _configure(connection, foreign_keys)',
      '        leak = [connection]\n        _configure(connection, foreign_keys)'),
     ('observe_statement', '        _configure(connection, foreign_keys)',
@@ -194,6 +208,8 @@ def test_private_preparation_source_substitutions_refuse(scope, old, new):
 
 @pytest.mark.parametrize('tail', [
     '\nhelper_alias = _schema_steps\n',
+    '\nmetadata_alias = _physical_schema\n',
+    '\npolicy_alias = _metadata_authorizer\n',
     '\ndef other(tenant_connection):\n'
     '    return _schema_steps(tenant_connection, "", (), False, "")\n',
     '\nconnect_alias = sqlite3.connect\n',
@@ -247,9 +263,15 @@ def test_wrapper_added_downstream_read_requires_descriptor_edge():
         '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "',
         '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "\n'
         '            "AND EXISTS (SELECT 1 FROM deletion_fences WHERE frontier >= 0) "')
-    fragment = build_planning_descriptor_fragment(changed)
-    with pytest.raises(UnknownPlanningChain, match='descriptor'):
-        verify_planning_descriptor_fragment(fragment, expected())
+    sql = next(sql for name, ordinal, _, sql in EXPECTED_SQL
+               if name == 'BrokerAuthorityReader._execute_planning_read' and ordinal == 20)
+    sql = sql.replace('ORDER BY commit_sequence',
+        'AND EXISTS (SELECT 1 FROM deletion_fences WHERE frontier >= 0) '
+        'ORDER BY commit_sequence')
+    assert ('main', 'deletion_fences', 'frontier') in _prepare_reads(
+        schema_contract('tenant_main')[0], sql)
+    with pytest.raises(UnknownPlanningChain, match='independent contract'):
+        build_planning_descriptor_fragment(changed)
 
 
 def test_descriptor_missing_or_ghost_leaf_refuses():

@@ -850,3 +850,22 @@ private-connection provenance. No filename exemption removed them. Noncandidate
 calls/aliases remain in the full corpus; global require_closed still refuses.
 Complete receiver/domain/caller/assembly joins, approved graph/AMR/descriptor,
 CURRENT and public startup admission remain required.
+
+Selected engine/schema evidence (2026-10-16, uncommitted verification slice):
+`selected_engine_contracts.py` freezes reviewed, UNREGISTERED SQL/DDL/action and
+physical-schema expectations independently of candidate observations.
+`selected_engine_evidence.py` joins those comparisons into the existing planning
+fragment and global canonical rederivation: 35 selected engine records, tenant
+EMPTY schema and ledger EMPTY/EXISTING schemas. Physical metadata is observed on
+the same disposable connection that executes the schema units; actual foreign-key
+state is read back. Metadata/catalog actions remain distinct from business reads.
+
+The implementation agent ran the five selected engine/preparation/planning/global
+closure and V1 snapshot test files: 295 passed; two additional actual-FK and
+observer-recipe negative cases passed. These are bounded verification results,
+not runtime admission. Root inspected the integration and independently ran
+`.venv/bin/python -m pytest -q -p no:timeout tests/verification/test_selected_engine_evidence.py`:
+45 passed in 24.48s. Live schema authentication, admitted engine
+artifact, runtime default foreign keys, WAL/lock behavior, complete receiver/domain
+closure, approved descriptor/CURRENT and mandatory startup admission remain open;
+`require_closed()` still refuses.

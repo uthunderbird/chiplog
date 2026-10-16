@@ -16,6 +16,10 @@ class UnregisteredSqlAccess(ValueError):
 
 
 SqlAction = tuple[str, str | None, str | None, str | None, str | None]
+ColumnInfo = tuple[int, str, str, int, str | None, int]
+IndexInfo = tuple[int, str, int, str, int]
+IndexColumnInfo = tuple[int, int, str | None, int, str, int]
+PhysicalCatalogRow = tuple[str, str, str, str | None]
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,22 @@ class SqlPreparation:
     foreign_keys: bool
     initial_schema_sha256: str
     sqlite_version: str
+
+
+@dataclass(frozen=True)
+class PhysicalSchemaObservation:
+    """Disposable physical census, never an authenticated live schema."""
+
+    schema_sha256: str
+    initial_schema_sha256: str
+    catalog: tuple[PhysicalCatalogRow, ...]
+    columns: tuple[tuple[str, tuple[ColumnInfo, ...]], ...]
+    indexes: tuple[tuple[str, tuple[IndexInfo, ...]], ...]
+    index_columns: tuple[tuple[str, tuple[IndexColumnInfo, ...]], ...]
+    units: tuple[SqlPreparation, ...]
+    foreign_keys: bool
+    sqlite_version: str
+    recipe: str = "private-main-memory/cache=0/autocommit/sequential-create/metadata"
 
 
 _ACTIONS = {
@@ -97,7 +117,7 @@ def _authorizer(actions: set[SqlAction], objects: frozenset[tuple[str, str]], *,
             elif name == "SELECT":
                 allowed = True
             elif name == "FUNCTION":
-                allowed = second in {"count", "max", "min", "coalesce", "substr"}
+                allowed = second in {"count", "max", "min", "coalesce", "substr", "glob"}
             elif name == "TRANSACTION":
                 allowed = first == "BEGIN"
             elif name == "PRAGMA":
@@ -149,6 +169,67 @@ def _configure(connection, foreign_keys):
     if type(foreign_keys) is not bool:
         raise SqlPreparationRefused("foreign_keys must be an explicit bool")
     connection.execute("PRAGMA foreign_keys = " + ("ON" if foreign_keys else "OFF"))
+    actual = connection.execute("PRAGMA foreign_keys").fetchall()
+    if actual != [(int(foreign_keys),)]:
+        raise SqlPreparationRefused("configured foreign_keys state differs")
+
+
+def _metadata_authorizer(objects):
+    def authorize(code, first, second, database, source):
+        allowed = source is None and (
+            (code == sqlite3.SQLITE_SELECT and database is None)
+            or (code == sqlite3.SQLITE_READ and first == "sqlite_master"
+                and second in {"type", "name", "tbl_name", "sql"} and database == "main")
+            or (code == sqlite3.SQLITE_PRAGMA and database == "main" and (
+                (first in {"table_info", "index_list"} and ("table", second) in objects)
+                or (first == "index_xinfo" and ("index", second) in objects)))
+        )
+        return sqlite3.SQLITE_OK if allowed else sqlite3.SQLITE_DENY
+    return authorize
+
+
+def _physical_schema(connection, objects):
+    connection.set_authorizer(_metadata_authorizer(objects))
+    catalog = connection.execute(
+        "SELECT type, name, tbl_name, sql FROM main.sqlite_master ORDER BY type, name"
+    ).fetchall()
+    columns = []
+    indexes = []
+    index_columns = []
+    for kind, name in sorted(objects):
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name):
+            raise SqlPreparationRefused("metadata object name is not a fixed identifier")
+        if kind == "table":
+            rows = connection.execute(f'PRAGMA main.table_info("{name}")').fetchall()
+            columns.append((name, tuple(rows)))
+            rows = connection.execute(f'PRAGMA main.index_list("{name}")').fetchall()
+            indexes.append((name, tuple(rows)))
+        else:
+            rows = connection.execute(f'PRAGMA main.index_xinfo("{name}")').fetchall()
+            index_columns.append((name, tuple(rows)))
+    return tuple(catalog), tuple(columns), tuple(indexes), tuple(index_columns)
+
+
+def observe_registered_schema(
+    schema_sql: str, *, initial_schema_sql: str,
+    registered_objects: tuple[tuple[str, str], ...], foreign_keys: bool,
+) -> PhysicalSchemaObservation:
+    """Execute candidate CREATE units then inspect their result on the same memory DB."""
+    objects = _objects(registered_objects)
+    with closing(sqlite3.connect(":memory:", cached_statements=0,
+                                isolation_level=None)) as connection:
+        _configure(connection, foreign_keys)
+        _schema_steps(connection, initial_schema_sql, objects, foreign_keys, "")
+        units = _schema_steps(connection, schema_sql, objects, foreign_keys, initial_schema_sql)
+        try:
+            catalog, columns, indexes, index_columns = _physical_schema(connection, objects)
+        except sqlite3.Error as error:
+            raise SqlPreparationRefused("physical metadata observation refused") from error
+        return PhysicalSchemaObservation(
+            sha256(schema_sql.encode()).hexdigest(),
+            sha256(initial_schema_sql.encode()).hexdigest(),
+            catalog, columns, indexes, index_columns, units, foreign_keys, sqlite3.sqlite_version,
+        )
 
 
 def observe_statement(

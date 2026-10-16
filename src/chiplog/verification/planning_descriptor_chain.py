@@ -27,6 +27,11 @@ from chiplog.verification.canonical_database_routes import (
     verify_forwarded_database_roles,
 )
 from chiplog.verification.constant_sql_scripts import extract_constant_sql_scripts
+from chiplog.verification.selected_engine_evidence import (
+    SelectedDomainSchemaEvidence,
+    SelectedEngineEvidence,
+    build_selected_engine_evidence,
+)
 from chiplog.verification.sql_expression_inventory import (
     SqlExpressionInventory,
     SqlExpressionResolution,
@@ -92,6 +97,8 @@ class PlanningDescriptorFragment:
     preparation_chains: tuple[PreparationOriginChain, ...]
     scanner_chains: tuple[ReaderScannerChain, ...]
     ledger_chains: tuple[ReadLedgerOriginChain, ...]
+    domain_schemas: tuple[SelectedDomainSchemaEvidence, ...]
+    engine_evidence: tuple[SelectedEngineEvidence, ...]
     residual_obligations: tuple[str, ...]
 
     def require_closed(self) -> None:
@@ -316,14 +323,22 @@ def _preparation_origins(sources, corpus):
     parents = {child: parent for parent in ast.walk(tree)
                for child in ast.iter_child_nodes(parent)}
     scopes = {name: _scope(tree, name) for name in (
-        '_configure', '_schema_steps', 'observe_statement', 'observe_schema_script')}
+        '_configure', '_schema_steps', '_physical_schema', 'observe_statement',
+        'observe_schema_script', 'observe_registered_schema')}
+    metadata_policy = _scope(tree, '_metadata_authorizer')
+    _signature(metadata_policy, ('objects',))
+    _require([n for n in ast.walk(tree) if _binds(n, '_metadata_authorizer')]
+             == [metadata_policy], 'metadata authorizer binding changed')
     for name, scope in scopes.items():
         _require([n for n in ast.walk(tree) if _binds(n, name)] == [scope]
                  and not scope.decorator_list, 'preparation callable is rebound: ' + name)
     _signature(scopes['_configure'], ('connection', 'foreign_keys'))
     _signature(scopes['_schema_steps'],
                ('connection', 'script', 'objects', 'foreign_keys', 'initial_schema_sql'))
+    _signature(scopes['_physical_schema'], ('connection', 'objects'))
     for name, argument, keywords in (
+        ('observe_registered_schema', 'schema_sql',
+         ['initial_schema_sql', 'registered_objects', 'foreign_keys']),
         ('observe_statement', 'sql',
          ['registered_schema_sql', 'registered_objects', 'foreign_keys']),
         ('observe_schema_script', 'script',
@@ -366,7 +381,7 @@ def _preparation_origins(sources, corpus):
     factories = {}
     bindings = {}
     contexts = {}
-    for name in ('observe_statement', 'observe_schema_script'):
+    for name in ('observe_statement', 'observe_schema_script', 'observe_registered_schema'):
         scope = scopes[name]
         context = _one([n for n in scope.body if isinstance(n, ast.With)],
                        'expected direct private preparation context')
@@ -380,6 +395,16 @@ def _preparation_origins(sources, corpus):
         bindings[name] = item.optional_vars
         contexts[name] = item.context_expr
     forwards = {
+        'observe_registered_schema': (
+            exact_call(scopes['observe_registered_schema'], '_configure(connection, foreign_keys)'),
+            exact_call(scopes['observe_registered_schema'],
+                       "_schema_steps(connection, initial_schema_sql, objects, foreign_keys, '')"),
+            exact_call(scopes['observe_registered_schema'],
+                       '_schema_steps(connection, schema_sql, objects, foreign_keys, '
+                       'initial_schema_sql)'),
+            exact_call(scopes['observe_registered_schema'],
+                       '_physical_schema(connection, objects)'),
+        ),
         'observe_statement': (
             exact_call(scopes['observe_statement'], '_configure(connection, foreign_keys)'),
             exact_call(scopes['observe_statement'],
@@ -398,19 +423,30 @@ def _preparation_origins(sources, corpus):
     sinks = {
         '_configure': (("connection.execute('PRAGMA foreign_keys = ' + "
                         "('ON' if foreign_keys else 'OFF'))",
-                        'FOREIGN_KEYS_PROFILE'),),
+                        'FOREIGN_KEYS_PROFILE'),
+                       ("connection.execute('PRAGMA foreign_keys')", 'FOREIGN_KEYS_OBSERVATION')),
+        '_physical_schema': (
+            ("connection.execute('SELECT type, name, tbl_name, sql FROM main.sqlite_master "
+             "ORDER BY type, name')", 'PHYSICAL_CATALOG'),
+            ('connection.execute(f\'PRAGMA main.table_info("{name}")\')', 'PHYSICAL_COLUMNS'),
+            ('connection.execute(f\'PRAGMA main.index_list("{name}")\')', 'PHYSICAL_INDEXES'),
+            ('connection.execute(f\'PRAGMA main.index_xinfo("{name}")\')',
+             'PHYSICAL_INDEX_COLUMNS'),
+        ),
         '_schema_steps': (('connection.execute(sql)', 'SCHEMA_UNIT'),),
         'observe_statement': (("connection.execute('EXPLAIN ' + sql)", 'EXPLAIN_FIRST'),
                               ("connection.execute('EXPLAIN ' + sql, (None,) * bindings)",
                                'EXPLAIN_BINDING_RETRY')),
         'observe_schema_script': (),
+        'observe_registered_schema': (),
     }
     actual_sinks = {name: tuple((exact_call(scopes[name], expression), role)
                                for expression, role in entries) for name, entries in sinks.items()}
     for name, entries in actual_sinks.items():
         for call, _ in entries:
             parent = parents[call]
-            if name == '_configure':
+            if name == '_configure' and _text(call).startswith(
+                "connection.execute('PRAGMA foreign_keys = '"):
                 _require(isinstance(parent, ast.Expr) and parent.value is call,
                          'preparation profile cursor escapes')
             else:
@@ -419,7 +455,8 @@ def _preparation_origins(sources, corpus):
                 _require(isinstance(parent, ast.Attribute) and parent.value is call
                          and parent.attr == 'fetchall' and isinstance(fetch, ast.Call)
                          and fetch.func is parent and not fetch.args and not fetch.keywords
-                         and isinstance(statement, ast.Expr) and statement.value is fetch,
+                         and isinstance(statement, (ast.Expr, ast.Assign))
+                         and statement.value is fetch,
                          'preparation execute cursor escapes')
     allowed_forwards = {call for calls in forwards.values() for call in calls}
     for name, scope in scopes.items():
@@ -428,6 +465,9 @@ def _preparation_origins(sources, corpus):
                  'preparation connection is rebound')
         allowed = {call for call, _ in actual_sinks[name]}
         allowed.update(forwards.get(name, ()))
+        if name == '_physical_schema':
+            allowed.add(exact_call(scope,
+                'connection.set_authorizer(_metadata_authorizer(objects))'))
         if name in {'_schema_steps', 'observe_statement'}:
             schema_argument = 'schema=True))' if name == '_schema_steps' else 'schema=False))'
             allowed.add(exact_call(scope, 'connection.set_authorizer(_authorizer(actions, objects, '
@@ -444,6 +484,12 @@ def _preparation_origins(sources, corpus):
                      or (isinstance(parent, ast.Call) and parent.args[0] is node)),
                      'preparation connection escapes registered call positions')
     for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == '_metadata_authorizer':
+            parent = parents.get(node)
+            _require(isinstance(parent, ast.Call) and parent.func is node
+                     and frame(parent) is scopes['_physical_schema']
+                     and _text(parent) == '_metadata_authorizer(objects)',
+                     'private metadata authorizer escapes')
         if isinstance(node, ast.Name) and node.id in scopes:
             _require(parents.get(node) in allowed_forwards
                      and parents[node].func is node, 'private preparation helper escapes')
@@ -488,6 +534,10 @@ def _preparation_origins(sources, corpus):
                     for alias in node.names:
                         name = alias.asname or alias.name
                         _require(alias.name in {'observe_statement', 'observe_schema_script',
+                                                'observe_registered_schema',
+                                                'PhysicalSchemaObservation',
+                                                'ColumnInfo', 'IndexInfo', 'IndexColumnInfo',
+                                                'PhysicalCatalogRow', 'SqlAction',
                                                 'SqlPreparation', 'SqlPreparationRefused'},
                                  'unsupported preparation import exposure')
                         _require([n for n in ast.walk(other_tree) if _binds(n, name)] == [node],
@@ -1411,13 +1461,15 @@ def build_planning_descriptor_fragment(
             for alternative, expression in enumerate(row.alternatives):
                 rows.append(PlanningDescriptorRow(site, statement, alternative, expression.label,
                     expression.sql, 'tenant_main', _prepare_reads(schema, expression.sql)))
+        domain_schemas, engine_evidence = build_selected_engine_evidence(
+            sources, corpus, expressions, rows, scanner_chains, ledger_chains, schema)
         return PlanningDescriptorFragment(corpus, expressions, edge,
             tuple(e for e in assembly.edges if e != edge), wrapper_site, tuple(rows),
-            preparation_chains, scanner_chains, ledger_chains, (
+            preparation_chains, scanner_chains, ledger_chains, domain_schemas, engine_evidence, (
                 'fragment only: supplied source set is not independently proven exhaustive',
                 'other assembly mounts and external class mutation are unproved',
                 'selected scanner origins are conditional; full helper semantics, other '
-                'incoming contexts, metadata/engine graph and AMR remain unproved',
+                'incoming contexts and global engine graph/AMR remain unproved',
                 'preparation origins are source-local only; authorizer policy and external '
                 'runtime mutation/indirect reflective access require independent evidence',
                 'selected broker_read_ledger provenance only; runtime._read_ledger and '
@@ -1429,6 +1481,9 @@ def build_planning_descriptor_fragment(
                 'module import effects, runtime callbacks and all downstream constructor effects',
                 'global receiver/domain closure, physical schema/AMR, '
                 'CURRENT and V2 startup admission',
+                'selected schemas/actions/metadata are disposable UNREGISTERED expectations; '
+                'live physical schema, runtime default FK, WAL/locks, Python implicit '
+                'transactions and admitted engine artifact remain unproved',
             ))
     except UnknownPlanningChain:
         raise
