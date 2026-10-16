@@ -1,5 +1,8 @@
 """Pure batch verification cannot substitute publication-envelope metadata."""
 
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 
 from chiplog.capabilities.effects.dispatch_v2 import digest
@@ -27,7 +30,9 @@ from tests.support.acceptance_v2 import prepared_acceptance
         "identity",
     ],
 )
-def test_exact_batch_graph_rejects_resigned_companion_and_header_mutations(mutation: str) -> None:
+def test_exact_batch_graph_rejects_resigned_companion_and_header_mutations(
+    mutation: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     retained = prepared_acceptance(command_id="accept")
     loop, effects = retained.loop_request, retained.effects_request
     cut = loop.binding.cut
@@ -81,7 +86,24 @@ def test_exact_batch_graph_rejects_resigned_companion_and_header_mutations(mutat
     }
     batch = CallEffectBatch.model_validate(data)
     if mutation == "none":
+        operands = (loop, effects)
+        counts = [0, 0]
+        serializers: dict[type[Any], Callable[..., bytes]] = {
+            type(operand): type(operand).canonical_bytes for operand in operands
+        }
+
+        def counted(self: object, *args: Any, **kwargs: Any) -> bytes:
+            for index, operand in enumerate(operands):
+                if self is operand:
+                    counts[index] += 1
+            return serializers[type(self)](self, *args, **kwargs)
+
+        for model in serializers:
+            monkeypatch.setattr(model, "canonical_bytes", counted)
         verify_call_batch(batch, retained)
+        assert counts == [1, 1]
+        assert batch.loop_command.canonical_bytes == serializers[type(loop)](loop)
+        assert batch.effects_command.canonical_bytes == serializers[type(effects)](effects)
         return
     if mutation == "omit":
         records = records[:2]

@@ -2417,3 +2417,37 @@ calls; they are not an unknown-SQL count. Candidate size27303653bytes, SHA256
 `15627f9d0b73bea27094d43702aaa2e27583fc352be770870afa05b378bdeb5b`.
 Source paths/bytes were rechecked after derivation. This is unregistered inert
 partial evidence, with global closure still unconditionally refused.
+
+### Exact verify_call_batch operands are serialized once
+
+After checkpoint631a109 (353 selected verification tests passed in123.48s),
+the next source-grounded repeat was the adjacent bytes/hash serialization in
+`composition/r14_call_batch.py::verify_call_batch`. Local loop/effects bytes now
+serve both purposes. The batch JSON-mode validation, complete companion graph,
+cut/registry comparisons and authenticated caller checks are unchanged.
+
+Command `.venv/bin/pytest -p no:timeout -q
+'tests/composition/test_call_batch.py::test_exact_batch_graph_rejects_resigned_companion_and_header_mutations[none]'
+--tb=short` first failed with actual counts[2,2], expected[1,1]. After repair,
+`.venv/bin/pytest -p no:timeout -q tests/composition/test_call_batch.py --tb=short`
+passed12 tests in0.30s, including existing signed companion/header negatives.
+Scoped mypy over the source/test and Ruff pass.
+
+MCP sessionfaea87ae-49a4-440f-8a0f-fdeac877e16a is CLOSED after exit0.
+An effects-only conditional logpoint inside the exact-object counter emitted
+one hit with before=[1,0]. The post-call breakpoint observed[1,1] and both exact
+command-byte comparisons True, with the test -> pytest stack. Expected BP1
+stack was not sampled because the logpoint did not pause. The observed debugger
+test duration9.23s includes a pause and is not latency evidence. Expectations,
+driver and terminal marker: `/private/tmp/r14-verify-call-batch-debug-*`.
+
+Command `.venv/bin/python /private/tmp/r14-verify-call-batch-compare.py` compared
+the631a109 function AST with current dependencies against the new function on
+the earlier preserved expired96MB issuance, not live authority. Three alternating
+pairs measured old347–391ms/new323–353ms, paired savings17–38ms. Both accepted
+the same batch with unchanged serialized SHA256
+`66deb8d134ab1dc6fcc80d6e6933942c2c0dd4c30a7951a56649ffc69957f71c`;
+effects operand13668511bytes. Receipt:
+`/private/tmp/r14-verify-call-batch-compare.json`. This is a local cost reduction,
+not proof of removing the8.124s mandate overrun. A discriminating phase-timed
+fresh repeat is needed before assigning the remaining runtime cost.

@@ -47,17 +47,19 @@ def verify_call_batch(batch: CallEffectBatch, retained: RetainedAcceptancePrepar
     effects = retained.effects_request
     cut = loop.binding.cut
     policy = policy_reference()
+    loop_bytes = loop.canonical_bytes()
     expected_loop = OwnerCommandBytes(
         owner="agent_loop",
         schema_id=LOOP_PREPARATION_SCHEMA,
-        canonical_bytes=loop.canonical_bytes(),
-        fingerprint=digest(loop.canonical_bytes()),
+        canonical_bytes=loop_bytes,
+        fingerprint=digest(loop_bytes),
     )
+    effects_bytes = effects.canonical_bytes()
     expected_effects = OwnerCommandBytes(
         owner="effects",
         schema_id=effects.schema_id,
-        canonical_bytes=effects.canonical_bytes(),
-        fingerprint=digest(effects.canonical_bytes()),
+        canonical_bytes=effects_bytes,
+        fingerprint=digest(effects_bytes),
     )
     if (
         not isinstance(batch.planning, NoPlanningParticipant)
