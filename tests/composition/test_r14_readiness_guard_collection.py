@@ -17,9 +17,9 @@ from tests.composition.test_r14_recovery_pending_prefix import _fixture
 from tests.composition.test_r14_resume_artifacts import _evidence as resume_evidence
 
 
-@pytest.mark.parametrize("synthetic_repeat_expires_actor", (False, True))
+@pytest.mark.parametrize("mutation", (None, "synthetic-actor-expiry", "same-head-tamper"))
 async def test_custom_source_keeps_final_collection_at_real_writer(
-    tmp_path, monkeypatch, synthetic_repeat_expires_actor
+    tmp_path, monkeypatch, mutation
 ):
     runtime, entry, _, _, _ = await _fixture(tmp_path, False)
     template = publication.retained(entry)
@@ -43,7 +43,7 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
         written = []
         receipt = (await resume_evidence()).actor_budget_v1
         actor = object()
-        state = SimpleNamespace(now=1, issued=False)
+        state = SimpleNamespace(now=1, issued=False, tampered_preimage=None)
 
         def check_actor(observed):
             assert observed is actor
@@ -54,7 +54,7 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
             def collect_held(self, actual_runtime):
                 assert actual_runtime is runtime
                 counts["collect"] += 1
-                if counts["collect"] == 2 and synthetic_repeat_expires_actor:
+                if counts["collect"] == 2 and mutation == "synthetic-actor-expiry":
                     state.now += 31_000_000_000
                 return cut
 
@@ -85,6 +85,23 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
             return actor, receipt
 
         async def submit(batch):
+            assert batch.expected_preimage_commitment == predecessor
+            if mutation == "same-head-tamper":
+                store._connection.execute(
+                    "INSERT INTO records VALUES (?,?,?,?,?,?)",
+                    (runtime._tenant_id, "tamper", "agent_loop",
+                     publication.ACCOUNTING_SCHEMA, b"tamper", 1),
+                )
+                store._connection.commit()
+                with workspace_snapshot(runtime._database) as snapshot:
+                    state.tampered_preimage = capture_authority_snapshot_commitment(
+                        snapshot.connection, runtime._tenant_id
+                    )
+                assert state.tampered_preimage != predecessor
+                assert store._connection.execute(
+                    "SELECT head FROM tenant_heads"
+                ).fetchall() == [(1,)]
+
             def admission():
                 counts["admission"] += 1
                 return batch.admission_guard()
@@ -96,6 +113,9 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
             result = await appender.submit(
                 replace(batch, admission_guard=admission, decision_guard=decision)
             )
+            if mutation == "same-head-tamper":
+                assert result.disposition == "STALE", result
+                return result
             assert result.disposition == "COMMITTED", result
             written.append(batch)
             return result
@@ -126,7 +146,22 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
         monkeypatch.setattr(publication, "issue_execution_recovery_actor_v1", issue)
         monkeypatch.setattr(publication, "_finish", finish)
 
-        if synthetic_repeat_expires_actor:
+        if mutation == "same-head-tamper":
+            with pytest.raises(LoopRejected, match="recovery atomic publication STALE"):
+                await publication.publish_execution_accounting_readiness(runtime)
+            assert counts == {"collect": 1}
+            assert not written and not selected
+            assert store._connection.execute(
+                "SELECT record_id, canonical_bytes FROM records"
+            ).fetchall() == [("tamper", b"tamper")]
+            assert store._connection.execute("SELECT * FROM publications").fetchall() == []
+            assert store._connection.execute("SELECT head FROM tenant_heads").fetchall() == [(1,)]
+            with workspace_snapshot(runtime._database) as snapshot:
+                assert capture_authority_snapshot_commitment(
+                    snapshot.connection, runtime._tenant_id
+                ) == state.tampered_preimage
+            return
+        if mutation == "synthetic-actor-expiry":
             with pytest.raises(LoopRejected, match="STALE:authority-after-cut"):
                 await publication.publish_execution_accounting_readiness(runtime)
             assert counts == {"collect": 2, "admission": 1, "decision": 1}
@@ -153,6 +188,24 @@ async def test_custom_source_keeps_final_collection_at_real_writer(
         assert store._connection.execute("SELECT head FROM tenant_heads").fetchall() == [(2,)]
         assert evidence.accounting_request.cut == cut
         assert counts == {"collect": 2, "admission": 1, "decision": 1}
+        public_batch = publication.command(evidence)
+        assert public_batch.expected_preimage_commitment is None
+        assert replace(
+            batch, expected_preimage_commitment=None, admission_guard=None, decision_guard=None
+        ) == public_batch
+
+        def unexpected_guard(*args):
+            raise AssertionError("SQL replay must not run fresh-publication guards")
+
+        replay = await appender.submit(replace(
+            batch, admission_guard=unexpected_guard, decision_guard=unexpected_guard
+        ))
+        assert replay.disposition == "REPLAY"
+        assert replay.commit_sequence == 2
+        assert len(selected) == 1
+        assert store._connection.execute("SELECT count(*) FROM records").fetchone() == (2,)
+        assert store._connection.execute("SELECT count(*) FROM publications").fetchone() == (1,)
+        assert store._connection.execute("SELECT head FROM tenant_heads").fetchall() == [(2,)]
     finally:
         await appender.close()
         store.close()

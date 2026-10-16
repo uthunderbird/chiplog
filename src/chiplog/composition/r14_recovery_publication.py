@@ -644,6 +644,7 @@ async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress
     result = await runtime._appender.submit(
         replace(
             batch,
+            expected_preimage_commitment=cut.materialization_commitment,
             admission_guard=lambda: guard(check_cut=False),
             decision_guard=decide,
         )

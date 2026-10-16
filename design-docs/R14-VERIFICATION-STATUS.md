@@ -1433,3 +1433,42 @@ Root also ran `.venv/bin/python /private/tmp/r14-writer-snapshot-visibility.py`:
 separate workspace read connections see the committed preimage in both writer
 phases, while the writer connection sees its candidate postimage at decision.
 Thus postimage visibility is not a reason to remove the final full cut.
+
+### Saved cross-seal final-guard failure and live physical CAS (2026-10-16)
+
+Command: `.venv/bin/python /private/tmp/r14_saved_cross_seal_continue.py
+/private/tmp/r14-cross-seal-open-resumed-prefix-20261016/test_accepted_open_recovery_re0/native-v23-prepare.sqlite`.
+Process 32005 / execution handle 38487 is **terminal, exit 1**. It reached
+`SAVED_RESUME_AUTHENTICATED_TARGETS` and failed in the actual writer's readiness
+decision guard with `STALE:authority-after-cut`. It never returned readiness,
+started next Turn or selected the second seal. Main source bytes stayed at
+`c821421` throughout; intervening commits changed tests/docs only.
+
+Read-only SQL after exit found head 28 and zero readiness publications. Custody
+still has one transfer, SHA256
+`71b48c233854dfd66cb804845b3e3cc0fee935ffff1277c641432da0d7fe6db9`.
+The after-cut actor check failed; the swallowed inner exception was not captured,
+so its exact cause is not claimed. A one-second native sample at 10:12:20 +0500
+showed the main event loop waiting and asyncio_0 doing JSON encoding, consistent
+with writer work. It does not identify an exact Python caller or whole-run cost.
+External nonblocking Python stack sampling was unavailable without root on macOS.
+
+Separately, the live readiness submit now binds
+`expected_preimage_commitment=cut.materialization_commitment`. Both full cut
+collections and all live guards remain. The public/durable command stays
+unchanged: only the transient command passed to the appender has this CAS field.
+The actual-submit assertion was RED in all three cases (missing preimage).
+After the one-field fix, real SQLite rejects same-head physical tamper before
+either guard, preserving exactly the injected row and post-tamper commitment,
+with no candidate/publication/decision. Positive publication retains both
+guards and two collections; synthetic actor-expiry still rolls back. SQL REPLAY
+retains existing short-circuit behavior and does not claim fresh CAS validation.
+
+Command: `uv run pytest -q tests/composition/test_r14_readiness_guard_collection.py
+tests/composition/test_r14_readiness_artifacts.py
+tests/composition/test_r14_recovery_pending_prefix.py --tb=short`
+— **23 passed in 3.57s** on main after exact transfer; scoped Ruff/diff passed.
+The first tamper fixture needed correction to read its commitment inside a real
+transaction; that fixture error is not a product failure. Native input-witness
+reuse still has open dependency/eligibility and fallback/replay obligations;
+no second cut has been removed. Full cross-seal and R14 remain OPEN.
