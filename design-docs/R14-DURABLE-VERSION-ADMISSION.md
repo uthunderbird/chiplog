@@ -422,3 +422,48 @@ unproved. No RUNNING tuple or descriptor is registered. The next discriminating
 negative is a real publication_sql predicate mutation adding a deletion_fences
 subquery: extraction must observe the new frontier read before frozen graph
 comparison rejects it. A source-hash mismatch alone cannot satisfy that test.
+
+## First executable SQL read-edge extraction, not descriptor admission
+
+`verification/authority_read_graph.py` now extracts the actual three direct
+execute sites in `BrokerAuthorityReader._execute_planning_read`. It parses one
+source string without importing/executing it, resolves literal/concatenation and
+both finite conditional-string alternatives through unique dominating lexical
+assignments, and rejects unsupported stores, expressions, receivers or execution
+placement. Connection annotations select syntax only; they do not prove runtime
+instance identity. Calls inside lambda/conditional expressions are not direct
+sites. Unknown alias/reflection and whole-repository closure remain unimplemented.
+
+Each alternative gets a new disposable SQLite schema connection with statement
+cache disabled. EXPLAIN preparation plus explicit authorizer actions produces
+the actual `(database,table,column)` set; predicates/subqueries and COUNT(*)'s
+empty-column table dependency are retained. SQLite determines binding count,
+including question marks inside literals/comments. A denied action, syntax or
+binding failure refuses the entire observation; partial callbacks never become
+a returned graph. No source authority database is opened and no runtime read
+connection gains authority from this verifier.
+
+The real publication_sql predicate mutant adds an EXISTS read of
+deletion_fences.frontier while retaining authored actual_edges. The test first
+observes that engine edge, then verifies the independent literal graph refuses.
+Ghost expected edges/omitted branches also refuse. Lexical forward/conditional
+definitions, receiver and SQL-local rebinding, repeated identical queries,
+COUNT(*), extension/ATTACH/PRAGMA and incomplete preparation have separate cases.
+The initial eight feature tests reached the explicit not-implemented API and
+failed in0.06s; that was a missing-feature RED, not a mounted product failure.
+Cold design review then found nested execution placement: two actual-source
+mutants gave DID NOT RAISE in0.06s, repaired by the direct AST-parent check.
+Command `.venv/bin/pytest -q tests/verification/test_authority_read_graph.py --tb=short`
+now gives21 passed in0.13s. Review:
+`/private/tmp/r14-sql-edge-extraction-design-review.md`.
+
+This is one method's five per-site/alternative observations and literal edge
+vocabulary, not a frozen full-source descriptor. It does not remove the existing
+authored runtime check or mount startup admission. Schema is the existing trusted
+main DDL supplied to the disposable engine; independent full physical-schema
+goldens remain required. No tuple registration follows. The earlier507-site
+inventory describes the pre-extractor snapshot; the new verifier itself adds
+private-schema/EXPLAIN SQL sites. A fresh all-src AST scan over the same seven
+candidate names now finds511 calls (execute348, executemany1, executescript8,
+connect57, read_connection80, workspace_snapshot10, join_workspace_snapshot7).
+Those meta-verifier sites must be classified too; no filename exemption is made.
