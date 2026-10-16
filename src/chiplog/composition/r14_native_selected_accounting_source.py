@@ -1206,6 +1206,19 @@ class R14NativeSelectedAccountingSource:
 
                     def authenticate_selected_suffix(runtime, actual, anchored):
                         nonlocal native_suffix_authenticated
+                        pending = runtime._pending()
+                        if (
+                            len(pending) == 1
+                            and pending[0].get("operation_kind")
+                            == "agent_loop.execution-accounting-readiness.v1"
+                        ):
+                            from chiplog.composition.r14_recovery_publication import (
+                                authenticate_selected_recovery_prefix_held,
+                            )
+
+                            return authenticate_selected_recovery_prefix_held(
+                                runtime, actual, anchored
+                            )
                         if authenticate_selected_resolution_prefix_held(
                             runtime, actual, anchored
                         ):

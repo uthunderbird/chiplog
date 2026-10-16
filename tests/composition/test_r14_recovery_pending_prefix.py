@@ -238,6 +238,104 @@ async def test_open_effects_callback_uses_exact_pending_readiness_prefix(
     assert len(fallback_calls) == (0 if route == "readiness" else 1)
 
 
+@pytest.mark.parametrize("damaged_result", [False, True])
+@pytest.mark.parametrize("historical_locator", [False, True])
+@pytest.mark.parametrize("route", ["readiness", "registered", "unknown", "multiple"])
+async def test_accepted_outcome_callback_rechecks_exact_pending_readiness(
+    tmp_path, monkeypatch, damaged_result, historical_locator, route
+):
+    """Real SQL prefix; accepted facts/effects semantics are explicit controls."""
+    from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+    from chiplog.capabilities.agent_loop.recovery_contracts import Present
+    from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+        ConsequentialAcceptedCall,
+    )
+    from chiplog.composition import r14_historical_suffix as suffix
+    from chiplog.composition import r14_original_call_resolution_source as resolution
+    from chiplog.composition import r16_effects
+    from chiplog.composition.r14_native_selected_accounting_source import (
+        R14NativeSelectedAccountingSource,
+    )
+
+    class ReachedPrefixVerdict(BaseException):
+        pass
+
+    runtime, entry, _, predecessor, actual = await _fixture(tmp_path, True)
+    if route in {"registered", "unknown"}:
+        entry["operation_kind"] = (
+            "agent_loop.original-resolver-invocation.v1"
+            if route == "registered" else "agent_loop.unknown.v1"
+        )
+    elif route == "multiple":
+        runtime._pending = lambda: (entry, entry)
+    journal = SimpleNamespace(decisions=())
+    runtime._owner_decisions = lambda: SimpleNamespace(snapshot=lambda: journal)
+    reference = Present(head="effect", fingerprint="1" * 64)
+    acceptance = ConsequentialAcceptedCall(
+        initialized=reference,
+        accepted=reference,
+        execution_intent=reference,
+        external_effect_intent=reference,
+        complete_acceptance_manifest=(reference, reference),
+    )
+    seal = SimpleNamespace(initialized_records=(SimpleNamespace(original_call_id="call"),))
+    accepted = SimpleNamespace(
+        original_call_id="call",
+        selected_seal=seal,
+        source=SimpleNamespace(
+            selected_native_seals=(seal,),
+            target_inventory_rows=(
+                SimpleNamespace(original_call_id="call", acceptance=acceptance),
+            ),
+        ),
+    )
+    source_reader = object.__new__(R14NativeSelectedAccountingSource)
+    source_reader._runtime = runtime
+    fallback_calls = []
+
+    def broader_success(*args, **kwargs):
+        fallback_calls.append(True)
+        return True
+
+    monkeypatch.setattr(resolution, "authenticate_selected_resolution_prefix_held", broader_success)
+    monkeypatch.setattr(suffix, "authenticate_selected_open_prefix_held", broader_success)
+    monkeypatch.setattr(suffix, "authenticate_selected_pending_r14_suffix_held", broader_success)
+    monkeypatch.setattr(
+        suffix, "authenticate_selected_r14_native_terminal_suffix_held", broader_success
+    )
+    verdicts = []
+
+    def read_effects(actual_runtime, owners, *, authenticate_later_suffix, **kwargs):
+        # Repeated uses must re-read evidence; no cached success after corruption.
+        for attempt in range(3):
+            if damaged_result or attempt == 2:
+                entry["resulting"] = "0" * 64
+            verdict = authenticate_later_suffix(actual_runtime, actual, predecessor)
+            verdicts.append(verdict)
+            assert verdict is (route != "readiness" or (not damaged_result and attempt < 2))
+        raise ReachedPrefixVerdict
+
+    monkeypatch.setattr(r16_effects, "_read_materialized_effects_with_history", read_effects)
+    locator = (
+        dict(
+            expected_outcome_record_id="outcome",
+            expected_selected_decision=CallSubjectHead(subject_id="decision", revision=reference),
+            expected_tenant_commit_sequence=1,
+        )
+        if historical_locator else {}
+    )
+    with pytest.raises(ReachedPrefixVerdict):
+        source_reader._collect_one_accepted_outcome(
+            current_obligation_state="OPEN",
+            accepted_facts=accepted,
+            allow_authenticated_later_suffix=not historical_locator,
+            **locator,
+        )
+    expected = [False] * 3 if damaged_result else [True, True, False]
+    assert verdicts == (expected if route == "readiness" else [True] * 3)
+    assert len(fallback_calls) == (0 if route == "readiness" else 3)
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
