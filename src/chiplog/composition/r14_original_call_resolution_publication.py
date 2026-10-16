@@ -335,6 +335,13 @@ def _startup_state(
 def read_selected_original_call_resolution_source_held(
     runtime: CommonCliExecutionRuntime,
 ) -> PreparedOriginalCallResolution | None:
+    evidence = _read_selected_original_call_resolution_evidence_held(runtime)
+    return evidence.prepared if evidence is not None else None
+
+
+def _read_selected_original_call_resolution_evidence_held(
+    runtime: CommonCliExecutionRuntime,
+) -> RetainedOriginalCallResolutionPublication | None:
     runtime._pending()
     selected = _selected_entries(runtime)
     if not selected:
@@ -357,7 +364,7 @@ def read_selected_original_call_resolution_source_held(
 
         read_execution_recovery_history(runtime, selected_only=True)
     _validate_physical_catalog(runtime, batch)
-    return evidence.prepared
+    return evidence
 
 
 def validate_original_call_resolution_startup(

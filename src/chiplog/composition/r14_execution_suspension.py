@@ -224,6 +224,29 @@ def _validate_selected(
         if check_history:
             raise ValueError("pending suspension requires outer authenticated history")
     evidence = _retained(entry)
+    return _validate_selected_evidence(
+        runtime,
+        entry,
+        physical_command,
+        evidence,
+        check_history=check_history,
+        allow_pending_absent=allow_pending_absent,
+    )
+
+
+def _validate_selected_evidence(
+    runtime,
+    entry: dict[str, object],
+    physical_command,
+    evidence: RetainedExecutionSuspension,
+    *,
+    check_history: bool = True,
+    allow_pending_absent: bool = False,
+):
+    if allow_pending_absent:
+        runtime._authority_gate().require_held()
+        if check_history:
+            raise ValueError("pending suspension requires outer authenticated history")
     command = _command(evidence)
     if (
         replace(command, expected_preimage_commitment=None)

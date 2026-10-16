@@ -8,6 +8,7 @@ from chiplog.architecture.r7_runtime import (
 )
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+from chiplog.composition import r14_execution_suspension as suspension_module
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
 from chiplog.composition.r14_loop_history import read_execution_history
 from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
@@ -33,7 +34,7 @@ async def test_mounted_suspension_holds_without_authenticated_active_run(tmp_pat
         assert runtime.read_selected_execution_suspension() is None
 
 
-async def test_mounted_same_run_resume_reopens_the_selected_suspension(tmp_path):
+async def test_mounted_same_run_resume_reopens_the_selected_suspension(tmp_path, monkeypatch):
     database = tmp_path / "resume.sqlite"
     custody = tmp_path / "custody"
     resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
@@ -71,7 +72,39 @@ async def test_mounted_same_run_resume_reopens_the_selected_suspension(tmp_path)
         runtime._full_recovery_cut_source = recovery_source
         suspended_head = suspension.pair.suspended_run.revision.head
 
-        resumed = await runtime.resume_execution(run.run_id, suspended_head, b"resume-the-same-run")
+        retained_reads = []
+        decode_retained = suspension_module._retained
+        suspended_run = next(
+            row
+            for row in read_execution_history(runtime).records
+            if isinstance(row, ExecutionRunRecord) and row.head == suspended_head
+        )
+
+        def count_retained_reads(entry):
+            retained_reads.append(entry.get("operation_id"))
+            return decode_retained(entry)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(suspension_module, "_retained", count_retained_reads)
+            selected = source._selected_suspension_for_run(runtime, suspended_run)
+        assert selected is not None
+        assert retained_reads == [suspension.pair.suspension_command_id]
+
+        retained_reads = []
+        decode_retained = suspension_module._retained
+
+        def count_retained_reads(entry):
+            retained_reads.append(entry.get("operation_id"))
+            return decode_retained(entry)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(suspension_module, "_retained", count_retained_reads)
+            read_execution_history(runtime)
+        assert retained_reads == [suspension.pair.suspension_command_id]
+
+        resumed = await runtime.resume_execution(
+            run.run_id, suspended_head, b"resume-the-same-run"
+        )
 
         assert resumed.run_id == run.run_id
         assert resumed.state == "ACTIVE"

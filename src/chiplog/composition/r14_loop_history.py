@@ -1055,7 +1055,7 @@ def _read_call_history(
                             _run_ref as suspension_run_ref,
                         )
                         from chiplog.composition.r14_execution_suspension import (
-                            _validate_selected as validate_suspension,
+                            _validate_selected_evidence as validate_suspension_evidence,
                         )
 
                         if command.operation_kind != SUSPENSION_OPERATION:
@@ -1106,10 +1106,11 @@ def _read_call_history(
                             raise ValueError(
                                 "selected execution suspension source lineage differs: " + failed
                             )
-                        validate_suspension(
+                        validate_suspension_evidence(
                             runtime,
                             retained_entry[2],
                             command,
+                            retained,
                             check_history=False,
                             allow_pending_absent=allow_pending_absent,
                         )

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -205,6 +206,231 @@ def test_selected_reduction_source_projection_keeps_the_complete_chain(monkeypat
         sources["opening"],
         sources["successor"],
     )
+
+
+def test_closed_recovery_source_projection_keeps_resolver_authority(monkeypatch):
+    """Source acquisition is inert; the real projection must retain authority proofs."""
+    from chiplog.capabilities.agent_loop.original_call_resolution_preparation import (
+        prepare_original_call_resolution,
+    )
+    from chiplog.capabilities.agent_loop.original_semantic_reduction_preparation import (
+        prepare_loop_semantic_reduction,
+    )
+    from chiplog.composition import r14_loop_semantic_reduction_publication as reductions
+    from chiplog.composition import r14_original_call_resolution_publication as resolutions
+    from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
+        _source,
+    )
+    from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
+        request as resolution_request,
+    )
+    from tests.capabilities.agent_loop.test_original_semantic_reduction_preparation import (
+        request as reduction_request,
+    )
+    from tests.capabilities.agent_loop.test_recovery_accounting import recovery_call
+
+    resolver_request = resolution_request()
+    resolution = prepare_original_call_resolution(resolver_request)
+    request = reduction_request()
+    reduced = prepare_loop_semantic_reduction(request)
+    reduction_source = _source(
+        reduced.record,
+        record_id=reduced.record.reduction_id,
+        owner="agent_loop",
+        schema=reduced.record.schema_id,
+    )
+    selected_reduction = SimpleNamespace(record=reduced.record, source=reduction_source)
+    retained_resolution = SimpleNamespace(request=resolver_request, prepared=resolution)
+    monkeypatch.setattr(
+        resolutions, "read_selected_original_call_resolution_source_held", lambda _: resolution
+    )
+    monkeypatch.setattr(
+        resolutions, "_read_selected_original_call_resolution_evidence_held",
+        lambda _: retained_resolution, raising=False,
+    )
+    monkeypatch.setattr(reductions, "_selected_entries", lambda _: ("selected",))
+    monkeypatch.setattr(
+        reductions, "validate_selected_command", lambda *args: SimpleNamespace(request=request)
+    )
+    monkeypatch.setattr(
+        reductions, "_selected_value", lambda *args: (None, selected_reduction)
+    )
+    monkeypatch.setattr(reductions, "capture_request", lambda _: request)
+    runtime = SimpleNamespace(
+        read_selected_accepted_open_frontier=lambda: SimpleNamespace(
+            calls=(recovery_call(recovered=True),)
+        ),
+        read_selected_loop_semantic_reduction=lambda: selected_reduction,
+    )
+    subset = SimpleNamespace(
+        accepted_closed_outcome=SimpleNamespace(
+            complete_ordered_evidence_sources=request.complete_ordered_evidence
+        ),
+        accepted_open_outcome=None,
+    )
+    result = NativeRecoveryCutSource._selected_accepted_recovery_inputs(runtime, subset)
+    assert result is not None
+    authority_sources = (
+        resolver_request.cut.resolver_policy,
+        resolver_request.cut.authority.authenticated_invocation,
+    )
+    for source in authority_sources:
+        assert source in result[3]
+    assert resolver_request.cut.current_obligation in result[3]
+    assert resolver_request.cut.call_terminal in result[3]
+
+    from chiplog.composition import r14_native_recovery_cut as cuts
+    from chiplog.composition.h1_inventory_leaf_contracts import H1RawInventoryItem
+
+    monkeypatch.setattr(
+        cuts, "AuthenticatedCustodyRecord",
+        SimpleNamespace(model_validate_json=lambda _: object()),
+    )
+    scope = SimpleNamespace(selected_admission_bytes=b"inert custody acquisition")
+    known = {source.physical_record.subject_id: source for source in result[3]}
+    occurrences = tuple(
+        H1RawInventoryItem(
+            surface="PHYSICAL",
+            locator="records/" + source.physical_record.subject_id,
+            tenant=resolver_request.cut.tenant_id,
+            owner=source.owner,
+            schema=source.schema_id,
+            record_kind=None,
+            record_id=source.physical_record.subject_id,
+            fingerprint=source.physical_record.revision.fingerprint,
+            raw=source.canonical_record_bytes,
+        )
+        for source in authority_sources
+    )
+    assert cuts.classify_native_occurrences(occurrences, {}, known, scope)
+    for occurrence in occurrences:
+        omitted = {key: source for key, source in known.items() if key != occurrence.record_id}
+        assert not cuts.classify_native_occurrences(occurrences, {}, omitted, scope)
+        substituted = replace(occurrence, raw=occurrence.raw + b" ")
+        assert not cuts.classify_native_occurrences((substituted,), {}, known, scope)
+
+
+@pytest.mark.parametrize(
+    "damage", [None, "head", "fingerprint", "physical", "bytes", "owner", "schema"]
+)
+def test_original_resolver_source_requires_exact_independent_selection(damage):
+    from chiplog.composition.r14_native_recovery_cut import _original_source_matches_selection
+    from tests.capabilities.agent_loop.test_original_call_resolution_preparation import request
+
+    source = request().cut.current_obligation
+    record = SimpleNamespace(
+        record_id=source.physical_record.subject_id, owner=source.owner,
+        schema_id=source.schema_id, canonical_bytes=source.canonical_record_bytes,
+    )
+    decision = source.selected_decision.model_copy(update={"subject_id": "command-id"})
+    if damage in {"head", "fingerprint"}:
+        revision = source.selected_decision.revision.model_copy(update={damage: "f" * 64})
+        source = source.model_copy(update={
+            "selected_decision": source.selected_decision.model_copy(update={"revision": revision})
+        })
+    elif damage == "physical":
+        source = source.model_copy(update={
+            "physical_record": source.physical_record.model_copy(update={"subject_id": "foreign"})
+        })
+    elif damage == "bytes":
+        source = source.model_copy(update={
+            "canonical_record_bytes": source.canonical_record_bytes + b" "
+        })
+    elif damage in {"owner", "schema"}:
+        source = source.model_copy(update={
+            "schema_id" if damage == "schema" else "owner": "foreign"
+        })
+    assert _original_source_matches_selection(source, record, decision) is (damage is None)
+
+
+@pytest.mark.parametrize("variant", [
+    "carrier-and-marker", "marker-only", "duplicate-carrier", "logical-child",
+])
+def test_accepted_effect_join_distinguishes_carrier_and_body_fingerprints(variant):
+    from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
+    from chiplog.composition.r14_native_recovery_cut import _accepted_source_preimages
+    from tests.capabilities.effects.test_dispatch_outcomes import request
+
+    send = original_send()
+    record = prepare_outcome(request(send, send))
+    raw = record.canonical_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    marker = CallSubjectHead(
+        subject_id=record.record.subject_id,
+        revision=Present(head=record.record.head, fingerprint=record.record.fingerprint),
+    )
+    selected = RecoverySourceRecord(
+        owner="effects", schema_id=record.schema_id, subject=marker,
+        canonical_record_bytes=raw, physical_record=marker,
+        selected_decision=CallSubjectHead(
+            subject_id="decision", revision=Present(head="decision", fingerprint="d" * 64)
+        ),
+    )
+    physical = CallSubjectHead(
+        subject_id=record.record.head,
+        revision=Present(head="record:" + digest, fingerprint=digest),
+    )
+    carrier = selected.model_copy(update={
+        "subject": marker.model_copy(update={
+            "revision": marker.revision.model_copy(update={"fingerprint": digest})
+        }), "physical_record": physical,
+    })
+    body_alias = selected.model_copy(update={"physical_record": physical})
+    assert carrier.subject != body_alias.subject
+    if variant == "logical-child":
+        child = selected.model_copy(update={
+            "subject": marker.model_copy(update={"subject_id": "nested-evidence"})
+        })
+        retained_child = child.model_copy(update={"physical_record": physical})
+        wrong_child = retained_child.model_copy(update={
+            "subject": retained_child.subject.model_copy(update={
+                "revision": marker.revision.model_copy(update={"fingerprint": digest})
+            })
+        })
+        assert _accepted_source_preimages((child,), (retained_child, wrong_child)) == (
+            retained_child,
+        )
+        with pytest.raises(ValueError, match="lacks one exact recovery preimage"):
+            _accepted_source_preimages((child,), (wrong_child,))
+    elif variant == "carrier-and-marker":
+        assert _accepted_source_preimages((selected,), (carrier, body_alias)) == (carrier,)
+    else:
+        sources = (body_alias,) if variant == "marker-only" else (carrier, carrier, body_alias)
+        with pytest.raises(ValueError, match="lacks one exact recovery preimage"):
+            _accepted_source_preimages((selected,), sources)
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_original_terminal_aliases_share_one_exact_selected_decision(conflict):
+    from chiplog.capabilities.agent_loop.execution_recovery_preparation import _source_for_revision
+    from chiplog.capabilities.agent_loop.recovery_domain import RecoveryHold
+    from chiplog.composition.r14_native_recovery_cut import _original_source_decisions
+    from tests.capabilities.agent_loop.test_original_call_resolution_preparation import request
+
+    original = request().cut.call_terminal
+    physical = original.physical_record
+    record = SimpleNamespace(
+        record_id=physical.subject_id, owner=original.owner,
+        schema_id=original.schema_id, canonical_bytes=original.canonical_record_bytes,
+    )
+    generic_decision = original.selected_decision.model_copy(update={"subject_id": "command-id"})
+    raw = original.model_copy(update={
+        "subject": physical, "selected_decision": generic_decision,
+    })
+    cut = SimpleNamespace(complete_sources=(raw, original))
+    with pytest.raises(RecoveryHold, match="missing or duplicate accepted-recovery source"):
+        _source_for_revision(cut, original.subject.revision, original.schema_id)
+    source_rows = (original, raw) if conflict else (original,)
+    decisions = _original_source_decisions(
+        source_rows, {record.record_id: (record, generic_decision)}
+    )
+    if conflict:
+        assert decisions is None
+    else:
+        assert decisions == {record.record_id: original.selected_decision}
+        raw = raw.model_copy(update={"selected_decision": decisions[record.record_id]})
+        cut.complete_sources = (raw, original)
+        assert _source_for_revision(cut, original.subject.revision, original.schema_id) == original
 
 
 def test_closed_accepted_recovery_retains_only_exact_selected_open_preimages(monkeypatch):

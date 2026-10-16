@@ -173,11 +173,37 @@ def _source_preimage_is_valid(source: RecoverySourceRecord) -> bool:
     evidence = record.command.evidence
     if (
         record.canonical_bytes() != source.canonical_record_bytes
-        or record.kind != "EVIDENCE_RECORDED"
-        or record.command.operation != "APPEND_EVIDENCE"
-        or evidence is None
         or source.physical_record.subject_id
         != record.record.subject_id + "/" + record.record.fingerprint
+    ):
+        return False
+    if (
+        source.subject.subject_id == record.record.subject_id
+        and source.subject.revision.head == record.record.head
+        and source.subject.revision.fingerprint == record.record.fingerprint
+    ):
+        if (record.kind, record.command.operation) not in {
+            ("EVIDENCE_RECORDED", "APPEND_EVIDENCE"),
+            ("RECONCILED", "RESOLVE_OBLIGATION"),
+        }:
+            return False
+        from chiplog.capabilities.effects.dispatch_v2 import canonical, reference
+
+        body = canonical(
+            {
+                "command": record.command.model_dump(mode="json"),
+                "snapshot": record.snapshot.model_dump(mode="json"),
+                "kind": record.kind,
+                "predecessor": record.predecessor.model_dump(mode="json"),
+            }
+        )
+        return record.record == reference(
+            "effect-record/" + record.command.identity.command_id, body
+        )
+    if (
+        record.kind != "EVIDENCE_RECORDED"
+        or record.command.operation != "APPEND_EVIDENCE"
+        or evidence is None
     ):
         return False
     reference = evidence_head(evidence)

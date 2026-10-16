@@ -661,3 +661,185 @@ The selector `test_accepted_open_recovery_reopens_across_seals_and_rejects_each_
 A follow-up mcp-debugger run used the prewritten per-breakpoint expectations in `/private/tmp/r14-cross-seal-suspension-stale-debug-expectations.md`, with seven verified non-pausing logpoints and no actor-budget or clock changes. BP1 recorded `now=1360682491378125`, deadline `1360711244135916`, and `source_cut_validated=False`. BP2 recorded an equal `ExecutionRecoveryCut` at `1360732449080083`: the held source collection took 49.957s, while only 28.753s remained at BP1. Conditional BP4 then recorded expiry at `1360732589054083` with `source_cut_validated=True`. BP3 source mismatch, BP5 caught exception and conditional SQLite head/preimage points did not fire. The test returned `STALE` in 234.16s.
 
 Runner `/private/tmp/chiplog-r14-cross-seal-suspension-debug-runner.py` wrote `/private/tmp/chiplog-r14-cross-seal-suspension-debug-profile.json`: HEAD remained `143b5c1318ee054b3e14ed2453873f87cf2da504`; all 1,215 captured source/test/config files matched before and after. The debugger session was closed. This proves the guard-held re-collection crosses the fixed actor budget on this history. The fresh subset already carries `authenticated_execution_history`, produced by `read_execution_recovery_history(selected_only=True, exact_historical_sources=True)` under the authority gate. The collector then called the accepted-OPEN frontier reader, whose validator reopened that same history, and `_current_cut` reopened it again while independently checking current authority commitment, database identity, tenant, selected decision and outcome, and physical effects preimage. A boundary test initially failed because the history argument was not forwarded; the forwarding change now passes while the gate remains held. Next action: run this same mounted cross-seal selector without timeout changes; the suspension must pass and execution must reach second-seal recovery and locator-substitution negatives.
+
+### Accepted suspended lineage diagnosis (2026-10-16)
+
+The production-clock cross-seal selector still returns HOLD at its first resume.
+A late-armed code-object-filtered call/exception/return trace recorded a normal
+`_collect_held` return at the exact lineage comparison, with nine authenticated
+Run records and accepted recovery inputs present; no exception was recorded.
+The saved trace is `/private/tmp/r14-open-resume-return-trace-20261016.json`.
+Read-only SQLite inspection of that fixture confirms eight pre-suspension Run
+records followed by one causally linked SUSPENDED record.
+
+The two source contracts differ: cancelled accounting retains pre-suspension
+facts; accepted facts are freshly constructed from authenticated current history
+and the subset reader requires their last Run reference to match the current
+Run. Unconditionally stripping the suspension suffix therefore rejects accepted
+resume. The repair strips it only for retained cancellation accounting and
+preserves exact full equality for accepted facts, plus separate selected
+suspension and physical-publication validation. A cold design review found no
+critical/blocking defect in this bounded repair; this is model review, not
+external independent verification.
+
+The existing accepted-closed subset mounted test now performs resolver policy,
+invocation, resolution and semantic reduction, then resumes without another
+external send. Before the repair,
+`uv run pytest -q tests/composition/test_r14_native_recovery_source_subset.py::test_source_subset_reopens_exact_accepted_closed_outcome_without_resend --tb=short`
+returned `1 failed in 655.50s` at that resume with HOLD. The post-repair rerun
+with `--basetemp=/private/tmp/r14-accepted-lineage-green-20261016` also returned
+HOLD (`1 failed in 661.35s`), so the lineage repair is insufficient and the next
+rejection still needs localization. The test was then corrected to retain its
+original SUSPENDED reopen assertion before resolver/reduction and resume; its
+current form has not yet been verified. The full cross-seal selector remains
+pending. These results do not close R14.6 or R14.
+
+### Resolver authority source projection diagnosis (2026-10-16)
+
+A restart-only mcp-debugger runner reopened that failed fixture at its original
+path. Before setting breakpoints, expectations for all collector return sites
+and wrapper exits were written to
+`/private/tmp/r14-accepted-resume-all-return-breakpoints-expectations.md`.
+All 54 points were verified. The debugger stopped at collector line 1492,
+after `classify_native_occurrences` returned false. The actual frame confirmed
+full source-lineage equality (9/9) and a selected suspension, proving the prior
+lineage gate now passes in this diagnostic history.
+
+Classifying each captured occurrence independently rejected exactly two PHYSICAL
+rows: `chiplog.loop.original-resolver-authority-policy.v1` and
+`chiplog.loop.original-resolver-invocation.v1`. Both were present in the physical
+inventory but absent from the projected known sources. No product clocks or
+budgets were changed. The runner ended with HOLD and the debugger was closed;
+its restarted resource construction is diagnostic evidence, not a substitute
+for a full mounted pass.
+
+The fast source-projection regression initially failed on the omitted policy
+source (`1 failed in 0.60s`). The repair retains the already validated resolution
+envelope through a private reader, preserves the public Prepared result, and
+projects its exact resolver policy/registered authority/authenticated invocation
+sources into the existing selected/physical reconciliation. It does not admit
+these schemas without source proof. The regression also rejects omitted known
+sources and changed physical bytes; missing physical membership remains the
+collector's reconciliation obligation.
+
+`uv run pytest -q tests/composition/test_r14_historical_suffix.py tests/composition/test_r14_native_recovery_cut.py tests/composition/test_r14_native_selected_accounting_fast_path.py -k 'not selected_native_cut_reopens'`
+returned `189 passed, 2 deselected in 1.38s`. R8 structure/import and Ruff pass.
+The repaired restart-only resume passed the collector and reached owner
+preparation, which returned `TERMINAL_RECOVERY_FAULT /
+RESUME_INTEGRITY_FAULT_OBSERVED`. This proves source classification progressed,
+not that resume succeeded. The next action is to capture the exact owner request
+and reproduce its underlying `CallPreparationRejected.reason` directly in the
+pure preparation function. The corrected mounted restart/resume test and full
+cross-seal selector remain pending. R14 remains OPEN.
+
+### Owner request and R16 record-marker diagnosis (2026-10-16)
+
+The restart-only request capture completed without owner submission/publication.
+It saved 33,423,674 canonical bytes at
+`/private/tmp/r14-captured-accepted-resume-request.json`. A direct pure regression
+(`/private/tmp/test_r14_captured_resume_request.py`) failed in 0.49s with
+`INTEGRITY_FAULT: native frontier member lacks authenticated source preimage`.
+The missing EVIDENCE markers are the exact R16 outcome `record.record` references
+retained by the immutable semantic reduction. The collector had projected raw
+carrier and nested evidence heads, but not those body-domain record references.
+
+The repair projects record-marker aliases only from the independently
+authenticated native R16 outcome sources, preserving the existing physical
+representative for classification. The owner-side preimage check verifies exact
+canonical bytes, physical carrier identity/raw SHA, and recomputed original
+command/snapshot/kind/predecessor body reference. It covers both evidence records
+and the closed reconciliation witness; immutable reduction refs are unchanged.
+A fast real-record test first failed the valid marker case, then passed evidence
+and closed-witness cases plus subject/carrier/body/marker/schema/owner negatives.
+
+An inert projection experiment on the captured input passes the missing-preimage
+guard after adding the three corresponding aliases. Its next Run mismatch is
+worker session: the restarted runtime has a fresh worker, while this route
+requires the original same-worker Run. No stale worker credential was installed
+or sent to a runtime. The mounted test now has separate `suspended` and `resumed`
+variants, preserving SUSPENDED reopen and placing resume inside the original
+runtime before ACTIVE reopen. Both current variants remain unverified.
+
+An additional pure, in-memory same-worker diagnostic reaches
+`obligation resume rewrote existing EVIDENCE heads`: baseline EVIDENCE is the
+registered singleton ABSENT marker, while current EVIDENCE has its selected
+record heads. Owner transition handling requires a discriminating red test;
+no relaxation has been implemented. R14 remains OPEN.
+
+The marker repair passed its cold scoped mechanism review with no confirmed
+P0/P1. `uv run pytest -q tests/capabilities/agent_loop/test_native_recovery_cut_validation.py tests/composition/test_r14_historical_suffix.py tests/composition/test_r14_native_recovery_cut.py tests/composition/test_r14_native_selected_accounting_fast_path.py -k 'not selected_native_cut_reopens'`
+returned `208 passed, 2 deselected in 1.38s`; R8 structure/import and Ruff pass.
+These are local validation/projection results, not mounted resume completion.
+
+### Exact obligation-resume transition and source provenance (2026-10-16)
+
+The fast transition boundary now uses real original-resolution/reduction records
+while isolating outer cut and suspension authentication. Its initial two positive
+cases failed: the registered singleton ABSENT evidence marker was treated as an
+existing evidence head, and AUTHORITY used the opening before its local binding.
+The repair normalizes only the exact singleton ABSENT evidence prefix, validates
+the opening before the family loop, retains inherited authority heads, and admits
+only the exact absent-to-current semantic reduction transition. It also compares
+the terminal's external-effect revision with the acceptance revision. Negative
+cases assert specific rejection reasons for rewritten/extra evidence, unexpected
+reductions, missing/extra authority, policy changes and unrelated frontier changes.
+
+Two further tests first failed for omitted original opening/terminal source
+projection and ambiguous physical/logical terminal aliases. The projection now
+retains the exact sources from the authenticated resolver request; terminal role
+selection requires the original-call logical subject and still checks full source
+equality against invocation. Duplicate matching logical terminals still reject.
+Original agent-loop source provenance is preserved only after independent journal
+selection proves exact owner/schema/bytes, physical reference, and complete
+selected-decision revision. A same-subject source replaces the generic physical
+projection rather than introducing a second role. Mutation checks cover decision
+head/fingerprint, physical identity, bytes, owner and schema.
+
+`uv run pytest -q tests/capabilities/agent_loop/test_obligation_resume_transition.py tests/capabilities/agent_loop/test_execution_recovery_preparation.py tests/capabilities/agent_loop/test_native_recovery_cut_validation.py tests/composition/test_r14_historical_suffix.py tests/composition/test_r14_native_recovery_cut.py tests/composition/test_r14_native_selected_accounting_fast_path.py -k 'not selected_native_cut_reopens'`
+returned `247 passed, 2 deselected in 1.96s`. Ruff passes. These checks prove the
+local boundaries, not mounted owner admission. The fresh same-runtime production
+clock selector is running; an earlier run was explicitly interrupted after
+47.31s because it had loaded code before the final source-provenance change.
+The cross-seal accepted-open selector and full R14 completion remain OPEN.
+
+The first fresh mounted selector failed before resume, at suspension, after
+64.58s. A real `$mcp-debugger` attach to a fresh same-runtime fixture isolated the
+original caught exception: `collect_held:775 -> _collect_held:1623 ->
+_assemble_accepted:2636`, `selected effects source lacks one exact recovery
+preimage`. Source lines refer to the debugger-frozen tree with SHA256
+`aa4a49f11f7e57dbac77e2dad3a62cba3d726d24a91efe36309ca3f8bdd9eba1`.
+Before setting breakpoints, reachability/value/stack/next-step expectations for
+all rejection sites were saved to
+`/private/tmp/r14-suspend-provenance-expectations.md`. No product clocks changed;
+the session was closed and the server reported zero remaining sessions.
+
+The failed join compared only effect subject ID and head. Two authenticated
+preimages shared those fields but had different fingerprint domains: the existing
+normalized carrier fingerprint and the new immutable body-domain marker alias.
+The extracted unchanged join reproduced two red fast cases (carrier plus marker
+wrongly ambiguous; marker alone wrongly accepted). The repair matches the entire
+expected normalized subject, retaining existing carrier semantics and preserving
+the separate reduction marker. Duplicate carriers still reject; nested logical
+children retain their child fingerprint and reject a carrier-digest replacement.
+A cold plan review found no critical issue with that repair.
+
+The six-file fast-suite command above now returns `251 passed, 2 deselected in
+1.91s`; Ruff passes. A fresh same-runtime mounted run is pending on this tree.
+The cold scoped design review of the preceding provenance/transition changes
+found no substantiated P0/P1; its artifact is
+`/private/tmp/r14-resume-provenance-redteam.md`. It did not prove mounted admission.
+
+The next mounted run passed cut construction and reached the owner, then failed
+suspension after 63.59s with `missing or duplicate accepted-recovery source`
+for the terminal (`matches=2`). The raw terminal alias still carried generic
+command-subject provenance while its logical alias carried exact decision-subject
+provenance. The projection now builds one independently verified decision mapping
+per original physical row, rejects conflicting full decision references, and
+applies that provenance to raw and logical aliases alike. Owner strict source
+deduplication and invocation equality are unchanged. A focused real-terminal
+test reproduces the conflicting-provenance HOLD and proves same-provenance
+alias collapse; a same-revision/different-decision-subject control rejects.
+The cold plan reviewer found no critical flaw in that mapping.
+
+The fast command above returns `253 passed, 2 deselected in 1.78s`; Ruff passes.
+The fresh mounted selector on this final mapping is still pending.

@@ -67,8 +67,10 @@ async def test_source_subset_requires_selected_accounting_and_reopens(tmp_path: 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resume_before_reopen", [False, True], ids=["suspended", "resumed"])
 async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resend(
     tmp_path: Path,
+    resume_before_reopen: bool,
 ) -> None:
     database = tmp_path / "native-recovery-accepted-sources.sqlite"
     resources = HermeticDispatchResources(
@@ -192,6 +194,21 @@ async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resen
             )
             source_by_id[identity] = source
         assert len(resources.require_original_provider().transfers) == 1
+
+        if resume_before_reopen:
+            await runtime.publish_original_resolver_authority_policy()
+            await runtime.publish_original_resolver_invocation()
+            await runtime.publish_original_call_resolution()
+            await runtime.publish_loop_semantic_reduction()
+            resumed = await runtime.resume_execution(
+                sealed.run_id, suspended_run_head.revision.head, b"resume-closed-native-recovery"
+            )
+            assert resumed.state == "ACTIVE"
+            assert resumed.predecessor == suspended_run_head.revision.head
+            assert runtime.read_selected_execution_resume() == resumed
+            assert len(resources.require_original_provider().transfers) == 1
+            subset = R14NativeRecoverySourceSubsetReader(runtime).collect()
+            assert subset is not None
 
     async with open_common_cli_execution_runtime(
         database,

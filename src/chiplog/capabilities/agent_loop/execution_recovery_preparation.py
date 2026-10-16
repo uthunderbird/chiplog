@@ -500,6 +500,18 @@ def _validate_obligation_resume_successor(
     current_by_family = {row.family: row for row in cut.frontier.ordered_members}
     if tuple(before_by_family) != tuple(current_by_family):
         raise RecoveryHold("obligation resume changed native frontier family inventory")
+    opening_sources = tuple(
+        source
+        for source in cut.complete_sources
+        if source.schema_id == "chiplog.execution.accepted-open-recovery-opening.v1"
+        and source.subject.subject_id == binding.obligation_id
+        and source.subject.revision.head == binding.obligation_head
+    )
+    if len(opening_sources) != 1:
+        raise RecoveryHold("obligation resume lost or duplicated its original opening")
+    opening = _record(opening_sources[0], AcceptedOpenRecoveryOpeningV1)
+    if opening.original != binding:
+        raise RecoveryHold("obligation resume opening no longer binds the frozen cause")
     for family, before in before_by_family.items():
         after = current_by_family[family]
         if family not in allowed:
@@ -507,7 +519,12 @@ def _validate_obligation_resume_successor(
                 raise RecoveryHold(f"obligation resume changed unrelated frontier family {family}")
             continue
         if family in {"EVIDENCE", "POLICY"}:
-            if after.ordered_heads[: len(before.ordered_heads)] != before.ordered_heads:
+            prefix = (
+                ()
+                if family == "EVIDENCE" and before.ordered_heads == (Absent(),)
+                else before.ordered_heads
+            )
+            if after.ordered_heads[: len(prefix)] != prefix:
                 raise RecoveryHold(f"obligation resume rewrote existing {family} heads")
         elif family == "OBLIGATION":
             if (
@@ -519,21 +536,9 @@ def _validate_obligation_resume_successor(
                 or after.ordered_heads[3] != closure.resolver_batch
             ):
                 raise RecoveryHold("obligation resume changed the opening or closure shape")
-            opening_sources = tuple(
-                source
-                for source in cut.complete_sources
-                if source.schema_id == "chiplog.execution.accepted-open-recovery-opening.v1"
-                and source.subject.subject_id == binding.obligation_id
-                and source.subject.revision.head == binding.obligation_head
-            )
-            if len(opening_sources) != 1:
-                raise RecoveryHold("obligation resume lost or duplicated its original opening")
-            opening = _record(opening_sources[0], AcceptedOpenRecoveryOpeningV1)
-            if opening.original != binding:
-                raise RecoveryHold("obligation resume opening no longer binds the frozen cause")
         elif family == "SEMANTIC_REDUCTION":
             if (
-                before.ordered_heads
+                before.ordered_heads != (Absent(),)
                 or after.ordered_heads != (reduction.current_reduction,)
             ):
                 raise RecoveryHold("obligation resume has an unexpected reduction transition")
@@ -588,6 +593,7 @@ def _validate_obligation_resume_successor(
                 for source in cut.complete_sources
                 if source.schema_id
                 == "chiplog.execution.accepted-open-terminal-disposition.v1"
+                and source.subject.subject_id == current_call.original_call_id
                 and source.subject.revision == current_disposition.terminal
             )
             if len(terminal_sources) != 1:
@@ -602,7 +608,7 @@ def _validate_obligation_resume_successor(
                 or invocation.reducer_policy_source != reducer_policies[0]
                 or terminal.obligation_opening.subject_id != opening.opening_id
                 or terminal.original_call_id != current_call.original_call_id
-                or terminal.external_effect_intent
+                or terminal.external_effect_intent.revision
                 != current_call.acceptance.external_effect_intent
             ):
                 raise RecoveryHold(
@@ -615,8 +621,9 @@ def _validate_obligation_resume_successor(
                 or source.schema_id
                 == "chiplog.loop.original-effect-evidence-reducer-policy.v1"
             )
-            if after.ordered_heads != tuple(
-                source.subject.revision for source in selected_resolver_sources
+            if after.ordered_heads != (
+                *before.ordered_heads,
+                *(source.subject.revision for source in selected_resolver_sources),
             ):
                 raise RecoveryHold(
                     "obligation resume authority family has extra or missing sources"
