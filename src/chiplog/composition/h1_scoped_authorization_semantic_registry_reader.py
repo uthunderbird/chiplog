@@ -191,7 +191,7 @@ class H1ScopedAuthorizationSemanticRegistryReaderV1:
             issuance = effects.selected.selected_h1.issuance
             if type(issuance) is not H1CompletionIssuanceV4:
                 raise TypeError("selected issuance is not V4")
-            original_sources = issuance.effects_call.request.intent.acquisition.original_sources
+            original_sources = issuance.effects_call.request.original_sources
             original = original_sources.semantic_registry
             lease = evidence.current_claim.binding.claimant_clock.lease_expires_at_ns
             if type(original) is not CapturedSource or type(lease) is not int:

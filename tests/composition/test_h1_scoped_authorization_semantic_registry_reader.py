@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from chiplog.capabilities.effects.contracts import ExactHead
+from chiplog.capabilities.effects.dispatch_authority_contracts import CapturedSource
 from chiplog.capabilities.effects.h1_scoped_dispatch_semantics import (
     H1_SCOPED_DISPATCH_V2_SEMANTIC_MANIFEST,
     PREPARE_H1_SCOPED_DELIVERY_V2,
@@ -43,7 +44,7 @@ class _Runtime:
         return self._gate
 
 
-def _producer_only_v2_capture():
+def _producer_only_v2_capture() -> CapturedSource:
     """Make a self-consistent V2 DTO which omits the authorization operation."""
     raw = H1_SCOPED_DISPATCH_V2_SEMANTIC_MANIFEST.model_copy(
         update={"operations": (PREPARE_H1_SCOPED_DELIVERY_V2,)}
@@ -74,11 +75,7 @@ def _installed(monkeypatch: pytest.MonkeyPatch):
     original = h1_scoped_dispatch_v2_semantic_registry_capture(
         clock_contract="chiplog.dispatch.monotonic.v2", clock_epoch="epoch", valid_until_ns=75
     )
-    request = SimpleNamespace(
-        intent=SimpleNamespace(
-            acquisition=SimpleNamespace(original_sources=SimpleNamespace(semantic_registry=original))
-        )
-    )
+    request = SimpleNamespace(original_sources=SimpleNamespace(semantic_registry=original))
     issuance = SimpleNamespace(effects_call=SimpleNamespace(request=request))
     claim = SimpleNamespace(
         binding=SimpleNamespace(claimant_clock=SimpleNamespace(lease_expires_at_ns=50))
@@ -137,15 +134,22 @@ def _installed(monkeypatch: pytest.MonkeyPatch):
     return subject, runtime, joined_capture, joined, clock, request, claim
 
 
+@pytest.mark.parametrize("legacy_intent_decoy", [False, True])
 def test_registry_reader_returns_exact_original_and_g1_lease_current(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, legacy_intent_decoy: bool
 ) -> None:
     subject, runtime, joined_capture, _, _, request, _ = _installed(monkeypatch)
+    if legacy_intent_decoy:
+        request.intent = SimpleNamespace(
+            acquisition=SimpleNamespace(
+                original_sources=SimpleNamespace(semantic_registry=_producer_only_v2_capture())
+            )
+        )
     reader = subject.H1ScopedAuthorizationSemanticRegistryReaderV1(runtime)
     capture = reader.read(joined_capture)
     with runtime._authority_gate().hold():
         role = reader.role_held(capture)
-    assert role.original is request.intent.acquisition.original_sources.semantic_registry
+    assert role.original is request.original_sources.semantic_registry
     assert role.current == h1_scoped_dispatch_v2_semantic_registry_capture(
         clock_contract="chiplog.dispatch.monotonic.v2", clock_epoch="epoch", valid_until_ns=50
     )
@@ -160,7 +164,7 @@ def test_registry_reader_rejects_self_consistent_altered_original_or_v1(
 ) -> None:
     subject, runtime, joined_capture, _, _, request, _ = _installed(monkeypatch)
     if isinstance(replacement, bytes):
-        request.intent.acquisition.original_sources.semantic_registry = (
+        request.original_sources.semantic_registry = (
             h1_scoped_dispatch_v2_semantic_registry_capture(
                 clock_contract="chiplog.dispatch.monotonic.v2",
                 clock_epoch="epoch",
@@ -168,7 +172,7 @@ def test_registry_reader_rejects_self_consistent_altered_original_or_v1(
             ).model_copy(update={"source_version": "v1", "canonical_value": replacement})
         )
     else:
-        request.intent.acquisition.original_sources.semantic_registry = replacement
+        request.original_sources.semantic_registry = replacement
     reader = subject.H1ScopedAuthorizationSemanticRegistryReaderV1(runtime)
     with pytest.raises(subject.H1ScopedAuthorizationSemanticRegistryHold, match="unavailable"):
         reader.read(joined_capture)
@@ -181,20 +185,23 @@ def test_registry_reader_rejects_changed_epoch_lease_joined_or_tampered_current(
     reader = subject.H1ScopedAuthorizationSemanticRegistryReaderV1(runtime)
     capture = reader.read(joined_capture)
     clock.epoch = "other"
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSemanticRegistryHold, match="unavailable"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSemanticRegistryHold, match="unavailable"),
     ):
         reader.recheck_held(capture)
     clock.epoch = "epoch"
     claim.binding.claimant_clock.lease_expires_at_ns = 51
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSemanticRegistryHold, match="sources changed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSemanticRegistryHold, match="sources changed"),
     ):
         reader.recheck_held(capture)
     claim.binding.claimant_clock.lease_expires_at_ns = 50
     joined.changed = True
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSemanticRegistryHold, match="unavailable"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSemanticRegistryHold, match="unavailable"),
     ):
         reader.recheck_held(capture)
     joined.changed = False
@@ -204,8 +211,9 @@ def test_registry_reader_rejects_changed_epoch_lease_joined_or_tampered_current(
         "_record",
         replace(record, role=replace(record.role, current=_producer_only_v2_capture())),
     )
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSemanticRegistryHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSemanticRegistryHold, match="not reader-issued"),
     ):
         reader.role_held(capture)
 
@@ -217,8 +225,9 @@ def test_registry_reader_rejects_forgery_and_releases_clock_capture(
     reader = subject.H1ScopedAuthorizationSemanticRegistryReaderV1(runtime)
     capture = reader.read(joined_capture)
     forged = object.__new__(subject.H1ScopedAuthorizationSemanticRegistryCaptureV1)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSemanticRegistryHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSemanticRegistryHold, match="not reader-issued"),
     ):
         reader.role_held(forged)
     with pytest.raises(TypeError, match="cannot be copied"):
@@ -228,7 +237,8 @@ def test_registry_reader_rejects_forgery_and_releases_clock_capture(
     second = reader.read(joined_capture)
     reader.close()
     assert len(clock.released) == 2
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSemanticRegistryHold, match="reader is closed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSemanticRegistryHold, match="reader is closed"),
     ):
         reader.role_held(second)
