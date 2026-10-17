@@ -29,9 +29,7 @@ from tests.capabilities.deployment_trust.test_prepared_external_delivery_grant_v
     revoke_request,
 )
 
-ISSUE: Literal["ISSUE_PREPARED_EXTERNAL_DELIVERY_GRANT"] = (
-    "ISSUE_PREPARED_EXTERNAL_DELIVERY_GRANT"
-)
+ISSUE: Literal["ISSUE_PREPARED_EXTERNAL_DELIVERY_GRANT"] = "ISSUE_PREPARED_EXTERNAL_DELIVERY_GRANT"
 REVOKE: Literal["REVOKE_PREPARED_EXTERNAL_DELIVERY_GRANT"] = (
     "REVOKE_PREPARED_EXTERNAL_DELIVERY_GRANT"
 )
@@ -98,8 +96,9 @@ def test_verifies_real_ed25519_signed_issue_and_revoke(
     )
 
 
-def test_rejects_invalid_signature_request_bytes_source_ref_scope_permission_and_v1_source(
-) -> None:
+def test_rejects_invalid_signature_request_bytes_source_ref_scope_permission_and_v1_source() -> (
+    None
+):
     key = Ed25519PrivateKey.generate()
     request = issue_request()
     retained = _signed_source(request, key)

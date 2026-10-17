@@ -773,13 +773,19 @@ async def test_scoped_owner_requires_exact_h1_semantic_registry_capture(
     original_sources = call.request.original_sources.model_copy(
         update={"semantic_registry": original}
     )
-    assert prepare_h1_scoped_delivery(
-        _with_request(call, call.request.model_copy(update={"original_sources": original_sources}))
-    ).disposition == "DENIED"
+    assert (
+        prepare_h1_scoped_delivery(
+            _with_request(
+                call, call.request.model_copy(update={"original_sources": original_sources})
+            )
+        ).disposition
+        == "DENIED"
+    )
 
 
-async def test_scoped_owner_requires_current_h1_semantic_registry_capture_to_match_original(
-) -> None:
+async def test_scoped_owner_requires_current_h1_semantic_registry_capture_to_match_original() -> (
+    None
+):
     call = await _call()
     current_registry = call.request.current.sources.semantic_registry.model_copy(
         update={"reader_id": "forged-reader"}
@@ -788,9 +794,12 @@ async def test_scoped_owner_requires_current_h1_semantic_registry_capture_to_mat
         update={"semantic_registry": current_registry}
     )
     current = call.request.current.model_copy(update={"sources": current_sources})
-    assert prepare_h1_scoped_delivery(
-        _with_request(call, call.request.model_copy(update={"current": current}))
-    ).disposition == "DENIED"
+    assert (
+        prepare_h1_scoped_delivery(
+            _with_request(call, call.request.model_copy(update={"current": current}))
+        ).disposition
+        == "DENIED"
+    )
 
 
 @pytest.mark.parametrize(
@@ -813,9 +822,12 @@ async def test_scoped_owner_requires_exact_history_and_generation_capture_metada
     source = getattr(call.request.current.sources, role).model_copy(update={field: replacement})
     sources = call.request.current.sources.model_copy(update={role: source})
     current = call.request.current.model_copy(update={"sources": sources})
-    assert prepare_h1_scoped_delivery(
-        _with_request(call, call.request.model_copy(update={"current": current}))
-    ).disposition == "DENIED"
+    assert (
+        prepare_h1_scoped_delivery(
+            _with_request(call, call.request.model_copy(update={"current": current}))
+        ).disposition
+        == "DENIED"
+    )
 
 
 async def test_scoped_owner_requires_equal_original_history_and_generation_captures() -> None:
@@ -826,9 +838,14 @@ async def test_scoped_owner_requires_equal_original_history_and_generation_captu
     original_sources = call.request.original_sources.model_copy(
         update={"effects_history": changed_history}
     )
-    assert prepare_h1_scoped_delivery(
-        _with_request(call, call.request.model_copy(update={"original_sources": original_sources}))
-    ).disposition == "DENIED"
+    assert (
+        prepare_h1_scoped_delivery(
+            _with_request(
+                call, call.request.model_copy(update={"original_sources": original_sources})
+            )
+        ).disposition
+        == "DENIED"
+    )
 
     changed_generation = call.request.original_sources.normative_conflict_generation.model_copy(
         update={"reader_id": "another-reader"}
@@ -836,9 +853,14 @@ async def test_scoped_owner_requires_equal_original_history_and_generation_captu
     original_sources = call.request.original_sources.model_copy(
         update={"normative_conflict_generation": changed_generation}
     )
-    assert prepare_h1_scoped_delivery(
-        _with_request(call, call.request.model_copy(update={"original_sources": original_sources}))
-    ).disposition == "DENIED"
+    assert (
+        prepare_h1_scoped_delivery(
+            _with_request(
+                call, call.request.model_copy(update={"original_sources": original_sources})
+            )
+        ).disposition
+        == "DENIED"
+    )
 
 
 async def test_scoped_owner_binds_history_observation_and_generation_not_policy_head() -> None:
@@ -856,9 +878,12 @@ async def test_scoped_owner_binds_history_observation_and_generation_not_policy_
     current = call.request.current.model_copy(
         update={"history_observation": generation_capture.invalidation_manifest}
     )
-    assert prepare_h1_scoped_delivery(
-        _with_request(call, call.request.model_copy(update={"current": current}))
-    ).disposition == "DENIED"
+    assert (
+        prepare_h1_scoped_delivery(
+            _with_request(call, call.request.model_copy(update={"current": current}))
+        ).disposition
+        == "DENIED"
+    )
 
 
 async def test_scoped_owner_rejects_self_consistent_history_containing_target_intent() -> None:
@@ -903,12 +928,8 @@ async def test_scoped_owner_retains_h1_source_bytes_and_refuses_forged_candidate
     forged_candidate = planning.candidate.model_copy(
         update={"prepared_delivery_basis_bytes": b"forged"}
     )
-    forged_planning = planning.model_copy(
-        update={"candidate": forged_candidate}
-    )
-    forged_sources = call.request.original_sources.model_copy(
-        update={"planning": forged_planning}
-    )
+    forged_planning = planning.model_copy(update={"candidate": forged_candidate})
+    forged_sources = call.request.original_sources.model_copy(update={"planning": forged_planning})
     forged_request = call.request.model_copy(update={"original_sources": forged_sources})
     forged_call = call.model_copy(
         update={

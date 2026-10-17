@@ -53,36 +53,58 @@ def _transition(monkeypatch, *, existing_evidence=False, damage=None):
     branch = call.acceptance.model_copy(
         update={"external_effect_intent": terminal.external_effect_intent.revision}
     )
-    disposition = call.disposition.model_copy(update={
-        "terminal": original.call_terminal.subject.revision,
-        "obligation": original.original,
-    })
-    call = call.model_copy(update={
-        "original_call_id": original.original.original_call_id,
-        "acceptance": branch,
-        "disposition": disposition,
-    })
-    current_call = call.model_copy(update={"disposition": disposition.model_copy(update={
-        "recovered_outcome": disposition.recovered_outcome.model_copy(update={"outcome": outcome})
-    })})
+    disposition = call.disposition.model_copy(
+        update={
+            "terminal": original.call_terminal.subject.revision,
+            "obligation": original.original,
+        }
+    )
+    call = call.model_copy(
+        update={
+            "original_call_id": original.original.original_call_id,
+            "acceptance": branch,
+            "disposition": disposition,
+        }
+    )
+    current_call = call.model_copy(
+        update={
+            "disposition": disposition.model_copy(
+                update={
+                    "recovered_outcome": disposition.recovered_outcome.model_copy(
+                        update={"outcome": outcome}
+                    )
+                }
+            )
+        }
+    )
     closure = NS(
-        original=original.original, terminal_disposition=disposition.terminal,
-        recovered_outcome=outcome, closure=closure_ref, resolver_batch=batch_ref,
+        original=original.original,
+        terminal_disposition=disposition.terminal,
+        recovered_outcome=outcome,
+        closure=closure_ref,
+        resolver_batch=batch_ref,
         reduction_id=reduced.reduction_id,
     )
     evidence = tuple(source.revision for source in reduced.complete_ordered_evidence)
     reduction = NS(
-        reduction_id=reduced.reduction_id, obligation_closure=closure_ref,
-        accepted_outcome=outcome, consumability="CONSUMABLE",
-        ordered_consumed_evidence=evidence, current_reduction=reduction_ref,
+        reduction_id=reduced.reduction_id,
+        obligation_closure=closure_ref,
+        accepted_outcome=outcome,
+        consumability="CONSUMABLE",
+        ordered_consumed_evidence=evidence,
+        current_reduction=reduction_ref,
     )
     batch_source = _source(
-        resolved.batch, record_id=resolved.batch.batch_id, owner="agent_loop",
+        resolved.batch,
+        record_id=resolved.batch.batch_id,
+        owner="agent_loop",
         schema="chiplog.loop.original-resolver-batch.v1",
     )
     resolver_sources = (
-        original.resolver_policy, original.reducer_policy,
-        original.authority.authenticated_invocation, batch_source,
+        original.resolver_policy,
+        original.reducer_policy,
+        original.authority.authenticated_invocation,
+        batch_source,
     )
     authority = tuple(source.subject.revision for source in resolver_sources)
     scope = Present(head="native-scope", fingerprint="a" * 64)
@@ -95,13 +117,18 @@ def _transition(monkeypatch, *, existing_evidence=False, damage=None):
     before_heads = {
         "CALL": (disposition.terminal, Absent()),
         "EVIDENCE": evidence[:1] if existing_evidence else (Absent(),),
-        "AUTHORITY": (scope,), "POLICY": (policy, semantic),
+        "AUTHORITY": (scope,),
+        "POLICY": (policy, semantic),
         "OBLIGATION": (disposition.terminal, original.current_obligation.subject.revision),
-        "SEMANTIC_REDUCTION": (Absent(),), "PROMPT": (policy,),
+        "SEMANTIC_REDUCTION": (Absent(),),
+        "PROMPT": (policy,),
     }
     after_heads = {
-        **before_heads, "CALL": (disposition.terminal, outcome), "EVIDENCE": evidence,
-        "AUTHORITY": (scope, *authority), "POLICY": (policy, semantic, *authority),
+        **before_heads,
+        "CALL": (disposition.terminal, outcome),
+        "EVIDENCE": evidence,
+        "AUTHORITY": (scope, *authority),
+        "POLICY": (policy, semantic, *authority),
         "OBLIGATION": (disposition.terminal, outcome, closure_ref, batch_ref),
         "SEMANTIC_REDUCTION": (reduction_ref,),
     }
@@ -126,7 +153,8 @@ def _transition(monkeypatch, *, existing_evidence=False, damage=None):
 
     def frontier(heads, calls, sequence):
         return NS(
-            tenant_commit_sequence=sequence, ordered_calls=(calls,),
+            tenant_commit_sequence=sequence,
+            ordered_calls=(calls,),
             ordered_members=tuple(NS(family=k, ordered_heads=v) for k, v in heads.items()),
         )
 
@@ -135,11 +163,15 @@ def _transition(monkeypatch, *, existing_evidence=False, damage=None):
     monkeypatch.setattr(preparation, "_expected_suspended_frontier", lambda *args: before)
     monkeypatch.setattr(preparation, "_run_ref", lambda _: "outer-authenticated-run")
     cut = NS(
-        tenant_id=original.tenant_id, frontier=after,
-        original_closures=(closure,), current_reductions=(reduction,),
+        tenant_id=original.tenant_id,
+        frontier=after,
+        original_closures=(closure,),
+        current_reductions=(reduction,),
         complete_sources=(
-            NS(schema_id=preparation.SCHEMA_V5), original.current_obligation,
-            original.call_terminal, *resolver_sources,
+            NS(schema_id=preparation.SCHEMA_V5),
+            original.current_obligation,
+            original.call_terminal,
+            *resolver_sources,
         ),
     )
     if damage == "opening-missing":
@@ -149,7 +181,8 @@ def _transition(monkeypatch, *, existing_evidence=False, damage=None):
     elif damage == "opening-duplicated":
         cut.complete_sources = (*cut.complete_sources, original.current_obligation)
     baseline = NS(
-        original_obligations=(original.original,), frontier=before,
+        original_obligations=(original.original,),
+        frontier=before,
         predecessor_run="outer-authenticated-predecessor",
     )
     return cut, baseline
@@ -164,7 +197,8 @@ def test_obligation_resume_appends_exact_selected_closure(monkeypatch, existing_
 def test_obligation_resume_selects_logical_terminal_among_physical_aliases(monkeypatch):
     cut, baseline = _transition(monkeypatch)
     terminal = next(
-        source for source in cut.complete_sources
+        source
+        for source in cut.complete_sources
         if source.schema_id == "chiplog.execution.accepted-open-terminal-disposition.v1"
     )
     physical = terminal.model_copy(update={"subject": terminal.physical_record})
@@ -176,7 +210,8 @@ def test_obligation_resume_selects_logical_terminal_among_physical_aliases(monke
 def test_obligation_resume_rejects_duplicate_logical_terminal(monkeypatch):
     cut, baseline = _transition(monkeypatch)
     terminal = next(
-        source for source in cut.complete_sources
+        source
+        for source in cut.complete_sources
         if source.schema_id == "chiplog.execution.accepted-open-terminal-disposition.v1"
     )
     cut.complete_sources = (*cut.complete_sources, terminal)
@@ -184,20 +219,23 @@ def test_obligation_resume_rejects_duplicate_logical_terminal(monkeypatch):
         preparation._validate_obligation_resume_successor(cut, baseline, object())
 
 
-@pytest.mark.parametrize("damage,reason", [
-    ("evidence-rewrite", "rewrote existing EVIDENCE heads"),
-    ("evidence-mixed", "rewrote existing EVIDENCE heads"),
-    ("evidence-extra", "closure and consumable reduction"),
-    ("reduction-existing", "unexpected reduction transition"),
-    ("reduction-extra", "unexpected reduction transition"),
-    ("authority-missing-inherited", "authority family has extra or missing sources"),
-    ("authority-extra", "authority family has extra or missing sources"),
-    ("policy-rewrite", "policy family has extra or missing sources"),
-    ("unrelated", "changed unrelated frontier family PROMPT"),
-    ("external-intent", "resolver invocation does not bind the exact opening and terminal"),
-    ("opening-missing", "lost or duplicated its original opening"),
-    ("opening-duplicated", "lost or duplicated its original opening"),
-])
+@pytest.mark.parametrize(
+    "damage,reason",
+    [
+        ("evidence-rewrite", "rewrote existing EVIDENCE heads"),
+        ("evidence-mixed", "rewrote existing EVIDENCE heads"),
+        ("evidence-extra", "closure and consumable reduction"),
+        ("reduction-existing", "unexpected reduction transition"),
+        ("reduction-extra", "unexpected reduction transition"),
+        ("authority-missing-inherited", "authority family has extra or missing sources"),
+        ("authority-extra", "authority family has extra or missing sources"),
+        ("policy-rewrite", "policy family has extra or missing sources"),
+        ("unrelated", "changed unrelated frontier family PROMPT"),
+        ("external-intent", "resolver invocation does not bind the exact opening and terminal"),
+        ("opening-missing", "lost or duplicated its original opening"),
+        ("opening-duplicated", "lost or duplicated its original opening"),
+    ],
+)
 def test_obligation_resume_rejects_unregistered_frontier_changes(monkeypatch, damage, reason):
     cut, baseline = _transition(monkeypatch, damage=damage)
     with pytest.raises(RecoveryHold, match=reason):

@@ -313,9 +313,7 @@ async def test_legacy_suspension_owner_route_cannot_return_an_open_obligation(
     )
     prepared_with_obligation = prepared.model_copy(
         update={
-            "baseline": prepared.baseline.model_copy(
-                update={"original_obligations": (obligation,)}
-            )
+            "baseline": prepared.baseline.model_copy(update={"original_obligations": (obligation,)})
         }
     )
     monkeypatch.setattr(
@@ -323,9 +321,7 @@ async def test_legacy_suspension_owner_route_cannot_return_an_open_obligation(
     )
 
     legacy = process.dispatch(process.SUSPENSION_OPERATION, request.canonical_bytes())
-    v37 = process.dispatch(
-        process.SUSPENSION_OBLIGATION_OPERATION, request.canonical_bytes()
-    )
+    v37 = process.dispatch(process.SUSPENSION_OBLIGATION_OPERATION, request.canonical_bytes())
 
     assert legacy["failure"] == "PROTOCOL_REJECTED"
     assert "legacy suspension route" in legacy["reason"]
@@ -381,9 +377,7 @@ async def _resume_request() -> PrepareExecutionResume:
     assert suspension.kind == "PREPARED_EXECUTION_SUSPENSION_V2"
     suspended = suspension.run
     suspended_ref = _run_ref(suspended)
-    suspended_source = _source(
-        "chiplog.agent-loop.execution-record.v2", suspended_ref, suspended
-    )
+    suspended_source = _source("chiplog.agent-loop.execution-record.v2", suspended_ref, suspended)
     current_cut = cut.model_copy(
         update={
             "tenant_commit_sequence": cut.tenant_commit_sequence + 1,

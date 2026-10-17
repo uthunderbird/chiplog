@@ -207,9 +207,7 @@ def test_rejects_missing_revoked_or_operation_disallowed_binding(
         )
 
 
-@pytest.mark.parametrize(
-    "field", ["tenant_id", "database_id", "operator_key_id", "policy_id"]
-)
+@pytest.mark.parametrize("field", ["tenant_id", "database_id", "operator_key_id", "policy_id"])
 def test_rejects_binding_with_one_wrong_scope_field(field: str) -> None:
     private_key = Ed25519PrivateKey.generate()
     policy_request = request(ISSUE)

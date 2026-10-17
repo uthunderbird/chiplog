@@ -464,9 +464,7 @@ async def test_non_scheduler_successor_rejects_changed_binding_manifest_mutation
     else:
         changed = (expected[1], expected[0], *expected[2:])
     edge = value.result.edge.model_copy(update={"changed_binding_manifest": changed})
-    edge_member = _content_member(
-        "SUCCESSOR_EDGE", "chiplog.execution.successor-edge.v1", edge
-    )
+    edge_member = _content_member("SUCCESSOR_EDGE", "chiplog.execution.successor-edge.v1", edge)
     result = value.result.model_copy(update={"edge": edge})
 
     with pytest.raises(
@@ -515,9 +513,7 @@ async def test_non_scheduler_successor_rejects_changed_predecessor_objective() -
             "complete_initialization": (initialization_ref,),
         }
     )
-    edge_member = _content_member(
-        "SUCCESSOR_EDGE", "chiplog.execution.successor-edge.v1", edge
-    )
+    edge_member = _content_member("SUCCESSOR_EDGE", "chiplog.execution.successor-edge.v1", edge)
     result = value.result.model_copy(
         update={
             "edge": edge,
@@ -1406,8 +1402,7 @@ async def test_native_non_scheduler_successor_owner_preparation_and_start(
     request = fixture.request.model_copy(
         update={
             "command_id": (
-                f"execution-successor:{fixture.request.run.run_id}:"
-                f"{fixture.request.run.head}"
+                f"execution-successor:{fixture.request.run.run_id}:{fixture.request.run.head}"
             ),
             "admitted_input": fixture.request.admitted_input.model_copy(
                 update={"database_id": "logical-ingress-database"}
@@ -1478,8 +1473,7 @@ async def test_successor_classification_requires_changed_authenticated_objective
     request = fixture.request.model_copy(
         update={
             "command_id": (
-                f"execution-successor:{fixture.request.run.run_id}:"
-                f"{fixture.request.run.head}"
+                f"execution-successor:{fixture.request.run.run_id}:{fixture.request.run.head}"
             ),
             "admitted_input": fixture.request.admitted_input.model_copy(
                 update={"database_id": "logical-ingress-database"}

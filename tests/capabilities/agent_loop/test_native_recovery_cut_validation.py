@@ -15,8 +15,17 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import FrozenRu
 
 @pytest.mark.parametrize(
     "damage",
-    [None, "subject", "carrier-id", "carrier-head", "carrier-fingerprint",
-     "body", "marker", "schema", "owner"],
+    [
+        None,
+        "subject",
+        "carrier-id",
+        "carrier-head",
+        "carrier-fingerprint",
+        "body",
+        "marker",
+        "schema",
+        "owner",
+    ],
 )
 @pytest.mark.parametrize("record_kind", ["evidence", "closed"])
 def test_r16_outcome_record_marker_requires_exact_body_and_physical_carrier(damage, record_kind):
@@ -35,16 +44,26 @@ def test_r16_outcome_record_marker_requires_exact_body_and_physical_carrier(dama
         _, _, record = _closed_r16()
     if damage == "body":
         record = record.model_copy(
-            update={"snapshot": record.snapshot.model_copy(update={
-                "state": "CONFIRMED" if record.snapshot.state != "CONFIRMED" else "OUTCOME_UNKNOWN"
-            })}
+            update={
+                "snapshot": record.snapshot.model_copy(
+                    update={
+                        "state": "CONFIRMED"
+                        if record.snapshot.state != "CONFIRMED"
+                        else "OUTCOME_UNKNOWN"
+                    }
+                )
+            }
         )
     elif damage == "marker":
         record = record.model_copy(
-            update={"record": record.record.model_copy(update={
-                "fingerprint": "f" * 64,
-                "head": record.record.subject_id + "/" + "f" * 64,
-            })}
+            update={
+                "record": record.record.model_copy(
+                    update={
+                        "fingerprint": "f" * 64,
+                        "head": record.record.subject_id + "/" + "f" * 64,
+                    }
+                )
+            }
         )
     raw = record.canonical_bytes()
     digest = hashlib.sha256(raw).hexdigest()
@@ -72,18 +91,14 @@ def test_r16_outcome_record_marker_requires_exact_body_and_physical_carrier(dama
         if damage == "carrier-id":
             physical = physical.model_copy(update={"subject_id": "foreign"})
         else:
-            changes = (
-                {"head": "foreign"}
-                if damage == "carrier-head"
-                else {"fingerprint": "f" * 64}
-            )
+            changes = {"head": "foreign"} if damage == "carrier-head" else {"fingerprint": "f" * 64}
             revision = physical.revision.model_copy(update=changes)
             physical = physical.model_copy(update={"revision": revision})
         source = source.model_copy(update={"physical_record": physical})
     elif damage in {"schema", "owner"}:
-        source = source.model_copy(update={
-            "schema_id" if damage == "schema" else "owner": "foreign"
-        })
+        source = source.model_copy(
+            update={"schema_id" if damage == "schema" else "owner": "foreign"}
+        )
     assert _source_preimage_is_valid(source) is (damage is None)
 
 
@@ -116,8 +131,7 @@ def test_frozen_binding_references_must_belong_to_their_registered_frontier_fami
     cut = SimpleNamespace(
         frontier=SimpleNamespace(
             ordered_members=tuple(
-                SimpleNamespace(family=family, ordered_heads=heads)
-                for family, heads in families
+                SimpleNamespace(family=family, ordered_heads=heads) for family, heads in families
             )
         ),
         current_bindings=FrozenRunBindings(
@@ -137,9 +151,7 @@ def test_frozen_binding_references_must_belong_to_their_registered_frontier_fami
 
     _validate_frozen_binding_frontier_membership(cut)
 
-    cut.current_bindings = cut.current_bindings.model_copy(
-        update={"semantic_bindings": (policy,)}
-    )
+    cut.current_bindings = cut.current_bindings.model_copy(update={"semantic_bindings": (policy,)})
     with pytest.raises(
         ValueError,
         match="native frozen binding is outside its registered family: semantic_bindings",

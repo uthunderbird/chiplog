@@ -205,27 +205,21 @@ def test_late_compatible_and_rival_evidence_prepare_exact_reduction_successors()
 
     send = original_send()
     opening = prepare_outcome(outcome_request(send, send))
-    initial = prepare_outcome(
-        outcome_request(opening, send, name="receipt-initial")
-    )
+    initial = prepare_outcome(outcome_request(opening, send, name="receipt-initial"))
     confirmed = prepare_outcome(
         outcome_request(initial, send, positive=("subject",), name="confirm")
     )
     closed = prepare_outcome(outcome_request(confirmed, send, close=True))
 
     def prepare_late(name: str, *, negative: tuple[str, ...] = ()):
-        late = prepare_outcome(
-            outcome_request(closed, send, negative=negative, name=name)
-        )
+        late = prepare_outcome(outcome_request(closed, send, negative=negative, name=name))
         evidence = late.command.evidence
         assert evidence is not None
         evidence_ref = evidence_head(evidence)
         carrier = _head(late.record.subject_id, late.record.head, late.record.fingerprint)
         evidence_source = RecoverySourceRecord(
             owner="effects",
-            subject=_head(
-                evidence_ref.subject_id, evidence_ref.head, evidence_ref.fingerprint
-            ),
+            subject=_head(evidence_ref.subject_id, evidence_ref.head, evidence_ref.fingerprint),
             schema_id=late.schema_id,
             canonical_record_bytes=late.canonical_bytes(),
             selected_decision=_head("selected:late:" + name, "decision", "a" * 64),

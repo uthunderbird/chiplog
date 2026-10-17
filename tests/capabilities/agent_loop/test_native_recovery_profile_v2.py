@@ -96,9 +96,7 @@ def test_v2_selection_guard_rejects_v1_rows_and_late_lineage(tmp_path):
         connection.execute(
             "CREATE TABLE records (tenant_id TEXT, schema_id TEXT, commit_sequence INTEGER)"
         )
-        connection.execute(
-            "CREATE TABLE publications (tenant_id TEXT, operation_kind TEXT)"
-        )
+        connection.execute("CREATE TABLE publications (tenant_id TEXT, operation_kind TEXT)")
     journal = SimpleNamespace(entries=lambda: ())
     runtime = SimpleNamespace(
         _tenant_id="tenant", _database=database, _loop_decisions=lambda: journal

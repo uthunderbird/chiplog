@@ -298,9 +298,9 @@ def test_supersession_closes_old_lineage_and_uses_new_id_genesis() -> None:
     same_id_payload["new_issue"]["administrative_source"]["semantic_scope"] = same_id_payload[
         "new_issue"
     ]["proposed_mandate"]["mandate"]["scope"]
-    same_id_payload["administrative_source"]["semantic_scope"] = same_id_payload[
-        "new_issue"
-    ]["proposed_mandate"]["mandate"]["scope"]
+    same_id_payload["administrative_source"]["semantic_scope"] = same_id_payload["new_issue"][
+        "proposed_mandate"
+    ]["mandate"]["scope"]
     _refresh_proposed_mandate(same_id_payload["new_issue"]["proposed_mandate"])
     with pytest.raises(ValidationError, match="distinct mandate ID"):
         SupersedeScheduledMandateV1.model_validate_json(_json_payload(same_id_payload))

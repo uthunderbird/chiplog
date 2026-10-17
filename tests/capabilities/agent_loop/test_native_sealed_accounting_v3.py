@@ -215,8 +215,7 @@ def test_v3_static_owner_route_uses_its_versioned_wire_schemas() -> None:
     first, second = _two_frontiers()
     request = _request((first, second))
     route = next(
-        row for row in ORIGINAL_RECOVERY_ROUTES
-        if row[0] == PREPARE_SEALED_ACCOUNTING_V3_OPERATION
+        row for row in ORIGINAL_RECOVERY_ROUTES if row[0] == PREPARE_SEALED_ACCOUNTING_V3_OPERATION
     )
 
     response = dispatch_original_recovery(

@@ -32,9 +32,10 @@ def test_h1_zero_obligation_terminal_work_preserves_exact_source_and_result_byte
         result = preparation.prepare_h1_terminal_work(request)
 
         assert isinstance(result, PreparedPostTerminalWork)
-        assert result.source_request_fingerprint == hashlib.sha256(
-            request.canonical_bytes()
-        ).hexdigest()
+        assert (
+            result.source_request_fingerprint
+            == hashlib.sha256(request.canonical_bytes()).hexdigest()
+        )
         assert result.ordered_work == ()
         assert result.complete_records == ()
         assert result.complete_commitment == preparation.prepared_post_terminal_work_commitment(
@@ -46,9 +47,10 @@ def test_h1_zero_obligation_terminal_work_preserves_exact_source_and_result_byte
             b'"complete_records":[],"ordered_work":[],"source_request_fingerprint":"'
             b'1f91a165c22aa871daa7e808ee45c71c76c76423de514f13f3d6a76da0229490"}'
         )
-        assert result.canonical_bytes() == preparation.prepare_h1_terminal_work(
-            request
-        ).canonical_bytes()
+        assert (
+            result.canonical_bytes()
+            == preparation.prepare_h1_terminal_work(request).canonical_bytes()
+        )
         assert (
             request.original_terminalization_request
             == fixture.assembly.work_source.canonical_bytes()

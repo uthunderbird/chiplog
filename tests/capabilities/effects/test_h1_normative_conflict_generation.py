@@ -88,9 +88,7 @@ def test_history_rejects_duplicate_or_reordered_members(
 def test_history_rejects_fingerprint_mutation() -> None:
     member = _member("one", (3, 0))
     with pytest.raises(ValueError):
-        H1EffectsHistoryMemberV1.model_validate(
-            {**member.model_dump(), "fingerprint": "0" * 64}
-        )
+        H1EffectsHistoryMemberV1.model_validate({**member.model_dump(), "fingerprint": "0" * 64})
 
 
 def test_generation_uses_only_versioned_tenant_and_verified_history_digest() -> None:

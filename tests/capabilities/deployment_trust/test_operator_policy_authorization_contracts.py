@@ -184,9 +184,7 @@ def test_payload_binds_exact_canonical_revoke_request_bytes_and_hash() -> None:
         ("operation", "ISSUE_PREPARED_EXTERNAL_SELF_DELIVERY_POLICY"),
     ],
 )
-def test_payload_rejects_scope_operation_or_command_mismatch(
-    field: str, replacement: str
-) -> None:
+def test_payload_rejects_scope_operation_or_command_mismatch(field: str, replacement: str) -> None:
     request = revoke_request() if field == "operation" else issue_request()
     payload = payload_for(request).model_dump(mode="json")
     payload[field] = replacement
@@ -238,9 +236,7 @@ def test_retained_source_binds_hash_identity_content_head_and_canonical_bytes() 
     content_head = operator_policy_source_content_head(source_bytes)
 
     retained = RetainedOperatorPolicyAuthorizationSourceV1(
-        ref=ExactHead(
-            identity="operator-source", head=content_head, fingerprint=fingerprint
-        ),
+        ref=ExactHead(identity="operator-source", head=content_head, fingerprint=fingerprint),
         canonical_source_bytes=source_bytes,
     )
     assert retained.ref.identity == signed.payload.source_id

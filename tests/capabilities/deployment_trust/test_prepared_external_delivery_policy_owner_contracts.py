@@ -355,9 +355,7 @@ def test_proposal_rejects_wrong_digest_or_derived_policy_fields(mutation: str) -
         message = "call SHA256"
     elif mutation == "terms":
         other_policy = candidate.policy.model_copy(update={"terms": terms(b"other payload")})
-        changed = candidate.model_copy(
-            update={"policy": other_policy}
-        )
+        changed = candidate.model_copy(update={"policy": other_policy})
         message = "differs from signed request"
     elif mutation == "status":
         changed = candidate.model_copy(

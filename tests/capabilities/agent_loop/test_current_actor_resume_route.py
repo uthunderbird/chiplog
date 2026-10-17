@@ -17,10 +17,12 @@ def test_current_actor_operation_is_an_exact_owner_route() -> None:
 
 
 @pytest.mark.parametrize(
-    "operation", [process.RESUME_OPERATION, process.RESUME_OBLIGATION_OPERATION],
+    "operation",
+    [process.RESUME_OPERATION, process.RESUME_OBLIGATION_OPERATION],
 )
 async def test_old_resume_routes_reject_new_disposition_before_preparation(
-    monkeypatch: pytest.MonkeyPatch, operation: str,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
 ) -> None:
     request = (await _resume_request()).model_copy(update={"disposition_version": DISPOSITION})
 
@@ -34,7 +36,8 @@ async def test_old_resume_routes_reject_new_disposition_before_preparation(
 
 @pytest.mark.parametrize("version", ["r14-same-run-equality.v1", "unknown"])
 async def test_current_actor_route_rejects_foreign_disposition_before_preparation(
-    monkeypatch: pytest.MonkeyPatch, version: str,
+    monkeypatch: pytest.MonkeyPatch,
+    version: str,
 ) -> None:
     request = (await _resume_request()).model_copy(update={"disposition_version": version})
 
@@ -48,13 +51,17 @@ async def test_current_actor_route_rejects_foreign_disposition_before_preparatio
 
 async def test_current_actor_preparation_requires_closed_v5_original_obligation() -> None:
     request = await _resume_request()
-    changed = request.model_copy(update={
-        "disposition_version": DISPOSITION,
-        "fence": request.fence.model_copy(update={
-            "worker_session_id": "4:fresh-generation:fresh-owner-session",
-            "runtime_generation": "fresh-generation",
-        }),
-    })
+    changed = request.model_copy(
+        update={
+            "disposition_version": DISPOSITION,
+            "fence": request.fence.model_copy(
+                update={
+                    "worker_session_id": "4:fresh-generation:fresh-owner-session",
+                    "runtime_generation": "fresh-generation",
+                }
+            ),
+        }
+    )
     result = prepare_execution_resume(changed)
     assert result.kind == "CALL_PREPARATION_REJECTED_V1"
     assert result.code == "HOLD"

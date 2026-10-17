@@ -184,9 +184,7 @@ def request(*, negative: bool = False) -> PrepareOriginalCallResolution:
         owner="agent_loop",
         schema="chiplog.loop.original-resolver-invocation.v1",
     )
-    witness_ref = _head(
-        witness.record.subject_id, witness.record.head, witness.record.fingerprint
-    )
+    witness_ref = _head(witness.record.subject_id, witness.record.head, witness.record.fingerprint)
     witness_source = RecoverySourceRecord(
         owner="effects",
         subject=witness_ref,
@@ -291,11 +289,15 @@ def test_preparation_holds_for_unproven_or_unsupported_cut(mutation: str) -> Non
         cut = cut.model_copy(update={"selected_witness": cut.complete_ordered_evidence[0]})
     elif mutation == "foreign_intent":
         cut = cut.model_copy(
-            update={"selected_witness": cut.selected_witness.model_copy(update={
-                "canonical_record_bytes": b"{}",
-                "physical_record": _head("foreign", "record:" + _sha(b"{}"), _sha(b"{}")),
-                "subject": _head("foreign", "record:" + _sha(b"{}"), _sha(b"{}")),
-            })}
+            update={
+                "selected_witness": cut.selected_witness.model_copy(
+                    update={
+                        "canonical_record_bytes": b"{}",
+                        "physical_record": _head("foreign", "record:" + _sha(b"{}"), _sha(b"{}")),
+                        "subject": _head("foreign", "record:" + _sha(b"{}"), _sha(b"{}")),
+                    }
+                )
+            }
         )
     elif mutation == "incomplete_evidence":
         cut = cut.model_copy(update={"complete_ordered_evidence": ()})

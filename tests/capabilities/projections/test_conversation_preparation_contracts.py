@@ -329,9 +329,7 @@ def _admitted_input(selected: CallSubjectHead) -> SelectedAdmittedRunInput:
                 provider_id="provider",
                 account_id="account",
                 recipient_id="recipient",
-                endpoint=ExactHead(
-                    identity="endpoint", head="endpoint/head", fingerprint="a" * 64
-                ),
+                endpoint=ExactHead(identity="endpoint", head="endpoint/head", fingerprint="a" * 64),
                 canonical_address=b"recipient://exact",
                 credential_binding=ExactHead(
                     identity="credential", head="credential/head", fingerprint="b" * 64
@@ -573,8 +571,9 @@ def test_admitted_records_bind_identical_text_to_distinct_selected_heads() -> No
     assert decoded.entry.accepted_bytes == b"exact accepted bytes"
 
 
-def test_admitted_requests_with_identical_text_and_distinct_heads_have_distinct_fingerprints(
-) -> None:
+def test_admitted_requests_with_identical_text_and_distinct_heads_have_distinct_fingerprints() -> (
+    None
+):
     first = _admitted_request(_head("selected/one"))
     second = _admitted_request(_head("selected/two"))
 
@@ -655,7 +654,9 @@ async def test_completion_rejection_request_and_result_unions_have_zero_assistan
     assert request.source_cut.source_schema_id == request.proposed_terminal_run.schema_id
     assert request.proposed_terminal_run.state == "ABORTED"
     assert (
-        PrepareExecutionCompletion.model_validate_json(request.original_completion_request_bytes).run.state
+        PrepareExecutionCompletion.model_validate_json(
+            request.original_completion_request_bytes
+        ).run.state
         == "ACTIVE"
     )
     assert request.preserved_trace.subject_id == "preserved-trace"
@@ -703,9 +704,7 @@ def test_source_cut_rejects_unregistered_schema_and_schema_body_mismatch() -> No
     with pytest.raises(ValidationError):
         ConversationSourceCutV1.model_validate(mismatch)
     noncanonical = v3_cut.model_dump()
-    noncanonical["source_bytes"] = json.dumps(
-        json.loads(v3.canonical_bytes()), indent=2
-    ).encode()
+    noncanonical["source_bytes"] = json.dumps(json.loads(v3.canonical_bytes()), indent=2).encode()
     with pytest.raises(ValidationError):
         ConversationSourceCutV1.model_validate(noncanonical)
 

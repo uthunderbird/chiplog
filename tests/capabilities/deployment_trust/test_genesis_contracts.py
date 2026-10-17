@@ -42,9 +42,16 @@ def test_complete_tuple_has_no_missing_member_defaults(member):
 @pytest.mark.parametrize("version", (True, "2", 2.0, 0, 1, 3))
 def test_v2_genesis_does_not_coerce_or_reinterpret_another_genesis_version(version):
     with pytest.raises(ValidationError):
-        DatabaseGenesisV2(**(VERSIONS | {
-            "genesis_version": version, "tenant_id": "tenant", "database_instance_id": "db",
-        }))
+        DatabaseGenesisV2(
+            **(
+                VERSIONS
+                | {
+                    "genesis_version": version,
+                    "tenant_id": "tenant",
+                    "database_instance_id": "db",
+                }
+            )
+        )
 
 
 def test_tuple_can_represent_unknown_positive_version_without_admitting_it() -> None:
