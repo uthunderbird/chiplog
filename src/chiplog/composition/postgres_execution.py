@@ -58,6 +58,7 @@ from chiplog.composition.postgres_model_recovery import PostgresModelCustody
 from chiplog.composition.postgres_planning import PostgresPlanningRuntime
 from chiplog.platform.deployment_gate import DeploymentGateRequest
 from chiplog.platform.postgres import (
+    Batch,
     Connection,
     PostgresIntegrityError,
     PostgresServer,
@@ -77,6 +78,7 @@ if TYPE_CHECKING:
         NativeDeliverySendV1,
     )
     from chiplog.composition.postgres_effects import PostgresEffectsBinding
+    from chiplog.composition.postgres_scheduler import PostgresScheduler
 
 RUN_SCHEMAS = {"chiplog.agent-loop.execution-record.v2", "chiplog.agent-loop.execution-record.v3"}
 INITIALIZED_SCHEMA = "chiplog.agent-loop.initialized-call.v1"
@@ -112,6 +114,7 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
     ) -> None:
         super().__init__(database, tenant, operator_secret, authenticate_entitlement)
         self.effects_binding = effects_binding
+        self.scheduler: PostgresScheduler | None = None
         if model.session is not None:
             raise LoopRejected("model adapter already bound; provide a fresh adapter per runtime")
         self.tenant_id, self.principal_id = tenant, principal_id
@@ -139,6 +142,23 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
         with self._transaction() as (connection, trust):
             self._actor(connection, trust, self.peer)
             return self._worker
+
+    def scheduler_fence(self, snapshot: Snapshot, run_id: str) -> bytes | None:
+        runs = [run for run in self._runs(snapshot) if run.run_id == run_id]
+        if not runs:
+            raise LoopRejected("scheduler action Run is absent")
+        run = runs[-1]
+        if not isinstance(run.root_binding, SchedulerRootReference):
+            return None
+        if self.scheduler is None:
+            raise LoopHold("scheduled action requires its mounted scheduler")
+        return self.scheduler.lease_fence(snapshot, run).canonical_bytes()
+
+    def assert_scheduler_fence(
+        self, snapshot: Snapshot, run_id: str, expected: bytes | None
+    ) -> None:
+        if self.scheduler_fence(snapshot, run_id) != expected:
+            raise LoopHold("scheduler action lease fence changed")
 
     def snapshot(self) -> Snapshot:
         return self._snapshot_for_peer(self.peer)
@@ -172,6 +192,7 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
                         or run.principal != self.principal_id
                         or run.canonical_bytes() != record.canonical_bytes
                         or run.predecessor != (None if previous is None else previous.head)
+                        or (previous is not None and run.root_binding != previous.root_binding)
                     ):
                         raise ValueError("execution record identity or ancestry mismatch")
                     latest[run.run_id] = run
@@ -234,6 +255,47 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
                 raise LoopRejected("stale execution tenant head")
             if validate is not None:
                 validate(snapshot)
+            selected = {run.run_id: run for run in self._runs(snapshot)}
+            checked: set[str] = set()
+            for item in records:
+                if item.schema_id not in RUN_SCHEMAS:
+                    continue
+                kind = (
+                    ExecutionRunRecordV3 if item.schema_id.endswith(".v3") else ExecutionRunRecord
+                )
+                proposed = current(kind.model_validate_json(item.canonical_bytes))
+                source = selected.get(proposed.run_id)
+                if source is not None:
+                    if proposed.root_binding != source.root_binding:
+                        raise LoopRejected("execution scheduler root binding changed")
+                    if (
+                        source.run_id not in checked
+                        and operation not in {"execution.capture", "execution.call-outcome"}
+                    ):
+                        self.scheduler_fence(snapshot, source.run_id)
+                        checked.add(source.run_id)
+                elif isinstance(proposed.root_binding, SchedulerRootReference):
+                    if self.scheduler is None:
+                        raise LoopHold("scheduled initialization requires its mounted scheduler")
+                    candidate = Snapshot(
+                        snapshot.head + 1,
+                        (
+                            *snapshot.batches,
+                            Batch(
+                                operation, idempotency_key, fingerprint, snapshot.head + 1, records
+                            ),
+                        ),
+                    )
+                    lineage = self.scheduler.lineage(candidate, proposed.root_binding.root_id)
+                    root = proposed.root_binding
+                    if (
+                        lineage.lineage.initial_run_id != proposed.run_id
+                        or root.initial_run_id != proposed.run_id
+                        or root.root_fingerprint != lineage.lineage.root_fingerprint
+                        or root.subject_canonical_base64
+                        != base64.b64encode(lineage.lineage.subject.canonical_bytes()).decode()
+                    ):
+                        raise LoopRejected("scheduled initialization root differs")
             if transaction_action is not None:
                 transaction_action(connection)
             return self.database.append(

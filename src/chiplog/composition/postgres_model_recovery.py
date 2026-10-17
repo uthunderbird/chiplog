@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS model_attempt_custody (
     response bytea,
     receipt text,
     CHECK ((response IS NULL) = (receipt IS NULL))
-)
+);
+ALTER TABLE model_attempt_custody ADD COLUMN IF NOT EXISTS scheduler_lease bytea;
 """
 
 
@@ -53,18 +54,23 @@ class PostgresModelCustody:
         self._capabilities[attempt.attempt_id] = capability, emitted.head
         connection.execute(
             "INSERT INTO model_attempt_custody "
-            "(attempt_id,emitted_head,binding,capability_hash,state,max_response_bytes) "
-            "VALUES (%s,%s,%s,%s,'NEVER_STARTED',%s)",
+            "(attempt_id,emitted_head,binding,capability_hash,state,"
+            "max_response_bytes,scheduler_lease) "
+            "VALUES (%s,%s,%s,%s,'NEVER_STARTED',%s,%s)",
             (
                 attempt.attempt_id, emitted.head, attempt.canonical_bytes(),
                 hashlib.sha256(capability).digest(), emitted.policy.max_response_bytes,
+                self._runtime.scheduler_fence(
+                    self._runtime.database._snapshot(connection), emitted.run_id
+                ),
             ),
         )
 
     def _sender_row(self, connection: Connection, attempt: CustodiedAttempt) -> Any:
         capability = self._capabilities.get(attempt.attempt_id)
         row = connection.execute(
-            "SELECT emitted_head,binding,capability_hash,state,max_response_bytes,response,receipt "
+            "SELECT emitted_head,binding,capability_hash,state,max_response_bytes,"
+            "response,receipt,scheduler_lease "
             "FROM model_attempt_custody WHERE attempt_id=%s FOR UPDATE",
             (attempt.attempt_id,),
         ).fetchone()
@@ -85,6 +91,9 @@ class PostgresModelCustody:
             if row[3] != "NEVER_STARTED":
                 raise LoopHold("model transport already started or fenced; no repeated SEND")
             snapshot = runtime.database._snapshot(connection)
+            runtime.assert_scheduler_fence(
+                snapshot, attempt.manifest.run_id, None if row[7] is None else bytes(row[7])
+            )
             runs = [
                 run for run in runtime._runs(snapshot)
                 if run.run_id == attempt.manifest.run_id
