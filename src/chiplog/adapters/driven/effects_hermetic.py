@@ -333,11 +333,10 @@ class HermeticEffectsProvider:
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
-            directory = os.open(self._observation_journal_path.parent, os.O_RDONLY)
-            try:
+            with ExitStack() as resources:
+                directory = os.open(self._observation_journal_path.parent, os.O_RDONLY)
+                resources.callback(os.close, directory)
                 os.fsync(directory)
-            finally:
-                os.close(directory)
             fcntl.flock(stream, fcntl.LOCK_UN)
 
     def _persist_transfer(self, transfer: HermeticTransfer) -> None:
@@ -444,6 +443,8 @@ class HermeticEffectsProvider:
             registered_receipt_key=self._receipt_key,
         )
         scenario = scenarios[prior]
+        occurred: tuple[str, ...]
+        incapable: tuple[str, ...]
         if scenario == "COMPATIBLE":
             occurred = ()
             incapable = ()
