@@ -11,7 +11,7 @@ from chiplog.capabilities.agent_loop.execution_transition_contracts import (
     ExecutionTransitionProposal,
 )
 from chiplog.capabilities.agent_loop.execution_transitions import prepare_execution_transition
-from chiplog.capabilities.agent_loop.recovery_contracts import Absent
+from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
 from chiplog.capabilities.agent_loop.scheduler_contracts import (
     IntervalBranch,
     StreamingEligibilityEvidence,
@@ -41,13 +41,94 @@ from chiplog.capabilities.agent_loop.scheduler_execution_contracts import (
     ProposedScheduledWholeEnvelopeV2,
     SafetyHoldNoDebitAccountingV2,
     ScheduledExecutionBindingV2,
+    ScheduledIntervalExactReplayV2,
     ScheduledMandateBudgetV1,
     ScheduledMandateConsumptionBasisV1,
     ScheduledWholeIntervalEnvelopeV2,
     ScheduledWholeIntervalMemberDescriptorV2,
+    SelectedExactDecisionV2,
+    SelectedScheduledWholeEnvelopeV2,
 )
 from chiplog.capabilities.agent_loop.scheduler_materialization import SchedulerCanonicalMember
+from chiplog.capabilities.agent_loop.scheduler_outcome_record_contracts import (
+    ExecutableIntervalResultRecordV2,
+    executable_interval_result_reference,
+    make_executable_interval_result_member,
+    make_scheduled_parent_member,
+    scheduled_whole_reference,
+)
+from chiplog.capabilities.agent_loop.scheduler_seed_producer_contracts import (
+    primitive_parent_reference,
+    scheduler_execution_command_reference,
+)
 from tests.support.scheduler_execution import DIGEST, call_head, ordinary_seed_batch, present
+
+
+def ordinary_exact_replay(
+    *, debit: tuple[Present, bytes] | None = None
+) -> ScheduledIntervalExactReplayV2:
+    """Native selected bytes for codec consumers, without publication authority."""
+    seed_batch = ordinary_seed_batch()
+    assert isinstance(seed_batch.source, PreparedPrimitiveFirstPublicationV2)
+    parent = seed_batch.source.primitive_parent
+    parent_reference = primitive_parent_reference(parent)
+    parent_member = make_scheduled_parent_member(parent)
+    result = ExecutableIntervalResultRecordV2(
+        parent=parent,
+        ordered_dispositions=(),
+        ordered_occurrences=(),
+        resulting_boundary=parent.boundary.cutoff_due_coordinate,
+    )
+    result_member = make_executable_interval_result_member(result)
+    records = (parent_member, result_member)
+    subjects = (parent.command.command_id, parent.command.command_id)
+    descriptors = tuple(
+        ScheduledWholeIntervalMemberDescriptorV2(
+            record_kind=member.record_kind,
+            subject_id=subject_id,
+            record_id=member.record_id,
+            schema_id=member.schema_id,
+            fingerprint=member.fingerprint,
+        )
+        for member, subject_id in zip(records, subjects, strict=True)
+    )
+    selected_debit = Absent() if debit is None else debit[0]
+    body = ScheduledWholeIntervalEnvelopeV2(
+        tenant_id="tenant",
+        interval_command=scheduler_execution_command_reference(parent.command),
+        branch=parent.branch,
+        primitive_reference=parent_reference,
+        selected_configuration=seed_batch.configuration_source.configuration,
+        selected_mandate=seed_batch.selected_mandate.mandate_head,
+        selected_applicability=call_head("applicability"),
+        selected_budget_predecessor=seed_batch.selected_budget_predecessor.budget_head,
+        budget_successor=selected_debit,
+        selected_clock_cut_fingerprint=DIGEST,
+        outcome=executable_interval_result_reference(result),
+        ordered_non_envelope_members=descriptors,
+        expected_ordinary_seed_count=0,
+        ordered_occurrence_materializations=(),
+        resulting_boundary=parent.boundary.cutoff_due_coordinate.canonical_coordinate,
+        dependency_manifest_fingerprint=DIGEST,
+    )
+    whole = SelectedScheduledWholeEnvelopeV2(
+        selected_reference=scheduled_whole_reference(body),
+        canonical_envelope_bytes=body.canonical_bytes(),
+        body=body,
+    )
+    return ScheduledIntervalExactReplayV2(
+        source=SelectedExactDecisionV2(
+            selected_decision=parent_reference,
+            canonical_selected_decision_bytes=parent.canonical_bytes(),
+            canonical_selected_result_bytes=result.canonical_bytes(),
+            exact_prefix_materialization=parent_reference,
+            selected_debit=selected_debit,
+            canonical_selected_debit_bytes=None if debit is None else debit[1],
+        ),
+        complete_selected_records=records,
+        complete_selected_member_subject_ids=subjects,
+        selected_whole_envelope=whole,
+    )
 
 
 def overflow_seed_batch() -> PreparedOverflowSeedBatchV2:

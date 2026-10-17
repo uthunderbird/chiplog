@@ -13,6 +13,7 @@ from tests.support.scheduler_execution_batches import (
     finalize_request,
     finalized_result,
     finalized_result_with_two_non_envelope_members,
+    ordinary_exact_replay,
     preparation_outputs,
     prepare_request,
     streamed_overflow_finalized_result,
@@ -220,25 +221,8 @@ def test_budget_predecessor_and_deltas_cannot_be_substituted() -> None:
 
 
 def test_selected_replay_retains_original_debit_bytes_and_v1_wire_is_closed() -> None:
-    selected = SelectedExactDecisionV2(
-        selected_decision=present("decision"),
-        canonical_selected_decision_bytes=b"decision-v1-original",
-        canonical_selected_result_bytes=b"result-v1-original",
-        exact_prefix_materialization=present("prefix"),
-        selected_debit=present("debit"),
-        canonical_selected_debit_bytes=b"debit-v1-original",
-    )
-    finalized = finalized_result(1)
-    replay = ScheduledIntervalExactReplayV2(
-        source=selected,
-        complete_selected_records=finalized.complete_ordered_canonical_records,
-        complete_selected_member_subject_ids=finalized.complete_ordered_member_subject_ids,
-        selected_whole_envelope=SelectedScheduledWholeEnvelopeV2(
-            selected_reference=finalized.whole_envelope.external_reference,
-            canonical_envelope_bytes=finalized.whole_envelope.canonical_envelope_bytes,
-            body=finalized.whole_envelope.body,
-        ),
-    )
+    replay = ordinary_exact_replay(debit=(present("debit"), b"debit-v1-original"))
+    selected = replay.source
     restored: ScheduledIntervalPreparationResultV2 = TypeAdapter(
         ScheduledIntervalPreparationResultV2
     ).validate_json(replay.canonical_bytes())
