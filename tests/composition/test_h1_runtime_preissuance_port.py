@@ -12,12 +12,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from time import perf_counter_ns
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+from chiplog.composition.h1_completion_preparation_session import H1CompletionPreparationSession
 from chiplog.composition.h1_launch_enrollment import InstalledH1Launch
+from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
 from chiplog.composition.h1_preissuance_registration import H1PreissuanceSourceViolation
 from chiplog.composition.h1_runtime_preissuance_port import (
     _H1FinalCompletionFence,
@@ -29,6 +31,15 @@ from chiplog.composition.h1_runtime_preissuance_port import (
 )
 from chiplog.composition.h1_terminal_call_identity import _terminal_call_identity
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall
+
+if TYPE_CHECKING:
+    from chiplog.composition.common_cli_execution_runtime import _H1ScopeWire
+    from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
+    from chiplog.composition.h1_first_path_sources import H1FirstPathCapture
+    from chiplog.composition.h1_native_member_sources import H1CurrentNativeMemberSourceCut
+    from chiplog.composition.h1_runtime_preissuance_port import (
+        _AuthenticatedCompletionEffectsSource,
+    )
 
 
 def test_port_refuses_noncanonical_runtime_before_any_custody_or_launch_access() -> None:
@@ -95,9 +106,7 @@ def test_recovery_final_completion_fence_replays_exact_wire_once(
         def __init__(self) -> None:
             self.preflight_calls: list[tuple[object, object]] = []
 
-        def _require_complete_chain_preflight_held(
-            self, lease: object, preflight: object
-        ) -> None:
+        def _require_complete_chain_preflight_held(self, lease: object, preflight: object) -> None:
             self.preflight_calls.append((lease, preflight))
 
     session = object.__new__(H1CompletionPreparationSession)
@@ -105,7 +114,7 @@ def test_recovery_final_completion_fence_replays_exact_wire_once(
     object.__setattr__(session, "_recovery", object())
     object.__setattr__(session, "_recovery_terminal_clearance", clearance)
     fence = object.__new__(_H1FinalCompletionFence)
-    wire = cast("object", object())
+    wire = cast("_H1ScopeWire", object())
     lease = _Lease()
     source = _Source()
     context = object()
@@ -116,15 +125,17 @@ def test_recovery_final_completion_fence_replays_exact_wire_once(
     monkeypatch.setattr(
         _H1LiveCompletionEnrollment,
         "_require_recovery_record",
-        lambda _self, received_session: record
-        if received_session is session
-        else (_ for _ in ()).throw(AssertionError("foreign recovery session")),
+        lambda _self, received_session: (
+            record
+            if received_session is session
+            else (_ for _ in ()).throw(AssertionError("foreign recovery session"))
+        ),
     )
 
     issued = _IssuedFinalCompletionFence(
         fence,
         session,
-        cast("object", object()),
+        cast("_H1PreterminalScopeSnapshot", object()),
         clearance,
         wire,
     )
@@ -178,29 +189,41 @@ def _terminal_call(*, deadline_ns: int = 100) -> PublicPortCall:
     )
 
 
-def _port_with_proof(*, effects_returned_at_ns: int = 10) -> tuple[
+def _port_with_proof(
+    monkeypatch: pytest.MonkeyPatch, *, effects_returned_at_ns: int = 10
+) -> tuple[
     _H1RuntimePreissuancePort,
-    object,
+    H1CompletionPreparationSession,
     _H1PreterminalCompletionProof,
     _Enrollment,
 ]:
-    session = SimpleNamespace(_cut=object())
-    effects_exchange = SimpleNamespace(returned_at_ns=effects_returned_at_ns)
-    session._effects_exchange = effects_exchange
+    session = object.__new__(H1CompletionPreparationSession)
+    object.__setattr__(session, "_cut", object())
+    object.__setattr__(session, "_recovery", None)
+    effects_exchange = cast(
+        "H1CompletionOwnerExchangeV1", SimpleNamespace(returned_at_ns=effects_returned_at_ns)
+    )
+    object.__setattr__(session, "_effects_exchange", effects_exchange)
     snapshot = _H1PreterminalScopeSnapshot(
         session=session,
-        first_path=cast("object", object()),
-        native_cap=cast("object", object()),
+        first_path=cast("H1FirstPathCapture", object()),
+        native_cap=cast("H1CurrentNativeMemberSourceCut", object()),
         scope_cap=object(),
         delivery_receipt=object(),
         effects_exchange=effects_exchange,
-        effects_source=cast("object", object()),
+        effects_source=cast("_AuthenticatedCompletionEffectsSource", object()),
         terminal_sent=None,
         terminal_call_fingerprint=None,
         terminal_owner_frame_bytes=None,
     )
     proof = object.__new__(_H1PreterminalCompletionProof)
-    enrollment = _Enrollment()
+    enrollment = object.__new__(_H1LiveCompletionEnrollment)
+    recorder = _Enrollment()
+
+    def reserve(_owner: _H1LiveCompletionEnrollment, **kwargs: object) -> object:
+        return recorder._reserve_terminal_clearance(**kwargs)
+
+    monkeypatch.setattr(_H1LiveCompletionEnrollment, "_reserve_terminal_clearance", reserve)
     port = object.__new__(_H1RuntimePreissuancePort)
     object.__setattr__(port, "_gate", _HeldGate())
     object.__setattr__(
@@ -219,17 +242,17 @@ def _port_with_proof(*, effects_returned_at_ns: int = 10) -> tuple[
                 enrollment,
                 session._cut,
                 snapshot,
-                cast("object", object()),
+                cast("_H1ScopeWire", object()),
             )
         },
     )
-    return port, session, proof, enrollment
+    return port, session, proof, recorder
 
 
 def test_terminal_bind_uses_issued_proof_once_without_final_fence_replay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    port, session, proof, enrollment = _port_with_proof()
+    port, session, proof, enrollment = _port_with_proof(monkeypatch)
     sent = _terminal_call()
 
     def final_fence_must_not_run(*_args: object, **_kwargs: object) -> object:
@@ -266,20 +289,37 @@ def test_terminal_bind_uses_issued_proof_once_without_final_fence_replay(
         port._bind_terminal_clearance(session, proof, sent)
 
 
-def test_terminal_bind_wrong_session_burns_proof_before_a_later_replay() -> None:
-    port, session, proof, _enrollment = _port_with_proof()
+def test_terminal_bind_wrong_session_burns_proof_before_a_later_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port, session, proof, _enrollment = _port_with_proof(monkeypatch)
     sent = _terminal_call()
 
     with pytest.raises(H1PreissuanceSourceViolation, match="unavailable or expired"):
-        port._bind_terminal_clearance(object(), proof, sent)
+        port._bind_terminal_clearance(object.__new__(H1CompletionPreparationSession), proof, sent)
     with pytest.raises(H1PreissuanceSourceViolation, match="unavailable or expired"):
         port._bind_terminal_clearance(session, proof, sent)
 
 
-def test_terminal_bind_rejects_terminal_deadline_before_proved_effects_return() -> None:
-    port, session, proof, enrollment = _port_with_proof(effects_returned_at_ns=101)
+def test_terminal_bind_rejects_terminal_deadline_before_proved_effects_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port, session, proof, enrollment = _port_with_proof(monkeypatch, effects_returned_at_ns=101)
 
     with pytest.raises(H1PreissuanceSourceViolation, match="source changed before bind"):
         port._bind_terminal_clearance(session, proof, _terminal_call(deadline_ns=100))
     assert port._preterminal_proofs == {}
     assert enrollment.reservations == []
+
+
+def test_terminal_bind_foreign_object_does_not_consume_original_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port, session, proof, enrollment = _port_with_proof(monkeypatch)
+    sent = _terminal_call()
+    with pytest.raises(H1PreissuanceSourceViolation, match="session is foreign"):
+        port._bind_terminal_clearance(object(), proof, sent)
+    assert id(proof) in port._preterminal_proofs
+    port._bind_terminal_clearance(session, proof, sent)
+    assert port._preterminal_proofs == {}
+    assert len(enrollment.reservations) == 1
