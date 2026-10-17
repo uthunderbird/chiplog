@@ -5,10 +5,11 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     ConsequentialAcceptedCall,
@@ -1024,7 +1025,7 @@ async def test_effects_run_snapshot_reuse_keeps_exact_sql_checks(
     from tests.capabilities.agent_loop.test_execution_recovery_preparation import _cut
 
     cut = await _cut()
-    runs = cut.complete_ordered_run_lineage
+    runs = cast(tuple[ExecutionRunRecord, ...], cut.complete_ordered_run_lineage)
     assert len(runs) >= 2
     snapshot = history.ExecutionHistorySnapshot(tenant_head=1, records=runs)
     database = tmp_path / "effects-runs.sqlite"
@@ -1051,7 +1052,7 @@ async def test_effects_run_snapshot_reuse_keeps_exact_sql_checks(
         elif damage == "frontier":
             snapshot = snapshot.model_copy(update={"tenant_head": 2})
         runtime = object.__new__(R14PlanningRuntime)
-        runtime._record_schema_variants = {("agent_loop", runs[0].schema_id): object()}
+        runtime._record_schema_variants = (("agent_loop", runs[0].schema_id),)
         reads = []
 
         def acquire(actual_runtime, **kwargs):

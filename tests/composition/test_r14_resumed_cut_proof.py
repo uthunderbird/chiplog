@@ -2,10 +2,12 @@
 
 import json
 from types import SimpleNamespace as NS
+from typing import cast
 
 import pytest
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
 from chiplog.composition import r14_execution_resume as resume
 from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
@@ -46,7 +48,7 @@ async def test_selected_resume_proof_requires_exact_closed_original(monkeypatch,
         subject_id="baseline", revision=Present(head="baseline", fingerprint="a" * 64)
     )
     foreign_ref = Present(head="foreign", fingerprint="f" * 64)
-    run = typed_cut.complete_ordered_run_lineage[-1].model_copy(
+    run = cast(ExecutionRunRecord, typed_cut.complete_ordered_run_lineage[-1]).model_copy(
         update={
             "state": "ACTIVE",
             "suspension_baseline": baseline_ref,

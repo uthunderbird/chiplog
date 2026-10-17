@@ -4,9 +4,11 @@ Reaching inventory is required, but does not establish a complete mounted cut.
 """
 
 from types import SimpleNamespace as NS
+from typing import cast
 
 import pytest
 
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.composition import r14_native_recovery_cut as collector
 from chiplog.composition import r17_native_one_call_scope as scopes
 from tests.capabilities.agent_loop.test_execution_recovery_preparation import _cut
@@ -24,7 +26,7 @@ class InventoryReached(Exception):
 async def test_resumed_active_run_requires_exact_resume_before_inventory(
     monkeypatch, selected, no_retry
 ):
-    original = (await _cut()).complete_ordered_run_lineage[-1]
+    original = cast(ExecutionRunRecord, (await _cut()).complete_ordered_run_lineage[-1])
     ref = collector._run_ref(original)
     run = original.model_copy(
         update={

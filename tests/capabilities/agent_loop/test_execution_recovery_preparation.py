@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+from typing import cast
 
 import pytest
 from tests.support.execution_fan_out import fixture
@@ -15,6 +16,9 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     SealedResponseRecord,
 )
 from chiplog.capabilities.agent_loop.call_acceptance_preparation import call_record_reference
+from chiplog.capabilities.agent_loop.contracts import Frozen
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+from chiplog.capabilities.agent_loop.execution_history_contracts import ExecutionRunRecordV3
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PreparedExecutionSuspension,
     PrepareExecutionAccounting,
@@ -42,6 +46,7 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
     NotApplicable,
     OriginalObligationBinding,
     Present,
+    RecoveryDTO,
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
@@ -58,14 +63,14 @@ from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import
 )
 
 
-def _run_ref(run):
+def _run_ref(run: ExecutionRunRecord | ExecutionRunRecordV3) -> CallSubjectHead:
     return CallSubjectHead(
         subject_id=run.run_id,
         revision=Present(head=run.head, fingerprint=run.digest()),
     )
 
 
-def _source(schema, ref, value):
+def _source(schema: str, ref: CallSubjectHead, value: Frozen | RecoveryDTO) -> RecoverySourceRecord:
     return RecoverySourceRecord(
         owner="agent_loop",
         subject=ref,
@@ -76,7 +81,7 @@ def _source(schema, ref, value):
     )
 
 
-async def _cut():
+async def _cut() -> ExecutionRecoveryCut:
     f = await fixture()
     captured = f.captured_run
     original = f.request.ordered_calls[-1]
@@ -172,7 +177,7 @@ async def _cut():
     )
     artifact = turn.attempts[turn.selector].manifest.artifact
 
-    def _present(raw):
+    def _present(raw: bytes) -> Present:
         digest = hashlib.sha256(raw).hexdigest()
         return Present(head="record:" + digest, fingerprint=digest)
 
@@ -214,7 +219,7 @@ async def _cut():
     return cut
 
 
-async def test_owner_accounting_and_continuation_are_separate_exact_proposals():
+async def test_owner_accounting_and_continuation_are_separate_exact_proposals() -> None:
     cut = await _cut()
     accounting_request = PrepareExecutionAccounting(command_id="account", cut=cut)
     accounting = prepare_execution_accounting(accounting_request)
@@ -233,14 +238,14 @@ async def test_owner_accounting_and_continuation_are_separate_exact_proposals():
     ):
         reply = process.dispatch(operation, request.canonical_bytes())
         assert (
-            base64.b64decode(reply["payload"])
+            base64.b64decode(cast(str, reply["payload"]))
             == (
                 accounting if operation == process.ACCOUNTING_OPERATION else ready
             ).canonical_bytes()
         )
 
 
-async def test_owner_prepares_acyclic_non_scheduler_suspension_batch():
+async def test_owner_prepares_acyclic_non_scheduler_suspension_batch() -> None:
     cut = await _cut()
     run = cut.complete_ordered_run_lineage[-1]
     request = PrepareExecutionSuspension(
@@ -275,7 +280,7 @@ async def test_owner_prepares_acyclic_non_scheduler_suspension_batch():
 
 async def test_legacy_suspension_owner_route_cannot_return_an_open_obligation(
     monkeypatch: pytest.MonkeyPatch,
-):
+) -> None:
     cut = await _cut()
     run = cut.complete_ordered_run_lineage[-1]
     request = PrepareExecutionSuspension(
@@ -324,11 +329,11 @@ async def test_legacy_suspension_owner_route_cannot_return_an_open_obligation(
     v37 = process.dispatch(process.SUSPENSION_OBLIGATION_OPERATION, request.canonical_bytes())
 
     assert legacy["failure"] == "PROTOCOL_REJECTED"
-    assert "legacy suspension route" in legacy["reason"]
-    assert base64.b64decode(v37["payload"]) == prepared_with_obligation.canonical_bytes()
+    assert "legacy suspension route" in cast(str, legacy["reason"])
+    assert base64.b64decode(cast(str, v37["payload"])) == prepared_with_obligation.canonical_bytes()
 
 
-async def test_first_suspension_profile_holds_with_activation_blocker():
+async def test_first_suspension_profile_holds_with_activation_blocker() -> None:
     cut = await _cut()
     run = cut.complete_ordered_run_lineage[-1]
     request = PrepareExecutionSuspension(
@@ -435,7 +440,7 @@ async def _resume_request() -> PrepareExecutionResume:
     return request
 
 
-async def test_owner_prepares_same_run_resume_only_for_exact_suspension_frontier():
+async def test_owner_prepares_same_run_resume_only_for_exact_suspension_frontier() -> None:
     request = await _resume_request()
     suspended = request.run
     selected_pair = request.original_suspension.selected_pair
@@ -452,7 +457,7 @@ async def test_owner_prepares_same_run_resume_only_for_exact_suspension_frontier
     assert result.original_pair == selected_pair
     reply = process.dispatch(process.RESUME_OPERATION, request.canonical_bytes())
     assert reply["schema_id"] == process.RESULT_SCHEMA
-    assert base64.b64decode(reply["payload"]) == result.canonical_bytes()
+    assert base64.b64decode(cast(str, reply["payload"])) == result.canonical_bytes()
 
     changed = request.model_copy(
         update={"cut": current_cut.model_copy(update={"tenant_commit_sequence": 3})}
@@ -464,14 +469,14 @@ async def test_owner_prepares_same_run_resume_only_for_exact_suspension_frontier
     )
 
     observation = ExecutionRecoveryClassified.model_validate_json(
-        base64.b64decode(classified_reply["payload"])
+        base64.b64decode(cast(str, classified_reply["payload"]))
     )
     assert observation.source_request_fingerprint == changed.digest()
     assert observation.disposition in ("RECOVERY_HOLD", "TERMINAL_RECOVERY_FAULT")
     assert observation.kind == "EXECUTION_RECOVERY_CLASSIFIED_V1"
 
 
-async def test_readiness_rejects_missing_extra_and_changed_accounting():
+async def test_readiness_rejects_missing_extra_and_changed_accounting() -> None:
     cut = await _cut()
     accounting = prepare_execution_accounting(PrepareExecutionAccounting(command_id="a", cut=cut))
     assert accounting.kind == "PREPARED_EXECUTION_ACCOUNTING_V1"
@@ -502,7 +507,7 @@ async def test_readiness_rejects_missing_extra_and_changed_accounting():
         "forged_bindings",
     ],
 )
-async def test_owner_holds_invalid_supplied_cut(mutation):
+async def test_owner_holds_invalid_supplied_cut(mutation: str) -> None:
     cut = await _cut()
     sources = list(cut.complete_sources)
     if mutation == "missing":
@@ -536,7 +541,7 @@ async def test_owner_holds_invalid_supplied_cut(mutation):
             }
         )
     elif mutation == "recovery_required":
-        call = cut.complete_ordered_responses[0].ordered_calls[0]
+        call = cast(TerminalCallFrontier, cut.complete_ordered_responses[0].ordered_calls[0])
         obligation = OriginalObligationBinding(
             original_run_id=cut.current_run.subject_id,
             original_call_id=call.original_call_id,
