@@ -8,6 +8,7 @@ from pathlib import Path
 
 _SCRIPT = Path(__file__).resolve().parents[2] / ".harness/scripts/retro-inputs.sh"
 _CADENCE = Path(__file__).resolve().parents[2] / ".harness/scripts/checks/retro_due.py"
+_RULES = Path(__file__).resolve().parents[2] / ".harness/scripts/checks/rules_have_reproducers.py"
 _CATALOG = "src/chiplog/inert_shared/r8-implementation-v1.json"
 
 
@@ -45,6 +46,8 @@ def test_pin_counts_include_root_and_follow_last_committed_retro(tmp_path: Path)
     cadence = tmp_path / ".harness/scripts/checks/retro_due.py"
     cadence.parent.mkdir(parents=True)
     cadence.write_bytes(_CADENCE.read_bytes())
+    (cadence.parent / _RULES.name).write_bytes(_RULES.read_bytes())
+    (tmp_path / ".harness/reproducers").mkdir()
     retro_dir = tmp_path / ".harness/retro"
     retro_dir.mkdir(parents=True)
     (retro_dir / "TEMPLATE.md").write_text("template\n")
