@@ -47,7 +47,7 @@ from chiplog.platform.ingress_transition_contracts import (
     IngressCommandIdentity,
     RetainedIngressSource,
 )
-from tests.composition.test_plan_effect_publication import response
+from tests.support.composition.plan_effect_publication import response
 
 
 async def _client(path: Path) -> None:

@@ -15,7 +15,7 @@ from chiplog.platform._sqlite import SQLiteMaterializer
 from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.workspace_snapshot import workspace_snapshot
-from tests.capabilities.agent_loop.test_execution_recovery_preparation import _cut, _run_ref
+from tests.support.capabilities.agent_loop.execution_recovery_preparation import _cut, _run_ref
 
 
 @pytest.mark.asyncio

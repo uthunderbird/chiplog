@@ -3,7 +3,7 @@ import pytest
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy
 from chiplog.platform.postgres import Connection, PostgresServer, Record
-from tests.composition.test_postgres_execution import bootstrap, opened, origin
+from tests.support.composition.postgres_execution import bootstrap, opened, origin
 
 
 async def test_prepared_ingress_run_and_companion_publish_all_or_none(

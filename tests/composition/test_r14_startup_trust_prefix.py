@@ -33,7 +33,7 @@ def _restore_legacy(directory):
     return directory / capture["database_name"], capture["operator_secret"].encode()
 
 
-def _files(directory):
+def _files(directory: Path) -> dict[str, tuple[bytes, int]]:
     return {
         path.name: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
         for path in directory.iterdir()

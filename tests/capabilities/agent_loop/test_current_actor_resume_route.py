@@ -1,7 +1,7 @@
 """Version routing controls; pure requests do not authenticate a live caller."""
 
 import pytest
-from tests.capabilities.agent_loop.test_execution_recovery_preparation import _resume_request
+from tests.support.capabilities.agent_loop.execution_recovery_preparation import _resume_request
 
 from chiplog.capabilities.agent_loop import _execution_recovery_process as process
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import prepare_execution_resume

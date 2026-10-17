@@ -19,8 +19,8 @@ from chiplog.platform.owner_publications import (
     PreparedOwnerPublication,
     SelectedOwnerDecision,
 )
-from tests.composition.test_effects_registry import record as legacy_record
 from tests.support.acceptance_v2 import prepared_acceptance
+from tests.support.composition.effects_registry import record as legacy_record
 
 
 def _owner_record(

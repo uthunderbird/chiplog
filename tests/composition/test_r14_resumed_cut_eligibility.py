@@ -11,8 +11,8 @@ import pytest
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.composition import r14_native_recovery_cut as collector
 from chiplog.composition import r17_native_one_call_scope as scopes
-from tests.capabilities.agent_loop.test_execution_recovery_preparation import _cut
-from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
+from tests.support.capabilities.agent_loop.execution_recovery_preparation import _cut
+from tests.support.capabilities.agent_loop.original_call_resolution_preparation import (
     request as resolution_request,
 )
 

@@ -3,12 +3,12 @@
 import hashlib
 
 import pytest
-from tests.capabilities.agent_loop.test_execution_next_turn_preparation import (
+from tests.support.capabilities.agent_loop.execution_next_turn_preparation import (
     _ref,
     _request,
     _seal_run,
 )
-from tests.capabilities.agent_loop.test_execution_recovery_preparation import _cut, _source
+from tests.support.capabilities.agent_loop.execution_recovery_preparation import _cut, _source
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CancelledBeforeAcceptRecord,
@@ -400,7 +400,7 @@ async def test_resumed_structural_proof_rejects_inexact_retained_preimages(mutat
     pair = next(source for source in sources if source.schema_id.endswith("suspension-pair.v2"))
     update = {}
     if mutation == "baseline-original-closure-mismatch":
-        from tests.capabilities.agent_loop.test_original_continuation_witness import (
+        from tests.support.capabilities.agent_loop.original_continuation_witness import (
             _original_cut_accounting,
         )
 

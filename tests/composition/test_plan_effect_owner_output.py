@@ -12,7 +12,7 @@ from chiplog.capabilities.effects.contracts import (
 )
 from chiplog.composition.r14 import open_r14_loop
 from chiplog.platform.broker import PublicPortCall, PublicPortRejected, PublicPortResult
-from tests.composition.test_plan_effect_publication import prepare_display, response
+from tests.support.composition.plan_effect_publication import prepare_display, response
 
 
 @pytest.mark.parametrize("mutation", ("state", "rehash_state", "attempt", "record", "evidence"))

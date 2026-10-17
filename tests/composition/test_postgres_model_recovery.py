@@ -16,7 +16,7 @@ from chiplog.capabilities.agent_loop.live_contract import LiveModelBinding
 from chiplog.composition.postgres_execution import PostgresExecutionRuntime
 from chiplog.composition.postgres_model_recovery import recover_model_response
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_execution import IDENTITY, SECRET, bootstrap, opened, origin
+from tests.support.composition.postgres_execution import IDENTITY, SECRET, bootstrap, opened, origin
 
 
 @pytest.mark.parametrize("version", ["v2", "v3"])

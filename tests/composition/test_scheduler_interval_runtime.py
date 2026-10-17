@@ -13,10 +13,6 @@ import pytest
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopRejected
 from chiplog.capabilities.agent_loop.scheduler_contracts import SchedulerIntervalBound
 from chiplog.capabilities.agent_loop.scheduler_preparation import PreparedSchedulerBatch
-from chiplog.composition.r15_scheduler_registry import (
-    SchedulerGenesisAdoption,
-    SchedulerGenesisDraft,
-)
 from chiplog.composition.r15_scheduler_runtime import R15SchedulerRuntime, open_r15_runtime
 from chiplog.composition.r15_tick_clock_v1 import EvaluationSchedulerClock
 from chiplog.composition.r15_tick_contracts import TickPolicyAdoption, TickPolicyDraft
@@ -24,40 +20,9 @@ from chiplog.platform._sqlite import PhysicalPublicationCommand, PublicationResu
 from chiplog.platform.broker import PublicPortCall, PublicPortResult, PublicPortSuccess
 from chiplog.platform.owner_publications import OwnerPublicationUncertain
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
-
-
-async def configure(
-    runtime: R15SchedulerRuntime,
-    policy: str = "COALESCE",
-    limit: int = 4,
-    bound: SchedulerIntervalBound | None = None,
-) -> None:
-    draft = SchedulerGenesisDraft.model_validate(
-        dict(
-            adoption_act_id="genesis",
-            schedule_id="schedule",
-            start_ns=10,
-            period_ns=10,
-            end_exclusive_ns="NO_END",
-            prompt="Review",
-            policy=BudgetPolicy(),
-            missed_policy=policy,
-            interval_bound=bound
-            or SchedulerIntervalBound(
-                max_member_count=limit,
-                max_manifest_bytes=65536,
-                max_serialized_batch_bytes=1_048_576,
-            ),
-        )
-    )
-    command = await runtime.preview_scheduler_genesis("hermetic-ingress", draft)
-    result = await runtime.adopt_scheduler_genesis(
-        "hermetic-ingress",
-        SchedulerGenesisAdoption(
-            adoption_act_id="genesis", command_bytes=command.canonical_bytes()
-        ),
-    )
-    assert result.kind == "COMMITTED"
+from tests.support.composition.scheduler_interval_runtime import (
+    configure,
+)
 
 
 async def adoption(runtime: R15SchedulerRuntime, act: str = "tick") -> TickPolicyAdoption:

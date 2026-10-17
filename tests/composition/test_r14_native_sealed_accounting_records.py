@@ -5,93 +5,17 @@ import hashlib
 import pytest
 from pydantic import TypeAdapter
 
-from chiplog.capabilities.agent_loop._original_recovery_process import (
-    PREPARE_SEALED_ACCOUNTING_V3_OPERATION,
-)
-from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_contracts import (
-    NATIVE_SEALED_ACCOUNTING_V3_REQUEST_SCHEMA,
-    NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA,
-)
-from chiplog.capabilities.agent_loop.native_sealed_accounting_v3_preparation import (
-    prepare_native_sealed_accounting_v3,
-)
 from chiplog.composition.r14_native_accounting_records import (
-    NativeSealedAccountingSourceStampV3,
     NativeSealedAccountingV3PhysicalEnvelope,
     NativeSealedAccountingV3Record,
-    RetainedNativeSealedAccountingV3Publication,
     _sealed_accounting_v3_artifacts,
     sealed_accounting_v3_command,
     sealed_accounting_v3_envelope,
-    sealed_accounting_v3_record,
     validate_retained_sealed_accounting_v3_publication,
 )
-from chiplog.platform.broker import (
-    BrokerSession,
-    CallBudget,
-    PublicPortCall,
-    PublicPortSuccess,
+from tests.support.composition.r14_native_sealed_accounting_records import (
+    _retained,
 )
-from tests.capabilities.agent_loop.test_native_sealed_accounting_v3 import (
-    _request,
-    _two_frontiers,
-)
-
-
-def _retained():
-    request = _request(_two_frontiers())
-    response = prepare_native_sealed_accounting_v3(request)
-    stamp = NativeSealedAccountingSourceStampV3(
-        tenant_id="tenant",
-        database_identity=("device", 10, 20),
-        tenant_commit_sequence=12,
-        authority_materialization_commitment="c" * 64,
-    )
-    broker = BrokerSession(
-        tenant_id="tenant",
-        broker_epoch=1,
-        generation_id="generation",
-        owner_id="broker",
-        session_id="broker-session",
-    )
-    owner = BrokerSession(
-        tenant_id="tenant",
-        broker_epoch=1,
-        generation_id="generation",
-        owner_id="agent_loop",
-        session_id="owner-session",
-    )
-    sent = PublicPortCall(
-        operation_id=PREPARE_SEALED_ACCOUNTING_V3_OPERATION,
-        request_id="request-1",
-        caller=broker,
-        callee=owner,
-        schema_id=NATIVE_SEALED_ACCOUNTING_V3_REQUEST_SCHEMA,
-        canonical_payload=request.canonical_bytes(),
-        budget=CallBudget(
-            remaining_calls=1,
-            remaining_depth=1,
-            absolute_deadline_ns=100,
-            policy_version=1,
-        ),
-    )
-    returned = PublicPortSuccess(
-        request_id=sent.request_id,
-        responder=owner,
-        schema_id=NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA,
-        canonical_payload=response.canonical_bytes(),
-    )
-    record = sealed_accounting_v3_record(request, response, stamp)
-    return RetainedNativeSealedAccountingV3Publication(
-        request=request,
-        response=response,
-        owner_request=sent,
-        owner_response=returned,
-        selected_source_bytes=b"selected-source",
-        physical_source_bytes=b"physical-source",
-        source_stamp=stamp,
-        record=record,
-    )
 
 
 def test_v3_record_retains_mixed_per_seal_result_and_external_source_stamp() -> None:

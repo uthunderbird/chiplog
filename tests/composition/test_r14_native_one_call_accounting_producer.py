@@ -22,10 +22,7 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     SealedResponseRecord,
 )
 from chiplog.capabilities.agent_loop.execution_contracts import (
-    ConsequentialToolCall,
-    ExecutionContinue,
     ExecutionRunRecord,
-    SelfEffectArguments,
 )
 from chiplog.capabilities.agent_loop.native_one_call_accounting_contracts import (
     NATIVE_ONE_CALL_ACCOUNTING_REQUEST_SCHEMA,
@@ -44,14 +41,10 @@ from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import
     frontier_registry_reference,
 )
 from chiplog.composition.common_cli_execution_runtime import (
-    CommonCliExecutionRuntime,
     open_common_cli_execution_runtime,
 )
-from chiplog.composition.common_execution_driver_contracts import SelectedExecutionReceiptV1
-from chiplog.composition.r14_cancellation_contracts import CancelCallSubmission
 from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_execution_recovery_source import R14NativeCancelledCallSource
-from chiplog.composition.r14_loop_history import read_execution_recovery_history
 from chiplog.composition.r14_native_one_call_accounting_producer import (
     R14NativeOneCallCancelledAccountingProducer,
     R14NativeOneCallCancelledAccountingV24Producer,
@@ -61,20 +54,10 @@ from chiplog.composition.r14_native_selected_accounting_source import (
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.broker import PublicPortSuccess
-from tests.support.h1_cli_execution import admit_runtime_slot
-
-
-def _response() -> bytes:
-    return ExecutionContinue(
-        kind="Continue",
-        tool_calls=(
-            ConsequentialToolCall(
-                call_id="effect",
-                tool="request_self_effect",
-                arguments=SelfEffectArguments(payload=b"effect", bundle_members=("one",)),
-            ),
-        ),
-    ).canonical_bytes()
+from tests.support.composition.r14_native_one_call_accounting_producer import (
+    _response,
+    _selected_cancelled,
+)
 
 
 def _rehead_attempt(attempt: object) -> object:
@@ -207,32 +190,6 @@ def _replace_initialized(
             ),
             "selected_sealed_run_bytes": changed.canonical_bytes(),
         }
-    )
-
-
-async def _selected_cancelled(runtime: CommonCliExecutionRuntime) -> None:
-    request = await admit_runtime_slot(runtime, "native-accounting")
-    initial = await runtime.drive_input(request)
-    assert isinstance(initial, SelectedExecutionReceiptV1)
-    run_id = initial.stable_run_lineage_id
-    started = await runtime.begin_execution(
-        "hermetic-ingress", run_id, initial.selected_run_head.head
-    )
-    captured = await runtime.capture_execution("hermetic-ingress", run_id, started.head)
-    sealed = await runtime.seal_execution("hermetic-ingress", run_id, captured.head)
-    _, inventory, _, _, _, _ = read_execution_recovery_history(runtime)
-    row = inventory.ordered_calls[0]
-    await runtime.cancel_execution_call(
-        "hermetic-ingress",
-        CancelCallSubmission(
-            act_id="cancel-native-effect",
-            original_call_id=row.original_call_id,
-            initialized=reference(row.initialized_record.original_call_id, row.initialized_record),
-            current_run=CallSubjectHead(
-                subject_id=sealed.run_id,
-                revision=Present(head=sealed.head, fingerprint=sealed.digest()),
-            ),
-        ),
     )
 
 

@@ -478,7 +478,7 @@ async def test_legacy_effect_history_refuses_dispatch_without_new_selection(tmp_
     from contextlib import closing
 
     from chiplog.capabilities.agent_loop.contracts import LoopRejected
-    from tests.composition.test_denial_runtime import _effect, _ingress
+    from tests.support.composition.denial_runtime import _effect, _ingress
 
     database = tmp_path / "mixed.db"
     resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1)

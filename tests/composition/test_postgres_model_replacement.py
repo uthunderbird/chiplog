@@ -18,31 +18,11 @@ from chiplog.composition.postgres_model_recovery import (
     replace_unstarted_model_attempt,
 )
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_execution import SECRET, bootstrap, opened, origin
-
-RESPONSE = json.dumps(
-    {
-        "kind": "Continue",
-        "tool_calls": [
-            {
-                "call_id": "proposal",
-                "tool": "propose_intent",
-                "text": "replacement",
-            }
-        ],
-    }
-).encode()
-
-
-class PausedModel(HermeticModel):
-    def __init__(self) -> None:
-        super().__init__((RESPONSE,))
-        self.entered, self.release = asyncio.Event(), asyncio.Event()
-
-    async def invoke(self, attempt: ModelAttempt | ExecutionAttempt) -> tuple[bytes, str]:
-        self.entered.set()
-        await self.release.wait()
-        return await super().invoke(attempt)
+from tests.support.composition.postgres_execution import SECRET, bootstrap, opened, origin
+from tests.support.composition.postgres_model_replacement import (
+    RESPONSE,
+    PausedModel,
+)
 
 
 @pytest.mark.parametrize("version", ["v2", "v3"])

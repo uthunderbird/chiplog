@@ -21,7 +21,7 @@ from chiplog.composition.r15_scheduler_registry import SchedulerGenesisAdoption
 from chiplog.composition.r15_scheduler_runtime import open_r15_runtime
 from chiplog.composition.r15_tick_clock_v1 import EvaluationSchedulerClock
 from chiplog.composition.scheduler_source_registry import read_admitted_scheduler_startup
-from tests.composition.test_scheduler_mandate_issuance_runtime import _draft
+from tests.support.composition.scheduler_mandate_issuance_runtime import _draft
 
 
 def test_interval_service_needs_separate_selected_administration() -> None:

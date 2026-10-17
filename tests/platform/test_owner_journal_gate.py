@@ -11,7 +11,7 @@ from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJo
 from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.owner_decision_journal import IndependentOwnerDecisionJournal
 from chiplog.platform.owner_publications import PreparedOwnerPublication
-from tests.platform.test_owner_publications import digest, request
+from tests.support.platform.owner_publications import digest, request
 
 _WORKER = """
 import sys

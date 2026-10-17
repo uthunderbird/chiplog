@@ -8,7 +8,7 @@ from types import MethodType, SimpleNamespace
 import pytest
 
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
-from tests.composition.test_r14_recovery_pending_prefix import _fixture, _hash, _insert
+from tests.support.composition.r14_recovery_pending_prefix import _fixture, _hash, _insert
 
 
 def _entry(batch, predecessor, resulting, **evidence):
@@ -34,9 +34,11 @@ async def _semantic_prefix(tmp_path, monkeypatch, *, complete, bridge):
     from chiplog.composition import r14_execution_resume as resume
     from chiplog.composition import r14_loop_semantic_reduction_publication as reduction
     from chiplog.composition import r14_original_call_resolution_publication as resolution
-    from tests.capabilities.agent_loop.test_execution_recovery_preparation import _cut
-    from tests.composition.test_r14_loop_semantic_reduction_publication import retained
-    from tests.composition.test_r14_original_call_resolution_publication import publication_evidence
+    from tests.support.capabilities.agent_loop.execution_recovery_preparation import _cut
+    from tests.support.composition.r14_loop_semantic_reduction_publication import retained
+    from tests.support.composition.r14_original_call_resolution_publication import (
+        publication_evidence,
+    )
 
     resolved = publication_evidence()
     resolution_batch = resolution.command(resolved)

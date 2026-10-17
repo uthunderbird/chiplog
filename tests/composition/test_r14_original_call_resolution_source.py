@@ -39,9 +39,9 @@ from chiplog.composition.r14_original_call_resolution_source import (
     _verify_same_obligation_append,
     capture_original_call_resolution_request,
 )
-from tests.capabilities.agent_loop.test_original_call_resolution_preparation import request
 from tests.capabilities.effects.support.dispatch_outcomes import original_send
-from tests.capabilities.effects.test_dispatch_outcomes import request as outcome_request
+from tests.support.capabilities.agent_loop.original_call_resolution_preparation import request
+from tests.support.capabilities.effects.dispatch_outcomes import request as outcome_request
 
 
 @pytest.mark.parametrize(

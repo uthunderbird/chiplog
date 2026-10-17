@@ -25,14 +25,14 @@ from chiplog.composition.h1_preissuance_registration import H1PreissuanceSourceV
 from chiplog.composition.h1_v2_recovery_native_source import H1V2RecoveryNativeSource
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.broker import PublicPortSuccess
-from tests.composition.test_h1_postseal_recovery_stages import (
+from tests.support.composition.h1_postseal_recovery_stages import (
     _OPERATIONS,
     _install_recorders,
     _RecordingEngine,
     _seal_v3_then_v2_without_recovery,
     _stage_calls,
 )
-from tests.composition.test_h1_recovery_stage_source import _admit_other
+from tests.support.composition.h1_recovery_stage_source import _admit_other
 from tests.support.h1_cli_execution import advance
 from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
 

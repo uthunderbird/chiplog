@@ -2,24 +2,19 @@
 
 from __future__ import annotations
 
-from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
+from tests.capabilities.effects.support.dispatch_outcomes import original_send
+from tests.support.capabilities.agent_loop.original_call_resolution_preparation import (
     _head,
     _source,
 )
-from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
-    request as resolution_request,
+from tests.support.capabilities.agent_loop.original_semantic_reduction_preparation import (
+    request,
 )
-from tests.capabilities.effects.support.dispatch_outcomes import original_send
-from tests.capabilities.effects.test_dispatch_outcomes import request as outcome_request
+from tests.support.capabilities.effects.dispatch_outcomes import request as outcome_request
 
 from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
-from chiplog.capabilities.agent_loop.original_call_resolution_preparation import (
-    prepare_original_call_resolution,
-)
 from chiplog.capabilities.agent_loop.original_recovery_contracts import (
-    LoopRecoveryStream,
     PreparedLoopSemanticReduction,
-    PrepareLoopSemanticReduction,
     SelectedLoopSemanticReduction,
 )
 from chiplog.capabilities.agent_loop.original_semantic_reduction_preparation import (
@@ -27,62 +22,6 @@ from chiplog.capabilities.agent_loop.original_semantic_reduction_preparation imp
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent
 from chiplog.capabilities.effects.dispatch_outcomes import evidence_head, prepare_outcome
-
-
-def request() -> PrepareLoopSemanticReduction:
-    source_request = resolution_request()
-    prepared = prepare_original_call_resolution(source_request)
-    assert prepared.kind == "PREPARED_ORIGINAL_CALL_RESOLUTION_V1"
-    cut = source_request.cut
-    records = (
-        (
-            prepared.basis,
-            "chiplog.loop.original-resolution-basis.v1",
-            prepared.basis.basis_id,
-        ),
-        (
-            prepared.closure,
-            prepared.closure.schema_id,
-            prepared.closure.closure_id,
-        ),
-        (
-            prepared.recovered_outcome,
-            prepared.recovered_outcome.schema_id,
-            prepared.recovered_outcome.outcome_id,
-        ),
-        (
-            prepared.batch,
-            "chiplog.loop.original-resolver-batch.v1",
-            prepared.batch.batch_id,
-        ),
-    )
-    anchors = (
-        *(
-            _source(record, record_id=record_id, owner="agent_loop", schema=schema)
-            for record, schema, record_id in records
-        ),
-        cut.selected_witness,
-    )
-    binding = cut.original
-    return PrepareLoopSemanticReduction(
-        command_id="reduce-original-semantic-evidence",
-        tenant_id=cut.tenant_id,
-        database_id=cut.database_id,
-        tenant_commit_sequence=cut.tenant_commit_sequence + 1,
-        materialization_commitment="a" * 64,
-        stream=LoopRecoveryStream(
-            stream_id=binding.evidence_stream_id,
-            registry=cut.obligation_stream.registry,
-            subject=cut.current_obligation.subject,
-            schema_id="chiplog.loop.semantic-reduction.v1",
-        ),
-        expected=Absent(),
-        original=binding,
-        complete_ordered_evidence=cut.complete_ordered_evidence,
-        complete_anchor_sources=anchors,
-        reducer_policy=cut.reducer_policy,
-        authority=cut.authority,
-    )
 
 
 def test_preparation_builds_consumable_resolved_reduction() -> None:

@@ -13,8 +13,8 @@ from chiplog.composition import r14_recovery_publication as publication
 from chiplog.platform._sqlite import EventAppender, FenceAdvanceCommand, SQLiteMaterializer
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.workspace_snapshot import workspace_snapshot
-from tests.composition.test_r14_recovery_pending_prefix import _fixture
-from tests.composition.test_r14_resume_artifacts import _evidence as resume_evidence
+from tests.support.composition.r14_recovery_pending_prefix import _fixture
+from tests.support.composition.r14_resume_artifacts import _evidence as resume_evidence
 
 
 async def _exercise_custom_source_writer(tmp_path, monkeypatch, mutation, *, witness_stage=None):

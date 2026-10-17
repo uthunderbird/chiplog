@@ -34,7 +34,7 @@ from chiplog.platform._owner_publication_contracts import (
 from chiplog.platform.authority_gate import AuthorityGateError
 from chiplog.platform.broker import PublicPortCall, PublicPortResult
 from chiplog.platform.r8_gate import BrokerDeploymentGate
-from tests.composition.test_effects_authenticated_cut import _response
+from tests.support.composition.effects_authenticated_cut import _response
 from tests.support.deployment_gate import KEY, entitlement, request, signature
 
 

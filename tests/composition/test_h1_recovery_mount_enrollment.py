@@ -21,7 +21,7 @@ from chiplog.composition.h1_launch_enrollment import (
     _provision_h1_recovery_mount,
 )
 from chiplog.platform.authority_gate import AuthorityGate
-from tests.composition.test_h1_evidence_mount_enrollment import _slot
+from tests.support.composition.h1_evidence_mount_enrollment import _slot
 
 
 def _enrolled_slot(tmp_path: Path) -> tuple[InstalledH1Slot, ExpectedH1Genesis]:

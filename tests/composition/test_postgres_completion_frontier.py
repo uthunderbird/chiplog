@@ -19,11 +19,11 @@ from chiplog.composition.postgres_execution import PostgresExecutionRuntime
 from chiplog.composition.postgres_planning import PostgresPlanningRuntime
 from chiplog.platform.deployment_gate import CurrentEntitlement
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_completion import completion, eligibility, opened, origin
-from tests.composition.test_postgres_effects import IDENTITY, KEY, PEER
-from tests.composition.test_postgres_execution import SECRET
-from tests.composition.test_postgres_planning import verifier
-from tests.composition.test_postgres_two_seals import effect_response
+from tests.support.composition.postgres_completion import completion, eligibility, opened, origin
+from tests.support.composition.postgres_effects import IDENTITY, KEY, PEER
+from tests.support.composition.postgres_execution import SECRET
+from tests.support.composition.postgres_planning import verifier
+from tests.support.composition.postgres_two_seals import effect_response
 from tests.support.deployment_gate import signature
 
 

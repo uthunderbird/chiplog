@@ -17,7 +17,7 @@ from chiplog.composition.r14_original_outcome_translation import (
     translate_selected_outcome_v1,
 )
 from tests.capabilities.effects.support.dispatch_outcomes import original_send
-from tests.capabilities.effects.test_dispatch_outcomes import request
+from tests.support.capabilities.effects.dispatch_outcomes import request
 
 
 def closed_status(*, no_effect: bool) -> RecoveredEffectStatusV1:

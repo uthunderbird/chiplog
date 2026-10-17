@@ -20,7 +20,7 @@ from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.broker import PublicPortSuccess
 from chiplog.platform.workspace_snapshot import read_connection, workspace_snapshot
-from tests.composition.test_r14_native_sealed_accounting_records import _retained
+from tests.support.composition.r14_native_sealed_accounting_records import _retained
 
 
 @pytest.mark.asyncio

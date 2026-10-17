@@ -11,9 +11,9 @@ from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.composition.postgres_effects import adopt_effect, preview_effect
 from chiplog.composition.postgres_execution import PostgresExecutionRuntime
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_completion import opened, prepared
-from tests.composition.test_postgres_effects import PEER
-from tests.composition.test_postgres_two_seals import effect_response
+from tests.support.composition.postgres_completion import opened, prepared
+from tests.support.composition.postgres_effects import PEER
+from tests.support.composition.postgres_two_seals import effect_response
 
 
 @pytest.mark.parametrize("first", ["accept", "cancel"])

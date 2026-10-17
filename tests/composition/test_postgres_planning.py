@@ -1,5 +1,4 @@
 import hashlib
-import hmac
 import time
 from dataclasses import replace
 
@@ -9,7 +8,10 @@ from chiplog.composition.postgres_planning import PostgresPlanningRuntime
 from chiplog.platform import postgres_gate
 from chiplog.platform.deployment_gate import DeploymentGateRequest
 from chiplog.platform.postgres import PostgresServer, Record
-from tests.support.deployment_gate import KEY, request, signature
+from tests.support.composition.postgres_planning import (
+    verifier,
+)
+from tests.support.deployment_gate import request, signature
 from tests.support.r8_journey import (
     IDENTITY,
     SECRET,
@@ -17,10 +19,6 @@ from tests.support.r8_journey import (
     planning_entitlement,
     planning_request,
 )
-
-
-def verifier(payload: bytes, proof: bytes) -> bool:
-    return hmac.compare_digest(hmac.digest(KEY, payload, "sha256"), proof)
 
 
 async def test_planning_transaction_can_atomically_publish_a_companion(

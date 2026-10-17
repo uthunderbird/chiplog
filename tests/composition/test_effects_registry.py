@@ -7,9 +7,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from chiplog.capabilities.effects.contracts import (
-    CommandIdentity,
     EffectRecord,
-    EffectSnapshot,
     EffectStoreSnapshot,
 )
 from chiplog.composition.r16_effects import EffectPreviewBinding, HermeticEffectProposal
@@ -17,7 +15,10 @@ from chiplog.composition.r16_effects_registry import (
     HermeticPlanEffectRegistry,
     HermeticPolicyEvaluation,
 )
-from tests.support.effects import head, intent
+from tests.support.composition.effects_registry import (
+    record,
+)
+from tests.support.effects import intent
 
 
 def binding() -> EffectPreviewBinding:
@@ -57,40 +58,6 @@ def evaluate(
         EffectStoreSnapshot(tenant_id="hermetic-tenant", tenant_head=len(records), records=records),
         tenant_id="hermetic-tenant",
         principal_id="hermetic-principal",
-    )
-
-
-def record(state: str, name: str = "old") -> EffectRecord:
-    registry = HermeticPlanEffectRegistry()
-    original = intent()
-    authority = original.authority.model_copy(
-        update={
-            "tenant_id": "hermetic-tenant",
-            "principal_id": "hermetic-principal",
-            "actor_id": "hermetic-principal",
-            "recipient": registry.recipient,
-        }
-    )
-    snapshot = EffectSnapshot.model_validate(
-        {
-            "intent": original.model_copy(
-                update={"authority": authority, "semantics": registry.semantics}
-            ),
-            "attempt": head(name),
-            "state": state,
-            "authorizations": (),
-            "transmissions": (),
-            "evidence": (),
-            "unresolved_obligations": (),
-        }
-    )
-    return EffectRecord(
-        record=head(name + "record"),
-        command=CommandIdentity(command_id=name, fingerprint=name, expected_tenant_head=0),
-        predecessor=None,
-        kind="PLAN_EFFECT_PUBLISHED",
-        snapshot=snapshot,
-        source_command=b"owner bytes",
     )
 
 

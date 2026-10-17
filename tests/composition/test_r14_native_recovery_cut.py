@@ -225,16 +225,16 @@ def test_closed_recovery_source_projection_keeps_resolver_authority(monkeypatch)
     )
     from chiplog.composition import r14_loop_semantic_reduction_publication as reductions
     from chiplog.composition import r14_original_call_resolution_publication as resolutions
-    from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
+    from tests.support.capabilities.agent_loop.original_call_resolution_preparation import (
         _source,
     )
-    from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
+    from tests.support.capabilities.agent_loop.original_call_resolution_preparation import (
         request as resolution_request,
     )
-    from tests.capabilities.agent_loop.test_original_semantic_reduction_preparation import (
+    from tests.support.capabilities.agent_loop.original_semantic_reduction_preparation import (
         request as reduction_request,
     )
-    from tests.capabilities.agent_loop.test_recovery_accounting import recovery_call
+    from tests.support.capabilities.agent_loop.recovery_accounting import recovery_call
 
     resolver_request = resolution_request()
     resolution = prepare_original_call_resolution(resolver_request)
@@ -323,7 +323,7 @@ def test_closed_recovery_source_projection_keeps_resolver_authority(monkeypatch)
 )
 def test_original_resolver_source_requires_exact_independent_selection(damage) -> None:
     from chiplog.composition.r14_native_recovery_cut import _original_source_matches_selection
-    from tests.capabilities.agent_loop.test_original_call_resolution_preparation import request
+    from tests.support.capabilities.agent_loop.original_call_resolution_preparation import request
 
     source = request().cut.current_obligation
     record = SimpleNamespace(
@@ -373,7 +373,7 @@ def test_original_resolver_source_requires_exact_independent_selection(damage) -
 def test_accepted_effect_join_distinguishes_carrier_and_body_fingerprints(variant: str) -> None:
     from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
     from chiplog.composition.r14_native_recovery_cut import _accepted_source_preimages
-    from tests.capabilities.effects.test_dispatch_outcomes import request
+    from tests.support.capabilities.effects.dispatch_outcomes import request
 
     send = original_send()
     record = prepare_outcome(request(send, send))
@@ -437,7 +437,7 @@ def test_original_terminal_aliases_share_one_exact_selected_decision(conflict) -
     from chiplog.capabilities.agent_loop.execution_recovery_preparation import _source_for_revision
     from chiplog.capabilities.agent_loop.recovery_domain import RecoveryHold
     from chiplog.composition.r14_native_recovery_cut import _original_source_decisions
-    from tests.capabilities.agent_loop.test_original_call_resolution_preparation import request
+    from tests.support.capabilities.agent_loop.original_call_resolution_preparation import request
 
     original = request().cut.call_terminal
     physical = original.physical_record
@@ -698,7 +698,9 @@ def test_original_source_decision_alias_rejects_substitutions(damage: str) -> No
 def test_original_resolver_anchor_producer_joins_selected_command_decision() -> None:
     from chiplog.composition.r14_loop_semantic_reduction_publication import _selected_anchor_sources
     from chiplog.composition.r14_original_call_resolution_publication import command
-    from tests.composition.test_r14_original_call_resolution_publication import publication_evidence
+    from tests.support.composition.r14_original_call_resolution_publication import (
+        publication_evidence,
+    )
 
     retained = publication_evidence()
     batch = command(retained)

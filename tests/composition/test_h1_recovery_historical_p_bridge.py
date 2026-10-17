@@ -20,7 +20,7 @@ from chiplog.composition.h1_recovery_stage_source import (
     H1RecoveryStageSource,
     H1RecoveryStageSourceError,
 )
-from tests.composition.test_h1_recovery_stage_source import (
+from tests.support.composition.h1_recovery_stage_source import (
     _admit_other,
     _resources,
     _v2_seal_with_historical_v3_prepare,

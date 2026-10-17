@@ -10,9 +10,9 @@ from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.capabilities.agent_loop.contracts import LoopHold, LoopRejected
 from chiplog.composition import postgres_readonly
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_completion import opened
-from tests.composition.test_postgres_effects import PEER
-from tests.composition.test_postgres_readonly_carried_work import pending_after_closed_effect
+from tests.support.composition.postgres_completion import opened
+from tests.support.composition.postgres_effects import PEER
+from tests.support.composition.postgres_readonly_carried_work import pending_after_closed_effect
 
 
 @pytest.mark.parametrize("terminal", ["success", "exhausted"])

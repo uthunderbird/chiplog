@@ -7,8 +7,8 @@ from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopHold
 from chiplog.composition.postgres_application import PostgresApplicationDriver
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_completion import completion, opened, prepared
-from tests.composition.test_postgres_effects import PEER
+from tests.support.composition.postgres_completion import completion, opened, prepared
+from tests.support.composition.postgres_effects import PEER
 
 
 async def test_driver_accepts_captured_completion_and_reopen_never_calls_model(

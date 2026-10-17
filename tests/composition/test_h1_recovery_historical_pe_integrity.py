@@ -25,7 +25,7 @@ from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_preseal_pe_anchor_records import (
     decode_h1_preseal_pe_anchor_record,
 )
-from tests.composition.test_h1_recovery_historical_pe_source import (
+from tests.support.composition.h1_recovery_historical_pe_source import (
     _resources,
     _seal_v3_prepare_as_v2,
     _selected_seal_decision,

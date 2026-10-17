@@ -16,8 +16,8 @@ from chiplog.composition.postgres_execution import PostgresExecutionRuntime
 from chiplog.composition.postgres_local_delivery import PostgresLocalDeliveryBinding
 from chiplog.composition.postgres_planning import PostgresPlanningRuntime
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_completion import eligibility
-from tests.composition.test_postgres_planning import verifier
+from tests.support.composition.postgres_completion import eligibility
+from tests.support.composition.postgres_planning import verifier
 from tests.support.deployment_gate import signature
 
 

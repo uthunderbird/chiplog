@@ -36,7 +36,7 @@ from chiplog.platform._owner_publication_contracts import (
 )
 from chiplog.platform.broker import PublicPortCall, PublicPortResult
 from chiplog.platform.owner_publications import OwnerPublicationUncertain, PreparedOwnerPublication
-from tests.composition.test_scheduler_mandate_issuance_runtime import _adoption, _draft
+from tests.support.composition.scheduler_mandate_issuance_runtime import _adoption, _draft
 
 _SIGNER: subprocess.Popen[str]
 _AUTHORITY: LeaseExecutionAuthority

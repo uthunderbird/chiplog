@@ -30,14 +30,14 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import FrozenRu
 @pytest.mark.parametrize("record_kind", ["evidence", "closed"])
 def test_r16_outcome_record_marker_requires_exact_body_and_physical_carrier(damage, record_kind):
     from tests.capabilities.effects.support.dispatch_outcomes import original_send
-    from tests.capabilities.effects.test_dispatch_outcomes import request
+    from tests.support.capabilities.effects.dispatch_outcomes import request
 
     from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
 
     send = original_send()
     record = prepare_outcome(request(send, send))
     if record_kind == "closed":
-        from tests.capabilities.agent_loop.test_original_call_resolution_preparation import (
+        from tests.support.capabilities.agent_loop.original_call_resolution_preparation import (
             _closed_r16,
         )
 

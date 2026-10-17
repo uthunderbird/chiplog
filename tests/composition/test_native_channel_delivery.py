@@ -16,7 +16,6 @@ from typing import Literal
 
 import pytest
 
-from chiplog.adapters.driven.effects_hermetic import HermeticEffectsProvider
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.adapters.driven.native_ingress_cli import CliIngressFrame, NativeCliIngress
 from chiplog.adapters.driven.native_ingress_telegram import NativeTelegramIngress
@@ -50,31 +49,20 @@ from chiplog.composition.postgres_planning import PostgresPlanningRuntime
 from chiplog.platform.deployment_gate import CurrentEntitlement, DeploymentGateRequest
 from chiplog.platform.postgres import PostgresServer, UserDatabase
 from chiplog.platform.postgres_gate import canonical
+from tests.support.composition.native_channel_delivery import (
+    ISSUER_KEY,
+    binding,
+)
 from tests.support.deployment_gate import KEY as GATE_KEY
 from tests.support.deployment_gate import entitlement, request, signature
 
 PRINCIPAL, PEER = "hermetic-principal", "local-cli"
-ISSUER_KEY, RECEIPT_KEY = b"stable-channel-issuer", b"stable-provider-receipt"
 OPERATOR_SECRET, WEBHOOK_SECRET = b"operator-fixture", b"webhook-fixture"
 type Channel = Literal["CLI", "TELEGRAM"]
 
 
 def verifier(payload: bytes, proof: bytes) -> bool:
     return hmac.compare_digest(hmac.digest(GATE_KEY, payload, "sha256"), proof)
-
-
-def binding(directory: Path, *, with_effect: bool = False) -> PostgresEffectsBinding:
-    scenario: Literal["LOST_RESPONSE_AFTER_EFFECT"] = "LOST_RESPONSE_AFTER_EFFECT"
-    scenarios = (scenario,) * (2 if with_effect else 1)
-    return PostgresEffectsBinding(
-        HermeticEffectsProvider(
-            receipt_key=RECEIPT_KEY,
-            scenarios=scenarios,
-            journal_path=directory / "transfers.jsonl",
-            observation_journal_path=directory / "observations.jsonl",
-        ),
-        RECEIPT_KEY,
-    )
 
 
 def registered(channel: Channel, transport: PostgresEffectsBinding) -> RegisteredIngressSource:

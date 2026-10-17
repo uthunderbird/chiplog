@@ -33,7 +33,7 @@ from chiplog.capabilities.projections.conversation_preparation_contracts import 
     make_conversation_canonical_member,
 )
 from chiplog.composition import completion_publication_contracts as publication
-from tests.capabilities.effects.test_h1_scoped_preparation import _call
+from tests.support.capabilities.effects.h1_scoped_preparation import _call
 from tests.support.completion_assembly import accepted_completion_fixture
 
 

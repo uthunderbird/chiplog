@@ -19,7 +19,7 @@ from chiplog.composition.r14_runtime import R14PlanningRuntime
 from chiplog.composition.r16_effects import R16EffectsProducer
 from chiplog.domain_primitives import TenantId
 from chiplog.platform.broker import PublicPortCall, PublicPortResult, PublicPortSuccess
-from tests.composition.test_plan_effect_publication import response
+from tests.support.composition.plan_effect_publication import response
 
 
 def _canonical(value: object) -> bytes:

@@ -19,13 +19,13 @@ from chiplog.composition.postgres_run_recovery import (
     suspend_execution,
 )
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_effects import IDENTITY, PEER, setup_effect
-from tests.composition.test_postgres_execution import SECRET, bootstrap, opened, origin
-from tests.composition.test_postgres_model_replacement import RESPONSE, PausedModel
-from tests.composition.test_postgres_planning import verifier
-from tests.composition.test_postgres_readonly import opened as readonly_opened
-from tests.composition.test_postgres_readonly import selected_call
-from tests.composition.test_postgres_readonly_successor import unavailable
+from tests.support.composition.postgres_effects import IDENTITY, PEER, setup_effect
+from tests.support.composition.postgres_execution import SECRET, bootstrap, opened, origin
+from tests.support.composition.postgres_model_replacement import RESPONSE, PausedModel
+from tests.support.composition.postgres_planning import verifier
+from tests.support.composition.postgres_readonly import opened as readonly_opened
+from tests.support.composition.postgres_readonly import selected_call
+from tests.support.composition.postgres_readonly_successor import unavailable
 from tests.support.deployment_gate import signature
 
 

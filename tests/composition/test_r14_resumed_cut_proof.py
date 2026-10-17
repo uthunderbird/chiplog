@@ -11,8 +11,8 @@ from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunReco
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
 from chiplog.composition import r14_execution_resume as resume
 from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
-from tests.capabilities.agent_loop.test_execution_recovery_preparation import _cut
-from tests.capabilities.agent_loop.test_obligation_resume_transition import _transition
+from tests.support.capabilities.agent_loop.execution_recovery_preparation import _cut
+from tests.support.capabilities.agent_loop.obligation_resume_transition import _transition
 
 
 @pytest.mark.asyncio

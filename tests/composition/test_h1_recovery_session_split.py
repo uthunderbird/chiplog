@@ -20,7 +20,7 @@ from chiplog.composition.h1_completion_preparation_session import (
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.broker import PublicPortCall
-from tests.composition.test_h1_horizontal_completion import _selected_native_v3_then_v2_source
+from tests.support.composition.h1_horizontal_completion import _selected_native_v3_then_v2_source
 from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
 
 

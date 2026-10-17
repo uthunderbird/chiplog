@@ -1022,7 +1022,7 @@ async def test_effects_run_snapshot_reuse_keeps_exact_sql_checks(
     from chiplog.composition import r16_effects as effects
     from chiplog.composition.r14_runtime import R14PlanningRuntime
     from chiplog.platform._sqlite import SCHEMA_SQL
-    from tests.capabilities.agent_loop.test_execution_recovery_preparation import _cut
+    from tests.support.capabilities.agent_loop.execution_recovery_preparation import _cut
 
     cut = await _cut()
     runs = cast(tuple[ExecutionRunRecord, ...], cut.complete_ordered_run_lineage)

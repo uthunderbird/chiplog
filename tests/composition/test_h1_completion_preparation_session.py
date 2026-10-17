@@ -49,10 +49,10 @@ from chiplog.platform.broker import (
     PublicPortResult,
     PublicPortSuccess,
 )
-from tests.capabilities.agent_loop.test_execution_first_path_completion_contracts import (
+from tests.support.capabilities.agent_loop.execution_first_path_completion_contracts import (
     request as real_first_path_request,
 )
-from tests.capabilities.projections.test_conversation_completion_owner import (
+from tests.support.capabilities.projections.conversation_completion_owner import (
     _request as real_conversation_request,
 )
 from tests.support.completion_assembly import accepted_completion_fixture

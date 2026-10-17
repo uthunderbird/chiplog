@@ -9,7 +9,6 @@ from typing import Literal
 
 import pytest
 
-from chiplog.capabilities.agent_loop.application import AgentLoop
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopRejected
 from chiplog.capabilities.effects.contracts import EffectRecord, ExactHead
 from chiplog.capabilities.effects.denial_contracts import DenialPreparationRequest
@@ -18,8 +17,7 @@ from chiplog.composition.r16_denial_authority import DenialAuthority
 from chiplog.composition.r16_denial_history import validate_selected_denials
 from chiplog.composition.r16_denial_inputs import validate_retained_denial_sources
 from chiplog.composition.r16_denial_publication import open_r16_loop
-from chiplog.composition.r16_denial_registry import DenialIngress
-from chiplog.composition.r16_effects import HermeticEffectProposal, R16EffectsProducer
+from chiplog.composition.r16_effects import HermeticEffectProposal
 from chiplog.composition.r16_effects_inputs import canonical, digest, reference
 from chiplog.platform._owner_publication_contracts import (
     BrokerPublicationResult,
@@ -43,6 +41,10 @@ from chiplog.platform.owner_publications import (
     PreparedOwnerPublication,
     SelectedOwnerDecision,
 )
+from tests.support.composition.denial_runtime import (
+    _effect,
+    _ingress,
+)
 
 
 def _response() -> bytes:
@@ -64,43 +66,6 @@ def _response() -> bytes:
             ],
         }
     ).encode()
-
-
-async def _effect(loop: AgentLoop, run_id: str = "r") -> tuple[R14PlanningRuntime, EffectRecord]:
-    created = await loop.create(run_id, "Prepare my action for " + run_id, BudgetPolicy())
-    active = await loop.activate(run_id, created.head)
-    await loop.step(run_id, active.head)
-    runtime = loop._planning
-    assert isinstance(runtime, R14PlanningRuntime)
-    display = await R16EffectsProducer(runtime).display_effect(run_id + "/turn/1/proposal/effect")
-    result = await runtime.publish_effect(
-        "hermetic-ingress", display.display_id, display.display_digest, display.adoption_act_id
-    )
-    assert isinstance(result, JournalSelectedPublication), result
-    effect_records = tuple(
-        member
-        for member in result.complete_records
-        if member.owner == "effects" and member.schema_id == "chiplog.effects.record.v1"
-    )
-    assert len(effect_records) == 1
-    return runtime, EffectRecord.model_validate_json(effect_records[0].canonical_bytes)
-
-
-def _ingress(
-    record: EffectRecord,
-    disposition: Literal[
-        "HELD_BEFORE_SEND", "CANCELLED_BEFORE_SEND", "SUPERSEDED_BEFORE_SEND"
-    ] = "CANCELLED_BEFORE_SEND",
-    successor: ExactHead | None = None,
-) -> DenialIngress:
-    return DenialIngress(
-        schema_id="chiplog.hermetic-denial-ingress.v1",
-        act_id="cancel-act",
-        intent_id=record.snapshot.intent.intent_id,
-        expected_attempt=record.snapshot.attempt,
-        disposition=disposition,
-        successor=successor,
-    )
 
 
 @pytest.mark.parametrize("disposition", ("HELD_BEFORE_SEND", "CANCELLED_BEFORE_SEND"))

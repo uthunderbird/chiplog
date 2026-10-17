@@ -24,7 +24,7 @@ from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 from chiplog.platform.r7_trust import decode_trust_owner_call_canonical
-from tests.composition.test_h1_scope_current_wire_runtime import _current_request
+from tests.support.composition.h1_scope_current_wire_runtime import _current_request
 from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
 
 V1_SCHEMA = "chiplog.composition.h1-completion-issuance.v1"

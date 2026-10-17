@@ -4,14 +4,12 @@ import pytest
 
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopHold, LoopRejected
-from chiplog.composition.postgres_readonly import HistoryReadUnavailable
 from chiplog.composition.postgres_readonly_successor import retry_readonly_in_successor
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_readonly import PEER, opened, selected_call
-
-
-def unavailable(*args: object) -> bytes:
-    raise HistoryReadUnavailable("temporary read failure")
+from tests.support.composition.postgres_readonly import PEER, opened, selected_call
+from tests.support.composition.postgres_readonly_successor import (
+    unavailable,
+)
 
 
 async def test_successors_share_counter_and_snapshot_after_reopen(
@@ -248,8 +246,8 @@ async def test_pending_sibling_holds_and_successor_acceptance_is_one_batch(
     postgres_server: PostgresServer,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tests.composition.test_postgres_execution import bootstrap
-    from tests.composition.test_postgres_execution import opened as execution_opened
+    from tests.support.composition.postgres_execution import bootstrap
+    from tests.support.composition.postgres_execution import opened as execution_opened
 
     database = await bootstrap(postgres_server)
     response = json.dumps(

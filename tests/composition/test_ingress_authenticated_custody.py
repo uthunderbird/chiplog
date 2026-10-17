@@ -42,7 +42,7 @@ from chiplog.platform.owner_publications import (
     SelectedOwnerDecision,
     selected_records,
 )
-from tests.composition.test_plan_effect_publication import prepare_display, response
+from tests.support.composition.plan_effect_publication import prepare_display, response
 
 
 def _selected_bytes(decision: SelectedOwnerDecision) -> bytes:

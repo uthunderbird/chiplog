@@ -21,7 +21,7 @@ from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform import r7_runtime
 from chiplog.platform.broker import PublicPortCall
-from tests.composition.test_h1_postseal_recovery_stages import _seal_v3_then_v2_without_recovery
+from tests.support.composition.h1_postseal_recovery_stages import _seal_v3_then_v2_without_recovery
 from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
 
 _RED = "guarded installed B recovery enrollment/admission is not mounted yet"

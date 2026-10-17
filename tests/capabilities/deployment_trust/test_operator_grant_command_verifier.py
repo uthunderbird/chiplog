@@ -24,7 +24,7 @@ from chiplog.capabilities.deployment_trust.operator_grant_command_verifier impor
 from chiplog.capabilities.deployment_trust.operator_policy_authorization_contracts import (
     RetainedOperatorPolicyAuthorizationSourceV1,
 )
-from tests.capabilities.deployment_trust.test_prepared_external_delivery_grant_v2_contracts import (
+from tests.support.capabilities.deployment_trust.delivery_grant_v2 import (
     issue_request,
     revoke_request,
 )

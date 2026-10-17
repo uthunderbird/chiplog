@@ -13,7 +13,7 @@ from chiplog.composition.r14_native_scope_binding import verify_native_prepare_s
 from chiplog.composition.r14_original_prepare_source import R14OriginalNativePrepareSource
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.composition.r17_native_one_call_scope import NativeOneCallScopeService
-from tests.composition.test_r14_native_one_call_accounting_producer import _response
+from tests.support.composition.r14_native_one_call_accounting_producer import _response
 from tests.support.h1_cli_execution import admit_runtime_slot
 
 

@@ -16,7 +16,7 @@ from chiplog.capabilities.agent_loop.scheduler_client_contracts import (
 from chiplog.composition.postgres_execution import PostgresExecutionRuntime
 from chiplog.composition.postgres_scheduler import PostgresScheduler
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_scheduler import (
+from tests.support.composition.postgres_scheduler import (
     IDENTITY,
     PEER,
     SECRET,
@@ -45,10 +45,10 @@ async def test_scheduled_effect_send_cannot_claim_after_expiry_or_takeover(
         resolve_original_effect,
     )
     from chiplog.platform.postgres_gate import canonical
-    from tests.composition.test_native_channel_delivery import binding
-    from tests.composition.test_postgres_completion import eligibility
-    from tests.composition.test_postgres_planning import verifier
-    from tests.composition.test_postgres_scheduler import bound_origin
+    from tests.support.composition.native_channel_delivery import binding
+    from tests.support.composition.postgres_completion import eligibility
+    from tests.support.composition.postgres_planning import verifier
+    from tests.support.composition.postgres_scheduler import bound_origin
     from tests.support.deployment_gate import signature
 
     clock = Clock(11)

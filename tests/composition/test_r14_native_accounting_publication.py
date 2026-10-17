@@ -36,7 +36,7 @@ from chiplog.composition.r14_native_selected_accounting_source import (
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._sqlite import LostCommitAcknowledgement
 from chiplog.platform.workspace_snapshot import read_connection
-from tests.composition.test_r14_native_one_call_accounting_producer import (
+from tests.support.composition.r14_native_one_call_accounting_producer import (
     _response,
     _selected_cancelled,
 )

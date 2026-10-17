@@ -1,6 +1,5 @@
 """Real canonical runtime histories; no current-effects authority fixture injection."""
 
-import base64
 import json
 import sqlite3
 from pathlib import Path
@@ -22,32 +21,13 @@ from chiplog.composition.r14 import open_r14_loop
 from chiplog.composition.r14_runtime import R14PlanningRuntime
 from chiplog.composition.r16_effects import (
     EffectsCurrentWorkerHold,
-    HermeticEffectProposal,
     R16EffectsProducer,
     read_materialized_effects,
 )
 from chiplog.platform.owner_decision_journal import IndependentOwnerDecisionJournal
-
-
-def _response() -> bytes:
-    proposal = HermeticEffectProposal(
-        schema_id="chiplog.hermetic-effect-proposal.v1",
-        purpose="Record my hermetic action",
-        payload_base64=base64.b64encode(b"\xffexact\x00payload").decode(),
-        bundle_members=("self-action",),
-    )
-    return json.dumps(
-        {
-            "kind": "Continue",
-            "tool_calls": [
-                {
-                    "call_id": "effect",
-                    "tool": "propose_intent",
-                    "text": proposal.canonical_bytes().decode(),
-                }
-            ],
-        }
-    ).encode()
+from tests.support.composition.effects_authenticated_cut import (
+    _response,
+)
 
 
 async def test_legacy_validation_reuses_only_exact_pairs_and_bounds_retained_bytes(

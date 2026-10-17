@@ -2,7 +2,7 @@
 
 import pytest
 from tests.capabilities.effects.support.dispatch_outcomes import original_send
-from tests.capabilities.effects.test_dispatch_outcomes import request
+from tests.support.capabilities.effects.dispatch_outcomes import request
 
 from chiplog.capabilities.effects.dispatch_outcome_contracts import (
     DispatchOutcomeRecordV2,

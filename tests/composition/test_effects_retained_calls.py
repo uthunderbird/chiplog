@@ -12,7 +12,7 @@ from chiplog.composition.r13_planning import R13PlanningRuntime
 from chiplog.composition.r16_effects import EffectPreviewBinding, R16EffectsProducer
 from chiplog.platform.authority_gate import AuthorityGateError
 from chiplog.platform.broker import PublicPortCall, PublicPortResult, PublicPortSuccess
-from tests.composition.test_effects_authenticated_cut import _response
+from tests.support.composition.effects_authenticated_cut import _response
 
 
 async def test_retained_actual_frames_send_original_display_request(

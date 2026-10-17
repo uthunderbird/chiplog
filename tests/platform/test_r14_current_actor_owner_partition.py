@@ -28,7 +28,7 @@ from chiplog.platform.r7_runtime import (
     OwnerProcessIdentity,
     _owner_module,
 )
-from tests.capabilities.agent_loop.test_execution_recovery_preparation import _resume_request
+from tests.support.capabilities.agent_loop.execution_recovery_preparation import _resume_request
 
 
 def test_v40_owner_partition_is_exact_and_preserves_v37() -> None:

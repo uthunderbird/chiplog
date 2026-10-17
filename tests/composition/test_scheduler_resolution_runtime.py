@@ -27,7 +27,7 @@ from chiplog.composition.r15_tick_contracts import TickPolicyAdoption, TickPolic
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PublicationResult
 from chiplog.platform.broker import PublicPortCall, PublicPortResult, PublicPortSuccess
 from chiplog.platform.owner_publications import OwnerPublicationUncertain
-from tests.composition.test_r15_interval_service_runtime import _adopt_service, _decide
+from tests.support.composition.r15_interval_service_runtime import _adopt_service, _decide
 
 
 async def _configure(

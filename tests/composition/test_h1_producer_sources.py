@@ -41,18 +41,22 @@ from chiplog.composition.h1_selected_output_sources import H1SelectedOutputSourc
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.composition.r16_effects import MaterializedEffectsCut
 from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
-from tests.composition.test_h1_prepared_delivery_basis_registry import _completed_session
-from tests.composition.test_j7_mounted_external_delivery_grant import (
+from tests.support.composition.h1_prepared_delivery_basis_registry import _completed_session
+from tests.support.composition.j7_mounted_external_delivery_grant import (
     _signed_grant,
     _trust_observation,
     _write_grant_pin,
 )
-from tests.platform.test_prepared_policy_owner_route import _authorize, _signed_source, _write_pin
 from tests.support.h1_installed_launch import (
     DATABASE,
     TENANT,
     installed_slot,
     prepare_installed_slot,
+)
+from tests.support.platform.prepared_policy_owner_route import (
+    _authorize,
+    _signed_source,
+    _write_pin,
 )
 
 

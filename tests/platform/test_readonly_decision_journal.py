@@ -8,7 +8,7 @@ import pytest
 
 from chiplog.adapters.driven.deployment_trust import _journal as journals
 from chiplog.platform.authority_gate import AuthorityGateError
-from tests.platform.test_existing_only_decision_journal import _provision
+from tests.support.platform.existing_only_decision_journal import _provision
 
 
 def _files(directory):

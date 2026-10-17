@@ -17,6 +17,9 @@ from chiplog.platform._sqlite import (
     StoreAdmissionError,
     VerifiedOwnerPublication,
 )
+from tests.support.platform.h1_publication_guard import (
+    _Resolver,
+)
 
 V2_OPERATION = "agent_loop.complete_acceptance.v2"
 LOCAL_INTENT_SCHEMA = "chiplog.effects.h1-local-prepared-commentary-intent.v1"
@@ -272,28 +275,6 @@ async def test_delivery_work_operation_refuses_mixed_bundle_before_resolver_rout
 
     assert store.durable_records() == ()
     await appender.close()
-
-
-class _Resolver:
-    def __init__(self, command: PhysicalPublicationCommand) -> None:
-        self.command = command
-        self.modes: list[PublicationVerificationMode] = []
-
-    def verify(
-        self,
-        command: PhysicalPublicationCommand,
-        mode: PublicationVerificationMode,
-        _connection: object,
-    ) -> VerifiedOwnerPublication:
-        self.modes.append(mode)
-        return VerifiedOwnerPublication.from_command(
-            command,
-            binding_fingerprint="binding",
-            selected_identity=None if mode == "PRESELECT" else "selected",
-            selected_fingerprint=None if mode == "PRESELECT" else "selected-fingerprint",
-            expected_resulting=None,
-            expected_commit_sequence=1,
-        )
 
 
 class _Observer:

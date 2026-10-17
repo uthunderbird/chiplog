@@ -12,7 +12,7 @@ from chiplog.composition.common_cli_execution_runtime import open_installed_h1_r
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_preissuance_registration import H1PreissuanceSourceViolation
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
-from tests.composition.test_h1_completion_scope_source import _original_and_native
+from tests.support.composition.h1_completion_scope_source import _original_and_native
 from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
 
 

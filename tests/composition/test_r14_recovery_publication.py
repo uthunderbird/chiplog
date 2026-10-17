@@ -18,7 +18,7 @@ from chiplog.composition.r14_recovery_publication import (
     publish_execution_accounting_readiness,
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
-from tests.capabilities.agent_loop.test_execution_recovery_preparation import _cut
+from tests.support.capabilities.agent_loop.execution_recovery_preparation import _cut
 
 
 async def test_mounted_source_hold_and_owner_ipc_do_not_publish(tmp_path) -> None:

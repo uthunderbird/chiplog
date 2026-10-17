@@ -22,7 +22,7 @@ from chiplog.composition.r14_cancellation_contracts import (
     CANCELLATION_SCHEMA,
     NOT_EXECUTED_SCHEMA,
 )
-from tests.capabilities.agent_loop.test_execution_next_turn_preparation import _request
+from tests.support.capabilities.agent_loop.execution_next_turn_preparation import _request
 from tests.support.execution_cancellation import retained_shape
 
 

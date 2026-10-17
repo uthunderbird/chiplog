@@ -20,27 +20,14 @@ from chiplog.composition.postgres_effects import (
 )
 from chiplog.composition.postgres_planning import PostgresPlanningRuntime
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_completion import completion, eligibility, origin
-from tests.composition.test_postgres_effects import IDENTITY, KEY, PEER
-from tests.composition.test_postgres_execution import SECRET
-from tests.composition.test_postgres_planning import verifier
+from tests.support.composition.postgres_completion import completion, eligibility, origin
+from tests.support.composition.postgres_effects import IDENTITY, KEY, PEER
+from tests.support.composition.postgres_execution import SECRET
+from tests.support.composition.postgres_planning import verifier
+from tests.support.composition.postgres_two_seals import (
+    effect_response,
+)
 from tests.support.deployment_gate import request, signature
-
-
-def effect_response(*labels: str) -> bytes:
-    return json.dumps(
-        {
-            "kind": "Continue",
-            "tool_calls": [
-                {
-                    "call_id": label,
-                    "tool": "request_self_effect",
-                    "arguments": {"payload": "aGVsbG8=", "bundle_members": [label]},
-                }
-                for label in labels
-            ],
-        }
-    ).encode()
 
 
 async def test_two_actual_accepted_effect_seals_reopen_and_complete_without_repeat_send(
@@ -159,7 +146,7 @@ async def test_new_fanout_growth_still_has_normal_byte_bound(
     import pytest
 
     from chiplog.capabilities.agent_loop.contracts import LoopRejected
-    from tests.composition.test_postgres_execution import bootstrap, opened
+    from tests.support.composition.postgres_execution import bootstrap, opened
 
     database = await bootstrap(postgres_server)
     raw = json.dumps(

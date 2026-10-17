@@ -57,8 +57,8 @@ from chiplog.platform.owner_publications import (
     SelectedOwnerDecision,
     source_commands,
 )
-from tests.platform.test_h1_publication_guard import _Resolver
-from tests.platform.test_owner_publications import FixtureAuthority, digest, request
+from tests.support.platform.h1_publication_guard import _Resolver
+from tests.support.platform.owner_publications import FixtureAuthority, digest, request
 
 
 def _binding(batch: CompleteDeliveryBatchV2) -> H1DeliveryBinding:

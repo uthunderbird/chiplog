@@ -12,9 +12,9 @@ from chiplog.composition.common_cli_execution_runtime import (
 )
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
-from tests.composition.test_j7_mounted_external_delivery_grant import _write_grant_pin
-from tests.platform.test_prepared_policy_owner_route import _write_pin
+from tests.support.composition.j7_mounted_external_delivery_grant import _write_grant_pin
 from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
+from tests.support.platform.prepared_policy_owner_route import _write_pin
 
 
 @pytest.mark.asyncio

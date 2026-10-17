@@ -19,7 +19,7 @@ from chiplog.composition.h1_completion_exchange_registry import (
 )
 from chiplog.composition.h1_completion_issuance import H1CompletionOwnerExchangeV1
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
-from tests.capabilities.agent_loop.test_execution_first_path_completion_contracts import (
+from tests.support.capabilities.agent_loop.execution_first_path_completion_contracts import (
     request as real_first_path_request,
 )
 

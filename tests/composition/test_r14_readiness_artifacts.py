@@ -7,8 +7,8 @@ import pytest
 
 from chiplog.capabilities.agent_loop import execution_recovery_preparation as preparation
 from chiplog.composition import r14_recovery_publication as publication
-from tests.composition.test_r14_recovery_pending_prefix import _fixture
-from tests.composition.test_r14_resume_artifacts import _evidence as resume_evidence
+from tests.support.composition.r14_recovery_pending_prefix import _fixture
+from tests.support.composition.r14_resume_artifacts import _evidence as resume_evidence
 
 
 async def _evidence(tmp_path):

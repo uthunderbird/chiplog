@@ -9,7 +9,7 @@ from chiplog.capabilities.agent_loop.readonly_history_tool_contracts import Conv
 from chiplog.capabilities.agent_loop.readonly_runtime_contracts import HistorySnapshotSelectionV2
 from chiplog.composition.postgres_readonly import HistoryReadUnavailable, execute_readonly_call
 from chiplog.platform.postgres import PostgresServer, PostgresTransientReadError
-from tests.composition.test_postgres_execution import bootstrap, opened
+from tests.support.composition.postgres_execution import bootstrap, opened
 
 
 def proposal(label: str) -> bytes:

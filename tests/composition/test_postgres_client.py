@@ -11,10 +11,10 @@ from chiplog.client import open_execution_client
 from chiplog.composition.postgres_effects import PostgresEffectsBinding
 from chiplog.composition.postgres_planning import PostgresPlanningRuntime
 from chiplog.platform.postgres import PostgresServer
-from tests.composition.test_postgres_completion import completion, origin
-from tests.composition.test_postgres_effects import IDENTITY, KEY, PEER
-from tests.composition.test_postgres_execution import SECRET
-from tests.composition.test_postgres_planning import verifier
+from tests.support.composition.postgres_completion import completion, origin
+from tests.support.composition.postgres_effects import IDENTITY, KEY, PEER
+from tests.support.composition.postgres_execution import SECRET
+from tests.support.composition.postgres_planning import verifier
 
 
 async def test_default_public_client_runs_native_postgres_completion_and_reopens(

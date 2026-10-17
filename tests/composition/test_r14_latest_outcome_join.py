@@ -35,7 +35,7 @@ from chiplog.composition.r14_native_selected_accounting_source import (
 from chiplog.composition.r16_dispatch_history import VerifiedDispatchHistory
 from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
 from tests.capabilities.effects.support.dispatch_outcomes import original_send
-from tests.capabilities.effects.test_dispatch_outcomes import request
+from tests.support.capabilities.effects.dispatch_outcomes import request
 
 
 def _selected_tuple(

@@ -26,7 +26,7 @@ from chiplog.platform.owner_publications import (
     BrokerPublicationCoordinator,
     PreparedOwnerPublication,
 )
-from tests.composition.test_effects_authenticated_cut import _response
+from tests.support.composition.effects_authenticated_cut import _response
 
 
 async def _display(loop: AgentLoop) -> tuple[R14PlanningRuntime, ProposalDisplay]:

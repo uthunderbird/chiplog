@@ -5,7 +5,7 @@ import base64
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
-from tests.capabilities.agent_loop.test_execution_first_path_completion_contracts import (
+from tests.support.capabilities.agent_loop.execution_first_path_completion_contracts import (
     request as first_path_request,
 )
 from tests.support.completion_assembly import accepted_completion_fixture
