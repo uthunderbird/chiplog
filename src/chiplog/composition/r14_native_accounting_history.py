@@ -37,12 +37,17 @@ from chiplog.composition.r14_native_selected_accounting_source import (
 from chiplog.platform._sqlite import PhysicalPublicationCommand
 
 if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.call_acceptance_contracts import SealedResponseRecord
+    from chiplog.capabilities.agent_loop.execution_preparation_bindings_contracts import (
+        NativeExecutionPreparationBindingsV2,
+    )
     from chiplog.composition.r14_execution_cancellation_contracts import (
         RetainedExecutionCancellationPreparation,
     )
     from chiplog.composition.r14_execution_fanout_contracts import (
         RetainedExecutionFanOutPreparation,
     )
+    from chiplog.composition.r14_original_prepare_source import R14OriginalNativePrepareProjection
     from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 
@@ -60,14 +65,14 @@ def retained_selected_native_accounting(
 
 def _verify_original_prepare_projection(
     runtime: R14PlanningRuntime,
-    prepare: object,
+    prepare: R14OriginalNativePrepareProjection,
     retained_bytes: bytes,
     decision_id: str,
     decision_bytes: bytes,
-    seal: object,
+    seal: SealedResponseRecord,
     fanout: RetainedExecutionFanOutPreparation,
     run_records: list[RunRecord | ExecutionRunRecord],
-    request_bindings: object,
+    request_bindings: NativeExecutionPreparationBindingsV2,
     verified_h1_prepare: tuple[
         H1OriginalWorkspaceIssuance,
         H1VerifiedWorkspaceClosure,

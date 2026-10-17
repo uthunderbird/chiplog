@@ -193,7 +193,7 @@ def selected_prior_turn_context(
         (source.schema_id, source.subject.subject_id): source for source in cut.complete_sources
     }
 
-    def selected_record(schema: str, ref: object, model: type) -> object:
+    def selected_record[T: RecoveryDTO](schema: str, ref: CallSubjectHead, model: type[T]) -> T:
         source = sources.get((schema, ref.subject_id))
         if (
             source is None
@@ -209,6 +209,12 @@ def selected_prior_turn_context(
         return value
 
     results: list[dict[str, object]] = []
+    terminal: (
+        CancelledBeforeAcceptRecord
+        | AcceptedOpenTerminalDispositionV1
+        | AcceptedDirectTerminalDispositionV1
+    )
+    result: NotExecutedCallResultRecord | AcceptedDirectTerminalResultV1
     for call in response.ordered_calls:
         if (
             not isinstance(call, TerminalCallFrontier)

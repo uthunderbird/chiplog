@@ -293,10 +293,10 @@ def _resumed_sealed_predecessor(request: PrepareNextExecutionTurn) -> ExecutionR
         "resumed selected capture is not the exact adjacent preimage",
     )
 
-    def physical_record[T: ExecutionSuspensionBaseline | ExecutionSuspensionPair](
+    def physical_record[T: (ExecutionSuspensionBaseline, ExecutionSuspensionPair)](
         type_: type[T], identity: Callable[[T], bool]
     ) -> T:
-        candidates = []
+        candidates: list[tuple[RecoverySourceRecord, T]] = []
         for source in cut.complete_sources:
             if source.schema_id != type_.model_fields["schema_id"].default:
                 continue
