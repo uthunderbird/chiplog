@@ -33,6 +33,8 @@ from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, P
 
 if TYPE_CHECKING:
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+    from chiplog.composition.r7_planning import ObservedTrustCall
+    from chiplog.composition.r14_execution_runtime import R14ExecutionRuntime
 
 OPERATION = "agent_loop.execution-accounting-readiness.v1"
 ACCOUNTING_SCHEMA = "chiplog.execution.sealed-accounting.v1"
@@ -57,10 +59,15 @@ class AuthenticatedRecoveryCutSource(Protocol):
 
 
 class HoldRecoveryCutSource:
-    def collect_held(self, runtime):
+    def collect_held(self, runtime: CommonCliExecutionRuntime) -> ExecutionRecoveryCut | None:
         return None
 
-    def authenticate_selected_held(self, runtime, evidence, entry):
+    def authenticate_selected_held(
+        self,
+        runtime: CommonCliExecutionRuntime,
+        evidence: RetainedRecoveryPublication,
+        entry: dict[str, object],
+    ) -> bool:
         return False
 
 
@@ -89,7 +96,9 @@ class RecoveryActorBudgetV1(RecoveryDTO):
     response: PublicPortSuccess
 
 
-async def issue_execution_recovery_actor_v1(runtime, peer):
+async def issue_execution_recovery_actor_v1(
+    runtime: R14ExecutionRuntime, peer: str
+) -> tuple[ObservedTrustCall, RecoveryActorBudgetV1]:
     """Issue the closed V26 budget before dispatch; never extend an issued call."""
     import os
 
@@ -145,7 +154,7 @@ async def issue_execution_recovery_actor_v1(runtime, peer):
     return observed, receipt
 
 
-def validate_recovery_actor_budget(receipt):
+def validate_recovery_actor_budget(receipt: RecoveryActorBudgetV1) -> None:
     from chiplog.platform.r7_trust import (
         TrustOwnerResult,
         decode_trust_owner_call_canonical,
@@ -540,7 +549,8 @@ class _ReadinessInputWitness:
 
 def _resumed_original_readiness_cut(cut: ExecutionRecoveryCut) -> bool:
     profiles = tuple(
-        row.schema_id for row in cut.complete_sources
+        row.schema_id
+        for row in cut.complete_sources
         if row.schema_id.startswith("chiplog.execution.native-one-call-recovery-profile.")
     )
     if profiles != ("chiplog.execution.native-one-call-recovery-profile.v5",):

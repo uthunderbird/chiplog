@@ -59,7 +59,7 @@ def accepted_direct_terminal_command(
         or result.accounting.result.subject_id != result.result.result_id
     ):
         raise ValueError("accepted/direct terminal owner result differs from exact request")
-    validate_recovery_actor_budget(evidence.actor_budget_v1)  # type: ignore[no-untyped-call]
+    validate_recovery_actor_budget(evidence.actor_budget_v1)
     if evidence.actor_budget_v1.request.callee.tenant_id != request.cut.tenant_id:
         raise ValueError("accepted/direct terminal actor budget tenant differs from source cut")
     sent, reply = evidence.owner_call, evidence.owner_reply

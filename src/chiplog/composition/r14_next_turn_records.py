@@ -77,7 +77,7 @@ class RetainedNextTurnPublication(RecoveryDTO):
 
 def next_turn_command(evidence: RetainedNextTurnPublication) -> PhysicalPublicationCommand:
     request, result = evidence.request, evidence.result
-    validate_recovery_actor_budget(evidence.actor_budget_v1)  # type: ignore[no-untyped-call]
+    validate_recovery_actor_budget(evidence.actor_budget_v1)
     if evidence.actor_budget_v1.request.callee.tenant_id != request.cut.tenant_id:
         raise ValueError("next Turn actor budget tenant differs")
     verify_next_native_execution_turn(request, result)
@@ -290,22 +290,24 @@ def selected_prior_turn_context(
             # lookup alone cannot justify the recovered result.
             _continuation_closures(cut, accounting)
             terminal_matches = [
-                source for source in cut.complete_sources
+                source
+                for source in cut.complete_sources
                 if source.owner == "agent_loop"
                 and source.schema_id == "chiplog.execution.accepted-open-terminal-disposition.v1"
                 and source.subject.subject_id == call.original_call_id
                 and source.subject.revision == call.disposition.terminal
             ]
             outcome_matches = [
-                source for source in cut.complete_sources
+                source
+                for source in cut.complete_sources
                 if source.owner == "agent_loop"
                 and source.schema_id == "chiplog.loop.recovered-call-outcome.v1"
                 and source.physical_record.revision == call.disposition.recovered_outcome.outcome
             ]
             if len(terminal_matches) != 1 or len(outcome_matches) != 1:
                 raise ValueError("recovered prior-turn terminal or outcome is missing or duplicate")
-            terminal_source, = terminal_matches
-            outcome_source, = outcome_matches
+            (terminal_source,) = terminal_matches
+            (outcome_source,) = outcome_matches
             terminal = AcceptedOpenTerminalDispositionV1.model_validate_json(
                 terminal_source.canonical_record_bytes
             )
@@ -325,11 +327,13 @@ def selected_prior_turn_context(
                 raise ValueError(
                     "recovered prior-turn result differs from selected response or call"
                 )
-            results.append({
-                "original_call_id": call.original_call_id,
-                "terminal": terminal.model_dump(mode="json"),
-                "result": outcome.model_dump(mode="json"),
-            })
+            results.append(
+                {
+                    "original_call_id": call.original_call_id,
+                    "terminal": terminal.model_dump(mode="json"),
+                    "result": outcome.model_dump(mode="json"),
+                }
+            )
             continue
         terminal_sources = [
             source

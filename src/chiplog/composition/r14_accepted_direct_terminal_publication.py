@@ -282,9 +282,7 @@ async def publish_accepted_direct_terminal(
         if predecessor != cut.materialization_commitment:
             raise LoopRejected("accepted/direct terminal predecessor differs")
 
-    refreshed, actor_budget = await issue_execution_recovery_actor_v1(  # type: ignore[no-untyped-call]
-        runtime, peer
-    )
+    refreshed, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)
     with runtime._authority_gate().hold():
         if not runtime._same_execution_actor_identity(observed, refreshed):
             raise LoopRejected("accepted/direct terminal actor changed before owner IPC")

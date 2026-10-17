@@ -295,7 +295,7 @@ async def start_next_execution_turn(
             if runtime._commitment_journal.load(runtime._tenant_id) != predecessor:
                 raise LoopRejected("recovery commitment changed during next Turn owner exchange")
 
-        refreshed, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)  # type: ignore[no-untyped-call]
+        refreshed, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)
         with runtime._authority_gate().hold():
             if not runtime._same_execution_actor_identity(observed, refreshed):
                 raise LoopRejected("next Turn actor changed before publication")
@@ -368,9 +368,7 @@ async def start_next_execution_turn(
                 except (ValueError, TypeError, RuntimeError, LoopRejected) as error:
                     failure = f"fresh recovery validation failed: {error}"
                 if failure is not None:
-                    raise LoopRejected(
-                        "next Turn source changed at final decision: " + failure
-                    )
+                    raise LoopRejected("next Turn source changed at final decision: " + failure)
                 runtime._append_decision(
                     {
                         "version": 1,
