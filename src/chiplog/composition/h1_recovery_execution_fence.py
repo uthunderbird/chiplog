@@ -13,7 +13,7 @@ import os
 import threading
 import weakref
 from asyncio import Task
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from typing import Any
 
 from chiplog.composition.h1_launch_enrollment import EnrolledH1RecoveryMount
@@ -138,13 +138,12 @@ class _H1RecoveryExecutionFence:
             except BaseException as exc:
                 error = exc
             try:
-                fcntl.flock(lease._fd, fcntl.LOCK_UN)
+                with ExitStack() as resources:
+                    resources.callback(os.close, lease._fd)
+                    fcntl.flock(lease._fd, fcntl.LOCK_UN)
             finally:
-                try:
-                    os.close(lease._fd)
-                finally:
-                    self._lease = None
-                    lease._released = True
+                self._lease = None
+                lease._released = True
         if error is not None:
             raise error
 
@@ -199,11 +198,7 @@ class _H1RecoveryExecutionLease:
         """
         self._fence._require_current_process()
         with _fork_lock:
-            if (
-                self._released
-                or os.getpid() != self._pid
-                or self._fence._lease is not self
-            ):
+            if self._released or os.getpid() != self._pid or self._fence._lease is not self:
                 raise RuntimeError("recovery execution fence lease is no longer current")
             self._fence._mount.assert_current()
 
