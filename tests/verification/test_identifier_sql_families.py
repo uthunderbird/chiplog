@@ -1,8 +1,10 @@
 """All seven real finite identifier sites, with independent engine expectations."""
 
 import ast
+from collections.abc import Iterable
 from hashlib import sha256
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -12,6 +14,8 @@ from chiplog.verification.identifier_sql_families import (
     extract_current_identifier_sql,
 )
 from chiplog.verification.sqlite_preparation import (
+    SqlAction,
+    SqlPreparation,
     UnregisteredSqlAccess,
     observe_statement,
     verify_sql_actions,
@@ -111,23 +115,23 @@ EXPECTED = (
 )
 
 
-def _sources():
+def _sources() -> tuple[tuple[str, str], ...]:
     return tuple((path, (ROOT / path).read_text()) for path in PATHS)
 
 
-def _observe(sql):
+def _observe(sql: str) -> SqlPreparation:
     return observe_statement(
         sql, registered_schema_sql=SCHEMA_SQL, registered_objects=OBJECTS, foreign_keys=True
     )
 
 
-def _sort(actions):
+def _sort(actions: Iterable[SqlAction]) -> tuple[SqlAction, ...]:
     return tuple(
         sorted(actions, key=lambda row: tuple((value is not None, value or "") for value in row))
     )
 
 
-def test_all_seven_current_sites_expand_the_independent_exact_domains():
+def test_all_seven_current_sites_expand_the_independent_exact_domains() -> None:
     families = extract_current_identifier_sql(_sources())
     assert len(families) == 7
     sources = dict(_sources())
@@ -154,6 +158,7 @@ def test_all_seven_current_sites_expand_the_independent_exact_domains():
         )
         for item, identifier in zip(family.alternatives, identifiers, strict=True):
             observed = _observe(item.sql)
+            expected: tuple[SqlAction, ...]
             if qualname.endswith("_activate_checkpoint_bundle"):
                 expected = (("PRAGMA", "user_version", "1211188048", None, None),)
             elif qualname in ("_schema_members", "SQLiteMaterializer._admit"):
@@ -177,7 +182,7 @@ def test_all_seven_current_sites_expand_the_independent_exact_domains():
             verify_sql_actions(observed.actions, expected)
 
 
-def _mutate(path, old, new):
+def _mutate(path: str, old: str, new: str) -> tuple[tuple[str, str], ...]:
     result = []
     for name, source in _sources():
         if name == path:
@@ -187,7 +192,7 @@ def _mutate(path, old, new):
     return tuple(result)
 
 
-def test_actual_literal_predicate_mutation_reaches_engine_and_graph_refuses():
+def test_actual_literal_predicate_mutation_reaches_engine_and_graph_refuses() -> None:
     sources = _mutate(
         "composition/r12.py",
         'f"SELECT * FROM {table} WHERE tenant_id = ? ORDER BY rowid"',
@@ -278,7 +283,9 @@ def test_actual_literal_predicate_mutation_reaches_engine_and_graph_refuses():
         ),
     ),
 )
-def test_unknown_identifier_producer_frame_or_binding_refuses(path, old, new):
+def test_unknown_identifier_producer_frame_or_binding_refuses(
+    path: str, old: str, new: str
+) -> None:
     with pytest.raises(UnknownIdentifierSql):
         extract_current_identifier_sql(_mutate(path, old, new))
 
@@ -293,7 +300,7 @@ def test_unknown_identifier_producer_frame_or_binding_refuses(path, old, new):
         ("architecture/r7_storage_surface.py", "mutate(AUTHORITY_STORAGE_MEMBERS)"),
     ),
 )
-def test_explicit_global_producer_mutation_or_escape_refuses(path, extra):
+def test_explicit_global_producer_mutation_or_escape_refuses(path: str, extra: str) -> None:
     sources = tuple(
         (name, source + "\n" + extra + "\n" if name == path else source)
         for name, source in _sources()
@@ -302,7 +309,7 @@ def test_explicit_global_producer_mutation_or_escape_refuses(path, extra):
         extract_current_identifier_sql(sources)
 
 
-def test_relative_dataclass_import_is_not_stdlib_identity():
+def test_relative_dataclass_import_is_not_stdlib_identity() -> None:
     sources = _mutate(
         "architecture/r7_storage_surface.py",
         "from dataclasses import asdict, dataclass",
@@ -312,7 +319,7 @@ def test_relative_dataclass_import_is_not_stdlib_identity():
         extract_current_identifier_sql(sources)
 
 
-def test_member_constructor_must_exist_before_manifest_evaluation():
+def test_member_constructor_must_exist_before_manifest_evaluation() -> None:
     sources = dict(_sources())
     tree = ast.parse(sources["architecture/r7_storage_surface.py"])
     (cls,) = [
@@ -328,7 +335,7 @@ def test_member_constructor_must_exist_before_manifest_evaluation():
 
 
 @pytest.mark.parametrize("name", ["member", "columns"])
-def test_unknown_direct_argument_escape_between_producers_and_sql_refuses(name):
+def test_unknown_direct_argument_escape_between_producers_and_sql_refuses(name: str) -> None:
     sources = _mutate(
         "platform/authority_reads.py",
         "        rows = connection.execute(\n            f'SELECT {columns}",
@@ -347,7 +354,7 @@ def test_unknown_direct_argument_escape_between_producers_and_sql_refuses(name):
         ("composition/r12.py", "_read_state"),
     ),
 )
-def test_selected_sql_moved_into_lambda_refuses(path, qualname):
+def test_selected_sql_moved_into_lambda_refuses(path: str, qualname: str) -> None:
     sources = dict(_sources())
     tree = ast.parse(sources[path])
     (method,) = [
@@ -366,10 +373,10 @@ def test_selected_sql_moved_into_lambda_refuses(path, qualname):
     ]
 
     class Wrap(ast.NodeTransformer):
-        def visit_Call(self, node):
+        def visit_Call(self, node: ast.Call) -> ast.AST:
             if node is target:
-                wrapper = ast.parse("(lambda: None)()", mode="eval").body
-                wrapper.func.body = node
+                wrapper = cast(ast.Call, ast.parse("(lambda: None)()", mode="eval").body)
+                cast(ast.Lambda, wrapper.func).body = node
                 return ast.copy_location(wrapper, node)
             return self.generic_visit(node)
 
