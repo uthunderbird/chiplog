@@ -415,7 +415,11 @@ async def test_plan_and_effect_share_transaction_and_keep_non_tool_origin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from chiplog.capabilities.effects.action_lifecycle_contracts import PlanActionProposal
-    from chiplog.capabilities.effects.effect_work_contracts import EffectWorkScan, PlanEffectRequest
+    from chiplog.capabilities.effects.effect_work_contracts import (
+        EffectWorkScan,
+        PlanEffectIntent,
+        PlanEffectRequest,
+    )
     from chiplog.composition.postgres_effect_work import (
         discover_effect_work,
         preview_action,
@@ -509,8 +513,43 @@ async def test_plan_and_effect_share_transaction_and_keep_non_tool_origin(
         with pytest.raises(RuntimeError, match="companion fault"):
             await publish_plan_effect(runtime, binding, PEER, value, adopted, planning_gate)
     assert runtime.snapshot() == before
-    intent = await publish_plan_effect(runtime, binding, PEER, value, adopted, planning_gate)
+
+    async def lose_committed_response() -> None:
+        await publish_plan_effect(runtime, binding, PEER, value, adopted, planning_gate)
+        raise RuntimeError("Plan/effect response lost after commit")
+
+    with pytest.raises(RuntimeError, match="response lost after commit"):
+        await lose_committed_response()
     committed = runtime.snapshot()
+    # Read the committed oracle independently; the caller received no intent response.
+    intent = PlanEffectIntent.model_validate_json(committed.batches[-1].records[0].canonical_bytes)
+    database = runtime.database
+
+    def reopen_client() -> tuple[PostgresExecutionRuntime, PostgresEffectsBinding, HermeticModel]:
+        fresh_binding = PostgresEffectsBinding(
+            HermeticEffectsProvider(
+                receipt_key=KEY,
+                scenarios=("CONFIRM",),
+                journal_path=tmp_path / "provider.jsonl",
+                observation_journal_path=tmp_path / "observations.jsonl",
+            ),
+            KEY,
+        )
+        # No scripted response: any attempt to call the model fails.
+        fresh_model = HermeticModel()
+        fresh_runtime = PostgresExecutionRuntime(
+            database,
+            "t",
+            SECRET,
+            **IDENTITY,
+            model=fresh_model,
+            origin=origin(),
+            effects_binding=fresh_binding,
+            authenticate_entitlement=verifier,
+        )
+        return fresh_runtime, fresh_binding, fresh_model
+
+    runtime, binding, recovery_model = reopen_client()
     assert [batch.operation for batch in committed.batches[-2:]] == [
         "planning.create_intention_line",
         "effects.plan-intent",
@@ -521,6 +560,7 @@ async def test_plan_and_effect_share_transaction_and_keep_non_tool_origin(
         await publish_plan_effect(runtime, binding, PEER, value, adopted, planning_gate) == intent
     )
     assert runtime.snapshot() == committed
+    assert recovery_model.requests == []
     # Stale owner revision and a Planning semantic denial leave no half publication.
     for failure in ("stale", "denied"):
         bad_command = command(failure, purpose="" if failure == "denied" else "valid")
@@ -565,6 +605,10 @@ async def test_plan_and_effect_share_transaction_and_keep_non_tool_origin(
         }
     )
     await commit_effect_send(runtime, binding, PEER, adopted.intent_id, send_gate)
+    committed_send = runtime.snapshot()
+    runtime, binding, recovery_model = reopen_client()
+    assert runtime.snapshot() == committed_send
+    assert binding.provider.transfers == ()
     work = await discover_effect_work(
         runtime,
         binding,
@@ -583,6 +627,7 @@ async def test_plan_and_effect_share_transaction_and_keep_non_tool_origin(
     closure = await resolve_original_effect(runtime, binding, PEER, adopted.intent_id)
     assert closure.outcome == "CONFIRMED"
     assert len(binding.provider.transfers) == 1
+    assert recovery_model.requests == []
 
 
 async def test_claim_before_transport_fault_reopens_as_unknown_without_send(

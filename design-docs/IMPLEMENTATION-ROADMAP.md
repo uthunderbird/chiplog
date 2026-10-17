@@ -437,6 +437,12 @@ A15, A38–A47, A49–A52, A54–A57, A59 and owns A99 and A108.
 
 ### R15 — Scheduler occurrence and lease lineage
 
+**Functional acceptance verified, 2026-10-17.** Native PostgreSQL scheduler,
+atomic occurrence/Run publication, overflow resolution, lease-fenced model/effect
+work and scheduled completion/delivery recovery pass the mounted client criteria.
+See [verification status](R15-R17-VERIFICATION-STATUS.md). Historical exhaustive
+DoD below remains subject to the functional plan's explicit backlog.
+
 **Depends on:** R13; R14 complete before R15 takeover/recovery work begins.
 
 Implement revision-bound occurrence identity, `INDIVIDUAL | COALESCED | SKIPPED` disposition, canonical aggregate manifests, tagged lineage roots, leases/generations, takeover and exact scheduler successor fencing.
@@ -459,6 +465,12 @@ A17, A18, A40, A43, A47, A51, A53, A58 and owns A98; specializes the scheduler r
 
 ### R16 — Effects, outbox, dispatch binding, and reconciliation
 
+**Functional acceptance verified, 2026-10-17.** Atomic Plan/effect adoption,
+durable discovery, lost-response reconciliation without resend and fresh
+compensation pass the mounted client criteria. See
+[verification status](R15-R17-VERIFICATION-STATUS.md); deferred broad assurance
+is not claimed complete.
+
 **Depends on:** R5, R8, R13 and the functional R14 baseline. R15 and R16 now
 proceed in parallel against the shared native runtime contracts.
 
@@ -472,6 +484,13 @@ R18 integrates its owner contracts with the complete loop.
 **DoD:** V5/V6 cover every named dispatch state/transition, crash edge, domain+intent atomicity, no provider inside the transaction, stale binding, the exact initialized-head `ToolCallAccepted` CAS with atomic intent publication, a reached pre-accept-dispatch mutant, unknown outcome without blind retry, exact reconciliation, changed/rival replay, compensation with fresh authority, and late evidence. T01 runs with a fake adapter; T03 reaches lost response and observes zero replacement attempts. Covers A06–A08, A30, A35, A37, A48.
 
 ### R17 — Durable inbox, delivery, and channel parity
+
+**Functional acceptance verified, 2026-10-17.** Authenticated native CLI and
+Telegram adapter custody feed the shared PostgreSQL driver and delivery lifecycle.
+The actual `native-chat` command mounts PG trust and durable local delivery;
+both channel witnesses recover without repeating model work or SEND. See
+[verification status](R15-R17-VERIFICATION-STATUS.md). Live external deployment
+and universal source/FIFO/quarantine assurance remain outside this acceptance.
 
 **Depends on:** R8, R13 and the functional R14 baseline. R17 proceeds beside
 R15/R16; final client witnesses verify their mounted joins.

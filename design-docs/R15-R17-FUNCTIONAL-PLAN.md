@@ -1,12 +1,26 @@
 # R15–R17: parallel functional implementation
 
-Status: implementation, 2026-10-17. User instruction: work on R15–R17 in parallel;
+Status: CLOSED under the retained functional scope,
+2026-10-17. User instruction: work on R15–R17 in parallel;
 make the client scenarios work and defer unnecessary assurance and rare cases.
 This replaces the old serial milestone order, not authorization, data ownership,
 atomicity or no-repeat-SEND requirements. R14 functional baseline is `4576ae4`.
-No R15/R16/R17 completion or deployment eligibility is claimed here.
+The broader historical assurance scope and deployment eligibility remain open.
 
-## Current integrated evidence and remaining client boundary
+## Current integrated evidence
+
+The final functional union passed **103 tests in 47.80s** on the current
+`4866099` source plus the Plan recovery test change. It includes the actual
+`native-chat` subprocess and private local inbox, both authenticated ingress
+channels, scheduled execution/delivery, and Plan/effect recovery with a fresh
+runtime and provider. See `R15-R17-VERIFICATION-STATUS.md` for the exact command
+and requirement-to-evidence map. Cold review of this closure plan found no
+critical defects; common-model limitations remain.
+
+The following preparation record describes earlier gaps, now addressed by the
+native CLI and mounted horizontal witnesses. It is historical, not pending work.
+
+### Earlier preparation record (superseded)
 
 Native services are integrated through `386203e`: scheduler cycles/model lease
 fences, Plan/effect atomicity, compensation/outbox recovery, authenticated channel
@@ -89,9 +103,10 @@ Root-owned horizontal witnesses:
 - Plan/effect atomic adoption and separately authorized compensation, with exact
   replay, stale rejection and original evidence retained.
 
-These are completion requirements, not claims that current code passes them.
+These are the retained completion requirements; the verification status maps
+each to current runtime and test evidence.
 
-## Existing implementation and missing boundaries
+## Historical starting implementation and missing boundaries
 
 - R15 pure semantics: `scheduler_configuration.py`, `scheduler_domain.py`,
   `scheduler_materialization.py`, `scheduler_leases.py` under agent_loop.

@@ -1,5 +1,10 @@
 # R14–R17: one integrated mechanism
 
+Current-status pointer, 2026-10-17: the user-authorized functional acceptance is
+verified in [R15-R17-VERIFICATION-STATUS.md](R15-R17-VERIFICATION-STATUS.md).
+This document retains the earlier design and broader assurance target; its
+PLANNED/OPEN wording below describes historical cuts, not pending functional work.
+
 Status: PLANNED, implementation and final evidence OPEN. Replanned 2026-09-24
 at the user's request: **all remaining contracts → tests → implementation of
 one joint mechanism → detailed verification and extensions**. No retrospective.

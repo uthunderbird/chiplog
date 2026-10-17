@@ -1,5 +1,14 @@
 # R14–R17 completion ledger
 
+**Current functional acceptance, 2026-10-17:** R14 is closed under its functional
+scope; R15–R17 mounted client criteria are verified. The combined current run
+passed 103 tests in 47.80s, including native CLI, scheduled delivery, both ingress
+channels and Plan/effect recovery. See
+[R15–R17 verification](R15-R17-VERIFICATION-STATUS.md) for requirement-level
+evidence. R15, R16 and R17 are CLOSED under that functional scope. The explicit functional backlog,
+historical full-assurance scope and live deployment eligibility remain open.
+The old OPEN statuses below describe their recorded full-scope cuts.
+
 **R14 scope update, 2026-10-17:** the user's simplification instruction supersedes
 the full-assurance R14 completion demands below. Use
 [functional scope and backlog](R14-FUNCTIONAL-SCOPE.md) for current acceptance.
@@ -44,8 +53,9 @@ reconstructing owner outputs. Existing journal/appender mechanisms are reused.
 The user's 2026-10-17 instruction supersedes the serial 2026-10-12 order:
 R14 is functionally closed; implement R15–R17 in parallel. The current acceptance,
 ownership and explicit deferrals are in `R15-R17-FUNCTIONAL-PLAN.md`. These items
-remain OPEN until actual mounted client scenarios pass; contract shape checks
-alone do not close them. The integrated plan is historical design context.
+now have mounted client evidence in `R15-R17-VERIFICATION-STATUS.md`; contract
+shape checks alone did not close them. The integrated plan is historical design
+context; broader deferred assurance remains open.
 The baseline column and chronological notes below
 describe their recorded cuts; current reuse and remaining joins are identified
 in the relevant contracts and runtime notes.
