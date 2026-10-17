@@ -385,14 +385,14 @@ success. Covers A09, A13, A16, A20, A34 and owns A105.
 
 ### R14–R17 implementation coordination
 
-The user's current execution order (2026-10-12) is serial by roadmap item:
-complete and verify R14, then R15, then R16, then R17. Work may be parallelized
-within the active item where interfaces and ownership permit; the dependency graph
-below does not authorize starting a later roadmap item early. The integrated plan
-records a prior implementation strategy and is not the current execution order.
-The sections below retain their full ownership, dependency, and DoD requirements.
-No intermediate item completion waives a required counterhistory or registry
-convergence check for that item.
+The user's current instruction (2026-10-17) is parallel functional R15–R17
+implementation after the closed functional R14 baseline. This supersedes the
+2026-10-12 serial order. `R15-R17-FUNCTIONAL-PLAN.md` defines the current client
+acceptance, shared-file ownership and explicit backlog. Preserve authorization,
+durable data, atomic publication and no repeated SEND; broad assurance and rare
+cases listed there do not block the functional slice. Historical DoD below
+remains a record of the broader integration target, not a reason to restore
+deferred work into the current slice.
 
 ### R14 — Recovery frontier and call accounting
 
@@ -459,7 +459,8 @@ A17, A18, A40, A43, A47, A51, A53, A58 and owns A98; specializes the scheduler r
 
 ### R16 — Effects, outbox, dispatch binding, and reconciliation
 
-**Depends on:** R5, R8, R13; R14 and R15 complete before R16 work begins.
+**Depends on:** R5, R8, R13 and the functional R14 baseline. R15 and R16 now
+proceed in parallel against the shared native runtime contracts.
 
 Implement owner-produced effect intents, Plan/effect atomic publication, full version-bound `SEND_COMMITTED` reducer, immutable `DispatchSemanticBinding`, provider attempt/transmission/outcome, stable idempotency, outbox, ambiguity, reconciliation and separately authorized compensation.
 
@@ -472,7 +473,8 @@ R18 integrates its owner contracts with the complete loop.
 
 ### R17 — Durable inbox, delivery, and channel parity
 
-**Depends on:** R8, R13; R14–R16 complete before R17 work begins.
+**Depends on:** R8, R13 and the functional R14 baseline. R17 proceeds beside
+R15/R16; final client witnesses verify their mounted joins.
 
 Specialize the R3/R4 authenticated durable inbox for Telegram witness/replay identity, then implement CLI/Telegram response delivery, outbox workers and evidence-bound deterministic consequential rendering. The common acknowledgement contract is reused, not reimplemented.
 

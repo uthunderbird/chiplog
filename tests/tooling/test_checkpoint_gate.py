@@ -77,6 +77,10 @@ def r8_fixture(root: Path) -> dict[str, str]:
     shutil.copyfile(ROOT / "src/chiplog/verification/r8_surface.py", verification / "r8_surface.py")
     shutil.copyfile(ROOT / "src/chiplog/cli.py", source / "cli.py")
     shutil.copyfile(ROOT / "src/chiplog/composition/r8.py", composition / "r8.py")
+    shutil.copyfile(
+        ROOT / "src/chiplog/composition/postgres_planning.py",
+        composition / "postgres_planning.py",
+    )
     implementation = source / "implementation.py"
     implementation.write_text("value = 1\n")
     catalog = {

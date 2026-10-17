@@ -197,6 +197,10 @@ def test_real_gate_uses_full_index_and_propagates_layout_failure(repository: Pat
         (package / "__init__.py").write_text("")
     shutil.copy2(ROOT / "src/chiplog/cli.py", source_root / "cli.py")
     shutil.copy2(ROOT / "src/chiplog/composition/r8.py", composition / "r8.py")
+    shutil.copy2(
+        ROOT / "src/chiplog/composition/postgres_planning.py",
+        composition / "postgres_planning.py",
+    )
     shutil.copy2(ROOT / "src/chiplog/verification/r8_surface.py", verification / "r8_surface.py")
     catalog = {
         path.relative_to(source_root).as_posix(): sha256(path.read_bytes()).hexdigest()

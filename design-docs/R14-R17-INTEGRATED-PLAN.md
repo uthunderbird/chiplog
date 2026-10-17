@@ -7,6 +7,8 @@ one joint mechanism → detailed verification and extensions**. No retrospective
 This document records the integrated workflow proposed on 2026-09-24. On
 2026-10-12, the user set the execution order to complete and verify R14, then R15,
 then R16, then R17, allowing parallel work only within the active roadmap item.
+On 2026-10-17 the user replaced that serial order with parallel functional
+R15–R17 work; see `R15-R17-FUNCTIONAL-PLAN.md` for current acceptance and backlog.
 This document no longer sets the execution order or requires one joint
 implementation phase. IMPLEMENTATION-ROADMAP.md, project-architecture/NORMATIVE.md,
 and the completion ledger remain the sources for requirements and evidence; retain

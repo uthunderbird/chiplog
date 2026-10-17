@@ -41,13 +41,12 @@ reconstructing owner outputs. Existing journal/appender mechanisms are reused.
 
 ## Current execution order
 
-Per the user's instruction on 2026-10-12, finish and verify one roadmap item at a
-time: R14 → R15 → R16 → R17. Parallel work is allowed within the active item
-when ownership and interfaces permit. This execution order supersedes the
-2026-09-24 integrated-plan workflow; that document is historical design context,
-not authority to require one joint R14–R17 implementation phase. The full
-requirements in IMPLEMENTATION-ROADMAP.md, normative architecture, and this
-ledger remain in scope. The baseline column and chronological notes below
+The user's 2026-10-17 instruction supersedes the serial 2026-10-12 order:
+R14 is functionally closed; implement R15–R17 in parallel. The current acceptance,
+ownership and explicit deferrals are in `R15-R17-FUNCTIONAL-PLAN.md`. These items
+remain OPEN until actual mounted client scenarios pass; contract shape checks
+alone do not close them. The integrated plan is historical design context.
+The baseline column and chronological notes below
 describe their recorded cuts; current reuse and remaining joins are identified
 in the relevant contracts and runtime notes.
 
