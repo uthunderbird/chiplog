@@ -255,3 +255,82 @@ def test_trusted_installer_revokes_active_registration(tmp_path: Path) -> None:
     custody.revoke(binding, original, "tenant-a", "principal-a", "channel-a", 0)
     with pytest.raises(H1RegistrationCustodyError, match="revoked"):
         custody.select("tenant-a", "principal-a", "channel-a")
+
+
+@pytest.mark.parametrize("operation", ["install", "replace"])
+def test_temp_close_failure_keeps_single_descriptor_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    binding = _binding(tmp_path)
+    registry = H1RegistrationCustodyV1.model_validate(_registry())
+    custody = None
+    original = b""
+    if operation == "replace":
+        original = _install(tmp_path)
+        custody = H1RegistrationCustody.mount(binding)
+        registry = H1RegistrationCustodyV1.model_validate(_registry(entries=[_entry(generation=1)]))
+    real_write, real_close = os.write, os.close
+    written_fds: set[int] = set()
+    invalid_close_attempts: list[int] = []
+    failure_injected = False
+
+    def write(fd: int, data: bytes) -> int:
+        written_fds.add(fd)
+        return real_write(fd, data)
+
+    def close(fd: int) -> None:
+        nonlocal failure_injected
+        if failure_injected and fd in written_fds:
+            try:
+                os.fstat(fd)
+            except OSError:
+                invalid_close_attempts.append(fd)
+        real_close(fd)
+        if fd in written_fds and not failure_injected:
+            failure_injected = True
+            raise OSError("injected close failure after kernel close")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "write", write)
+        patch.setattr(os, "close", close)
+        if custody is None:
+            with pytest.raises(H1RegistrationCustodyError, match="persistence uncertain"):
+                H1RegistrationCustody.install(binding, registry)
+        else:
+            with pytest.raises(H1RegistrationCustodyError, match="poisoned"):
+                custody.replace(
+                    binding, original, "tenant-a", "principal-a", "channel-a", 0, registry
+                )
+            with pytest.raises(H1RegistrationCustodyError, match="poisoned"):
+                custody.select("tenant-a", "principal-a", "channel-a")
+    assert len(written_fds) == 1
+    assert failure_injected
+    assert invalid_close_attempts == []
+    if custody is None:
+        H1RegistrationCustody.install(binding, registry)
+    else:
+        custody.close()
+
+
+def test_install_temp_unlink_failure_releases_pair_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding = _binding(tmp_path)
+    registry = H1RegistrationCustodyV1.model_validate(_registry())
+
+    def fail_unlink(path: str, *, dir_fd: int) -> None:
+        assert path.startswith(".h1-registration-custody-install-")
+        raise OSError("injected temp cleanup failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "unlink", fail_unlink)
+        with pytest.raises(OSError, match="injected temp cleanup failure"):
+            H1RegistrationCustody.install(binding, registry)
+    leftovers = tuple(tmp_path.glob(".h1-registration-custody-install-*.tmp"))
+    assert len(leftovers) == 1
+    leftovers[0].unlink()
+    custody = H1RegistrationCustody.mount(binding)
+    assert custody.select("tenant-a", "principal-a", "channel-a").registration_id == (
+        "registration-a"
+    )
+    custody.close()

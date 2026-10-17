@@ -220,26 +220,28 @@ def _acquire_pair_lock(binding: TrustedH1RegistrationLauncherBinding) -> int:
     _private_directory(binding._directory_fd)
     lock_fd = -1
     acquired = False
-    try:
-        lock_fd = os.open(
-            _pair_lock_name(binding),
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
-            0o600,
-            dir_fd=binding._directory_fd,
-        )
-        _private_regular(lock_fd)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        acquired = True
-        return lock_fd
-    except BlockingIOError:
-        raise H1RegistrationCustodyError("registry/database pair is already locked") from None
-    except OSError as exc:
-        raise H1RegistrationCustodyError("registry/database pair lock unavailable") from exc
-    finally:
-        if lock_fd >= 0 and not acquired:
-            with suppress(OSError):
-                fcntl.flock(lock_fd, fcntl.LOCK_UN | fcntl.LOCK_NB)
-            os.close(lock_fd)
+    with ExitStack() as resources:
+        try:
+            lock_fd = os.open(
+                _pair_lock_name(binding),
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=binding._directory_fd,
+            )
+            resources.callback(os.close, lock_fd)
+            _private_regular(lock_fd)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+            resources.pop_all()
+            return lock_fd
+        except BlockingIOError:
+            raise H1RegistrationCustodyError("registry/database pair is already locked") from None
+        except OSError as exc:
+            raise H1RegistrationCustodyError("registry/database pair lock unavailable") from exc
+        finally:
+            if lock_fd >= 0 and not acquired:
+                with suppress(OSError):
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN | fcntl.LOCK_NB)
 
 
 class H1RegistrationCustody:
@@ -290,48 +292,46 @@ class H1RegistrationCustody:
         ):
             raise H1RegistrationCustodyError("installation binding differs from trusted launch")
         raw = registry.canonical_bytes()
-        lock_fd = _acquire_pair_lock(trusted)
-        fd = -1
-        temporary = ".h1-registration-custody-install-" + secrets.token_hex(16) + ".tmp"
-        try:
-            fd = os.open(
-                temporary,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600,
-                dir_fd=trusted._directory_fd,
-            )
-            _private_regular(fd)
-            offset = 0
-            while offset < len(raw):
-                written = os.write(fd, raw[offset:])
-                if written <= 0:
-                    raise OSError("incomplete registry installation write")
-                offset += written
-            os.fsync(fd)
-            os.close(fd)
-            fd = -1
-            os.link(
-                temporary,
-                _FILENAME,
-                src_dir_fd=trusted._directory_fd,
-                dst_dir_fd=trusted._directory_fd,
-                follow_symlinks=False,
-            )
-            os.fsync(trusted._directory_fd)
-        except FileExistsError:
-            raise H1RegistrationCustodyError(
-                "registry already exists; installation is exclusive"
-            ) from None
-        except OSError as exc:
-            raise H1RegistrationCustodyError(
-                "registry installation persistence uncertain; reconcile before mount"
-            ) from exc
-        finally:
-            if fd >= 0:
-                os.close(fd)
-            with suppress(FileNotFoundError):
-                os.unlink(temporary, dir_fd=trusted._directory_fd)
-            os.close(lock_fd)
+        with ExitStack() as lock_resources:
+            lock_fd = _acquire_pair_lock(trusted)
+            lock_resources.callback(os.close, lock_fd)
+            temporary = ".h1-registration-custody-install-" + secrets.token_hex(16) + ".tmp"
+            try:
+                with ExitStack() as file_resources:
+                    fd = os.open(
+                        temporary,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        0o600,
+                        dir_fd=trusted._directory_fd,
+                    )
+                    file_resources.callback(os.close, fd)
+                    _private_regular(fd)
+                    offset = 0
+                    while offset < len(raw):
+                        written = os.write(fd, raw[offset:])
+                        if written <= 0:
+                            raise OSError("incomplete registry installation write")
+                        offset += written
+                    os.fsync(fd)
+                os.link(
+                    temporary,
+                    _FILENAME,
+                    src_dir_fd=trusted._directory_fd,
+                    dst_dir_fd=trusted._directory_fd,
+                    follow_symlinks=False,
+                )
+                os.fsync(trusted._directory_fd)
+            except FileExistsError:
+                raise H1RegistrationCustodyError(
+                    "registry already exists; installation is exclusive"
+                ) from None
+            except OSError as exc:
+                raise H1RegistrationCustodyError(
+                    "registry installation persistence uncertain; reconcile before mount"
+                ) from exc
+            finally:
+                with suppress(FileNotFoundError):
+                    os.unlink(temporary, dir_fd=trusted._directory_fd)
 
     @classmethod
     def mount(cls, binding: object) -> H1RegistrationCustody:
@@ -638,31 +638,28 @@ class H1RegistrationCustody:
     def _durable_replace(self, raw: bytes) -> None:
         directory_fd = self._binding._directory_fd
         temporary = ".h1-registration-custody-" + secrets.token_hex(16) + ".tmp"
-        fd = -1
         try:
-            fd = os.open(
-                temporary,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600,
-                dir_fd=directory_fd,
-            )
-            _private_regular(fd)
-            offset = 0
-            while offset < len(raw):
-                written = os.write(fd, raw[offset:])
-                if written <= 0:
-                    raise OSError("incomplete registry write")
-                offset += written
-            os.fsync(fd)
-            os.close(fd)
-            fd = -1
+            with ExitStack() as resources:
+                fd = os.open(
+                    temporary,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                resources.callback(os.close, fd)
+                _private_regular(fd)
+                offset = 0
+                while offset < len(raw):
+                    written = os.write(fd, raw[offset:])
+                    if written <= 0:
+                        raise OSError("incomplete registry write")
+                    offset += written
+                os.fsync(fd)
             os.replace(temporary, _FILENAME, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
             os.fsync(directory_fd)
         except BaseException:
             self._poisoned = True
             raise
         finally:
-            if fd >= 0:
-                os.close(fd)
             with suppress(FileNotFoundError):
                 os.unlink(temporary, dir_fd=directory_fd)
