@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Final
 
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
 from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
@@ -13,8 +14,8 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
     HermeticOutputScopeV1,
 )
 
-_RECORD_TYPE = "chiplog.deployment_trust.hermetic_output_scope"
-_SCHEMA = "chiplog.deployment_trust.record.v1"
+_RECORD_TYPE: Final = "chiplog.deployment_trust.hermetic_output_scope"
+_SCHEMA: Final = "chiplog.deployment_trust.record.v1"
 
 
 @dataclass(frozen=True, slots=True)

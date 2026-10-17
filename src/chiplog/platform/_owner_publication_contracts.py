@@ -10,7 +10,7 @@ proves none of it.
 """
 
 import hashlib
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Final, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -506,7 +506,7 @@ class DeliveryWorkGenesisBatchV1(BrokerDTO):
         return self
 
 
-DELIVERY_WORK_CLAIM_OPERATION = "agent_loop.delivery_work.claim.v1"
+DELIVERY_WORK_CLAIM_OPERATION: Final = "agent_loop.delivery_work.claim.v1"
 
 
 def decode_delivery_work_claim_command(

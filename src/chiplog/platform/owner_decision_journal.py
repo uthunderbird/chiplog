@@ -12,6 +12,7 @@ from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJo
 from chiplog.platform._owner_publication_contracts import (
     BrokerDTO,
     CompleteDeliveryBatchV2,
+    DeliveryWorkClaimBatchV1,
     DeliveryWorkGenesisBatchV1,
     Digest,
     Identity,
@@ -22,7 +23,6 @@ from chiplog.platform._owner_publication_contracts import (
 )
 from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.delivery_work_claim_binding_contracts import (
-    DeliveryWorkClaimBatchV1,
     DeliveryWorkClaimBindingV1,
     validate_delivery_work_claim_binding,
 )

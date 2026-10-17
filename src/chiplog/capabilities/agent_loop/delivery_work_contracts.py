@@ -8,16 +8,16 @@ The broker must authenticate the selected source and perform the CAS publication
 from __future__ import annotations
 
 import hashlib
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field, model_validator
 
 from .recovery_contracts import Digest, Identity, RecoveryDTO
 
-DELIVERY_WORK_SCHEMA = "chiplog.delivery-work.subject.v1"
+DELIVERY_WORK_SCHEMA: Final = "chiplog.delivery-work.subject.v1"
 DELIVERY_WORK_OWNER = "agent_loop"
-DELIVERY_WORK_GENESIS_COMMAND_SCHEMA = "chiplog.agent-loop.prepare-delivery-work-genesis.v1"
-DELIVERY_WORK_CLAIM_COMMAND_SCHEMA = "chiplog.agent-loop.prepare-delivery-work-claim.v1"
+DELIVERY_WORK_GENESIS_COMMAND_SCHEMA: Final = "chiplog.agent-loop.prepare-delivery-work-genesis.v1"
+DELIVERY_WORK_CLAIM_COMMAND_SCHEMA: Final = "chiplog.agent-loop.prepare-delivery-work-claim.v1"
 
 
 def _digest(value: bytes) -> str:
