@@ -705,8 +705,8 @@ def _read_call_history(
 
                         if command.operation_kind != OPERATION:
                             raise ValueError("original resolution has a substituted operation")
-                        evidence = validate_selected_command(runtime, entry, command)
-                        cut = evidence.request.cut
+                        resolution_evidence = validate_selected_command(runtime, entry, command)
+                        cut = resolution_evidence.request.cut
                         if original_sources is None or resolver_policy_sources is None:
                             raise ValueError("original resolution precedes its selected sources")
                         if (cut.current_obligation, cut.call_terminal) != original_sources or (
@@ -716,7 +716,7 @@ def _read_call_history(
                             raise ValueError(
                                 "original resolution source references differ from selected history"
                             )
-                        original_resolution_evidence = evidence
+                        original_resolution_evidence = resolution_evidence
                         original_resolution_resulting = entry.get("resulting")
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
@@ -737,17 +737,17 @@ def _read_call_history(
 
                         if command.operation_kind != reduction_publication.OPERATION:
                             raise ValueError("semantic reduction has a substituted operation")
-                        evidence = reduction_publication.validate_selected_command(
+                        reduction_evidence = reduction_publication.validate_selected_command(
                             runtime, entry, command
                         )
                         if (
                             original_resolution_evidence is None
                             or not isinstance(original_resolution_resulting, str)
-                            or len(evidence.request.complete_ordered_evidence)
+                            or len(reduction_evidence.request.complete_ordered_evidence)
                             < len(
                                 original_resolution_evidence.request.cut.complete_ordered_evidence
                             )
-                            or evidence.request.complete_ordered_evidence[
+                            or reduction_evidence.request.complete_ordered_evidence[
                                 : len(
                                     original_resolution_evidence.request.cut.complete_ordered_evidence
                                 )
@@ -779,8 +779,8 @@ def _read_call_history(
                             runtime,
                             base_sequence=base_sequence,
                             base_commitment=base_commitment,
-                            end_sequence=evidence.request.tenant_commit_sequence,
-                            end_commitment=evidence.request.materialization_commitment,
+                            end_sequence=reduction_evidence.request.tenant_commit_sequence,
+                            end_commitment=reduction_evidence.request.materialization_commitment,
                             base_witness=base_witness,
                             owner_snapshot=owner_snapshot,
                             loop_entries=loop_journal_entries,
@@ -794,11 +794,14 @@ def _read_call_history(
                         expected_anchors = reduction_publication._selected_anchor_sources(
                             runtime, selected_resolution[0], retained_resolution
                         )
-                        if evidence.request.complete_anchor_sources[:-1] != expected_anchors[:-1]:
+                        if (
+                            reduction_evidence.request.complete_anchor_sources[:-1]
+                            != expected_anchors[:-1]
+                        ):
                             raise ValueError("semantic reduction resolver anchors differ")
                         reduction_publication.validate_selected_witness_at_cut(
                             runtime,
-                            evidence.request.complete_anchor_sources[-1],
+                            reduction_evidence.request.complete_anchor_sources[-1],
                             command.expected_head,
                             snapshot=owner_snapshot,
                         )
@@ -807,7 +810,7 @@ def _read_call_history(
                             if current_semantic_reduction is None
                             else current_semantic_reduction
                         )
-                        if evidence.request.expected != expected_reduction:
+                        if reduction_evidence.request.expected != expected_reduction:
                             raise ValueError("semantic reduction selected predecessor differs")
                         selected_decision_id, selected_decision_raw = selected_decision_envelopes[
                             identity
@@ -815,7 +818,7 @@ def _read_call_history(
                         _, current_semantic_reduction = reduction_publication._selected_value(
                             runtime, (selected_decision_id, selected_decision_raw, entry, command)
                         )
-                        current_semantic_reduction_evidence = evidence
+                        current_semantic_reduction_evidence = reduction_evidence
                         current_semantic_reduction_entry = entry
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
@@ -1064,7 +1067,7 @@ def _read_call_history(
                         if retained_entry is None:
                             raise ValueError("selected execution suspension entry is absent")
                         retained = retained_suspension(retained_entry[2])
-                        evidence = retained.request
+                        suspension_request = retained.request
                         proposed = retained.result.run
                         previous = latest.get(proposed.run_id)
                         prior_lineage = tuple(
@@ -1083,15 +1086,16 @@ def _read_call_history(
                                 expected_preimage_commitment=None,
                             )
                             == command,
-                            "tenant": evidence.cut.tenant_id == tenant,
-                            "sequence": evidence.cut.tenant_commit_sequence
+                            "tenant": suspension_request.cut.tenant_id == tenant,
+                            "sequence": suspension_request.cut.tenant_commit_sequence
                             == command.expected_head,
-                            "predecessor": evidence.cut.materialization_commitment
+                            "predecessor": suspension_request.cut.materialization_commitment
                             == entry.get("predecessor"),
-                            "run": evidence.run == previous,
+                            "run": suspension_request.run == previous,
                             "previous_type": isinstance(previous, ExecutionRunRecord),
-                            "current_ref": evidence.cut.current_run == previous_run_ref,
-                            "lineage": evidence.cut.complete_ordered_run_lineage == prior_lineage,
+                            "current_ref": suspension_request.cut.current_run == previous_run_ref,
+                            "lineage": suspension_request.cut.complete_ordered_run_lineage
+                            == prior_lineage,
                             "suspended": proposed.state == "SUSPENDED",
                             "run_predecessor": proposed.predecessor == previous.head,
                             "root": proposed.root_binding == "NOT_APPLICABLE",
@@ -1141,7 +1145,7 @@ def _read_call_history(
                             validate_selected as validate_policy_selected,
                         )
 
-                        evidence = validate_policy_selected(runtime, entry, command)
+                        policy_evidence = validate_policy_selected(runtime, entry, command)
                         if len(command.records) != 2 or tuple(
                             r.schema_id for r in command.records
                         ) != (RESOLVER_POLICY_SCHEMA, REDUCER_SCHEMA):
@@ -1156,7 +1160,7 @@ def _read_call_history(
                         for record in command.records:
                             digest = hashlib.sha256(record.canonical_bytes).hexdigest()
                             subject_id = (
-                                evidence.request.policy.policy_id
+                                policy_evidence.request.policy.policy_id
                                 if record.schema_id == RESOLVER_POLICY_SCHEMA
                                 else original_effect_evidence_reducer_policy_v1(
                                     runtime._tenant_id
@@ -1200,9 +1204,9 @@ def _read_call_history(
                             r14_original_resolver_invocation_publication as inv_pub,
                         )
 
-                        raw = entry.get(inv_pub.EVIDENCE_FIELD)
+                        invocation_raw = entry.get(inv_pub.EVIDENCE_FIELD)
                         if (
-                            not isinstance(raw, str)
+                            not isinstance(invocation_raw, str)
                             or original_sources is None
                             or resolver_policy_sources is None
                         ):
@@ -1210,11 +1214,11 @@ def _read_call_history(
                                 "selected resolver invocation lacks historical sources"
                             )
                         evidence_type = inv_pub.RetainedOriginalResolverInvocationPublication
-                        evidence = evidence_type.model_validate_json(raw)
-                        invocation = evidence.prepared.invocation
+                        invocation_evidence = evidence_type.model_validate_json(invocation_raw)
+                        invocation = invocation_evidence.prepared.invocation
                         if (
-                            evidence.canonical_bytes().decode() != raw
-                            or inv_pub.command(evidence) != command
+                            invocation_evidence.canonical_bytes().decode() != invocation_raw
+                            or inv_pub.command(invocation_evidence) != command
                             or tuple(record.schema_id for record in command.records)
                             != (inv_pub.SCHEMA,)
                             or (
@@ -1229,7 +1233,7 @@ def _read_call_history(
                             raise ValueError(
                                 "selected resolver invocation differs from historical source cut"
                             )
-                        inv_pub._validate_invocation_actor(runtime, evidence)
+                        inv_pub._validate_invocation_actor(runtime, invocation_evidence)
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
@@ -1285,20 +1289,24 @@ def _read_call_history(
 
                         if command.operation_kind != NEXT_TURN_PUBLICATION:
                             raise ValueError("next Turn retained under substituted operation")
-                        evidence = validate_selected_next_turn(
+                        next_turn_evidence = validate_selected_next_turn(
                             runtime,
                             entry,
                             command,
                             authenticated_loop_decisions=authenticated_loop_decisions,
                             verified_h1_prepares=verified_h1_prepares,
                         )
-                        before, after = evidence.request.run, evidence.result.run
+                        before, after = (
+                            next_turn_evidence.request.run,
+                            next_turn_evidence.result.run,
+                        )
                         if (
                             not isinstance(before, ExecutionRunRecord)
                             or not isinstance(after, ExecutionRunRecord)
                             or latest.get(before.run_id) != before
                             or after.predecessor != before.head
-                            or evidence.request.cut.tenant_commit_sequence != command.expected_head
+                            or next_turn_evidence.request.cut.tenant_commit_sequence
+                            != command.expected_head
                             or after.event != "TurnStarted"
                         ):
                             raise ValueError("selected next Turn differs from exact Run history")
@@ -1312,7 +1320,7 @@ def _read_call_history(
                     if command.operation_kind == "effects.accept_call":
                         value = call_values[identity]
                         accepted_preparation = value.retained
-                        before = ExecutionHistorySnapshot(
+                        acceptance_history = ExecutionHistorySnapshot(
                             tenant_head=command.expected_head, records=tuple(mixed_records)
                         )
                         worker = value.captured.cut.worker
@@ -1323,7 +1331,7 @@ def _read_call_history(
                             or accepted_preparation.loop_request.binding.cut.predecessor_inventory
                             != execution_inventory(
                                 tenant,
-                                before,
+                                acceptance_history,
                                 tuple(preparations),
                                 tuple(cancellations),
                                 tuple(execution_preparations),
@@ -1348,8 +1356,8 @@ def _read_call_history(
                             retained_selected_native_sealed_accounting_v3,
                         )
 
-                        evidence = retained_selected_native_sealed_accounting_v3(entry)
-                        seal_fingerprint = evidence.request.selected_response.revision.fingerprint
+                        v3_account = retained_selected_native_sealed_accounting_v3(entry)
+                        seal_fingerprint = v3_account.request.selected_response.revision.fingerprint
                         if seal_fingerprint in native_sealed_accounting_seals:
                             raise ValueError(
                                 "duplicate V3 native accounting for selected response seal"
@@ -1430,8 +1438,8 @@ def _read_call_history(
                             retained_accepted_open_recovery,
                         )
 
-                        evidence = retained_accepted_open_recovery(entry)
-                        expected = accepted_open_recovery_command(evidence)
+                        open_recovery_evidence = retained_accepted_open_recovery(entry)
+                        expected = accepted_open_recovery_command(open_recovery_evidence)
                         if (
                             command.operation_kind != ACCEPTED_OPEN_RECOVERY_OPERATION
                             or entry.get("operation_kind") != ACCEPTED_OPEN_RECOVERY_OPERATION
@@ -1439,11 +1447,11 @@ def _read_call_history(
                             or command != expected
                             or len(command.records) != 3
                             or command.records[0].canonical_bytes
-                            != evidence.result.accounting.canonical_bytes()
+                            != open_recovery_evidence.result.accounting.canonical_bytes()
                             or command.records[1].canonical_bytes
-                            != evidence.result.opening.canonical_bytes()
+                            != open_recovery_evidence.result.opening.canonical_bytes()
                             or command.records[2].canonical_bytes
-                            != evidence.result.terminal.canonical_bytes()
+                            != open_recovery_evidence.result.terminal.canonical_bytes()
                             or entry.get("fingerprint") != command.request_fingerprint
                             or entry.get("expected_head") != command.expected_head
                         ):
@@ -1456,13 +1464,13 @@ def _read_call_history(
                             runtime,
                             command=command,
                             entry=entry,
-                            cut=evidence.request.cut,
+                            cut=open_recovery_evidence.request.cut,
                         )
                         deferred_native_open_sources.append(
                             (
                                 command,
                                 entry,
-                                evidence.request.cut,
+                                open_recovery_evidence.request.cut,
                                 ExecutionHistorySnapshot(
                                     tenant_head=command.expected_head, records=tuple(mixed_records)
                                 ),
@@ -1476,13 +1484,13 @@ def _read_call_history(
 
                         selected_decision_id, raw_decision = selected_decision_envelopes[identity]
                         original_sources = accepted_open_recovery_sources(
-                            evidence,
+                            open_recovery_evidence,
                             selected_decision_id=selected_decision_id,
                             selected_decision_bytes=raw_decision.encode()
                             if isinstance(raw_decision, str)
                             else raw_decision,
                         )
-                        accepted_open_recoveries.append(evidence)
+                        accepted_open_recoveries.append(open_recovery_evidence)
                         expected_ids.update(record.record_id for record in command.records)
                         expected_publications.add((command.operation_kind, identity))
                         continue
@@ -1503,8 +1511,8 @@ def _read_call_history(
                             retained_accepted_direct_terminal,
                         )
 
-                        evidence = retained_accepted_direct_terminal(entry)
-                        expected = accepted_direct_terminal_command(evidence)
+                        direct_terminal_evidence = retained_accepted_direct_terminal(entry)
+                        expected = accepted_direct_terminal_command(direct_terminal_evidence)
                         if (
                             command.operation_kind != ACCEPTED_DIRECT_TERMINAL_OPERATION
                             or entry.get("operation_kind") != ACCEPTED_DIRECT_TERMINAL_OPERATION
@@ -1512,7 +1520,7 @@ def _read_call_history(
                             or identity != command.idempotency_key
                             or command != expected
                             or entry.get("predecessor")
-                            != evidence.request.cut.materialization_commitment
+                            != direct_terminal_evidence.request.cut.materialization_commitment
                             or entry.get("fingerprint") != command.request_fingerprint
                             or entry.get("expected_head") != command.expected_head
                             or tuple(record.schema_id for record in command.records)
@@ -1523,9 +1531,9 @@ def _read_call_history(
                             )
                             or tuple(record.canonical_bytes for record in command.records)
                             != (
-                                evidence.result.accounting.canonical_bytes(),
-                                evidence.result.terminal.canonical_bytes(),
-                                evidence.result.result.canonical_bytes(),
+                                direct_terminal_evidence.result.accounting.canonical_bytes(),
+                                direct_terminal_evidence.result.terminal.canonical_bytes(),
+                                direct_terminal_evidence.result.result.canonical_bytes(),
                             )
                         ):
                             raise ValueError("selected accepted/direct terminal differs")
@@ -1549,8 +1557,8 @@ def _read_call_history(
                             retained_accepted_open_accounting,
                         )
 
-                        evidence = retained_accepted_open_accounting(entry)
-                        expected = accepted_open_accounting_command(evidence)
+                        open_accounting_evidence = retained_accepted_open_accounting(entry)
+                        expected = accepted_open_accounting_command(open_accounting_evidence)
                         if (
                             command.operation_kind != ACCEPTED_OPEN_ACCOUNTING_OPERATION
                             or entry.get("operation_kind") != ACCEPTED_OPEN_ACCOUNTING_OPERATION
@@ -1559,7 +1567,7 @@ def _read_call_history(
                             or len(command.records) != 1
                             or command.records[0].schema_id != ACCEPTED_OPEN_ACCOUNTING_SCHEMA
                             or command.records[0].canonical_bytes
-                            != evidence.result.accounting.canonical_bytes()
+                            != open_accounting_evidence.result.accounting.canonical_bytes()
                             or entry.get("fingerprint") != command.request_fingerprint
                             or entry.get("expected_head") != command.expected_head
                         ):
@@ -1572,13 +1580,13 @@ def _read_call_history(
                             runtime,
                             command=command,
                             entry=entry,
-                            cut=evidence.request.cut,
+                            cut=open_accounting_evidence.request.cut,
                         )
                         deferred_native_open_sources.append(
                             (
                                 command,
                                 entry,
-                                evidence.request.cut,
+                                open_accounting_evidence.request.cut,
                                 ExecutionHistorySnapshot(
                                     tenant_head=command.expected_head, records=tuple(mixed_records)
                                 ),
@@ -1978,23 +1986,25 @@ def _read_call_history(
                         )
                         expected_publications.add((command.operation_kind, identity))
                         continue
-                    record = RunRecord.model_validate_json(first.canonical_bytes)
+                    legacy_run_record = RunRecord.model_validate_json(first.canonical_bytes)
                     if (
                         first.owner != OWNER
                         or first.schema_id != RUN_SCHEMA
-                        or first.record_id != record.head
-                        or record.tenant != tenant
+                        or first.record_id != legacy_run_record.head
+                        or legacy_run_record.tenant != tenant
                         or (
                             command.operation_kind != CANCELLATION_OPERATION
-                            and record.head != identity
+                            and legacy_run_record.head != identity
                         )
-                        or first.canonical_bytes != record.canonical_bytes()
+                        or first.canonical_bytes != legacy_run_record.canonical_bytes()
                     ):
                         raise ValueError("selected Run identity or canonical bytes differ")
                     if command.operation_kind == CANCELLATION_OPERATION:
-                        raw = entry["cancellation_preparation"]
-                        cancellation = RetainedCancellationPreparation.model_validate_json(raw)
-                        if cancellation.canonical_bytes().decode() != raw:
+                        cancellation_raw = entry["cancellation_preparation"]
+                        cancellation = RetainedCancellationPreparation.model_validate_json(
+                            cancellation_raw
+                        )
+                        if cancellation.canonical_bytes().decode() != cancellation_raw:
                             raise ValueError("noncanonical retained cancellation")
                         cancelled_envelope = build_cancellation_envelope(cancellation)
                         prior = LoopSnapshot(
@@ -2004,8 +2014,8 @@ def _read_call_history(
                             cancelled_envelope.canonical_bytes().decode()
                             != entry["cancellation_envelope"]
                             or cancellation_command(cancellation) != command
-                            or cancellation.run_companion != record
-                            or cancellation.run_predecessor != latest.get(record.run_id)
+                            or cancellation.run_companion != legacy_run_record
+                            or cancellation.run_predecessor != latest.get(legacy_run_record.run_id)
                             or cancellation.request.cut.materialization_commitment
                             != entry["predecessor"]
                             or cancellation.expected_snapshot_fingerprint != prior.digest()
@@ -2025,24 +2035,27 @@ def _read_call_history(
                             raise ValueError("selected cancellation differs from original history")
                         cancellations.append(cancellation)
                     elif command.operation_kind == FANOUT_OPERATION:
-                        raw = entry["fanout_preparation"]
-                        evidence = RetainedFanOutPreparation.model_validate_json(raw)
-                        if evidence.canonical_bytes().decode() != raw:
+                        fanout_raw = entry["fanout_preparation"]
+                        legacy_fanout_evidence = RetainedFanOutPreparation.model_validate_json(
+                            fanout_raw
+                        )
+                        if legacy_fanout_evidence.canonical_bytes().decode() != fanout_raw:
                             raise ValueError("noncanonical retained fanout preparation")
-                        envelope = build_envelope(evidence)
+                        envelope = build_envelope(legacy_fanout_evidence)
                         prior = LoopSnapshot(
                             tenant_head=command.expected_head, records=tuple(records)
                         )
-                        capture = evidence.request.captured_run
+                        capture = legacy_fanout_evidence.request.captured_run
                         if (
                             envelope.canonical_bytes().decode() != entry["fanout_envelope"]
                             or physical_command(envelope) != command
-                            or evidence.accepted_run != record
-                            or capture != latest.get(record.run_id)
-                            or evidence.request.request.cut.materialization_commitment
+                            or legacy_fanout_evidence.accepted_run != legacy_run_record
+                            or capture != latest.get(legacy_run_record.run_id)
+                            or legacy_fanout_evidence.request.request.cut.materialization_commitment
                             != entry["predecessor"]
-                            or evidence.expected_snapshot_fingerprint != prior.digest()
-                            or evidence.request.request.cut.predecessor_inventory
+                            or legacy_fanout_evidence.expected_snapshot_fingerprint
+                            != prior.digest()
+                            or legacy_fanout_evidence.request.request.cut.predecessor_inventory
                             != execution_inventory(
                                 tenant,
                                 ExecutionHistorySnapshot(
@@ -2059,29 +2072,33 @@ def _read_call_history(
                         if capture.head in captured_heads:
                             raise ValueError("captured response already has a selected fanout")
                         captured_heads.add(capture.head)
-                        preparations.append(evidence)
-                    elif command.request_fingerprint != record.digest():
+                        preparations.append(legacy_fanout_evidence)
+                    elif command.request_fingerprint != legacy_run_record.digest():
                         raise ValueError("selected legacy Run fingerprint differs")
-                    elif record.event == "CompleteAcceptance":
+                    elif legacy_run_record.event == "CompleteAcceptance":
                         if len(companions) != 1 or (
                             companions[0].record_id,
                             companions[0].owner,
                             companions[0].schema_id,
-                        ) != (record.run_id + "/accepted", CONVERSATION_OWNER, CONVERSATION_SCHEMA):
+                        ) != (
+                            legacy_run_record.run_id + "/accepted",
+                            CONVERSATION_OWNER,
+                            CONVERSATION_SCHEMA,
+                        ):
                             raise ValueError("selected Complete companion structure differs")
                     elif companions:
                         raise ValueError("unregistered legacy Run publication companions")
-                    previous_legacy = latest.get(record.run_id)
+                    previous_legacy = latest.get(legacy_run_record.run_id)
                     if isinstance(previous_legacy, ExecutionRunRecord):
                         raise ValueError("Run lineage changed its registered schema")
-                    validate_record(previous_legacy, record)
+                    validate_record(previous_legacy, legacy_run_record)
                     expected_ids.update(
                         row.record_id for row in command.records if row.owner == OWNER
                     )
                     expected_publications.add((command.operation_kind, identity))
-                    latest[record.run_id] = record
-                    records.append(record)
-                    mixed_records.append(record)
+                    latest[legacy_run_record.run_id] = legacy_run_record
+                    records.append(legacy_run_record)
+                    mixed_records.append(legacy_run_record)
                 if exact_historical_sources and pending_source_publication is not None:
                     pending_command = runtime._publication(pending_source_publication)
                     with read_connection(runtime._database) as current_connection:
@@ -2435,6 +2452,7 @@ def read_selected_accepted_direct_terminal_frontier(
         accepted_direct_terminal_command,
         retained_accepted_direct_terminal,
     )
+
     with runtime._authority_gate().hold():
         if authenticated_history is None:
             authenticated_history = read_execution_recovery_history(runtime)
