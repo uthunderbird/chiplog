@@ -616,7 +616,7 @@ async def drive_successor(
         return (await _publish_start(runtime, peer, evidence)).result.run
 
 
-def _assert_ingress_unclaimed(runtime, request):
+def _assert_ingress_unclaimed(runtime: R14PlanningRuntime, request: DriveInputRequestV1) -> None:
     claim = _ingress_claim(request)
     for _, _, raw in runtime._loop_decisions().entries():
         entry = json.loads(raw)
@@ -629,18 +629,24 @@ def _assert_ingress_unclaimed(runtime, request):
             )
 
             evidence = RetainedInboxExecutionInitialization.model_validate_json(value)
-            prior = DriveInputRequestV1.model_validate_json(evidence.driver_request_bytes)
-            if _ingress_claim(prior) == claim:
+            prior_inbox_request = DriveInputRequestV1.model_validate_json(
+                evidence.driver_request_bytes
+            )
+            if _ingress_claim(prior_inbox_request) == claim:
                 raise LoopRejected("selected ingress already claimed by inbox initialization")
         retained = entry.get(EVIDENCE_FIELD)
         if isinstance(retained, str):
-            prior = _retained(entry)
-            prior_request = DriveInputRequestV1.model_validate_json(prior.driver_request_bytes)
+            prior_successor = _retained(entry)
+            prior_request = DriveInputRequestV1.model_validate_json(
+                prior_successor.driver_request_bytes
+            )
             if _ingress_claim(prior_request) == claim:
                 raise LoopRejected("selected ingress already claimed by successor")
 
 
-def assert_ingress_unclaimed_by_successor(runtime, request, selected_claim: str) -> None:
+def assert_ingress_unclaimed_by_successor(
+    runtime: R14PlanningRuntime, request: DriveInputRequestV1, selected_claim: str
+) -> None:
     """Reject a selected ingress or deterministic Run ID owned by another command."""
     expected_fingerprint = request.original_driver_command_fingerprint()
     with runtime._authority_gate().hold():
