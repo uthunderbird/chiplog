@@ -14,10 +14,15 @@ from chiplog.capabilities.deployment_trust import TrustReference
 from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
     HermeticOutputPolicyV1,
     HermeticOutputScopeAnchorV1,
+    HermeticOutputScopeV1,
     HermeticOutputSourceV1,
     SelectedHermeticResourceObservationRefV1,
 )
 from chiplog.capabilities.evidence_journal.commands import Heads, TrustedIngress
+from chiplog.composition.common_cli_execution_runtime import (
+    CommonCliExecutionRuntime,
+    _H1ScopeAppendReceipt,
+)
 from chiplog.composition.h1_preissuance_registration import (
     H1PreissuanceSelection,
     H1PreissuanceSourceViolation,
@@ -31,6 +36,7 @@ from chiplog.composition.h1_runtime_preissuance_port import (
 )
 from chiplog.composition.h1_workspace_policy_v2 import H1WorkspacePolicyV2
 from chiplog.domain_primitives import PrincipalId, TenantId
+from chiplog.platform.r7_trust_durability import FrozenTrustObservation
 
 
 class _Gate:
@@ -50,6 +56,14 @@ def _bound_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[_H1RuntimePreissuancePort, H1PreissuanceSelection, TrustedIngress]:
     port = object.__new__(_H1RuntimePreissuancePort)
+    # Inert unit double: source opening and authentication stay substituted below.
+    trust_observation = FrozenTrustObservation(b"fixture", None, "/inert/fixture", ())
+    port._runtime = cast(
+        CommonCliExecutionRuntime,
+        SimpleNamespace(
+            _trust=SimpleNamespace(capture_verified_observation=lambda: trust_observation)
+        ),
+    )
     selected = SelectedHermeticResourceObservationRefV1(
         signature_domain="dispatch-resources.v1",
         selected_initialization=_head("initialization"),
@@ -186,12 +200,20 @@ def _bound_port(
                         source_anchor=anchor,
                         ordered_current_source_refs=(
                             scope.admitted_authentication,
-                            scope.recipient.endpoint,
-                            scope.recipient.credential_binding,
+                            anchor.decision,
+                            anchor.record,
                         ),
                     ),
                 ),
                 scope=cast(Any, scope),
+                append_receipt=_H1ScopeAppendReceipt(
+                    request_id="inert-scope-issue",
+                    before=trust_observation,
+                    after=trust_observation,
+                    decision_id="inert-scope-decision",
+                    scope=cast(HermeticOutputScopeV1, scope),
+                    disposition="ISSUED",
+                ),
             ),
         )
     }
@@ -240,9 +262,8 @@ def test_selected_workspace_authentication_heads_reopen_the_retained_current_cut
     cut = port._cuts[id(selection)][1]
     port._cuts[id(selection)] = (
         selection,
-        _SelectionCut(
-            prepared=cut.prepared,
-            issued=cut.issued,
+        replace(
+            cut,
             current=cast(
                 Any,
                 SimpleNamespace(
@@ -251,7 +272,6 @@ def test_selected_workspace_authentication_heads_reopen_the_retained_current_cut
                     ordered_current_source_refs=(),
                 ),
             ),
-            scope=cut.scope,
         ),
     )
     with pytest.raises(H1PreissuanceSourceViolation, match="stale"):
@@ -328,4 +348,19 @@ def test_late_bind_refuses_foreign_or_consumed_selection(monkeypatch: pytest.Mon
     with pytest.raises(H1PreissuanceSourceViolation, match="consumed"):
         port.selected_workspace_authentication_heads(selection)
     with pytest.raises(H1PreissuanceSourceViolation, match="consumed"):
+        port.selected_workspace_identity(selection)
+
+
+def test_selected_workspace_cut_rejects_changed_trust_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port, selection, _ = _bound_port(monkeypatch)
+    cut = port._cuts[id(selection)][1]
+    changed = replace(cut.append_receipt.after, journal_head="changed-trust-head")
+    monkeypatch.setattr(port._runtime._trust, "capture_verified_observation", lambda: changed)
+
+    assert not port.check_current(selection)
+    with pytest.raises(H1PreissuanceSourceViolation, match="stale"):
+        port.selected_workspace_authentication_heads(selection)
+    with pytest.raises(H1PreissuanceSourceViolation, match="stale"):
         port.selected_workspace_identity(selection)
