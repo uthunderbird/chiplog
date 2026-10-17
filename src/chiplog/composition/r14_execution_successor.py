@@ -60,6 +60,7 @@ from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.execution_run_versions import ExecutionRun
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
     from chiplog.composition.r14_runtime import R14PlanningRuntime
 
@@ -496,7 +497,7 @@ async def drive_successor(
     peer: str,
     driver_request: DriveInputRequestV1,
     admitted: SelectedAdmittedRunInput | None,
-) -> ExecutionRunRecord | None:
+) -> ExecutionRun | None:
     """Publish/recover this authenticated CLI request as a successor if eligible."""
     async with runtime._execution_lane:
         actor = await runtime._execution_actor(peer)
@@ -671,7 +672,9 @@ def assert_ingress_unclaimed_by_successor(
                 )
 
 
-async def replay_successor(runtime, peer: str, driver_request: DriveInputRequestV1):
+async def replay_successor(
+    runtime: CommonCliExecutionRuntime, peer: str, driver_request: DriveInputRequestV1
+) -> ExecutionRun | None:
     """Finish an exact retained successor before live dispatch observation."""
     with runtime._authority_gate().hold():
         if _find_replay(runtime, driver_request) is None:
