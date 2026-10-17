@@ -23,9 +23,14 @@ def _provision(tmp_path: Path) -> tuple[Path, AuthorityGate, str, tuple[FileIden
         path.with_suffix(".lock"),
     ):
         sidecar.chmod(0o600)
-    return path, gate, decision_id, tuple(
-        checked_file_identity(sidecar)
-        for sidecar in (path, path.with_suffix(".key"), path.with_suffix(".lock"))
+    return (
+        path,
+        gate,
+        decision_id,
+        tuple(
+            checked_file_identity(sidecar)
+            for sidecar in (path, path.with_suffix(".key"), path.with_suffix(".lock"))
+        ),
     )
 
 

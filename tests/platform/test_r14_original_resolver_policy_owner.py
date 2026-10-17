@@ -50,9 +50,7 @@ def test_v33_partition_resolves_to_the_static_original_recovery_process() -> Non
         session_id="session",
         capability_ids=_V33_EXECUTION_OPERATIONS,
     )
-    assert _owner_module(identity) == (
-        "chiplog.capabilities.agent_loop._original_recovery_process"
-    )
+    assert _owner_module(identity) == ("chiplog.capabilities.agent_loop._original_recovery_process")
 
 
 def test_v31_adoption_route_runs_in_isolated_owner_and_preserves_v30_routes() -> None:

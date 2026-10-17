@@ -188,9 +188,7 @@ def test_late_receipt_is_a_durable_observation_of_the_original_send(
     initial_observation = verify_hermetic_receipt(
         ticket, first, registered_receipt_key=b"registered"
     )
-    late_observation = verify_hermetic_receipt(
-        ticket, late, registered_receipt_key=b"registered"
-    )
+    late_observation = verify_hermetic_receipt(ticket, late, registered_receipt_key=b"registered")
 
     assert late_observation.sequence == initial_observation.sequence + 1
     assert len(provider.transfers) == 1

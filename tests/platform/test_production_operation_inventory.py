@@ -14,6 +14,7 @@ from chiplog.capabilities.agent_loop.scheduler_preparation import (
     ConfigurationPreparationRequest,
     IntervalPreparationRequest,
     LeasePreparationRequest,
+    MandateIssuancePreparationRequest,
     RolloverPreparationRequest,
 )
 from chiplog.capabilities.deployment_trust.cli_custody_validation import CliCustodyOwnerCall
@@ -184,17 +185,26 @@ def _expanded_owner_request_literals() -> tuple[tuple[str, str, str, str], ...]:
             "v1",
             _scheduler_variants(RolloverPreparationRequest)[0],
         ),
+        (
+            "scheduler.prepare_mandate_issuance",
+            _route_schema_id("scheduler.prepare_mandate_issuance"),
+            "v1",
+            _scheduler_variants(MandateIssuancePreparationRequest)[0],
+        ),
     )
 
 
-def test_inventory_freezes_22_route_envelope_and_payload_literals() -> None:
+def test_inventory_freezes_23_route_envelope_and_payload_literals() -> None:
     expected_new = _expanded_owner_request_literals()
 
-    assert len(OPERATION_REQUIRED_KEYS_V1) == 22
-    assert tuple(
-        (key.operation_id, key.request_schema_id, key.request_version, key.request_variant)
-        for key in OPERATION_REQUIRED_KEYS_V1[5:]
-    ) == expected_new
+    assert len(OPERATION_REQUIRED_KEYS_V1) == 23
+    assert (
+        tuple(
+            (key.operation_id, key.request_schema_id, key.request_version, key.request_variant)
+            for key in OPERATION_REQUIRED_KEYS_V1[5:]
+        )
+        == expected_new
+    )
 
 
 def test_expanded_keys_reject_mutated_schema_version_variant_and_route_pairing() -> None:
@@ -213,9 +223,7 @@ def test_expanded_keys_reject_mutated_schema_version_variant_and_route_pairing()
             if key.operation_id == "scheduler.prepare_rollover"
             else "scheduler.prepare_rollover"
         )
-        assert key.model_copy(
-            update={"operation_id": different_route}
-        ) not in required_keys
+        assert key.model_copy(update={"operation_id": different_route}) not in required_keys
 
 
 def test_expanded_rows_are_exact_c_open_declarations_without_a_mount() -> None:
@@ -266,6 +274,13 @@ def test_expanded_rows_are_exact_c_open_declarations_without_a_mount() -> None:
             "scheduler_prepare_rollover_selected_readback_decoder",
             "scheduler_prepare_rollover_replay_identity_policy",
             "scheduler_prepare_rollover_registered_publication_mount",
+        ),
+        (
+            "scheduler_prepare_mandate_issuance_ordered_owner_participant_recipe",
+            "scheduler_prepare_mandate_issuance_physical_record_pattern",
+            "scheduler_prepare_mandate_issuance_selected_readback_decoder",
+            "scheduler_prepare_mandate_issuance_replay_identity_policy",
+            "scheduler_prepare_mandate_issuance_registered_publication_mount",
         ),
     )
 
@@ -362,7 +377,7 @@ def test_outer_or_nested_schema_and_another_ingress_variant_do_not_register() ->
     assert _resolution_kind(snapshot, ingress_key, cut) == "UNKNOWN_VERSION"
     assert _resolution_kind(snapshot, nested_source_schema_key, cut) == "UNKNOWN_VERSION"
     assert _resolution_kind(snapshot, another_ingress_command_key, cut) == "UNKNOWN_VERSION"
-    assert len(snapshot.rows) == 22
+    assert len(snapshot.rows) == 23
 
 
 def test_result_kinds_cannot_masquerade_as_driver_request_variants() -> None:

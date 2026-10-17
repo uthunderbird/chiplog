@@ -117,9 +117,13 @@ def test_unverifiable_snapshot_has_contextual_typed_failure(tmp_path: Path, inva
         assert caught.value.__cause__ is not None
 
 
-@pytest.mark.parametrize("capture", [
-    capture_authority_snapshot_bytes, capture_authority_snapshot_commitment,
-])
+@pytest.mark.parametrize(
+    "capture",
+    [
+        capture_authority_snapshot_bytes,
+        capture_authority_snapshot_commitment,
+    ],
+)
 @pytest.mark.parametrize("table", ["sqliteXauthority", "unknown_authority", 'quoted"authority'])
 def test_snapshot_rejects_unknown_names_before_schema_pragma(capture, table):
     with closing(sqlite3.connect(":memory:")) as connection:
@@ -152,20 +156,64 @@ def test_snapshot_rejects_missing_registered_table_before_schema_pragma(change):
 def test_closed_schema_keeps_exact_v1_blob_null_and_scalar_preimage():
     # Literal table/column/row vocabulary is independent of the production manifest.
     expected = [
-        {"table": "deletion_fences", "columns": ["tenant_id", "generation", "frontier"],
-         "rows": []},
-        {"table": "evidence_inbox", "columns": [
-            "tenant_id", "source_id", "evidence_id", "fingerprint", "canonical_bytes",
-            "followup_kind", "state", "attempt_id", "transport_version", "cursor",
-        ], "rows": [["tenant", "source", "evidence", "fingerprint", {"base64": "AP8="},
-                    "followup", "pending", None, None, None]]},
-        {"table": "publications", "columns": [
-            "tenant_id", "operation_kind", "idempotency_key", "request_fingerprint",
-            "commit_sequence", "record_ids",
-        ], "rows": []},
-        {"table": "records", "columns": [
-            "tenant_id", "record_id", "owner", "schema_id", "canonical_bytes", "commit_sequence",
-        ], "rows": [["tenant", "record", "fixture", "fixture.v1", {"base64": "AP8="}, 3]]},
+        {
+            "table": "deletion_fences",
+            "columns": ["tenant_id", "generation", "frontier"],
+            "rows": [],
+        },
+        {
+            "table": "evidence_inbox",
+            "columns": [
+                "tenant_id",
+                "source_id",
+                "evidence_id",
+                "fingerprint",
+                "canonical_bytes",
+                "followup_kind",
+                "state",
+                "attempt_id",
+                "transport_version",
+                "cursor",
+            ],
+            "rows": [
+                [
+                    "tenant",
+                    "source",
+                    "evidence",
+                    "fingerprint",
+                    {"base64": "AP8="},
+                    "followup",
+                    "pending",
+                    None,
+                    None,
+                    None,
+                ]
+            ],
+        },
+        {
+            "table": "publications",
+            "columns": [
+                "tenant_id",
+                "operation_kind",
+                "idempotency_key",
+                "request_fingerprint",
+                "commit_sequence",
+                "record_ids",
+            ],
+            "rows": [],
+        },
+        {
+            "table": "records",
+            "columns": [
+                "tenant_id",
+                "record_id",
+                "owner",
+                "schema_id",
+                "canonical_bytes",
+                "commit_sequence",
+            ],
+            "rows": [["tenant", "record", "fixture", "fixture.v1", {"base64": "AP8="}, 3]],
+        },
         {"table": "store_metadata", "columns": ["singleton", "store_version"], "rows": [[1, 1]]},
         {"table": "tenant_heads", "columns": ["tenant_id", "head"], "rows": [["tenant", 3]]},
     ]
@@ -174,12 +222,25 @@ def test_closed_schema_keeps_exact_v1_blob_null_and_scalar_preimage():
         connection.executescript(SCHEMA_SQL)
         connection.execute("INSERT INTO store_metadata VALUES (1,1)")
         connection.execute("INSERT INTO tenant_heads VALUES ('tenant',3)")
-        connection.execute("INSERT INTO records VALUES (?,?,?,?,?,?)",
-                           ("tenant", "record", "fixture", "fixture.v1", b"\x00\xff", 3))
-        connection.execute("INSERT INTO evidence_inbox VALUES (?,?,?,?,?,?,?,?,?,?)", (
-            "tenant", "source", "evidence", "fingerprint", b"\x00\xff", "followup", "pending",
-            None, None, None,
-        ))
+        connection.execute(
+            "INSERT INTO records VALUES (?,?,?,?,?,?)",
+            ("tenant", "record", "fixture", "fixture.v1", b"\x00\xff", 3),
+        )
+        connection.execute(
+            "INSERT INTO evidence_inbox VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "tenant",
+                "source",
+                "evidence",
+                "fingerprint",
+                b"\x00\xff",
+                "followup",
+                "pending",
+                None,
+                None,
+                None,
+            ),
+        )
         assert capture_authority_snapshot_bytes(connection, "tenant") == expected_bytes
         assert capture_authority_snapshot_commitment(connection, "tenant") == (
             hashlib.sha256(expected_bytes).hexdigest()

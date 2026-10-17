@@ -245,9 +245,7 @@ def test_reopened_historical_scope_accepts_persisted_json_and_rejects_invalid_sc
     with _bundle(tmp_path) as bundle:
         _bootstrap(bundle)
         scope = _scope()
-        decision_id, _, _ = bundle.durability.append_hermetic_output_scope(
-            scope.canonical_bytes()
-        )
+        decision_id, _, _ = bundle.durability.append_hermetic_output_scope(scope.canonical_bytes())
         raw = bundle.durability._journal.entries()[-1][2]
         logical_head = bundle.durability.owner_snapshot_entries()[-1][0]
 
@@ -268,6 +266,4 @@ def test_reopened_historical_scope_accepts_persisted_json_and_rejects_invalid_sc
         assert payload["scope"] == scope.model_dump(mode="json")
         del payload["scope"]["issuer"]
         with pytest.raises(RuntimeError, match="historical H1 scope payload is invalid"):
-            reopened.durability._validate_historical_payload(
-                "HERMETIC_OUTPUT_SCOPE_V1", payload
-            )
+            reopened.durability._validate_historical_payload("HERMETIC_OUTPUT_SCOPE_V1", payload)

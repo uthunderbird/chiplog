@@ -251,12 +251,15 @@ def test_handoff_members_preserve_selected_refs_and_independent_receipt_evidence
         schema_id=receipt.schema_id,
         canonical_source_bytes=receipt.canonical_bytes(),
     )
-    assert decode_ingress_source(
-        retained_receipt,
-        expected_class="PROVIDER_CALLBACK",
-        expected_binding=receipt.source_binding,
-        registered_reader_id="provider-callback-v1",
-    ) == receipt
+    assert (
+        decode_ingress_source(
+            retained_receipt,
+            expected_class="PROVIDER_CALLBACK",
+            expected_binding=receipt.source_binding,
+            registered_reader_id="provider-callback-v1",
+        )
+        == receipt
+    )
 
 
 def test_handoff_observation_shape_matrix_rejects_invalid_serialized_rows() -> None:
@@ -317,6 +320,7 @@ def test_handoff_observation_shape_matrix_rejects_invalid_serialized_rows() -> N
             authenticated_source=None,
             selected_raw_custody=head("provider-custody"),
         )
+
     def provider(
         name: str,
         *,

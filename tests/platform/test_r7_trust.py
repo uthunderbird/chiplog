@@ -61,7 +61,9 @@ def test_owner_call_decoder_rejects_reordered_outer_wire() -> None:
 
 
 def test_owner_call_decoder_does_not_treat_base64_text_as_utf8_bytes() -> None:
-    wire = _wire(snapshot=b"\xff\x00",)
+    wire = _wire(
+        snapshot=b"\xff\x00",
+    )
     raw = json.loads(wire.canonical_bytes())
     assert raw["snapshot_bytes"] == base64.b64encode(b"\xff\x00").decode("ascii")
 

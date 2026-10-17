@@ -444,7 +444,9 @@ def test_existing_scope_never_provisions_lock_and_recovers_after_failed_open(
     after = (gate.path.read_bytes(), gate.path.stat())
     assert after[0] == before[0]
     assert (after[1].st_dev, after[1].st_ino, after[1].st_mode) == (
-        before[1].st_dev, before[1].st_ino, before[1].st_mode
+        before[1].st_dev,
+        before[1].st_ino,
+        before[1].st_mode,
     )
     with gate.hold(), AuthorityGate.for_database(gate.database).hold_existing():
         gate.require_held()

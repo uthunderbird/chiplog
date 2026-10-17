@@ -16,13 +16,12 @@ def _files(directory):
         path.name: (
             os.readlink(path) if path.is_symlink() else path.read_bytes(),
             path.lstat().st_mode,
-        ) for path in directory.iterdir()
+        )
+        for path in directory.iterdir()
     }
 
 
-def test_readonly_snapshot_authenticates_real_journal_without_writable_opens(
-    tmp_path, monkeypatch
-):
+def test_readonly_snapshot_authenticates_real_journal_without_writable_opens(tmp_path, monkeypatch):
     path, gate, first, _ = _provision(tmp_path)
     before = _files(tmp_path)
     opened = []
@@ -38,10 +37,14 @@ def test_readonly_snapshot_authenticates_real_journal_without_writable_opens(
     assert snapshot.entries == ((first, None, b"first"),)
     with pytest.raises(FrozenInstanceError):
         snapshot.entries = ()
-    assert all(flags & os.O_ACCMODE == os.O_RDONLY and not flags & os.O_CREAT
-               for _, flags in opened)
+    assert all(
+        flags & os.O_ACCMODE == os.O_RDONLY and not flags & os.O_CREAT for _, flags in opened
+    )
     assert {Path(name).name for name, _ in opened} >= {
-        path.name, path.name + ".key", path.name + ".head", path.name + ".lock",
+        path.name,
+        path.name + ".key",
+        path.name + ".head",
+        path.name + ".lock",
     }
     assert _files(tmp_path) == before
 
@@ -60,10 +63,24 @@ def test_readonly_snapshot_requires_preheld_gate_before_any_open(tmp_path, monke
     assert opened == []
 
 
-@pytest.mark.parametrize("damage", [
-    "missing-body", "missing-key", "missing-head", "missing-lock", "body", "key",
-    "short-key", "head", "non-ascii-head", "head-new", "mode", "symlink", "hardlink",
-])
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing-body",
+        "missing-key",
+        "missing-head",
+        "missing-lock",
+        "body",
+        "key",
+        "short-key",
+        "head",
+        "non-ascii-head",
+        "head-new",
+        "mode",
+        "symlink",
+        "hardlink",
+    ],
+)
 def test_readonly_snapshot_refuses_bad_sources_without_repair(tmp_path, damage):
     path, gate, _, _ = _provision(tmp_path)
     if damage.startswith("missing-"):
@@ -79,9 +96,7 @@ def test_readonly_snapshot_refuses_bad_sources_without_repair(tmp_path, damage):
     elif damage in {"key", "short-key"}:
         path.with_name(path.name + ".key").write_bytes(b"x" * (32 if damage == "key" else 1))
     elif damage in {"head", "non-ascii-head"}:
-        path.with_name(path.name + ".head").write_bytes(
-            b"0" * 64 if damage == "head" else b"\xff"
-        )
+        path.with_name(path.name + ".head").write_bytes(b"0" * 64 if damage == "head" else b"\xff")
     elif damage == "head-new":
         path.with_name(path.name + ".head.new").write_bytes(b"pending")
     elif damage == "mode":

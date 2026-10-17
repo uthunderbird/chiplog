@@ -287,8 +287,7 @@ def test_current_signed_policy_returns_only_the_exact_current_active_anchor(tmp_
         issued = _append_issue(bundle)
 
         assert (
-            bundle.durability.current_signed_prepared_self_delivery_policy(issued.anchor)
-            == issued
+            bundle.durability.current_signed_prepared_self_delivery_policy(issued.anchor) == issued
         )
 
 
@@ -314,7 +313,9 @@ def test_current_signed_policy_denies_superseded_and_revoked_anchors(tmp_path: P
                 "status": "REVOKED",
                 "authorization_command": ExactHead(
                     identity=request.command_id,
-                    head=prepared_self_delivery_policy_request_content_head(request.canonical_bytes()),
+                    head=prepared_self_delivery_policy_request_content_head(
+                        request.canonical_bytes()
+                    ),
                     fingerprint=hashlib.sha256(request.canonical_bytes()).hexdigest(),
                 ),
                 "authorization_source": source.ref,

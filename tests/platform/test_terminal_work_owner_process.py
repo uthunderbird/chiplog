@@ -26,7 +26,11 @@ def test_h1_terminal_work_owner_returns_canonical_empty_result_over_ipc() -> Non
             "effects_transport": HermeticEffectsProvider(receipt_key=b"fixture", scenarios=()),
         }
         with AuthorityBrokerRuntime(
-            "tenant", 1, "terminal-work-h1", R14_R17_H1_PRODUCTION_MANIFEST, b"secret",
+            "tenant",
+            1,
+            "terminal-work-h1",
+            R14_R17_H1_PRODUCTION_MANIFEST,
+            b"secret",
             realized_leaves=leaves,
         ) as runtime:
             callee = runtime.session("agent_loop")
