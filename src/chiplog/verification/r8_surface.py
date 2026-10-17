@@ -143,11 +143,14 @@ def verify_r8_surfaces(root: Path, surfaces: tuple[DeploymentSurface, ...] = SUR
         for node in runtime_class.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    for boundary in ("create", "render"):
-        if not {"require", "crossed", "_context", "_transaction"} <= _calls(methods[boundary]):
+    if not {"_transaction", "publish_plan_in_transaction"} <= _calls(methods["create"]):
+        raise R8SurfaceViolation("planning create lost its transaction-local handoff")
+    for boundary, required in (
+        ("publish_plan_in_transaction", {"require", "crossed", "_context", "execute"}),
+        ("render", {"require", "crossed", "_context", "_transaction", "rebuild"}),
+    ):
+        if boundary not in methods or not required <= _calls(methods[boundary]):
             raise R8SurfaceViolation("real handoff has no final deployment gate")
-    if "execute" not in _calls(methods["create"]) or "rebuild" not in _calls(methods["render"]):
-        raise R8SurfaceViolation("planning owner or projection boundary missing")
 
 
 def _implementation_catalog(root: Path) -> dict[str, str]:

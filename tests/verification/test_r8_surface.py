@@ -23,6 +23,19 @@ def _catalog_for_copy(root: Path) -> None:
     path.write_text(json.dumps(snapshot_python_sources(root), sort_keys=True))
 
 
+def test_transaction_local_planning_handoff_requires_its_gate(tmp_path: Path) -> None:
+    source = tmp_path / "src/chiplog"
+    shutil.copytree(ROOT / "src/chiplog", source)
+    verify_r8_surfaces(tmp_path)
+    path = source / "composition/postgres_planning.py"
+    original = path.read_text()
+    marker = 'fresh = gate.require(gate_request, "planning.create", payload)'
+    assert original.count(marker) == 1
+    path.write_text(original.replace(marker, "fresh = True"))
+    with pytest.raises(R8SurfaceViolation, match="final deployment gate"):
+        verify_r8_surfaces(tmp_path)
+
+
 def test_strict_catalog_rejects_duplicate_json_keys(tmp_path: Path) -> None:
     source = tmp_path / "src/chiplog"
     shutil.copytree(ROOT / "src/chiplog", source)

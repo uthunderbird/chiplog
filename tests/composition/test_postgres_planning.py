@@ -8,7 +8,7 @@ import pytest
 from chiplog.composition.postgres_planning import PostgresPlanningRuntime
 from chiplog.platform import postgres_gate
 from chiplog.platform.deployment_gate import DeploymentGateRequest
-from chiplog.platform.postgres import PostgresServer
+from chiplog.platform.postgres import PostgresServer, Record
 from tests.support.deployment_gate import KEY, request, signature
 from tests.support.r8_journey import (
     IDENTITY,
@@ -21,6 +21,48 @@ from tests.support.r8_journey import (
 
 def verifier(payload: bytes, proof: bytes) -> bool:
     return hmac.compare_digest(hmac.digest(KEY, payload, "sha256"), proof)
+
+
+async def test_planning_transaction_can_atomically_publish_a_companion(
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(time, "time_ns", lambda: 10)
+    database = postgres_server.user_database("t")
+    database.provision()
+    runtime = PostgresPlanningRuntime(database, "t", SECRET, verifier)
+    await runtime.bootstrap(database_instance_id="db", token="token", **IDENTITY)
+    entitlement = planning_entitlement()
+    runtime.import_entitlement(entitlement, signature(entitlement))
+    value = command()
+    with (
+        pytest.raises(RuntimeError, match="companion failed"),
+        runtime._transaction() as (connection, trust),
+    ):
+        outcome = runtime.publish_plan_in_transaction(
+            connection, trust, **IDENTITY, command=value, gate_request=planning_request(value)
+        )
+        assert outcome.disposition == "COMMITTED"
+        raise RuntimeError("companion failed")
+    assert database.snapshot().head == 0
+    with runtime._transaction() as (connection, trust):
+        outcome = runtime.publish_plan_in_transaction(
+            connection, trust, **IDENTITY, command=value, gate_request=planning_request(value)
+        )
+        assert outcome.disposition == "COMMITTED"
+        database.append(
+            connection,
+            "effects.test",
+            "effect",
+            "fp",
+            (Record("effect", "effects", "test.effect", b"effect"),),
+            1,
+        )
+    assert database.snapshot().head == 2
+    reopened = PostgresPlanningRuntime(replace(database), "t", SECRET, verifier)
+    replay = await reopened.create(**IDENTITY, command=value, gate_request=planning_request(value))
+    assert replay.disposition == "REPLAY"
+    assert replay.result == outcome.result
 
 
 async def test_postgres_planning_bootstrap_create_reopen_replay_projection_and_revocation(

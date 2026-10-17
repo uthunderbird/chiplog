@@ -171,37 +171,53 @@ class PostgresPlanningRuntime:
         gate_request: DeploymentGateRequest | None = None,
     ) -> PlanningOutcome:
         with self._transaction() as (connection, trust):
-            context = self._context(trust, principal_id, credential_id, session_id)
-            if any(
-                item.tenant_id != self.tenant
-                for item in (
-                    command.command_id,
-                    command.intention_line_id,
-                    command.revision_id,
-                )
-            ):
-                return PlanningOutcome("DENIED", None, "foreign tenant identifier")
-            if gate_request is None or gate_request.operation_id != command.command_id.value:
-                return PlanningOutcome(
-                    "DENIED", None, "HOLD: exact deployment entitlement required"
-                )
-            gate = PostgresDeploymentGate(
-                connection, self.tenant.value, self._authenticate_entitlement
+            return self.publish_plan_in_transaction(
+                connection,
+                trust,
+                principal_id=principal_id,
+                credential_id=credential_id,
+                session_id=session_id,
+                command=command,
+                gate_request=gate_request,
             )
-            payload = command_bytes(command)
-            try:
-                fresh = gate.require(gate_request, "planning.create", payload)
-            except PermissionError as error:
-                return PlanningOutcome("DENIED", None, str(error))
-            repository = PostgresPlanningRepository(self.database, self.tenant, connection)
-            outcome = _PlanningUseCase(repository, _TrustBridge(trust)).execute(context, command)
-            if outcome.disposition == "COMMITTED":
-                if not fresh:
-                    raise RuntimeError(
-                        "recorded deployment handoff has no committed planning batch"
-                    )
-                gate.crossed(gate_request, payload)
-            return outcome
+
+    def publish_plan_in_transaction(
+        self,
+        connection: Connection,
+        trust: DeploymentTrustService,
+        *,
+        principal_id: str,
+        credential_id: str,
+        session_id: str,
+        command: CreateIntentionLine,
+        gate_request: DeploymentGateRequest | None = None,
+    ) -> PlanningOutcome:
+        """Publish on the caller's locked transaction; never commit independently.
+
+        Companion owners must raise on denial or companion failure so the outer
+        transaction rolls back both publications and their gate handoffs.
+        """
+        context = self._context(trust, principal_id, credential_id, session_id)
+        if any(
+            item.tenant_id != self.tenant
+            for item in (command.command_id, command.intention_line_id, command.revision_id)
+        ):
+            return PlanningOutcome("DENIED", None, "foreign tenant identifier")
+        if gate_request is None or gate_request.operation_id != command.command_id.value:
+            return PlanningOutcome("DENIED", None, "HOLD: exact deployment entitlement required")
+        gate = PostgresDeploymentGate(connection, self.tenant.value, self._authenticate_entitlement)
+        payload = command_bytes(command)
+        try:
+            fresh = gate.require(gate_request, "planning.create", payload)
+        except PermissionError as error:
+            return PlanningOutcome("DENIED", None, str(error))
+        repository = PostgresPlanningRepository(self.database, self.tenant, connection)
+        outcome = _PlanningUseCase(repository, _TrustBridge(trust)).execute(context, command)
+        if outcome.disposition == "COMMITTED":
+            if not fresh:
+                raise RuntimeError("recorded deployment handoff has no committed planning batch")
+            gate.crossed(gate_request, payload)
+        return outcome
 
     async def render(
         self,
