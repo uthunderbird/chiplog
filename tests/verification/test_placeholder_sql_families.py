@@ -6,11 +6,17 @@ import pytest
 
 from chiplog.platform._sqlite import SCHEMA_SQL
 from chiplog.verification.placeholder_sql_families import (
+    PlaceholderSqlFamily,
     UnknownPlaceholderSql,
     extract_placeholder_sql_families,
     prepare_placeholder_sql_family,
 )
-from chiplog.verification.sqlite_preparation import UnregisteredSqlAccess, verify_sql_actions
+from chiplog.verification.sqlite_preparation import (
+    SqlAction,
+    SqlPreparation,
+    UnregisteredSqlAccess,
+    verify_sql_actions,
+)
 
 ROOT = Path(__file__).resolve().parents[2] / "src/chiplog"
 TABLES = (
@@ -25,6 +31,8 @@ TABLES = (
 OBJECTS = tuple(("table", name) for name in TABLES) + tuple(
     ("index", "sqlite_autoindex_" + name + "_1") for name in TABLES if name != "store_metadata"
 )
+type PlaceholderCase = tuple[str, str, int, str, str, int, tuple[str, ...]]
+
 CASES = (
     (
         "adapters/driven/planning_sqlite.py",
@@ -83,20 +91,20 @@ CASES = (
 )
 
 
-def _extract(case, source=None):
+def _extract(case: PlaceholderCase, source: str | None = None) -> tuple[PlaceholderSqlFamily, ...]:
     path, qualname, *_ = case
     return extract_placeholder_sql_families(
         (ROOT / path).read_text() if source is None else source, qualname
     )
 
 
-def _prepare(family):
+def _prepare(family: PlaceholderSqlFamily) -> tuple[tuple[int, SqlPreparation], ...]:
     return prepare_placeholder_sql_family(
         family, schema_sql=SCHEMA_SQL, registered_objects=OBJECTS, foreign_keys=True
     )
 
 
-def _expected(case, n):
+def _expected(case: PlaceholderCase, n: int) -> tuple[SqlAction, ...]:
     path, *_, columns = case
     extra = (
         ("schema_id",)
@@ -112,7 +120,9 @@ def _expected(case, n):
     # Empty IN makes the whole WHERE false before SQLite authorizes predicates;
     # output expressions remain authorized, but tenant/schema filters disappear.
     columns = tuple(column for column in columns if n or column != "tenant_id")
-    actions = [("READ", "records", column, "main", None) for column in (*columns, *extra)]
+    actions: list[SqlAction] = [
+        ("READ", "records", column, "main", None) for column in (*columns, *extra)
+    ]
     actions.append(("SELECT", None, None, None, None))
     if path.endswith("r14_recovery_profile_publication.py"):
         actions.append(("FUNCTION", None, "min", None, None))
@@ -122,7 +132,9 @@ def _expected(case, n):
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case[1])
-def test_actual_six_families_bind_exact_generator_and_parameter_source(case) -> None:
+def test_actual_six_families_bind_exact_generator_and_parameter_source(
+    case: PlaceholderCase,
+) -> None:
     (family,) = _extract(case)
     assert (
         family.qualname,
@@ -141,7 +153,7 @@ def test_actual_six_families_bind_exact_generator_and_parameter_source(case) -> 
         verify_sql_actions(statement.actions, _expected(case, n))
 
 
-def _replace(source, old, new):
+def _replace(source: str, old: str, new: str) -> str:
     assert source.count(old) == 1
     return source.replace(old, new)
 

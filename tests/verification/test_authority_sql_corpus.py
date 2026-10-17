@@ -8,6 +8,7 @@ import pytest
 
 from chiplog.verification.authority_sql_corpus import (
     CorpusInventoryChanged,
+    CurrentSqlCorpus,
     UnresolvedSqlCorpus,
     current_sql_corpus,
     inspect_sources,
@@ -31,7 +32,7 @@ async def open_example(database):
 """
 
 
-def _inspect(source=SOURCE):
+def _inspect(source: str = SOURCE) -> CurrentSqlCorpus:
     return inspect_sources((("src/chiplog/sample.py", source),))
 
 
@@ -64,7 +65,7 @@ def test_blank_lines_preserve_identity_and_identical_calls_remain_distinct() -> 
     assert calls[0].shape_sha256 == calls[1].shape_sha256
     assert original.source_digests != spaced.source_digests
     with pytest.raises(FrozenInstanceError):
-        calls[0].ordinal = 99
+        calls[0].__setattr__("ordinal", 99)
 
 
 @pytest.mark.parametrize("change", ["add_mount", "remove_mount", "remove_site", "change_binding"])

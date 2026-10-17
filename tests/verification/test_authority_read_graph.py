@@ -33,7 +33,7 @@ RECORD_COLUMNS = (
 )
 
 
-def _expected():
+def _expected() -> tuple[StatementReads, ...]:
     publications = tuple(("main", "publications", column) for column in PUBLICATION_COLUMNS)
     selection = tuple(
         ("main", "publications", column)
@@ -58,7 +58,7 @@ def _expected():
     )
 
 
-def _replace(source, before, after):
+def _replace(source: str, before: str, after: str) -> str:
     assert source.count(before) == 1
     return source.replace(before, after)
 
@@ -83,6 +83,7 @@ def test_predicate_subquery_changes_extracted_business_edges() -> None:
         if isinstance(node, ast.FunctionDef) and node.name == "_execute_planning_read"
     ]
     segment = ast.get_source_segment(source, leaf)
+    assert segment is not None
     changed_segment = _replace(
         segment,
         '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "',
@@ -110,7 +111,7 @@ def test_ghost_edge_and_omitted_branch_are_not_registered() -> None:
 
 
 @pytest.mark.parametrize("mutation", ["dynamic", "forward", "conditional", "rebind"])
-def test_unsupported_expression_or_lexical_binding_refuses(mutation) -> None:
+def test_unsupported_expression_or_lexical_binding_refuses(mutation: str) -> None:
     source = SOURCE.read_text()
     if mutation == "dynamic":
         changed = _replace(
@@ -157,7 +158,7 @@ def test_identical_sql_at_distinct_sites_has_independent_callbacks() -> None:
     assert first == repeated == [_expected()[1].reads, _expected()[2].reads]
 
 
-def _replace_first_query(source, sql):
+def _replace_first_query(source: str, sql: str) -> str:
     old = (
         '"SELECT 1 FROM publications WHERE tenant_id = ? "\n'
         '            "GROUP BY commit_sequence HAVING COUNT(*) > 1 LIMIT 1"'
@@ -202,7 +203,7 @@ def test_schema_preparation_cannot_attach_and_create_external_file(tmp_path: Pat
         "BEGIN",
     ],
 )
-def test_shared_engine_permissions_do_not_broaden_planning_read_policy(sql) -> None:
+def test_shared_engine_permissions_do_not_broaden_planning_read_policy(sql: str) -> None:
     changed = _replace_first_query(SOURCE.read_text(), sql)
     with pytest.raises(UnknownSqlExpression, match="prepare completely"):
         planning_read_graph(changed, SCHEMA_SQL)
@@ -215,7 +216,7 @@ def test_shared_engine_permissions_do_not_broaden_planning_read_policy(sql) -> N
         "CREATE TABLE store_metadata AS SELECT 1 AS singleton, 1 AS store_version;",
     ],
 )
-def test_supplied_schema_rejects_business_dml_and_select(tail) -> None:
+def test_supplied_schema_rejects_business_dml_and_select(tail: str) -> None:
     if tail.startswith("INSERT"):
         schema = SCHEMA_SQL + tail
     else:
@@ -239,7 +240,7 @@ def test_supplied_schema_rejects_business_dml_and_select(tail) -> None:
         "SELECT record_id FROM records; SELECT tenant_id FROM records",
     ],
 )
-def test_incomplete_preparation_or_denied_action_never_returns_partial_graph(sql) -> None:
+def test_incomplete_preparation_or_denied_action_never_returns_partial_graph(sql: str) -> None:
     changed = _replace_first_query(SOURCE.read_text(), sql)
     with pytest.raises(UnknownSqlExpression, match="prepare completely"):
         planning_read_graph(changed, SCHEMA_SQL)
@@ -254,7 +255,9 @@ def test_incomplete_preparation_or_denied_action_never_returns_partial_graph(sql
         '(scope_sql := " ")',
     ],
 )
-def test_unsupported_rebinding_of_sql_local_is_not_resolved_from_first_assignment(store) -> None:
+def test_unsupported_rebinding_of_sql_local_is_not_resolved_from_first_assignment(
+    store: str,
+) -> None:
     changed = _replace(
         SOURCE.read_text(),
         "        publication_sql = (",
@@ -271,7 +274,7 @@ def test_unsupported_rebinding_of_sql_local_is_not_resolved_from_first_assignmen
         "connection.execute(publication_sql) if operation.variant else None",
     ],
 )
-def test_nested_or_conditional_execution_is_not_a_direct_statement(expression) -> None:
+def test_nested_or_conditional_execution_is_not_a_direct_statement(expression: str) -> None:
     changed = _replace(
         SOURCE.read_text(),
         "        duplicate_sequence = connection.execute(\n",

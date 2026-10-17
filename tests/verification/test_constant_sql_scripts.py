@@ -55,12 +55,12 @@ CASES = (
 
 @pytest.mark.parametrize("relative,qualname,symbol,site,receiver,digest", CASES)
 def test_actual_script_constant_and_consumer_identity(
-    relative,
-    qualname,
-    symbol,
-    site,
-    receiver,
-    digest,
+    relative: str,
+    qualname: str,
+    symbol: str,
+    site: int,
+    receiver: str,
+    digest: str,
 ) -> None:
     source = (ROOT / relative).read_text()
     (script,) = extract_constant_sql_scripts(source, qualname, symbol)
@@ -139,7 +139,7 @@ BASE = 'SQL = "CREATE TABLE a(x);"\ndef use(connection):\n    connection.execute
         BASE.replace('SQL = "CREATE TABLE a(x);"', 'if condition:\n    SQL = "CREATE TABLE a(x);"'),
     ),
 )
-def test_unknown_binding_expression_or_frame_refuses(source) -> None:
+def test_unknown_binding_expression_or_frame_refuses(source: str) -> None:
     with pytest.raises(UnknownConstantSql):
         extract_constant_sql_scripts(source, "use", "SQL")
 

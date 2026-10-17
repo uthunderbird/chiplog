@@ -9,6 +9,8 @@ import pytest
 from chiplog.platform._sqlite import SCHEMA_SQL
 from chiplog.verification.cutoff_sql_families import UnknownCutoffSql, extract_h1_cutoff_sql
 from chiplog.verification.sqlite_preparation import (
+    SqlAction,
+    SqlPreparation,
     UnregisteredSqlAccess,
     observe_statement,
     verify_sql_actions,
@@ -46,7 +48,7 @@ COLUMNS = (
 )
 
 
-def _expected(index):
+def _expected(index: int) -> tuple[SqlAction, ...]:
     table, columns = COLUMNS[index]
     return tuple(
         sorted(
@@ -58,13 +60,13 @@ def _expected(index):
     )
 
 
-def _prepare(sql):
+def _prepare(sql: str) -> SqlPreparation:
     return observe_statement(
         sql, registered_schema_sql=SCHEMA_SQL, registered_objects=OBJECTS, foreign_keys=True
     )
 
 
-def _replace(source, old, new):
+def _replace(source: str, old: str, new: str) -> str:
     assert source.count(old) == 1
     return source.replace(old, new)
 

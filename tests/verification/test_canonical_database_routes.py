@@ -14,14 +14,14 @@ from chiplog.verification.canonical_database_routes import (
 ROOT = Path(__file__).resolve().parents[2] / "src/chiplog"
 
 
-def _sources():
+def _sources() -> tuple[str, str]:
     return (
         (ROOT / "composition/r7_planning.py").read_text(),
         (ROOT / "platform/r7_leaves.py").read_text(),
     )
 
 
-def _replace(source, old, new):
+def _replace(source: str, old: str, new: str) -> str:
     assert source.count(old) == 1
     return source.replace(old, new)
 
