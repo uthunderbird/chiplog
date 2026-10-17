@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, create_autospec
 
 import pytest
 
@@ -30,6 +32,8 @@ from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
 )
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
+from chiplog.composition import r14_loop_semantic_reduction_publication as publication
+from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 from chiplog.composition.r14_accepted_open_accounting_publication import (
     _reduction_matches_current_evidence,
     _reduction_matches_resolution,
@@ -635,3 +639,44 @@ def test_selection_prefix_rejects_rewritten_or_truncated_history() -> None:
     assert _selection_prefix(prior, (*prior, ("decision-b", b"entry-b", {}, "batch-b")))
     assert not _selection_prefix(prior, (("decision-a", b"changed", {}, "batch-a"),))
     assert not _selection_prefix(prior, ())
+
+
+@pytest.mark.asyncio
+async def test_semantic_replay_returns_retained_preparation_without_owner_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise real retained decoding; doubles do not establish durable authority."""
+    evidence = retained()
+    batch = publication.command(evidence)
+    entry = {
+        "operation_kind": publication.OPERATION,
+        "operation_id": batch.idempotency_key,
+        "fingerprint": batch.request_fingerprint,
+        "expected_head": batch.expected_head,
+        "predecessor": evidence.predecessor,
+        "resulting": "e" * 64,
+        publication.EVIDENCE_FIELD: evidence.canonical_bytes().decode(),
+    }
+    selected = ("selected-reduction", b"retained-decision", entry, batch)
+    runtime = create_autospec(CommonCliExecutionRuntime, instance=True)
+    runtime._tenant_id = evidence.tenant_id
+    runtime._database_identity = (evidence.database_id, 0, 0)
+    runtime._authority_gate.return_value.hold.return_value = nullcontext()
+    selection = Mock(return_value=[selected])
+    finish = AsyncMock(return_value=evidence.prepared)
+    owner_exchange = AsyncMock(side_effect=AssertionError("replay must not prepare again"))
+    monkeypatch.setattr(publication, "_selected_entries", selection)
+    monkeypatch.setattr(publication, "_finish", finish)
+    monkeypatch.setattr(publication, "capture_request", lambda _runtime: evidence.request)
+    monkeypatch.setattr(
+        publication, "validate_loop_semantic_reduction_startup", lambda _runtime: None
+    )
+    monkeypatch.setattr(publication, "_owner_exchange", owner_exchange)
+
+    result = await publication.publish_loop_semantic_reduction(runtime)
+
+    finish.assert_awaited_once_with(runtime, entry)
+    assert selection.call_count == 2
+    owner_exchange.assert_not_awaited()
+    assert isinstance(result, PreparedLoopSemanticReduction)
+    assert result == evidence.prepared

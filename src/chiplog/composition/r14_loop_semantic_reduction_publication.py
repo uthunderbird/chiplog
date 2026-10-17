@@ -358,7 +358,9 @@ def _validate_physical_catalog(runtime, batches):
         raise ValueError("semantic reduction physical catalog differs from selection")
 
 
-def _selected_value(runtime, selected):
+def _selected_value(
+    runtime: OriginalResolutionHistoryRuntime, selected: SelectedEntry
+) -> tuple[RetainedLoopSemanticReductionPublication, SelectedLoopSemanticReduction]:
     decision_id, decision_raw, entry, batch = selected
     evidence = validate_selected_command(runtime, entry, batch)
     raw = decision_raw.encode() if isinstance(decision_raw, str) else decision_raw
@@ -681,12 +683,12 @@ async def publish_loop_semantic_reduction(
         request = capture_request(runtime)
         if selected_before:
             latest = selected_before[-1]
-            _, current_reduction = _selected_value(runtime, latest)
+            selected_evidence, current_reduction = _selected_value(runtime, latest)
             current_evidence = tuple(
                 source.physical_record for source in request.complete_ordered_evidence
             )
             if current_reduction.record.complete_ordered_evidence == current_evidence:
-                return current_reduction
+                return selected_evidence.prepared
         predecessor = runtime._commitment_journal.load(runtime._tenant_id)
         if predecessor != request.materialization_commitment:
             raise LoopRejected("semantic reduction predecessor differs from current source cut")

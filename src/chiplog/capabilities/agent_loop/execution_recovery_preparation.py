@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
@@ -117,6 +118,11 @@ from .successor_record_contracts import (
     _validate_admitted_successor_source,
 )
 
+if TYPE_CHECKING:
+    from typing import Literal
+
+    from .execution_history_contracts import ExecutionRunRecordV3
+
 _RUN = "chiplog.agent-loop.execution-record.v2"
 _SEAL = "chiplog.call.response-seal.v1"
 _INITIALIZED = "chiplog.call.initialized.v1"
@@ -143,7 +149,7 @@ def _record[T: RecoveryDTO](source: RecoverySourceRecord, type_: type[T]) -> T:
     return value
 
 
-def _run_ref(run: ExecutionRunRecord) -> CallSubjectHead:
+def _run_ref(run: ExecutionRunRecord | ExecutionRunRecordV3) -> CallSubjectHead:
     return CallSubjectHead(
         subject_id=run.run_id,
         revision=Present(head=run.head, fingerprint=run.digest()),
@@ -2117,6 +2123,7 @@ def classify_execution_resume_rejection(
     """Describe a failed resume preparation without authorizing a transition."""
     if rejected.command_id != request.command_id:
         raise ValueError("resume rejection belongs to another command")
+    disposition: Literal["RECOVERY_HOLD", "TERMINAL_RECOVERY_FAULT"]
     if rejected.code == "HOLD":
         disposition = "RECOVERY_HOLD"
         reason = "RESUME_FRONTIER_UNSUPPORTED_OR_INCOMPLETE"
@@ -2138,7 +2145,7 @@ def classify_execution_resume(
     if isinstance(result, PreparedExecutionResume):
         if result.source_request_fingerprint != request.digest():
             raise ValueError("prepared resume belongs to another request")
-        disposition = "SAME_RUN"
+        disposition: Literal["SAME_RUN"] = "SAME_RUN"
         reason = "EXACT_SAME_RUN_FRONTIER_PREPARED"
         return ExecutionRecoveryClassified(
             source_request_fingerprint=request.digest(),

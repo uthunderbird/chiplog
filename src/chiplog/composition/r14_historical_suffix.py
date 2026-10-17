@@ -5,10 +5,20 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from typing import TYPE_CHECKING
 
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
+
+if TYPE_CHECKING:
+    from chiplog.composition.r14_accepted_open_accounting_records import (
+        RetainedAcceptedOpenAccountingPublication,
+        RetainedAcceptedOpenRecoveryPublication,
+    )
+    from chiplog.composition.r14_execution_suspension import RetainedExecutionSuspension
+    from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 _SUFFIX_OPERATIONS = frozenset(
     {
@@ -276,7 +286,12 @@ def native_open_physical_execution_history_held(
     return _materialized_native_open_run_history_held(runtime, connection, snapshot=snapshot)
 
 
-def _materialized_native_open_run_history_held(runtime, connection, *, snapshot):
+def _materialized_native_open_run_history_held(
+    runtime: R14PlanningRuntime,
+    connection: sqlite3.Connection,
+    *,
+    snapshot: ExecutionHistorySnapshot,
+) -> ExecutionHistorySnapshot:
     """Project Runs only after the caller proves complete selected membership.
 
     The canonical outer OPEN fold must authenticate every omitted pending member
@@ -299,7 +314,7 @@ def _materialized_native_open_run_history_held(runtime, connection, *, snapshot)
     ).fetchone()
     if head is None or snapshot.tenant_head != head[0]:
         raise ValueError("OPEN physical history frontier differs from the current cut")
-    schemas = {
+    schemas: dict[type[RunRecord] | type[ExecutionRunRecord] | type[ExecutionRunRecordV3], str] = {
         RunRecord: SCHEMA,
         ExecutionRunRecord: EXECUTION_RUN_V2_SCHEMA,
         ExecutionRunRecordV3: EXECUTION_RUN_V3_SCHEMA,
@@ -331,6 +346,11 @@ def authenticate_selected_open_prefix_held(runtime, actual, anchored):
         return False
     entry = pending[0]
     operation = entry.get("operation_kind")
+    evidence: (
+        RetainedAcceptedOpenAccountingPublication
+        | RetainedAcceptedOpenRecoveryPublication
+        | RetainedExecutionSuspension
+    )
     if operation == records.ACCEPTED_OPEN_ACCOUNTING_OPERATION:
         evidence = records.retained_accepted_open_accounting(entry)
         command = records.accepted_open_accounting_command(evidence)
@@ -584,8 +604,8 @@ def _validate_native_suffix_loop_command(runtime, entry, command) -> None:
             retained_accepted_direct_terminal,
         )
 
-        evidence = retained_accepted_direct_terminal(entry)
-        expected = accepted_direct_terminal_command(evidence)
+        direct_evidence = retained_accepted_direct_terminal(entry)
+        expected = accepted_direct_terminal_command(direct_evidence)
     elif operation == "agent_loop.native-sealed-accounting.v3":
         from chiplog.composition.r14_native_accounting_records import (
             NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION,
@@ -598,27 +618,27 @@ def _validate_native_suffix_loop_command(runtime, entry, command) -> None:
 
         if operation != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION:
             raise ValueError("native suffix V3 operation is unregistered")
-        evidence = retained_selected_native_sealed_accounting_v3(entry)
-        validate_retained_sealed_accounting_v3_publication(evidence)
-        expected = sealed_accounting_v3_command(evidence)
+        sealed_evidence = retained_selected_native_sealed_accounting_v3(entry)
+        validate_retained_sealed_accounting_v3_publication(sealed_evidence)
+        expected = sealed_accounting_v3_command(sealed_evidence)
     elif operation == "agent_loop.accepted-open-accounting.v1":
         from chiplog.composition.r14_accepted_open_accounting_records import (
             accepted_open_accounting_command,
             retained_accepted_open_accounting,
         )
 
-        evidence = retained_accepted_open_accounting(entry)
-        expected = accepted_open_accounting_command(evidence)
-        source_commitment = evidence.request.cut.materialization_commitment
+        open_accounting_evidence = retained_accepted_open_accounting(entry)
+        expected = accepted_open_accounting_command(open_accounting_evidence)
+        source_commitment = open_accounting_evidence.request.cut.materialization_commitment
     elif operation == "agent_loop.accepted-open-recovery.v1":
         from chiplog.composition.r14_accepted_open_accounting_records import (
             accepted_open_recovery_command,
             retained_accepted_open_recovery,
         )
 
-        evidence = retained_accepted_open_recovery(entry)
-        expected = accepted_open_recovery_command(evidence)
-        source_commitment = evidence.request.cut.materialization_commitment
+        open_recovery_evidence = retained_accepted_open_recovery(entry)
+        expected = accepted_open_recovery_command(open_recovery_evidence)
+        source_commitment = open_recovery_evidence.request.cut.materialization_commitment
     elif operation == "agent_loop.native-one-call-cancelled-accounting.v1":
         from pydantic import TypeAdapter
 
@@ -632,11 +652,11 @@ def _validate_native_suffix_loop_command(runtime, entry, command) -> None:
             R14NativeExecutionRecordSourceManifest,
         )
 
-        evidence = retained_selected_native_accounting(entry)
+        cancelled_evidence = retained_selected_native_accounting(entry)
         source = TypeAdapter(R14NativeExecutionRecordSourceManifest).validate_json(
-            evidence.physical_source_bytes
+            cancelled_evidence.physical_source_bytes
         )
-        expected, envelope = _native_one_call_accounting_artifacts(evidence, source)
+        expected, envelope = _native_one_call_accounting_artifacts(cancelled_evidence, source)
         if entry.get("native_one_call_accounting_envelope") != envelope.canonical_bytes().decode():
             raise ValueError("native suffix cancellation accounting envelope differs")
         source_commitment = source.source_stamp.authority_materialization_commitment
@@ -946,8 +966,11 @@ def validate_native_terminal_suffix_semantics(
             if intent_id not in allowed_intent_ids:
                 raise ValueError("native terminal suffix dispatch belongs to another seal")
         elif batch.operation in ("effects.record_evidence", "effects.reconcile"):
-            issuance = validate_outcome_issuance(batch, runtime)
-            if issuance.request.original_send.snapshot.intent.intent_id not in allowed_intent_ids:
+            outcome_issuance = validate_outcome_issuance(batch, runtime)
+            if (
+                outcome_issuance.request.original_send.snapshot.intent.intent_id
+                not in allowed_intent_ids
+            ):
                 raise ValueError("native terminal suffix outcome belongs to another seal")
         elif batch.operation == "dispatch.consume_effect_send":
             from chiplog.composition.r16_dispatch_outbox import ConsumeRequest

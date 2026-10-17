@@ -60,6 +60,8 @@ from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
+    from typing import Literal
+
     from chiplog.capabilities.agent_loop.execution_run_versions import ExecutionRun
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
     from chiplog.composition.r14_runtime import R14PlanningRuntime
@@ -517,7 +519,7 @@ async def drive_successor(
             if start_entry is not None:
                 started = await _finish_start(runtime, start_entry[2])
                 return started.result.run
-            return await _publish_start(runtime, peer, source_evidence)
+            return (await _publish_start(runtime, peer, source_evidence)).result.run
 
         if admitted is None:
             raise LoopRejected("selected admitted CLI input is required for a new successor")
@@ -687,7 +689,7 @@ async def _publish_batch(
 ):
     driver_request = DriveInputRequestV1.model_validate_json(evidence.driver_request_bytes)
 
-    def guard():
+    def guard() -> Literal["STALE"] | None:
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(actor)
@@ -727,7 +729,7 @@ async def _publish_batch(
                 return "STALE"
         return None
 
-    def decide(resulting):
+    def decide(resulting: str) -> None:
         with runtime._authority_gate().hold():
             guard_result = guard()
             if guard_result is not None or not resulting:
@@ -767,7 +769,9 @@ async def _publish_batch(
     await _finish_batch(runtime, selected[2])
 
 
-async def _publish_start(runtime, peer, source_evidence):
+async def _publish_start(
+    runtime, peer: str, source_evidence: RetainedExecutionSuccessor
+) -> RetainedExecutionSuccessorStart:
     """Prepare and publish the distinct evidence-bound CREATED -> ACTIVE step."""
     created = source_evidence.result.successor_run
     operation_id = f"execution-successor-start:{created.run_id}:{created.head}"
@@ -816,7 +820,7 @@ async def _publish_start(runtime, peer, source_evidence):
     batch = _start_command(evidence)
     predecessor = snapshot
 
-    def guard():
+    def guard() -> Literal["STALE"] | None:
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(actor)
@@ -839,7 +843,7 @@ async def _publish_start(runtime, peer, source_evidence):
                 return "STALE"
         return None
 
-    def decide(resulting):
+    def decide(resulting: str) -> None:
         with runtime._authority_gate().hold():
             if guard() is not None or not resulting:
                 raise LoopRejected("successor start source changed at transaction guard")
