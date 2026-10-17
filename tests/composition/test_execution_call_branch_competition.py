@@ -141,29 +141,33 @@ async def _initialized_branch(
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
     )
-    response = ExecutionContinue(
-        kind="Continue",
-        tool_calls=(
-            (
-                ConsequentialToolCall(
-                    call_id="sibling",
-                    tool="request_self_effect",
-                    arguments=SelfEffectArguments(
-                        payload=b"sibling", bundle_members=("sibling-member",)
+    response = (
+        ExecutionContinue(
+            kind="Continue",
+            tool_calls=(
+                (
+                    ConsequentialToolCall(
+                        call_id="sibling",
+                        tool="request_self_effect",
+                        arguments=SelfEffectArguments(
+                            payload=b"sibling", bundle_members=("sibling-member",)
+                        ),
                     ),
-                ),
+                )
+                if with_sibling_effect
+                else ()
             )
-            if with_sibling_effect
-            else ()
-        )
-        + (
-            ConsequentialToolCall(
-                call_id="effect",
-                tool="request_self_effect",
-                arguments=SelfEffectArguments(payload=b"branch", bundle_members=("one",)),
+            + (
+                ConsequentialToolCall(
+                    call_id="effect",
+                    tool="request_self_effect",
+                    arguments=SelfEffectArguments(payload=b"branch", bundle_members=("one",)),
+                ),
             ),
-        ),
-    ).model_dump_json().encode()
+        )
+        .model_dump_json()
+        .encode()
+    )
     async with open_common_cli_execution_runtime(
         database, resources=resources, responses=(response,)
     ) as runtime:
@@ -252,8 +256,7 @@ def _selected_members(
     decisions = tuple(
         item
         for item in _decision_entries(runtime)
-        if item["kind"] == "DECIDED"
-        and item["operation_kind"] == EXECUTION_CANCELLATION_OPERATION
+        if item["kind"] == "DECIDED" and item["operation_kind"] == EXECUTION_CANCELLATION_OPERATION
     )
     assert len(decisions) == 1
     records = decisions[0]["records"]
@@ -273,16 +276,20 @@ async def test_selected_unmaterialized_cross_family_winner_recovers_before_rival
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, winner: str
 ) -> None:
     """A selected but uncommitted winner excludes its rival through restart."""
-    response = ExecutionContinue(
-        kind="Continue",
-        tool_calls=(
-            ConsequentialToolCall(
-                call_id="effect",
-                tool="request_self_effect",
-                arguments=SelfEffectArguments(payload=b"branch", bundle_members=("one",)),
+    response = (
+        ExecutionContinue(
+            kind="Continue",
+            tool_calls=(
+                ConsequentialToolCall(
+                    call_id="effect",
+                    tool="request_self_effect",
+                    arguments=SelfEffectArguments(payload=b"branch", bundle_members=("one",)),
+                ),
             ),
-        ),
-    ).model_dump_json().encode()
+        )
+        .model_dump_json()
+        .encode()
+    )
     async with _initialized_branch(tmp_path) as branch:
         runtime = branch.runtime
         preview = await runtime.preview_call_acceptance("hermetic-ingress", branch.target)

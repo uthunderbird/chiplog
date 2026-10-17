@@ -94,7 +94,9 @@ async def test_real_effects_ipc_unlocked_and_run_mutation_rejects(
             assert isinstance(result, JournalSelectedPublication)
             assert result.kind == "COMMITTED"
             assert {record.owner for record in result.complete_records} == {
-                "planning", "effects", "broker_ingress"
+                "planning",
+                "effects",
+                "broker_ingress",
             }
         assert len(observed) == 1
         assert observed[0][1].request_id == observed[0][0].request_id

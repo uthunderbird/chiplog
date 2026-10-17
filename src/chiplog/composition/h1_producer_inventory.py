@@ -402,9 +402,7 @@ class H1ProducerInventoryReader:
             or observed_time_ns < policy.terms.not_before_ns
             or observed_time_ns < grant.scope.mandate.not_before_ns
         ):
-            raise H1ProducerInventoryViolation(
-                "H1 producer pinned observation time is invalid"
-            )
+            raise H1ProducerInventoryViolation("H1 producer pinned observation time is invalid")
         sessions = self._sessions_held()
         if (
             physical.worker.owner_session != sessions[1]

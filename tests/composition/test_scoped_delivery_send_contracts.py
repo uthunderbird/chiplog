@@ -452,9 +452,12 @@ async def test_terminal_receipt_requires_its_original_first_transmission() -> No
     receipt = await _receipt()
     actual = receipt.first_send_child.record.transmission
     valid = _terminal_outcome(receipt, (actual,))
-    assert ScopedDeliverySendReceiptV3.model_validate(
-        receipt.model_copy(update={"outcome": valid}).model_dump()
-    ).outcome.kind == "CONFIRMED"
+    assert (
+        ScopedDeliverySendReceiptV3.model_validate(
+            receipt.model_copy(update={"outcome": valid}).model_dump()
+        ).outcome.kind
+        == "CONFIRMED"
+    )
 
     other = _terminal_outcome(receipt, (fixture_head("different-child"),))
     with pytest.raises(ValidationError):

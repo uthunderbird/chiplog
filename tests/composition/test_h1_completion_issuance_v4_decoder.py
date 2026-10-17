@@ -20,9 +20,12 @@ def _canonical(value: object) -> bytes:
 
 
 def test_v4_dispatch_accepts_only_its_matching_closed_outer_and_inner_schema() -> None:
-    assert issuance.dispatch_h1_completion_issuance_schema(
-        issuance.V4_SCHEMA, _canonical({"schema_id": issuance.V4_SCHEMA})
-    ) == "V4"
+    assert (
+        issuance.dispatch_h1_completion_issuance_schema(
+            issuance.V4_SCHEMA, _canonical({"schema_id": issuance.V4_SCHEMA})
+        )
+        == "V4"
+    )
 
     for outer, inner in (
         (issuance.V3_SCHEMA, issuance.V4_SCHEMA),
@@ -30,9 +33,7 @@ def test_v4_dispatch_accepts_only_its_matching_closed_outer_and_inner_schema() -
         (issuance.V4_SCHEMA, "chiplog.composition.h1-completion-issuance.v9"),
     ):
         with pytest.raises(ValueError, match="outer and inner"):
-            issuance.dispatch_h1_completion_issuance_schema(
-                outer, _canonical({"schema_id": inner})
-            )
+            issuance.dispatch_h1_completion_issuance_schema(outer, _canonical({"schema_id": inner}))
 
 
 @pytest.mark.parametrize(

@@ -45,8 +45,9 @@ async def test_same_read_derives_once_but_authenticates_both_actual_horizons(tmp
                 )
                 rows.append((identity, predecessor, raw, entry, command))
             cut = historical._make_authenticated_loop_decision_cut(runtime, rows)
-            (_, _, _, entry, physical), = (
-                row for row in rows
+            ((_, _, _, entry, physical),) = (
+                row
+                for row in rows
                 if row[3].get("kind") == "DECIDED"
                 and row[3].get("operation_kind") == publication.OPERATION
             )
@@ -69,16 +70,16 @@ async def test_same_read_derives_once_but_authenticates_both_actual_horizons(tmp
                 return original_authenticate(*args, **kwargs)
 
             def observe_read(runtime, selected_entry, selected_cut):
-                row = historical._recovery_derivation_row(
-                    runtime, selected_entry, selected_cut
-                )
+                row = historical._recovery_derivation_row(runtime, selected_entry, selected_cut)
                 key = row.decision_id, row.raw
-                cache_reads.append((
-                    id(selected_cut),
-                    key in selected_cut._recovery_derivations,
-                    len(selected_cut._recovery_derivations),
-                    hashlib.sha256(row.raw).hexdigest()[:12],
-                ))
+                cache_reads.append(
+                    (
+                        id(selected_cut),
+                        key in selected_cut._recovery_derivations,
+                        len(selected_cut._recovery_derivations),
+                        hashlib.sha256(row.raw).hexdigest()[:12],
+                    )
+                )
                 return original_read_derived(runtime, selected_entry, selected_cut)
 
             monkeypatch.setattr(publication, "command", counted)
@@ -89,7 +90,10 @@ async def test_same_read_derives_once_but_authenticates_both_actual_horizons(tmp
             )
             bounded = physical.expected_head + 1
             second = publication.validate_selected(
-                runtime, entry, physical, through_sequence=bounded,
+                runtime,
+                entry,
+                physical,
+                through_sequence=bounded,
                 authenticated_loop_decisions=cut,
             )
             assert horizons == [None, bounded]
@@ -101,32 +105,43 @@ async def test_same_read_derives_once_but_authenticates_both_actual_horizons(tmp
             assert original_command(first) == physical
             assert resources.require_original_provider().transfers == ()
             assert historical._read_cached_recovery_command(runtime, entry, first, cut) == physical
-            assert historical._read_cached_recovery_command(
-                runtime, entry, first.model_copy(), cut
-            ) is None
+            assert (
+                historical._read_cached_recovery_command(runtime, entry, first.model_copy(), cut)
+                is None
+            )
             with pytest.raises(ValueError):
                 publication.validate_selected(
-                    runtime, entry, replace(physical, request_fingerprint="0" * 64),
+                    runtime,
+                    entry,
+                    replace(physical, request_fingerprint="0" * 64),
                     authenticated_loop_decisions=cut,
                 )
             assert len(derived) == 1
             assert first.actor_budget_v1 is not None
             damaged_values = (
-                first.model_copy(update={
-                    "accounting_result": first.accounting_result.model_copy(
-                        update={"source_request_fingerprint": "0" * 64}
-                    )
-                }),
-                first.model_copy(update={
-                    "accounting_reply": first.accounting_reply.model_copy(
-                        update={"canonical_payload": b"{}"}
-                    )
-                }),
-                first.model_copy(update={
-                    "actor_budget_v1": first.actor_budget_v1.model_copy(update={
-                        "issued_monotonic_ns": first.actor_budget_v1.issued_monotonic_ns + 1
-                    })
-                }),
+                first.model_copy(
+                    update={
+                        "accounting_result": first.accounting_result.model_copy(
+                            update={"source_request_fingerprint": "0" * 64}
+                        )
+                    }
+                ),
+                first.model_copy(
+                    update={
+                        "accounting_reply": first.accounting_reply.model_copy(
+                            update={"canonical_payload": b"{}"}
+                        )
+                    }
+                ),
+                first.model_copy(
+                    update={
+                        "actor_budget_v1": first.actor_budget_v1.model_copy(
+                            update={
+                                "issued_monotonic_ns": first.actor_budget_v1.issued_monotonic_ns + 1
+                            }
+                        )
+                    }
+                ),
             )
             for damaged in damaged_values:
                 bad_entry = dict(
@@ -180,14 +195,14 @@ async def test_same_read_derives_once_but_authenticates_both_actual_horizons(tmp
             class CachePoisoningSource(NativeRecoveryCutSource):
                 def authenticate_selected_held(self, runtime, evidence, selected_entry, **kwargs):
                     received_cut = kwargs["authenticated_loop_decisions"]
-                    damaged = evidence.model_copy(update={
-                        "accounting_reply": evidence.accounting_reply.model_copy(
-                            update={"canonical_payload": b"{}"}
-                        )
-                    })
-                    row = historical._recovery_derivation_row(
-                        runtime, selected_entry, received_cut
+                    damaged = evidence.model_copy(
+                        update={
+                            "accounting_reply": evidence.accounting_reply.model_copy(
+                                update={"canonical_payload": b"{}"}
+                            )
+                        }
                     )
+                    row = historical._recovery_derivation_row(runtime, selected_entry, received_cut)
                     try:
                         received_cut._recovery_derivations[(row.decision_id, row.raw)] = (
                             damaged,
@@ -208,7 +223,10 @@ async def test_same_read_derives_once_but_authenticates_both_actual_horizons(tmp
             )
             assert callback_observations == ["cache-read-only"]
             bounded_evidence = publication.validate_selected(
-                runtime, entry, physical, through_sequence=bounded,
+                runtime,
+                entry,
+                physical,
+                through_sequence=bounded,
                 authenticated_loop_decisions=cut,
             )
             assert bounded_evidence is first
@@ -223,7 +241,8 @@ async def test_same_read_derives_once_but_authenticates_both_actual_horizons(tmp
             owner = runtime._owner_decisions()._raw
             owner_entries = owner.entries()
             marker = next(
-                json.loads(raw) for _, _, raw in reversed(owner_entries)
+                json.loads(raw)
+                for _, _, raw in reversed(owner_entries)
                 if json.loads(raw).get("kind") == "MATERIALIZED"
             )
             marker["decision_id"] = "missing-selected-decision"
@@ -233,7 +252,10 @@ async def test_same_read_derives_once_but_authenticates_both_actual_horizons(tmp
             )
             with pytest.raises(ValueError, match="unauthenticated"):
                 publication.validate_selected(
-                    runtime, entry, physical, through_sequence=bounded,
+                    runtime,
+                    entry,
+                    physical,
+                    through_sequence=bounded,
                     authenticated_loop_decisions=cut,
                 )
             assert horizons[-1] == bounded

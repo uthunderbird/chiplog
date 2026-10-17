@@ -123,8 +123,10 @@ def _exchange() -> tuple[
         schema_id="chiplog.deployment-trust.owner-result.v1",
         canonical_payload=b"\xffresult",
     )
-    return request, result, SimpleNamespace(
-        sent=sent, returned=returned, sent_at_ns=10, returned_at_ns=20
+    return (
+        request,
+        result,
+        SimpleNamespace(sent=sent, returned=returned, sent_at_ns=10, returned_at_ns=20),
     )
 
 

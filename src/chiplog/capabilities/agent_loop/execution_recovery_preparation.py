@@ -2069,7 +2069,8 @@ def prepare_execution_resume(
         ):
             raise RecoveryHold("resume Run, frozen baseline, or selected suspension differs")
         if request.disposition_version not in (
-            "r14-same-run-equality.v1", CURRENT_ACTOR_RESUME_DISPOSITION,
+            "r14-same-run-equality.v1",
+            CURRENT_ACTOR_RESUME_DISPOSITION,
         ):
             raise RecoveryHold("unsupported same-Run disposition version")
         if request.command_id != f"execution-resume:{current.run_id}:{current.head}":

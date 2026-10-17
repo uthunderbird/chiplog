@@ -138,9 +138,7 @@ def test_runtime_reader_rejects_clock_deadline_beyond_claim_lease(
     subject, runtime, joined_capture, _, clock, _, _ = _installed(monkeypatch)
     clock.valid_until = 51
     reader = subject.H1ScopedAuthorizationRuntimeReaderV1(runtime)
-    with pytest.raises(
-        subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="clock or claim"
-    ):
+    with pytest.raises(subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="clock or claim"):
         reader.read(joined_capture)
     assert len(clock.released) == 1
 
@@ -162,9 +160,12 @@ def test_runtime_reader_rejects_changed_claim_fence(
     reader = subject.H1ScopedAuthorizationRuntimeReaderV1(runtime)
     capture = reader.read(joined_capture)
     setattr(binding, field, "other" if field != "lease_expires_at_ns" else 51)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationRuntimeAndFenceHold,
-        match=r"sources changed|clock or claim",
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationRuntimeAndFenceHold,
+            match=r"sources changed|clock or claim",
+        ),
     ):
         reader.recheck_held(capture)
 
@@ -176,19 +177,22 @@ def test_runtime_reader_rejects_joined_change_backward_clock_and_forgery(
     reader = subject.H1ScopedAuthorizationRuntimeReaderV1(runtime)
     capture = reader.read(joined_capture)
     joined.changed = True
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="unavailable"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="unavailable"),
     ):
         reader.recheck_held(capture)
     joined.changed = False
     clock.now = 9
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="clock or claim"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="clock or claim"),
     ):
         reader.recheck_held(capture)
     forged = object.__new__(subject.H1ScopedAuthorizationRuntimeCaptureV1)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="not reader-issued"),
     ):
         reader.role_held(forged)
     with pytest.raises(TypeError, match="cannot be copied"):
@@ -205,12 +209,11 @@ def test_runtime_reader_rejects_selected_decision_or_physical_g1_substitution(
     setattr(
         claim,
         field,
-        SimpleNamespace(canonical_bytes=lambda: b"other physical g1")
-        if field == "g1"
-        else "other",
+        SimpleNamespace(canonical_bytes=lambda: b"other physical g1") if field == "g1" else "other",
     )
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="sources changed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="sources changed"),
     ):
         reader.recheck_held(capture)
 
@@ -223,14 +226,16 @@ def test_runtime_reader_releases_only_its_clock_capture_and_closes(
     capture = reader.read(joined_capture)
     reader.release(capture)
     assert len(clock.released) == 1
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="not reader-issued"),
     ):
         reader.role_held(capture)
     second = reader.read(joined_capture)
     reader.close()
     assert len(clock.released) == 2
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="reader is closed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationRuntimeAndFenceHold, match="reader is closed"),
     ):
         reader.role_held(second)

@@ -245,10 +245,7 @@ def _captured_scope(
         schema_id=record["schema_id"],
         record=ExactHead(
             identity="trust-record:" + decision_id + ":1",
-            head="trust-record:"
-            + decision_id
-            + ":1/"
-            + hashlib.sha256(record_raw).hexdigest(),
+            head="trust-record:" + decision_id + ":1/" + hashlib.sha256(record_raw).hexdigest(),
             fingerprint=hashlib.sha256(record_raw).hexdigest(),
         ),
         scope_revision=scope.revision,

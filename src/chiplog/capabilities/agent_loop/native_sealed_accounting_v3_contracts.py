@@ -26,9 +26,7 @@ NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA = (
 class PrepareNativeSealedAccountingV3(ExecutionRecoveryDTO):
     """Exact response seal selection and its complete ordered terminal members."""
 
-    kind: Literal["PREPARE_NATIVE_SEALED_ACCOUNTING_V3"] = (
-        "PREPARE_NATIVE_SEALED_ACCOUNTING_V3"
-    )
+    kind: Literal["PREPARE_NATIVE_SEALED_ACCOUNTING_V3"] = "PREPARE_NATIVE_SEALED_ACCOUNTING_V3"
     command_id: Identity
     selected_response: CallSubjectHead
     sealed_manifest_fingerprint: Digest
@@ -39,9 +37,7 @@ class PrepareNativeSealedAccountingV3(ExecutionRecoveryDTO):
 class PreparedNativeSealedAccountingV3(ExecutionRecoveryDTO):
     """Inert, exhaustive per-seal terminal accounting; grants no next-step authority."""
 
-    kind: Literal["PREPARED_NATIVE_SEALED_ACCOUNTING_V3"] = (
-        "PREPARED_NATIVE_SEALED_ACCOUNTING_V3"
-    )
+    kind: Literal["PREPARED_NATIVE_SEALED_ACCOUNTING_V3"] = "PREPARED_NATIVE_SEALED_ACCOUNTING_V3"
     source_request_fingerprint: Digest
     selected_response: CallSubjectHead
     sealed_manifest_fingerprint: Digest

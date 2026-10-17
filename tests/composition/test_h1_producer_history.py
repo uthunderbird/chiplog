@@ -197,9 +197,7 @@ def test_unknown_selected_schema_is_rejected_before_the_legacy_verifier(
         (lambda one, two: (one, two, _legacy("extra")), "outside selected"),
     ],
 )
-def test_selected_membership_and_order_are_complete(
-    rows: object, message: str
-) -> None:
+def test_selected_membership_and_order_are_complete(rows: object, message: str) -> None:
     first, second = _legacy("first"), _legacy("second")
     chosen = rows(first, second)  # type: ignore[operator]
     cut, journal = _history((first, second), rows=chosen)

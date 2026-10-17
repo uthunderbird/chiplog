@@ -239,9 +239,7 @@ async def test_scoped_root_fails_closed_before_local_recovery_or_finalization(
             def capture_must_not_run(*_args: object, **_kwargs: object) -> object:
                 raise AssertionError("SCOPED_V3 reached local recovery source capture")
 
-            async def finalization_must_not_run(
-                _authority: object, **_kwargs: object
-            ) -> object:
+            async def finalization_must_not_run(_authority: object, **_kwargs: object) -> object:
                 raise AssertionError("SCOPED_V3 reached finalization authority")
 
             monkeypatch.setattr(

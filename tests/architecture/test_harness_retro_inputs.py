@@ -86,6 +86,5 @@ def test_pin_counts_include_root_and_follow_last_committed_retro(tmp_path: Path)
     assert f"коммитов периода: 2   (git rev-list --count {base}..HEAD)" in current
     assert "retro_since=2" in _run_cadence(tmp_path)
     assert (
-        f"коммитов с R8 catalog: 1   "
-        f"(git rev-list --count {base}..HEAD -- {_CATALOG})"
+        f"коммитов с R8 catalog: 1   (git rev-list --count {base}..HEAD -- {_CATALOG})"
     ) in current

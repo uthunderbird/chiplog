@@ -220,18 +220,20 @@ class H1V3RecoveryHistoricalSource:
         if effects.effects_result is None:
             raise H1V3RecoveryHistoricalSourceError("V3 terminal source requires Effects result")
         try:
-            if type(effects.effects_request) is PrepareH1ScopedDeliveryV1 and type(
-                effects.effects_result
-            ) is PreparedH1ScopedDeliveryV1:
+            if (
+                type(effects.effects_request) is PrepareH1ScopedDeliveryV1
+                and type(effects.effects_result) is PreparedH1ScopedDeliveryV1
+            ):
                 request = build_h1_scoped_terminal_work_request(
                     completion_request=effects.original_completion_request,
                     completion_result=effects.prepared_completion,
                     effects_request=effects.effects_request,
                     effects_result=effects.effects_result,
                 )
-            elif type(effects.effects_request) is PrepareH1ScopedDeliveryV2 and type(
-                effects.effects_result
-            ) is PreparedH1ScopedDeliveryV2:
+            elif (
+                type(effects.effects_request) is PrepareH1ScopedDeliveryV2
+                and type(effects.effects_result) is PreparedH1ScopedDeliveryV2
+            ):
                 request = build_h1_scoped_v2_terminal_work_request(
                     completion_request=effects.original_completion_request,
                     completion_result=effects.prepared_completion,

@@ -97,8 +97,11 @@ def test_current_history_capture_is_reader_issued_rechecked_and_revoked(
         assert reader.role_held(capture).reader_id == "inert"
     reader.release(capture)
     assert len(clock.released) == 1
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationCurrentEffectsHistoryHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationCurrentEffectsHistoryHold, match="not reader-issued"
+        ),
     ):
         reader.role_held(capture)
 
@@ -109,22 +112,31 @@ def test_current_history_capture_rejects_forgery_and_close_revokes_clock(
     subject, runtime, joined_capture, clock, reader = _installed(monkeypatch)
 
     forged = object.__new__(subject.H1ScopedAuthorizationCurrentEffectsHistoryCaptureV1)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationCurrentEffectsHistoryHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationCurrentEffectsHistoryHold, match="not reader-issued"
+        ),
     ):
         reader.role_held(forged)
     foreign_reader = subject.H1ScopedAuthorizationCurrentEffectsHistoryReaderV1(runtime)
     foreign = foreign_reader.read(joined_capture)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationCurrentEffectsHistoryHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationCurrentEffectsHistoryHold, match="not reader-issued"
+        ),
     ):
         reader.role_held(foreign)
     foreign_reader.close()
     capture = reader.read(joined_capture)
     reader.close()
     assert len(clock.released) == 2
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationCurrentEffectsHistoryHold, match="reader is closed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationCurrentEffectsHistoryHold, match="reader is closed"
+        ),
     ):
         reader.role_held(capture)
 
@@ -190,9 +202,12 @@ def test_current_history_rejects_substituted_database_identity(
         lambda _: SimpleNamespace(**vars(source_member)),
     )
 
-    assert subject.H1ScopedAuthorizationCurrentEffectsHistoryReaderV1._require_joined_current_held(
-        runtime, cut, journal, selected, issuance, evidence
-    ) is claim
+    assert (
+        subject.H1ScopedAuthorizationCurrentEffectsHistoryReaderV1._require_joined_current_held(
+            runtime, cut, journal, selected, issuance, evidence
+        )
+        is claim
+    )
     substituted = SimpleNamespace(**(vars(cut) | {"physical_inode": 10}))
     with pytest.raises(ValueError, match="current materialized frontier differs"):
         subject.H1ScopedAuthorizationCurrentEffectsHistoryReaderV1._require_joined_current_held(
@@ -216,12 +231,18 @@ def test_material_reader_executes_joined_r16_and_physical_binding(
     runtime._owner_decisions = lambda: object()
     joined_capture, clock_capture = object(), object()
     record = SimpleNamespace(
-        record_id="intent", record_kind="ExternalActionIntent", schema_id="schema",
-        fingerprint="fingerprint", canonical_bytes=b"intent",
+        record_id="intent",
+        record_kind="ExternalActionIntent",
+        schema_id="schema",
+        fingerprint="fingerprint",
+        canonical_bytes=b"intent",
     )
     member = SimpleNamespace(
-        record_id="intent", record_kind="ExternalActionIntent", schema_id="schema",
-        fingerprint="fingerprint", canonical_record_bytes=b"intent",
+        record_id="intent",
+        record_kind="ExternalActionIntent",
+        schema_id="schema",
+        fingerprint="fingerprint",
+        canonical_record_bytes=b"intent",
     )
     source = SimpleNamespace(tenant_id="tenant", intent_id="intent", intent=member)
 
@@ -244,8 +265,12 @@ def test_material_reader_executes_joined_r16_and_physical_binding(
     journal = SimpleNamespace(head="journal", decisions=(selected, claim))
     cut = SimpleNamespace(
         rows=(SimpleNamespace(record=record, commit_sequence=4, publication_ordinal=0),),
-        tenant_id="tenant", owner_journal_head="journal", tenant_frontier=4,
-        materialization_commitment="commitment", physical_path="/database", physical_device=7,
+        tenant_id="tenant",
+        owner_journal_head="journal",
+        tenant_frontier=4,
+        materialization_commitment="commitment",
+        physical_path="/database",
+        physical_device=7,
         physical_inode=9,
     )
     evidence = SimpleNamespace(
@@ -270,9 +295,9 @@ def test_material_reader_executes_joined_r16_and_physical_binding(
         cut.materialization_commitment = "other"
     joined_calls: list[str] = []
     clock_calls: list[str] = []
-    effects = SimpleNamespace(selected=SimpleNamespace(selected_h1=SimpleNamespace(
-        decision=selected, issuance=_V4()
-    )))
+    effects = SimpleNamespace(
+        selected=SimpleNamespace(selected_h1=SimpleNamespace(decision=selected, issuance=_V4()))
+    )
     joined = SimpleNamespace(
         recheck_held=lambda value: (joined_calls.append("recheck"), value)[1],
         _issued_record_held=lambda _: SimpleNamespace(effects_capture="effects", evidence=evidence),

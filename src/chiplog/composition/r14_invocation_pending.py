@@ -55,16 +55,22 @@ def authenticate_selected_invocation_prefix_held(runtime, actual: str, anchored:
                 historical.execute("BEGIN")
                 if state == "COMPLETE":
                     for row in batch.records:
-                        if historical.execute(
-                            "DELETE FROM records WHERE tenant_id=? AND record_id=?",
-                            (runtime._tenant_id, row.record_id),
-                        ).rowcount != 1:
+                        if (
+                            historical.execute(
+                                "DELETE FROM records WHERE tenant_id=? AND record_id=?",
+                                (runtime._tenant_id, row.record_id),
+                            ).rowcount
+                            != 1
+                        ):
                             return False
-                    if historical.execute(
-                        "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
-                        "AND idempotency_key=?",
-                        (runtime._tenant_id, batch.operation_kind, batch.idempotency_key),
-                    ).rowcount != 1:
+                    if (
+                        historical.execute(
+                            "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
+                            "AND idempotency_key=?",
+                            (runtime._tenant_id, batch.operation_kind, batch.idempotency_key),
+                        ).rowcount
+                        != 1
+                    ):
                         return False
                     historical.execute(
                         "UPDATE tenant_heads SET head=? WHERE tenant_id=?",
@@ -110,5 +116,5 @@ def authenticate_selected_invocation_prefix_held(runtime, actual: str, anchored:
                     return False
         runtime._check_database_identity()
         return True
-    except (ValueError, TypeError, RuntimeError, OSError, sqlite3.Error):
+    except ValueError, TypeError, RuntimeError, OSError, sqlite3.Error:
         return False

@@ -382,9 +382,7 @@ def test_scheduler_rollover_crosses_owner_ipc_at_uint64_boundary() -> None:
         session="next-session",
         command_id="takeover-to-maximum",
     )
-    first_request = _lease_request(
-        predecessor, first, first_issued, submission_id="submission"
-    )
+    first_request = _lease_request(predecessor, first, first_issued, submission_id="submission")
     with AuthorityBrokerRuntime(
         "tenant", 1, "generation", R14_PRODUCTION_MANIFEST, b"secret"
     ) as runtime:
@@ -399,9 +397,7 @@ def test_scheduler_rollover_crosses_owner_ipc_at_uint64_boundary() -> None:
         assert first_result.request_id == "takeover-to-maximum"
         assert first_result.responder == runtime.session("agent_loop")
         assert first_result.schema_id == "chiplog.scheduler.prepared-lease.v1"
-        first_prepared = PreparedSchedulerRecord.model_validate_json(
-            first_result.canonical_payload
-        )
+        first_prepared = PreparedSchedulerRecord.model_validate_json(first_result.canonical_payload)
         assert first_prepared.canonical_bytes() == first_result.canonical_payload
         assert (
             hashlib.sha256(first_prepared.canonical_record_bytes).hexdigest()
@@ -537,9 +533,10 @@ def test_scheduler_rollover_crosses_owner_ipc_at_uint64_boundary() -> None:
         assert rollover_result.schema_id == "chiplog.scheduler.prepared-batch.v1"
         prepared = PreparedSchedulerBatch.model_validate_json(rollover_result.canonical_payload)
         assert prepared.canonical_bytes() == rollover_result.canonical_payload
-        assert prepared.source_request_fingerprint == hashlib.sha256(
-            rollover_request.canonical_bytes()
-        ).hexdigest()
+        assert (
+            prepared.source_request_fingerprint
+            == hashlib.sha256(rollover_request.canonical_bytes()).hexdigest()
+        )
         assert isinstance(prepared.result, RolloverCandidate)
         assert tuple(record.record_kind for record in prepared.records) == (
             "scheduler.rollover-decision",

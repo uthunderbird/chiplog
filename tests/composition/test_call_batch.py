@@ -31,7 +31,8 @@ from tests.support.acceptance_v2 import prepared_acceptance
     ],
 )
 def test_exact_batch_graph_rejects_resigned_companion_and_header_mutations(
-    mutation: str, monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     retained = prepared_acceptance(command_id="accept")
     loop, effects = retained.loop_request, retained.effects_request

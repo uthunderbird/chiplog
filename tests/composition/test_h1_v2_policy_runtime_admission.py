@@ -112,9 +112,12 @@ def _command(
     policy = _policy(runtime._tenant_id)
     payload = policy.canonical_bytes()
     fingerprint = _digest(payload)
-    policy_id = "workspace-policy:" + hashlib.sha256(
-        json.dumps([policy.tenant, policy.principal, policy.channel]).encode()
-    ).hexdigest()
+    policy_id = (
+        "workspace-policy:"
+        + hashlib.sha256(
+            json.dumps([policy.tenant, policy.principal, policy.channel]).encode()
+        ).hexdigest()
+    )
     record_id = policy_id + ":" + fingerprint
     return PhysicalPublicationCommand(
         tenant_id=runtime._tenant_id,

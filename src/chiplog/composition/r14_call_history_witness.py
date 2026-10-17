@@ -257,7 +257,8 @@ def capture_call_history_inputs(runtime: ExecutionDispatchRuntime) -> CallHistor
     journals = capture_call_history_journal_inputs(runtime)
     return (
         CallHistoryInputs(**vars(journals), authority_commitment=authority_commitment)
-        if journals is not None else None
+        if journals is not None
+        else None
     )
 
 

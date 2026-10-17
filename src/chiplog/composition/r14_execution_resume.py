@@ -116,8 +116,11 @@ def _prepare_resume_artifacts(request, result, call, reply) -> _ResumeArtifacts:
     request_raw = request.canonical_bytes()
     result_raw = result.canonical_bytes()
     if (
-        call.operation_id not in (
-            OWNER_OPERATION, OWNER_OBLIGATION_OPERATION, OWNER_CURRENT_ACTOR_OPERATION,
+        call.operation_id
+        not in (
+            OWNER_OPERATION,
+            OWNER_OBLIGATION_OPERATION,
+            OWNER_CURRENT_ACTOR_OPERATION,
         )
         or call.schema_id != "chiplog.execution.recovery-request.v1"
         or call.canonical_payload != request_raw
@@ -151,14 +154,22 @@ def _prepare_resume_artifacts(request, result, call, reply) -> _ResumeArtifacts:
     if classify_execution_resume(request, result).disposition != "SAME_RUN":
         raise ValueError("resume owner result does not classify as SAME_RUN")
     return _ResumeArtifacts(
-        request_raw, result_raw, call, reply, run_raw, result.run.head, command_id,
-        request.cut.tenant_id, request.cut.tenant_commit_sequence,
+        request_raw,
+        result_raw,
+        call,
+        reply,
+        run_raw,
+        result.run.head,
+        command_id,
+        request.cut.tenant_id,
+        request.cut.tenant_commit_sequence,
         request.cut.materialization_commitment,
     )
 
 
 def _bind_resume_artifacts(
-    evidence: RetainedExecutionResume, artifacts: _ResumeArtifacts,
+    evidence: RetainedExecutionResume,
+    artifacts: _ResumeArtifacts,
 ) -> PhysicalPublicationCommand:
     """Bind the actual fresh actor receipt to this invocation's immutable proof bytes."""
     validate_recovery_actor_budget(evidence.actor_budget_v1)
@@ -526,7 +537,8 @@ async def resume_execution(
                 cut=cut,
                 disposition_version=(
                     CURRENT_ACTOR_RESUME_DISPOSITION
-                    if current_actor else "r14-same-run-equality.v1"
+                    if current_actor
+                    else "r14-same-run-equality.v1"
                 ),
                 activation_payload=activation_payload,
                 fence=NonSchedulerFence(

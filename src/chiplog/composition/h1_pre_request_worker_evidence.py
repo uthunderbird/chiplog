@@ -284,9 +284,12 @@ class H1PreRequestWorkerEvidence:
             value["run"],
             value["worker_session_id"],
         ]
-        identity = "h1-evidence:worker:" + hashlib.sha256(
-            _canonical([_PROJECTION_DOMAIN, journal, "worker", worker_key])
-        ).hexdigest()
+        identity = (
+            "h1-evidence:worker:"
+            + hashlib.sha256(
+                _canonical([_PROJECTION_DOMAIN, journal, "worker", worker_key])
+            ).hexdigest()
+        )
         digest = hashlib.sha256(record.canonical_bytes()).hexdigest()
         return ExactHead(identity=identity, head="record:" + digest, fingerprint=digest)
 

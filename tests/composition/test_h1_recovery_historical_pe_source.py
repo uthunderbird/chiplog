@@ -70,9 +70,12 @@ def test_current_historical_reader_reconstructs_once_and_rejects_noncanonical_by
     )
     monkeypatch.setattr(source_module, "decode_first_path_completion_request", lambda _: Request())
 
-    assert reader._reconstruct_current_completion_bytes(
-        original_identity=object(), original_fingerprint="f", selected_seal=object()
-    ) == b"canonical"
+    assert (
+        reader._reconstruct_current_completion_bytes(
+            original_identity=object(), original_fingerprint="f", selected_seal=object()
+        )
+        == b"canonical"
+    )
     assert calls == ["reconstruct"]
 
     class Noncanonical(Request):

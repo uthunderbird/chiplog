@@ -531,13 +531,16 @@ def test_selected_source_revision_rebinds_logical_marker_to_exact_preimage() -> 
 
     assert _selected_source_revision(original_logical_marker, (selected_source,)) == source_revision
     assert _selected_source_revision(source_revision, (selected_source,)) == source_revision
-    assert _selected_source_revision(
-        CallSubjectHead(
-            subject_id="accepted-intent",
-            revision=Present(head=source_revision.head, fingerprint="e" * 64),
-        ),
-        (selected_source,),
-    ) is None
+    assert (
+        _selected_source_revision(
+            CallSubjectHead(
+                subject_id="accepted-intent",
+                revision=Present(head=source_revision.head, fingerprint="e" * 64),
+            ),
+            (selected_source,),
+        )
+        is None
+    )
     assert _selected_source_revision(original_logical_marker, ()) is None
     conflicting = selected_source.model_copy(
         update={

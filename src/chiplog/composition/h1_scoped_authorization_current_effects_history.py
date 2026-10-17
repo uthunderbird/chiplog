@@ -279,7 +279,8 @@ class H1ScopedAuthorizationCurrentEffectsHistoryReaderV1:
                 row.record.schema_id,
                 row.record.fingerprint,
                 row.record.canonical_bytes,
-            ) == (
+            )
+            == (
                 source.intent.record_id,
                 source.intent.record_kind,
                 source.intent.schema_id,

@@ -317,9 +317,10 @@ async def test_selected_scoped_v3_resume_reaches_terminal_owner_and_replays_nine
             assert completed.stage_input("TERMINAL_WORK")[0] == (
                 terminal.terminal_request.canonical_bytes()
             )
-            assert terminal.terminal_result.canonical_bytes() == dict(completed.results)[
-                "TERMINAL_WORK"
-            ]
+            assert (
+                terminal.terminal_result.canonical_bytes()
+                == dict(completed.results)["TERMINAL_WORK"]
+            )
             owner_calls_before_replay = all_owner_calls
             replayed = await coordinator.resume_selected(
                 request.identity, request.original_driver_command_fingerprint(), locator
@@ -676,9 +677,7 @@ async def test_selected_scoped_v3_revocation_at_terminal_admission_keeps_only_pi
                     terminal_frames += 1
                 original_send_frame(connection, secret, payload)
 
-            monkeypatch.setattr(
-                type(authority_reader), "recheck", revoke_before_terminal_admission
-            )
+            monkeypatch.setattr(type(authority_reader), "recheck", revoke_before_terminal_admission)
             monkeypatch.setattr(broker, "_call_with_admission_guard", counted)
             monkeypatch.setattr(broker_runtime, "_send_frame", count_terminal_frames)
             with pytest.raises(H1PostSealRecoveryCoordinatorError):

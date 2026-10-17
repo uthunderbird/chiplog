@@ -211,8 +211,9 @@ async def test_source_subset_reopens_exact_accepted_closed_outcome_without_resen
             with monkeypatch.context() as patch:
                 patch.setattr(NativeRecoveryCutSource, "collect_for_resume_held", counted_collect)
                 resumed = await runtime.resume_execution(
-                    sealed.run_id, suspended_run_head.revision.head,
-                    b"resume-closed-native-recovery"
+                    sealed.run_id,
+                    suspended_run_head.revision.head,
+                    b"resume-closed-native-recovery",
                 )
             assert collect_calls == [runtime]
             assert resumed.state == "ACTIVE"

@@ -305,11 +305,7 @@ async def test_mounted_j7_issue_appends_and_reopens_historical_lifecycle(tmp_pat
             assert authority.historical_projection == historical_projection
             authority_reader.recheck(authority)
             forged = issue.model_copy(
-                update={
-                    "proposed_scope": scope.model_copy(
-                        update={"worker_session_id": "forged"}
-                    )
-                }
+                update={"proposed_scope": scope.model_copy(update={"worker_session_id": "forged"})}
             )
             with pytest.raises(PermissionError):
                 await runtime.authorize_prepared_external_delivery_grant(

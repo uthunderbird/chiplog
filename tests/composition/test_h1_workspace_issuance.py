@@ -197,9 +197,7 @@ async def test_h1_original_workspace_reopens_exact_native_issuance(
             _validate_retained_original(
                 issued.model_copy(
                     update={
-                        "sources": issued.sources.model_copy(
-                            update={"selected_loop_decisions": ()}
-                        )
+                        "sources": issued.sources.model_copy(update={"selected_loop_decisions": ()})
                     }
                 )
             )

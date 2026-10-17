@@ -1105,7 +1105,8 @@ class H1ConversationSources:
                     or request.source.selected_response_seal != selected_seal
                     or inventory.tenant_sequence != historical.source.tenant_commit_sequence
                     or inventory.commitment != historical.source.materialization_commitment
-                    or inventory.database_identity != (
+                    or inventory.database_identity
+                    != (
                         historical.database_path,
                         historical.database_device,
                         historical.database_inode,

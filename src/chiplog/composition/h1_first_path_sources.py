@@ -645,8 +645,7 @@ class H1FirstPathSources:
                 raise ValueError("H1 historical conversation owner prefix differs")
             raw_owner_entries = tuple(owner_journal._raw.entries())
             raw_by_id = {
-                decision_id: decision
-                for decision_id, _previous, decision in raw_owner_entries
+                decision_id: decision for decision_id, _previous, decision in raw_owner_entries
             }
             if len(raw_by_id) != len(raw_owner_entries):
                 raise ValueError("H1 historical conversation owner decisions collide")

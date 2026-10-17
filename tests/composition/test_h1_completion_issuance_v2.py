@@ -254,29 +254,37 @@ async def test_v2_historical_current_uses_its_selected_frame_but_fresh_current_r
     )
     assert isinstance(wire.returned, PublicPortSuccess)
     candidate = H1OwnerCurrentCandidateV1.model_validate_json(wire.returned.canonical_payload)
-    assembly = cast(Any, SimpleNamespace(
-        ordered_effects=(
-            SimpleNamespace(
-                owner_call=SimpleNamespace(
-                    request=SimpleNamespace(
-                        selected_scope=SimpleNamespace(
-                            current_request=request, current_result=candidate.current
+    assembly = cast(
+        Any,
+        SimpleNamespace(
+            ordered_effects=(
+                SimpleNamespace(
+                    owner_call=SimpleNamespace(
+                        request=SimpleNamespace(
+                            selected_scope=SimpleNamespace(
+                                current_request=request, current_result=candidate.current
+                            )
                         )
                     )
-                )
-            ),
-        )
-    ))
-    historical_session = wire.sent.callee
-    fresh_session = historical_session.model_copy(update={"session_id": "fresh-capture"})
-    historical_capture = cast(Any, SimpleNamespace(
-        sessions=(fresh_session,),
-        observed=SimpleNamespace(
-            observation=SimpleNamespace(
-                snapshot_bytes=decode_trust_owner_call_canonical(wire.sent.canonical_payload).snapshot_bytes
+                ),
             )
         ),
-    ))
+    )
+    historical_session = wire.sent.callee
+    fresh_session = historical_session.model_copy(update={"session_id": "fresh-capture"})
+    historical_capture = cast(
+        Any,
+        SimpleNamespace(
+            sessions=(fresh_session,),
+            observed=SimpleNamespace(
+                observation=SimpleNamespace(
+                    snapshot_bytes=decode_trust_owner_call_canonical(
+                        wire.sent.canonical_payload
+                    ).snapshot_bytes
+                )
+            ),
+        ),
+    )
 
     # The selected P frame remains valid even though the later capture records
     # a different trust-owner session.

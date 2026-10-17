@@ -582,10 +582,7 @@ async def test_historical_p_reader_holds_on_genuinely_appended_invalid_scope_res
             original_append = runtime._append_decision
 
             def append_mutated(decision: dict[str, object]) -> None:
-                if (
-                    decision.get("kind") == "DECIDED"
-                    and "h1_preseal_p_scope_wires_v1" in decision
-                ):
+                if decision.get("kind") == "DECIDED" and "h1_preseal_p_scope_wires_v1" in decision:
                     _mutate_residual(kind)(decision)
                 original_append(decision)
 

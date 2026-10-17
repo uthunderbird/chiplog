@@ -17,9 +17,7 @@ from tests.composition.test_r14_recovery_pending_prefix import _fixture
 from tests.composition.test_r14_resume_artifacts import _evidence as resume_evidence
 
 
-async def _exercise_custom_source_writer(
-    tmp_path, monkeypatch, mutation, *, witness_stage=None
-):
+async def _exercise_custom_source_writer(tmp_path, monkeypatch, mutation, *, witness_stage=None):
     runtime, entry, _, _, _ = await _fixture(tmp_path, False)
     template = publication.retained(entry)
     store = SQLiteMaterializer(
@@ -91,8 +89,14 @@ async def _exercise_custom_source_writer(
             if mutation == "same-head-tamper":
                 store._connection.execute(
                     "INSERT INTO records VALUES (?,?,?,?,?,?)",
-                    (runtime._tenant_id, "tamper", "agent_loop",
-                     publication.ACCOUNTING_SCHEMA, b"tamper", 1),
+                    (
+                        runtime._tenant_id,
+                        "tamper",
+                        "agent_loop",
+                        publication.ACCOUNTING_SCHEMA,
+                        b"tamper",
+                        1,
+                    ),
                 )
                 store._connection.commit()
                 with workspace_snapshot(runtime._database) as snapshot:
@@ -100,9 +104,9 @@ async def _exercise_custom_source_writer(
                         snapshot.connection, runtime._tenant_id
                     )
                 assert state.tampered_preimage != predecessor
-                assert store._connection.execute(
-                    "SELECT head FROM tenant_heads"
-                ).fetchall() == [(1,)]
+                assert store._connection.execute("SELECT head FROM tenant_heads").fetchall() == [
+                    (1,)
+                ]
 
             def admission():
                 counts["admission"] += 1
@@ -198,13 +202,15 @@ async def _exercise_custom_source_writer(
             assert store._connection.execute("SELECT * FROM publications").fetchall() == []
             assert store._connection.execute("SELECT head FROM tenant_heads").fetchall() == [(1,)]
             with workspace_snapshot(runtime._database) as snapshot:
-                assert capture_authority_snapshot_commitment(
-                    snapshot.connection, runtime._tenant_id
-                ) == state.tampered_preimage
+                assert (
+                    capture_authority_snapshot_commitment(snapshot.connection, runtime._tenant_id)
+                    == state.tampered_preimage
+                )
             return
         if mutation in ("synthetic-actor-expiry", "semantic-change"):
             expected_reason = (
-                "STALE:authority-after-cut" if mutation == "synthetic-actor-expiry"
+                "STALE:authority-after-cut"
+                if mutation == "synthetic-actor-expiry"
                 else "STALE:recovery-cut-changed"
             )
             with pytest.raises(LoopRejected, match=expected_reason):
@@ -215,9 +221,10 @@ async def _exercise_custom_source_writer(
             assert store._connection.execute("SELECT * FROM publications").fetchall() == []
             assert store._connection.execute("SELECT head FROM tenant_heads").fetchall() == [(1,)]
             with workspace_snapshot(runtime._database) as snapshot:
-                assert capture_authority_snapshot_commitment(
-                    snapshot.connection, runtime._tenant_id
-                ) == predecessor
+                assert (
+                    capture_authority_snapshot_commitment(snapshot.connection, runtime._tenant_id)
+                    == predecessor
+                )
             if witness_stage is not None:
                 assert input_reads == [1, 2, 3, 4]
             return
@@ -251,16 +258,19 @@ async def _exercise_custom_source_writer(
         assert input_reads == expected_input_reads[witness_stage]
         public_batch = publication.command(evidence)
         assert public_batch.expected_preimage_commitment is None
-        assert replace(
-            batch, expected_preimage_commitment=None, admission_guard=None, decision_guard=None
-        ) == public_batch
+        assert (
+            replace(
+                batch, expected_preimage_commitment=None, admission_guard=None, decision_guard=None
+            )
+            == public_batch
+        )
 
         def unexpected_guard(*args):
             raise AssertionError("SQL replay must not run fresh-publication guards")
 
-        replay = await appender.submit(replace(
-            batch, admission_guard=unexpected_guard, decision_guard=unexpected_guard
-        ))
+        replay = await appender.submit(
+            replace(batch, admission_guard=unexpected_guard, decision_guard=unexpected_guard)
+        )
         assert replay.disposition == "REPLAY"
         assert replay.commit_sequence == 2
         assert len(selected) == 1
@@ -273,17 +283,26 @@ async def _exercise_custom_source_writer(
 
 
 @pytest.mark.parametrize("mutation", (None, "synthetic-actor-expiry", "same-head-tamper"))
-async def test_custom_source_keeps_final_collection_at_real_writer(
-    tmp_path, monkeypatch, mutation
-):
+async def test_custom_source_keeps_final_collection_at_real_writer(tmp_path, monkeypatch, mutation):
     await _exercise_custom_source_writer(tmp_path, monkeypatch, mutation)
 
 
-@pytest.mark.parametrize("stage", (
-    "unchanged", "before-absent", "before-error", "after-absent", "after-error",
-    "after-changed", "admission-changed-restored", "decision-changed", "decision-error",
-    "semantic-change", "slow-fallback",
-))
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "unchanged",
+        "before-absent",
+        "before-error",
+        "after-absent",
+        "after-error",
+        "after-changed",
+        "admission-changed-restored",
+        "decision-changed",
+        "decision-error",
+        "semantic-change",
+        "slow-fallback",
+    ),
+)
 async def test_fabricated_witness_guard_wiring_at_real_writer(tmp_path, monkeypatch, stage):
     mutation = {
         "semantic-change": "semantic-change",

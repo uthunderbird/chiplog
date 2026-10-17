@@ -886,9 +886,7 @@ def validate_h1_scoped_v3_complete_acceptance_batch(
         return _failure("EXCHANGE", str(error))
     source_bytes = completion_terminal_work_source_bytes(assembly.work_source)
     if assembly.terminal_work_request.original_terminalization_request != source_bytes:
-        return _failure(
-            "SOURCE", "H1 scoped V3 terminal work does not use its accepted source"
-        )
+        return _failure("SOURCE", "H1 scoped V3 terminal work does not use its accepted source")
     try:
         _validate_terminal_work_source_join(assembly.work_source, assembly.terminal_work_request)
     except ValueError:

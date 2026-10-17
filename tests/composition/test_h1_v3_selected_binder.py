@@ -59,6 +59,7 @@ def test_v3_selected_recovery_rejects_a_changed_durable_conversation(
         lambda _: initialization,
     )
     monkeypatch.setattr(historical.DriveInputRequestV1, "model_validate_json", lambda _: original)
+
     class Locator:
         def __init__(self, _runtime: object) -> None:
             pass
@@ -67,6 +68,7 @@ def test_v3_selected_recovery_rejects_a_changed_durable_conversation(
             return object()
 
     monkeypatch.setattr(historical, "H1V2RecoveryNativeSource", Locator)
+
     class RootSource:
         def __init__(self, _runtime: object) -> None:
             pass

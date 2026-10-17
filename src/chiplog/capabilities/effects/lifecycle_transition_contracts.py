@@ -38,6 +38,7 @@ LifecycleIntent = Annotated[
 
 class EffectsObligationRevision(DispatchObservationDTO):
     """Stable original obligation subject; this revision's hash is derived externally."""
+
     schema_id: Literal["chiplog.effects.all-child-obligation.v1"] = (
         "chiplog.effects.all-child-obligation.v1"
     )

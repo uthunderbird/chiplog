@@ -112,12 +112,11 @@ def _installed(monkeypatch: pytest.MonkeyPatch):
         lambda *_: (SimpleNamespace(), SimpleNamespace(decisions=(selected,))),
     )
     verified = SimpleNamespace(commitment="commitment", tenant_head=lambda _: 1)
+
     def prechecks(*_args: object, **_kwargs: object) -> tuple[object, object]:
         return verified, predecessor
 
-    monkeypatch.setattr(
-        subject, "_require_v2_read_plan_prechecks", prechecks
-    )
+    monkeypatch.setattr(subject, "_require_v2_read_plan_prechecks", prechecks)
     monkeypatch.setattr(
         subject.H1ScopedAuthorizationNormativeConflictGenerationReaderV1,
         "_prefix_history",
@@ -188,9 +187,7 @@ def test_prefix_history_passes_installed_runtime_to_prior_scoped_binder(
         tenant_commit_sequence=1,
         prepared=SimpleNamespace(request=SimpleNamespace(complete_records=(prior,))),
     )
-    predecessor = SimpleNamespace(
-        tenant_id="tenant", head="head", decisions=(decision,)
-    )
+    predecessor = SimpleNamespace(tenant_id="tenant", head="head", decisions=(decision,))
     selected = SimpleNamespace(
         tenant_commit_sequence=2,
         prepared=SimpleNamespace(request=SimpleNamespace(complete_records=(target,))),
@@ -201,9 +198,7 @@ def test_prefix_history_passes_installed_runtime_to_prior_scoped_binder(
             SimpleNamespace(commit_sequence=2, record=target),
         )
     )
-    verified_rows = SimpleNamespace(
-        physical_record=lambda **_: ("effects", "schema", b"prior", 1)
-    )
+    verified_rows = SimpleNamespace(physical_record=lambda **_: ("effects", "schema", b"prior", 1))
     runtime = object()
     interpreted = object()
 
@@ -218,9 +213,12 @@ def test_prefix_history_passes_installed_runtime_to_prior_scoped_binder(
     )
     monkeypatch.setattr(subject, "interpret_h1_producer_effects_history", interpret)
     monkeypatch.setattr(subject, "_effects_history", lambda value: value)
-    assert subject.H1ScopedAuthorizationNormativeConflictGenerationReaderV1._prefix_history(
-        cut, predecessor, selected, verified_rows, runtime=runtime
-    ) is interpreted
+    assert (
+        subject.H1ScopedAuthorizationNormativeConflictGenerationReaderV1._prefix_history(
+            cut, predecessor, selected, verified_rows, runtime=runtime
+        )
+        is interpreted
+    )
 
 
 def test_normative_source_is_reader_issued_rechecked_and_revoked(
@@ -235,15 +233,22 @@ def test_normative_source_is_reader_issued_rechecked_and_revoked(
     assert source.clock_epoch == "epoch"
 
     joined.changed = True
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationNormativeConflictGenerationHold, match="prefix is unavailable"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationNormativeConflictGenerationHold,
+            match="prefix is unavailable",
+        ),
     ):
         reader.recheck_held(capture)
     joined.changed = False
     reader.release(capture)
     assert len(clock.released) == 1
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationNormativeConflictGenerationHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationNormativeConflictGenerationHold, match="not reader-issued"
+        ),
     ):
         reader.source_held(capture)
 
@@ -255,16 +260,22 @@ def test_normative_source_rejects_forged_capture_and_close_revokes_dependency(
     reader = subject.H1ScopedAuthorizationNormativeConflictGenerationReaderV1(runtime)
 
     forged = object.__new__(subject.H1ScopedAuthorizationNormativeConflictGenerationCaptureV1)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationNormativeConflictGenerationHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationNormativeConflictGenerationHold, match="not reader-issued"
+        ),
     ):
         reader.source_held(forged)
 
     capture = reader.read(joined_capture)
     reader.close()
     assert len(clock.released) == 1
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationNormativeConflictGenerationHold, match="reader is closed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationNormativeConflictGenerationHold, match="reader is closed"
+        ),
     ):
         reader.source_held(capture)
 
@@ -281,7 +292,10 @@ def test_normative_source_release_survives_a_revoked_clock_capture(
 
     clock.release = revoked
     reader.release(capture)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationNormativeConflictGenerationHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationNormativeConflictGenerationHold, match="not reader-issued"
+        ),
     ):
         reader.source_held(capture)

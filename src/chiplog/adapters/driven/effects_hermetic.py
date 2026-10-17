@@ -326,9 +326,10 @@ class HermeticEffectsProvider:
             observation = verify_hermetic_receipt(
                 ticket, receipt, registered_receipt_key=self._receipt_key
             )
-            if observation.sequence != next(
-                row.sequence for row in self._transfers if row.ticket == ticket
-            ) + prior + 1:
+            if (
+                observation.sequence
+                != next(row.sequence for row in self._transfers if row.ticket == ticket) + prior + 1
+            ):
                 raise ValueError("concurrent late receipt sequence differs")
             stream.write(raw)
             stream.flush()
@@ -459,9 +460,7 @@ class HermeticEffectsProvider:
             observation_hex=raw.hex(),
             signature=hmac.digest(self._receipt_key, _RECEIPT_DOMAIN + raw, "sha256").hex(),
         ).canonical_bytes()
-        verify_hermetic_receipt(
-            transfer.ticket, receipt, registered_receipt_key=self._receipt_key
-        )
+        verify_hermetic_receipt(transfer.ticket, receipt, registered_receipt_key=self._receipt_key)
         self._persist_late_receipt(transmission_id, receipt)
         self._late_receipts.append((transmission_id, receipt))
         return receipt

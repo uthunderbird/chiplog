@@ -220,10 +220,7 @@ async def test_ordinary_plan_effect_rejects_existing_v1_epoch(tmp_path: Path) ->
     )
     assert isinstance(opened, EpochOpenedV2)
     legacy = EpochOpened(
-        **(
-            opened.model_dump(mode="python")
-            | {"schema_id": "chiplog.ingress.admission-epoch.v1"}
-        )
+        **(opened.model_dump(mode="python") | {"schema_id": "chiplog.ingress.admission-epoch.v1"})
     )
     with pytest.raises(ValueError, match="epoch differs"):
         ordinary_plan_effect_events(

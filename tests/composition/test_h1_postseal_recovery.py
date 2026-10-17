@@ -66,7 +66,7 @@ def _other_root() -> H1PostSealRecoveryRootV1:
 def test_authenticated_prefix_round_trips_large_semantic_input_and_rejects_wrong_digest() -> None:
     root = _root()
     root_record = H1PostSealRecoveryTransition.begin(H1PostSealRecoveryState.empty(root))
-    state = apply_authenticated_prefix((('entry-0', None, root_record.canonical_bytes()),), root)
+    state = apply_authenticated_prefix((("entry-0", None, root_record.canonical_bytes()),), root)
     semantic_input = b"x" * 2_123_366
     input_record = H1PostSealRecoveryTransition.pin_input(
         state, stage="COMPLETION", semantic_input=semantic_input

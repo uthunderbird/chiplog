@@ -262,9 +262,7 @@ def test_current_reader_rejects_physical_g1_mutant() -> None:
     reader = object.__new__(H1DeliveryWorkCurrentClaimReader)
 
     with pytest.raises(H1DeliveryWorkCurrentClaimHold, match="not physical"):
-        reader._read_exact_g1(
-            connection, batch, SimpleNamespace(tenant_commit_sequence=2), binding
-        )
+        reader._read_exact_g1(connection, batch, SimpleNamespace(tenant_commit_sequence=2), binding)
 
 
 @pytest.mark.parametrize("now_ns", [9, 20])
@@ -372,9 +370,7 @@ def test_check_prepared_rejects_rotated_session_or_expired_clock(mutation: str) 
         else ("clock-epoch", 20 if mutation == "expiry" else 10)
     )
     authority._runtime = SimpleNamespace(
-        _supervisor=SimpleNamespace(
-            runtime=lambda: SimpleNamespace(session=lambda _: session)
-        ),
+        _supervisor=SimpleNamespace(runtime=lambda: SimpleNamespace(session=lambda _: session)),
         _require_dispatch_resources=lambda: SimpleNamespace(clock=lambda: clock),
     )
 

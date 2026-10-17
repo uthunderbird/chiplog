@@ -112,8 +112,7 @@ def _validate_frozen_binding_frontier_membership(cut: ExecutionRecoveryCut) -> N
     """
 
     family_heads = {
-        member.family: frozenset(member.ordered_heads)
-        for member in cut.frontier.ordered_members
+        member.family: frozenset(member.ordered_heads) for member in cut.frontier.ordered_members
     }
     bindings = cut.current_bindings
     exact_families = (
@@ -128,9 +127,7 @@ def _validate_frozen_binding_frontier_membership(cut: ExecutionRecoveryCut) -> N
         ("policy", (bindings.policy,), ("POLICY",)),
     )
     for name, references, families in exact_families:
-        allowed = frozenset(
-            head for family in families for head in family_heads.get(family, ())
-        )
+        allowed = frozenset(head for family in families for head in family_heads.get(family, ()))
         if any(reference not in allowed for reference in references):
             raise ValueError(f"native frozen binding is outside its registered family: {name}")
 
@@ -138,12 +135,9 @@ def _validate_frozen_binding_frontier_membership(cut: ExecutionRecoveryCut) -> N
         "EFFECT", frozenset()
     )
     if any(
-        reference not in recipient_or_effect
-        for reference in bindings.recipient_effect_bindings
+        reference not in recipient_or_effect for reference in bindings.recipient_effect_bindings
     ):
-        raise ValueError(
-            "native frozen binding is outside RECIPIENT/EFFECT registered families"
-        )
+        raise ValueError("native frozen binding is outside RECIPIENT/EFFECT registered families")
 
     mandate_heads = family_heads.get("MANDATE", frozenset())
     if any(reference not in mandate_heads for reference in bindings.authority_mandate_heads):
@@ -168,7 +162,7 @@ def _source_preimage_is_valid(source: RecoverySourceRecord) -> bool:
         return False
     try:
         record = DispatchOutcomeRecordV2.model_validate_json(source.canonical_record_bytes)
-    except (ValidationError, ValueError):
+    except ValidationError, ValueError:
         return False
     evidence = record.command.evidence
     if (

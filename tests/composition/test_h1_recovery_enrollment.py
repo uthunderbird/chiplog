@@ -155,8 +155,9 @@ def test_recovery_revocation_retains_active_enrollment_when_p_cleanup_fails() ->
 
 
 @pytest.mark.asyncio
-async def test_failed_shared_drain_keeps_recovery_enrollment_active_for_both_cleanup_paths(
-) -> None:
+async def test_failed_shared_drain_keeps_recovery_enrollment_active_for_both_cleanup_paths() -> (
+    None
+):
     """Ordinary and finalization cleanup share a drain seam that never revokes on failure."""
     from chiplog.composition.h1_live_completion_enrollment import (
         _H1LiveCompletionEnrollment,

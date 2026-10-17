@@ -57,9 +57,7 @@ def test_v35_registers_execution_suspension_without_mutating_v34() -> None:
     assert verify_runtime_manifest(production)
     verify_production_evaluation_equivalence(production, evaluation)
     assert production.manifest_version == 35
-    assert operation not in {
-        item.operation_id for item in previous.routes
-    }
+    assert operation not in {item.operation_id for item in previous.routes}
     route = next(item for item in production.routes if item.operation_id == operation)
     assert route.request_schema_id == "chiplog.execution.recovery-request.v1"
     assert route.result_schema_id == "chiplog.execution.recovery-result.v1"
@@ -121,9 +119,7 @@ def test_v37_selects_the_new_profile_generation_and_preserves_v36_route_graph() 
             "clock": ProductionClock(),
             "model": HermeticModel(),
             "planning_store": ProductionPlanningStore(),
-            "effects_transport": HermeticEffectsProvider(
-                receipt_key=b"fixture", scenarios=()
-            ),
+            "effects_transport": HermeticEffectsProvider(receipt_key=b"fixture", scenarios=()),
         },
     ) as runtime:
         loop = next(row for row in runtime.attest() if row.identity.owner_id == "agent_loop")

@@ -1750,11 +1750,15 @@ R14_EXECUTION_CURRENT_ACTOR_RESUME_V40_PRODUCTION_MANIFEST = replace(
         else owner
         for owner in R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST.owners
     ),
-    routes=tuple(sorted(
-        (*R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST.routes,
-         _V40_EXECUTION_RESUME_ROUTE),
-        key=lambda route: (route.callee_owner_id, route.operation_id),
-    )),
+    routes=tuple(
+        sorted(
+            (
+                *R14_EXECUTION_OBLIGATION_RESUME_V37_PRODUCTION_MANIFEST.routes,
+                _V40_EXECUTION_RESUME_ROUTE,
+            ),
+            key=lambda route: (route.callee_owner_id, route.operation_id),
+        )
+    ),
 )
 R14_EXECUTION_CURRENT_ACTOR_RESUME_V40_EVALUATION_MANIFEST = replace(
     R14_EXECUTION_CURRENT_ACTOR_RESUME_V40_PRODUCTION_MANIFEST,

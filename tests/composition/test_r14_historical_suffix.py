@@ -37,9 +37,9 @@ def test_pending_r14_suffix_dispatches_exactly_once_only_for_registered_operatio
         lambda *args, **kwargs: calls.append((args, kwargs)) or True,
     )
 
-    assert suffix.authenticate_selected_pending_r14_suffix_held(
-        runtime, "actual", "anchored"
-    ) is (expected_calls == 1)
+    assert suffix.authenticate_selected_pending_r14_suffix_held(runtime, "actual", "anchored") is (
+        expected_calls == 1
+    )
     assert len(calls) == expected_calls
 
 
@@ -887,9 +887,7 @@ def test_lifecycle_physical_validation_keeps_default_strict_and_reaches_pending_
 @pytest.mark.parametrize(
     "family", ["suspension", "successor", "accepted-open-accounting", "accepted-open-recovery"]
 )
-@pytest.mark.parametrize(
-    "damage", [None, "anchor-advanced", "predecessor", "unselected", "orphan"]
-)
+@pytest.mark.parametrize("damage", [None, "anchor-advanced", "predecessor", "unselected", "orphan"])
 def test_completed_pending_lifecycle_requires_exact_final_batch_and_current_anchor(
     tmp_path, monkeypatch, family, damage
 ):
@@ -993,16 +991,23 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_current_anch
             authenticate_selected_recovery_prefix_held,
         )
 
-        evidence = SimpleNamespace(request=SimpleNamespace(cut=SimpleNamespace(
-            tenant_id="tenant", database_id="database", materialization_commitment=predecessor,
-            tenant_commit_sequence=command.expected_head,
-        )))
+        evidence = SimpleNamespace(
+            request=SimpleNamespace(
+                cut=SimpleNamespace(
+                    tenant_id="tenant",
+                    database_id="database",
+                    materialization_commitment=predecessor,
+                    tenant_commit_sequence=command.expected_head,
+                )
+            )
+        )
         if family == "suspension":
             from chiplog.composition import r14_execution_suspension as suspension
 
             monkeypatch.setattr(suspension, "_retained", lambda _: evidence)
             monkeypatch.setattr(
-                suspension, "_command",
+                suspension,
+                "_command",
                 lambda _: replace(command, expected_preimage_commitment=predecessor),
             )
         else:
@@ -1011,7 +1016,8 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_current_anch
                 records,
                 (
                     "retained_accepted_open_recovery"
-                    if recovery else "retained_accepted_open_accounting"
+                    if recovery
+                    else "retained_accepted_open_accounting"
                 ),
                 lambda _: evidence,
             )
@@ -1019,11 +1025,12 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_current_anch
                 records,
                 (
                     "accepted_open_recovery_command"
-                    if recovery else "accepted_open_accounting_command"
+                    if recovery
+                    else "accepted_open_accounting_command"
                 ),
                 lambda _: command,
             )
         with gate.hold():
-            assert authenticate_selected_recovery_prefix_held(
-                runtime, actual, anchored
-            ) is (damage in (None, "anchor-advanced"))
+            assert authenticate_selected_recovery_prefix_held(runtime, actual, anchored) is (
+                damage in (None, "anchor-advanced")
+            )

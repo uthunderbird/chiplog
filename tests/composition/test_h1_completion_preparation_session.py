@@ -381,9 +381,12 @@ async def test_session_terminal_result_requires_prepared_commitment_not_protocol
     prepared = prepare_h1_terminal_work(request)
     assert not isinstance(prepared, WorkPreparationRejected)
 
-    assert H1CompletionPreparationSession._validate_terminal_work_result(
-        request, prepared.canonical_bytes()
-    ) == prepared
+    assert (
+        H1CompletionPreparationSession._validate_terminal_work_result(
+            request, prepared.canonical_bytes()
+        )
+        == prepared
+    )
 
     rejected = WorkPreparationRejected(code="DENIED", reason="h1-nonempty-obligations")
     with pytest.raises(H1CompletionPreparationUnavailable, match="result differs"):
@@ -506,9 +509,7 @@ async def test_terminal_budget_is_exactly_bound_once_and_expiry_still_blocks_dis
     bound: list[PublicPortCall] = []
     burned: list[object] = []
     proof_sessions: list[H1CompletionPreparationSession] = [session]
-    monkeypatch.setattr(
-        _H1LiveCompletionEnrollment, "_require_live", lambda *_: None
-    )
+    monkeypatch.setattr(_H1LiveCompletionEnrollment, "_require_live", lambda *_: None)
     monkeypatch.setattr(
         _H1LiveCompletionEnrollment,
         "_terminal_admission_guard",
@@ -582,6 +583,7 @@ async def test_terminal_budget_is_exactly_bound_once_and_expiry_still_blocks_dis
     assert len(expired_bound) == 1
     assert broker_calls == []
     assert burned == [clearance, clearance]
+
 
 async def _live_session(
     *,
@@ -856,12 +858,14 @@ async def test_recovery_completion_uses_enrolled_guard_and_retains_the_actual_ex
     )
     recovery_source._validate_result = (  # type: ignore[method-assign]
         lambda value, stage, semantic, returned: (
-            value is context
-            and stage == "COMPLETION"
-            and semantic == request.canonical_bytes()
-            and returned == result_bytes
+            (
+                value is context
+                and stage == "COMPLETION"
+                and semantic == request.canonical_bytes()
+                and returned == result_bytes
+            )
+            or (_ for _ in ()).throw(ValueError("recovery result differs"))
         )
-        or (_ for _ in ()).throw(ValueError("recovery result differs"))
     )
     enrollment._require_recovery_session = lambda **_: None  # type: ignore[method-assign]
     enrollment._reserve_recovery_clearance = lambda **_: object()  # type: ignore[method-assign]

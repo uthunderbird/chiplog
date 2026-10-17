@@ -354,6 +354,7 @@ async def test_invocation_publication_replays_exact_lost_ack_without_new_auth(
         submit = runtime._appender.submit
 
         if decision_case == "commit":
+
             async def commit_then_lose_ack(batch):
                 await submit(batch)
                 raise LostCommitAcknowledgement("invocation acknowledgement lost")

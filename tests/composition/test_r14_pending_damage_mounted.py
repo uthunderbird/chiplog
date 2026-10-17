@@ -62,7 +62,8 @@ async def test_pending_suspension_damage_rejects_outer_read_and_startup(
         sealed = await runtime.seal_execution("hermetic-ingress", captured.run_id, captured.head)
         _, inventory, _ = read_execution_call_history(runtime)
         calls = tuple(
-            item for item in inventory.ordered_calls
+            item
+            for item in inventory.ordered_calls
             if item.initialized_record.call.classification == "CONSEQUENTIAL"
         )
         assert len(calls) == 1
@@ -70,7 +71,8 @@ async def test_pending_suspension_damage_rejects_outer_read_and_startup(
         preview = await runtime.preview_call_acceptance(
             "hermetic-ingress",
             CallAcceptanceTarget(
-                original_call_id=call.original_call_id, initialized=call.initialized,
+                original_call_id=call.original_call_id,
+                initialized=call.initialized,
                 current_run=execution_run_head(sealed),
             ),
         )
@@ -121,10 +123,14 @@ async def test_pending_suspension_damage_rejects_outer_read_and_startup(
         expected_suspension = _retained(pending[0]).result
         assert expected_suspension.run in history[0].records
         with read_connection(database) as connection:
-            batch_ids = tuple(row[0] for row in connection.execute(
-                "SELECT record_id FROM records WHERE tenant_id=? AND commit_sequence=? "
-                "ORDER BY rowid", (runtime._tenant_id, command.expected_head + 1),
-            ))
+            batch_ids = tuple(
+                row[0]
+                for row in connection.execute(
+                    "SELECT record_id FROM records WHERE tenant_id=? AND commit_sequence=? "
+                    "ORDER BY rowid",
+                    (runtime._tenant_id, command.expected_head + 1),
+                )
+            )
         assert batch_ids == (
             () if fault == "before_commit" else tuple(row.record_id for row in command.records)
         )
@@ -133,7 +139,8 @@ async def test_pending_suspension_damage_rejects_outer_read_and_startup(
         with sqlite3.connect(database) as connection:
             predecessor = connection.execute(
                 "SELECT owner,schema_id,canonical_bytes FROM records "
-                "WHERE tenant_id=? AND record_id=?", (runtime._tenant_id, sealed.head)
+                "WHERE tenant_id=? AND record_id=?",
+                (runtime._tenant_id, sealed.head),
             ).fetchone()
             assert predecessor is not None
             if damage == "predecessor-absent":
@@ -176,6 +183,9 @@ async def test_pending_suspension_damage_rejects_outer_read_and_startup(
     assert runtime._pending() == before_pending
     assert len(resources.require_original_provider().transfers) == before_transfers
     with sqlite3.connect(database) as connection:
-        assert connection.execute(
-            "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
-        ).fetchone() == head
+        assert (
+            connection.execute(
+                "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+            ).fetchone()
+            == head
+        )

@@ -162,9 +162,7 @@ async def test_model_requires_durable_emission_and_restart_never_reissues(
             with monkeypatch.context() as fault:
                 if failure == "before_commit" and isinstance(request, EmitExecutionAttempt):
                     fault.setattr(runtime._appender, "submit", crash)
-                return await publish(
-                    peer, request, expected_snapshot=expected_snapshot, **kwargs
-                )
+                return await publish(peer, request, expected_snapshot=expected_snapshot, **kwargs)
 
         monkeypatch.setattr(runtime, "_publish_initial_transition", intercept)
         if failure == "none":
@@ -283,8 +281,11 @@ async def test_capture_rejects_corrupted_completed_predecessor(
     )
     from chiplog.platform.authority_reads import capture_authority_storage_state
 
-    target = {"accumulate": AccumulateExecutionVisibility,
-              "prepare": PrepareExecutionRequest, "emit": EmitExecutionAttempt}[phase]
+    target = {
+        "accumulate": AccumulateExecutionVisibility,
+        "prepare": PrepareExecutionRequest,
+        "emit": EmitExecutionAttempt,
+    }[phase]
     database = tmp_path / "capture-corruption.sqlite"
     async with open_execution_runtime(database, responses=(b"unused",)) as runtime:
         created = await runtime.create_execution("hermetic-ingress", "run", "Plan", BudgetPolicy())
@@ -324,6 +325,9 @@ async def test_capture_rejects_corrupted_completed_predecessor(
         assert runtime._execution_model.requests == []
         assert runtime._loop_decisions().entries() == entries
         with sqlite3.connect(database) as connection:
-            assert connection.execute(
-                "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
-            ).fetchone()[0] == head
+            assert (
+                connection.execute(
+                    "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+                ).fetchone()[0]
+                == head
+            )

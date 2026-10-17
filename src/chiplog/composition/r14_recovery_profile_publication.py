@@ -116,15 +116,21 @@ def _assert_v2_precedes_covered_lineage(runtime, profile_sequence: int | None = 
     )
     placeholders = ",".join("?" for _ in covered)
     with read_connection(runtime._database) as connection:
-        if connection.execute(
-            "SELECT 1 FROM records WHERE tenant_id=? AND schema_id=? LIMIT 1",
-            (runtime._tenant_id, SCHEMA),
-        ).fetchone() is not None:
+        if (
+            connection.execute(
+                "SELECT 1 FROM records WHERE tenant_id=? AND schema_id=? LIMIT 1",
+                (runtime._tenant_id, SCHEMA),
+            ).fetchone()
+            is not None
+        ):
             raise ValueError("V1 recovery profile physical record blocks V2")
-        if connection.execute(
-            "SELECT 1 FROM publications WHERE tenant_id=? AND operation_kind=? LIMIT 1",
-            (runtime._tenant_id, PROFILE_OPERATION),
-        ).fetchone() is not None:
+        if (
+            connection.execute(
+                "SELECT 1 FROM publications WHERE tenant_id=? AND operation_kind=? LIMIT 1",
+                (runtime._tenant_id, PROFILE_OPERATION),
+            ).fetchone()
+            is not None
+        ):
             raise ValueError("V1 recovery profile publication blocks V2")
         row = connection.execute(
             "SELECT MIN(commit_sequence) FROM records "

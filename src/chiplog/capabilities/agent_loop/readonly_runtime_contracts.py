@@ -8,8 +8,12 @@ from .readonly_history_tool_contracts import ConversationHistoryQuery, ReadOnlyD
 from .recovery_contracts import Identity
 
 ReadOnlyStateV2 = Literal[
-    "INITIALIZED", "ACCEPTED", "RETRY_PENDING", "SUCCEEDED",
-    "FAILED_DEFINITE_FINAL", "RECOVERY_REQUIRED",
+    "INITIALIZED",
+    "ACCEPTED",
+    "RETRY_PENDING",
+    "SUCCEEDED",
+    "FAILED_DEFINITE_FINAL",
+    "RECOVERY_REQUIRED",
 ]
 
 

@@ -476,12 +476,10 @@ def _selected_h1_issuance_principal(
     ):
         raise ValueError("H1 selected delivery closure issuance differs")
     try:
-        principal_id = (
-            cast(
-                PrepareExecutionCompletionFirstPathV2,
-                issuance.assembly.original_completion_request,
-            ).source.selected_admitted_input.principal_id
-        )
+        principal_id = cast(
+            PrepareExecutionCompletionFirstPathV2,
+            issuance.assembly.original_completion_request,
+        ).source.selected_admitted_input.principal_id
     except AttributeError as error:
         raise ValueError("H1 selected V2 delivery closure principal differs") from error
     if not isinstance(principal_id, str) or not principal_id:
@@ -892,9 +890,7 @@ def _canonical_json_bytes(value: object, *, name: str) -> bytes:
 
 def _selected_decision_bytes(value: object) -> bytes:
     """Match the installed loop-journal encoder, including escaped Unicode."""
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def _full_frame_json(value: object, *, name: str) -> bytes:

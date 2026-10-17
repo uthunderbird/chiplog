@@ -312,12 +312,8 @@ def execution_native_one_call_cancellation_frontier_registry_v1() -> RecoveryFro
                 family,
             ),
             ordinal=ordinal,
-            subject_extractor_id=(
-                f"execution-native-one-call-cancellation-v1:{family}:subjects"
-            ),
-            cardinality_rule=(
-                f"execution-native-one-call-cancellation-v1:{family}:cardinality"
-            ),
+            subject_extractor_id=(f"execution-native-one-call-cancellation-v1:{family}:subjects"),
+            cardinality_rule=(f"execution-native-one-call-cancellation-v1:{family}:cardinality"),
             terminal_conflict_rule=(
                 f"execution-native-one-call-cancellation-v1:{family}:conflicts"
             ),

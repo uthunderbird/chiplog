@@ -264,8 +264,8 @@ def _canonical_planning_statements(
             "AND operation_kind = 'planning.create_intention_line' "
             "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
             "ORDER BY commit_sequence, operation_kind, idempotency_key LIMIT ?"
-            if operation.variant == "PLANNING_PUBLICATIONS_R13" else
-            "SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, "
+            if operation.variant == "PLANNING_PUBLICATIONS_R13"
+            else "SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, "
             "commit_sequence, record_ids FROM publications WHERE tenant_id = ? "
             "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
             "ORDER BY commit_sequence, operation_kind, idempotency_key LIMIT ?"
@@ -278,8 +278,8 @@ def _canonical_planning_statements(
             "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
             "ORDER BY commit_sequence, operation_kind, idempotency_key LIMIT ?"
             ") ORDER BY record_id LIMIT ?"
-            if operation.variant == "PLANNING_PUBLICATIONS_R13" else
-            "SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence "
+            if operation.variant == "PLANNING_PUBLICATIONS_R13"
+            else "SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence "
             "FROM records WHERE tenant_id = ? AND commit_sequence IN ("
             "SELECT commit_sequence FROM publications WHERE tenant_id = ? "
             "AND (commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) "
@@ -289,22 +289,42 @@ def _canonical_planning_statements(
     )
     parameters = (
         (operation.tenant_id,),
-        (operation.tenant_id, operation.after_commit_sequence, operation.after_operation_kind,
-         operation.after_idempotency_key, operation.max_rows),
-        (operation.tenant_id, operation.tenant_id, operation.after_commit_sequence,
-         operation.after_operation_kind, operation.after_idempotency_key,
-         operation.max_rows, operation.max_rows * 5 + 1),
+        (
+            operation.tenant_id,
+            operation.after_commit_sequence,
+            operation.after_operation_kind,
+            operation.after_idempotency_key,
+            operation.max_rows,
+        ),
+        (
+            operation.tenant_id,
+            operation.tenant_id,
+            operation.after_commit_sequence,
+            operation.after_operation_kind,
+            operation.after_idempotency_key,
+            operation.max_rows,
+            operation.max_rows * 5 + 1,
+        ),
     )
     return tuple(zip(queries, parameters, strict=True))
 
 
 def _planning_statement_fingerprint(
-    statement: tuple[str, tuple[str | int, ...]], snapshot_id: str,
+    statement: tuple[str, tuple[str | int, ...]],
+    snapshot_id: str,
 ) -> str:
-    return hashlib.sha256(json.dumps({
-        "domain": "planning-prepared-statement/v2",
-        "query": statement[0], "parameters": statement[1], "snapshot_id": snapshot_id,
-    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "domain": "planning-prepared-statement/v2",
+                "query": statement[0],
+                "parameters": statement[1],
+                "snapshot_id": snapshot_id,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
 
 
 @contextmanager
@@ -326,8 +346,11 @@ def _prepared_planning_statement(
     observed: set[tuple[str, str, str]] = set()
 
     def authorize(
-        action: int, first: str | None, second: str | None,
-        database: str | None, source: str | None,
+        action: int,
+        first: str | None,
+        second: str | None,
+        database: str | None,
+        source: str | None,
     ) -> int:
         if source is not None:
             return sqlite3.SQLITE_DENY
@@ -339,8 +362,11 @@ def _prepared_planning_statement(
                 assert first is not None and second is not None
                 observed.add((database, first, second))
                 return sqlite3.SQLITE_OK
-        if (count and action == sqlite3.SQLITE_FUNCTION
-                and (first, second, database) == (None, "count", None)):
+        if (
+            count
+            and action == sqlite3.SQLITE_FUNCTION
+            and (first, second, database) == (None, "count", None)
+        ):
             return sqlite3.SQLITE_OK
         return sqlite3.SQLITE_DENY
 
@@ -499,8 +525,10 @@ class BrokerAuthorityReader:
         self._ledger.begin(operation, state)
         with closing(
             sqlite3.connect(
-                f"file:{self._database}?mode=ro", uri=True,
-                isolation_level=None, cached_statements=0
+                f"file:{self._database}?mode=ro",
+                uri=True,
+                isolation_level=None,
+                cached_statements=0,
             )
         ) as connection:
             connection.execute("BEGIN")
@@ -643,11 +671,11 @@ class BrokerAuthorityReader:
             else PLANNING_PUBLICATION_READ_EDGES
         )
         canonical_columns = {member.table: member.columns for member in AUTHORITY_STORAGE_MEMBERS}
-        if (
-            tuple(edge.table for edge in declared) != ("publications", "records")
-            or any(edge.operation != operation.variant
-                   or edge.columns != canonical_columns[edge.table]
-                   or len(set(edge.columns)) != len(edge.columns) for edge in declared)
+        if tuple(edge.table for edge in declared) != ("publications", "records") or any(
+            edge.operation != operation.variant
+            or edge.columns != canonical_columns[edge.table]
+            or len(set(edge.columns)) != len(edge.columns)
+            for edge in declared
         ):
             error = ValueError("declared planning graph is not canonical")
             raise AuthorityReadFailure(
@@ -658,7 +686,8 @@ class BrokerAuthorityReader:
         )
         record_reads = frozenset(("main", declared[1].table, col) for col in declared[1].columns)
         selection_reads = frozenset(
-            edge for edge in publication_reads
+            edge
+            for edge in publication_reads
             if edge[2] in {"tenant_id", "operation_kind", "idempotency_key", "commit_sequence"}
         )
         uniqueness_reads = frozenset(
@@ -674,7 +703,9 @@ class BrokerAuthorityReader:
                 {
                     "domain": "planning-prepared-read/v2",
                     "parameters": (
-                        uniqueness_parameters, publication_parameters, record_parameters,
+                        uniqueness_parameters,
+                        publication_parameters,
+                        record_parameters,
                     ),
                     "queries": (uniqueness_sql, publication_sql, record_sql),
                     "snapshot_id": snapshot.snapshot_id,
@@ -684,8 +715,12 @@ class BrokerAuthorityReader:
             ).encode()
         ).hexdigest()
         with _prepared_planning_statement(
-            connection, uniqueness_sql, uniqueness_parameters, uniqueness_reads,
-            canonical_statement=canonical_statements[0], snapshot_id=snapshot.snapshot_id,
+            connection,
+            uniqueness_sql,
+            uniqueness_parameters,
+            uniqueness_reads,
+            canonical_statement=canonical_statements[0],
+            snapshot_id=snapshot.snapshot_id,
             count=True,
         ) as uniqueness_observed:
             duplicate_sequence = connection.execute(
@@ -694,20 +729,29 @@ class BrokerAuthorityReader:
         if duplicate_sequence is not None:
             raise AuthorityReadFailure("publication commit sequence is not unique")
         with _prepared_planning_statement(
-            connection, publication_sql, publication_parameters, publication_reads,
-            canonical_statement=canonical_statements[1], snapshot_id=snapshot.snapshot_id,
+            connection,
+            publication_sql,
+            publication_parameters,
+            publication_reads,
+            canonical_statement=canonical_statements[1],
+            snapshot_id=snapshot.snapshot_id,
         ) as publication_observed:
             publications = connection.execute(publication_sql, publication_parameters).fetchall()
         with _prepared_planning_statement(
-            connection, record_sql, record_parameters, record_reads | selection_reads,
-            canonical_statement=canonical_statements[2], snapshot_id=snapshot.snapshot_id,
+            connection,
+            record_sql,
+            record_parameters,
+            record_reads | selection_reads,
+            canonical_statement=canonical_statements[2],
+            snapshot_id=snapshot.snapshot_id,
         ) as record_observed:
             records = connection.execute(record_sql, record_parameters).fetchall()
         observed = uniqueness_observed | publication_observed | record_observed
         actual_edges = tuple(
-            (edge.table, tuple(
-                col for col in edge.columns if ("main", edge.table, col) in observed
-            ))
+            (
+                edge.table,
+                tuple(col for col in edge.columns if ("main", edge.table, col) in observed),
+            )
             for edge in declared
         )
         publication_record_ids = tuple(str(row[5]).split("\n") for row in publications)

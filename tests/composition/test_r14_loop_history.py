@@ -90,9 +90,7 @@ async def test_selected_successor_history_requires_exact_ordered_two_run_pair() 
     malformed.canonical_bytes = b"{}"
     malformed.fingerprint = hashlib.sha256(malformed.canonical_bytes).hexdigest()
     with pytest.raises(ValueError):
-        _successor_run_pair(
-            SimpleNamespace(records=(malformed, member(created))), *expected
-        )
+        _successor_run_pair(SimpleNamespace(records=(malformed, member(created))), *expected)
 
 
 @pytest.mark.parametrize(
@@ -206,9 +204,7 @@ async def test_complete_delivery_v2_applicability_schema_dispatch_is_total() -> 
             "authentication": fixture.batch.authentication.model_copy(
                 update={
                     "applicability_schema": H1_ISSUANCE_V2_SCHEMA,
-                    "applicability_bytes": (
-                        f'{{"schema_id":"{H1_ISSUANCE_SCHEMA}"}}'.encode()
-                    ),
+                    "applicability_bytes": (f'{{"schema_id":"{H1_ISSUANCE_SCHEMA}"}}'.encode()),
                 }
             )
         }

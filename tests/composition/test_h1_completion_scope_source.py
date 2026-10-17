@@ -138,8 +138,10 @@ async def test_installed_port_captures_and_replays_only_its_authenticated_comple
             assert issue_wire is original_cut.cut.scope_issue_wire
             assert current_wire is port._completion_scopes[id(capability)][1].scope_current_wire
             assert current_wire.sent.request_id == current_wire.returned.request_id
-            assert current_wire.sent_at_ns <= current_wire.returned_at_ns < (
-                current_wire.sent.budget.absolute_deadline_ns
+            assert (
+                current_wire.sent_at_ns
+                <= current_wire.returned_at_ns
+                < (current_wire.sent.budget.absolute_deadline_ns)
             )
             with pytest.raises(TypeError, match="cannot be copied"):
                 copy.copy(capability)
@@ -179,23 +181,22 @@ async def test_effects_source_replays_only_one_p_bound_scope_delivery_cut(tmp_pa
                 scope_cap, native, receipt, native._capture
             )
 
-            assert source.selected_scope.scope == port._replay_completion_scope(
-                scope_cap, native
-            ).scope
-            assert source.fence.canonical_bytes() == port._replay_delivery_inputs(
-                receipt, native._capture
-            )[1].canonical_bytes()
+            assert (
+                source.selected_scope.scope
+                == port._replay_completion_scope(scope_cap, native).scope
+            )
+            assert (
+                source.fence.canonical_bytes()
+                == port._replay_delivery_inputs(receipt, native._capture)[1].canonical_bytes()
+            )
             assert type(source.fence) is EffectsNonSchedulerFence
             assert (
-                source.selected_scope.current_result.source_anchor
-                == source.selected_scope.anchor
+                source.selected_scope.current_result.source_anchor == source.selected_scope.anchor
             )
 
             other_cap = await port._capture_completion_scope(native._capture, native, original)
             with pytest.raises(H1PreissuanceSourceViolation, match=r"delivery.*scope"):
-                port._replay_completion_effects_source(
-                    other_cap, native, receipt, native._capture
-                )
+                port._replay_completion_effects_source(other_cap, native, receipt, native._capture)
             with pytest.raises(H1PreissuanceSourceViolation, match="receipt"):
                 port._replay_completion_effects_source(
                     scope_cap, native, cast(Any, object()), native._capture
@@ -237,6 +238,4 @@ async def test_effects_source_rejects_stale_physical_or_substituted_current_wire
                 expected_error = "owner wire"
 
             with pytest.raises(H1PreissuanceSourceViolation, match=expected_error):
-                port._replay_completion_effects_source(
-                    scope_cap, native, receipt, native._capture
-                )
+                port._replay_completion_effects_source(scope_cap, native, receipt, native._capture)

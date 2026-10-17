@@ -38,6 +38,7 @@ def _run_ref(run: ExecutionRunRecord) -> CallSubjectHead:
         revision=Present(head=run.head, fingerprint=run.digest()),
     )
 
+
 def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
@@ -47,7 +48,9 @@ def _rejected(command_id: str, error: Exception) -> CallPreparationRejected:
         command_id=command_id,
         code="HOLD" if isinstance(error, RecoveryHold) else "INTEGRITY_FAULT",
         reason=str(error),
-        )
+    )
+
+
 def prepare_accepted_direct_terminal_v1(
     request: PrepareAcceptedDirectTerminalV1,
 ) -> PreparedAcceptedDirectTerminalV1 | CallPreparationRejected:

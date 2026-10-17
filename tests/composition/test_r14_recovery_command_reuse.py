@@ -21,7 +21,8 @@ async def test_native_selected_validation_constructs_once_and_rejects_damaged_ex
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
     )
     async with open_common_cli_execution_runtime(
-        tmp_path / "command-reuse.sqlite", resources=resources,
+        tmp_path / "command-reuse.sqlite",
+        resources=resources,
         responses=(native_response(),),
         manifest=R14_EXECUTION_NEXT_TURN_V27_PRODUCTION_MANIFEST,
         recovery_cut_source=NativeRecoveryCutSource(),
@@ -32,8 +33,12 @@ async def test_native_selected_validation_constructs_once_and_rejects_damaged_ex
         await runtime.publish_execution_accounting_readiness()
         with runtime._authority_gate().hold():
             entries = tuple(json.loads(raw) for _, _, raw in runtime._loop_decisions().entries())
-            entry, = (item for item in entries if item.get("kind") == "DECIDED"
-                      and item.get("operation_kind") == publication.OPERATION)
+            (entry,) = (
+                item
+                for item in entries
+                if item.get("kind") == "DECIDED"
+                and item.get("operation_kind") == publication.OPERATION
+            )
             physical = runtime._publication(entry)
             original = publication.command
             calls = []
@@ -47,9 +52,12 @@ async def test_native_selected_validation_constructs_once_and_rejects_damaged_ex
             assert len(calls) == 1, "one validation must derive the recovery command only once"
             assert original(retained) == physical
             calls.clear()
-            assert runtime._full_recovery_cut_source.authenticate_selected_held(
-                runtime, retained, entry
-            ) is True
+            assert (
+                runtime._full_recovery_cut_source.authenticate_selected_held(
+                    runtime, retained, entry
+                )
+                is True
+            )
             assert len(calls) == 1
 
             class DenyingNativeSource(NativeRecoveryCutSource):
@@ -88,10 +96,14 @@ async def test_native_selected_validation_constructs_once_and_rejects_damaged_ex
                 )
                 with pytest.raises(ValueError):
                     publication.validate_selected(runtime, bad_entry, physical)
-                assert runtime._full_recovery_cut_source.authenticate_selected_held(
-                    runtime, damaged, bad_entry
-                ) is False
-            assert tuple(
-                json.loads(raw) for _, _, raw in runtime._loop_decisions().entries()
-            ) == entries
+                assert (
+                    runtime._full_recovery_cut_source.authenticate_selected_held(
+                        runtime, damaged, bad_entry
+                    )
+                    is False
+                )
+            assert (
+                tuple(json.loads(raw) for _, _, raw in runtime._loop_decisions().entries())
+                == entries
+            )
             assert len(resources.require_original_provider().transfers) == 0

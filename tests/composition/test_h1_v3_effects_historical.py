@@ -96,7 +96,10 @@ def _effects_prefix(
         else:
             kwargs.update(result_bytes=payload, result_digest=hashlib.sha256(payload).hexdigest())
         raw = H1PostSealRecoveryRecordV1(
-            kind, root.root_id(), predecessor, **kwargs  # type: ignore[arg-type]
+            kind,  # type: ignore[arg-type]
+            root.root_id(),
+            predecessor,
+            **kwargs,
         ).canonical_bytes()
         entry_id = f"entry-{index}"
         records.append(_record(entry_id, raw, kind, stage))

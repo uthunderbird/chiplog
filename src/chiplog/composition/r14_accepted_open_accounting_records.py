@@ -177,6 +177,8 @@ def accepted_open_recovery_command(
         minimum_fence_frontier=0,
         records=records,
     )
+
+
 def retained_accepted_open_accounting(
     entry: dict[str, object],
 ) -> RetainedAcceptedOpenAccountingPublication:

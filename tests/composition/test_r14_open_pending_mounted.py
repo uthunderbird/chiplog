@@ -42,7 +42,8 @@ async def test_selected_open_pending_batch_recovers_after_reopen(
         recovery_cut_source=NativeRecoveryCutSource(),
     )
     operation = (
-        "agent_loop.execution-suspension.v1" if family == "suspension"
+        "agent_loop.execution-suspension.v1"
+        if family == "suspension"
         else "agent_loop.accepted-open-" + family + ".v1"
     )
     async with open_common_cli_execution_runtime(
@@ -60,7 +61,8 @@ async def test_selected_open_pending_batch_recovers_after_reopen(
         sealed = await runtime.seal_execution("hermetic-ingress", captured.run_id, captured.head)
         _, inventory, _ = read_execution_call_history(runtime)
         calls = tuple(
-            item for item in inventory.ordered_calls
+            item
+            for item in inventory.ordered_calls
             if item.initialized_record.call.classification == "CONSEQUENTIAL"
         )
         assert len(calls) == 1
@@ -68,7 +70,8 @@ async def test_selected_open_pending_batch_recovers_after_reopen(
         preview = await runtime.preview_call_acceptance(
             "hermetic-ingress",
             CallAcceptanceTarget(
-                original_call_id=call.original_call_id, initialized=call.initialized,
+                original_call_id=call.original_call_id,
+                initialized=call.initialized,
                 current_run=execution_run_head(sealed),
             ),
         )
@@ -106,7 +109,8 @@ async def test_selected_open_pending_batch_recovers_after_reopen(
 
         def interrupt_marker(entry):
             if (
-                fault == "after_anchor" and injected
+                fault == "after_anchor"
+                and injected
                 and entry.get("kind") == "MATERIALIZED"
                 and entry.get("operation_id") == injected[0].idempotency_key
             ):
@@ -136,10 +140,14 @@ async def test_selected_open_pending_batch_recovers_after_reopen(
             expected_suspension = _retained(pending[0]).result
             assert expected_suspension.run in history[0].records
             with read_connection(database) as connection:
-                batch_ids = tuple(row[0] for row in connection.execute(
-                    "SELECT record_id FROM records WHERE tenant_id=? AND commit_sequence=? "
-                    "ORDER BY rowid", (runtime._tenant_id, command.expected_head + 1),
-                ))
+                batch_ids = tuple(
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT record_id FROM records WHERE tenant_id=? AND commit_sequence=? "
+                        "ORDER BY rowid",
+                        (runtime._tenant_id, command.expected_head + 1),
+                    )
+                )
             assert batch_ids == (
                 () if fault == "before_commit" else tuple(row.record_id for row in command.records)
             )

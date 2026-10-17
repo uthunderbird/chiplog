@@ -572,9 +572,7 @@ def _prepare_h1_scoped_delivery(
         )
         retained = make_scoped_intent_retained_exchange(intent_request)
         if request.retained_sources != retained.original_sources:
-            return reject(
-                "H1 scoped delivery retained sources differ from exact intent projection"
-            )
+            return reject("H1 scoped delivery retained sources differ from exact intent projection")
         member = make_scoped_intent_member(intent)
         intent_result = PreparedScopedIntentPublication(
             source_request_fingerprint=_sha(intent_request.canonical_bytes()),

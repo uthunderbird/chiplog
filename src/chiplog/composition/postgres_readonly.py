@@ -64,8 +64,12 @@ def read_selected_readonly_lineage(
 
 
 def _call(
-    runtime: PostgresExecutionRuntime, snapshot: Snapshot, original_call_id: str,
-    *, executing_run_id: str | None = None, for_successor_admission: bool = False,
+    runtime: PostgresExecutionRuntime,
+    snapshot: Snapshot,
+    original_call_id: str,
+    *,
+    executing_run_id: str | None = None,
+    for_successor_admission: bool = False,
 ) -> tuple[str, ConversationHistoryQuery, str]:
     calls = [
         call for call in runtime._initialized(snapshot) if call.original_call_id == original_call_id
@@ -86,7 +90,10 @@ def _call(
         from chiplog.composition.postgres_readonly_successor import require_successor_authority
 
         require_successor_authority(
-            runtime, snapshot, executing_run_id, original_call_id,
+            runtime,
+            snapshot,
+            executing_run_id,
+            original_call_id,
             for_successor_admission=for_successor_admission,
         )
         run_id = executing_run_id
@@ -112,7 +119,9 @@ async def _publish(
 
     def guard(current: Snapshot) -> None:
         _, _, run_id = _call(
-            runtime, current, proposed.original_call_id,
+            runtime,
+            current,
+            proposed.original_call_id,
             executing_run_id=proposed.attempts[-1].run_id,
         )
         if phase == "accept":
@@ -155,7 +164,9 @@ async def execute_readonly_call(
         if previous is None and expected_counter_head is not None:
             raise LoopRejected("read-only lineage is absent")
         lineage_id, query, run_id = _call(
-            runtime, snapshot, original_call_id,
+            runtime,
+            snapshot,
+            original_call_id,
             executing_run_id=previous.attempts[-1].run_id if previous is not None else None,
         )
         current = previous

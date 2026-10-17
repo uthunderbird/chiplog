@@ -292,9 +292,10 @@ async def test_selected_capture_retains_exact_signed_resource_observation_and_gr
         assert captured.resource_observation == resources.observe()
         assert captured.verified.recipient == sources.expected.recipient
         assert captured.resource_grant.identity == grant["grant_id"]
-        assert captured.resource_grant.fingerprint == hashlib.sha256(
-            evidence.dispatch_grant_bytes
-        ).hexdigest()
+        assert (
+            captured.resource_grant.fingerprint
+            == hashlib.sha256(evidence.dispatch_grant_bytes).hexdigest()
+        )
         assert captured.resource_grant.head == (
             grant["grant_id"] + "/" + hashlib.sha256(evidence.dispatch_grant_bytes).hexdigest()
         )

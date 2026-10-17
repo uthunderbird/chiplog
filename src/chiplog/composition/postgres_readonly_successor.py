@@ -56,19 +56,25 @@ def selected_turn_origin(
         source = runs.get(edge.source_run_head)
         initial = runs.get(edge.successor_active_head)
         if (
-            source is None or source.run_id != edge.source_run_id
-            or initial is None or initial.run_id != run.run_id
+            source is None
+            or source.run_id != edge.source_run_id
+            or initial is None
+            or initial.run_id != run.run_id
             or len(source.turns) != edge.inherited_turn_count
             or initial.turns != source.turns
-            or run.turns[:edge.inherited_turn_count] != source.turns
+            or run.turns[: edge.inherited_turn_count] != source.turns
         ):
             raise PostgresIntegrityError("inherited Turn differs from selected successor source")
         run = source
 
 
 def require_successor_authority(
-    runtime: PostgresExecutionRuntime, snapshot: Snapshot, run_id: str, original_call_id: str,
-    *, for_successor_admission: bool = False,
+    runtime: PostgresExecutionRuntime,
+    snapshot: Snapshot,
+    run_id: str,
+    original_call_id: str,
+    *,
+    for_successor_admission: bool = False,
 ) -> ExecutionRun:
     from chiplog.composition.postgres_readonly import _selected
 
@@ -76,13 +82,15 @@ def require_successor_authority(
     lineage = _selected(snapshot, original_call_id)
     rows = [row for row in runtime._runs(snapshot) if row.run_id == run_id]
     if (
-        edge is None or edge.original_call_id != original_call_id
-        or lineage is None or not lineage.attempts
+        edge is None
+        or edge.original_call_id != original_call_id
+        or lineage is None
+        or not lineage.attempts
         or lineage.lineage_id != edge.lineage_id
         or lineage.attempts[-1].run_id != run_id
-        or not rows or rows[-1].state not in (
-            ("ACTIVE", "SUSPENDED") if for_successor_admission else ("ACTIVE",)
-        )
+        or not rows
+        or rows[-1].state
+        not in (("ACTIVE", "SUSPENDED") if for_successor_admission else ("ACTIVE",))
     ):
         raise LoopHold("read-only successor execution authority is absent")
     return rows[-1]
@@ -133,7 +141,10 @@ async def retry_readonly_in_successor(
                 raise LoopHold("successor requires a definite retryable pending outcome")
             run_id = previous.attempts[-1].run_id
             _call(
-                runtime, current, original_call_id, executing_run_id=run_id,
+                runtime,
+                current,
+                original_call_id,
+                executing_run_id=run_id,
                 for_successor_admission=True,
             )
             all_runs = runtime._runs(current)
@@ -162,30 +173,48 @@ async def retry_readonly_in_successor(
 
         previous, source = admission(snapshot)
         superseded = advance(source, "ReadOnlySuccessorSelected", state="SUPERSEDED")
-        successor = headed(source.model_copy(update={
-            "run_id": successor_run_id, "head": "pending", "predecessor": None,
-            "state": "ACTIVE",
-            "worker_session": runtime.current_worker(), "event": "ReadOnlySuccessorActivated",
-        }), "loop:")
+        successor = headed(
+            source.model_copy(
+                update={
+                    "run_id": successor_run_id,
+                    "head": "pending",
+                    "predecessor": None,
+                    "state": "ACTIVE",
+                    "worker_session": runtime.current_worker(),
+                    "event": "ReadOnlySuccessorActivated",
+                }
+            ),
+            "loop:",
+        )
         accepted = accept_readonly_attempt(
             previous, run_id=successor_run_id, expected_head=previous.head
         )
         edge = ReadOnlySuccessorV2(
             edge_id=previous.lineage_id + ":successor:" + str(accepted.attempts_consumed),
-            original_call_id=original_call_id, lineage_id=previous.lineage_id,
-            pending_head=previous.head, source_run_id=source.run_id, source_run_head=source.head,
-            successor_run_id=successor_run_id, successor_active_head=successor.head,
-            accepted_head=accepted.head, inherited_turn_count=len(source.turns),
+            original_call_id=original_call_id,
+            lineage_id=previous.lineage_id,
+            pending_head=previous.head,
+            source_run_id=source.run_id,
+            source_run_head=source.head,
+            successor_run_id=successor_run_id,
+            successor_active_head=successor.head,
+            accepted_head=accepted.head,
+            inherited_turn_count=len(source.turns),
         )
 
         def guard(current: Snapshot) -> None:
             admission(current)
 
         result = await runtime.publish_execution_batch(
-            peer, "readonly.successor.v2", previous.head, snapshot.head,
+            peer,
+            "readonly.successor.v2",
+            previous.head,
+            snapshot.head,
             (
                 Record(
-                    superseded.head, "agent_loop", superseded.schema_id,
+                    superseded.head,
+                    "agent_loop",
+                    superseded.schema_id,
                     superseded.canonical_bytes(),
                 ),
                 Record(

@@ -142,10 +142,13 @@ async def test_locator_reopens_installed_v2_seal_after_later_unrelated_input(
         async with open_installed_h1_runtime(launch, resources=later_resources) as runtime:
             other = await _admit_other(runtime)
             await runtime.drive_input(other)
-            assert H1V2RecoveryNativeSource(runtime).locate_selected_seal(
-                original_identity=request.identity,
-                original_fingerprint=request.original_driver_command_fingerprint(),
-            ) == located
+            assert (
+                H1V2RecoveryNativeSource(runtime).locate_selected_seal(
+                    original_identity=request.identity,
+                    original_fingerprint=request.original_driver_command_fingerprint(),
+                )
+                == located
+            )
 
 
 @pytest.mark.asyncio

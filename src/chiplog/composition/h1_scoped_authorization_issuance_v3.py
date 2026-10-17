@@ -108,6 +108,7 @@ def _retained_fingerprint(
 
 def _canonical_json(raw: bytes) -> None:
     """Reject duplicate, non-object, and noncanonical JSON before DTO decode."""
+
     def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
@@ -120,9 +121,11 @@ def _canonical_json(raw: bytes) -> None:
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
     except (AttributeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise ValueError("owner frame payload is not strict UTF-8 JSON") from error
-    if not isinstance(value, dict) or json.dumps(
-        value, sort_keys=True, ensure_ascii=False, separators=(",", ":")
-    ).encode() != raw:
+    if (
+        not isinstance(value, dict)
+        or json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+        != raw
+    ):
         raise ValueError("owner frame payload is not canonical JSON")
 
 

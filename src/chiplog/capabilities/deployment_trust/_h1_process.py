@@ -22,8 +22,8 @@ ROUTES = tuple(
 )
 
 _j7_dispatch: Callable[[str, bytes], dict[str, object]] = _j7_process.make_dispatch(None)
-_j7_grant_dispatch: Callable[[str, bytes], dict[str, object]] = (
-    _j7_grant_process.make_dispatch(None)
+_j7_grant_dispatch: Callable[[str, bytes], dict[str, object]] = _j7_grant_process.make_dispatch(
+    None
 )
 
 

@@ -290,15 +290,10 @@ class H1ScopedAuthorizationNormativeConflictGenerationReaderV1:
         )
         if not selected_members:
             raise ValueError("selected V4 decision has no effects member")
-        rows = tuple(
-            row
-            for row in cut.rows
-            if row.commit_sequence in decisions
-        )
+        rows = tuple(row for row in cut.rows if row.commit_sequence in decisions)
         if (
             tuple(row.record for row in cut.rows) != (*expected, *selected_members)
-            or
-            any(row.commit_sequence >= selected.tenant_commit_sequence for row in rows)
+            or any(row.commit_sequence >= selected.tenant_commit_sequence for row in rows)
             or tuple(row.record for row in rows) != expected
             or any(
                 item.tenant_commit_sequence >= selected.tenant_commit_sequence

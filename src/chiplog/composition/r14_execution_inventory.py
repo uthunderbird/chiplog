@@ -106,9 +106,7 @@ def execution_inventory(
             or cancellation.proposal.result.terminal != terminal
         ):
             raise ValueError("execution cancellation lacks its exact initialized branch")
-        observations[row.original_call_id] = row.model_copy(
-            update={"terminal": terminal.revision}
-        )
+        observations[row.original_call_id] = row.model_copy(update={"terminal": terminal.revision})
     return accepted_inventory(
         inventory.model_copy(
             update={"ordered_calls": tuple(observations[key] for key in sorted(observations))}

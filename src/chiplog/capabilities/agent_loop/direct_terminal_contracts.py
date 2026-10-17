@@ -41,6 +41,8 @@ class AcceptedDirectTerminalCutV1(ExecutionRecoveryDTO):
     batch_record_ids: tuple[Identity, ...] = Field(min_length=1)
     prior_terminal: Literal["ABSENT"] = "ABSENT"
     cut_fingerprint: Digest
+
+
 class PrepareAcceptedDirectTerminalV1(ExecutionRecoveryDTO):
     kind: Literal["PREPARE_ACCEPTED_DIRECT_TERMINAL_V1"] = "PREPARE_ACCEPTED_DIRECT_TERMINAL_V1"
     command_id: Identity

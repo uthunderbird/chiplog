@@ -1382,8 +1382,9 @@ def _decode_value(
         raise ValueError("H1 completion batch read manifest differs from captured issuance")
     if (
         batch.identity.tenant_id
-        != cast(PrepareExecutionCompletionFirstPathV2, value.assembly.original_completion_request)
-        .source.tenant_id
+        != cast(
+            PrepareExecutionCompletionFirstPathV2, value.assembly.original_completion_request
+        ).source.tenant_id
         or batch.identity.command_id != command_id
         or batch.identity.command_fingerprint != command_fingerprint
     ):

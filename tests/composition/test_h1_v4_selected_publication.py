@@ -384,8 +384,7 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
                 runtime._h1_scoped_authorization_normative_conflict_generation_reader_v1
             )
             assert (
-                type(normative_reader)
-                is H1ScopedAuthorizationNormativeConflictGenerationReaderV1
+                type(normative_reader) is H1ScopedAuthorizationNormativeConflictGenerationReaderV1
             )
             normative_capture = normative_reader.read(delivery_work_capture)
             with runtime._authority_gate().hold():
@@ -393,16 +392,12 @@ async def test_v22_selected_v4_publication_reopens_through_historical_binder_onc
             assert normative_source.clock_epoch == clock_role.clock_epoch
             assert normative_source.valid_until_ns == clock_role.valid_until_ns
             mandate = issuance.effects_result.intent_result.intent.mandate
-            assert (
-                normative_source.invalidation_manifest
-                == mandate.normative_conflict_generation
-            )
+            assert normative_source.invalidation_manifest == mandate.normative_conflict_generation
             current_effects_reader = (
                 runtime._h1_scoped_authorization_current_effects_history_reader_v1
             )
             assert (
-                type(current_effects_reader)
-                is H1ScopedAuthorizationCurrentEffectsHistoryReaderV1
+                type(current_effects_reader) is H1ScopedAuthorizationCurrentEffectsHistoryReaderV1
             )
             current_effects_capture = current_effects_reader.read(delivery_work_capture)
             with runtime._authority_gate().hold():

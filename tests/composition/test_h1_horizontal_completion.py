@@ -179,8 +179,7 @@ async def test_installed_h1_horizontal_four_owner_calls_and_final_scope(
                 conversation_request.canonical_json_bytes()
             )
             assert (
-                conversation_exchange.returned.request_id
-                == conversation_exchange.sent.request_id
+                conversation_exchange.returned.request_id == conversation_exchange.sent.request_id
             )
             assert conversation_exchange.returned.responder == conversation_exchange.sent.callee
             assert conversation_exchange.sent_at_ns <= conversation_exchange.returned_at_ns

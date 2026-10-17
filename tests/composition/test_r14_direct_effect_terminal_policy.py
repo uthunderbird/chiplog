@@ -87,9 +87,7 @@ def test_v1_rejects_non_exact_status_and_empty_evidence_lineage() -> None:
 def test_v1_classifies_authenticated_neutral_evidence_appended_after_closure() -> None:
     send = original_send()
     unknown = prepare_outcome(request(send, send))
-    confirmed = prepare_outcome(
-        request(unknown, send, positive=("subject",), name="confirmed")
-    )
+    confirmed = prepare_outcome(request(unknown, send, positive=("subject",), name="confirmed"))
     closed = prepare_outcome(request(confirmed, send, close=True))
     late = prepare_outcome(request(closed, send, name="late-neutral"))
 

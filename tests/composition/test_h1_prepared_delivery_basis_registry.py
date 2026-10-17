@@ -100,8 +100,7 @@ async def test_installed_registry_captures_and_replays_only_a_genuine_b_completi
                 == session._cut.first_path.initialization_envelope_bytes
             )
             assert (
-                first.fence.canonical_bytes()
-                == session._preflight.request.fence.canonical_bytes()
+                first.fence.canonical_bytes() == session._preflight.request.fence.canonical_bytes()
             )
             assert journal._entries() == before
             assert first.delivery.selection.recipient == scope.recipient
@@ -125,9 +124,7 @@ async def test_installed_registry_captures_and_replays_only_a_genuine_b_completi
 
             forged = object.__new__(type(historical))
             forged._record = object()
-            with pytest.raises(
-                H1CompletionExchangeRegistryViolation, match="not registry-issued"
-            ):
+            with pytest.raises(H1CompletionExchangeRegistryViolation, match="not registry-issued"):
                 registry.replay_prepared_delivery_preimages(forged)
 
             retained_sent = historical._record.exchange.sent.canonical_payload
@@ -175,9 +172,13 @@ async def test_registry_rejects_before_success_and_after_source_or_mount_change(
     )
     with _open_installed_h1_launch(slot) as launch:
         async with open_installed_h1_runtime(launch, resources=resources) as runtime:
-            request, _original, seal, _first_path, _native = (
-                await _selected_native_v3_then_v2_source(runtime)
-            )
+            (
+                request,
+                _original,
+                seal,
+                _first_path,
+                _native,
+            ) = await _selected_native_v3_then_v2_source(runtime)
             registry = runtime._h1_completion_exchange_registry
             assert registry is not None
             with pytest.raises(H1CompletionExchangeRegistryViolation, match="one B registration"):

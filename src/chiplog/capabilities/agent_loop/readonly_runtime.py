@@ -40,11 +40,13 @@ def accept_readonly_attempt(
     attempt = ReadOnlyAttemptV2(
         attempt_id=f"{current.lineage_id}:attempt:{ordinal}", ordinal=ordinal, run_id=run_id
     )
-    return current.model_copy(update={
-        "head": attempt.attempt_id + ":accepted",
-        "predecessor": current.head,
-        "attempts": (*current.attempts, attempt),
-    })
+    return current.model_copy(
+        update={
+            "head": attempt.attempt_id + ":accepted",
+            "predecessor": current.head,
+            "attempts": (*current.attempts, attempt),
+        }
+    )
 
 
 def record_readonly_outcome(
@@ -57,8 +59,10 @@ def record_readonly_outcome(
         if attempt.outcome == outcome:
             return current
         raise LoopRejected("read-only attempt already has a different selected outcome")
-    return current.model_copy(update={
-        "head": attempt.attempt_id + ":outcome",
-        "predecessor": current.head,
-        "attempts": (*current.attempts[:-1], attempt.model_copy(update={"outcome": outcome})),
-    })
+    return current.model_copy(
+        update={
+            "head": attempt.attempt_id + ":outcome",
+            "predecessor": current.head,
+            "attempts": (*current.attempts[:-1], attempt.model_copy(update={"outcome": outcome})),
+        }
+    )

@@ -17,7 +17,9 @@ from chiplog.verification.sqlite_preparation import (
 
 ColumnDeclarations = tuple[tuple[str, tuple[tuple[str, str, int, int], ...]], ...]
 SchemaContract = tuple[
-    str, tuple[tuple[str, str], ...], tuple[PhysicalCatalogRow, ...],
+    str,
+    tuple[tuple[str, str], ...],
+    tuple[PhysicalCatalogRow, ...],
     tuple[tuple[str, tuple[ColumnInfo, ...]], ...],
     tuple[tuple[str, tuple[IndexInfo, ...]], ...],
     tuple[tuple[str, tuple[IndexColumnInfo, ...]], ...],
@@ -77,73 +79,87 @@ CREATE TABLE IF NOT EXISTS authority_read_releases (
 
 EXPECTED_SQL: tuple[tuple[str, int, str, str], ...] = (
     (
-        'BrokerAuthorityReader._execute_planning_read', 39, 'branch=0',
+        "BrokerAuthorityReader._execute_planning_read",
+        39,
+        "branch=0",
         (
-            'SELECT 1 FROM publications WHERE tenant_id = ? GROUP BY commit_sequence HAVING '
-            'COUNT(*) > 1 LIMIT 1'
+            "SELECT 1 FROM publications WHERE tenant_id = ? GROUP BY commit_sequence HAVING "
+            "COUNT(*) > 1 LIMIT 1"
         ),
     ),
     (
-        'BrokerAuthorityReader._execute_planning_read', 44, 'branch=0',
+        "BrokerAuthorityReader._execute_planning_read",
+        44,
+        "branch=0",
         (
-            'SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, '
-            'commit_sequence, record_ids FROM publications WHERE tenant_id = ? AND '
+            "SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, "
+            "commit_sequence, record_ids FROM publications WHERE tenant_id = ? AND "
             "operation_kind = 'planning.create_intention_line' AND (commit_sequence, "
-            'operation_kind, idempotency_key) > (?, ?, ?) ORDER BY commit_sequence, '
-            'operation_kind, idempotency_key LIMIT ?'
+            "operation_kind, idempotency_key) > (?, ?, ?) ORDER BY commit_sequence, "
+            "operation_kind, idempotency_key LIMIT ?"
         ),
     ),
     (
-        'BrokerAuthorityReader._execute_planning_read', 44, 'branch=1',
+        "BrokerAuthorityReader._execute_planning_read",
+        44,
+        "branch=1",
         (
-            'SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, '
-            'commit_sequence, record_ids FROM publications WHERE tenant_id = ? AND '
-            '(commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) ORDER BY '
-            'commit_sequence, operation_kind, idempotency_key LIMIT ?'
+            "SELECT tenant_id, operation_kind, idempotency_key, request_fingerprint, "
+            "commit_sequence, record_ids FROM publications WHERE tenant_id = ? AND "
+            "(commit_sequence, operation_kind, idempotency_key) > (?, ?, ?) ORDER BY "
+            "commit_sequence, operation_kind, idempotency_key LIMIT ?"
         ),
     ),
     (
-        'BrokerAuthorityReader._execute_planning_read', 48, 'branch=0',
+        "BrokerAuthorityReader._execute_planning_read",
+        48,
+        "branch=0",
         (
-            'SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence '
-            'FROM records WHERE tenant_id = ? AND commit_sequence IN (SELECT commit_sequence '
-            'FROM publications WHERE tenant_id = ? AND operation_kind = '
+            "SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence "
+            "FROM records WHERE tenant_id = ? AND commit_sequence IN (SELECT commit_sequence "
+            "FROM publications WHERE tenant_id = ? AND operation_kind = "
             "'planning.create_intention_line' AND (commit_sequence, operation_kind, "
-            'idempotency_key) > (?, ?, ?) ORDER BY commit_sequence, operation_kind, '
-            'idempotency_key LIMIT ?) ORDER BY record_id LIMIT ?'
+            "idempotency_key) > (?, ?, ?) ORDER BY commit_sequence, operation_kind, "
+            "idempotency_key LIMIT ?) ORDER BY record_id LIMIT ?"
         ),
     ),
     (
-        'BrokerAuthorityReader._execute_planning_read', 48, 'branch=1',
+        "BrokerAuthorityReader._execute_planning_read",
+        48,
+        "branch=1",
         (
-            'SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence '
-            'FROM records WHERE tenant_id = ? AND commit_sequence IN (SELECT commit_sequence '
-            'FROM publications WHERE tenant_id = ? AND (commit_sequence, operation_kind, '
-            'idempotency_key) > (?, ?, ?) ORDER BY commit_sequence, operation_kind, '
-            'idempotency_key LIMIT ?) ORDER BY record_id LIMIT ?'
+            "SELECT tenant_id, record_id, owner, schema_id, canonical_bytes, commit_sequence "
+            "FROM records WHERE tenant_id = ? AND commit_sequence IN (SELECT commit_sequence "
+            "FROM publications WHERE tenant_id = ? AND (commit_sequence, operation_kind, "
+            "idempotency_key) > (?, ?, ?) ORDER BY commit_sequence, operation_kind, "
+            "idempotency_key LIMIT ?) ORDER BY record_id LIMIT ?"
         ),
     ),
     (
-        'BrokerAuthorityReader.execute', 9, 'branch=0',
-        (
-            'BEGIN'
-        ),
+        "BrokerAuthorityReader.execute",
+        9,
+        "branch=0",
+        ("BEGIN"),
     ),
     (
-        'BrokerAuthorityReader.execute', 24, 'branch=0',
-        (
-            'SELECT head FROM tenant_heads WHERE tenant_id = ?'
-        ),
+        "BrokerAuthorityReader.execute",
+        24,
+        "branch=0",
+        ("SELECT head FROM tenant_heads WHERE tenant_id = ?"),
     ),
     (
-        '_authority_snapshot_bytes', 12, "(('table', 'deletion_fences'),)",
+        "_authority_snapshot_bytes",
+        12,
+        "(('table', 'deletion_fences'),)",
         (
             'SELECT "tenant_id", "generation", "frontier" FROM main."deletion_fences" ORDER '
-            'BY 1, 2, 3'
+            "BY 1, 2, 3"
         ),
     ),
     (
-        '_authority_snapshot_bytes', 12, "(('table', 'evidence_inbox'),)",
+        "_authority_snapshot_bytes",
+        12,
+        "(('table', 'evidence_inbox'),)",
         (
             'SELECT "tenant_id", "source_id", "evidence_id", "fingerprint", '
             '"canonical_bytes", "followup_kind", "state", "attempt_id", "transport_version", '
@@ -151,166 +167,185 @@ EXPECTED_SQL: tuple[tuple[str, int, str, str], ...] = (
         ),
     ),
     (
-        '_authority_snapshot_bytes', 12, "(('table', 'publications'),)",
+        "_authority_snapshot_bytes",
+        12,
+        "(('table', 'publications'),)",
         (
             'SELECT "tenant_id", "operation_kind", "idempotency_key", "request_fingerprint", '
             '"commit_sequence", "record_ids" FROM main."publications" ORDER BY 1, 2, 3, 4, 5,'
-            ' 6'
+            " 6"
         ),
     ),
     (
-        '_authority_snapshot_bytes', 12, "(('table', 'records'),)",
+        "_authority_snapshot_bytes",
+        12,
+        "(('table', 'records'),)",
         (
             'SELECT "tenant_id", "record_id", "owner", "schema_id", "canonical_bytes", '
             '"commit_sequence" FROM main."records" ORDER BY 1, 2, 3, 4, 5, 6'
         ),
     ),
     (
-        '_authority_snapshot_bytes', 12, "(('table', 'store_metadata'),)",
-        (
-            'SELECT "singleton", "store_version" FROM main."store_metadata" ORDER BY 1, 2'
-        ),
+        "_authority_snapshot_bytes",
+        12,
+        "(('table', 'store_metadata'),)",
+        ('SELECT "singleton", "store_version" FROM main."store_metadata" ORDER BY 1, 2'),
     ),
     (
-        '_authority_snapshot_bytes', 12, "(('table', 'tenant_heads'),)",
-        (
-            'SELECT "tenant_id", "head" FROM main."tenant_heads" ORDER BY 1, 2'
-        ),
+        "_authority_snapshot_bytes",
+        12,
+        "(('table', 'tenant_heads'),)",
+        ('SELECT "tenant_id", "head" FROM main."tenant_heads" ORDER BY 1, 2'),
     ),
     (
-        '_schema_members', 4, 'branch=0',
+        "_schema_members",
+        4,
+        "branch=0",
         (
             "SELECT name FROM main.sqlite_master WHERE type = 'table' AND name NOT GLOB "
             "'sqlite_*' ORDER BY name"
         ),
     ),
     (
-        '_schema_members', 12, "(('table', 'deletion_fences'),)",
-        (
-            'PRAGMA main.table_info("deletion_fences")'
-        ),
+        "_schema_members",
+        12,
+        "(('table', 'deletion_fences'),)",
+        ('PRAGMA main.table_info("deletion_fences")'),
     ),
     (
-        '_schema_members', 12, "(('table', 'derivatives'),)",
-        (
-            'PRAGMA main.table_info("derivatives")'
-        ),
+        "_schema_members",
+        12,
+        "(('table', 'derivatives'),)",
+        ('PRAGMA main.table_info("derivatives")'),
     ),
     (
-        '_schema_members', 12, "(('table', 'evidence_inbox'),)",
-        (
-            'PRAGMA main.table_info("evidence_inbox")'
-        ),
+        "_schema_members",
+        12,
+        "(('table', 'evidence_inbox'),)",
+        ('PRAGMA main.table_info("evidence_inbox")'),
     ),
     (
-        '_schema_members', 12, "(('table', 'publications'),)",
-        (
-            'PRAGMA main.table_info("publications")'
-        ),
+        "_schema_members",
+        12,
+        "(('table', 'publications'),)",
+        ('PRAGMA main.table_info("publications")'),
     ),
     (
-        '_schema_members', 12, "(('table', 'records'),)",
-        (
-            'PRAGMA main.table_info("records")'
-        ),
+        "_schema_members",
+        12,
+        "(('table', 'records'),)",
+        ('PRAGMA main.table_info("records")'),
     ),
     (
-        '_schema_members', 12, "(('table', 'store_metadata'),)",
-        (
-            'PRAGMA main.table_info("store_metadata")'
-        ),
+        "_schema_members",
+        12,
+        "(('table', 'store_metadata'),)",
+        ('PRAGMA main.table_info("store_metadata")'),
     ),
     (
-        '_schema_members', 12, "(('table', 'tenant_heads'),)",
-        (
-            'PRAGMA main.table_info("tenant_heads")'
-        ),
+        "_schema_members",
+        12,
+        "(('table', 'tenant_heads'),)",
+        ('PRAGMA main.table_info("tenant_heads")'),
     ),
     (
-        'BrokerReadLedger.__init__', 16, 'literal-script',
+        "BrokerReadLedger.__init__",
+        16,
+        "literal-script",
         (
-            '\nCREATE TABLE IF NOT EXISTS authority_read_state (\n    tenant_id TEXT PRIMARY '
-            'KEY,\n    canonical_state BLOB NOT NULL,\n    state_fingerprint TEXT NOT NULL\n'
-            ');\nCREATE TABLE IF NOT EXISTS authority_read_releases (\n    tenant_id TEXT NOT'
-            ' NULL,\n    read_attempt_id TEXT NOT NULL,\n    request_fingerprint TEXT NOT '
-            'NULL,\n    initial_state_fingerprint TEXT NOT NULL,\n    state TEXT NOT NULL '
+            "\nCREATE TABLE IF NOT EXISTS authority_read_state (\n    tenant_id TEXT PRIMARY "
+            "KEY,\n    canonical_state BLOB NOT NULL,\n    state_fingerprint TEXT NOT NULL\n"
+            ");\nCREATE TABLE IF NOT EXISTS authority_read_releases (\n    tenant_id TEXT NOT"
+            " NULL,\n    read_attempt_id TEXT NOT NULL,\n    request_fingerprint TEXT NOT "
+            "NULL,\n    initial_state_fingerprint TEXT NOT NULL,\n    state TEXT NOT NULL "
             "CHECK (state IN ('PENDING', 'RELEASED', 'STALE_OR_INDETERMINATE_READ')),\n    "
-            'result_digest TEXT,\n    result_bytes BLOB,\n    recipient_fingerprint TEXT NOT '
-            'NULL,\n    proof_fingerprint TEXT,\n    enqueued INTEGER NOT NULL CHECK '
-            '(enqueued IN (0, 1)),\n    dequeued INTEGER NOT NULL CHECK (dequeued IN (0, 1)),'
-            '\n    PRIMARY KEY (tenant_id, read_attempt_id)\n);\n'
+            "result_digest TEXT,\n    result_bytes BLOB,\n    recipient_fingerprint TEXT NOT "
+            "NULL,\n    proof_fingerprint TEXT,\n    enqueued INTEGER NOT NULL CHECK "
+            "(enqueued IN (0, 1)),\n    dequeued INTEGER NOT NULL CHECK (dequeued IN (0, 1)),"
+            "\n    PRIMARY KEY (tenant_id, read_attempt_id)\n);\n"
         ),
     ),
     (
-        'BrokerReadLedger.begin', 6, 'branch=0',
+        "BrokerReadLedger.begin",
+        6,
+        "branch=0",
         (
-            'INSERT INTO authority_read_releases VALUES\n                       (?, ?, ?, ?, '
+            "INSERT INTO authority_read_releases VALUES\n                       (?, ?, ?, ?, "
             "'PENDING', NULL, NULL, ?, NULL, 0, 0)"
         ),
     ),
     (
-        'BrokerReadLedger.current_state_or_none', 7, 'branch=0',
+        "BrokerReadLedger.current_state_or_none",
+        7,
+        "branch=0",
+        ("SELECT canonical_state, state_fingerprint FROM authority_read_state WHERE tenant_id = ?"),
+    ),
+    (
+        "BrokerReadLedger.dequeue",
+        4,
+        "branch=0",
+        ("BEGIN IMMEDIATE"),
+    ),
+    (
+        "BrokerReadLedger.dequeue",
+        7,
+        "branch=0",
         (
-            'SELECT canonical_state, state_fingerprint FROM authority_read_state WHERE '
-            'tenant_id = ?'
+            "SELECT result_bytes, recipient_fingerprint, state, enqueued, dequeued"
+            "\n                   FROM authority_read_releases\n                   WHERE "
+            "tenant_id = ? AND read_attempt_id = ?"
         ),
     ),
     (
-        'BrokerReadLedger.dequeue', 4, 'branch=0',
+        "BrokerReadLedger.dequeue",
+        13,
+        "branch=0",
         (
-            'BEGIN IMMEDIATE'
+            "UPDATE authority_read_releases SET dequeued = 1\n                   WHERE "
+            "tenant_id = ? AND read_attempt_id = ? AND dequeued = 0"
         ),
     ),
     (
-        'BrokerReadLedger.dequeue', 7, 'branch=0',
+        "BrokerReadLedger.release",
+        10,
+        "branch=0",
+        ("BEGIN IMMEDIATE"),
+    ),
+    (
+        "BrokerReadLedger.release",
+        13,
+        "branch=0",
+        ("SELECT state_fingerprint FROM authority_read_state WHERE tenant_id = ?"),
+    ),
+    (
+        "BrokerReadLedger.release",
+        16,
+        "branch=0",
         (
-            'SELECT result_bytes, recipient_fingerprint, state, enqueued, dequeued'
-            '\n                   FROM authority_read_releases\n                   WHERE '
-            'tenant_id = ? AND read_attempt_id = ?'
+            "SELECT request_fingerprint, initial_state_fingerprint, state,"
+            "\n                          result_digest, recipient_fingerprint, "
+            "proof_fingerprint,\n                          enqueued, dequeued"
+            "\n                   FROM authority_read_releases\n                   WHERE "
+            "tenant_id = ? AND read_attempt_id = ?"
         ),
     ),
     (
-        'BrokerReadLedger.dequeue', 13, 'branch=0',
-        (
-            'UPDATE authority_read_releases SET dequeued = 1\n                   WHERE '
-            'tenant_id = ? AND read_attempt_id = ? AND dequeued = 0'
-        ),
-    ),
-    (
-        'BrokerReadLedger.release', 10, 'branch=0',
-        (
-            'BEGIN IMMEDIATE'
-        ),
-    ),
-    (
-        'BrokerReadLedger.release', 13, 'branch=0',
-        (
-            'SELECT state_fingerprint FROM authority_read_state WHERE tenant_id = ?'
-        ),
-    ),
-    (
-        'BrokerReadLedger.release', 16, 'branch=0',
-        (
-            'SELECT request_fingerprint, initial_state_fingerprint, state,'
-            '\n                          result_digest, recipient_fingerprint, '
-            'proof_fingerprint,\n                          enqueued, dequeued'
-            '\n                   FROM authority_read_releases\n                   WHERE '
-            'tenant_id = ? AND read_attempt_id = ?'
-        ),
-    ),
-    (
-        'BrokerReadLedger.release', 29, 'branch=0',
+        "BrokerReadLedger.release",
+        29,
+        "branch=0",
         (
             "UPDATE authority_read_releases SET state = 'RELEASED',\n                       "
-            'result_digest = ?, result_bytes = ?, proof_fingerprint = ?, enqueued = 1'
-            '\n                       WHERE tenant_id = ? AND read_attempt_id = ? AND state ='
+            "result_digest = ?, result_bytes = ?, proof_fingerprint = ?, enqueued = 1"
+            "\n                       WHERE tenant_id = ? AND read_attempt_id = ? AND state ="
             " 'PENDING'"
         ),
     ),
     (
-        'BrokerReadLedger.release', 31, 'branch=0',
+        "BrokerReadLedger.release",
+        31,
+        "branch=0",
         (
-            'UPDATE authority_read_releases\n                       SET state = '
+            "UPDATE authority_read_releases\n                       SET state = "
             "'STALE_OR_INDETERMINATE_READ', proof_fingerprint = ?\n                       "
             "WHERE tenant_id = ? AND read_attempt_id = ? AND state = 'PENDING'"
         ),
@@ -506,7 +541,12 @@ _RECORD = ("canonical_bytes", "commit_sequence", "owner", "record_id", "schema_i
 
 
 def expected_actions(
-    qualname: str, ordinal: int, label: str, *, initial_case: str = "REGISTERED", unit: int = 0,
+    qualname: str,
+    ordinal: int,
+    label: str,
+    *,
+    initial_case: str = "REGISTERED",
+    unit: int = 0,
 ) -> tuple[SqlAction, ...]:
     """Independent finite semantic action contracts; no candidate SQL is parsed."""
     if qualname == "BrokerAuthorityReader._execute_planning_read":

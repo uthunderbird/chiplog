@@ -87,9 +87,7 @@ class NativeOneCallRecoveryProfileV2(RecoveryDTO):
     schema_id: Literal["chiplog.execution.native-one-call-recovery-profile.v2"] = SCHEMA_V2
     kind: Literal["NATIVE_ONE_CALL_RECOVERY_PROFILE_V2"] = "NATIVE_ONE_CALL_RECOVERY_PROFILE_V2"
     registry: RecoveryFrontierRegistry
-    call_branches: tuple[
-        Literal["CANCELLED_BEFORE_ACCEPT", "CONSEQUENTIAL_ACCEPTED_RECOVERY"], ...
-    ]
+    call_branches: tuple[Literal["CANCELLED_BEFORE_ACCEPT", "CONSEQUENTIAL_ACCEPTED_RECOVERY"], ...]
     dispatch_outcomes: tuple[
         Literal[
             "CONFIRMED",
@@ -97,7 +95,8 @@ class NativeOneCallRecoveryProfileV2(RecoveryDTO):
             "OUTCOME_UNKNOWN",
             "PARTIAL",
             "PARTIAL_CONFIRMED",
-        ], ...
+        ],
+        ...,
     ]
     dispatch_record_kinds: tuple[
         Literal[
@@ -105,7 +104,8 @@ class NativeOneCallRecoveryProfileV2(RecoveryDTO):
             "INTENT_ACCEPTED",
             "DISPATCH_AUTHORIZED",
             "SEND_COMMITTED",
-        ], ...
+        ],
+        ...,
     ]
     dispatch_outcome_record_kinds: tuple[Literal["EVIDENCE_RECORDED", "RECONCILED"], ...]
     obligation_states: tuple[Literal["OPEN", "CLOSED"], ...]
@@ -184,13 +184,13 @@ class NativeOneCallRecoveryProfileV3(NativeOneCallRecoveryProfileV2):
 
     schema_id: Literal["chiplog.execution.native-one-call-recovery-profile.v3"] = SCHEMA_V3
     kind: Literal["NATIVE_ONE_CALL_RECOVERY_PROFILE_V3"] = "NATIVE_ONE_CALL_RECOVERY_PROFILE_V3"
-    causal_change_set: Literal[
+    causal_change_set: Literal["RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_V3"] = (
         "RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_V3"
-    ] = "RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_V3"
+    )
     causal_transitions: tuple[str, ...]
-    fingerprint_domain: Literal[
+    fingerprint_domain: Literal["chiplog.execution.native-one-call-recovery.v3"] = (
         "chiplog.execution.native-one-call-recovery.v3"
-    ] = "chiplog.execution.native-one-call-recovery.v3"
+    )
 
 
 def native_one_call_recovery_profile_v3() -> NativeOneCallRecoveryProfileV3:
@@ -234,12 +234,12 @@ class NativeOneCallRecoveryProfileV4(NativeOneCallRecoveryProfileV3):
 
     schema_id: Literal["chiplog.execution.native-one-call-recovery-profile.v4"] = SCHEMA_V4
     kind: Literal["NATIVE_ONE_CALL_RECOVERY_PROFILE_V4"] = "NATIVE_ONE_CALL_RECOVERY_PROFILE_V4"
-    causal_change_set: Literal[
+    causal_change_set: Literal["RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_SUSPENSION_V4"] = (
         "RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_SUSPENSION_V4"
-    ] = "RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_SUSPENSION_V4"
-    fingerprint_domain: Literal[
+    )
+    fingerprint_domain: Literal["chiplog.execution.native-one-call-recovery.v4"] = (
         "chiplog.execution.native-one-call-recovery.v4"
-    ] = "chiplog.execution.native-one-call-recovery.v4"
+    )
 
 
 def native_one_call_recovery_profile_v4() -> NativeOneCallRecoveryProfileV4:
@@ -276,9 +276,9 @@ class NativeOneCallRecoveryProfileV5(NativeOneCallRecoveryProfileV4):
     causal_change_set: Literal[
         "RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_SUSPENSION_OBLIGATION_V5"
     ] = "RUN_LINEAGE_CALL_ACCEPTANCE_DISPATCH_RESOLUTION_SUSPENSION_OBLIGATION_V5"
-    fingerprint_domain: Literal[
+    fingerprint_domain: Literal["chiplog.execution.native-one-call-recovery.v5"] = (
         "chiplog.execution.native-one-call-recovery.v5"
-    ] = "chiplog.execution.native-one-call-recovery.v5"
+    )
 
 
 def native_one_call_recovery_profile_v5() -> NativeOneCallRecoveryProfileV5:

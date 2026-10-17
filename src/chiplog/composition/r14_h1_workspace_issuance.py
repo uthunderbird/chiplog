@@ -302,8 +302,7 @@ def _validate_retained_original(issued: H1OriginalWorkspaceIssuance) -> None:
     ):
         raise WorkspaceRejected("original conversation bindings differ")
     ingress_sources = {
-        (source.owner, source.record_id, source.content_digest)
-        for source in ingress.sources
+        (source.owner, source.record_id, source.content_digest) for source in ingress.sources
     }
     for binding in bindings:
         if binding.subject.record_id in physical_conversation_ids:
@@ -338,9 +337,10 @@ def _validate_retained_original(issued: H1OriginalWorkspaceIssuance) -> None:
                     raise ValueError("selected decision physical record differs")
         except (KeyError, TypeError, ValueError) as error:
             raise WorkspaceRejected("invalid original conversation decision") from error
-    if len(decision_conversation_ids) != len(set(decision_conversation_ids)) or set(
-        decision_conversation_ids
-    ) != physical_conversation_ids:
+    if (
+        len(decision_conversation_ids) != len(set(decision_conversation_ids))
+        or set(decision_conversation_ids) != physical_conversation_ids
+    ):
         raise WorkspaceRejected("original conversation decision proof differs")
     policy = records.get(issued.sources.policy_record_id)
     if policy is None or policy.canonical_record_bytes() != base64.b64decode(

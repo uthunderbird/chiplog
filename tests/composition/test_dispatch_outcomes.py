@@ -274,9 +274,7 @@ async def test_receipt_publication_crash_reopens_original_obligation_without_ree
     from chiplog.composition.r16_dispatch_runtime import open_dispatch_runtime
 
     database, custody = tmp_path / "dispatch.db", tmp_path / "custody.json"
-    resources = HermeticDispatchResources(
-        scenarios=("CONFIRM",), cap=1, custody_path=custody
-    )
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
     async with open_dispatch_loop(database, resources=resources, responses=(_response(),)) as loop:
         created = await loop.create("r", "Prepare my action", BudgetPolicy())
         active = await loop.activate("r", created.head)
@@ -296,9 +294,7 @@ async def test_receipt_publication_crash_reopens_original_obligation_without_ree
             if raw is not None:
                 assert len(resources.require_original_provider().transfers) == 1
                 raise OSError("injected before receipt publication")
-            return await original_observe(
-                selected_runtime, selected_intent, raw, boundary=boundary
-            )
+            return await original_observe(selected_runtime, selected_intent, raw, boundary=boundary)
 
         with monkeypatch.context() as fault:
             fault.setattr(r16_dispatch_outcomes, "observe_outcome", crash_after_provider)

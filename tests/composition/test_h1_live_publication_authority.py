@@ -265,9 +265,7 @@ def _verify_fixture(
     journal = SimpleNamespace(selected=None)
     runtime = SimpleNamespace(
         _authority_gate=lambda: gate,
-        _owner_decisions=lambda: SimpleNamespace(
-            lookup=lambda _tenant, _command: journal.selected
-        ),
+        _owner_decisions=lambda: SimpleNamespace(lookup=lambda _tenant, _command: journal.selected),
     )
     authority._runtime = cast(Any, runtime)
     authority._prepared[batch.identity.command_id] = (prepared, SimpleNamespace(batch=batch))
@@ -460,9 +458,9 @@ async def test_h1_verify_projects_real_completion_command_without_callback_equal
         authority.verify(replace(guarded, records=(changed_record, *guarded.records[1:])), "ABSENT")
 
 
-def _active_replay_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[
-    H1LivePublicationAuthority, ExactReplayQuery
-]:
+def _active_replay_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[H1LivePublicationAuthority, ExactReplayQuery]:
     """Build only the private active-commit join required by replay authentication."""
     from chiplog.composition.h1_live_completion_enrollment import (
         _H1LiveCompletionEnrollment,
@@ -538,9 +536,7 @@ def test_h1_replay_authentication_requires_active_exact_issued_scope(
         query.model_copy(
             update={
                 "original_commands": (
-                    query.original_commands[0].model_copy(
-                        update={"canonical_bytes": b"foreign"}
-                    ),
+                    query.original_commands[0].model_copy(update={"canonical_bytes": b"foreign"}),
                 )
             }
         ),

@@ -60,9 +60,7 @@ async def test_mounted_same_run_resume_reopens_the_selected_suspension(tmp_path,
                 return recovery_source.collect_held(actual_runtime)
 
             def authenticate_selected_held(self, actual_runtime, evidence, entry):
-                return recovery_source.authenticate_selected_held(
-                    actual_runtime, evidence, entry
-                )
+                return recovery_source.authenticate_selected_held(actual_runtime, evidence, entry)
 
         runtime._full_recovery_cut_source = CountingRecoverySource()
         suspension = await runtime.suspend_execution(run.run_id, run.head, ())
@@ -102,9 +100,7 @@ async def test_mounted_same_run_resume_reopens_the_selected_suspension(tmp_path,
             read_execution_history(runtime)
         assert retained_reads == [suspension.pair.suspension_command_id]
 
-        resumed = await runtime.resume_execution(
-            run.run_id, suspended_head, b"resume-the-same-run"
-        )
+        resumed = await runtime.resume_execution(run.run_id, suspended_head, b"resume-the-same-run")
 
         assert resumed.run_id == run.run_id
         assert resumed.state == "ACTIVE"

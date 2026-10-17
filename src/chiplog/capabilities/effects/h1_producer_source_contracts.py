@@ -53,9 +53,7 @@ class H1ProducerNotApplicableV1(DispatchObservationDTO):
     schema_id: Literal["chiplog.effects.h1-producer-not-applicable.v1"] = (
         "chiplog.effects.h1-producer-not-applicable.v1"
     )
-    kind: Literal["H1_PREPARED_DELIVERY_NOT_APPLICABLE"] = (
-        "H1_PREPARED_DELIVERY_NOT_APPLICABLE"
-    )
+    kind: Literal["H1_PREPARED_DELIVERY_NOT_APPLICABLE"] = "H1_PREPARED_DELIVERY_NOT_APPLICABLE"
     role: Literal["planning", "original_adoption"]
     reason: Literal["PREPARED_DELIVERY_PROOF"] = "PREPARED_DELIVERY_PROOF"
     candidate: H1PreparedDeliveryMandateCandidateV1

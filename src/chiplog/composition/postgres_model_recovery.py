@@ -58,8 +58,11 @@ class PostgresModelCustody:
             "max_response_bytes,scheduler_lease) "
             "VALUES (%s,%s,%s,%s,'NEVER_STARTED',%s,%s)",
             (
-                attempt.attempt_id, emitted.head, attempt.canonical_bytes(),
-                hashlib.sha256(capability).digest(), emitted.policy.max_response_bytes,
+                attempt.attempt_id,
+                emitted.head,
+                attempt.canonical_bytes(),
+                hashlib.sha256(capability).digest(),
+                emitted.policy.max_response_bytes,
                 self._runtime.scheduler_fence(
                     self._runtime.database._snapshot(connection), emitted.run_id
                 ),
@@ -75,7 +78,8 @@ class PostgresModelCustody:
             (attempt.attempt_id,),
         ).fetchone()
         if (
-            capability is None or row is None
+            capability is None
+            or row is None
             or row[0] != capability[1]
             or bytes(row[1]) != attempt.canonical_bytes()
             or not secrets.compare_digest(bytes(row[2]), hashlib.sha256(capability[0]).digest())
@@ -94,13 +98,13 @@ class PostgresModelCustody:
             runtime.assert_scheduler_fence(
                 snapshot, attempt.manifest.run_id, None if row[7] is None else bytes(row[7])
             )
-            runs = [
-                run for run in runtime._runs(snapshot)
-                if run.run_id == attempt.manifest.run_id
-            ]
+            runs = [run for run in runtime._runs(snapshot) if run.run_id == attempt.manifest.run_id]
             if (
-                not runs or runs[-1].state != "ACTIVE" or runs[-1].head != row[0]
-                or not runs[-1].turns or not runs[-1].turns[-1].attempts
+                not runs
+                or runs[-1].state != "ACTIVE"
+                or runs[-1].head != row[0]
+                or not runs[-1].turns
+                or not runs[-1].turns[-1].attempts
                 or runs[-1].turns[-1].attempts[-1].canonical_bytes() != attempt.canonical_bytes()
             ):
                 raise LoopHold("model transport requires the selected ACTIVE emitted Run")
@@ -139,9 +143,12 @@ class PostgresModelCustody:
                 (attempt.attempt_id,),
             ).fetchone()
             if (
-                row is None or row[0] != emitted.head
+                row is None
+                or row[0] != emitted.head
                 or bytes(row[1]) != attempt.canonical_bytes()
-                or row[2] != "STARTED" or row[3] is None or row[4] is None
+                or row[2] != "STARTED"
+                or row[3] is None
+                or row[4] is None
             ):
                 raise LoopHold("model outcome unknown; no retained response or resend authority")
             return bytes(row[3]), str(row[4])
@@ -151,11 +158,14 @@ class PostgresModelCustody:
         attempt = emitted.turns[-1].attempts[-1]
         row = connection.execute(
             "SELECT emitted_head,binding,state FROM model_attempt_custody "
-            "WHERE attempt_id=%s FOR UPDATE", (attempt.attempt_id,),
+            "WHERE attempt_id=%s FOR UPDATE",
+            (attempt.attempt_id,),
         ).fetchone()
         if (
-            row is None or row[0] != emitted.head
-            or bytes(row[1]) != attempt.canonical_bytes() or row[2] != "NEVER_STARTED"
+            row is None
+            or row[0] != emitted.head
+            or bytes(row[1]) != attempt.canonical_bytes()
+            or row[2] != "NEVER_STARTED"
         ):
             raise LoopHold("model attempt may have started; replacement is forbidden")
         connection.execute(
@@ -172,13 +182,15 @@ async def recover_model_response(
         runs = runtime._runs(snapshot)
         sources = [row for row in runs if row.run_id == run_id and row.head == expected_head]
         if (
-            len(sources) != 1 or sources[0].event != "ModelAttemptEmitted"
+            len(sources) != 1
+            or sources[0].event != "ModelAttemptEmitted"
             or sources[0].turns[-1].attempts[-1].state != "EMITTED_OUTCOME_UNKNOWN"
         ):
             raise LoopRejected("recovery requires the exact emitted model Run")
         emitted = sources[0]
         batches = [
-            batch for batch in snapshot.batches
+            batch
+            for batch in snapshot.batches
             if batch.operation == "execution.emit"
             and any(record.record_id == emitted.head for record in batch.records)
         ]
@@ -200,10 +212,15 @@ async def recover_model_response(
                 raise LoopRejected("model recovery selected generation changed")
 
         await runtime.publish_execution_batch(
-            peer, "execution.capture", key, snapshot.head,
-            (Record(
-                recovered.head, "agent_loop", recovered.schema_id, recovered.canonical_bytes()
-            ),),
+            peer,
+            "execution.capture",
+            key,
+            snapshot.head,
+            (
+                Record(
+                    recovered.head, "agent_loop", recovered.schema_id, recovered.canonical_bytes()
+                ),
+            ),
             guard,
         )
         return recovered
@@ -242,10 +259,16 @@ async def replace_unstarted_model_attempt(
             runtime._model_custody.register(connection, emitted)
 
         result = await runtime.publish_execution_batch(
-            peer, "execution.emit", key, snapshot.head,
-            tuple(Record(row.head, "agent_loop", row.schema_id, row.canonical_bytes())
-                  for row in (prepared, emitted)),
-            guard, transaction_action=stage,
+            peer,
+            "execution.emit",
+            key,
+            snapshot.head,
+            tuple(
+                Record(row.head, "agent_loop", row.schema_id, row.canonical_bytes())
+                for row in (prepared, emitted)
+            ),
+            guard,
+            transaction_action=stage,
         )
         if result.disposition != "COMMITTED":
             selected = runtime._snapshot_for_peer(peer)
@@ -263,9 +286,15 @@ async def replace_unstarted_model_attempt(
                 raise LoopRejected("replacement response selected generation changed")
 
         await runtime.publish_execution_batch(
-            peer, "execution.capture", key, latest.head,
-            (Record(
-                recovered.head, "agent_loop", recovered.schema_id, recovered.canonical_bytes()
-            ),), capture_guard,
+            peer,
+            "execution.capture",
+            key,
+            latest.head,
+            (
+                Record(
+                    recovered.head, "agent_loop", recovered.schema_id, recovered.canonical_bytes()
+                ),
+            ),
+            capture_guard,
         )
         return recovered

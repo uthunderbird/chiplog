@@ -88,9 +88,11 @@ async def fixture(
         else parsed
     )
     # Exact captured bytes include significant retention of noncanonical whitespace.
-    raw = response.canonical_bytes() if canonical_response else json.dumps(
-        response.model_dump(mode="json"), indent=2
-    ).encode() + b"\n"
+    raw = (
+        response.canonical_bytes()
+        if canonical_response
+        else json.dumps(response.model_dump(mode="json"), indent=2).encode() + b"\n"
+    )
     encoded = base64.b64encode(raw).decode()
     attempt = old.captured_run.turns[-1].attempts[-1].model_dump(mode="json")
     attempt.update(live_model=None, response_base64=encoded)

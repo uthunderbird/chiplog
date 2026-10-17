@@ -122,8 +122,7 @@ def capture_dispatch(
             record.snapshot.intent.canonical_bytes(): record.snapshot.intent
             for decision in owner_snapshot.decisions
             for raw in decision.prepared.request.complete_records
-            if raw.owner == "effects"
-            and raw.schema_id == "chiplog.effects.dispatch-record.v2"
+            if raw.owner == "effects" and raw.schema_id == "chiplog.effects.dispatch-record.v2"
             for record in (DispatchRecordV2.model_validate_json(raw.canonical_bytes),)
             if record.snapshot.intent.intent_id == intent_id
         }

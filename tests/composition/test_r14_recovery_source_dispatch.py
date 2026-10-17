@@ -24,7 +24,8 @@ def test_replaced_native_authenticator_still_denies(monkeypatch, replacement):
     else:
         monkeypatch.setattr(
             source if replacement == "instance" else NativeRecoveryCutSource,
-            "authenticate_selected_held", deny,
+            "authenticate_selected_held",
+            deny,
         )
     runtime = SimpleNamespace(
         _full_recovery_cut_source=source,

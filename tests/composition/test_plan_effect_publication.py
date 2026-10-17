@@ -88,7 +88,9 @@ async def test_actual_plan_effect_commit_and_historical_replay(tmp_path: Path) -
         assert isinstance(result, JournalSelectedPublication), result
         assert result.kind == "COMMITTED"
         assert tuple(row.owner for row in result.complete_records) == ("planning",) * 5 + (
-            "effects", "broker_ingress", "broker_ingress",
+            "effects",
+            "broker_ingress",
+            "broker_ingress",
         )
         selected = runtime._owner_decisions().lookup(runtime._tenant_id, result.command_id)
         assert selected is not None
@@ -152,9 +154,7 @@ async def test_selected_ordinary_history_rejects_missing_or_altered_claim(
                 claim.model_copy(update={"canonical_bytes": claim.canonical_bytes + b" "}),
             )
         else:
-            claim = CapacityClaimed.model_validate_json(
-                batch.admission_records[-1].canonical_bytes
-            )
+            claim = CapacityClaimed.model_validate_json(batch.admission_records[-1].canonical_bytes)
             stale = claim.model_copy(update={"predecessor": claim.epoch})
             admission = (*batch.admission_records[:-1], admission_wire(stale.claim_id, stale))
         corrupted = batch.model_copy(

@@ -63,9 +63,7 @@ def test_historical_r16_maps_effect_reference_subjects_to_delivery_exact_heads(
 ) -> None:
     """R16's effects references and the selected delivery recipient use different DTO names."""
     custody_path = tmp_path / "r16-custody.json"
-    resources = HermeticDispatchResources(
-        scenarios=("CONFIRM",), cap=1, custody_path=custody_path
-    )
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody_path)
     resources.bind(AuthorityGate(tmp_path / "r16-authority.sqlite3"))
     observation = resources.observe()
     custody = load_existing_historical_custody(custody_path)
@@ -134,9 +132,7 @@ def test_historical_r16_maps_effect_reference_subjects_to_delivery_exact_heads(
         )
 
     issuance = issuance_for(delivery_recipient)
-    historical_sources._verify_historical_r16(
-        issuance, h0_selection=h0_selection, custody=custody
-    )
+    historical_sources._verify_historical_r16(issuance, h0_selection=h0_selection, custody=custody)
 
     original = getattr(delivery_recipient, changed_field)
     changed = original.model_copy(update={"head": "different-r16-reference-head"})
@@ -329,9 +325,7 @@ def _v2_selected_scope_frame_inputs() -> tuple[object, object, object]:
     return issuance, native, frames
 
 
-def _install_selected_scope_frame_codecs(
-    monkeypatch: pytest.MonkeyPatch, frames: object
-) -> None:
+def _install_selected_scope_frame_codecs(monkeypatch: pytest.MonkeyPatch, frames: object) -> None:
     anchor = SimpleNamespace(
         binding={"bound": "anchor"},
         as_dict=lambda: {
@@ -341,9 +335,7 @@ def _install_selected_scope_frame_codecs(
             }
         },
     )
-    monkeypatch.setattr(
-        historical_sources, "decode_h1_preseal_pe_anchor_record", lambda _: anchor
-    )
+    monkeypatch.setattr(historical_sources, "decode_h1_preseal_pe_anchor_record", lambda _: anchor)
     monkeypatch.setattr(
         historical_sources, "decode_h1_preseal_p_scope_wires", lambda *_args, **_kwargs: object()
     )

@@ -388,11 +388,13 @@ async def non_scheduler_successor() -> NonSchedulerSuccessorFixture:
         }
     )
     successor_origin = active.origin.model_copy(
-        update={"ingress_binding": ExactHead(
-            identity="successor-cli-inbox",
-            head="successor-cli-inbox-head",
-            fingerprint=hashlib.sha256(b"successor-cli-inbox").hexdigest(),
-        )}
+        update={
+            "ingress_binding": ExactHead(
+                identity="successor-cli-inbox",
+                head="successor-cli-inbox-head",
+                fingerprint=hashlib.sha256(b"successor-cli-inbox").hexdigest(),
+            )
+        }
     )
     successor_prompt = "successor prompt"
     admitted_input = SelectedAdmittedRunInput(

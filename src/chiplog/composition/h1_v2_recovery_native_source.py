@@ -205,9 +205,7 @@ class H1V2RecoveryNativeSource:
             # A later V3 seal is unrelated to the selected V2 prefix.  Locate
             # candidates from their native physical seal before decoding the
             # V2-only retained envelope of the selected candidate.
-            candidate = _Command(
-                decision_id, predecessor, raw, self._runtime._publication(entry)
-            )
+            candidate = _Command(decision_id, predecessor, raw, self._runtime._publication(entry))
             if self._seal_locator(candidate) == selected_seal:
                 matches.append(index)
         if len(matches) != 1:
@@ -517,9 +515,7 @@ class H1V2RecoveryNativeSource:
                 raise H1V2RecoveryNativeSourceConflict(
                     "historical source has competing original initializations"
                 )
-            raise H1V2RecoveryNativeSourceAbsent(
-                "historical source has no original initialization"
-            )
+            raise H1V2RecoveryNativeSourceAbsent("historical source has no original initialization")
         return found[0]
 
     @staticmethod

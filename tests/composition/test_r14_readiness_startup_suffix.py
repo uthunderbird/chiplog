@@ -13,10 +13,15 @@ from tests.composition.test_r14_recovery_pending_prefix import _fixture, _hash, 
 
 def _entry(batch, predecessor, resulting, **evidence):
     return dict(
-        version=1, kind="DECIDED", operation_kind=batch.operation_kind,
-        operation_id=batch.idempotency_key, expected_head=batch.expected_head,
-        fingerprint=batch.request_fingerprint, predecessor=predecessor,
-        resulting=resulting, **evidence,
+        version=1,
+        kind="DECIDED",
+        operation_kind=batch.operation_kind,
+        operation_id=batch.idempotency_key,
+        expected_head=batch.expected_head,
+        fingerprint=batch.request_fingerprint,
+        predecessor=predecessor,
+        resulting=resulting,
+        **evidence,
     )
 
 
@@ -55,32 +60,49 @@ async def _semantic_prefix(tmp_path, monkeypatch, *, complete, bridge):
         with sqlite3.connect(database) as connection:
             connection.execute("UPDATE tenant_heads SET head=?", (resolution_batch.expected_head,))
         add(database, resolution_batch)
-        source = template.request.model_copy(update={
-            "database_id": str(database), "materialization_commitment": _hash(database),
-        })
+        source = template.request.model_copy(
+            update={
+                "database_id": str(database),
+                "materialization_commitment": _hash(database),
+            }
+        )
         prepared = prepare_loop_semantic_reduction(source)
-        evidence = template.model_copy(update={
-            "database_id": str(database), "request": source, "prepared": prepared,
-            "predecessor": source.materialization_commitment,
-            "owner_call": template.owner_call.model_copy(
-                update={"canonical_payload": source.canonical_bytes()}
-            ),
-            "owner_reply": template.owner_reply.model_copy(
-                update={"canonical_payload": prepared.canonical_bytes()}
-            ),
-        })
+        evidence = template.model_copy(
+            update={
+                "database_id": str(database),
+                "request": source,
+                "prepared": prepared,
+                "predecessor": source.materialization_commitment,
+                "owner_call": template.owner_call.model_copy(
+                    update={"canonical_payload": source.canonical_bytes()}
+                ),
+                "owner_reply": template.owner_reply.model_copy(
+                    update={"canonical_payload": prepared.canonical_bytes()}
+                ),
+            }
+        )
         batch = reduction.command(evidence)
         add(database, batch, **{reduction.EVIDENCE_FIELD: evidence.canonical_bytes().decode()})
         if bridge:
             raw = run.canonical_bytes()
             batch = PhysicalPublicationCommand(
-                tenant_id="tenant", operation_kind=resume.OPERATION,
-                idempotency_key="controlled-resume", request_fingerprint="a" * 64,
-                expected_head=batch.expected_head + 1, fence_generation="r6",
-                expected_fence_frontier=0, minimum_fence_frontier=0,
-                records=(PhysicalRecord(
-                    run.head, "agent_loop", run.schema_id, raw, hashlib.sha256(raw).hexdigest(),
-                ),),
+                tenant_id="tenant",
+                operation_kind=resume.OPERATION,
+                idempotency_key="controlled-resume",
+                request_fingerprint="a" * 64,
+                expected_head=batch.expected_head + 1,
+                fence_generation="r6",
+                expected_fence_frontier=0,
+                minimum_fence_frontier=0,
+                records=(
+                    PhysicalRecord(
+                        run.head,
+                        "agent_loop",
+                        run.schema_id,
+                        raw,
+                        hashlib.sha256(raw).hexdigest(),
+                    ),
+                ),
             )
             add(database, batch)
             witness = DispatchOutcomeRecordV2.model_validate_json(
@@ -90,11 +112,14 @@ async def _semantic_prefix(tmp_path, monkeypatch, *, complete, bridge):
                 original_run_id=run.run_id,
                 evidence_stream_id=witness.snapshot.intent.intent_id,
             )
-            resume_evidence = SimpleNamespace(request=SimpleNamespace(
-                run=run, original_suspension=SimpleNamespace(
-                    baseline=SimpleNamespace(original_obligations=(original,))
-                ),
-            ))
+            resume_evidence = SimpleNamespace(
+                request=SimpleNamespace(
+                    run=run,
+                    original_suspension=SimpleNamespace(
+                        baseline=SimpleNamespace(original_obligations=(original,))
+                    ),
+                )
+            )
 
     runtime, pending, ready_batch, predecessor, _ = await _fixture(
         tmp_path, complete, prepare_prefix=prefix
@@ -102,15 +127,16 @@ async def _semantic_prefix(tmp_path, monkeypatch, *, complete, bridge):
     pending.update(_entry(ready_batch, pending["predecessor"], pending["resulting"]))
     entries.append(pending)
     batches[ready_batch.idempotency_key] = ready_batch
+
     def journal_entries():
         # Persistence/authentication is controlled; marker sequencing is real.
         values = []
         for entry in entries:
             values.append(entry)
             if entry is not pending:
-                values.append(dict(
-                    version=1, kind="MATERIALIZED", operation_id=entry["operation_id"]
-                ))
+                values.append(
+                    dict(version=1, kind="MATERIALIZED", operation_id=entry["operation_id"])
+                )
         return tuple(
             (str(index), None, json.dumps(value, sort_keys=True, separators=(",", ":")))
             for index, value in enumerate(values)
@@ -129,9 +155,11 @@ async def _semantic_prefix(tmp_path, monkeypatch, *, complete, bridge):
         setattr(runtime, name, MethodType(getattr(R14PlanningRuntime, name), runtime))
     # Only these unrelated authority acquisitions are controlled. Reduction command,
     # interval chain, exact readiness prefix, physical catalog and SQL hashes are real.
-    monkeypatch.setattr(resolution, "_selected_entries", lambda _: (
-        ("resolution", "{}", entries[0], resolution_batch),
-    ))
+    monkeypatch.setattr(
+        resolution,
+        "_selected_entries",
+        lambda _: (("resolution", "{}", entries[0], resolution_batch),),
+    )
     monkeypatch.setattr(resolution, "validate_selected_command", lambda *a: resolved)
     monkeypatch.setattr(reduction, "validate_selected_witness_at_cut", lambda *a, **kw: None)
 
@@ -182,8 +210,11 @@ async def test_semantic_startup_proves_only_through_pending_readiness_predecesso
         )
         with pytest.raises(ValueError, match="unauthenticated"):
             recovery.validate_selected(runtime, pending, runtime._publication(pending))
-        assert (runtime._database.read_bytes(), runtime._loop_decisions().entries(),
-                runtime._commitment_journal.load("tenant")) == before
+        assert (
+            runtime._database.read_bytes(),
+            runtime._loop_decisions().entries(),
+            runtime._commitment_journal.load("tenant"),
+        ) == before
 
 
 @pytest.mark.parametrize("physical", ["ABSENT", "COMPLETE"])
@@ -201,19 +232,26 @@ async def test_semantic_startup_keeps_own_publication_crash_windows(
     values = [json.loads(raw) for _, _, raw in runtime._loop_decisions().entries()]
     values = [value for value in values if value["operation_id"] != pending["operation_id"]]
     if not materialized:
-        values = [value for value in values if not (
-            value["operation_id"] == batch.idempotency_key and value["kind"] == "MATERIALIZED"
-        )]
-    runtime._loop_decisions = lambda: SimpleNamespace(entries=lambda: tuple(
-        (str(index), None, json.dumps(value, sort_keys=True, separators=(",", ":")))
-        for index, value in enumerate(values)
-    ))
+        values = [
+            value
+            for value in values
+            if not (
+                value["operation_id"] == batch.idempotency_key and value["kind"] == "MATERIALIZED"
+            )
+        ]
+    runtime._loop_decisions = lambda: SimpleNamespace(
+        entries=lambda: tuple(
+            (str(index), None, json.dumps(value, sort_keys=True, separators=(",", ":")))
+            for index, value in enumerate(values)
+        )
+    )
     if physical == "ABSENT":
         with sqlite3.connect(runtime._database) as connection:
             for record in batch.records:
                 connection.execute("DELETE FROM records WHERE record_id=?", (record.record_id,))
-            connection.execute("DELETE FROM publications WHERE idempotency_key=?",
-                               (batch.idempotency_key,))
+            connection.execute(
+                "DELETE FROM publications WHERE idempotency_key=?", (batch.idempotency_key,)
+            )
             connection.execute("UPDATE tenant_heads SET head=?", (batch.expected_head,))
     anchor = entry["resulting"] if materialized else entry["predecessor"]
     runtime._commitment_journal = SimpleNamespace(load=lambda _: anchor)
@@ -224,8 +262,11 @@ async def test_semantic_startup_keeps_own_publication_crash_windows(
                 reduction.validate_loop_semantic_reduction_startup(runtime)
         else:
             reduction.validate_loop_semantic_reduction_startup(runtime)
-        assert (runtime._database.read_bytes(), runtime._loop_decisions().entries(),
-                runtime._commitment_journal.load("tenant")) == before
+        assert (
+            runtime._database.read_bytes(),
+            runtime._loop_decisions().entries(),
+            runtime._commitment_journal.load("tenant"),
+        ) == before
 
 
 @pytest.mark.parametrize("damage", ["orphan", "duplicate", "unknown-kind", "changed-exact"])
@@ -247,32 +288,52 @@ async def test_semantic_startup_keeps_exact_marker_history(tmp_path, monkeypatch
 
         def changed_lookup(identity, expected):
             # Mutate only the journal after selection; expected remains the old entry.
-            selected = next(value for value in values if value["kind"] == "DECIDED"
-                            and value["operation_id"] == identity)
+            selected = next(
+                value
+                for value in values
+                if value["kind"] == "DECIDED" and value["operation_id"] == identity
+            )
             selected["fingerprint"] = "0" * 64
             return exact_lookup(identity, expected)
 
         runtime._loop_decision_record = changed_lookup
-    runtime._loop_decisions = lambda: SimpleNamespace(entries=lambda: tuple(
-        (str(index), None, json.dumps(value, sort_keys=True, separators=(",", ":")))
-        for index, value in enumerate(values)
-    ))
+    runtime._loop_decisions = lambda: SimpleNamespace(
+        entries=lambda: tuple(
+            (str(index), None, json.dumps(value, sort_keys=True, separators=(",", ":")))
+            for index, value in enumerate(values)
+        )
+    )
     with runtime._authority_gate().hold():
         sql_before = runtime._database.read_bytes()
         anchor = runtime._commitment_journal.load("tenant")
-        with pytest.raises(LoopRejected, match=(
-            "missing or changed exact" if damage == "changed-exact"
-            else "orphaned loop materialization" if damage in {"orphan", "duplicate"}
-            else "unknown loop publication disposition"
-        )):
+        with pytest.raises(
+            LoopRejected,
+            match=(
+                "missing or changed exact"
+                if damage == "changed-exact"
+                else "orphaned loop materialization"
+                if damage in {"orphan", "duplicate"}
+                else "unknown loop publication disposition"
+            ),
+        ):
             reduction.validate_loop_semantic_reduction_startup(runtime)
         assert runtime._database.read_bytes() == sql_before
         assert runtime._commitment_journal.load("tenant") == anchor
 
 
-@pytest.mark.parametrize("damage", [
-    "old-row", "readiness-row", "anchor", "predecessor", "result", "multiple", "owner", "gate",
-])
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "old-row",
+        "readiness-row",
+        "anchor",
+        "predecessor",
+        "result",
+        "multiple",
+        "owner",
+        "gate",
+    ],
+)
 async def test_semantic_readiness_rejection_preserves_sql_journal_and_anchor(
     tmp_path, monkeypatch, damage
 ):
@@ -283,11 +344,14 @@ async def test_semantic_readiness_rejection_preserves_sql_journal_and_anchor(
     if damage in {"old-row", "readiness-row"}:
         batch = (
             reduction._selected_entries(runtime)[0][3]
-            if damage == "old-row" else runtime._publication(pending)
+            if damage == "old-row"
+            else runtime._publication(pending)
         )
         with sqlite3.connect(runtime._database) as connection:
-            connection.execute("UPDATE records SET canonical_bytes=? WHERE record_id=?",
-                               (b"changed", batch.records[0].record_id))
+            connection.execute(
+                "UPDATE records SET canonical_bytes=? WHERE record_id=?",
+                (b"changed", batch.records[0].record_id),
+            )
     elif damage == "anchor":
         runtime._commitment_journal = SimpleNamespace(load=lambda _: "0" * 64)
     elif damage in {"predecessor", "result"}:
@@ -300,14 +364,20 @@ async def test_semantic_readiness_rejection_preserves_sql_journal_and_anchor(
         runtime._pending_gate_publications = lambda: (object(),)
     proposed_recovery = []
     with runtime._authority_gate().hold():
-        before = (runtime._database.read_bytes(), runtime._loop_decisions().entries(),
-                  runtime._commitment_journal.load("tenant"))
+        before = (
+            runtime._database.read_bytes(),
+            runtime._loop_decisions().entries(),
+            runtime._commitment_journal.load("tenant"),
+        )
         with pytest.raises((ValueError, LoopRejected)):
             reduction.validate_loop_semantic_reduction_startup(runtime)
             proposed_recovery.append(True)
         assert proposed_recovery == []
-        assert (runtime._database.read_bytes(), runtime._loop_decisions().entries(),
-                runtime._commitment_journal.load("tenant")) == before
+        assert (
+            runtime._database.read_bytes(),
+            runtime._loop_decisions().entries(),
+            runtime._commitment_journal.load("tenant"),
+        ) == before
 
 
 async def test_real_startup_rejects_unauthenticated_readiness_before_recovery(
@@ -321,8 +391,10 @@ async def test_real_startup_rejects_unauthenticated_readiness_before_recovery(
     runtime, _, _ = await _semantic_prefix(tmp_path, monkeypatch, complete=True, bridge=True)
     controls = {
         "r14_loop_history": (
-            "validate_selected_h1_completions", "validate_selected_delivery_work_genesis",
-            "validate_selected_cancellations", "validate_selected_executions",
+            "validate_selected_h1_completions",
+            "validate_selected_delivery_work_genesis",
+            "validate_selected_cancellations",
+            "validate_selected_executions",
             "validate_selected_native_accounting",
         ),
         "r14_accepted_open_accounting_publication": (
@@ -350,20 +422,36 @@ async def test_real_startup_rejects_unauthenticated_readiness_before_recovery(
     runtime._recover_pending = recover
     runtime._finish_decision = lambda *a, **kw: recovery_calls.append(True)
     with runtime._authority_gate().hold():
-        before = (runtime._database.read_bytes(), runtime._loop_decisions().entries(),
-                  runtime._commitment_journal.load("tenant"))
+        before = (
+            runtime._database.read_bytes(),
+            runtime._loop_decisions().entries(),
+            runtime._commitment_journal.load("tenant"),
+        )
     with pytest.raises(ValueError, match="unauthenticated"):
         await R14PlanningRuntime._prepare_startup(runtime)
     assert recovery_calls == []
-    assert (runtime._database.read_bytes(), runtime._loop_decisions().entries(),
-            runtime._commitment_journal.load("tenant")) == before
+    assert (
+        runtime._database.read_bytes(),
+        runtime._loop_decisions().entries(),
+        runtime._commitment_journal.load("tenant"),
+    ) == before
 
 
 @pytest.mark.parametrize("family", ["policy", "invocation", "resolution"])
-@pytest.mark.parametrize("route", [
-    "readiness", "other", "unknown", "multiple", "owner", "gate",
-    "bad-prefix", "bad-generic", "anchored",
-])
+@pytest.mark.parametrize(
+    "route",
+    [
+        "readiness",
+        "other",
+        "unknown",
+        "multiple",
+        "owner",
+        "gate",
+        "bad-prefix",
+        "bad-generic",
+        "anchored",
+    ],
+)
 async def test_old_startup_complete_requires_readiness_before_unanchored_suffix_proof(
     tmp_path, monkeypatch, family, route
 ):
@@ -396,10 +484,15 @@ async def test_old_startup_complete_requires_readiness_before_unanchored_suffix_
         "resolution": (resolution, resolution._startup_state),
     }[family]
     batch = SimpleNamespace(expected_head=0, idempotency_key="old-selected")
-    runtime._loop_decisions = lambda: SimpleNamespace(entries=lambda: (
-        ("materialized", None,
-         json.dumps({"kind": "MATERIALIZED", "operation_id": "old-selected"})),
-    ))
+    runtime._loop_decisions = lambda: SimpleNamespace(
+        entries=lambda: (
+            (
+                "materialized",
+                None,
+                json.dumps({"kind": "MATERIALIZED", "operation_id": "old-selected"}),
+            ),
+        )
+    )
     monkeypatch.setattr(module, "inspect_publication", lambda *args: "COMPLETE")
     catalogs, generic_calls = [], []
     monkeypatch.setattr(module, "_validate_physical_catalog", lambda *a: catalogs.append(a))

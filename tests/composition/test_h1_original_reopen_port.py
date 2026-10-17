@@ -216,8 +216,8 @@ async def test_installed_selected_v3_original_reopens_through_issuer_current_sco
             selected = select_h1_v3_prepare_for_candidate(
                 runtime, captured, expected_head=captured.head
             )
-            physical = R13Workspace(runtime).open_h1_workspace_issuance().load(
-                selected.issuance_ref
+            physical = (
+                R13Workspace(runtime).open_h1_workspace_issuance().load(selected.issuance_ref)
             )
             assert type(physical) is H1OriginalWorkspaceIssuanceV2
 

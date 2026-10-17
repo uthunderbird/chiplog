@@ -53,9 +53,9 @@ class _Frozen(BaseModel):
 
 
 def _canonical_json(value: object) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
 
 
 OWNER: Literal["conversation"] = "conversation"
@@ -65,9 +65,7 @@ ACCEPTED_ENTRY_SCHEMA: Literal["chiplog.conversation.accepted-entry.v2"] = (
 PREPARATION_DOMAIN: Literal["chiplog.conversation.preparation.v1"] = (
     "chiplog.conversation.preparation.v1"
 )
-NO_CHANGE_DOMAIN: Literal["chiplog.conversation.no-change.v1"] = (
-    "chiplog.conversation.no-change.v1"
-)
+NO_CHANGE_DOMAIN: Literal["chiplog.conversation.no-change.v1"] = "chiplog.conversation.no-change.v1"
 ADMITTED_INPUT_SOURCE_SCHEMA: Literal["chiplog.agent-loop.selected-admitted-run-input.v1"] = (
     "chiplog.agent-loop.selected-admitted-run-input.v1"
 )
@@ -172,9 +170,7 @@ def conversation_member_payload(
         raise ConversationPreparationIntegrityError(
             "admitted input does not carry delivery or recipient binding"
         )
-    if source_kind == "COMPLETION" and (
-        not delivery_id or not recipient_binding_json
-    ):
+    if source_kind == "COMPLETION" and (not delivery_id or not recipient_binding_json):
         raise ConversationPreparationIntegrityError(
             "completion requires delivery and recipient binding"
         )

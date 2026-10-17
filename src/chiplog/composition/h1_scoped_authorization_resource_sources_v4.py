@@ -54,6 +54,7 @@ class H1ScopedAuthorizationResourceCaptureV4:
     def __reduce__(self) -> str:
         raise TypeError("H1 V4 authorization resource captures cannot be serialized")
 
+
 class H1ScopedAuthorizationResourceReaderV4:
     """Read endpoint, credential, and grant roles from one rechecked V4 cut."""
 

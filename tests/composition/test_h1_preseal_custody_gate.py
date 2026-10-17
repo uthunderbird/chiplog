@@ -346,14 +346,21 @@ def test_close_denies_bound_gate_and_preserves_pair_lock_until_unbound(tmp_path:
         with pytest.raises(H1RegistrationCustodyError, match="authority gate is bound"):
             custody.close()
         with pytest.raises(H1RegistrationCustodyError, match="locked"):
-            H1RegistrationCustody.mount(_trusted_launcher_binding_for_canonical_runtime(
-                os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY), _DEPLOYMENT, _DATABASE, _GENESIS
-            ))
+            H1RegistrationCustody.mount(
+                _trusted_launcher_binding_for_canonical_runtime(
+                    os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY),
+                    _DEPLOYMENT,
+                    _DATABASE,
+                    _GENESIS,
+                )
+            )
         custody.unbind_authority_gate(gate)
         custody.close()
-        reopened = H1RegistrationCustody.mount(_trusted_launcher_binding_for_canonical_runtime(
-            os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY), _DEPLOYMENT, _DATABASE, _GENESIS
-        ))
+        reopened = H1RegistrationCustody.mount(
+            _trusted_launcher_binding_for_canonical_runtime(
+                os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY), _DEPLOYMENT, _DATABASE, _GENESIS
+            )
+        )
         reopened.close()
     finally:
         if custody._lock_fd >= 0:

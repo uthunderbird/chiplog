@@ -98,16 +98,15 @@ def test_v3_record_retains_mixed_per_seal_result_and_external_source_stamp():
     evidence = _retained()
 
     selected = validate_retained_sealed_accounting_v3_publication(evidence)
-    reopened = TypeAdapter(NativeSealedAccountingV3Record).validate_json(
-        selected.canonical_bytes()
-    )
+    reopened = TypeAdapter(NativeSealedAccountingV3Record).validate_json(selected.canonical_bytes())
 
     assert reopened == selected
     assert selected.record_id == "native-sealed-accounting:" + "a" * 64
     assert selected.ordered_sealed_call_ids == ("call", "call-2")
-    assert tuple(
-        call.original_call_id for call in selected.result.complete_ordered_calls
-    ) == selected.ordered_sealed_call_ids
+    assert (
+        tuple(call.original_call_id for call in selected.result.complete_ordered_calls)
+        == selected.ordered_sealed_call_ids
+    )
     assert selected.source_stamp == evidence.source_stamp
     assert "source_stamp" not in evidence.request.model_dump()
 
@@ -133,9 +132,10 @@ def test_v3_candidate_command_is_one_seal_scoped_atomic_physical_row():
     assert len(command.records) == len(envelope.records) == 1
     assert command.records[0].record_id == evidence.record.record_id
     assert command.records[0].canonical_bytes == evidence.record.canonical_bytes()
-    assert command.records[0].fingerprint == hashlib.sha256(
-        evidence.record.canonical_bytes()
-    ).hexdigest()
+    assert (
+        command.records[0].fingerprint
+        == hashlib.sha256(evidence.record.canonical_bytes()).hexdigest()
+    )
 
 
 @pytest.mark.parametrize(
@@ -176,9 +176,7 @@ def test_v3_record_rejects_one_sided_owner_exchange_substitution(mutation: str):
     else:
         changed_response = evidence.response.model_copy(
             update={
-                "complete_ordered_calls": tuple(
-                    reversed(evidence.response.complete_ordered_calls)
-                )
+                "complete_ordered_calls": tuple(reversed(evidence.response.complete_ordered_calls))
             }
         )
         evidence = evidence.model_copy(update={"response": changed_response})

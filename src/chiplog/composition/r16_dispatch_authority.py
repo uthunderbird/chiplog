@@ -273,9 +273,7 @@ class DispatchPublicationAuthority:
                     return "DENIED"
                 origin = intent.mandate.origin
                 original_call_id = (
-                    origin.original_call_id
-                    if isinstance(origin, InitializedCallOrigin)
-                    else None
+                    origin.original_call_id if isinstance(origin, InitializedCallOrigin) else None
                 )
                 capture_kwargs = {}
                 if original_call_id is not None:
@@ -306,7 +304,7 @@ class DispatchPublicationAuthority:
                 return None
             except LoopRejected:
                 return "STALE"
-            except (ValueError, RuntimeError, OSError, KeyError, TypeError):
+            except ValueError, RuntimeError, OSError, KeyError, TypeError:
                 return "INDETERMINATE"
         return "DENIED"
 

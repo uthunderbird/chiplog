@@ -276,10 +276,10 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
                 if source is not None:
                     if proposed.root_binding != source.root_binding:
                         raise LoopRejected("execution scheduler root binding changed")
-                    if (
-                        source.run_id not in checked
-                        and operation not in {"execution.capture", "execution.call-outcome"}
-                    ):
+                    if source.run_id not in checked and operation not in {
+                        "execution.capture",
+                        "execution.call-outcome",
+                    }:
                         self.scheduler_fence(snapshot, source.run_id)
                         checked.add(source.run_id)
                 elif isinstance(proposed.root_binding, SchedulerRootReference):

@@ -111,10 +111,7 @@ def decode_scoped_authorization_owner_records(
         raise ScopedAuthorizationRecordIntegrityError(
             "authorization or parent original intent differs"
         )
-    if (
-        authorization.expected_parent != selected_intent
-        or parent.predecessor != selected_intent
-    ):
+    if authorization.expected_parent != selected_intent or parent.predecessor != selected_intent:
         raise ScopedAuthorizationRecordIntegrityError("authorization or parent predecessor differs")
     if parent.predecessor == authorization_head:
         raise ScopedAuthorizationRecordIntegrityError("parent predecessor is the new authorization")

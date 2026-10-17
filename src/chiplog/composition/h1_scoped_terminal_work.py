@@ -169,7 +169,9 @@ def build_h1_scoped_v2_terminal_work_request(
         effects_bytes = effects_request.canonical_bytes()
         effects_result_bytes = effects_result.canonical_bytes()
         if (
-            PrepareExecutionCompletionFirstPathV2.model_validate_json(completion_bytes).canonical_bytes()
+            PrepareExecutionCompletionFirstPathV2.model_validate_json(
+                completion_bytes
+            ).canonical_bytes()
             != completion_bytes
             or PreparedExecutionCompletion.model_validate_json(result_bytes).canonical_bytes()
             != result_bytes

@@ -117,9 +117,10 @@ class H1PostSealRecoveryRootV1:
             "publication_command_fingerprint",
         ):
             _require_digest(getattr(self, name), name)
-        if not isinstance(self.selected_run_head, str) or _RUN_HEAD.fullmatch(
-            self.selected_run_head
-        ) is None:
+        if (
+            not isinstance(self.selected_run_head, str)
+            or _RUN_HEAD.fullmatch(self.selected_run_head) is None
+        ):
             raise H1PostSealRecoveryRecordError("selected_run_head is invalid")
 
     def as_dict(self) -> dict[str, object]:

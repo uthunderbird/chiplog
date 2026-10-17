@@ -292,9 +292,7 @@ def test_turn_consumer_holds_when_authenticated_evidence_is_newer_than_reduction
             )
         }
     )
-    assert not _reduction_matches_current_evidence(
-        reduction, (*sources, late_source)
-    )
+    assert not _reduction_matches_current_evidence(reduction, (*sources, late_source))
     assert not _reduction_matches_current_evidence(reduction, ())
 
 
@@ -373,11 +371,7 @@ def test_historical_witness_must_be_latest_selected_outcome_at_its_cut() -> None
             runtime, source, tenant_commit_sequence=7, snapshot=owner_snapshot()
         )
 
-    forged = source.model_copy(
-        update={
-            "canonical_record_bytes": later_bytes
-        }
-    )
+    forged = source.model_copy(update={"canonical_record_bytes": later_bytes})
     with pytest.raises(ValueError, match="physical member"):
         validate_selected_witness_at_cut(
             runtime, forged, tenant_commit_sequence=6, snapshot=owner_snapshot()
@@ -522,9 +516,9 @@ async def test_append_suffix_authenticates_real_selected_owner_lineage(
         batch = _owner_outcome_batch(
             outcome, tenant=tenant, sequence=sequence, predecessor=predecessor
         )
-        result = await BrokerPublicationCoordinator(
-            appender, Authority(), owner_journal
-        ).commit(batch)
+        result = await BrokerPublicationCoordinator(appender, Authority(), owner_journal).commit(
+            batch
+        )
         assert result.kind == "COMMITTED"
         decision = owner_journal.lookup(tenant, batch.identity.command_id)
         assert decision is not None
@@ -584,9 +578,7 @@ async def test_append_suffix_authenticates_real_selected_owner_lineage(
         subject=base_ref,
         schema_id=base_outcome.schema_id,
         canonical_record_bytes=base_outcome.canonical_bytes(),
-        selected_decision=_head(
-            base.decision_id, base.decision_head, base.decision_fingerprint
-        ),
+        selected_decision=_head(base.decision_id, base.decision_head, base.decision_fingerprint),
         physical_record=base_ref,
     )
 

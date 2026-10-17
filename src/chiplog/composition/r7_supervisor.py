@@ -528,7 +528,7 @@ class R7RuntimeSupervisor:
                             runtime._install_j7_operator_policy_key_pin(pin)
                         if grant_pin is not None:
                             runtime._install_j7_operator_grant_key_pin(grant_pin)
-                    except (OperatorPolicyPinError, OperatorGrantPinError):
+                    except OperatorPolicyPinError, OperatorGrantPinError:
                         self._j7_operator_policy_key_pin = None
                         self._j7_operator_grant_key_pin = None
                     else:

@@ -154,6 +154,7 @@ def _v2_binding(
 
 def _synthetic_v2_envelope() -> tuple[CompleteDeliveryBatchV2, dict[str, object]]:
     """A structural envelope only; its applicability is deliberately not genuine."""
+
     def command(owner: str) -> OwnerCommandBytes:
         raw = (owner + "-command").encode()
         return OwnerCommandBytes(
@@ -367,7 +368,9 @@ def test_v2_closure_strict_wire_rejects_malformed_fields(
         ),
         _canonical(value) + b" ",
         (
-            b'{"command_fingerprint":"' + b"b" * 64 + b'","command_fingerprint":"'
+            b'{"command_fingerprint":"'
+            + b"b" * 64
+            + b'","command_fingerprint":"'
             + b"c" * 64
             + b'"}'
         ),

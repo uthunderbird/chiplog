@@ -254,7 +254,8 @@ def _current_cut(
     if authenticated_history is not None or (selected_only and expected_source_cut is not None):
         runtime._authority_gate().require_held()
     history = (
-        authenticated_history if authenticated_history is not None
+        authenticated_history
+        if authenticated_history is not None
         else read_execution_recovery_history(
             runtime,
             selected_only=selected_only,
@@ -303,7 +304,8 @@ def _current_cut(
         pending = runtime._pending()
         if (
             len(pending) == 1
-            and pending[0].get("operation_kind") in (
+            and pending[0].get("operation_kind")
+            in (
                 ACCEPTED_OPEN_ACCOUNTING_OPERATION,
                 ACCEPTED_OPEN_RECOVERY_OPERATION,
                 "agent_loop.execution-accounting-readiness.v1",
@@ -415,8 +417,11 @@ def _cut_is_preserved_by_selected_suspension(
                 return False
             entry = selected[0][2]
             _, suspension = _validate_selected(
-                runtime, entry, _command(_retained(entry)),
-                check_history=False, allow_pending_absent=True,
+                runtime,
+                entry,
+                _command(_retained(entry)),
+                check_history=False,
+                allow_pending_absent=True,
             )
         else:
             suspension = read_selected_execution_suspension_held(runtime)
@@ -1029,7 +1034,10 @@ def _validated_selected_accepted_open_recoveries(runtime, *, authenticated_histo
             raise LoopRejected("duplicate accepted/open recovery for selected call and seal")
         seen_call_keys.add(key)
         current = _authenticate_selected_open_source(
-            runtime, entry, command, evidence.request.cut,
+            runtime,
+            entry,
+            command,
+            evidence.request.cut,
             authenticated_history=authenticated_history,
         )
         accounting_cut = current[1]

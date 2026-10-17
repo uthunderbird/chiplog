@@ -155,9 +155,7 @@ class H1ScopedAuthorizationDeliveryWorkReaderV1:
         )
         issuance = effects.selected.selected_h1.issuance
         if type(issuance) is not H1CompletionIssuanceV4:
-            raise H1ScopedAuthorizationDeliveryWorkHold(
-                "selected Effects issuance is not V4"
-            )
+            raise H1ScopedAuthorizationDeliveryWorkHold("selected Effects issuance is not V4")
         scope = issuance.effects_call.request.selected_scope.scope
         if type(scope) is not HermeticOutputScopeV1:
             raise H1ScopedAuthorizationDeliveryWorkHold("selected V4 scope is unavailable")

@@ -353,8 +353,10 @@ async def test_unmaterialized_journal_suffix_is_authenticated_before_constructor
         "payload": envelope["payload"],
         "predecessor": logical[-1][0] if corruption == "operator_auth" else "wrong-logical-head",
     }
+
     def canonical(value):
         return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
     raw = canonical(
         {
             **unsigned,

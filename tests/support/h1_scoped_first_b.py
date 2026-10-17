@@ -226,26 +226,34 @@ async def issue_real_h1_scoped_authority(
         self_recipient_semantics="OPERATOR_ATTESTED_SELF",
         payload_class="NonAuthoritativeText",
         payload_digest=projection.delivery.render_digest,
-        payload_byte_length=len(projection.delivery.rendered_bytes), source_classes=("CLI",),
-        selection_modes=("ORIGIN_EXACT",), external_delivery=True, max_calls=1,
-        clock_contract="chiplog.dispatch.monotonic.v2", clock_epoch=epoch,
-        not_before_ns=now_ns - 1, expires_at_ns=now_ns + 300_000_000_000,
+        payload_byte_length=len(projection.delivery.rendered_bytes),
+        source_classes=("CLI",),
+        selection_modes=("ORIGIN_EXACT",),
+        external_delivery=True,
+        max_calls=1,
+        clock_contract="chiplog.dispatch.monotonic.v2",
+        clock_epoch=epoch,
+        not_before_ns=now_ns - 1,
+        expires_at_ns=now_ns + 300_000_000_000,
     )
     policy = await runtime.authorize_prepared_self_delivery_policy(
-        _signed_policy(IssuePreparedExternalSelfDeliveryPolicyRequestV1(
-            operation="ISSUE_PREPARED_EXTERNAL_SELF_DELIVERY_POLICY",
-            command_id="policy-for-grant",
-            tenant_id=TENANT,
-            database_id=DATABASE,
-            policy_id="policy",
-            expected_trust_observation=_trust_observation(runtime),
-            expected_policy=None,
-            terms=terms,
-        )),
+        _signed_policy(
+            IssuePreparedExternalSelfDeliveryPolicyRequestV1(
+                operation="ISSUE_PREPARED_EXTERNAL_SELF_DELIVERY_POLICY",
+                command_id="policy-for-grant",
+                tenant_id=TENANT,
+                database_id=DATABASE,
+                policy_id="policy",
+                expected_trust_observation=_trust_observation(runtime),
+                expected_policy=None,
+                terms=terms,
+            )
+        ),
         request_id="grant-policy",
     )
     scope = PreparedExternalDeliveryGrantScopeV2(
-        principal_id=projection.principal_id, worker_session_id=projection.worker_session_id,
+        principal_id=projection.principal_id,
+        worker_session_id=projection.worker_session_id,
         contour_head=projection.selected_scope.scope.contour_head,
         authenticated_credential_head=projection.selected_scope.scope.authenticated_cli_state.credential_head,
         authenticated_session_head=projection.selected_scope.scope.authenticated_cli_state.session_head,
@@ -258,9 +266,13 @@ async def issue_real_h1_scoped_authority(
             clock_epoch=epoch,
         ),
         mandate=BoundedExternalSelfSendMandateV1(
-            purpose="PREPARED_EXTERNAL_SELF_SEND", external_delivery=True, selection="ORIGIN_EXACT",
-            payload_class="NonAuthoritativeText", communication_authority=policy.anchor.policy,
-            disclosure_authority=policy.anchor.policy, self_recipient_binding=policy.anchor.policy,
+            purpose="PREPARED_EXTERNAL_SELF_SEND",
+            external_delivery=True,
+            selection="ORIGIN_EXACT",
+            payload_class="NonAuthoritativeText",
+            communication_authority=policy.anchor.policy,
+            disclosure_authority=policy.anchor.policy,
+            self_recipient_binding=policy.anchor.policy,
             original_run=projection.original_run,
             captured_attempt=projection.captured_attempt,
             preparation_basis=prepared_delivery_basis_head_v3(projection.basis),
@@ -288,8 +300,11 @@ async def issue_real_h1_scoped_authority(
         proposed_scope=scope,
     )
     await runtime.authorize_prepared_external_delivery_grant(
-        _signed_grant(issue), request_id="grant-issue", original_identity=request.identity,
-        original_fingerprint=request.original_driver_command_fingerprint(), selected_seal=seal,
+        _signed_grant(issue),
+        request_id="grant-issue",
+        original_identity=request.identity,
+        original_fingerprint=request.original_driver_command_fingerprint(),
+        selected_seal=seal,
     )
     reader = runtime._h1_scoped_delivery_authority_reader
     assert type(reader) is H1ScopedDeliveryAuthorityReader

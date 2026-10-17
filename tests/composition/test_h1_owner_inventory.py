@@ -292,8 +292,7 @@ async def test_delivery_work_genesis_decodes_only_in_its_parent_v4_run_cohort() 
         raw=claim.canonical_bytes(),
     )
     assert (
-        decode_h1_completion_scope(claim_item, claim_cohort).identities[1]
-        == decoded.identities[1]
+        decode_h1_completion_scope(claim_item, claim_cohort).identities[1] == decoded.identities[1]
     )
     with pytest.raises(H1OwnerInventoryFailure, match="CORRUPT"):
         decode_h1_completion_scope(replace(claim_item, raw=genesis.canonical_bytes()), claim_cohort)

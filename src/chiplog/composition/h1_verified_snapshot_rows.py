@@ -146,7 +146,8 @@ class H1VerifiedSnapshotRows:
         expected_ids = tuple(row.record_id for row in command.records)
         if (
             publication is None
-            or publication != (
+            or publication
+            != (
                 command.request_fingerprint,
                 sequence,
                 "\n".join(expected_ids),

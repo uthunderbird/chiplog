@@ -114,7 +114,7 @@ class CallPublicationAuthority:
             if witness is None
             else witness.recheck(runtime, value.captured)
         )
-        with (nullcontext() if witness is None else workspace_snapshot(runtime._database)):
+        with nullcontext() if witness is None else workspace_snapshot(runtime._database):
             fresh = capture_dispatch(
                 runtime,
                 resources,

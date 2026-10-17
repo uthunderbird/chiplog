@@ -993,11 +993,12 @@ class H1CompletionPreparationSession:
             ) from error
         assembly: Any
         if producer == "SCOPED_V3":
-            if (
-                type(effects_call)
-                not in (H1ScopedDeliveryOwnerCallV1, H1ScopedDeliveryOwnerCallV2)
-                or type(effects_result)
-                not in (PreparedH1ScopedDeliveryV1, PreparedH1ScopedDeliveryV2)
+            if type(effects_call) not in (
+                H1ScopedDeliveryOwnerCallV1,
+                H1ScopedDeliveryOwnerCallV2,
+            ) or type(effects_result) not in (
+                PreparedH1ScopedDeliveryV1,
+                PreparedH1ScopedDeliveryV2,
             ):
                 raise H1CompletionPreparationUnavailable("H1 scoped finalization wire differs")
             assembly = PrepareCompleteAcceptanceAssemblyV1(
@@ -1117,9 +1118,10 @@ class H1CompletionPreparationSession:
         )
         issuance: Any
         if producer == "SCOPED_V3":
-            if type(effects_call) is H1ScopedDeliveryOwnerCallV2 and type(
-                effects_result
-            ) is PreparedH1ScopedDeliveryV2:
+            if (
+                type(effects_call) is H1ScopedDeliveryOwnerCallV2
+                and type(effects_result) is PreparedH1ScopedDeliveryV2
+            ):
                 issuance = H1CompletionIssuanceV4.model_validate(
                     {
                         **issuance_fields,
@@ -1128,9 +1130,10 @@ class H1CompletionPreparationSession:
                     }
                 )
                 applicability_schema = V4_SCHEMA
-            elif type(effects_call) is H1ScopedDeliveryOwnerCallV1 and type(
-                effects_result
-            ) is PreparedH1ScopedDeliveryV1:
+            elif (
+                type(effects_call) is H1ScopedDeliveryOwnerCallV1
+                and type(effects_result) is PreparedH1ScopedDeliveryV1
+            ):
                 issuance = H1CompletionIssuanceV3.model_validate(
                     {
                         **issuance_fields,

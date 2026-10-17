@@ -873,9 +873,7 @@ class _H1LiveCompletionEnrollment:
             self._records.clear()
             self._closed = True
 
-    def _consume_authority_issuance(
-        self, *, authority: object, source: object
-    ) -> _IssuanceRecord:
+    def _consume_authority_issuance(self, *, authority: object, source: object) -> _IssuanceRecord:
         """Consume a recovery-issued source before writer reentry."""
         with self._gate.hold():
             self._require_open_and_mounted()
@@ -1004,12 +1002,8 @@ class _H1LiveCompletionEnrollment:
                 "H1 scoped issuance Effects evidence is unavailable"
             )
         if exchange.sent.schema_id == "chiplog.effects.h1-scoped-delivery-owner-call.v1":
-            call = H1ScopedDeliveryOwnerCallV1.model_validate_json(
-                exchange.sent.canonical_payload
-            )
-            result = PreparedH1ScopedDeliveryV1.model_validate_json(
-                returned.canonical_payload
-            )
+            call = H1ScopedDeliveryOwnerCallV1.model_validate_json(exchange.sent.canonical_payload)
+            result = PreparedH1ScopedDeliveryV1.model_validate_json(returned.canonical_payload)
             if (
                 call.canonical_bytes() != exchange.sent.canonical_payload
                 or returned.schema_id != result.schema_id
@@ -1019,12 +1013,8 @@ class _H1LiveCompletionEnrollment:
                 raise H1LiveCompletionEnrollmentUnavailable("H1 V3 Effects evidence differs")
             return H1CompletionIssuanceV3, V3_SCHEMA
         if exchange.sent.schema_id == "chiplog.effects.h1-scoped-delivery-owner-call.v2":
-            call = H1ScopedDeliveryOwnerCallV2.model_validate_json(
-                exchange.sent.canonical_payload
-            )
-            result = PreparedH1ScopedDeliveryV2.model_validate_json(
-                returned.canonical_payload
-            )
+            call = H1ScopedDeliveryOwnerCallV2.model_validate_json(exchange.sent.canonical_payload)
+            result = PreparedH1ScopedDeliveryV2.model_validate_json(returned.canonical_payload)
             if (
                 call.canonical_bytes() != exchange.sent.canonical_payload
                 or returned.schema_id != result.schema_id
@@ -1061,9 +1051,7 @@ class _H1LiveCompletionEnrollment:
             or preflight._lease is not record.lease
             or preflight._retired
         ):
-            raise H1LiveCompletionEnrollmentUnavailable(
-                "H1 recovery producer preflight differs"
-            )
+            raise H1LiveCompletionEnrollmentUnavailable("H1 recovery producer preflight differs")
         try:
             context_state = cast(Any, record.source)._context_state(record.context)
             root = context_state.root

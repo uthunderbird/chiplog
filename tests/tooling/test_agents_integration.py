@@ -446,9 +446,7 @@ def test_retro_status_keeps_committed_skip_streak_during_new_draft(tmp_path: Pat
     )
     subprocess.run(["git", "add", "."], cwd=project, check=True)
     subprocess.run(["git", "commit", "-qm", "committed skip"], cwd=project, check=True)
-    (retro / "2026-09-29.md").write_text(
-        "---\ndate: 2026-09-29\noutcome:\nrule:\nreason:\n---\n"
-    )
+    (retro / "2026-09-29.md").write_text("---\ndate: 2026-09-29\noutcome:\nrule:\nreason:\n---\n")
 
     def status() -> str:
         return subprocess.check_output(
@@ -494,9 +492,7 @@ def test_retro_skip_threshold_allows_fourth_and_blocks_fifth(tmp_path: Path) -> 
             f"---\ndate: 2026-09-{index:02}\noutcome: skip\nreason: no harness change\n---\n"
         )
         subprocess.run(["git", "add", "."], cwd=project, check=True)
-        subprocess.run(
-            ["git", "commit", "-qm", f"retro skip {index}"], cwd=project, check=True
-        )
+        subprocess.run(["git", "commit", "-qm", f"retro skip {index}"], cwd=project, check=True)
 
     for index in range(1, 5):
         add_skip(index)

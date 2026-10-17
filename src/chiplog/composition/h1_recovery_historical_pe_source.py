@@ -317,9 +317,7 @@ class H1RecoveryHistoricalPESource:
                     raise H1RecoveryHistoricalPESourceIntegrityError(
                         "full historical V2 cut differs from native selected decision"
                     )
-                p_owner = getattr(
-                    self._runtime, "_h1_preissuance_registration_source_port", None
-                )
+                p_owner = getattr(self._runtime, "_h1_preissuance_registration_source_port", None)
                 if (
                     type(p_owner) is not _H1RuntimePreissuancePort
                     or p_owner._runtime is not self._runtime

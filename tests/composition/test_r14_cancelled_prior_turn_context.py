@@ -71,10 +71,13 @@ async def test_cancelled_prior_turn_context_requires_selected_terminal_result_jo
         }
     )
     terminal_ref, terminal_source = _source(
-        terminal, terminal.terminal_id, CANCELLATION_SCHEMA, CallSubjectHead(
+        terminal,
+        terminal.terminal_id,
+        CANCELLATION_SCHEMA,
+        CallSubjectHead(
             subject_id="decision:next-turn",
             revision=Present(head="decision:next-turn", fingerprint="1" * 64),
-        )
+        ),
     )
     result = cancellation.proposal.result.model_copy(
         update={

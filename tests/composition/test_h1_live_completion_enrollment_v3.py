@@ -197,9 +197,7 @@ def test_scoped_finalization_binding_rejects_a_crossed_effects_exchange(
     enrollment._gate = AuthorityGate.for_database(tmp_path / "authority.sqlite3")
     inventory = object.__new__(H1ProducerInventoryCapture)
     reader = object.__new__(H1ProducerInventoryReader)
-    exchange = H1CompletionOwnerExchangeV1.model_construct(
-        role="effects", sent=object()
-    )
+    exchange = H1CompletionOwnerExchangeV1.model_construct(role="effects", sent=object())
     crossed = H1CompletionOwnerExchangeV1.model_construct(role="effects", sent=object())
     session = SimpleNamespace(_effects_exchange=exchange)
     record = SimpleNamespace(

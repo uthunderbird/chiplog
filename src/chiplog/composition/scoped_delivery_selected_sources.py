@@ -235,9 +235,7 @@ class ScopedDeliverySelectedSources:
         intent: ExternalActionIntentV3 = decode_selected_delivery_intent(source)
         if intent.intent_id != intent_id:
             raise ScopedDeliverySelectedSourcesError("selected V3 intent identity differs")
-        initial_authorization = _require_initial_authorization_absent(
-            cut=cut, intent_id=intent_id
-        )
+        initial_authorization = _require_initial_authorization_absent(cut=cut, intent_id=intent_id)
         # The full selected effects cut has already been authenticated.  Scan all
         # selected batch members as well: a future broker consumption is not an
         # effects row. Until an exact registered decoder can prove a candidate

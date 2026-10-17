@@ -91,11 +91,7 @@ def test_command_rederives_owner_result_and_exact_four_record_batch() -> None:
 def test_command_rejects_mismatched_owner_reply() -> None:
     evidence = publication_evidence()
     changed = evidence.model_copy(
-        update={
-            "owner_reply": evidence.owner_reply.model_copy(
-                update={"canonical_payload": b"{}"}
-            )
-        }
+        update={"owner_reply": evidence.owner_reply.model_copy(update={"canonical_payload": b"{}"})}
     )
 
     with pytest.raises(ValueError, match=r"invalid .* recovery-wire body"):

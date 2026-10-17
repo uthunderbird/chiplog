@@ -57,13 +57,16 @@ from tests.capabilities.effects.test_dispatch_outcomes import request as outcome
 def test_selected_resolution_anchor_accepts_only_exact_unmaterialized_recovery(
     actual: str, anchored: str, materialized: bool, valid: bool
 ) -> None:
-    assert _selected_resolution_anchor_is_valid(
-        actual,
-        anchored,
-        "predecessor",
-        "resulting",
-        materialized=materialized,
-    ) is valid
+    assert (
+        _selected_resolution_anchor_is_valid(
+            actual,
+            anchored,
+            "predecessor",
+            "resulting",
+            materialized=materialized,
+        )
+        is valid
+    )
 
 
 def test_selected_witness_source_uses_exact_selected_member_and_rejects_changed_bytes() -> None:
@@ -117,9 +120,7 @@ def test_late_evidence_append_preserves_selected_r16_intent_and_obligation() -> 
         outcome_request(unknown, send, positive=("subject",), name="confirmed")
     )
     closed = prepare_outcome(outcome_request(confirmed, send, close=True, name="closed"))
-    late = prepare_outcome(
-        outcome_request(closed, send, negative=("subject",), name="late-rival")
-    )
+    late = prepare_outcome(outcome_request(closed, send, negative=("subject",), name="late-rival"))
 
     _verify_same_obligation_append(closed, late)
     with pytest.raises(LoopRejected, match="same-obligation append"):
@@ -257,11 +258,17 @@ def test_capture_builds_cut_from_selected_sources_and_closed_effect_member(
             SimpleNamespace(records=(object(),)),
             None,
             None,
-            (SimpleNamespace(proposal=SimpleNamespace(
-                fan_out=SimpleNamespace(response_seal=SimpleNamespace(
-                    response_seal_id="seal", digest=lambda: "d" * 64
-                ))
-            )),),
+            (
+                SimpleNamespace(
+                    proposal=SimpleNamespace(
+                        fan_out=SimpleNamespace(
+                            response_seal=SimpleNamespace(
+                                response_seal_id="seal", digest=lambda: "d" * 64
+                            )
+                        )
+                    )
+                ),
+            ),
             None,
             None,
         ),

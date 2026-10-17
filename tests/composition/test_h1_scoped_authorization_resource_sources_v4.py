@@ -71,27 +71,31 @@ def test_v4_resource_capture_rejects_forged_foreign_released_and_closed(
         assert reader.roles_held(capture).marker == "roles"
 
     forged = object.__new__(subject.H1ScopedAuthorizationResourceCaptureV4)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationResourceHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationResourceHold, match="not reader-issued"),
     ):
         reader.roles_held(forged)
 
     other = subject.H1ScopedAuthorizationResourceReaderV4(runtime)
     foreign = other.read(joined_capture)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationResourceHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationResourceHold, match="not reader-issued"),
     ):
         reader.roles_held(foreign)
 
     reader.release(capture)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationResourceHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationResourceHold, match="not reader-issued"),
     ):
         reader.roles_held(capture)
 
     other.close()
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationResourceHold, match="reader is closed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationResourceHold, match="reader is closed"),
     ):
         other.roles_held(foreign)
 

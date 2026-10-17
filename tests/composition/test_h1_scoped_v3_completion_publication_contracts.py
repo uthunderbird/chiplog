@@ -178,9 +178,10 @@ async def test_scoped_v3_builder_reproduces_the_complete_v2_batch() -> None:
     assert batch.complete_records == publication.expected_h1_scoped_v3_acceptance_records(
         assembly, call, result
     )
-    assert publication.validate_h1_scoped_v3_complete_acceptance_batch(
-        assembly, call, result, batch
-    ) is None
+    assert (
+        publication.validate_h1_scoped_v3_complete_acceptance_batch(assembly, call, result, batch)
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -281,12 +282,19 @@ async def test_scoped_v4_builder_retains_exact_v2_owner_bytes() -> None:
     )
     assert batch.prepared_effects_commands[0].schema_id == call.schema_id
     assert batch.prepared_effects_commands[0].canonical_bytes == call.canonical_bytes()
-    assert publication.validate_h1_scoped_v4_complete_acceptance_batch(
-        assembly, call, result, batch
-    ) is None
-    assert publication.validate_h1_scoped_v4_complete_acceptance_batch(
-        assembly, call, result, batch.model_copy(update={"complete_batch_fingerprint": "0" * 64})
-    ).code == "RECORDS"
+    assert (
+        publication.validate_h1_scoped_v4_complete_acceptance_batch(assembly, call, result, batch)
+        is None
+    )
+    assert (
+        publication.validate_h1_scoped_v4_complete_acceptance_batch(
+            assembly,
+            call,
+            result,
+            batch.model_copy(update={"complete_batch_fingerprint": "0" * 64}),
+        ).code
+        == "RECORDS"
+    )
 
 
 @pytest.mark.asyncio

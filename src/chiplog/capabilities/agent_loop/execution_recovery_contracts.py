@@ -191,9 +191,7 @@ class PrepareExecutionSuccessor(ExecutionRecoveryDTO):
 class PrepareExecutionSuccessorStart(ExecutionRecoveryDTO):
     """Evidence-bound first Turn transition for one selected CREATED successor."""
 
-    kind: Literal["PREPARE_EXECUTION_SUCCESSOR_START_V1"] = (
-        "PREPARE_EXECUTION_SUCCESSOR_START_V1"
-    )
+    kind: Literal["PREPARE_EXECUTION_SUCCESSOR_START_V1"] = "PREPARE_EXECUTION_SUCCESSOR_START_V1"
     command_id: Identity
     source_request: PrepareExecutionSuccessor
     created_run: ExecutionRun
@@ -345,9 +343,7 @@ class PreparedExecutionSuccessor(ExecutionRecoveryDTO):
 
 
 class PreparedExecutionSuccessorStart(ExecutionRecoveryDTO):
-    kind: Literal["PREPARED_EXECUTION_SUCCESSOR_START_V1"] = (
-        "PREPARED_EXECUTION_SUCCESSOR_START_V1"
-    )
+    kind: Literal["PREPARED_EXECUTION_SUCCESSOR_START_V1"] = "PREPARED_EXECUTION_SUCCESSOR_START_V1"
     source_request_fingerprint: Digest
     run: ExecutionRun
     complete_batch_fingerprint: Digest

@@ -22,10 +22,7 @@ def prepare_native_sealed_accounting_v3(
 
     request = PrepareNativeSealedAccountingV3.model_validate_json(request.canonical_bytes())
     response_id = request.selected_response.subject_id
-    if any(
-        frontier.response_id != response_id
-        for frontier in request.complete_ordered_frontiers
-    ):
+    if any(frontier.response_id != response_id for frontier in request.complete_ordered_frontiers):
         raise RecoveryIntegrityFault("frontier substituted from a different response seal")
 
     accounting = sealed_call_accounting(

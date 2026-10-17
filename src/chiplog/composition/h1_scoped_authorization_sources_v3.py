@@ -570,6 +570,7 @@ def _resource_roles(
     observation: ResourceObservation, grant: EffectsExactHead
 ) -> H1ScopedAuthorizationResourceRolesV1:
     """Make role DTOs from one signed observation without inventing time facts."""
+
     def source(role: str, raw: bytes) -> H1ScopedAuthorizationResourceRoleV1:
         digest = hashlib.sha256(raw).hexdigest()
         head = DeliveryExactHead(

@@ -162,10 +162,16 @@ def _expected_successor_inheritance(
     """Derive the represented inheritance set; this is structural, not source authority."""
     baseline = request.original_suspension.baseline
     current_run = request.cut.complete_ordered_run_lineage[-1]
-    _require(request.run.original_obligations, baseline.original_obligations,
-             "suspended Run obligations differ from baseline")
-    _require(current_run.original_obligations, request.run.original_obligations,
-             "current Run obligations differ from predecessor")
+    _require(
+        request.run.original_obligations,
+        baseline.original_obligations,
+        "suspended Run obligations differ from baseline",
+    )
+    _require(
+        current_run.original_obligations,
+        request.run.original_obligations,
+        "current Run obligations differ from predecessor",
+    )
     if request.cut.original_closures:
         raise RecoveryRecordIntegrityError(
             "successor closure observations require source-backed closure validation"
@@ -845,15 +851,21 @@ def validate_execution_successor_records(
         expected_obligations,
         "initialization obligations differ from predecessor",
     )
-    _require(edge.record.original_obligations, expected_obligations,
-             "successor edge obligations differ from predecessor")
+    _require(
+        edge.record.original_obligations,
+        expected_obligations,
+        "successor edge obligations differ from predecessor",
+    )
     _require(
         init.inherited_no_retry_boundaries,
         expected_no_retry,
         "initialization no-retry references differ from predecessor",
     )
-    _require(edge.record.inherited_no_retry_boundaries, expected_no_retry,
-             "successor edge no-retry references differ from predecessor")
+    _require(
+        edge.record.inherited_no_retry_boundaries,
+        expected_no_retry,
+        "successor edge no-retry references differ from predecessor",
+    )
     _require(
         tuple(_pending_head(value) for value in init.inherited_pending_branches),
         edge.record.inherited_pending_branches,

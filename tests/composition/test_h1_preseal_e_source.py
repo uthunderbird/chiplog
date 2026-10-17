@@ -95,8 +95,7 @@ async def test_installed_preseal_e_owner_captures_complete_codec_shaped_residual
             assert len(members) == len(native_members)
             assert [member["member_index"] for member in members] == list(range(len(members)))
             assert [member["member_digest"] for member in members] == [
-                hashlib.sha256(member.canonical_bytes()).hexdigest()
-                for member in native_members
+                hashlib.sha256(member.canonical_bytes()).hexdigest() for member in native_members
             ]
             for member in members:
                 assert set(member) == {

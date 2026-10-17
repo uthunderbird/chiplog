@@ -38,9 +38,7 @@ class ResolvedRuntimeIdentity:
 
     def __post_init__(self) -> None:
         prefix = (
-            "r8-development-v1:"
-            if self.source_identity.mode == "development"
-            else "r8-broker-v1:"
+            "r8-development-v1:" if self.source_identity.mode == "development" else "r8-broker-v1:"
         )
         if not self.broker_version.startswith(prefix) or not _DIGEST.fullmatch(
             self.broker_version.removeprefix(prefix)

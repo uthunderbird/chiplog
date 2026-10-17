@@ -717,9 +717,7 @@ class H1CompletionExchangeRegistry:
 
         try:
             self._native_sources.replay_current(record.native_cap)
-            scope = self._scope_port._replay_completion_scope(
-                record.scope_cap, record.native_cap
-            )
+            scope = self._scope_port._replay_completion_scope(record.scope_cap, record.native_cap)
             replay_delivery = getattr(self._scope_port, "_replay_delivery_inputs", None)
             if not callable(replay_delivery):
                 raise TypeError("delivery receipt replay is unavailable")
@@ -800,9 +798,7 @@ class H1CompletionExchangeRegistry:
                 database_id=request.source.database_id,
                 principal_id=run.principal,
                 worker_session_id=run.worker_session,
-                original_run=LoopHead(
-                    identity=run.run_id, head=run.head, fingerprint=run.digest()
-                ),
+                original_run=LoopHead(identity=run.run_id, head=run.head, fingerprint=run.digest()),
                 captured_attempt=LoopHead(
                     identity=attempt.subject_id,
                     head=attempt.revision.head,
@@ -919,9 +915,7 @@ class H1CompletionExchangeRegistry:
                 database_id=request.source.database_id,
                 principal_id=run.principal,
                 worker_session_id=run.worker_session,
-                original_run=LoopHead(
-                    identity=run.run_id, head=run.head, fingerprint=run.digest()
-                ),
+                original_run=LoopHead(identity=run.run_id, head=run.head, fingerprint=run.digest()),
                 captured_attempt=LoopHead(
                     identity=attempt.subject_id,
                     head=attempt.revision.head,
@@ -1014,9 +1008,7 @@ class H1CompletionExchangeRegistry:
                 database_id=request.source.database_id,
                 principal_id=run.principal,
                 worker_session_id=run.worker_session,
-                original_run=LoopHead(
-                    identity=run.run_id, head=run.head, fingerprint=run.digest()
-                ),
+                original_run=LoopHead(identity=run.run_id, head=run.head, fingerprint=run.digest()),
                 captured_attempt=LoopHead(
                     identity=attempt.subject_id,
                     head=attempt.revision.head,

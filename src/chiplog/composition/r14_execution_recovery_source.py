@@ -74,7 +74,7 @@ class R14NativeCancelledCallSource:
                 facts = self._collect_held()
                 self._runtime._check_database_identity()
                 return facts
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             return None
 
     def _collect_held(self) -> R14NativeCancelledCallSourceFacts | None:
@@ -142,11 +142,7 @@ class R14NativeCancelledCallSource:
         selected_response_seal = ordered_seals[0]
         selected_sealed_run = reference(seal.proposal.sealed_run.run_id, seal.proposal.sealed_run)
         physical_run = next(
-            (
-                run
-                for run in snapshot.records
-                if run.head == seal.proposal.sealed_run.head
-            ),
+            (run for run in snapshot.records if run.head == seal.proposal.sealed_run.head),
             None,
         )
         if not isinstance(physical_run, ExecutionRunRecord):

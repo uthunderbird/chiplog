@@ -442,8 +442,7 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
                     for run in snapshot.records
                     if isinstance(run, ExecutionRunRecord)
                     and run.run_id == retained_cut.current_run.subject_id
-                    and run.head
-                    not in (retained_cut.current_run.revision.head, current_run.head)
+                    and run.head not in (retained_cut.current_run.revision.head, current_run.head)
                 )
                 changed_run = rehash_cut(
                     {
@@ -483,8 +482,7 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert len(v3_record.result.complete_ordered_calls) == 1
         assert v3_record.result.complete_ordered_calls[0].disposition.kind == "RECOVERY_REQUIRED"
         assert (
-            v3_record.result.complete_ordered_calls[0]
-            .disposition.recovered_outcome.outcome.kind
+            v3_record.result.complete_ordered_calls[0].disposition.recovered_outcome.outcome.kind
             == "ABSENT"
         )
         assert len(resources.require_original_provider().transfers) == 1
@@ -503,9 +501,10 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
             before_v3_replay = connection.execute(
                 "SELECT head FROM tenant_heads WHERE tenant_id=?", (reopened._tenant_id,)
             ).fetchone()[0]
-        assert read_selected_native_sealed_accounting_v3(
-            reopened, seal_ref.revision.fingerprint
-        ) == v3_record
+        assert (
+            read_selected_native_sealed_accounting_v3(reopened, seal_ref.revision.fingerprint)
+            == v3_record
+        )
         with read_connection(reopened._database) as connection:
             after_v3_replay = connection.execute(
                 "SELECT head FROM tenant_heads WHERE tenant_id=?", (reopened._tenant_id,)

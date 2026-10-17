@@ -97,7 +97,11 @@ def verify_domain_schema(row: SelectedDomainSchemaEvidence) -> None:
 
 
 def verify_preparation(
-    observed: SqlPreparation, *, sql: str, domain: str, actions: tuple[SqlAction, ...],
+    observed: SqlPreparation,
+    *,
+    sql: str,
+    domain: str,
+    actions: tuple[SqlAction, ...],
     initial_schema_sql: str | None = None,
 ) -> None:
     """Semantic comparison ignores host version; canonical rederivation binds provenance."""
@@ -124,14 +128,27 @@ def build_selected_engine_evidence(
 ) -> tuple[tuple[SelectedDomainSchemaEvidence, ...], tuple[SelectedEngineEvidence, ...]]:
     texts = dict(sources)
     registry = ast.parse(texts["src/chiplog/architecture/r7_storage_surface.py"])
-    assignments = [n.value for n in registry.body if isinstance(n, ast.Assign)
-                   and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
-                   and n.targets[0].id == "AUTHORITY_STORAGE_MEMBERS"]
-    fixed_members = ast.parse("(" + ",".join(
-        f"StorageMember({table!r}, {columns!r}, {authority!r})"
-        for table, columns, authority in AMR_MEMBERS) + ",)", mode="eval").body
-    _require(len(assignments) == 1 and ast.dump(assignments[0]) == ast.dump(fixed_members),
-             "candidate AMR differs from independent member contract")
+    assignments = [
+        n.value
+        for n in registry.body
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Name)
+        and n.targets[0].id == "AUTHORITY_STORAGE_MEMBERS"
+    ]
+    fixed_members = ast.parse(
+        "("
+        + ",".join(
+            f"StorageMember({table!r}, {columns!r}, {authority!r})"
+            for table, columns, authority in AMR_MEMBERS
+        )
+        + ",)",
+        mode="eval",
+    ).body
+    _require(
+        len(assignments) == 1 and ast.dump(assignments[0]) == ast.dump(fixed_members),
+        "candidate AMR differs from independent member contract",
+    )
     contracts = {
         domain: schema_contract(domain) for domain in ("tenant_main", "broker_read_ledger")
     }
@@ -174,11 +191,14 @@ def build_selected_engine_evidence(
     seen: set[CorpusNode] = set()
     for planning_row in planning_rows:
         if planning_row.site not in seen:
-            selected.append((planning_row.site, "tenant_main", "PLANNING_READ",
-                             resolutions[planning_row.site]))
+            selected.append(
+                (planning_row.site, "tenant_main", "PLANNING_READ", resolutions[planning_row.site])
+            )
             seen.add(planning_row.site)
     chains: tuple[ReaderScannerChain | ReadLedgerOriginChain, ...] = (
-        *scanner_chains, *ledger_chains)
+        *scanner_chains,
+        *ledger_chains,
+    )
     for chain in chains:
         selected.append((chain.sink, chain.domain, chain.role, chain.expression))
     actual_sql = tuple(
@@ -244,7 +264,8 @@ def build_selected_engine_evidence(
                             for action, table, column, db, _ in preparation.actions
                             if action == "READ"
                             and db == "main"
-                            and table is not None and column is not None
+                            and table is not None
+                            and column is not None
                             and table != "sqlite_master"
                             and role != "SCHEMA_SCRIPT"
                         )
@@ -253,8 +274,10 @@ def build_selected_engine_evidence(
                         sorted(
                             (db, table, column)
                             for action, table, column, db, _ in preparation.actions
-                            if action == "READ" and table == "sqlite_master"
-                            and db is not None and column is not None
+                            if action == "READ"
+                            and table == "sqlite_master"
+                            and db is not None
+                            and column is not None
                         )
                     )
                     requests = tuple(

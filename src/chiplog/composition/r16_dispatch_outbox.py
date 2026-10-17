@@ -84,9 +84,7 @@ class _ConsumptionSources:
 
 
 def _capture_sources(runtime: R16DispatchRuntime) -> _ConsumptionSources:
-    cut, journal = _read_materialized_effects_with_history(
-        runtime, runtime._owner_decisions()
-    )
+    cut, journal = _read_materialized_effects_with_history(runtime, runtime._owner_decisions())
     dispatch = verify_dispatch_history(cut, journal)
     return _ConsumptionSources(cut, journal, dispatch)
 
@@ -295,13 +293,11 @@ class _ConsumeAuthority:
             require_selected_send_consumption_invocation(self.runtime, self.observed)
             current = _capture_sources(self.runtime)
             validate_consumptions(self.runtime, current.journal)
-            expected, _ = _request(
-                *_send(self.runtime, self.subject.intent.subject_id, current)
-            )
+            expected, _ = _request(*_send(self.runtime, self.subject.intent.subject_id, current))
             return None if current.cut == self.cut and expected == self.subject else "STALE"
         except LoopRejected:
             return "STALE"
-        except (ValueError, RuntimeError, OSError, KeyError, TypeError):
+        except ValueError, RuntimeError, OSError, KeyError, TypeError:
             return "INDETERMINATE"
 
     def materialization_state(
@@ -336,8 +332,10 @@ async def consume_and_emit(runtime: R16DispatchRuntime, peer: str, intent_id: st
     # Bind a new observation to the exact selected SEND; the selection observation
     # is not authority to consume it.
     observed = await authenticate(runtime, peer)
-    principal = None if observed.result.reference_bytes is None else json.loads(
-        observed.result.reference_bytes
+    principal = (
+        None
+        if observed.result.reference_bytes is None
+        else json.loads(observed.result.reference_bytes)
     )
     mandate = selected_record.snapshot.intent.mandate
     if (

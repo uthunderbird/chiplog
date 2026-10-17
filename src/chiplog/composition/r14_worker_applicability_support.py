@@ -58,9 +58,7 @@ def _canonical(value: RecoveryDTO | dict[str, str]) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _requirement(
-    role: str, head: str, binding: RecoveryDTO | dict[str, str]
-) -> SourceRequirement:
+def _requirement(role: str, head: str, binding: RecoveryDTO | dict[str, str]) -> SourceRequirement:
     return SourceRequirement(
         role=role,
         source_identity=f"chiplog.worker-applicability.{role}.v1",

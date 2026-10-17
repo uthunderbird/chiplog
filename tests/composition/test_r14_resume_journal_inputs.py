@@ -21,13 +21,15 @@ def journals(tmp_path, monkeypatch):
     with ExitStack() as stack:
         streams = {}
         for name, path in (
-            ("loop", tmp_path / "loop"), ("owner", tmp_path / "owner"),
+            ("loop", tmp_path / "loop"),
+            ("owner", tmp_path / "owner"),
             ("preview", tmp_path / "preview"),
             ("h1", database.with_suffix(".h1-workspace-issuance")),
             ("dashboard", database.with_suffix(".workspace-issuance")),
         ):
             stream = IndependentTenantDecisionJournal.for_authority_bundle(
-                path, authority_gate=gate,
+                path,
+                authority_gate=gate,
             )
             path.with_suffix(path.suffix + ".head").chmod(0o600)
             stack.callback(stream.close)
@@ -42,16 +44,21 @@ def journals(tmp_path, monkeypatch):
             anchor = capture_authority_snapshot_commitment(snapshot.connection, "tenant")
         state = NS(configuration=("canonical fixture configuration",), operations=())
         runtime = NS(
-            _database=database, _database_identity=(str(database), 1, 2), _tenant_id="tenant",
-            _authority_gate=lambda: gate, _check_database_identity=lambda: None,
+            _database=database,
+            _database_identity=(str(database), 1, 2),
+            _tenant_id="tenant",
+            _authority_gate=lambda: gate,
+            _check_database_identity=lambda: None,
             _commitment_journal=NS(load=lambda _: anchor),
             _loop_decisions=lambda: streams["loop"][0],
             _owner_decisions=lambda: NS(
                 _raw=streams["owner"][0],
-                snapshot=lambda: NS(decisions=tuple(
-                    NS(prepared=NS(request=NS(operation=operation)))
-                    for operation in state.operations
-                )),
+                snapshot=lambda: NS(
+                    decisions=tuple(
+                        NS(prepared=NS(request=NS(operation=operation)))
+                        for operation in state.operations
+                    )
+                ),
             ),
             _require_call_preview_journal=lambda: streams["preview"][0],
         )
@@ -103,8 +110,10 @@ def test_journal_capture_refuses_inputs_outside_closed_native_prefix(journals, c
             state.operations = ("agent_loop.complete_delivery_batch.v2",)
         else:
             journal = streams["loop"][0]
-            journal.append(b'{"kind":"DECIDED","operation_kind":"unknown","records":[]}',
-                           journal.entries()[-1][0])
+            journal.append(
+                b'{"kind":"DECIDED","operation_kind":"unknown","records":[]}',
+                journal.entries()[-1][0],
+            )
         assert witness.capture_call_history_journal_inputs(runtime) is None
 
 

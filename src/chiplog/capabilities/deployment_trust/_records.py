@@ -84,9 +84,7 @@ KIND_RECORD_TYPES: dict[str, tuple[str, ...]] = {
         "chiplog.deployment_trust.trust_transition",
     ),
     "AUTHENTICATED_LATE_EVIDENCE": ("chiplog.deployment_trust.evidence_authentication_binding",),
-    "PREPARED_SELF_DELIVERY_POLICY_V1": (
-        "chiplog.deployment_trust.prepared_self_delivery_policy",
-    ),
+    "PREPARED_SELF_DELIVERY_POLICY_V1": ("chiplog.deployment_trust.prepared_self_delivery_policy",),
     "PREPARED_EXTERNAL_DELIVERY_GRANT_V2": (
         "chiplog.deployment_trust.prepared_external_delivery_grant",
     ),

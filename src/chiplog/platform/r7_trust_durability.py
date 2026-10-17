@@ -1012,7 +1012,7 @@ class BrokerTrustDurability:
             if len(matches) != 1:
                 raise RuntimeError(
                     "reconstructed prepared delivery evidence does not identify one active grant"
-            )
+                )
             selected = matches[0]
             self._verify_current_signed_prepared_external_delivery_grant(selected)
             return selected
@@ -1071,13 +1071,9 @@ class BrokerTrustDurability:
             and retained.selected_scope.anchor == selector.scope_anchor
             and retained.selected_scope.scope == selector.scope
             and (
-                retained.selected_scope.selected_decision_bytes
-                == selector.selected_decision_bytes
+                retained.selected_scope.selected_decision_bytes == selector.selected_decision_bytes
             )
-            and (
-                retained.selected_scope.selected_record_bytes
-                == selector.selected_record_bytes
-            )
+            and (retained.selected_scope.selected_record_bytes == selector.selected_record_bytes)
             and retained.retained_origin == selector.retained_origin
             and retained.selected_source == selector.selected_source
             and retained.fence == selector.fence

@@ -93,16 +93,20 @@ class _AuthenticatedLoopDecisionCut:
             raise TypeError("authenticated loop cut is internal")
         object.__setattr__(self, "runtime", runtime)
         object.__setattr__(self, "_recovery_derivations", MappingProxyType({}))
-        object.__setattr__(self, "decisions", tuple(
-            _AuthenticatedLoopDecision(
-                decision_id=str(decision_id),
-                predecessor=predecessor,
-                raw=raw,
-                entry=_freeze_json(entry),
-                publication=publication,
-            )
-            for decision_id, predecessor, raw, entry, publication in decisions
-        ))
+        object.__setattr__(
+            self,
+            "decisions",
+            tuple(
+                _AuthenticatedLoopDecision(
+                    decision_id=str(decision_id),
+                    predecessor=predecessor,
+                    raw=raw,
+                    entry=_freeze_json(entry),
+                    publication=publication,
+                )
+                for decision_id, predecessor, raw, entry, publication in decisions
+            ),
+        )
 
 
 def _make_authenticated_loop_decision_cut(runtime, decisions):
@@ -137,11 +141,7 @@ def _v3_accepted_cut_route(cut) -> str | None:
                 else None
             )
         if isinstance(call.disposition, RecoveryRequiredResult):
-            return (
-                "accepted-open"
-                if cut.original_closures and cut.current_reductions
-                else None
-            )
+            return "accepted-open" if cut.original_closures and cut.current_reductions else None
         return None
     if isinstance(call.acceptance, InitializedCall) and isinstance(
         call.disposition, CancelledBeforeAcceptResult
@@ -223,7 +223,7 @@ def _external_intent_matches_dispatch_carrier(item, row) -> bool:
             and physical.revision.head == dispatch.record.head
             and physical.revision.fingerprint == dispatch.record.fingerprint
         )
-    except (TypeError, ValueError, AttributeError):
+    except TypeError, ValueError, AttributeError:
         return False
 
 
@@ -235,8 +235,7 @@ def _authenticated_scope_sources(cut, scope_source, authenticated) -> bool:
     trust_items = [
         item
         for item in cut.complete_sources
-        if item.owner == "deployment_trust"
-        and item.physical_record == scope_source.physical_record
+        if item.owner == "deployment_trust" and item.physical_record == scope_source.physical_record
     ]
     if len(trust_items) != 4:
         return False
@@ -254,10 +253,7 @@ def _authenticated_scope_sources(cut, scope_source, authenticated) -> bool:
             "chiplog.native-recovery.recipient.v1",
             recipient_bytes,
             SimpleNamespace(
-                subject_id=(
-                    "native-recipient:"
-                    + recipient_fingerprint
-                ),
+                subject_id=("native-recipient:" + recipient_fingerprint),
                 head="record:" + recipient_fingerprint,
                 fingerprint=recipient_fingerprint,
             ),
@@ -309,9 +305,7 @@ def _authenticated_loop_cut_matches(runtime, cut) -> bool:
     if not isinstance(cut, _AuthenticatedLoopDecisionCut) or cut.runtime is not runtime:
         return False
     current = runtime._loop_decisions().entries()
-    supplied = tuple(
-        (row.decision_id, row.predecessor, row.raw) for row in cut.decisions
-    )
+    supplied = tuple((row.decision_id, row.predecessor, row.raw) for row in cut.decisions)
     return current == supplied
 
 
@@ -338,7 +332,8 @@ def _recovery_derivation_row(runtime, entry, cut):
     if not _authenticated_loop_cut_matches(runtime, cut):
         raise ValueError("recovery derivation requires the unchanged authenticated loop cut")
     rows = tuple(
-        row for row in cut.decisions
+        row
+        for row in cut.decisions
         if row.entry.get("kind") == "DECIDED"
         and row.entry.get("operation_id") == entry.get("operation_id")
     )
@@ -500,7 +495,7 @@ def _authenticate_v3_accepted_cut(
         ):
             return False
         return _authenticated_scope_sources(cut, scope_source, authenticated)
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+    except OSError, RuntimeError, TypeError, ValueError, KeyError:
         return False
 
 
@@ -523,7 +518,11 @@ def authenticate_native_recovery_selected(
     except OSError, RuntimeError, TypeError, ValueError, KeyError, sqlite3.Error:
         return False
     return _authenticate_native_recovery_selected(
-        source, runtime, evidence, entry, batch,
+        source,
+        runtime,
+        evidence,
+        entry,
+        batch,
         through_sequence=through_sequence,
         authenticated_loop_decisions=authenticated_loop_decisions,
         verified_h1_prepares=verified_h1_prepares,
@@ -702,7 +701,8 @@ def _authenticate_native_recovery_selected(
             v3_profiles = [
                 row
                 for row in rows
-                if row[2] in (
+                if row[2]
+                in (
                     "chiplog.execution.native-one-call-recovery-profile.v3",
                     "chiplog.execution.native-one-call-recovery-profile.v4",
                     "chiplog.execution.native-one-call-recovery-profile.v5",
@@ -838,21 +838,13 @@ def _authenticate_native_recovery_selected(
             profile = (
                 decode_native_one_call_recovery_profile(profiles[0].canonical_record_bytes)
                 if profiles[0].schema_id == SCHEMA
-                else decode_native_one_call_recovery_profile_v5(
-                    profiles[0].canonical_record_bytes
-                )
+                else decode_native_one_call_recovery_profile_v5(profiles[0].canonical_record_bytes)
                 if profiles[0].schema_id == SCHEMA_V5
-                else decode_native_one_call_recovery_profile_v4(
-                    profiles[0].canonical_record_bytes
-                )
+                else decode_native_one_call_recovery_profile_v4(profiles[0].canonical_record_bytes)
                 if profiles[0].schema_id == SCHEMA_V4
-                else decode_native_one_call_recovery_profile_v3(
-                    profiles[0].canonical_record_bytes
-                )
+                else decode_native_one_call_recovery_profile_v3(profiles[0].canonical_record_bytes)
                 if profiles[0].schema_id == SCHEMA_V3
-                else decode_native_one_call_recovery_profile_v2(
-                    profiles[0].canonical_record_bytes
-                )
+                else decode_native_one_call_recovery_profile_v2(profiles[0].canonical_record_bytes)
             )
             run = runs[-1]
             if (
@@ -900,9 +892,7 @@ def _authenticate_native_recovery_selected(
                 # not be silently dropped from the selected C' proof.
                 boundary = len(owner_entries)
                 for index in range(1, len(owner_entries) + 1):
-                    candidate = snapshot_from_captured_entries(
-                        owner_entries[:index], cut.tenant_id
-                    )
+                    candidate = snapshot_from_captured_entries(owner_entries[:index], cut.tenant_id)
                     if any(
                         decision.tenant_commit_sequence > through_sequence
                         for decision in candidate.decisions
@@ -918,13 +908,10 @@ def _authenticate_native_recovery_selected(
                     for decision in captured_owner.decisions
                     if decision.tenant_commit_sequence <= through_sequence
                 )
-                if (
-                    selected_prefix.decisions != expected_prefix
-                    or any(
-                        decision.prepared.request.identity.command_id
-                        not in selected_prefix.materialized_command_ids
-                        for decision in expected_prefix
-                    )
+                if selected_prefix.decisions != expected_prefix or any(
+                    decision.prepared.request.identity.command_id
+                    not in selected_prefix.materialized_command_ids
+                    for decision in expected_prefix
                 ):
                     return False
             owner_cut = reconcile_h1_owner_cut(
@@ -1024,8 +1011,7 @@ def _authenticate_native_recovery_selected(
                     != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION
                     or item.get("operation_id") != expected_command.idempotency_key
                     or item.get("native_sealed_accounting_v3_envelope") != expected_envelope
-                    or item.get("predecessor")
-                    != source_stamp.authority_materialization_commitment
+                    or item.get("predecessor") != source_stamp.authority_materialization_commitment
                     or item.get("expected_head") != expected_command.expected_head
                     or item.get("fingerprint") != expected_command.request_fingerprint
                     or source_stamp.tenant_id != cut.tenant_id
@@ -1035,28 +1021,22 @@ def _authenticate_native_recovery_selected(
                     or selected_record.record_id != expected_command.records[0].record_id
                 ):
                     return False
-                selected_decision = _ref(
-                    selected.idempotency_key, raw, decision_id
-                )
+                selected_decision = _ref(selected.idempotency_key, raw, decision_id)
                 selected_physical = [
                     row
                     for row in physical
                     if row.physical_record.subject_id == selected_record.record_id
                 ]
-                if (
-                    len(selected_physical) != 1
-                    or (
-                        selected_physical[0].owner,
-                        selected_physical[0].schema_id,
-                        selected_physical[0].canonical_record_bytes,
-                        selected_physical[0].selected_decision,
-                    )
-                    != (
-                        "agent_loop",
-                        NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA,
-                        selected_record.canonical_bytes(),
-                        selected_decision,
-                    )
+                if len(selected_physical) != 1 or (
+                    selected_physical[0].owner,
+                    selected_physical[0].schema_id,
+                    selected_physical[0].canonical_record_bytes,
+                    selected_physical[0].selected_decision,
+                ) != (
+                    "agent_loop",
+                    NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA,
+                    selected_record.canonical_bytes(),
+                    selected_decision,
                 ):
                     return False
                 matching_v3.append((selected_record.record_id, selected_physical[0]))

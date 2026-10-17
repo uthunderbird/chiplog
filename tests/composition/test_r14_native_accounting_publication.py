@@ -224,7 +224,8 @@ async def test_native_accounting_rejects_incomplete_or_rival_source_manifest(
 
 @pytest.mark.parametrize("mutation", ("decision", "response", "issuance"))
 async def test_native_accounting_history_rejects_rival_prepare_projection(
-    tmp_path: Path, mutation: str,
+    tmp_path: Path,
+    mutation: str,
 ) -> None:
     database = tmp_path / f"native-accounting-prepare-{mutation}.sqlite"
     resources = HermeticDispatchResources(

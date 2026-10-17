@@ -15,7 +15,8 @@ def test_v40_registers_only_the_exact_current_actor_resume_extension() -> None:
     operation = "agent_loop.prepare_execution_resume_current_actor.v2"
     assert verify_runtime_manifest(production)
     verify_production_evaluation_equivalence(
-        production, R14_EXECUTION_CURRENT_ACTOR_RESUME_V40_EVALUATION_MANIFEST,
+        production,
+        R14_EXECUTION_CURRENT_ACTOR_RESUME_V40_EVALUATION_MANIFEST,
     )
     assert production.manifest_version == 40
     assert set(production.routes) - set(previous.routes) == {

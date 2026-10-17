@@ -500,10 +500,7 @@ async def test_scoped_v3_j7_recovers_the_two_b_stage_prefix_before_registry_capt
             completion_result = H1V3RecoveryHistoricalSource._stage_payload(
                 records[2], kind="STAGE_RESULT", stage="COMPLETION"
             )
-            assert (
-                preimages.original_completion_request.canonical_bytes()
-                == completion_input
-            )
+            assert preimages.original_completion_request.canonical_bytes() == completion_input
             assert preimages.prepared_completion.canonical_bytes() == completion_result
             assert projection.delivery.rendered_bytes
 
@@ -513,9 +510,7 @@ async def test_scoped_v3_j7_recovers_the_two_b_stage_prefix_before_registry_capt
                 with pytest.raises(H1CompletionExchangeRegistryViolation):
                     registry.replay_prepared_delivery_preimages(capture)
             finally:
-                object.__setattr__(
-                    recovered.pinned_records[1], "canonical_bytes", retained_input
-                )
+                object.__setattr__(recovered.pinned_records[1], "canonical_bytes", retained_input)
 
             def live_v2_capture_must_not_run(
                 _captured_registry: H1CompletionExchangeRegistry, **_kwargs: object

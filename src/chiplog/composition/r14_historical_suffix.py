@@ -52,9 +52,7 @@ NATIVE_OPEN_PENDING_LIFECYCLE_OPERATIONS = frozenset(
 )
 
 
-def validate_native_open_selected_source_stamp(
-    runtime, *, command, entry, cut
-) -> None:
+def validate_native_open_selected_source_stamp(runtime, *, command, entry, cut) -> None:
     """Bind retained OPEN source metadata to the selected publication header."""
     if (
         cut.tenant_id != runtime._tenant_id
@@ -377,8 +375,13 @@ def authenticate_selected_open_prefix_held(runtime, actual, anchored):
             )
         elif state == "COMPLETE":
             valid = authenticate_native_open_pending_lifecycle_held(
-                runtime, connection, actual, anchored, pending_publication=entry,
-                selected=((command, entry),), frontier=head[0],
+                runtime,
+                connection,
+                actual,
+                anchored,
+                pending_publication=entry,
+                selected=((command, entry),),
+                frontier=head[0],
             )
         else:
             return False

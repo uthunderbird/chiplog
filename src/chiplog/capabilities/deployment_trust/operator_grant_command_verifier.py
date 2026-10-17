@@ -110,7 +110,9 @@ def verify_operator_grant_request(
 def _canonical_request(request: OperatorGrantRequest) -> OperatorGrantRequest:
     if isinstance(request, IssuePreparedExternalDeliveryGrantRequestV2):
         verified: OperatorGrantRequest = (
-            IssuePreparedExternalDeliveryGrantRequestV2.model_validate_json(request.canonical_bytes())
+            IssuePreparedExternalDeliveryGrantRequestV2.model_validate_json(
+                request.canonical_bytes()
+            )
         )
     elif isinstance(request, RevokePreparedExternalDeliveryGrantRequestV2):
         verified = RevokePreparedExternalDeliveryGrantRequestV2.model_validate_json(

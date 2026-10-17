@@ -69,9 +69,7 @@ class H1J7CurrentScopeExchangeV1(CliCustodyDTO):
         return _broker_load(value)
 
     @field_serializer("sent", "returned", when_used="json")
-    def _encode_broker_envelope(
-        self, value: PublicPortCall | PublicPortSuccess
-    ) -> dict[str, Any]:
+    def _encode_broker_envelope(self, value: PublicPortCall | PublicPortSuccess) -> dict[str, Any]:
         return _broker_dump(value)
 
     @model_validator(mode="after")

@@ -105,9 +105,7 @@ async def test_installed_h1_mounts_exact_store_resolver_before_event_appender(
     observed_resolvers: list[object | None] = []
     original_init = EventAppender.__init__
 
-    def observe_appender(
-        self: object, materializer: Any, *args: object, **kwargs: object
-    ) -> None:
+    def observe_appender(self: object, materializer: Any, *args: object, **kwargs: object) -> None:
         observed_resolvers.append(materializer._owner_publication_resolver)
         original_init(self, materializer, *args, **kwargs)  # type: ignore[arg-type]
 
@@ -130,8 +128,7 @@ async def test_installed_h1_mounts_exact_store_resolver_before_event_appender(
             assert coordinator._authority is authority
             assert coordinator._appender is runtime._appender
             assert (
-                type(private_runtime._h1_live_completion_enrollment)
-                is _H1LiveCompletionEnrollment
+                type(private_runtime._h1_live_completion_enrollment) is _H1LiveCompletionEnrollment
             )
 
         assert authority._revoked is True
@@ -150,9 +147,7 @@ async def test_installed_h1_binds_root_only_after_the_runtime_graph_is_mounted(
     original_bind = H1DeliveryEvidenceJournal._bind_private_root_issuer
     observed: dict[str, object] = {}
 
-    def capture_bind(
-        self: H1DeliveryEvidenceJournal, issuer: object, installation: object
-    ) -> None:
+    def capture_bind(self: H1DeliveryEvidenceJournal, issuer: object, installation: object) -> None:
         runtime = cast(Any, cast(_H1LiveCompletionMount, installation)._runtime)
         observed["journal"] = self
         observed["issuer"] = issuer
@@ -194,9 +189,7 @@ async def test_installed_h1_enrollment_opens_only_its_private_b_session_and_revo
             assert session._sources is private_runtime._h1_first_path_sources
             with pytest.raises(H1LiveCompletionEnrollmentUnavailable, match="not enrolled"):
                 enrollment._require_live(
-                    type(session)(
-                        first_path_sources=private_runtime._h1_first_path_sources
-                    ),
+                    type(session)(first_path_sources=private_runtime._h1_first_path_sources),
                     object(),
                 )
             with pytest.raises(H1LiveCompletionEnrollmentUnavailable, match="cut is foreign"):
@@ -303,9 +296,7 @@ async def test_partial_installed_setup_does_not_bind_live_root(
     observed: dict[str, Any] = {}
     original_bind = H1DeliveryEvidenceJournal._bind_private_root_issuer
 
-    def capture_bind(
-        self: H1DeliveryEvidenceJournal, issuer: object, installation: object
-    ) -> None:
+    def capture_bind(self: H1DeliveryEvidenceJournal, issuer: object, installation: object) -> None:
         observed["journal"] = self
         observed["authority"] = issuer
         original_bind(self, issuer, installation)

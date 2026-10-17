@@ -334,9 +334,7 @@ def read_selected_original_resolver_authority_policy_source_held(runtime, *, his
     return evidence.request.policy, source
 
 
-def read_selected_original_effect_evidence_reducer_policy_source_held(
-    runtime, *, historical=False
-):
+def read_selected_original_effect_evidence_reducer_policy_source_held(runtime, *, historical=False):
     selected = read_selected_original_resolver_authority_policy_source_held(
         runtime, historical=historical
     )

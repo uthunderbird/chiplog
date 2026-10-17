@@ -271,38 +271,57 @@ class ScopedDeliverySendReceiptV3(DispatchObservationDTO):
                 self.outcome.reduction.record if self.outcome.reduction is not None else None
             )
             outcome_matches = (
-                (observed_parent is None or (
-                    observed_parent.original_intent == self.selected_intent.subject
-                    and child.transmission in observed_parent.complete_ordered_children
-                ))
-                and (observed_obligation is None or (
-                    observed_obligation.original_intent == self.selected_intent.subject
-                    and observed_obligation.original_send == self.first_send_decision.subject
-                    and child.transmission in observed_obligation.complete_ordered_children
-                ))
-                and (observed_reduction is None or (
-                    observed_reduction.original_intent == self.selected_intent.subject
-                    and child.transmission in observed_reduction.complete_ordered_children
-                    and self.outcome.parent is not None
-                    and observed_reduction.current_parent == self.outcome.parent.subject
-                ))
-                and (observed_parent is None or observed_obligation is None or (
-                    observed_parent.complete_ordered_children
-                    == observed_obligation.complete_ordered_children
-                    and (
-                        not isinstance(observed_parent.original_obligation, ExactHead)
-                        or observed_parent.original_obligation == observed_obligation.obligation
+                (
+                    observed_parent is None
+                    or (
+                        observed_parent.original_intent == self.selected_intent.subject
+                        and child.transmission in observed_parent.complete_ordered_children
                     )
-                ))
-                and (observed_parent is None or observed_reduction is None or (
-                    observed_parent.complete_ordered_children
-                    == observed_reduction.complete_ordered_children
-                    and observed_parent.complete_ordered_evidence
-                    == observed_reduction.complete_ordered_evidence
-                ))
-                and (observed_obligation is None or observed_reduction is None or (
-                    observed_reduction.original_obligation == observed_obligation.obligation
-                ))
+                )
+                and (
+                    observed_obligation is None
+                    or (
+                        observed_obligation.original_intent == self.selected_intent.subject
+                        and observed_obligation.original_send == self.first_send_decision.subject
+                        and child.transmission in observed_obligation.complete_ordered_children
+                    )
+                )
+                and (
+                    observed_reduction is None
+                    or (
+                        observed_reduction.original_intent == self.selected_intent.subject
+                        and child.transmission in observed_reduction.complete_ordered_children
+                        and self.outcome.parent is not None
+                        and observed_reduction.current_parent == self.outcome.parent.subject
+                    )
+                )
+                and (
+                    observed_parent is None
+                    or observed_obligation is None
+                    or (
+                        observed_parent.complete_ordered_children
+                        == observed_obligation.complete_ordered_children
+                        and (
+                            not isinstance(observed_parent.original_obligation, ExactHead)
+                            or observed_parent.original_obligation == observed_obligation.obligation
+                        )
+                    )
+                )
+                and (
+                    observed_parent is None
+                    or observed_reduction is None
+                    or (
+                        observed_parent.complete_ordered_children
+                        == observed_reduction.complete_ordered_children
+                        and observed_parent.complete_ordered_evidence
+                        == observed_reduction.complete_ordered_evidence
+                    )
+                )
+                and (
+                    observed_obligation is None
+                    or observed_reduction is None
+                    or (observed_reduction.original_obligation == observed_obligation.obligation)
+                )
             )
         else:
             outcome_matches = (

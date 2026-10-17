@@ -24,9 +24,7 @@ class H1DeliveryBinding(BrokerDTO):
     closure_schema_id: Literal[
         "chiplog.execution.h1-delivery-selection-closure.v1",
         "chiplog.execution.h1-delivery-selection-closure.v2",
-    ] = (
-        "chiplog.execution.h1-delivery-selection-closure.v1"
-    )
+    ] = "chiplog.execution.h1-delivery-selection-closure.v1"
     command_id: Identity
     command_fingerprint: Digest
     request_digest: Digest

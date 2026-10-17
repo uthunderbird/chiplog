@@ -27,9 +27,7 @@ from chiplog.platform.workspace_snapshot import read_connection
 def _fingerprint(cut: AcceptedOpenRecoveryCutV1) -> str:
     value = cut.model_dump(mode="json")
     del value["cut_fingerprint"]
-    raw = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode()
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -66,7 +64,8 @@ def build_accepted_open_recovery_cut(
                 # The canonical outer fold proves complete membership and any
                 # exact pending suffix before a historical cut can be exported.
                 history = (
-                    authenticated_history if authenticated_history is not None
+                    authenticated_history
+                    if authenticated_history is not None
                     else read_execution_recovery_history(
                         runtime,
                         selected_only=True,
@@ -78,9 +77,7 @@ def build_accepted_open_recovery_cut(
                 if anchored != actual:
                     return None
                 snapshot = read_execution_history(runtime)
-            runs = tuple(
-                item for item in snapshot.records if isinstance(item, ExecutionRunRecord)
-            )
+            runs = tuple(item for item in snapshot.records if isinstance(item, ExecutionRunRecord))
             lineage = accepted_open.accepted.source.target_run_lineage
             if not lineage:
                 return None
@@ -97,8 +94,11 @@ def build_accepted_open_recovery_cut(
                         "SELECT record_id,owner,schema_id,canonical_bytes,commit_sequence "
                         "FROM records WHERE tenant_id=? AND commit_sequence<=? "
                         f"AND record_id IN ({placeholders})",
-                        (runtime._tenant_id, source_tenant_commit_sequence,
-                         *(run.head for run in target_runs)),
+                        (
+                            runtime._tenant_id,
+                            source_tenant_commit_sequence,
+                            *(run.head for run in target_runs),
+                        ),
                     ).fetchall()
                 if not rows:
                     return None
@@ -112,14 +112,20 @@ def build_accepted_open_recovery_cut(
                     return None
                 run = matches[0]
                 if (owner, schema, bytes(raw)) != (
-                    "agent_loop", EXECUTION_RUN_SCHEMA, run.canonical_bytes()
+                    "agent_loop",
+                    EXECUTION_RUN_SCHEMA,
+                    run.canonical_bytes(),
                 ):
                     return None
             else:
-                matches = [run for run in runs if (
-                    run.run_id == lineage[-1].subject_id
-                    and run.head == lineage[-1].revision.head
-                )]
+                matches = [
+                    run
+                    for run in runs
+                    if (
+                        run.run_id == lineage[-1].subject_id
+                        and run.head == lineage[-1].revision.head
+                    )
+                ]
                 if len(matches) != 1:
                     return None
                 run = matches[0]
@@ -208,7 +214,7 @@ def build_accepted_open_recovery_cut(
             ):
                 return None
             return cut
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+    except OSError, RuntimeError, TypeError, ValueError, KeyError:
         return None
 
 

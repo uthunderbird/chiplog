@@ -33,16 +33,32 @@ class _Value(NS):
         return b'"inert owner/source boundary"'
 
 
-@pytest.mark.parametrize("mutation", [
-    None, "admission-input", "decision-input", "admission-clock", "decision-clock",
-    "decision-before-deadline", "decision-worker", "decision-session", "decision-trust",
-    "decision-pending", "physical-preimage",
-    "unsupported-prefix", "legacy-profile",
-    "collection-trust",
-    "current-actor", "current-actor-no-capability", "current-actor-decision-session",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "admission-input",
+        "decision-input",
+        "admission-clock",
+        "decision-clock",
+        "decision-before-deadline",
+        "decision-worker",
+        "decision-session",
+        "decision-trust",
+        "decision-pending",
+        "physical-preimage",
+        "unsupported-prefix",
+        "legacy-profile",
+        "collection-trust",
+        "current-actor",
+        "current-actor-no-capability",
+        "current-actor-decision-session",
+    ],
+)
 async def test_resume_validates_once_and_preserves_both_writer_guards(
-    tmp_path, monkeypatch, mutation,
+    tmp_path,
+    monkeypatch,
+    mutation,
 ):
     original = (await _cut()).complete_ordered_run_lineage[-1]
     suspended = original.model_copy(update={"state": "SUSPENDED"})
@@ -58,8 +74,11 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
     result = NS(run=active)
     suspension = NS(baseline=NS(original_obligations=("frozen-original",)))
     cut = NS(
-        tenant_id=original.tenant, database_id="database", materialization_commitment=preimage,
-        tenant_commit_sequence=0, complete_ordered_run_lineage=(suspended,),
+        tenant_id=original.tenant,
+        database_id="database",
+        materialization_commitment=preimage,
+        tenant_commit_sequence=0,
+        complete_ordered_run_lineage=(suspended,),
         complete_sources=(NS(schema_id="chiplog.execution.native-one-call-recovery-profile.v5"),),
     )
     if mutation == "legacy-profile":
@@ -86,11 +105,21 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
     state.pending = False
     engine = NS(
         session=lambda _: state.session,
-        graph_generation=lambda: NS(owners=(NS(owner_id="agent_loop", capability_ids=(
-            resume.OWNER_OBLIGATION_OPERATION,
-            *((resume.OWNER_CURRENT_ACTOR_OPERATION,)
-              if mutation != "current-actor-no-capability" else ()),
-        )),)),
+        graph_generation=lambda: NS(
+            owners=(
+                NS(
+                    owner_id="agent_loop",
+                    capability_ids=(
+                        resume.OWNER_OBLIGATION_OPERATION,
+                        *(
+                            (resume.OWNER_CURRENT_ACTOR_OPERATION,)
+                            if mutation != "current-actor-no-capability"
+                            else ()
+                        ),
+                    ),
+                ),
+            )
+        ),
     )
     actor = NS()
 
@@ -111,10 +140,15 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
             raise LoopRejected("inert publication pending")
 
     runtime = NS(
-        _tenant_id=original.tenant, _database=database, _database_identity=("database",),
-        _execution_lane=asyncio.Lock(), _execution_actor=initial_actor,
-        _authority_gate=lambda: NS(hold=nullcontext), _check_execution_actor=check_actor,
-        _check_database_identity=lambda: None, _require_no_pending=require_no_pending,
+        _tenant_id=original.tenant,
+        _database=database,
+        _database_identity=("database",),
+        _execution_lane=asyncio.Lock(),
+        _execution_actor=initial_actor,
+        _authority_gate=lambda: NS(hold=nullcontext),
+        _check_execution_actor=check_actor,
+        _check_database_identity=lambda: None,
+        _require_no_pending=require_no_pending,
         _commitment_journal=NS(load=lambda _: preimage),
         _trust=NS(capture_verified_observation=lambda: state.trust),
         current_worker=lambda: state.worker,
@@ -150,10 +184,23 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
     def physical_command():
         payload = active.canonical_bytes()
         return PhysicalPublicationCommand(
-            original.tenant, "inert.resume-guard-boundary", "resume", "fingerprint", 0,
-            "r6", 0, 0,
-            (PhysicalRecord("resumed", "agent_loop", resume.RUN_SCHEMA, payload,
-                            hashlib.sha256(payload).hexdigest()),),
+            original.tenant,
+            "inert.resume-guard-boundary",
+            "resume",
+            "fingerprint",
+            0,
+            "r6",
+            0,
+            0,
+            (
+                PhysicalRecord(
+                    "resumed",
+                    "agent_loop",
+                    resume.RUN_SCHEMA,
+                    payload,
+                    hashlib.sha256(payload).hexdigest(),
+                ),
+            ),
             expected_preimage_commitment=preimage,
         )
 
@@ -202,9 +249,13 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
                 state.pending = True
             return batch.decision_guard(resulting)
 
-        return await appender.submit(replace(
-            batch, admission_guard=admission, decision_guard=decision,
-        ))
+        return await appender.submit(
+            replace(
+                batch,
+                admission_guard=admission,
+                decision_guard=decision,
+            )
+        )
 
     runtime._appender = NS(submit=submit)
     monkeypatch.setattr(resume, "PrepareExecutionResume", _Value)
@@ -220,32 +271,53 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
     monkeypatch.setattr(resume, "_command", command)
     # Isolate source authentication and owner wire validation. Their real
     # implementations have separate tests; this fixture grants no authority.
-    monkeypatch.setattr(resume, "capture_call_history_journal_inputs",
-                        lambda _: None if mutation == "unsupported-prefix" else state.input,
-                        raising=False)
-    monkeypatch.setattr(resume, "_prepare_resume_artifacts",
-                        lambda *args: (prepare(None), classify(None, None)), raising=False)
-    monkeypatch.setattr(resume, "_bind_resume_artifacts",
-                        lambda *_: physical_command(), raising=False)
+    monkeypatch.setattr(
+        resume,
+        "capture_call_history_journal_inputs",
+        lambda _: None if mutation == "unsupported-prefix" else state.input,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        resume,
+        "_prepare_resume_artifacts",
+        lambda *args: (prepare(None), classify(None, None)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        resume, "_bind_resume_artifacts", lambda *_: physical_command(), raising=False
+    )
 
     monkeypatch.setattr(resume.time, "monotonic_ns", lambda: state.now)
     try:
         if mutation in (None, "decision-before-deadline", "current-actor"):
-            assert await resume.resume_execution(runtime, "peer", suspended.run_id,
-                                                 suspended.head, b"activate") == active
-            assert counts == {"collect": 1, "prepare": 1, "classify": 1,
-                              "admission": 1, "decision": 1}
+            assert (
+                await resume.resume_execution(
+                    runtime, "peer", suspended.run_id, suspended.head, b"activate"
+                )
+                == active
+            )
+            assert counts == {
+                "collect": 1,
+                "prepare": 1,
+                "classify": 1,
+                "admission": 1,
+                "decision": 1,
+            }
             assert len(store.durable_records()) == 1
             assert state.selected is not None
         else:
             with pytest.raises(LoopRejected):
-                await resume.resume_execution(runtime, "peer", suspended.run_id,
-                                              suspended.head, b"activate")
+                await resume.resume_execution(
+                    runtime, "peer", suspended.run_id, suspended.head, b"activate"
+                )
             assert not any(row[1] == "resumed" for row in store.durable_records())
             assert state.selected is None
             assert counts["admission"] == int(
-                mutation not in (
-                    "physical-preimage", "collection-trust", "current-actor-no-capability",
+                mutation
+                not in (
+                    "physical-preimage",
+                    "collection-trust",
+                    "current-actor-no-capability",
                 )
             )
             if mutation == "collection-trust":

@@ -61,8 +61,7 @@ def require_invocation(runtime: R14PlanningRuntime, observed: ObservedTrustCall)
             if time.monotonic_ns() >= observation_deadline:
                 detail = "STALE:admission-expired"
             elif (
-                runtime._supervisor.runtime().session("deployment_trust")
-                != observed.request.callee
+                runtime._supervisor.runtime().session("deployment_trust") != observed.request.callee
             ):
                 detail = "STALE:trust-session-changed"
             else:
@@ -105,8 +104,7 @@ def require_selected_send_consumption_invocation(
         or raw is None
         or observed.request.operation_id != "deployment_trust.authenticate"
         or observed.request.schema_id != "chiplog.deployment-trust.owner-call.v1"
-        or observed.request.callee
-        != runtime._supervisor.runtime().session("deployment_trust")
+        or observed.request.callee != runtime._supervisor.runtime().session("deployment_trust")
     ):
         raise LoopRejected("selected SEND consumption lacks fresh current authentication")
     state = runtime._read_ledger.current_state(runtime._tenant_id)
@@ -437,9 +435,7 @@ def _retained_trust_snapshot(raw: bytes) -> dict[str, Any]:
             if set(payload) != {"scope"} or not isinstance(scope_value, dict):
                 raise ValueError("retained native one-call scope payload is invalid")
             try:
-                scope = NativeOneCallContextScopeV1.model_validate_json(
-                    canonical(scope_value)
-                )
+                scope = NativeOneCallContextScopeV1.model_validate_json(canonical(scope_value))
             except ValueError as error:
                 raise ValueError("retained native one-call scope payload is invalid") from error
             if scope.model_dump(mode="json") != scope_value:

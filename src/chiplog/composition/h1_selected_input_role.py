@@ -546,9 +546,7 @@ def _r17(
             ),
         )
         candidates: list[tuple[int, SelectedOwnerDecision, CustodyRecord]] = []
-        for index, (ancestor, replayed) in enumerate(
-            zip(custody_ingress, records, strict=True)
-        ):
+        for index, (ancestor, replayed) in enumerate(zip(custody_ingress, records, strict=True)):
             if isinstance(replayed, CustodyRecord):
                 candidates.append((index, ancestor, replayed))
         stages = [

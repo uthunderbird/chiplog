@@ -262,9 +262,7 @@ def test_direct_outcome_lookup_uses_physical_inventory_record_id() -> None:
             revision=Present(head="record:outcome-bytes", fingerprint=_FINGERPRINT),
         ),
     )
-    logical = source.model_copy(
-        update={"subject": _head("effect-record:logical-view")}
-    )
+    logical = source.model_copy(update={"subject": _head("effect-record:logical-view")})
 
     decision = source.selected_decision
     assert _selected_direct_outcome_sources((source,), "outcome-record:one", decision) == (source,)
@@ -275,9 +273,7 @@ def test_direct_outcome_lookup_uses_physical_inventory_record_id() -> None:
     assert deduplicated[0].physical_record == source.physical_record
     assert deduplicated[0].canonical_record_bytes == source.canonical_record_bytes
     assert _selected_direct_outcome_sources((source,), "effect-intent:one", decision) == ()
-    foreign_decision = logical.model_copy(
-        update={"selected_decision": _head("foreign-decision")}
-    )
+    foreign_decision = logical.model_copy(update={"selected_decision": _head("foreign-decision")})
     assert _selected_direct_outcome_sources(
         (source, foreign_decision), "outcome-record:one", decision
     ) == (source,)
@@ -289,9 +285,7 @@ def test_direct_outcome_lookup_uses_physical_inventory_record_id() -> None:
 
 
 def test_direct_evidence_lookup_uses_semantic_head_and_keeps_physical_carrier() -> None:
-    evidence = ExactHead(
-        subject_id="evidence:one", head="evidence-head", fingerprint=_FINGERPRINT
-    )
+    evidence = ExactHead(subject_id="evidence:one", head="evidence-head", fingerprint=_FINGERPRINT)
     carrier = RecoverySourceRecord(
         owner="effects",
         subject=CallSubjectHead(
@@ -309,9 +303,12 @@ def test_direct_evidence_lookup_uses_semantic_head_and_keeps_physical_carrier() 
 
     assert _selected_direct_evidence_sources((carrier,), evidence) == (carrier,)
     assert carrier.physical_record.subject_id != evidence.subject_id
-    assert _selected_direct_evidence_sources(
-        (carrier,), evidence.model_copy(update={"fingerprint": "b" * 64})
-    ) == ()
+    assert (
+        _selected_direct_evidence_sources(
+            (carrier,), evidence.model_copy(update={"fingerprint": "b" * 64})
+        )
+        == ()
+    )
 
 
 @pytest.mark.asyncio

@@ -135,9 +135,7 @@ def _verify_original_prepare_projection(
         if isinstance(run, ExecutionRunRecord)
         else ()
     )
-    captured_turns = tuple(
-        turn for turn in captured.turns if turn.turn_id == seal.original_turn_id
-    )
+    captured_turns = tuple(turn for turn in captured.turns if turn.turn_id == seal.original_turn_id)
     if (
         not isinstance(run, ExecutionRunRecord)
         or started is None

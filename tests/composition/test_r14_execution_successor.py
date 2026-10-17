@@ -97,20 +97,30 @@ async def test_new_authenticated_ingress_selects_and_replays_suspended_run_succe
             )
             assert len(selected_commands) == 3
             assert len(selected_records) >= 3
-            assert _current_successor_ingress_occurrences(
-                runtime,
-                inventory,
-                request.model_copy(update={"identity": request.identity.model_copy(
-                    update={"original_ingress_request_fingerprint": "0" * 64}
-                )}),
-                admitted,
-            ) is None
-            assert _current_successor_ingress_occurrences(
-                runtime,
-                inventory,
-                request,
-                admitted.model_copy(update={"raw_input_bytes": b"forged input"}),
-            ) is None
+            assert (
+                _current_successor_ingress_occurrences(
+                    runtime,
+                    inventory,
+                    request.model_copy(
+                        update={
+                            "identity": request.identity.model_copy(
+                                update={"original_ingress_request_fingerprint": "0" * 64}
+                            )
+                        }
+                    ),
+                    admitted,
+                )
+                is None
+            )
+            assert (
+                _current_successor_ingress_occurrences(
+                    runtime,
+                    inventory,
+                    request,
+                    admitted.model_copy(update={"raw_input_bytes": b"forged input"}),
+                )
+                is None
+            )
         receipt = await runtime.drive_input(request)
         assert isinstance(receipt, SelectedExecutionReceiptV1)
         assert receipt.selected_run_state == "ACTIVE"
@@ -152,9 +162,7 @@ async def test_new_authenticated_ingress_selects_and_replays_suspended_run_succe
         assert captured.head != successor.head
         assert captured.turns[-1].attempts
         assert len(runtime._execution_model.requests) == 1
-        sealed = await runtime.seal_execution(
-            "hermetic-ingress", captured.run_id, captured.head
-        )
+        sealed = await runtime.seal_execution("hermetic-ingress", captured.run_id, captured.head)
         assert sealed.run_id == successor.run_id
         assert len(runtime._execution_model.requests) == 1
         assert successor_resources.require_original_provider().transfers == ()

@@ -69,9 +69,7 @@ def _text(decision: dict[str, object], field: str) -> str:
 
 
 def _with_deadline(observed: Any, deadline_ns: int) -> Any:
-    budget = observed.request.budget.model_copy(
-        update={"absolute_deadline_ns": deadline_ns}
-    )
+    budget = observed.request.budget.model_copy(update={"absolute_deadline_ns": deadline_ns})
     return replace(
         observed,
         request=observed.request.model_copy(update={"budget": budget}),
@@ -154,9 +152,7 @@ def _assert_anchor_is_sibling_and_physical_members_stay_native(
     )
     assert len(envelope.records) == 3
 
-    anchor = decode_h1_preseal_pe_anchor_record(
-        _text(decision, "h1_preseal_pe_anchor").encode()
-    )
+    anchor = decode_h1_preseal_pe_anchor_record(_text(decision, "h1_preseal_pe_anchor").encode())
     native = H1V2RecoveryNativeSource(runtime).select(
         original_identity=request.identity,
         original_fingerprint=request.original_driver_command_fingerprint(),

@@ -530,7 +530,9 @@ class H1ScopedDeliveryAuthorityReader:
         self._runtime._authority_gate().require_held()
         try:
             method = (
-                self._runtime._trust.current_signed_prepared_external_delivery_grant_for_reconstructed_evidence
+                self._runtime._trust
+                # Reopen the signed grant against the retained selector.
+                .current_signed_prepared_external_delivery_grant_for_reconstructed_evidence
             )
             return method(selector)
         except Exception as error:

@@ -35,10 +35,16 @@ def test_selected_direct_terminal_rebuild_uses_retained_run_and_sequence(monkeyp
         SimpleNamespace(records=(object(),)),
         None,
         None,
-        (SimpleNamespace(proposal=SimpleNamespace(fan_out=SimpleNamespace(
-            response_seal=seal,
-            initialized_records=(SimpleNamespace(original_call_id="call-a"),),
-        ))),),
+        (
+            SimpleNamespace(
+                proposal=SimpleNamespace(
+                    fan_out=SimpleNamespace(
+                        response_seal=seal,
+                        initialized_records=(SimpleNamespace(original_call_id="call-a"),),
+                    )
+                )
+            ),
+        ),
         None,
         None,
     )

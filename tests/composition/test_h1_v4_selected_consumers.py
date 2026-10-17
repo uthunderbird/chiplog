@@ -175,9 +175,7 @@ async def test_v4_forged_physical_member_and_cross_version_adoption_are_rejected
     monkeypatch.setattr(
         historical, "bind_selected_h1_completion", lambda *_: H1HistoricalSelection(decision, v4)
     )
-    forged = record.model_copy(
-        update={"fingerprint": hashlib.sha256(b"forged").hexdigest()}
-    )
+    forged = record.model_copy(update={"fingerprint": hashlib.sha256(b"forged").hexdigest()})
     forged_cut = replace(cut, rows=(StoredEffectRow(1, 0, (record.record_id,), forged),))
     with pytest.raises(producer_history.H1ProducerHistoryError, match=r"malformed|substituted"):
         producer_history.interpret_h1_producer_effects_history(

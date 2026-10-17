@@ -134,8 +134,7 @@ def _verify_broker_frame(exchange: H1J7CurrentScopeExchangeV1, call: H1OwnerCurr
     if (
         sent.operation_id != "deployment_trust.read_current_hermetic_output_scope"
         or sent.schema_id != "chiplog.deployment-trust.owner-call.v1"
-        or returned.schema_id
-        != "chiplog.deployment-trust.current-hermetic-output-scope-result.v1"
+        or returned.schema_id != "chiplog.deployment-trust.current-hermetic-output-scope-result.v1"
         or sent.request_id != route.request_id
         or returned.request_id != sent.request_id
         or returned.responder != sent.callee

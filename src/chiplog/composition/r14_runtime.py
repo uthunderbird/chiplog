@@ -156,9 +156,7 @@ class AnchoredOwnerDecisionJournal(IndependentOwnerDecisionJournal):
                     self._scan_entries(entries, "snapshot_at", record)
                     scan = _Scan(None, {}, frozenset())
                 else:
-                    scan = self._scan_entries(
-                        entries, "snapshot_at", record, capture_head=head
-                    )
+                    scan = self._scan_entries(entries, "snapshot_at", record, capture_head=head)
                 snapshot = OwnerJournalSnapshot(
                     self._runtime._tenant_id,
                     scan.head,

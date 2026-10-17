@@ -304,6 +304,7 @@ class H1DeliveryWorkClaimSources:
                 ),
             ),
         )
+
         def read_on(connection: sqlite3.Connection) -> tuple[object, ...] | None:
             if (
                 inspect_publication(connection, expectation, decision.tenant_commit_sequence)

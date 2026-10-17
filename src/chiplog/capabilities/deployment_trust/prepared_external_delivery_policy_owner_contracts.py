@@ -76,11 +76,15 @@ class AuthorizePreparedSelfDeliveryPolicyCallV1(CliCustodyDTO):
             if policy.canonical_bytes() != self.latest_policy_bytes:
                 raise ValueError("latest policy bytes must be canonical")
             anchor = self.latest_policy_anchor
-            if anchor.policy != ExactHead(
-                identity=policy.policy_id,
-                head=prepared_self_delivery_policy_content_head(self.latest_policy_bytes),
-                fingerprint=hashlib.sha256(self.latest_policy_bytes).hexdigest(),
-            ) or anchor.revision != policy.revision:
+            if (
+                anchor.policy
+                != ExactHead(
+                    identity=policy.policy_id,
+                    head=prepared_self_delivery_policy_content_head(self.latest_policy_bytes),
+                    fingerprint=hashlib.sha256(self.latest_policy_bytes).hexdigest(),
+                )
+                or anchor.revision != policy.revision
+            ):
                 raise ValueError("latest policy anchor differs from policy bytes")
         return self
 

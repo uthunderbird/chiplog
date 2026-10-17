@@ -173,9 +173,9 @@ def _synthetic_finalization_inputs() -> tuple[
     evidence = RetainedInboxExecutionInitialization.model_construct(
         driver_request_bytes=request.canonical_bytes(),
         driver_request_fingerprint=fingerprint,
-        request=SimpleNamespace(admitted=SimpleNamespace(
-            selected_decision=heads[0], custody=heads[1], inbox=heads[2]
-        )),
+        request=SimpleNamespace(
+            admitted=SimpleNamespace(selected_decision=heads[0], custody=heads[1], inbox=heads[2])
+        ),
         proposal=SimpleNamespace(run=terminal),
     )
     publication = JournalSelectedPublication.model_construct(
@@ -217,9 +217,7 @@ def _synthetic_finalization_inputs() -> tuple[
         selected_owner_decision=selected,
         physical_command=command,
         terminal_run=terminal,
-        acceptance_head=ExactHead(
-            identity="acceptance", head="acceptance", fingerprint="a" * 64
-        ),
+        acceptance_head=ExactHead(identity="acceptance", head="acceptance", fingerprint="a" * 64),
         delivery_manifest_head=ExactHead(
             identity="manifest", head="manifest", fingerprint="a" * 64
         ),
@@ -588,8 +586,7 @@ async def test_finalization_projection_does_not_reread_mutable_h0_after_lease(
     assert terminal.terminal_detail.acceptance_head.identity == "acceptance"
     assert terminal.terminal_detail.delivery_manifest_head.identity == "manifest"
     assert (
-        terminal.terminal_detail.committed_conversation_projection_head.identity
-        == "conversation"
+        terminal.terminal_detail.committed_conversation_projection_head.identity == "conversation"
     )
 
 
@@ -645,7 +642,10 @@ async def test_installed_finalizer_returns_the_exact_selected_readback_on_replay
             assert type(batch.authentication) is WorkerAuthentication
             assert batch.authentication.applicability_bytes == marker.issuance.canonical_bytes()
             assert tuple(exchange.role for exchange in marker.issuance.owner_exchanges) == (
-                "completion", "conversation", "effects", "terminal_work"
+                "completion",
+                "conversation",
+                "effects",
+                "terminal_work",
             )
             current_ids = (
                 marker.issuance.scope_current_exchange.sent.request_id,

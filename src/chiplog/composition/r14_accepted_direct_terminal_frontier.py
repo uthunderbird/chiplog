@@ -179,6 +179,7 @@ def selected_accepted_direct_terminal_call_frontier(
         accepted_direct_terminal_command,
         retained_accepted_direct_terminal,
     )
+
     try:
         current = validate_selected_accepted_direct_terminal(
             runtime,
@@ -233,7 +234,7 @@ def selected_accepted_direct_terminal_call_frontier(
             ordered_initialized_call_ids,
             sealed_manifest_fingerprint,
         )
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError):
+    except OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError:
         if authenticated_history is not None:
             raise
         return None

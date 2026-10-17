@@ -287,9 +287,7 @@ class H1CurrentTrustReaderV1:
         request: ReadCurrentHermeticExecutionScopeV1,
         result: CurrentHermeticExecutionScopeV1,
     ) -> H1SelectedScopeSourceV1:
-        fresh = selected.model_copy(
-            update={"current_request": request, "current_result": result}
-        )
+        fresh = selected.model_copy(update={"current_request": request, "current_result": result})
         if (
             fresh.anchor != selected.anchor
             or fresh.scope != selected.scope

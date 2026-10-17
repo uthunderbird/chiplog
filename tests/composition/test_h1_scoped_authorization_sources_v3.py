@@ -174,8 +174,9 @@ async def test_historical_mandate_roles_hold_v3_and_selected_intent_substitution
     subject, runtime, reader, captured = await _reader_with_v4_exchange(monkeypatch)
     capture, _ = captured
 
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"),
     ):
         reader.historical_mandate_roles_held(capture)
 
@@ -198,8 +199,9 @@ async def test_historical_mandate_roles_hold_v3_and_selected_intent_substitution
     )
     monkeypatch.setattr(subject, "require_h1_prepared_delivery_candidate", lambda *a, **k: None)
     monkeypatch.setattr(subject, "require_h1_prepared_delivery_sources", lambda *a, **k: None)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"),
     ):
         reader.historical_mandate_roles_held(capture)
 
@@ -242,8 +244,9 @@ async def test_historical_mandate_roles_hold_one_sided_not_applicable_substituti
     monkeypatch.setattr(subject, "make_scoped_intent_member", lambda intent: member)
     monkeypatch.setattr(subject, "require_h1_prepared_delivery_candidate", lambda *a, **k: None)
     monkeypatch.setattr(subject, "require_h1_prepared_delivery_sources", require_sources)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"),
     ):
         reader.historical_mandate_roles_held(capture)
 
@@ -262,8 +265,9 @@ async def test_historical_mandate_roles_hold_mismatched_v2_reconstruction(
         "prepare_h1_scoped_delivery_v2",
         lambda call: SimpleNamespace(intent_request=issuance.effects_result.intent_request),
     )
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSourceHold, match="V4 mandate"),
     ):
         reader.historical_mandate_roles_held(capture)
 
@@ -283,10 +287,14 @@ async def test_historical_mandate_roles_hold_stale_physical_selection(
         frontier=SimpleNamespace(tenant_frontier="changed physical row"),
     )
     reader._selected = SimpleNamespace(read=lambda **_: changed)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSourceHold, match="complete Effects cut changed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationSourceHold, match="complete Effects cut changed"
+        ),
     ):
         reader.historical_mandate_roles_held(capture)
+
 
 @pytest.mark.asyncio
 async def test_locator_reader_builds_initial_cut_without_caller_authority(
@@ -345,8 +353,11 @@ async def test_locator_reader_holds_when_native_cut_changes(
     monkeypatch.setattr(subject, "ScopedDeliverySelectedSources", _SelectedReader)
     reader = subject.H1ScopedAuthorizationEffectsHistoryReaderV1(runtime)
     capture = reader.capture(locator)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSourceHold, match="complete Effects cut changed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(
+            subject.H1ScopedAuthorizationSourceHold, match="complete Effects cut changed"
+        ),
     ):
         reader.recheck_held(capture)
 
@@ -393,8 +404,9 @@ def test_locator_reader_rejects_forged_capture(monkeypatch: pytest.MonkeyPatch) 
     runtime = _Runtime()
     reader = subject.H1ScopedAuthorizationEffectsHistoryReaderV1(runtime)
     forged = object.__new__(subject.H1ScopedAuthorizationEffectsHistoryCaptureV1)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSourceHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSourceHold, match="not reader-issued"),
     ):
         reader.observed_held(forged)
 
@@ -412,9 +424,7 @@ def test_historical_resource_roles_verify_signed_bytes_without_live_resource(
     from chiplog.platform.authority_gate import AuthorityGate
 
     custody_path = tmp_path / "custody.json"
-    resources = HermeticDispatchResources(
-        scenarios=("CONFIRM",), cap=1, custody_path=custody_path
-    )
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody_path)
     resources.bind(AuthorityGate(tmp_path / "authority.db"))
     observation = resources.observe()
     custody = load_existing_historical_custody(custody_path)
@@ -456,8 +466,9 @@ async def test_locator_reader_revokes_retained_capture_when_closed(
         )
     )
     reader.close()
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationSourceHold, match="reader is closed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationSourceHold, match="reader is closed"),
     ):
         reader.observed_held(capture)
 

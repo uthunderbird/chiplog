@@ -236,8 +236,7 @@ class H1PostSealRecoveryRootSource:
             )
         if (
             native.seal.decision_id == ""
-            or hashlib.sha256(native.seal.raw_bytes).hexdigest()
-            != native.seal.decision_fingerprint
+            or hashlib.sha256(native.seal.raw_bytes).hexdigest() != native.seal.decision_fingerprint
         ):
             raise H1PostSealRecoverySourceError("selected decision bytes differ")
         initialization = self._initialization(native.initialization.raw_bytes)
@@ -271,10 +270,9 @@ class H1PostSealRecoveryRootSource:
         if lineage[-1].decision_id != native.seal.decision_id:
             raise H1PostSealRecoverySourceError("selected seal does not close selected Run lineage")
         lineage_ids = {item.decision_id for item in lineage}
-        if (
-            any(member["decision_id"] not in lineage_ids for member in physical)
-            or not lineage_ids.issubset({member["decision_id"] for member in physical})
-        ):
+        if any(
+            member["decision_id"] not in lineage_ids for member in physical
+        ) or not lineage_ids.issubset({member["decision_id"] for member in physical}):
             raise H1PostSealRecoverySourceError("physical members differ from selected Run lineage")
         selected_physical = [
             member

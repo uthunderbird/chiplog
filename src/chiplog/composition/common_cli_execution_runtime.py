@@ -1100,18 +1100,14 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             publish_accepted_direct_terminal,
         )
 
-        return await publish_accepted_direct_terminal(
-            self, peer, original_call_id=original_call_id
-        )
+        return await publish_accepted_direct_terminal(self, peer, original_call_id=original_call_id)
 
     def read_selected_accepted_direct_terminal(self, *, original_call_id: str | None = None):
         from chiplog.composition.r14_loop_history import (
             read_selected_accepted_direct_terminal,
         )
 
-        return read_selected_accepted_direct_terminal(
-            self, original_call_id=original_call_id
-        )
+        return read_selected_accepted_direct_terminal(self, original_call_id=original_call_id)
 
     def read_selected_accepted_direct_terminal_frontier(
         self,
@@ -1155,9 +1151,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
     ):
         from chiplog.composition.r14_execution_resume import resume_execution
 
-        return await resume_execution(
-            self, peer, run_id, expected_head, activation_payload
-        )
+        return await resume_execution(self, peer, run_id, expected_head, activation_payload)
 
     def read_selected_execution_resume(self):
         from chiplog.composition.r14_execution_resume import (
@@ -2661,11 +2655,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 fingerprint=value.revision.fingerprint,
             )
 
-        rows = [
-            raw
-            for key, _, raw in self._loop_decisions().entries()
-            if key == decision_id
-        ]
+        rows = [raw for key, _, raw in self._loop_decisions().entries() if key == decision_id]
         if len(rows) != 1:
             raise LoopRejected("selected successor first-Turn decision disappeared")
         raw = rows[0].encode() if isinstance(rows[0], str) else rows[0]

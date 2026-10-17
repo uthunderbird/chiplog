@@ -56,7 +56,9 @@ def _installed(monkeypatch: pytest.MonkeyPatch, readings: list[tuple[str, int]])
     )
     evidence = SimpleNamespace(source=SimpleNamespace(intent_id="intent"), current_claim=claim)
     effects = SimpleNamespace(
-        observed=SimpleNamespace(original_intent=SimpleNamespace(mandate=SimpleNamespace(horizon=horizon)))
+        observed=SimpleNamespace(
+            original_intent=SimpleNamespace(mandate=SimpleNamespace(horizon=horizon))
+        )
     )
     effects_reader = SimpleNamespace(_issued_record_held=lambda capture: effects)
 
@@ -124,8 +126,9 @@ def test_clock_role_returns_fresh_final_reading_and_releases_dependent_capture(
     assert (role.observed_at_ns, role.valid_until_ns) == (12, 25)
     reader.release(capture)
     assert len(resources.released) == 1
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationClockHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationClockHold, match="not reader-issued"),
     ):
         reader.role_held(capture)
 
@@ -185,14 +188,16 @@ def test_clock_role_recheck_rejects_global_clock_rollback_and_close_revokes(
     capture = reader.read(joined_capture)
     with runtime._authority_gate().hold():
         assert reader.role_held(capture).observed_at_ns == 20
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationClockHold, match="horizon, epoch, or lease"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationClockHold, match="horizon, epoch, or lease"),
     ):
         reader.recheck_held(capture)
     reader.close()
     assert len(resources.released) == 1
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationClockHold, match="reader is closed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationClockHold, match="reader is closed"),
     ):
         reader.role_held(capture)
 
@@ -213,13 +218,15 @@ def test_clock_cleanup_revokes_capture_after_dependency_was_revoked(
 
     monkeypatch.setattr(resources, "release", dependent_already_closed)
     reader.release(released)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationClockHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationClockHold, match="not reader-issued"),
     ):
         reader.role_held(released)
     reader.close()
     assert reader._issued == {}
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationClockHold, match="reader is closed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationClockHold, match="reader is closed"),
     ):
         reader.role_held(closed)

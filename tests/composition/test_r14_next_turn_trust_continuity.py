@@ -44,9 +44,7 @@ def test_next_turn_trust_continuity_requires_the_exact_observation() -> None:
 
     changed_materializer = replace(authenticated, sources=(("different-source", 1, 2),))
     with pytest.raises(LoopRejected):
-        _require_trust_continuity(
-            authenticated, changed_materializer, "trust materializer changed"
-        )
+        _require_trust_continuity(authenticated, changed_materializer, "trust materializer changed")
 
     actor = SimpleNamespace(
         request=SimpleNamespace(callee=SimpleNamespace(generation_id="generation-a")),
@@ -230,9 +228,13 @@ async def test_unchanged_trust_reaches_next_turn_writer_admission(
         monkeypatch.setattr(runtime, "_same_execution_actor_identity", lambda _old, _new: True)
         current_worker = "current-worker-generation"
         monkeypatch.setattr(runtime, "current_worker", lambda: current_worker)
-        monkeypatch.setattr(runtime, "_append_decision", lambda entry: journal_rows.append(
-            (entry["operation_id"], None, json.dumps(entry, sort_keys=True).encode())
-        ))
+        monkeypatch.setattr(
+            runtime,
+            "_append_decision",
+            lambda entry: journal_rows.append(
+                (entry["operation_id"], None, json.dumps(entry, sort_keys=True).encode())
+            ),
+        )
         monkeypatch.setattr(runtime, "_loop_decisions", lambda: Journal())
         monkeypatch.setattr(runtime._trust, "capture_verified_observation", lambda: authenticated)
         monkeypatch.setattr(

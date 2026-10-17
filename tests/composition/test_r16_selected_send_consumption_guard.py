@@ -19,9 +19,7 @@ def _runtime_and_observation(*, current_observation=None, generation="generation
     ).encode()
     runtime = SimpleNamespace(
         _tenant_id="tenant",
-        _supervisor=SimpleNamespace(
-            runtime=lambda: SimpleNamespace(session=lambda owner: session)
-        ),
+        _supervisor=SimpleNamespace(runtime=lambda: SimpleNamespace(session=lambda owner: session)),
         _read_ledger=SimpleNamespace(
             current_state=lambda tenant: SimpleNamespace(
                 owner_draining=False,

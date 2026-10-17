@@ -36,26 +36,56 @@ class SourceTreeChanged(ValueError):
     pass
 
 
-_CALL_KINDS = frozenset({
-    "sql_call_candidate", "factory_or_wrapper_call_candidate", "mount_call_candidate",
-    "reflection_call", "dynamic_call", "other_call", "callable_reference_candidate",
-})
+_CALL_KINDS = frozenset(
+    {
+        "sql_call_candidate",
+        "factory_or_wrapper_call_candidate",
+        "mount_call_candidate",
+        "reflection_call",
+        "dynamic_call",
+        "other_call",
+        "callable_reference_candidate",
+    }
+)
 
 # Independently declared base-R7 READ dependencies, not generated from live SQL.
-_PUBLICATION = tuple(("main", "publications", column) for column in (
-    "commit_sequence", "idempotency_key", "operation_kind", "record_ids",
-    "request_fingerprint", "tenant_id",
-))
-_SELECTION = tuple(("main", "publications", column) for column in (
-    "commit_sequence", "idempotency_key", "operation_kind", "tenant_id",
-))
-_RECORD = tuple(("main", "records", column) for column in (
-    "canonical_bytes", "commit_sequence", "owner", "record_id", "schema_id", "tenant_id",
-))
+_PUBLICATION = tuple(
+    ("main", "publications", column)
+    for column in (
+        "commit_sequence",
+        "idempotency_key",
+        "operation_kind",
+        "record_ids",
+        "request_fingerprint",
+        "tenant_id",
+    )
+)
+_SELECTION = tuple(
+    ("main", "publications", column)
+    for column in (
+        "commit_sequence",
+        "idempotency_key",
+        "operation_kind",
+        "tenant_id",
+    )
+)
+_RECORD = tuple(
+    ("main", "records", column)
+    for column in (
+        "canonical_bytes",
+        "commit_sequence",
+        "owner",
+        "record_id",
+        "schema_id",
+        "tenant_id",
+    )
+)
 _BASE_READS = (
     (1, 0, (("main", "publications", "commit_sequence"), ("main", "publications", "tenant_id"))),
-    (2, 0, _PUBLICATION), (2, 1, _PUBLICATION),
-    (3, 0, (*_SELECTION, *_RECORD)), (3, 1, (*_SELECTION, *_RECORD)),
+    (2, 0, _PUBLICATION),
+    (2, 1, _PUBLICATION),
+    (3, 0, (*_SELECTION, *_RECORD)),
+    (3, 1, (*_SELECTION, *_RECORD)),
 )
 
 
@@ -134,14 +164,17 @@ def _assembly_calls(fragment: PlanningDescriptorFragment) -> tuple[AssemblyCall,
     candidates = tuple(n for n in fragment.corpus.nodes if n.kind == "mount_call_candidate")
     result = []
     for edge in (fragment.assembly, *fragment.other_mounts):
-        sites = [n for n in candidates if n.module == "src/" + edge.module
-                 and n.qualname == edge.caller]
+        sites = [
+            n for n in candidates if n.module == "src/" + edge.module and n.qualname == edge.caller
+        ]
         if not 1 <= edge.ordinal <= len(sites):
             raise DescriptorClosureRefused("assembly edge lacks its exact corpus occurrence")
         site = sites[edge.ordinal - 1]
         call = ast.parse(site.expression, mode="eval").body
-        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name) or (
-            call.func.id != edge.callee.rsplit(":", 1)[-1]
+        if (
+            not isinstance(call, ast.Call)
+            or not isinstance(call.func, ast.Name)
+            or (call.func.id != edge.callee.rsplit(":", 1)[-1])
         ):
             raise DescriptorClosureRefused("assembly edge and corpus callee differ")
         result.append(AssemblyCall(site, edge))
@@ -152,7 +185,8 @@ def _assembly_calls(fragment: PlanningDescriptorFragment) -> tuple[AssemblyCall,
 
 
 def _classifications(
-    fragment: PlanningDescriptorFragment, mounts: tuple[AssemblyCall, ...],
+    fragment: PlanningDescriptorFragment,
+    mounts: tuple[AssemblyCall, ...],
     anchors: tuple[ProtectedAnchorChain, ...],
 ) -> tuple[CallDisposition, ...]:
     local: dict[CorpusNode, tuple[str, str | None, list[str]]] = {}
@@ -167,8 +201,12 @@ def _classifications(
             previous[2].append(detail)
 
     for row in fragment.rows:
-        add(row.site, "PLANNING_READ", "tenant_main",
-            f"base R7 only; statement={row.statement}/alternative={row.alternative}")
+        add(
+            row.site,
+            "PLANNING_READ",
+            "tenant_main",
+            f"base R7 only; statement={row.statement}/alternative={row.alternative}",
+        )
     add(fragment.wrapper_site, "PLANNING_FORWARD", None, "base R7 reader field forwarding only")
     for chain in fragment.preparation_chains:
         detail = chain.entrypoint + "/" + chain.role
@@ -191,8 +229,12 @@ def _classifications(
         if mount.edge == fragment.assembly:
             add(mount.site, "BASE_ASSEMBLY", None, "base runtime/manifest forwarding only")
     for preparation in fragment.runtime_preparation_chains:
-        add(preparation.sink, "RUNTIME_PREPARATION_SQL", preparation.database_domain,
-            "selected planning caller: " + preparation.caller.expression)
+        add(
+            preparation.sink,
+            "RUNTIME_PREPARATION_SQL",
+            preparation.database_domain,
+            "selected planning caller: " + preparation.caller.expression,
+        )
     for anchor in anchors:
         for stage in anchor.stages:
             # Shared consumer occurrences retain their existing narrower role.
@@ -200,8 +242,7 @@ def _classifications(
                 role, domain, _ = local[stage.site]
                 add(stage.site, role, domain, "protected anchor chain: " + stage.role)
             else:
-                role = ("PLANNING_EXECUTION_FORWARD" if stage.role == "PLANNING_READ"
-                        else stage.role)
+                role = "PLANNING_EXECUTION_FORWARD" if stage.role == "PLANNING_READ" else stage.role
                 add(stage.site, role, stage.domain, "selected base runtime only")
         for site in anchor.publication_sql:
             add(site, "STATE_PUBLICATION_SQL", "broker_read_ledger", "protected anchor chain")
@@ -213,8 +254,15 @@ def _classifications(
             role, domain, details = local[site]
             result.append(CallDisposition(site, "CONDITIONAL_LOCAL", role, domain, tuple(details)))
         else:
-            result.append(CallDisposition(site, "UNRESOLVED", site.kind, None,
-                ("callee/receiver/domain effects require closure; lexical SQL is not proof",)))
+            result.append(
+                CallDisposition(
+                    site,
+                    "UNRESOLVED",
+                    site.kind,
+                    None,
+                    ("callee/receiver/domain effects require closure; lexical SQL is not proof",),
+                )
+            )
     return tuple(result)
 
 

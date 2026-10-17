@@ -259,9 +259,7 @@ class H1ProducerSourceReader:
             original_run=original_run,
             worker_session_id=projection.worker_session_id,
         )
-        interpreted = interpret_h1_producer_effects_history(
-            cut, journal, runtime=self._runtime
-        )
+        interpreted = interpret_h1_producer_effects_history(cut, journal, runtime=self._runtime)
         interpreted.require_intent_absent(intent_id)
         history = _effects_history(interpreted)
         if history.digest != interpreted.digest:

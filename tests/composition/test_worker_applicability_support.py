@@ -217,9 +217,7 @@ def test_captured_cut_rejects_missing_extra_duplicate_and_corrupted_bytes(
     for mutation in (captured[:-1], (*captured, captured[0]), (*captured, extra)):
         with pytest.raises(ApplicabilityShapeError):
             matches_captured_cut(requirements, mutation)
-    damaged = captured[0].__class__(
-        **{**captured[0].__dict__, "raw_bytes": b"substituted"}
-    )
+    damaged = captured[0].__class__(**{**captured[0].__dict__, "raw_bytes": b"substituted"})
     with pytest.raises(ApplicabilityShapeError, match="fingerprint"):
         matches_captured_cut(requirements, (damaged, *captured[1:]))
 

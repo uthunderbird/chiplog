@@ -97,7 +97,7 @@ def _startup_binding(raw: bytes | None) -> OperatorPolicyKeyBindingV1 | None:
         # Reconstruct from the immutable canonical representation before the
         # audit hook is installed; retain no caller-owned model instance.
         return OperatorPolicyKeyBindingV1.model_validate_json(binding.canonical_bytes())
-    except (ValueError, TypeError, json.JSONDecodeError):
+    except ValueError, TypeError, json.JSONDecodeError:
         return None
 
 
@@ -136,7 +136,7 @@ def _evaluate(
         return proposal
     except OperatorPolicyVerificationError:
         return _rejected("DENIED", call_sha256, "operator-command-denied")
-    except (ValueError, TypeError, KeyError, binascii.Error, json.JSONDecodeError):
+    except ValueError, TypeError, KeyError, binascii.Error, json.JSONDecodeError:
         return _rejected("DENIED", call_sha256, "policy-input-denied")
 
 
@@ -187,9 +187,7 @@ def _matches_snapshot(call: AuthorizePreparedSelfDeliveryPolicyCallV1) -> bool:
             or _canonical(envelope) != raw
         ):
             return False
-        logical_id = hashlib.sha256(
-            (predecessor or "GENESIS").encode() + b"\x00" + raw
-        ).hexdigest()
+        logical_id = hashlib.sha256((predecessor or "GENESIS").encode() + b"\x00" + raw).hexdigest()
         if entry[0] != logical_id:
             return False
         predecessor = logical_id

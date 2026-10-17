@@ -94,15 +94,17 @@ def test_joined_reader_rechecks_full_current_evidence_and_revokes_release(
     assert evidence.current_claim is current.value
 
     current.value = SimpleNamespace(source=source, g1="changed", binding="binding")
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationDeliveryWorkHold, match="evidence changed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationDeliveryWorkHold, match="evidence changed"),
     ):
         reader.recheck_held(capture)
 
     current.value = evidence.current_claim
     reader.release(capture)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationDeliveryWorkHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationDeliveryWorkHold, match="not reader-issued"),
     ):
         reader.evidence_held(capture)
 
@@ -114,15 +116,17 @@ def test_joined_reader_rejects_forgery_and_close(
     reader = subject.H1ScopedAuthorizationDeliveryWorkReaderV1(runtime)
 
     forged = object.__new__(subject.H1ScopedAuthorizationDeliveryWorkCaptureV1)
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationDeliveryWorkHold, match="not reader-issued"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationDeliveryWorkHold, match="not reader-issued"),
     ):
         reader.evidence_held(forged)
 
     capture = reader.read(effects_capture)
     reader.close()
-    with runtime._authority_gate().hold(), pytest.raises(
-        subject.H1ScopedAuthorizationDeliveryWorkHold, match="reader is closed"
+    with (
+        runtime._authority_gate().hold(),
+        pytest.raises(subject.H1ScopedAuthorizationDeliveryWorkHold, match="reader is closed"),
     ):
         reader.evidence_held(capture)
 
@@ -141,8 +145,10 @@ def test_selected_v4_source_requires_exact_issuance_and_each_member(
             fingerprint=hashlib.sha256(raw).hexdigest(),
         )
 
-    run, manifest, intent = member("run", b"run"), member("manifest", b"manifest"), member(
-        "intent", b"intent"
+    run, manifest, intent = (
+        member("run", b"run"),
+        member("manifest", b"manifest"),
+        member("intent", b"intent"),
     )
 
     class _V4:
@@ -150,9 +156,7 @@ def test_selected_v4_source_requires_exact_issuance_and_each_member(
             self.assembly = SimpleNamespace(
                 prepared_completion=SimpleNamespace(run=object(), terminal_manifest=object())
             )
-            self.effects_result = SimpleNamespace(
-                intent_result=SimpleNamespace(intent=object())
-            )
+            self.effects_result = SimpleNamespace(intent_result=SimpleNamespace(intent=object()))
 
     class _Batch:
         def __init__(self, records: tuple[object, ...]) -> None:
