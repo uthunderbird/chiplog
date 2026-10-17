@@ -9,6 +9,7 @@ import pytest
 from tests.support.recovery_records import (
     RecoveryRecords,
     head,
+    original_resolver_policy_members,
     physical,
     records,
     records_with_closed_acceptance_counter,
@@ -48,14 +49,15 @@ def decoded_records() -> tuple[RecoveryRecords, dict[str, DecodedRecoveryRecordM
 
 
 def test_every_registered_row_decodes_its_actual_canonical_positive_record() -> None:
-    fixture, decoded = decoded_records()
+    members = records().members | original_resolver_policy_members()
+    decoded = {kind: decode_recovery_record_member(member) for kind, member in members.items()}
     actual_rows = {
-        (member.owner, member.record_kind, member.schema_id) for member in fixture.members.values()
+        (member.owner, member.record_kind, member.schema_id) for member in members.values()
     }
     expected_rows = {(row.owner, row.record_kind, row.schema_id) for row in RECOVERY_RECORD_ROWS}
     assert actual_rows == expected_rows
-    assert len(expected_rows) == 16
-    for kind, member in fixture.members.items():
+    assert len(expected_rows) == 19
+    for kind, member in members.items():
         result = decoded[kind]
         assert result.member.canonical_record_bytes == result.record.canonical_bytes()
         assert (

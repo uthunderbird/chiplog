@@ -6,12 +6,17 @@ import hashlib
 from dataclasses import dataclass
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
-from chiplog.capabilities.agent_loop.execution_recovery_contracts import ExecutionSuccessorEdge
+from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+    AcceptedOpenRecoveryOpeningV1,
+    AcceptedOpenTerminalDispositionV1,
+    ExecutionSuccessorEdge,
+)
 from chiplog.capabilities.agent_loop.execution_recovery_observations import (
     ContinuationReadyRecord,
     ExecutionSuspensionBaseline,
     ExecutionSuspensionPair,
     ExecutionTerminalManifest,
+    RecoverySourceRecord,
     SealedAccountingRecord,
 )
 from chiplog.capabilities.agent_loop.model_attempt_recovery_contracts import (
@@ -25,8 +30,16 @@ from chiplog.capabilities.agent_loop.original_recovery_contracts import (
     OriginalObligationClosureRecord,
     OriginalResolutionBasis,
     OriginalResolverBatchRecord,
+    OriginalResolverInvocationV1,
+    PreparedOriginalResolverInvocationV1,
+    PrepareOriginalResolverInvocationV1,
     RecoveredCallOutcomeRecord,
     ResolvedReductionAnchor,
+    original_effect_evidence_reducer_policy_v1,
+    original_resolver_authority_policy_v1,
+)
+from chiplog.capabilities.agent_loop.original_resolver_invocation_preparation import (
+    prepare_original_resolver_invocation_v1,
 )
 from chiplog.capabilities.agent_loop.readonly_execution_contracts import (
     ReadOnlyAttemptAcceptedRecord,
@@ -405,6 +418,112 @@ def records() -> RecoveryRecords:
         "LATE_EXECUTION_RESPONSE": member_for("LATE_EXECUTION_RESPONSE", late),
     }
     return RecoveryRecords(values, suspended_run, head("selected-decision"), original, terminal)
+
+
+def original_resolver_policy_members() -> dict[str, RecoveryRecordMember]:
+    """Canonical codec examples, prepared by the owner; no publication authority."""
+    resolver = original_resolver_authority_policy_v1("tenant")
+    reducer = original_effect_evidence_reducer_policy_v1("tenant")
+    original = obligation().model_copy(
+        update={
+            "resolver_id": resolver.resolver_id,
+            "resolver_version": resolver.resolver_version,
+            "reducer_id": reducer.reducer_id,
+            "reducer_version": reducer.reducer_version,
+        }
+    )
+    decision = CallSubjectHead(
+        subject_id="selected-resolver-codec-fixture",
+        revision=Present(
+            head="selected-resolver-codec-fixture", fingerprint=digest("resolver-decision")
+        ),
+    )
+
+    def source(
+        value: RecoveryDTO,
+        record_id: str,
+        schema: str,
+        subject: CallSubjectHead | None = None,
+    ) -> RecoverySourceRecord:
+        raw = value.canonical_bytes()
+        reference = CallSubjectHead(
+            subject_id=record_id,
+            revision=Present(
+                head="record:" + hashlib.sha256(raw).hexdigest(),
+                fingerprint=hashlib.sha256(raw).hexdigest(),
+            ),
+        )
+        return RecoverySourceRecord(
+            owner="agent_loop",
+            subject=reference if subject is None else subject,
+            schema_id=schema,
+            canonical_record_bytes=raw,
+            selected_decision=decision,
+            physical_record=reference,
+        )
+
+    opening = AcceptedOpenRecoveryOpeningV1(
+        opening_id="codec-opening",
+        source_cut_fingerprint=digest("opening-cut"),
+        original=original,
+        evidence_sought=(),
+        safe_actions=("RESOLVE_ORIGINAL_OBLIGATION",),
+        denied_actions=("SEND", "RETRY", "APPEND_EVIDENCE"),
+    )
+    opening_source = source(
+        opening,
+        opening.opening_id,
+        opening.schema_id,
+        CallSubjectHead(
+            subject_id=original.obligation_id,
+            revision=Present(head=original.obligation_head, fingerprint=opening.digest()),
+        ),
+    )
+    terminal = AcceptedOpenTerminalDispositionV1(
+        terminal_id="codec-terminal",
+        source_cut_fingerprint=digest("terminal-cut"),
+        original_call_id=original.original_call_id,
+        response_id="codec-response",
+        accepted=head("codec-accepted"),
+        external_effect_intent=head("codec-intent"),
+        obligation_opening=opening_source.physical_record,
+    )
+    invocation = OriginalResolverInvocationV1(
+        invocation_id="r14-resolver-invocation:tenant:" + original.obligation_id,
+        tenant_id="tenant",
+        original=original,
+        accepted_opening_source=opening_source,
+        accepted_terminal_source=source(
+            terminal,
+            terminal.terminal_id,
+            terminal.schema_id,
+            CallSubjectHead(
+                subject_id=terminal.original_call_id,
+                revision=Present(head="record:" + terminal.digest(), fingerprint=terminal.digest()),
+            ),
+        ),
+        resolver_policy_source=source(resolver, resolver.policy_id, resolver.schema_id),
+        reducer_policy_source=source(reducer, reducer.policy_id, reducer.schema_id),
+        trust_journal_head="codec-trust-head",
+        trust_response_fingerprint=digest("codec-trust-response"),
+    )
+    prepared = prepare_original_resolver_invocation_v1(
+        PrepareOriginalResolverInvocationV1(
+            command_id=invocation.invocation_id, invocation=invocation
+        )
+    )
+    assert isinstance(prepared, PreparedOriginalResolverInvocationV1), prepared
+    return {
+        "ORIGINAL_RESOLVER_AUTHORITY_POLICY": member_for(
+            "ORIGINAL_RESOLVER_AUTHORITY_POLICY", resolver
+        ),
+        "ORIGINAL_EFFECT_EVIDENCE_REDUCER_POLICY": member_for(
+            "ORIGINAL_EFFECT_EVIDENCE_REDUCER_POLICY", reducer
+        ),
+        "ORIGINAL_RESOLVER_INVOCATION": member_for(
+            "ORIGINAL_RESOLVER_INVOCATION", prepared.invocation
+        ),
+    }
 
 
 def records_with_closed_acceptance_counter() -> RecoveryRecords:
