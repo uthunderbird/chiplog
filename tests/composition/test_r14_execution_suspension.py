@@ -1,5 +1,7 @@
 """Mounted suspension admission fails closed before a complete selected cut exists."""
 
+from pathlib import Path
+
 import pytest
 
 from chiplog.architecture.r7_runtime import (
@@ -18,7 +20,7 @@ from chiplog.platform.workspace_snapshot import read_connection
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 
 
-async def test_mounted_suspension_holds_without_authenticated_active_run(tmp_path) -> None:
+async def test_mounted_suspension_holds_without_authenticated_active_run(tmp_path: Path) -> None:
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
     )
@@ -34,7 +36,9 @@ async def test_mounted_suspension_holds_without_authenticated_active_run(tmp_pat
         assert runtime.read_selected_execution_suspension() is None
 
 
-async def test_mounted_same_run_resume_reopens_the_selected_suspension(tmp_path, monkeypatch):
+async def test_mounted_same_run_resume_reopens_the_selected_suspension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database = tmp_path / "resume.sqlite"
     custody = tmp_path / "custody"
     resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)

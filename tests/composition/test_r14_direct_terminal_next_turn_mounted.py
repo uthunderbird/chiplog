@@ -39,7 +39,7 @@ def _mark(name: str) -> None:
 
 @pytest.mark.asyncio
 async def test_selected_direct_terminal_reopens_to_one_next_turn(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database = tmp_path / "direct-terminal-next-turn.sqlite"
     resources = HermeticDispatchResources(

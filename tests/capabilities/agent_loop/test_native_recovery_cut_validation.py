@@ -110,7 +110,7 @@ def _head(label: str) -> Present:
     return Present(head=f"head:{label}", fingerprint=(label.encode().hex() * 64)[:64])
 
 
-def test_frozen_binding_references_must_belong_to_their_registered_frontier_family():
+def test_frozen_binding_references_must_belong_to_their_registered_frontier_family() -> None:
     prompt = _head("p")
     tool = _head("t")
     schema = _head("s")

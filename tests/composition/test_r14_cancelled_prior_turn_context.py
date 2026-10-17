@@ -44,7 +44,9 @@ def _source(record, identity: str, schema: str, decision: CallSubjectHead):
 
 
 @pytest.mark.asyncio
-async def test_cancelled_prior_turn_context_requires_selected_terminal_result_join(monkeypatch):
+async def test_cancelled_prior_turn_context_requires_selected_terminal_result_join(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     prepared = await _request()
     before = prepared.run
     next_turn = prepare_next_native_execution_turn(prepared).run

@@ -1,6 +1,7 @@
 """Fresh readiness orchestration counts; synthetic ports grant no authority."""
 
 from collections import Counter
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -20,8 +21,8 @@ async def _evidence(tmp_path):
 
 
 async def test_readiness_binding_reuses_derivation_but_public_reconstruction_revalidates(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     evidence, issued = await _evidence(tmp_path)
     calls = []
     accounting = preparation.prepare_execution_accounting
@@ -58,7 +59,9 @@ async def test_readiness_binding_reuses_derivation_but_public_reconstruction_rev
         "whole-exchange",
     ),
 )
-async def test_readiness_binding_rejects_changed_validated_artifacts(tmp_path, damage: str) -> None:
+async def test_readiness_binding_rejects_changed_validated_artifacts(
+    tmp_path: Path, damage: str
+) -> None:
     evidence, issued = await _evidence(tmp_path / "original")
     artifacts = publication._prepare_readiness_artifacts(evidence)
     if damage == "request":
@@ -126,7 +129,9 @@ async def test_readiness_binding_rejects_changed_validated_artifacts(tmp_path, d
         publication._bind_readiness_artifacts(changed, artifacts)
 
 
-async def test_fresh_readiness_does_not_reprepare_after_actor_issuance(tmp_path, monkeypatch):
+async def test_fresh_readiness_does_not_reprepare_after_actor_issuance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Build all fixture evidence outside the counter window. This fixture does
     # not authenticate a native source or exercise a registered writer.
     runtime, entry, _, _, _ = await _fixture(tmp_path, False)

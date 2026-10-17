@@ -3,6 +3,7 @@
 import json
 from collections import Counter
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -303,7 +304,9 @@ async def test_custom_source_keeps_final_collection_at_real_writer(tmp_path, mon
         "slow-fallback",
     ),
 )
-async def test_fabricated_witness_guard_wiring_at_real_writer(tmp_path, monkeypatch, stage: str):
+async def test_fabricated_witness_guard_wiring_at_real_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
     mutation = {
         "semantic-change": "semantic-change",
         "slow-fallback": "synthetic-actor-expiry",

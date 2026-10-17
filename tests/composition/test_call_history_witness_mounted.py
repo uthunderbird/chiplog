@@ -5,6 +5,7 @@ import math
 import sqlite3
 from contextlib import closing, nullcontext
 from dataclasses import fields, replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -326,8 +327,8 @@ async def test_native_post_owner_admission_uses_same_verified_history_with_fresh
 
 @pytest.mark.asyncio
 async def test_public_accept_seeds_exact_history_cache_and_main_commitment_change_misses(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
     )

@@ -1,5 +1,6 @@
 """Fail-closed checks for the separate interval service policy selection."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -34,7 +35,7 @@ def test_constructible_operation_without_broker_envelope_is_rejected() -> None:
         validate_selected_interval_policy(SimpleNamespace(operation=OPERATION))
 
 
-async def test_mounted_interval_policy_adoption_selects_and_replays(tmp_path) -> None:
+async def test_mounted_interval_policy_adoption_selects_and_replays(tmp_path: Path) -> None:
     database = tmp_path / "interval-policy.sqlite"
     clock = EvaluationSchedulerClock(1_000_000_000)
     async with open_r15_runtime(database, clock=clock) as runtime:

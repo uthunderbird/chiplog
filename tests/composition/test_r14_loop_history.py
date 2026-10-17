@@ -140,7 +140,10 @@ def test_startup_execution_allowlist_routes_successor_evidence(
     assert read == [((runtime,), {"selected_only": True})]
 
 
-def test_direct_terminal_frontier_without_history_keeps_fresh_read(monkeypatch: pytest.MonkeyPatch):
+def test_direct_terminal_frontier_without_history_keeps_fresh_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from chiplog.composition import r14_accepted_direct_terminal_publication as publication
     from chiplog.composition import r14_loop_history
 
     class Gate:
@@ -154,14 +157,18 @@ def test_direct_terminal_frontier_without_history_keeps_fresh_read(monkeypatch: 
     )
     observed = []
     history = (object(), object(), (), (), (), ())
-    monkeypatch.setattr(
-        r14_loop_history,
-        "read_execution_recovery_history",
-        lambda current: observed.append(current) or history,
-    )
+    original_reader = r14_loop_history.read_execution_recovery_history
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            r14_loop_history,
+            "read_execution_recovery_history",
+            lambda current: observed.append(current) or history,
+        )
+        assert read_selected_accepted_direct_terminal_frontier(runtime) is None
+        assert observed == [runtime]
 
-    assert read_selected_accepted_direct_terminal_frontier(runtime) is None
-    assert observed == [runtime]
+    assert r14_loop_history.read_execution_recovery_history is original_reader
+    assert vars(publication)["read_execution_recovery_history"] is original_reader
 
 
 async def test_selected_complete_delivery_v2_projects_its_native_terminal_run() -> None:

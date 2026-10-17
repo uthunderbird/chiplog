@@ -5,6 +5,8 @@ import hashlib
 import hmac
 import json
 from dataclasses import replace
+from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -150,8 +152,6 @@ def test_even_signed_malformed_receipt_cannot_change_child_or_outcome(mutation: 
 
 
 def test_read_only_probe_preserves_mixed_and_permanent_outcomes_without_retry() -> None:
-    from typing import Literal
-
     ticket = replace(_ticket(), bundle_members=("a", "b"))
     scenarios: tuple[Literal["MIXED", "PERMANENT_NO_EFFECT"], ...] = (
         "MIXED",
@@ -170,19 +170,22 @@ def test_read_only_probe_preserves_mixed_and_permanent_outcomes_without_retry() 
 
 @pytest.mark.parametrize("late_scenario", ("COMPATIBLE", "RIVAL"))
 def test_late_receipt_is_a_durable_observation_of_the_original_send(
-    tmp_path, late_scenario: str
+    tmp_path: Path, late_scenario: Literal["COMPATIBLE", "RIVAL"]
 ) -> None:
     ticket = _ticket()
     transfer_path = tmp_path / "provider.transfers"
     observation_path = tmp_path / "provider.observations"
-    options = {
-        "receipt_key": b"registered",
-        "scenarios": ("CONFIRM",),
-        "late_receipt_scenarios": ((late_scenario,),),
-        "journal_path": transfer_path,
-        "observation_journal_path": observation_path,
-    }
-    provider = HermeticEffectsProvider(**options)
+
+    def open_provider() -> HermeticEffectsProvider:
+        return HermeticEffectsProvider(
+            receipt_key=b"registered",
+            scenarios=("CONFIRM",),
+            late_receipt_scenarios=((late_scenario,),),
+            journal_path=transfer_path,
+            observation_journal_path=observation_path,
+        )
+
+    provider = open_provider()
     first = asyncio.run(provider.emit_issued(ticket))
     late = provider.observe_late_receipt(ticket.transmission_id)
     initial_observation = verify_hermetic_receipt(
@@ -201,7 +204,7 @@ def test_late_receipt_is_a_durable_observation_of_the_original_send(
         assert late_observation.occurred_members == ()
         assert late_observation.permanently_incapable_members == ("effect",)
 
-    reopened = HermeticEffectsProvider(**options)
+    reopened = open_provider()
     assert len(reopened.transfers) == 1
     with pytest.raises(ValueError, match="exhausted"):
         reopened.observe_late_receipt(ticket.transmission_id)

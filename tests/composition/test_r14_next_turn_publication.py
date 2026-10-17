@@ -31,7 +31,7 @@ from tests.support.native_cancelled import native_response, selected_native_canc
 @pytest.mark.asyncio
 async def test_historical_accounting_uses_exact_read_local_prepare_and_rejects_bad_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+) -> None:
     from chiplog.composition import r14_native_recovery_historical as historical
 
     resources = HermeticDispatchResources(
@@ -79,7 +79,7 @@ async def test_historical_accounting_uses_exact_read_local_prepare_and_rejects_b
 
 def test_named_accounting_validation_reuses_exact_candidate_after_all_eligible(
     monkeypatch: pytest.MonkeyPatch,
-):
+) -> None:
     named = {"operation_id": "named", "expected_head": 4}
     unnamed = {"operation_id": "unnamed", "expected_head": 4}
     named_batch, unnamed_batch = object(), object()
@@ -126,7 +126,7 @@ def test_named_accounting_validation_reuses_exact_candidate_after_all_eligible(
 
 def test_unnamed_eligible_accounting_failure_after_named_still_rejects(
     monkeypatch: pytest.MonkeyPatch,
-):
+) -> None:
     named = {"operation_id": "named", "expected_head": 4}
     unnamed = {"operation_id": "unnamed", "expected_head": 4}
     candidates = [

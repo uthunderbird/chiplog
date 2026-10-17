@@ -1,4 +1,5 @@
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -90,7 +91,7 @@ def test_native_recovery_profile_v3_preserves_v2_and_registers_accepted_transiti
     assert command.records[0].schema_id.endswith(".v3")
 
 
-def test_v2_selection_guard_rejects_v1_rows_and_late_lineage(tmp_path) -> None:
+def test_v2_selection_guard_rejects_v1_rows_and_late_lineage(tmp_path: Path) -> None:
     database = tmp_path / "profile.sqlite"
     with sqlite3.connect(database) as connection:
         connection.execute(

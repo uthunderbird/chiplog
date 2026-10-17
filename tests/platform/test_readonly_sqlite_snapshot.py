@@ -86,7 +86,7 @@ def _clean_source(tmp_path):
     return database, gate
 
 
-def test_missing_or_mismatched_gate_refuses_without_provisioning(tmp_path) -> None:
+def test_missing_or_mismatched_gate_refuses_without_provisioning(tmp_path: Path) -> None:
     from chiplog.platform.readonly_sqlite_snapshot import (
         AuthoritySQLSnapshotIntegrityError,
         readonly_authority_sql_snapshot,
@@ -109,7 +109,9 @@ def test_missing_or_mismatched_gate_refuses_without_provisioning(tmp_path) -> No
 
 
 @pytest.mark.parametrize("companion", ["-journal", "-wal"])
-def test_companion_appearance_during_consumer_refuses_and_cleans(tmp_path, companion: str) -> None:
+def test_companion_appearance_during_consumer_refuses_and_cleans(
+    tmp_path: Path, companion: str
+) -> None:
     from chiplog.platform.readonly_sqlite_snapshot import (
         AuthoritySQLSnapshotIntegrityError,
         readonly_authority_sql_snapshot,
@@ -128,7 +130,9 @@ def test_companion_appearance_during_consumer_refuses_and_cleans(tmp_path, compa
         connection.execute("SELECT 1")
 
 
-def test_replaced_source_during_copy_refuses_before_yield(tmp_path, monkeypatch):
+def test_replaced_source_during_copy_refuses_before_yield(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import chiplog.platform.readonly_sqlite_snapshot as snapshot
 
     database, gate = _clean_source(tmp_path)
@@ -150,7 +154,7 @@ def test_replaced_source_during_copy_refuses_before_yield(tmp_path, monkeypatch)
         pytest.fail("replaced source yielded")
 
 
-def test_consumer_exception_closes_private_connection_and_directory(tmp_path) -> None:
+def test_consumer_exception_closes_private_connection_and_directory(tmp_path: Path) -> None:
     from chiplog.platform.readonly_sqlite_snapshot import readonly_authority_sql_snapshot
 
     database, gate = _clean_source(tmp_path)
@@ -168,7 +172,7 @@ def test_consumer_exception_closes_private_connection_and_directory(tmp_path) ->
     assert _files(database.parent) == before
 
 
-def test_existing_nonhot_journal_is_unsupported(tmp_path) -> None:
+def test_existing_nonhot_journal_is_unsupported(tmp_path: Path) -> None:
     from chiplog.platform.readonly_sqlite_snapshot import (
         AuthoritySQLSnapshotIntegrityError,
         readonly_authority_sql_snapshot,
@@ -187,7 +191,7 @@ def test_existing_nonhot_journal_is_unsupported(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("tail", ["uncommitted", "reset"])
-def test_native_recovery_preserves_legitimate_wal_tails(tmp_path, tail: str) -> None:
+def test_native_recovery_preserves_legitimate_wal_tails(tmp_path: Path, tail: str) -> None:
     from chiplog.platform.readonly_sqlite_snapshot import readonly_authority_sql_snapshot
 
     producer = tmp_path / "producer.sqlite"
@@ -227,7 +231,9 @@ def test_native_recovery_preserves_legitimate_wal_tails(tmp_path, tail: str) -> 
     assert _files(directory) == before
 
 
-def test_private_sqlite_failure_is_typed_and_disposes_copy(tmp_path, monkeypatch):
+def test_private_sqlite_failure_is_typed_and_disposes_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import chiplog.platform.readonly_sqlite_snapshot as snapshot
 
     database, gate = _clean_source(tmp_path)
@@ -254,7 +260,7 @@ def test_private_sqlite_failure_is_typed_and_disposes_copy(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("alias", ["symlink", "hardlink", "fifo"])
-def test_aliased_or_nonregular_wal_refuses(tmp_path, alias: str) -> None:
+def test_aliased_or_nonregular_wal_refuses(tmp_path: Path, alias: str) -> None:
     from chiplog.platform.readonly_sqlite_snapshot import (
         AuthoritySQLSnapshotIntegrityError,
         readonly_authority_sql_snapshot,
@@ -278,7 +284,9 @@ def test_aliased_or_nonregular_wal_refuses(tmp_path, alias: str) -> None:
         pytest.fail("aliased/nonregular WAL yielded")
 
 
-def test_same_inode_content_mutation_during_copy_refuses(tmp_path, monkeypatch):
+def test_same_inode_content_mutation_during_copy_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import chiplog.platform.readonly_sqlite_snapshot as snapshot
 
     database, gate = _clean_source(tmp_path)
@@ -300,7 +308,7 @@ def test_same_inode_content_mutation_during_copy_refuses(tmp_path, monkeypatch):
         pytest.fail("mutated source yielded")
 
 
-def test_trust_role_is_limited_to_exact_companion_of_matching_gate(tmp_path) -> None:
+def test_trust_role_is_limited_to_exact_companion_of_matching_gate(tmp_path: Path) -> None:
     from chiplog.platform.readonly_sqlite_snapshot import (
         AuthoritySQLSnapshotIntegrityError,
         readonly_authority_sql_snapshot,

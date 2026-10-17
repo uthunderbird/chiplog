@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -145,7 +146,7 @@ def test_v2_source_rejects_checkpoint_substitution_before_any_root_derivation() 
 
 @pytest.mark.asyncio
 async def test_installed_immediate_v2_seal_derives_root_from_authenticated_source(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     slot, expected = installed_slot(tmp_path)
     await prepare_installed_slot(slot, expected, tmp_path)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -79,7 +80,7 @@ async def _admit_other(runtime) -> DriveInputRequestV1:
 
 
 @pytest.mark.asyncio
-async def test_installed_v2_selector_replays_old_native_cut_after_seal(tmp_path) -> None:
+async def test_installed_v2_selector_replays_old_native_cut_after_seal(tmp_path: Path) -> None:
     slot, expected = installed_slot(tmp_path)
     await prepare_installed_slot(slot, expected, tmp_path)
     resources = HermeticDispatchResources(

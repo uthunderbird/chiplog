@@ -1,5 +1,7 @@
 """Mounted CLI successor publication and exact replay after runtime reopen."""
 
+from pathlib import Path
+
 import pytest
 
 from chiplog.architecture.r7_runtime import R14_EXECUTION_SUCCESSOR_V38_PRODUCTION_MANIFEST
@@ -46,7 +48,7 @@ def _durable_state(runtime):
 
 @pytest.mark.asyncio
 async def test_new_authenticated_ingress_selects_and_replays_suspended_run_successor(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     database = tmp_path / "successor.sqlite"
     custody = tmp_path / "custody"

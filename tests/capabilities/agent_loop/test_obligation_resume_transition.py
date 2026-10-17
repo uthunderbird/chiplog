@@ -15,7 +15,9 @@ def test_obligation_resume_appends_exact_selected_closure(monkeypatch, existing_
     preparation._validate_obligation_resume_successor(cut, baseline, object())
 
 
-def test_obligation_resume_selects_logical_terminal_among_physical_aliases(monkeypatch):
+def test_obligation_resume_selects_logical_terminal_among_physical_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cut, baseline = _transition(monkeypatch)
     terminal = next(
         source
@@ -28,7 +30,9 @@ def test_obligation_resume_selects_logical_terminal_among_physical_aliases(monke
     preparation._validate_obligation_resume_successor(cut, baseline, object())
 
 
-def test_obligation_resume_rejects_duplicate_logical_terminal(monkeypatch):
+def test_obligation_resume_rejects_duplicate_logical_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cut, baseline = _transition(monkeypatch)
     terminal = next(
         source

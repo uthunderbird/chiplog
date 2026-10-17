@@ -11,7 +11,9 @@ from tests.support.composition.r14_resume_artifacts import (
 )
 
 
-async def test_resume_artifacts_bind_exact_bytes_without_repreparation(monkeypatch):
+async def test_resume_artifacts_bind_exact_bytes_without_repreparation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     evidence = await _evidence()
     events = []
     prepare = resume.prepare_execution_resume

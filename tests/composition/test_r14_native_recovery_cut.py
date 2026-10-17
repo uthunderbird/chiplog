@@ -198,7 +198,9 @@ def test_inherited_no_retry_references_require_one_exact_inactive_source() -> No
     assert not _selected_no_retry_sources((reference,), (source,), (reference,))
 
 
-def test_selected_reduction_source_projection_keeps_the_complete_chain(monkeypatch) -> None:
+def test_selected_reduction_source_projection_keeps_the_complete_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from chiplog.composition import r14_loop_semantic_reduction_publication as publication
 
     sources = {"opening": object(), "successor": object()}
@@ -215,7 +217,9 @@ def test_selected_reduction_source_projection_keeps_the_complete_chain(monkeypat
     )
 
 
-def test_closed_recovery_source_projection_keeps_resolver_authority(monkeypatch) -> None:
+def test_closed_recovery_source_projection_keeps_resolver_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Source acquisition is inert; the real projection must retain authority proofs."""
     from chiplog.capabilities.agent_loop.original_call_resolution_preparation import (
         prepare_original_call_resolution,
@@ -470,7 +474,9 @@ def test_original_terminal_aliases_share_one_exact_selected_decision(conflict) -
         assert _source_for_revision(cut, original.subject.revision, original.schema_id) == original
 
 
-def test_closed_accepted_recovery_retains_only_exact_selected_open_preimages(monkeypatch):
+def test_closed_accepted_recovery_retains_only_exact_selected_open_preimages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from chiplog.composition import r14_accepted_open_accounting_records as records
     from chiplog.composition import r14_original_obligation_sources as sources_module
 
@@ -1120,7 +1126,9 @@ def test_direct_selector_holds_retained_rival_marker_under_foreign_operation() -
     assert selected is None
 
 
-def test_direct_selector_forwards_exact_authenticated_history_from_subset(monkeypatch) -> None:
+def test_direct_selector_forwards_exact_authenticated_history_from_subset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from chiplog.composition import r14_accepted_direct_terminal_records as records
 
     operation = records.ACCEPTED_DIRECT_TERMINAL_OPERATION

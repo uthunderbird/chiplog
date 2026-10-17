@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -18,7 +19,9 @@ from tests.support.native_cancelled import native_response, selected_native_canc
 
 
 @pytest.mark.asyncio
-async def test_same_read_derives_once_but_authenticates_both_actual_horizons(tmp_path, monkeypatch):
+async def test_same_read_derives_once_but_authenticates_both_actual_horizons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
     )

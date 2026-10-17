@@ -29,7 +29,9 @@ from tests.support.h1_cli_execution import admit_complete_script, advance
 
 
 @pytest.mark.parametrize("case", ["second-turn", "missing", "duplicate", "bad-earlier"])
-def test_prepare_selection_is_turn_qualified_but_validates_the_whole_prefix(monkeypatch, case: str):
+def test_prepare_selection_is_turn_qualified_but_validates_the_whole_prefix(
+    monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
     workspace = SimpleNamespace(
         producer="projections",
         surface="workspace",

@@ -4,6 +4,8 @@ Synthetic wire cuts are not selected authority and cannot publish via the defaul
 source. These tests intentionally make no full-cut or continuation claim.
 """
 
+from pathlib import Path
+
 import pytest
 
 from chiplog.architecture.r7_runtime import R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST
@@ -21,7 +23,7 @@ from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.support.capabilities.agent_loop.execution_recovery_preparation import _cut
 
 
-async def test_mounted_source_hold_and_owner_ipc_do_not_publish(tmp_path) -> None:
+async def test_mounted_source_hold_and_owner_ipc_do_not_publish(tmp_path: Path) -> None:
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
     )
@@ -49,7 +51,7 @@ async def test_mounted_source_hold_and_owner_ipc_do_not_publish(tmp_path) -> Non
             await publish_execution_accounting_readiness(runtime)
 
 
-async def test_selected_profile_exact_restart_and_hold(tmp_path) -> None:
+async def test_selected_profile_exact_restart_and_hold(tmp_path: Path) -> None:
     from chiplog.composition.r14_loop_history import read_execution_history
     from chiplog.composition.r14_recovery_profile_publication import (
         publish_native_recovery_profile,
@@ -78,7 +80,7 @@ async def test_selected_profile_exact_restart_and_hold(tmp_path) -> None:
         assert await publish_native_recovery_profile(runtime) == selected
 
 
-async def test_v3_profile_selection_reopens_with_exact_version(tmp_path) -> None:
+async def test_v3_profile_selection_reopens_with_exact_version(tmp_path: Path) -> None:
     from chiplog.composition.r14_recovery_profile_publication import (
         publish_native_recovery_profile,
         read_native_recovery_profile_held,
@@ -104,7 +106,7 @@ async def test_v3_profile_selection_reopens_with_exact_version(tmp_path) -> None
         assert await publish_native_recovery_profile(runtime, version="v3") == selected
 
 
-async def test_profile_lost_ack_recovers_exact_selection(tmp_path) -> None:
+async def test_profile_lost_ack_recovers_exact_selection(tmp_path: Path) -> None:
     from unittest.mock import patch
 
     from chiplog.composition.r14_recovery_profile_publication import publish_native_recovery_profile
@@ -134,7 +136,7 @@ async def test_profile_lost_ack_recovers_exact_selection(tmp_path) -> None:
         assert await publish_native_recovery_profile(runtime) is not None
 
 
-async def test_profile_physical_tamper_rejects_read_and_restart(tmp_path) -> None:
+async def test_profile_physical_tamper_rejects_read_and_restart(tmp_path: Path) -> None:
     import sqlite3
 
     from chiplog.composition.r14_recovery_profile_publication import (
@@ -167,7 +169,7 @@ async def test_profile_physical_tamper_rejects_read_and_restart(tmp_path) -> Non
             pytest.fail("tampered profile reopened")
 
 
-async def test_v26_actor_budget_is_issued_before_ipc_and_expires(tmp_path):
+async def test_v26_actor_budget_is_issued_before_ipc_and_expires(tmp_path: Path) -> None:
     import time
     from unittest.mock import patch
 

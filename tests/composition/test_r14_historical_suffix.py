@@ -400,8 +400,8 @@ def test_mixed_suffix_rejects_gaps_forks_and_incomplete_physical_state(
 )
 @pytest.mark.parametrize("foreign", [False, True])
 def test_native_suffix_keeps_unselected_effects_out_of_authenticated_run_members(
-    monkeypatch, operation: str, foreign
-):
+    monkeypatch: pytest.MonkeyPatch, operation: str, foreign: bool
+) -> None:
     from chiplog.composition import r14_accepted_direct_terminal_records as terminal
     from chiplog.composition import (
         r16_dispatch_authority,
@@ -478,7 +478,7 @@ def test_native_suffix_keeps_unselected_effects_out_of_authenticated_run_members
     ],
 )
 def test_native_suffix_covers_existing_per_call_terminal_publication_families(
-    monkeypatch, operation: str
+    monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     """Physical sequence coverage; retained-envelope semantics have separate tests."""
     from chiplog.composition import r14_accepted_direct_terminal_records as terminal
@@ -534,7 +534,7 @@ def test_native_v3_suffix_resolves_retained_evidence_reader() -> None:
 
 @pytest.mark.parametrize("operation", ["dispatch.consume_effect_send", "dispatch.foreign"])
 def test_native_suffix_authenticates_physical_send_consumption_and_holds_unknown_family(
-    monkeypatch, operation: str
+    monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     """Physical suffix composition; the outbox validator owns ticket/SEND semantics."""
     from chiplog.composition import r14_accepted_direct_terminal_records as terminal

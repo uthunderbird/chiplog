@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -15,8 +16,8 @@ from tests.support.native_cancelled import native_response, selected_native_canc
 
 @pytest.mark.asyncio
 async def test_native_selected_validation_constructs_once_and_rejects_damaged_exchange(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
     )

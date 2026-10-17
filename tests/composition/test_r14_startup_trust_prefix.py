@@ -214,8 +214,8 @@ def _write_remnant(trust, remnant) -> None:
 
 @pytest.mark.asyncio
 async def test_sql_time_journal_mutation_refuses_before_consuming_constructors(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from chiplog.platform import startup_trust_prefix
 
     database, secret = _restore_legacy(tmp_path)
@@ -249,8 +249,8 @@ async def test_sql_time_journal_mutation_refuses_before_consuming_constructors(
 
 @pytest.mark.asyncio
 async def test_existing_cut_is_held_through_store_setup_and_released_before_async_entry(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from chiplog.architecture.r7_runtime import R7_PRODUCTION_MANIFEST
     from chiplog.platform.authority_gate import AuthorityGate, AuthorityGateError
 
