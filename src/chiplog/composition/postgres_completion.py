@@ -314,6 +314,7 @@ async def accept_completion(
         ):
             raise LoopRejected("acceptance requires exact prepared Complete Run")
         source = latest[-1]
+        runtime.scheduler_fence(snapshot, source.run_id)
         runtime.assert_all_selected_seals_closed(snapshot, source)
         worker = ref(
             runtime._worker, "worker:" + digest(runtime._token.encode()), runtime._token.encode()

@@ -258,6 +258,11 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
             selected = {run.run_id: run for run in self._runs(snapshot)}
             checked: set[str] = set()
             for item in records:
+                if item.schema_id == "chiplog.agent-loop.native-call-state.v1":
+                    state = NativeCallStateV1.model_validate_json(item.canonical_bytes)
+                    if state.state == "ACCEPTED" and state.run_id not in checked:
+                        self.scheduler_fence(snapshot, state.run_id)
+                        checked.add(state.run_id)
                 if item.schema_id not in RUN_SCHEMAS:
                     continue
                 kind = (

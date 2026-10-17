@@ -29,6 +29,18 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
     OriginalObligationBinding,
     Present,
 )
+from chiplog.capabilities.effects.action_lifecycle_contracts import (
+    ActionClaimV1,
+    ActionClosureV1,
+    ActionEvidenceV1,
+    ActionInvocationV1,
+    ActionRecord,
+    ActionReductionV1,
+    ActionSendV1,
+    CompensationActionProposal,
+    NonToolEffectPreview,
+    PlanActionProposal,
+)
 from chiplog.capabilities.effects.client_effect_contracts import (
     NativeEffectClaimV1,
     NativeEffectClosureV1,
@@ -41,7 +53,12 @@ from chiplog.capabilities.effects.client_effect_contracts import (
     NativeEffectSendV1,
 )
 from chiplog.capabilities.effects.contracts import ExactHead, ProviderRecipient, TransmissionAttempt
+from chiplog.capabilities.effects.dispatch_authority_contracts import DispatchObservationDTO
 from chiplog.capabilities.effects.domain import ChildMemberEvidence, reduce_child_evidence
+from chiplog.capabilities.effects.effect_work_contracts import (
+    CompensationEffectIntent,
+    PlanEffectIntent,
+)
 from chiplog.composition.r16_dispatch_registry import SEMANTICS
 from chiplog.platform.deployment_gate import DeploymentGateRequest
 from chiplog.platform.postgres import PostgresIntegrityError, Record, Snapshot
@@ -64,16 +81,16 @@ def exact(subject: str, raw: bytes) -> ExactHead:
     return ExactHead(subject_id=subject, head=subject + ":" + digest(raw), fingerprint=digest(raw))
 
 
-def effect_head[T: NativeEffectDTO](value: T) -> T:
+def effect_head[T: DispatchObservationDTO](value: T) -> T:
     value = value.model_copy(update={"head": "pending"})
-    return value.model_copy(update={"head": "effect:" + value.digest()})
+    return value.model_copy(update={"head": "effect:" + digest(value.canonical_bytes())})
 
 
-def record(value: NativeEffectDTO | NativeCallStateV1) -> Record:
+def record(value: DispatchObservationDTO | NativeCallStateV1) -> Record:
     return Record(
-        value.head,
-        "effects" if isinstance(value, NativeEffectDTO) else "agent_loop",
-        value.schema_id,
+        str(value.model_dump()["head"]),
+        "agent_loop" if isinstance(value, NativeCallStateV1) else "effects",
+        str(value.model_dump()["schema_id"]),
         value.canonical_bytes(),
     )
 
@@ -115,8 +132,8 @@ class PostgresEffectsBinding:
         )
 
 
-def rows[T: NativeEffectDTO](
-    runtime: PostgresExecutionRuntime, snapshot: Snapshot, kind: type[T], call_id: str
+def rows[T: DispatchObservationDTO](
+    runtime: PostgresExecutionRuntime, snapshot: Snapshot, kind: type[T], call_id: str | None
 ) -> tuple[T, ...]:
     result = []
     schema = kind.model_fields["schema_id"].default
@@ -128,24 +145,23 @@ def rows[T: NativeEffectDTO](
                 value = kind.model_validate_json(item.canonical_bytes)
                 if (
                     item.owner != "effects"
-                    or item.record_id != value.head
-                    or effect_head(value).head != value.head
+                    or item.record_id != value.model_dump()["head"]
+                    or effect_head(value).model_dump()["head"] != value.model_dump()["head"]
                     or value.canonical_bytes() != item.canonical_bytes
-                    or value.tenant_id != runtime.tenant_id
-                    or value.principal_id != runtime.principal_id
+                    or scope(value) != (runtime.tenant_id, runtime.principal_id)
                 ):
                     raise ValueError("native effect record identity differs")
             except ValueError as error:
                 raise PostgresIntegrityError(
                     f"operation=effects.read tenant={runtime.tenant_id} record_id={item.record_id}"
                 ) from error
-            if value.original_call_id == call_id:
+            if call_id is None or stream(value) == call_id:
                 result.append(value)
     return tuple(result)
 
 
-def one[T: NativeEffectDTO](
-    runtime: PostgresExecutionRuntime, snapshot: Snapshot, kind: type[T], call_id: str
+def one[T: DispatchObservationDTO](
+    runtime: PostgresExecutionRuntime, snapshot: Snapshot, kind: type[T], call_id: str | None
 ) -> T:
     selected = rows(runtime, snapshot, kind, call_id)
     if len(selected) != 1:
@@ -169,7 +185,7 @@ def common(runtime: PostgresExecutionRuntime, call_id: str) -> CommonFields:
     )
 
 
-def ticket(send: NativeEffectSendV1) -> IssuedEffectSendTicket:
+def ticket(send: NativeEffectSendV1 | ActionSendV1) -> IssuedEffectSendTicket:
     return decode_ticket(send.ticket_bytes)
 
 
@@ -184,13 +200,15 @@ def decode_ticket(raw: bytes) -> IssuedEffectSendTicket:
 def binding_matches(
     runtime: PostgresExecutionRuntime,
     binding: PostgresEffectsBinding,
-    intent: NativeEffectIntentV1,
+    intent: NativeEffectIntentV1 | EffectSubject,
     *,
     live: bool,
 ) -> None:
-    if intent.preview.target != binding.target(
-        runtime
-    ) or intent.preview.receipt_key_fingerprint != digest(binding.receipt_key):
+    if intent.preview.target != binding.target(runtime) or (
+        intent.preview.receipt_key_fingerprint
+        if isinstance(intent, NativeEffectIntentV1)
+        else intent.receipt_key_fingerprint
+    ) != digest(binding.receipt_key):
         raise PermissionError("original effect registration changed")
     if live and time.time_ns() >= intent.preview.expires_at_ns:
         raise LoopHold("adopted effect horizon expired")
@@ -270,10 +288,17 @@ async def adopt_effect(
         if existing[0].preview == preview and existing[0].authority_act_id == authority_act_id:
             return existing[0]
         raise LoopRejected("original effect adoption already selected")
+    action_intents: tuple[PlanEffectIntent | CompensationEffectIntent, ...] = (
+        *rows(runtime, snapshot, PlanEffectIntent, None),
+        *rows(runtime, snapshot, CompensationEffectIntent, None),
+    )
+    if any(item.request.intent_id in (call_id, call_id + "/effect") for item in action_intents):
+        raise LoopRejected("tool identity collides with selected non-tool effect")
     state = runtime._call_states(snapshot)[call_id]
     require_active_original_run(runtime, snapshot, state.run_id)
     if state.state != "INITIALIZED" or state.head != preview.initialized_head:
         raise LoopRejected("preview original call branch changed")
+    runtime.scheduler_fence(snapshot, state.run_id)
     accepted = headed(
         state.model_copy(
             update={
@@ -308,21 +333,22 @@ async def commit_effect_send(
     peer: str,
     call_id: str,
     request: DeploymentGateRequest,
-) -> NativeEffectSendV1:
+) -> NativeEffectSendV1 | ActionSendV1:
     with runtime._transaction() as (connection, trust):
         runtime._actor(connection, trust, peer)
         snapshot = runtime.database._snapshot(connection)
-        intent = one(runtime, snapshot, NativeEffectIntentV1, call_id)
-        existing = rows(runtime, snapshot, NativeEffectSendV1, call_id)
+        intent = subject(runtime, snapshot, call_id)
+        existing = send_rows(runtime, snapshot, call_id)
         if existing:
             if existing[0].gate_request_bytes != canonical(request.model_dump(mode="json")):
                 raise LoopRejected("first-send deployment request changed")
             return existing[0]
         binding_matches(runtime, binding, intent, live=True)
-        require_active_original_run(runtime, snapshot, intent.run_id)
-        state = runtime._call_states(snapshot)[call_id]
-        if state.head != intent.accepted_head or state.state != "ACCEPTED":
-            raise LoopRejected("first send requires exact adopted call")
+        require_subject_live(runtime, snapshot, intent)
+        if intent.tool is not None:
+            state = runtime._call_states(snapshot)[call_id]
+            if state.head != intent.tool.accepted_head or state.state != "ACCEPTED":
+                raise LoopRejected("first send requires exact adopted call")
         gate = PostgresDeploymentGate(
             connection, runtime.tenant_id, runtime._authenticate_entitlement
         )
@@ -369,16 +395,30 @@ async def commit_effect_send(
             issued.canonical_address.hex(),
         )
         send = effect_head(
-            NativeEffectSendV1(
-                **common(runtime, call_id),
-                intent_head=intent.head,
-                transmission=transmission,
-                ticket_bytes=canonical(body),
-                gate_request_bytes=canonical(request.model_dump(mode="json")),
+            (NativeEffectSendV1 if intent.tool is not None else ActionSendV1).model_validate(
+                dict(
+                    **intent.identity(),
+                    intent_head=intent.head,
+                    transmission=transmission,
+                    ticket_bytes=canonical(body),
+                    gate_request_bytes=canonical(request.model_dump(mode="json")),
+                )
             )
         )
+        send_records: tuple[Record, ...] = (record(send),)
+        if intent.tool is not None:
+            fence = runtime.scheduler_fence(snapshot, intent.tool.run_id)
+            if fence is not None:
+                send_records += (
+                    Record(
+                        send.head + "/scheduler-lease",
+                        "agent_loop",
+                        "chiplog.scheduler.action-fence.v1",
+                        fence,
+                    ),
+                )
         runtime.database.append(
-            connection, "effects.first-send", call_id, send.digest(), (record(send),), snapshot.head
+            connection, "effects.first-send", call_id, send.digest(), send_records, snapshot.head
         )
         gate.crossed(request, intent.canonical_bytes())
         return send
@@ -386,16 +426,16 @@ async def commit_effect_send(
 
 async def emit_effect(
     runtime: PostgresExecutionRuntime, binding: PostgresEffectsBinding, peer: str, call_id: str
-) -> NativeEffectClaimV1:
+) -> NativeEffectClaimV1 | ActionClaimV1:
     # The selected claim is irreversible. Recovery may reconcile; it never SENDs again.
     with runtime._transaction() as (connection, trust):
         runtime._actor(connection, trust, peer)
         snapshot = runtime.database._snapshot(connection)
-        existing = rows(runtime, snapshot, NativeEffectClaimV1, call_id)
+        existing = claim_rows(runtime, snapshot, call_id)
         if existing:
             return existing[0]
-        intent = one(runtime, snapshot, NativeEffectIntentV1, call_id)
-        send = one(runtime, snapshot, NativeEffectSendV1, call_id)
+        intent = subject(runtime, snapshot, call_id)
+        send = only(send_rows(runtime, snapshot, call_id))
         binding_matches(runtime, binding, intent, live=True)
         PostgresDeploymentGate(
             connection, runtime.tenant_id, runtime._authenticate_entitlement
@@ -405,56 +445,55 @@ async def emit_effect(
             intent.canonical_bytes(),
             live=True,
         )
-        state = runtime._call_states(snapshot)[call_id]
-        if state.head != intent.accepted_head:
-            raise LoopRejected("effect call changed before emission claim")
-        runs = [run for run in runtime._runs(snapshot) if run.run_id == intent.run_id]
-        run = runs[-1]
-        if run.state != "ACTIVE":
-            raise LoopHold("original Run is no longer active")
+        require_subject_live(runtime, snapshot, intent)
+        if intent.tool is not None:
+            state = runtime._call_states(snapshot)[call_id]
+            if state.head != intent.tool.accepted_head:
+                raise LoopRejected("effect call changed before emission claim")
+            expected_fence = selected_scheduler_fence(runtime, snapshot, send.head)
+            runtime.assert_scheduler_fence(snapshot, intent.tool.run_id, expected_fence)
         claim = effect_head(
-            NativeEffectClaimV1(
-                **common(runtime, call_id), send_head=send.head, worker=runtime._worker
+            (NativeEffectClaimV1 if intent.tool is not None else ActionClaimV1).model_validate(
+                dict(**intent.identity(), send_head=send.head, worker=runtime._worker)
             )
         )
-        obligation = OriginalObligationBinding(
-            original_run_id=run.run_id,
-            original_call_id=call_id,
-            obligation_id=intent.intent_id + "/obligation",
-            obligation_stream_id=intent.intent_id,
-            obligation_head=claim.head,
-            closure_predicate_id="native.original-effect.closed",
-            closure_predicate_version="1",
-            resolver_id="native.original-effect.resolver",
-            resolver_version="1",
-            reducer_id=SEMANTICS.reducer_version,
-            reducer_version="2",
-            evidence_stream_id=intent.intent_id + "/evidence",
-            evidence_head=Absent(),
-        )
-        opened_run = advance(
-            run,
-            "OriginalEffectClaimed",
-            original_obligations=(*run.original_obligations, obligation),
-            no_retry_references=(
-                *run.no_retry_references,
-                CallSubjectHead(
-                    subject_id=claim.head,
-                    revision=Present(head="record:" + claim.digest(), fingerprint=claim.digest()),
+        companions: tuple[Record, ...] = ()
+        if intent.tool is not None:
+            run = [run for run in runtime._runs(snapshot) if run.run_id == intent.tool.run_id][-1]
+            obligation = OriginalObligationBinding(
+                original_run_id=run.run_id,
+                original_call_id=call_id,
+                obligation_id=intent.intent_id + "/obligation",
+                obligation_stream_id=intent.intent_id,
+                obligation_head=claim.head,
+                closure_predicate_id="native.original-effect.closed",
+                closure_predicate_version="1",
+                resolver_id="native.original-effect.resolver",
+                resolver_version="1",
+                reducer_id=SEMANTICS.reducer_version,
+                reducer_version="2",
+                evidence_stream_id=intent.intent_id + "/evidence",
+                evidence_head=Absent(),
+            )
+            opened_run = advance(
+                run,
+                "OriginalEffectClaimed",
+                original_obligations=(*run.original_obligations, obligation),
+                no_retry_references=(
+                    *run.no_retry_references,
+                    CallSubjectHead(
+                        subject_id=claim.head,
+                        revision=Present(
+                            head="record:" + claim.digest(), fingerprint=claim.digest()
+                        ),
+                    ),
                 ),
-            ),
-        )
-        unknown = headed(
-            state.model_copy(update={"predecessor": state.head, "outcome": "OUTCOME_UNKNOWN"}),
-            "call-state:",
-        )
-        runtime.database.append(
-            connection,
-            "effects.emit-claim",
-            call_id,
-            claim.digest(),
-            (
-                record(claim),
+            )
+            unknown = headed(
+                state.model_copy(update={"predecessor": state.head, "outcome": "OUTCOME_UNKNOWN"}),
+                "call-state:",
+            )
+            companions = (
                 record(unknown),
                 Record(
                     opened_run.head,
@@ -462,7 +501,13 @@ async def emit_effect(
                     opened_run.schema_id,
                     opened_run.canonical_bytes(),
                 ),
-            ),
+            )
+        runtime.database.append(
+            connection,
+            "effects.emit-claim",
+            call_id,
+            claim.digest(),
+            (record(claim), *companions),
             snapshot.head,
         )
     runtime.current_worker()
@@ -479,13 +524,13 @@ def evidence_outcome(
     binding: PostgresEffectsBinding,
     snapshot: Snapshot,
     call_id: str,
-    additional: tuple[NativeEffectEvidenceV1, ...] = (),
+    additional: tuple[NativeEffectEvidenceV1 | ActionEvidenceV1, ...] = (),
 ) -> tuple[str, tuple[str, ...]]:
-    intent = one(runtime, snapshot, NativeEffectIntentV1, call_id)
-    send = one(runtime, snapshot, NativeEffectSendV1, call_id)
-    one(runtime, snapshot, NativeEffectClaimV1, call_id)
+    intent = subject(runtime, snapshot, call_id)
+    send = only(send_rows(runtime, snapshot, call_id))
+    only(claim_rows(runtime, snapshot, call_id))
     binding_matches(runtime, binding, intent, live=False)
-    evidence = (*rows(runtime, snapshot, NativeEffectEvidenceV1, call_id), *additional)
+    evidence = (*evidence_rows(runtime, snapshot, call_id), *additional)
     members = tuple(exact(member, member.encode()) for member in intent.preview.bundle_members)
     member_map = {member.subject_id: member for member in members}
     observations = []
@@ -528,37 +573,41 @@ async def append_effect_receipt(
     peer: str,
     call_id: str,
     raw: bytes,
-) -> NativeEffectEvidenceV1:
+) -> NativeEffectEvidenceV1 | ActionEvidenceV1:
     snapshot = runtime._snapshot_for_peer(peer)
-    intent = one(runtime, snapshot, NativeEffectIntentV1, call_id)
-    send = one(runtime, snapshot, NativeEffectSendV1, call_id)
-    one(runtime, snapshot, NativeEffectClaimV1, call_id)
+    intent = subject(runtime, snapshot, call_id)
+    send = only(send_rows(runtime, snapshot, call_id))
+    only(claim_rows(runtime, snapshot, call_id))
     binding_matches(runtime, binding, intent, live=False)
     verify_hermetic_receipt(ticket(send), raw, registered_receipt_key=binding.receipt_key)
-    evidence = rows(runtime, snapshot, NativeEffectEvidenceV1, call_id)
+    evidence = evidence_rows(runtime, snapshot, call_id)
     for value in evidence:
         if value.raw_receipt == raw:
             return value
     retained = effect_head(
-        NativeEffectEvidenceV1(
-            **common(runtime, call_id),
-            send_head=send.head,
-            predecessor_evidence=evidence[-1].head if evidence else None,
-            raw_receipt=raw,
+        (NativeEffectEvidenceV1 if intent.tool is not None else ActionEvidenceV1).model_validate(
+            dict(
+                **intent.identity(),
+                send_head=send.head,
+                predecessor_evidence=evidence[-1].head if evidence else None,
+                raw_receipt=raw,
+            )
         )
     )
     outcome, inventory = evidence_outcome(runtime, binding, snapshot, call_id, (retained,))
-    closures = rows(runtime, snapshot, NativeEffectClosureV1, call_id)
+    closures = closure_rows(runtime, snapshot, call_id)
     reduction = effect_head(
-        NativeEffectReductionV1(
-            **common(runtime, call_id),
-            send_head=send.head,
-            closure_head=closures[0].head if closures else None,
-            complete_evidence_heads=inventory,
-            outcome=cast(
-                NativeOutcome,
-                outcome,
-            ),
+        (NativeEffectReductionV1 if intent.tool is not None else ActionReductionV1).model_validate(
+            dict(
+                **intent.identity(),
+                send_head=send.head,
+                closure_head=closures[0].head if closures else None,
+                complete_evidence_heads=inventory,
+                outcome=cast(
+                    NativeOutcome,
+                    outcome,
+                ),
+            )
         )
     )
     await runtime.publish_execution_batch(
@@ -569,10 +618,10 @@ async def append_effect_receipt(
 
 async def reconcile_effect(
     runtime: PostgresExecutionRuntime, binding: PostgresEffectsBinding, peer: str, call_id: str
-) -> NativeEffectEvidenceV1 | None:
+) -> NativeEffectEvidenceV1 | ActionEvidenceV1 | None:
     snapshot = runtime._snapshot_for_peer(peer)
-    send = one(runtime, snapshot, NativeEffectSendV1, call_id)
-    one(runtime, snapshot, NativeEffectClaimV1, call_id)
+    send = only(send_rows(runtime, snapshot, call_id))
+    only(claim_rows(runtime, snapshot, call_id))
     raw = binding.provider.reconcile(send.transmission.transmission.subject_id)
     return (
         None if raw is None else await append_effect_receipt(runtime, binding, peer, call_id, raw)
@@ -581,17 +630,17 @@ async def reconcile_effect(
 
 async def resolve_original_effect(
     runtime: PostgresExecutionRuntime, binding: PostgresEffectsBinding, peer: str, call_id: str
-) -> NativeEffectClosureV1:
+) -> NativeEffectClosureV1 | ActionClosureV1:
     with runtime._transaction() as (connection, trust):
         runtime._actor(connection, trust, peer)
         snapshot = runtime.database._snapshot(connection)
-        intent = one(runtime, snapshot, NativeEffectIntentV1, call_id)
-        send = one(runtime, snapshot, NativeEffectSendV1, call_id)
+        intent = subject(runtime, snapshot, call_id)
+        send = only(send_rows(runtime, snapshot, call_id))
         outcome, inventory = evidence_outcome(runtime, binding, snapshot, call_id)
         if outcome not in {"CONFIRMED", "FAILED_NO_EFFECT", "PARTIAL_CONFIRMED"}:
             raise LoopHold("original effect evidence does not close every original member")
-        previous = rows(runtime, snapshot, NativeEffectClosureV1, call_id)
-        reductions = rows(runtime, snapshot, NativeEffectReductionV1, call_id)
+        previous = closure_rows(runtime, snapshot, call_id)
+        reductions = reduction_rows(runtime, snapshot, call_id)
         if (
             previous
             and reductions
@@ -603,24 +652,47 @@ async def resolve_original_effect(
             trust, runtime.principal_id, runtime.credential_id, runtime.session_id
         )
         invocation = effect_head(
-            NativeEffectInvocationV1(
-                **common(runtime, call_id),
-                send_head=send.head,
-                credential_id=runtime.credential_id,
-                session_id=runtime.session_id,
-                trust_materialization_head=context.trust_reference.materialization_head,
-                complete_evidence_heads=inventory,
+            (
+                NativeEffectInvocationV1 if intent.tool is not None else ActionInvocationV1
+            ).model_validate(
+                dict(
+                    **intent.identity(),
+                    send_head=send.head,
+                    credential_id=runtime.credential_id,
+                    session_id=runtime.session_id,
+                    trust_materialization_head=context.trust_reference.materialization_head,
+                    complete_evidence_heads=inventory,
+                )
             )
         )
         closure = (
             previous[0]
             if previous
             else effect_head(
-                NativeEffectClosureV1(
-                    **common(runtime, call_id),
-                    obligation_id=intent.intent_id + "/obligation",
+                (
+                    NativeEffectClosureV1 if intent.tool is not None else ActionClosureV1
+                ).model_validate(
+                    dict(
+                        **intent.identity(),
+                        obligation_id=intent.intent_id + "/obligation",
+                        send_head=send.head,
+                        invocation_head=invocation.head,
+                        complete_evidence_heads=inventory,
+                        outcome=cast(
+                            "Literal['CONFIRMED', 'FAILED_NO_EFFECT', 'PARTIAL_CONFIRMED']", outcome
+                        ),
+                    )
+                )
+            )
+        )
+        reduction = effect_head(
+            (
+                NativeEffectReductionV1 if intent.tool is not None else ActionReductionV1
+            ).model_validate(
+                dict(
+                    **intent.identity(),
                     send_head=send.head,
-                    invocation_head=invocation.head,
+                    closure_head=closure.head,
                     complete_evidence_heads=inventory,
                     outcome=cast(
                         "Literal['CONFIRMED', 'FAILED_NO_EFFECT', 'PARTIAL_CONFIRMED']", outcome
@@ -628,38 +700,30 @@ async def resolve_original_effect(
                 )
             )
         )
-        reduction = effect_head(
-            NativeEffectReductionV1(
-                **common(runtime, call_id),
-                send_head=send.head,
-                closure_head=closure.head,
-                complete_evidence_heads=inventory,
-                outcome=cast(
-                    "Literal['CONFIRMED', 'FAILED_NO_EFFECT', 'PARTIAL_CONFIRMED']", outcome
-                ),
-            )
-        )
-        state = runtime._call_states(snapshot)[call_id]
-        selected = headed(
-            state.model_copy(
-                update={
-                    "predecessor": state.head,
-                    "state": "TERMINAL",
-                    "outcome": "FAILED_DEFINITE" if outcome == "FAILED_NO_EFFECT" else "SUCCEEDED",
-                    "result_base64": base64.b64encode(
-                        canonical({"effect_outcome": outcome})
-                    ).decode(),
-                }
-            ),
-            "call-state:",
-        )
         records = (
             record(invocation),
             *((record(closure),) if not previous else ()),
             record(reduction),
         )
-        if selected != state:
-            records += (record(selected),)
+        if intent.tool is not None:
+            state = runtime._call_states(snapshot)[call_id]
+            selected = headed(
+                state.model_copy(
+                    update={
+                        "predecessor": state.head,
+                        "state": "TERMINAL",
+                        "outcome": "FAILED_DEFINITE"
+                        if outcome == "FAILED_NO_EFFECT"
+                        else "SUCCEEDED",
+                        "result_base64": base64.b64encode(
+                            canonical({"effect_outcome": outcome})
+                        ).decode(),
+                    }
+                ),
+                "call-state:",
+            )
+            if selected != state:
+                records += (record(selected),)
         runtime.database.append(
             connection,
             "effects.resolve",
@@ -678,9 +742,9 @@ def current_effect_result(
     call_id: str,
 ) -> bytes:
     """Pure snapshot join: original closure AND complete current semantic result."""
-    closure = one(runtime, snapshot, NativeEffectClosureV1, call_id)
+    closure = only(closure_rows(runtime, snapshot, call_id))
     outcome, inventory = evidence_outcome(runtime, binding, snapshot, call_id)
-    reductions = rows(runtime, snapshot, NativeEffectReductionV1, call_id)
+    reductions = reduction_rows(runtime, snapshot, call_id)
     if (
         not reductions
         or reductions[-1].closure_head != closure.head
@@ -690,3 +754,195 @@ def current_effect_result(
     ):
         raise LoopHold("original closure lacks a closed current semantic reduction")
     return canonical({"effect_outcome": outcome})
+
+
+def scope(value: DispatchObservationDTO) -> tuple[str, str]:
+    if isinstance(value, (PlanEffectIntent, CompensationEffectIntent)):
+        return value.request.tenant_id, value.request.principal_id
+    if isinstance(value, NonToolEffectPreview):
+        return value.proposal.tenant_id, value.proposal.principal_id
+    if isinstance(value, (NativeEffectDTO, ActionRecord)):
+        return value.tenant_id, value.principal_id
+    raise ValueError("unregistered effect record scope")
+
+
+def stream(value: DispatchObservationDTO) -> str:
+    if isinstance(value, (PlanEffectIntent, CompensationEffectIntent)):
+        return value.request.intent_id
+    if isinstance(value, NonToolEffectPreview):
+        return value.proposal.intent_id
+    if isinstance(value, NativeEffectDTO):
+        return value.original_call_id
+    if isinstance(value, ActionRecord):
+        return value.effect_stream_id
+    raise ValueError("unregistered effect record stream")
+
+
+@dataclass(frozen=True)
+class EffectSubject:
+    """Verified projection of owner bytes; never persisted as another intent."""
+
+    original: NativeEffectIntentV1 | PlanEffectIntent | CompensationEffectIntent
+    preview: NativeEffectPreviewV1 | PlanActionProposal | CompensationActionProposal
+    receipt_key_fingerprint: str
+    stream_id: str
+
+    @property
+    def tool(self) -> NativeEffectIntentV1 | None:
+        return self.original if isinstance(self.original, NativeEffectIntentV1) else None
+
+    @property
+    def intent_id(self) -> str:
+        if isinstance(self.original, NativeEffectIntentV1):
+            return self.original.intent_id
+        return self.original.request.intent_id
+
+    @property
+    def head(self) -> str:
+        return self.original.head
+
+    def canonical_bytes(self) -> bytes:
+        return self.original.canonical_bytes()
+
+    def digest(self) -> str:
+        return digest(self.canonical_bytes())
+
+    def identity(self) -> dict[str, str]:
+        tenant, principal = scope(self.original)
+        key = "original_call_id" if self.tool is not None else "effect_stream_id"
+        return dict(
+            head="pending", tenant_id=tenant, principal_id=principal, **{key: self.stream_id}
+        )
+
+
+def only[T](values: tuple[T, ...]) -> T:
+    if len(values) != 1:
+        raise LoopHold("effect requires exactly one selected record")
+    return values[0]
+
+
+def subject(runtime: PostgresExecutionRuntime, snapshot: Snapshot, stream_id: str) -> EffectSubject:
+    originals: tuple[NativeEffectIntentV1 | PlanEffectIntent | CompensationEffectIntent, ...] = (
+        *rows(runtime, snapshot, NativeEffectIntentV1, stream_id),
+        *rows(runtime, snapshot, PlanEffectIntent, stream_id),
+        *rows(runtime, snapshot, CompensationEffectIntent, stream_id),
+    )
+    value = only(originals)
+    if isinstance(value, NativeEffectIntentV1):
+        return EffectSubject(value, value.preview, value.preview.receipt_key_fingerprint, stream_id)
+    preview = only(
+        tuple(
+            item
+            for item in rows(runtime, snapshot, NonToolEffectPreview, stream_id)
+            if exact(item.head, item.canonical_bytes()) == value.request.adopted_preview
+        )
+    )
+    proposal = value.request.model_dump(exclude={"adopted_preview", "authority_act_id"})
+    if proposal != preview.proposal.model_dump():
+        raise LoopHold("intent differs from selected exact action preview")
+    return EffectSubject(value, preview.proposal, preview.receipt_key_fingerprint, stream_id)
+
+
+def require_subject_live(
+    runtime: PostgresExecutionRuntime, snapshot: Snapshot, value: EffectSubject
+) -> None:
+    if value.tool is not None:
+        require_active_original_run(runtime, snapshot, value.tool.run_id)
+    if isinstance(value.original, CompensationEffectIntent):
+        request = value.original.request
+        original = subject(runtime, snapshot, request.original_stream_id)
+        if exact(original.intent_id, original.canonical_bytes()) != request.original_intent:
+            raise LoopHold("compensation original intent changed")
+        if (
+            evidence_inventory_head(runtime, snapshot, request.original_stream_id)
+            != request.original_evidence_head
+        ):
+            raise LoopHold("compensation original evidence changed")
+
+
+def evidence_inventory_head(
+    runtime: PostgresExecutionRuntime, snapshot: Snapshot, stream_id: str
+) -> ExactHead:
+    value = subject(runtime, snapshot, stream_id)
+    send = only(send_rows(runtime, snapshot, stream_id))
+    claim = only(claim_rows(runtime, snapshot, stream_id))
+    raw = canonical(
+        dict(
+            intent=value.head,
+            send=send.head,
+            claim=claim.head,
+            evidence=[item.head for item in evidence_rows(runtime, snapshot, stream_id)],
+        )
+    )
+    return exact(value.intent_id + "/evidence-inventory", raw)
+
+
+def send_rows(
+    runtime: PostgresExecutionRuntime, snapshot: Snapshot, stream_id: str
+) -> tuple[NativeEffectSendV1 | ActionSendV1, ...]:
+    return (
+        *rows(runtime, snapshot, NativeEffectSendV1, stream_id),
+        *rows(runtime, snapshot, ActionSendV1, stream_id),
+    )
+
+
+def claim_rows(
+    runtime: PostgresExecutionRuntime, snapshot: Snapshot, stream_id: str
+) -> tuple[NativeEffectClaimV1 | ActionClaimV1, ...]:
+    return (
+        *rows(runtime, snapshot, NativeEffectClaimV1, stream_id),
+        *rows(runtime, snapshot, ActionClaimV1, stream_id),
+    )
+
+
+def evidence_rows(
+    runtime: PostgresExecutionRuntime, snapshot: Snapshot, stream_id: str
+) -> tuple[NativeEffectEvidenceV1 | ActionEvidenceV1, ...]:
+    return (
+        *rows(runtime, snapshot, NativeEffectEvidenceV1, stream_id),
+        *rows(runtime, snapshot, ActionEvidenceV1, stream_id),
+    )
+
+
+def closure_rows(
+    runtime: PostgresExecutionRuntime, snapshot: Snapshot, stream_id: str
+) -> tuple[NativeEffectClosureV1 | ActionClosureV1, ...]:
+    return (
+        *rows(runtime, snapshot, NativeEffectClosureV1, stream_id),
+        *rows(runtime, snapshot, ActionClosureV1, stream_id),
+    )
+
+
+def reduction_rows(
+    runtime: PostgresExecutionRuntime, snapshot: Snapshot, stream_id: str
+) -> tuple[NativeEffectReductionV1 | ActionReductionV1, ...]:
+    return (
+        *rows(runtime, snapshot, NativeEffectReductionV1, stream_id),
+        *rows(runtime, snapshot, ActionReductionV1, stream_id),
+    )
+
+
+def selected_scheduler_fence(
+    runtime: PostgresExecutionRuntime, snapshot: Snapshot, send_head: str
+) -> bytes | None:
+    identity = send_head + "/scheduler-lease"
+    selected = [
+        (batch, item)
+        for batch in snapshot.batches
+        for item in batch.records
+        if item.record_id == identity
+    ]
+    if not selected:
+        return None
+    if (
+        len(selected) != 1
+        or selected[0][1].owner != "agent_loop"
+        or selected[0][1].schema_id != "chiplog.scheduler.action-fence.v1"
+        or not selected[0][1].canonical_bytes
+        or not any(item.record_id == send_head for item in selected[0][0].records)
+    ):
+        error = ValueError("effect scheduler fence is not the exact SEND companion")
+        raise PostgresIntegrityError(
+            f"operation=effects.scheduler-fence tenant={runtime.tenant_id} record_id={identity}"
+        ) from error
+    return selected[0][1].canonical_bytes

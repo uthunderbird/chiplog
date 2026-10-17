@@ -79,12 +79,14 @@ class EffectWorkScan(DispatchObservationDTO):
     tenant_id: Identity
     principal_id: Identity
     limit: int = Field(gt=0)
+    after_send: Identity | None = None
 
 
 class EffectWorkDiscovery(DispatchObservationDTO):
     snapshot_head: Identity
     items: tuple[EffectWork, ...]
     has_more: bool
+    next_send: Identity | None = None
 
 
 class EffectWorkStep(DispatchObservationDTO):
