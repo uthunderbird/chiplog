@@ -462,6 +462,7 @@ async def commit_delivery_send(
             if previous[0].gate_request_bytes != encoded_request:
                 raise LoopRejected("delivery first-send request changed")
             return previous[0]
+        runtime.scheduler_fence(snapshot, accepted.run_id)
         revalidate(runtime, snapshot, accepted)
         gate = PostgresDeploymentGate(
             connection, runtime.tenant_id, runtime._authenticate_entitlement
@@ -539,6 +540,7 @@ async def emit_delivery(
         if len(sends) != 1 or sends[0].intent_head != intent.head:
             raise LoopRejected("delivery requires exact first-send record")
         send = sends[0]
+        runtime.scheduler_fence(snapshot, accepted.run_id)
         revalidate(runtime, snapshot, accepted)
         PostgresDeploymentGate(
             connection, runtime.tenant_id, runtime._authenticate_entitlement

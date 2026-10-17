@@ -127,6 +127,7 @@ async def _publish(
         if phase == "accept":
             from chiplog.composition.postgres_run_recovery import _crossed_work_closed
 
+            runtime.scheduler_fence(current, run_id)
             run = [row for row in runtime._runs(current) if row.run_id == run_id][-1]
             _crossed_work_closed(runtime, current, run)
         if _selected(current, proposed.original_call_id) != previous:

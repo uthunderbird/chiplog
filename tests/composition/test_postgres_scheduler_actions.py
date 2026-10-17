@@ -7,6 +7,8 @@ import pytest
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.capabilities.agent_loop.contracts import LoopHold
 from chiplog.capabilities.agent_loop.execution_client_transitions import ExecutionAttempt
+from chiplog.capabilities.agent_loop.readonly_history_tool_contracts import ConversationHistoryQuery
+from chiplog.capabilities.agent_loop.readonly_runtime_contracts import HistorySnapshotSelectionV2
 from chiplog.capabilities.agent_loop.scheduler_client_contracts import (
     NativeSchedulerCycle,
     NativeSchedulerLeaseRequest,
@@ -25,7 +27,9 @@ from tests.composition.test_postgres_scheduler import (
 from tests.support.scheduler_execution import origin
 
 
-@pytest.mark.parametrize("scenario", ["EXPIRED_SEND", "COMPLETE"])
+@pytest.mark.parametrize(
+    "scenario", ["EXPIRED_SEND", "COMPLETE", "EXPIRED_DELIVERY_PREPARE", "EXPIRED_DELIVERY_EMIT"]
+)
 async def test_scheduled_effect_send_cannot_claim_after_expiry_or_takeover(
     postgres_server: PostgresServer,
     tmp_path: Path,
@@ -76,20 +80,22 @@ async def test_scheduled_effect_send_cannot_claim_after_expiry_or_takeover(
         principal_id="hermetic-principal",
         credential_id="c",
         session_id="s",
-        model=HermeticModel(
-            (
-                response,
-                json.dumps(
-                    {
-                        "kind": "Complete",
-                        "tenant": "t",
-                        "run_id": execution.run_id,
-                        "turn_id": execution.run_id + "/turn/2",
-                        "deliveries": [
-                            {"payload": [{"kind": "NonAuthoritativeText", "text": "Done"}]}
-                        ],
-                    }
-                ).encode(),
+        model=(
+            model := HermeticModel(
+                (
+                    response,
+                    json.dumps(
+                        {
+                            "kind": "Complete",
+                            "tenant": "t",
+                            "run_id": execution.run_id,
+                            "turn_id": execution.run_id + "/turn/2",
+                            "deliveries": [
+                                {"payload": [{"kind": "NonAuthoritativeText", "text": "Done"}]}
+                            ],
+                        }
+                    ).encode(),
+                )
             )
         ),
         origin=bound_origin(transport),
@@ -113,13 +119,13 @@ async def test_scheduled_effect_send_cannot_claim_after_expiry_or_takeover(
     )
     runtime.import_entitlement(entitlement, signature(entitlement))
     await commit_effect_send(runtime, transport, PEER, call.original_call_id, gate)
-    if scenario == "COMPLETE":
+    if scenario != "EXPIRED_SEND":
         claim = await emit_effect(runtime, transport, PEER, call.original_call_id)
         await reconcile_effect(runtime, transport, PEER, call.original_call_id)
         await resolve_original_effect(runtime, transport, PEER, call.original_call_id)
         result = await PostgresApplicationDriver(runtime).drive_run(PEER, execution.run_id)
         assert result.state == "SUCCEEDED"
-        assert len(runtime.model.requests) == 2
+        assert len(model.requests) == 2
         assert len(runtime.delivery_intents(PEER, execution.run_id)) == 1
         assert len(transport.provider.transfers) == 1
         delivery = runtime.delivery_intents(PEER, execution.run_id)[0]
@@ -131,7 +137,23 @@ async def test_scheduled_effect_send_cannot_claim_after_expiry_or_takeover(
             signature(delivery_entitlement),
             previous=canonical(entitlement.model_dump(mode="json")),
         )
+        if scenario == "EXPIRED_DELIVERY_PREPARE":
+            clock.now = 21
+            before = runtime.snapshot()
+            with pytest.raises(LoopHold, match="expired"):
+                await runtime.commit_delivery_send(PEER, delivery.delivery_id, delivery_gate)
+            assert runtime.snapshot() == before
+            assert len(transport.provider.transfers) == 1
+            return
         await runtime.commit_delivery_send(PEER, delivery.delivery_id, delivery_gate)
+        if scenario == "EXPIRED_DELIVERY_EMIT":
+            clock.now = 21
+            before = runtime.snapshot()
+            with pytest.raises(LoopHold, match="expired"):
+                await runtime.emit_delivery(PEER, delivery.delivery_id)
+            assert runtime.snapshot() == before
+            assert len(transport.provider.transfers) == 1
+            return
         delivery_claim = await runtime.emit_delivery(PEER, delivery.delivery_id)
         assert len(transport.provider.transfers) == 2
         assert transport.provider.transfers[-1].ticket.payload == delivery.delivery.rendered_bytes
@@ -225,3 +247,78 @@ async def test_actual_model_start_checks_lease_but_late_response_is_retained(
         assert len(model.requests) == 1
         with pytest.raises(LoopHold, match="expired"):
             await runtime.seal_execution(PEER, execution.run_id, captured.head)
+
+
+@pytest.mark.parametrize(
+    "expire_before_accept", [True, False], ids=["expired-admission", "late-outcome"]
+)
+async def test_scheduled_readonly_fences_admission_and_retains_accepted_outcome(
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
+    expire_before_accept: bool,
+) -> None:
+    clock = Clock(11)
+    scheduler = await opened(postgres_server, clock)
+    selected = await adopted(scheduler)
+    cycle = await scheduler.scheduler_cycle(
+        PEER, NativeSchedulerCycle(act_id="tick", schedule=selected.schedule)
+    )
+    assert cycle.result.kind == "ORDINARY"
+    execution = cycle.result.members[0].execution
+    assert execution.kind == "EXECUTION"
+    raw = json.dumps(
+        {
+            "kind": "Continue",
+            "tool_calls": [
+                {
+                    "call_id": "history",
+                    "tool": "read_conversation_history",
+                    "arguments": {"limit": 10, "after_cursor": None},
+                }
+            ],
+        }
+    ).encode()
+    runtime = PostgresExecutionRuntime(
+        scheduler.runtime.database,
+        "t",
+        SECRET,
+        **IDENTITY,
+        model=HermeticModel((raw,)),
+        origin=origin(),
+    )
+    scheduler = PostgresScheduler(runtime, clock=clock, lease_duration_ns=10)
+    view = scheduler.lineage(runtime.snapshot(), execution.root.root_id)
+    await scheduler.transition_scheduler_lease(
+        PEER, NativeSchedulerLeaseRequest(act_id="acquire", transition="ACQUIRE", expected=view)
+    )
+    started = await runtime.begin_execution(PEER, execution.run_id, execution.initial_run.head)
+    captured = await runtime.capture_execution(PEER, execution.run_id, started.head)
+    await runtime.seal_execution(PEER, execution.run_id, captured.head)
+    call = runtime.initialized_calls()[0]
+    original_read = runtime.read_history_snapshot
+    reads = 0
+
+    def observed_read(
+        peer: str, selection: HistorySnapshotSelectionV2, query: ConversationHistoryQuery
+    ) -> bytes:
+        nonlocal reads
+        reads += 1
+        value = original_read(peer, selection, query)
+        clock.now = 21
+        return value
+
+    monkeypatch.setattr(runtime, "read_history_snapshot", observed_read)
+    if expire_before_accept:
+        clock.now = 21
+        before = runtime.snapshot()
+        with pytest.raises(LoopHold, match="expired"):
+            await runtime.execute_readonly_call(PEER, call.original_call_id)
+        assert runtime.snapshot() == before
+        assert reads == 0
+    else:
+        result = await runtime.execute_readonly_call(PEER, call.original_call_id)
+        assert result.state == "SUCCEEDED"
+        assert result.attempts_consumed == 1
+        assert clock.now == 21 and reads == 1
+        assert await runtime.execute_readonly_call(PEER, call.original_call_id) == result
+        assert reads == 1
