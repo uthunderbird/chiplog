@@ -18,7 +18,10 @@ from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.scheduler_preparation import ConfigurationPreparationRequest
 from chiplog.composition.r7_planning import ObservedTrustCall
 from chiplog.composition.r14_runtime import R14PlanningRuntime
-from chiplog.composition.r15_scheduler_history import inspect_publication, read_loop_snapshot
+from chiplog.composition.r15_scheduler_history import (
+    _read_loop_snapshot_with_startup,
+    inspect_publication,
+)
 from chiplog.composition.r15_scheduler_registry import (
     AMEND_POLICY_OPERATION,
     AMEND_SCHEDULE_OPERATION,
@@ -35,7 +38,7 @@ from chiplog.composition.r15_scheduler_registry import (
 )
 from chiplog.composition.scheduler_source_registry import (
     AdmittedSchedulerStartup,
-    read_admitted_scheduler_startup,
+    current_scheduler_registration,
 )
 from chiplog.platform._owner_publication_contracts import (
     ExactReplayQuery,
@@ -102,16 +105,22 @@ class SchedulerPublicationAuthority:
             )
             with context, read_connection(runtime._database) as connection:
                 # Validate ordinary shared history before selecting a new scheduler row.
-                read_loop_snapshot(runtime)
-                startup = read_admitted_scheduler_startup(
-                    runtime._database,
-                    runtime._tenant_id,
-                    runtime._owner_decisions(),
-                    runtime._commitment_journal,
-                )
-                if not isinstance(startup, AdmittedSchedulerStartup):
-                    raise LoopRejected("scheduler source admission unresolved")
+                _, startup = _read_loop_snapshot_with_startup(runtime)
                 cut = startup.cut
+                owner = runtime._owner_decisions().snapshot()
+                if (
+                    owner.tenant_id != cut.tenant_id
+                    or owner.head != cut.independent_journal_head
+                    or owner.decisions != cut.protected_decisions
+                    or owner.materialized_command_ids
+                    != frozenset(
+                        decision.prepared.request.identity.command_id
+                        for decision in cut.protected_decisions
+                    )
+                ):
+                    raise LoopRejected("scheduler owner journal changed after shared history")
+                if current_scheduler_registration() != startup.registration:
+                    raise LoopRejected("scheduler source admission changed after shared history")
                 if (
                     cut.physical_database_path,
                     cut.physical_device,

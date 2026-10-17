@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import secrets
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, cast
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
@@ -60,6 +60,7 @@ from chiplog.platform._owner_publication_contracts import (
     InvocationProofRef,
     JournalSelectedPublication,
     ObservedAbsence,
+    ObservedHead,
     ObservedPresence,
     OwnerCommandBytes,
     OwnerRecordBytes,
@@ -77,7 +78,7 @@ if TYPE_CHECKING:
     from chiplog.composition.r7_planning import ObservedTrustCall
     from chiplog.composition.r15_scheduler_runtime import R15SchedulerRuntime
 
-_OPERATION = "scheduler.issue_mandate"
+_OPERATION: Final = "scheduler.issue_mandate"
 _PREPARATION_SCHEMA = "chiplog.scheduler.mandate-issuance-preparation.v1"
 _ISSUANCE_SCHEMA = "chiplog.scheduler.mandate-issuance-evidence.v1"
 
@@ -352,9 +353,9 @@ class MandatePublicationAuthority(SchedulerPublicationAuthority):
         adoption: MandateIssuanceAdoption,
         preview: MandateClockPreview | None,
     ) -> None:
-        self._runtime = runtime
+        self._runtime: R15SchedulerRuntime = runtime
         self._observed = observed
-        self._adoption = adoption
+        self._mandate_adoption = adoption
         self._preview = preview
         self._is_genesis = False
         self._operations = (_OPERATION,)
@@ -366,13 +367,13 @@ class MandatePublicationAuthority(SchedulerPublicationAuthority):
         self._original_admin: MandateAdministrativeSourceV1 | None = None
 
     def retain_original(self, batch: SingleOwnerBatch) -> None:
-        if _validate_selected_batch(batch) != self._adoption:
+        if _validate_selected_batch(batch) != self._mandate_adoption:
             raise LoopRejected("selected mandate issuance belongs to another adoption")
         self._originals.append((batch.identity, batch.command))
 
     def capture_fresh(self) -> SchedulerFreshSources:
         sources = super().capture_fresh()
-        scope = _adopted_scope(self._adoption)
+        scope = _adopted_scope(self._mandate_adoption)
         if len(sources.startup.index.schedules) != 1:
             raise LoopRejected("mandate issuance requires one selected schedule")
         current = configuration_snapshot(
@@ -388,8 +389,8 @@ class MandatePublicationAuthority(SchedulerPublicationAuthority):
             if scope.horizon.issuance_clock_proof != self._preview.proof:
                 raise LoopRejected("mandate adopted clock proof differs")
             if (
-                self._preview.canonical_scope_bytes != self._adoption.canonical_scope_bytes
-                or self._preview.adoption_act_id != self._adoption.adoption_act_id
+                self._preview.canonical_scope_bytes != self._mandate_adoption.canonical_scope_bytes
+                or self._preview.adoption_act_id != self._mandate_adoption.adoption_act_id
                 or self._preview.proof.fence_fingerprint != _clock_fence(sources)
                 or self._preview.proof.command_id != self._command_id
             ):
@@ -402,7 +403,7 @@ class MandatePublicationAuthority(SchedulerPublicationAuthority):
                 and _admin_source(
                     self._runtime,
                     self._observed,
-                    self._adoption,
+                    self._mandate_adoption,
                     sources,
                     scope,
                     self._preview,
@@ -440,14 +441,14 @@ class MandatePublicationAuthority(SchedulerPublicationAuthority):
         return proof
 
     def _matches_original(self, request: SingleOwnerBatch) -> bool:
-        return _validate_selected_batch(request) == self._adoption
+        return _validate_selected_batch(request) == self._mandate_adoption
 
 
 def _manifest(request: MandateIssuancePreparationRequest) -> AuthoritativeReadManifest:
     cut = request.cut
     command = IssueScheduledMandateV1.model_validate_json(request.command_bytes)
     scope = command.proposed_mandate.mandate.scope
-    heads = (
+    heads: tuple[ObservedHead, ...] = (
         *(
             ObservedPresence(
                 head=ExactRecordHead(
@@ -498,11 +499,21 @@ async def publish_mandate(
     adoption = MandateIssuanceAdoption.model_validate_json(adoption.canonical_bytes())
     scope = _adopted_scope(adoption)
     observed = await _authenticate(runtime, peer)
-    retained = runtime._mandate_clock_issuances.get(scope.horizon.issuance_clock_proof.proof_id)
+    retained = cast(
+        "tuple[MandateClockPreview, ObservedTrustCall] | None",
+        runtime._mandate_clock_issuances.get(scope.horizon.issuance_clock_proof.proof_id),
+    )
     preview = retained[0] if retained is not None else None
     if preview is not None:
-        before = json.loads(retained[1].result.reference_bytes)
-        after = json.loads(observed.result.reference_bytes)
+        before = json.loads(
+            cast(
+                bytes,
+                cast("tuple[MandateClockPreview, ObservedTrustCall]", retained)[
+                    1
+                ].result.reference_bytes,
+            )
+        )
+        after = json.loads(cast(bytes, observed.result.reference_bytes))
         stable = (
             "tenant_id",
             "principal_id",

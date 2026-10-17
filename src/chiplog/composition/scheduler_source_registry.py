@@ -68,6 +68,12 @@ _MANIFEST_V3_REVISION2_SHA = "5d01204db2e1bf02c02fbd815d682a4d707b66d88ca34ea95f
 _V2B_CLOSURE_SHA = "928b044048cfed0e9cd62677c5e8e040e221bd7d649945959b90918d17e3d49a"
 _MANIFEST_V3_REVISION3 = Path(__file__).with_name("scheduler_source_manifest_v3_revision3.json")
 _MANIFEST_V3_REVISION3_SHA = "384e474aa8260710972b7e447eadaeb35ea5d482fca8c10acff06b2a44ab7582"
+_MANIFEST_V3_REVISION4 = Path(__file__).with_name("scheduler_source_manifest_v3_revision4.json")
+_MANIFEST_V3_REVISION4_SHA = "641801b242ec5f5aed7423a194a811323e66b568a1b760c372b39daca87b18b9"
+_REVIEWED_SHARED_CAPTURE_SOURCE_HASHES = (
+    "cb35358fccf08a07acc22f3046e4a1d5ce5875754bd3f505c6109064db5ee80a",
+    "e655c248a479b64f73d3d87ad36080b5a4216d4819ef011ad34e90da30b64c90",
+)
 _REVIEWED_FORMATTED_SOURCE_HASHES: dict[str, tuple[str, str]] = {
     "chiplog.capabilities.agent_loop.scheduler_mandate_lifecycle_contracts": (
         "f1fb581e0fe34d32ae0e45a0592b8e5792843c82fb5f47fd0d076554e195e365",
@@ -381,6 +387,8 @@ def _historical_source_matches(name: str, raw: bytes, fingerprint: str) -> bool:
     formatted = _REVIEWED_FORMATTED_SOURCE_HASHES.get(name)
     if formatted is not None:
         return (fingerprint, _sha(raw)) == formatted
+    if name == "chiplog.composition.r15_scheduler_history":
+        return (fingerprint, _sha(raw)) == _REVIEWED_SHARED_CAPTURE_SOURCE_HASHES
     if name == "chiplog.capabilities.agent_loop.contracts":
         addition = (
             b"class LoopHold(LoopRejected):\n"
@@ -520,6 +528,13 @@ def _revision2_v3_profile() -> dict[str, object]:
     return cast(dict[str, object], json.loads(raw))
 
 
+def _revision3_v3_profile() -> dict[str, object]:
+    raw = _MANIFEST_V3_REVISION3.read_bytes()
+    if _sha(raw) != _MANIFEST_V3_REVISION3_SHA:
+        raise ValueError("revision 3 V3 reviewed manifest changed")
+    return cast(dict[str, object], json.loads(raw))
+
+
 def _historical_v3_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
     return _historical_v3_profile_registration(current_profile, _original_v3_profile())
 
@@ -528,6 +543,12 @@ def _historical_v3_revision2_registration(
     current_profile: dict[str, object],
 ) -> SchedulerSourceRegistration:
     return _historical_v3_profile_registration(current_profile, _revision2_v3_profile())
+
+
+def _historical_v3_revision3_registration(
+    current_profile: dict[str, object],
+) -> SchedulerSourceRegistration:
+    return _historical_v3_profile_registration(current_profile, _revision3_v3_profile())
 
 
 def _historical_v3_profile_registration(
@@ -561,8 +582,9 @@ def _capture_scheduler_registration() -> tuple[
         _require_v2b_closure()
         _original_v3_profile()
         _revision2_v3_profile()
-        raw_manifest = _MANIFEST_V3_REVISION3.read_bytes()
-        if _sha(raw_manifest) != _MANIFEST_V3_REVISION3_SHA:
+        _revision3_v3_profile()
+        raw_manifest = _MANIFEST_V3_REVISION4.read_bytes()
+        if _sha(raw_manifest) != _MANIFEST_V3_REVISION4_SHA:
             return SourceRegistrationUnresolved("reviewed V3 manifest bytes differ"), {}
         expected = json.loads(raw_manifest)
         observed, sources, _ = _observe(v3=True)
@@ -834,6 +856,7 @@ def read_admitted_scheduler_startup(
     v2d = _historical_v2d_registration(observed)
     original_v3 = _historical_v3_registration(observed)
     revision2_v3 = _historical_v3_revision2_registration(observed)
+    revision3_v3 = _historical_v3_revision3_registration(observed)
     from chiplog.composition.r15_interval_policy_publication import (
         validate_selected_interval_policy_decision,
         validate_selected_interval_service_decision,
@@ -855,7 +878,8 @@ def read_admitted_scheduler_startup(
             v2d.reference.head: (4, v2d.reference),
             original_v3.reference.head: (5, original_v3.reference),
             revision2_v3.reference.head: (6, revision2_v3.reference),
-            registration.reference.head: (7, registration.reference),
+            revision3_v3.reference.head: (7, revision3_v3.reference),
+            registration.reference.head: (8, registration.reference),
         }
         candidate = admitted.get(historical.registry.head)
         if candidate is None or historical.registry != candidate[1] or candidate[0] < rank:
@@ -873,6 +897,7 @@ def read_admitted_scheduler_startup(
             5,
             6,
             7,
+            8,
         ):
             return SourceRegistrationUnresolved("lease acquire requires V2b selected source")
         if (
@@ -902,12 +927,12 @@ def read_admitted_scheduler_startup(
                 None,
             )
             == "chiplog.scheduler.interval-service-issuance.v3"
-            and rank not in (5, 6, 7)
+            and rank not in (5, 6, 7, 8)
         ):
             return SourceRegistrationUnresolved("interval service requires V3 selected source")
         if (
             historical.selection.prepared.request.operation == "scheduler.resolve_interval"
-            and rank not in (5, 6, 7)
+            and rank not in (5, 6, 7, 8)
         ):
             return SourceRegistrationUnresolved("interval resolution requires V3 selected source")
         _require_historical_equality(historical, selected)

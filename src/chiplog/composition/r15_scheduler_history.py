@@ -179,6 +179,13 @@ def inspect_publication(
 
 
 def read_loop_snapshot(runtime: R14PlanningRuntime) -> LoopSnapshot:
+    """Return the authenticated shared history at one current physical cut."""
+    return _read_loop_snapshot_with_startup(runtime)[0]
+
+
+def _read_loop_snapshot_with_startup(
+    runtime: R14PlanningRuntime,
+) -> tuple[LoopSnapshot, AdmittedSchedulerStartup]:
     """Project only authenticated legacy Runs from the joint scheduler/Run cut.
 
     The private ambient-cut observation avoids opening a second SQL transaction
@@ -353,7 +360,10 @@ def read_loop_snapshot(runtime: R14PlanningRuntime) -> LoopSnapshot:
                     raise ValueError("independent loop authority changed during read")
                 runtime._check_database_identity()
                 records.sort(key=lambda record: record_sequences[record.head])
-                return LoopSnapshot(tenant_head=startup.cut.tenant_frontier, records=tuple(records))
+                return (
+                    LoopSnapshot(tenant_head=startup.cut.tenant_frontier, records=tuple(records)),
+                    startup,
+                )
     except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
         raise LoopIntegrityError(
             f"operation=snapshot tenant={runtime._tenant_id} record_id={identity}"

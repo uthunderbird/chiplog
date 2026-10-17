@@ -875,6 +875,7 @@ def test_historical_lock_compatibility_rejects_old_or_unreviewed_dependency_chan
         "scheduler_source_manifest_v3.json",
         "scheduler_source_manifest_v3_revision2.json",
         "scheduler_source_manifest_v3_revision3.json",
+        "scheduler_source_manifest_v3_revision4.json",
     ],
 )
 def test_all_reviewed_v3_manifests_remain_immutable(
@@ -935,7 +936,13 @@ async def test_revision2_v3_selected_history_keeps_its_exact_registration(tmp_pa
 
 @pytest.mark.parametrize(
     "older_name,newer_name",
-    [("original", "current"), ("revision2", "current"), ("original", "revision2")],
+    [
+        ("original", "current"),
+        ("revision2", "current"),
+        ("original", "revision2"),
+        ("revision3", "current"),
+        ("revision2", "revision3"),
+    ],
 )
 @pytest.mark.parametrize("regressed", [False, True])
 async def test_v3_source_order_is_checked_before_replaying_a_later_selected_request(
@@ -952,6 +959,7 @@ async def test_v3_source_order_is_checked_before_replaying_a_later_selected_requ
     versions = {
         "original": source_registry._historical_v3_registration(observed),
         "revision2": source_registry._historical_v3_revision2_registration(observed),
+        "revision3": source_registry._historical_v3_revision3_registration(observed),
         "current": registered,
     }
     original, current = versions[older_name], versions[newer_name]
@@ -1038,6 +1046,35 @@ def test_reviewed_formatting_recognizes_only_exact_whole_file_pairs(name: str) -
     historical, formatted = source_registry._REVIEWED_FORMATTED_SOURCE_HASHES[name]
     raw = (source_registry._ROOT / "src" / Path(*name.split(".")).with_suffix(".py")).read_bytes()
     assert digest(raw) == formatted
+    assert source_registry._historical_source_matches(name, raw, historical)
+    assert not source_registry._historical_source_matches(name, raw + b"\n", historical)
+    assert not source_registry._historical_source_matches(name, raw, "0" * 64)
+
+
+async def test_revision3_v3_selected_history_keeps_its_exact_registration(tmp_path: Path) -> None:
+    observed, _, _ = source_registry._observe(v3=True)
+    retained = source_registry._historical_v3_revision3_registration(observed)
+    assert retained.reference.head == (
+        "scheduler-source-registry-v3:"
+        "b51097a1129b121885fd037473b993851681a34ef94698865d25f462ca8e9c02"
+    )
+    current = current_scheduler_registration()
+    assert isinstance(current, SchedulerSourceRegistration)
+    assert current.reference != retained.reference
+    fixture = await materialized(tmp_path, registry=retained.reference)
+    result = read_admitted_scheduler_startup(
+        fixture.database, "tenant", fixture.journal, fixture.anchor
+    )
+    assert isinstance(result, AdmittedSchedulerStartup)
+    assert result.cut.historical_requests[0].registry == retained.reference
+    assert result.registration == current
+
+
+def test_reviewed_shared_capture_matches_only_its_exact_source_pair() -> None:
+    name = "chiplog.composition.r15_scheduler_history"
+    historical, captured = source_registry._REVIEWED_SHARED_CAPTURE_SOURCE_HASHES
+    raw = (source_registry._ROOT / "src" / Path(*name.split(".")).with_suffix(".py")).read_bytes()
+    assert digest(raw) == captured
     assert source_registry._historical_source_matches(name, raw, historical)
     assert not source_registry._historical_source_matches(name, raw + b"\n", historical)
     assert not source_registry._historical_source_matches(name, raw, "0" * 64)

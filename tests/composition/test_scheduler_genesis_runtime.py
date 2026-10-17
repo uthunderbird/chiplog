@@ -12,19 +12,26 @@ from typing import Literal
 
 import pytest
 
+import chiplog.composition.r15_scheduler_authority as authority_module
 import chiplog.composition.r15_scheduler_history as history
+import chiplog.composition.scheduler_source_registry as source_registry
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.adapters.driven.loop_prompts import OwnedStaticPrompts
 from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError, SQLiteLoopStore
 from chiplog.capabilities.agent_loop.application import AgentLoop
-from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, EndpointSelection, LoopRejected
+from chiplog.capabilities.agent_loop.contracts import (
+    BudgetPolicy,
+    EndpointSelection,
+    LoopRejected,
+    LoopSnapshot,
+)
 from chiplog.capabilities.agent_loop.scheduler_contracts import SchedulerIntervalBound
 from chiplog.capabilities.agent_loop.scheduler_preparation import (
     ConfigurationPreparationRequest,
     PreparedSchedulerBatch,
     prepare_configuration,
 )
-from chiplog.composition.r14_runtime import open_r14_runtime
+from chiplog.composition.r14_runtime import R14PlanningRuntime, open_r14_runtime
 from chiplog.composition.r15_scheduler_authority import (
     SchedulerFreshSources,
     SchedulerPublicationAuthority,
@@ -52,10 +59,21 @@ from chiplog.composition.scheduler_source_registry import (
 )
 from chiplog.platform._owner_publication_contracts import ExactReplayQuery, SingleOwnerBatch
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord, PublicationResult
-from chiplog.platform.authority_reads import capture_authority_storage_state
+from chiplog.platform.authority_reads import (
+    AuthorityCommitmentJournal,
+    capture_authority_storage_state,
+)
 from chiplog.platform.broker import PublicPortCall, PublicPortResult, PublicPortSuccess
+from chiplog.platform.owner_decision_journal import (
+    IndependentOwnerDecisionJournal,
+    OwnerJournalIntegrityError,
+)
 from chiplog.platform.owner_publications import OwnerPublicationUncertain, PreparedOwnerPublication
 from chiplog.platform.r7_runtime import AuthorityBrokerRuntime
+from chiplog.platform.scheduler_reads import (
+    SchedulerSourceAdmissionUnresolved,
+    read_materialized_scheduler,
+)
 from chiplog.platform.workspace_snapshot import _CURRENT, workspace_snapshot
 
 _COMPLETE = b'{"kind":"Complete","deliveries":[{"kind":"NonAuthoritativeText","text":"Ready"}]}'
@@ -956,3 +974,91 @@ def test_selected_readback_rejects_whole_publication_contamination(mutation: str
         else:
             connection.execute("UPDATE records SET canonical_bytes=?", (b"changed",))
         assert history.inspect_publication(connection, command, 1) == "CONFLICT"
+
+
+async def test_fresh_scheduler_capture_reuses_history_startup_and_keeps_final_source_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with open_r14_runtime(tmp_path / "capture-count.sqlite") as runtime:
+        observed = await _authenticate(runtime, "hermetic-ingress")
+        command = command_from_draft(_draft(), capture_generation_sources(runtime, observed))
+        authority = SchedulerPublicationAuthority(
+            runtime,
+            observed,
+            SchedulerGenesisAdoption(
+                adoption_act_id=_draft().adoption_act_id,
+                command_bytes=command.canonical_bytes(),
+            ),
+        )
+        startup_reads = 0
+        source_observations = 0
+        original_startup = read_materialized_scheduler
+        original_observe = source_registry._observe
+
+        def startup(
+            database: Path,
+            tenant_id: str,
+            journal: IndependentOwnerDecisionJournal,
+            commitments: AuthorityCommitmentJournal,
+        ) -> SchedulerSourceAdmissionUnresolved:
+            nonlocal startup_reads
+            startup_reads += 1
+            return original_startup(database, tenant_id, journal, commitments)
+
+        def observe(
+            *, v3: bool = False
+        ) -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
+            nonlocal source_observations
+            source_observations += 1
+            return original_observe(v3=v3)
+
+        monkeypatch.setattr(source_registry, "read_materialized_scheduler", startup)
+        monkeypatch.setattr(source_registry, "_observe", observe)
+        sources = authority.capture_fresh()
+        assert sources.startup.cut.tenant_id == runtime._tenant_id
+        assert (startup_reads, source_observations) == (1, 3)
+
+
+@pytest.mark.parametrize("change", ["owner-journal", "source-profile"])
+async def test_fresh_scheduler_capture_rechecks_owner_and_sources_after_shared_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    async with open_r14_runtime(tmp_path / "capture-change.sqlite") as runtime:
+        observed = await _authenticate(runtime, "hermetic-ingress")
+        command = command_from_draft(_draft(), capture_generation_sources(runtime, observed))
+        authority = SchedulerPublicationAuthority(
+            runtime,
+            observed,
+            SchedulerGenesisAdoption(
+                adoption_act_id=_draft().adoption_act_id,
+                command_bytes=command.canonical_bytes(),
+            ),
+        )
+        original = history._read_loop_snapshot_with_startup
+        captures = 0
+
+        def changed(
+            actual_runtime: R14PlanningRuntime,
+        ) -> tuple[LoopSnapshot, AdmittedSchedulerStartup]:
+            nonlocal captures
+            captures += 1
+            snapshot, startup = original(actual_runtime)
+            if change == "owner-journal":
+                runtime._owner_decisions()._raw.append(
+                    b'{"kind":"UNKNOWN"}', startup.cut.independent_journal_head
+                )
+            else:
+                monkeypatch.setattr(
+                    authority_module,
+                    "current_scheduler_registration",
+                    lambda: source_registry.SourceRegistrationUnresolved("changed after history"),
+                )
+            return snapshot, startup
+
+        monkeypatch.setattr(authority_module, "_read_loop_snapshot_with_startup", changed)
+        with pytest.raises(
+            (OwnerJournalIntegrityError, LoopRejected),
+            match=r"owner journal integrity|source admission changed after shared history",
+        ):
+            authority.capture_fresh()
+        assert captures == 1
