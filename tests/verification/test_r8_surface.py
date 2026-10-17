@@ -231,8 +231,9 @@ def test_offline_gate_rejects_other_operator_policy_imports(
         verify_offline_import_boundary(tmp_path)
 
 
-def test_offline_gate_accepts_exact_cli_peer_leaf(tmp_path: Path) -> None:
-    target = tmp_path / "src/chiplog/adapters/driven/cli_custody_socket.py"
+@pytest.mark.parametrize("leaf", ["cli_custody_socket.py", "native_ingress_cli.py"])
+def test_offline_gate_accepts_exact_cli_peer_leaf(tmp_path: Path, leaf: str) -> None:
+    target = tmp_path / "src/chiplog/adapters/driven" / leaf
     target.parent.mkdir(parents=True)
     target.write_text("import socket\nimport ctypes\n")
     verify_offline_import_boundary(tmp_path)

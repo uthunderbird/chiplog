@@ -322,7 +322,11 @@ def verify_offline_import_boundary(root: Path) -> None:
                     top in {"socket", "ssl", "ctypes", "importlib"}
                     and relative != "chiplog/platform/r7_runtime.py"
                     and not (
-                        relative == "chiplog/adapters/driven/cli_custody_socket.py"
+                        relative
+                        in {
+                            "chiplog/adapters/driven/cli_custody_socket.py",
+                            "chiplog/adapters/driven/native_ingress_cli.py",
+                        }
                         and module in {"socket", "ctypes"}
                         and isinstance(node, ast.Import)
                     )
