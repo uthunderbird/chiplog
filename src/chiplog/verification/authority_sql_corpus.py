@@ -4,6 +4,7 @@ import ast
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import cast
 
 
 class CorpusInventoryChanged(ValueError):
@@ -40,7 +41,8 @@ class CurrentSqlCorpus:
         identities = tuple((node.module, node.qualname, node.ordinal) for node in self.nodes)
         modules = tuple(module for module, _ in self.source_digests)
         if (
-            not self.nodes or len(set(identities)) != len(identities)
+            not self.nodes
+            or len(set(identities)) != len(identities)
             or len(set(modules)) != len(modules)
             or any(node.module not in modules for node in self.nodes)
         ):
@@ -54,7 +56,9 @@ def inspect_sources(sources: tuple[tuple[str, str], ...]) -> CurrentSqlCorpus:
     return _inspect_sources_with_occurrences(sources)[0]
 
 
-def _inspect_sources_with_occurrences(sources):
+def _inspect_sources_with_occurrences(
+    sources: tuple[tuple[str, str], ...],
+) -> tuple[CurrentSqlCorpus, tuple[tuple[CorpusNode, ast.Call, ast.Module], ...]]:
     """Keep exact AST occurrences for the expression join; public accounting is unchanged."""
     if not sources or len({module for module, _ in sources}) != len(sources):
         raise UnresolvedSqlCorpus("source accounting requires unique nonempty input files")
@@ -68,7 +72,7 @@ def _inspect_sources_with_occurrences(sources):
         tree = ast.parse(source, filename=module)
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         scope_hashes: dict[ast.AST, str] = {}
-        events = []
+        events: list[tuple[str, int, int, str, ast.AST, str]] = []
 
         for node in ast.walk(tree):
             kind = None
@@ -78,9 +82,16 @@ def _inspect_sources_with_occurrences(sources):
                 kind = _call_kind(node.func)
             elif isinstance(node, (ast.Import, ast.ImportFrom)):
                 kind = "import"
-            elif isinstance(node, (
-                ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr, ast.Delete,
-            )):
+            elif isinstance(
+                node,
+                (
+                    ast.Assign,
+                    ast.AnnAssign,
+                    ast.AugAssign,
+                    ast.NamedExpr,
+                    ast.Delete,
+                ),
+            ):
                 kind = "binding"
             elif isinstance(node, ast.arg):
                 kind = "parameter"
@@ -94,24 +105,40 @@ def _inspect_sources_with_occurrences(sources):
                 kind = "opener_declaration"
             if kind is not None:
                 qualname, scope_digest = _scope(node, parents, tree, scope_hashes)
-                events.append((qualname, node.lineno, node.col_offset, kind, node, scope_digest))
+                located = cast(ast.stmt | ast.expr | ast.arg, node)
+                events.append(
+                    (qualname, located.lineno, located.col_offset, kind, node, scope_digest)
+                )
         ordinals: dict[str, int] = {}
-        for qualname, _, _, kind, node, scope_digest in sorted(
-            events, key=lambda event: event[:4]
-        ):
+        for qualname, _, _, kind, node, scope_digest in sorted(events, key=lambda event: event[:4]):
             ordinals[qualname] = ordinals.get(qualname, 0) + 1
-            evidence = CorpusNode(module, qualname, ordinals[qualname], kind,
-                                  ast.unparse(node), _shape(node), scope_digest)
+            evidence = CorpusNode(
+                module,
+                qualname,
+                ordinals[qualname],
+                kind,
+                ast.unparse(node),
+                _shape(node),
+                scope_digest,
+            )
             nodes.append(evidence)
             if kind == "sql_call_candidate":
-                occurrences.append((evidence, node, tree))
+                occurrences.append((evidence, cast(ast.Call, node), tree))
     return CurrentSqlCorpus(tuple(nodes), tuple(digests)), tuple(occurrences)
 
 
-_SQL_NAMES = frozenset({
-    "execute", "executemany", "executescript", "connect", "cursor",
-    "read_connection", "workspace_snapshot", "join_workspace_snapshot",
-})
+_SQL_NAMES = frozenset(
+    {
+        "execute",
+        "executemany",
+        "executescript",
+        "connect",
+        "cursor",
+        "read_connection",
+        "workspace_snapshot",
+        "join_workspace_snapshot",
+    }
+)
 
 
 def _shape(node: ast.AST) -> str:
@@ -119,7 +146,9 @@ def _shape(node: ast.AST) -> str:
 
 
 def _scope(
-    node: ast.AST, parents: dict[ast.AST, ast.AST], tree: ast.Module,
+    node: ast.AST,
+    parents: dict[ast.AST, ast.AST],
+    tree: ast.Module,
     scope_hashes: dict[ast.AST, str],
 ) -> tuple[str, str]:
     scopes = []
@@ -135,8 +164,10 @@ def _scope(
 
 
 def _call_kind(function: ast.expr) -> str:
-    name = function.id if isinstance(function, ast.Name) else (
-        function.attr if isinstance(function, ast.Attribute) else None
+    name = (
+        function.id
+        if isinstance(function, ast.Name)
+        else (function.attr if isinstance(function, ast.Attribute) else None)
     )
     if name in {"execute", "executemany", "executescript"}:
         return "sql_call_candidate"
@@ -152,6 +183,8 @@ def _call_kind(function: ast.expr) -> str:
 
 
 def current_sql_corpus(root: Path) -> CurrentSqlCorpus:
-    sources = tuple((str(path.relative_to(root)), path.read_bytes().decode("utf-8"))
-                    for path in sorted((root / "src").rglob("*.py")))
+    sources = tuple(
+        (str(path.relative_to(root)), path.read_bytes().decode("utf-8"))
+        for path in sorted((root / "src").rglob("*.py"))
+    )
     return inspect_sources(sources)

@@ -6,10 +6,10 @@ and external class mutation remain outside this fragment and block global closur
 """
 
 import ast
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from chiplog.verification.assembly_forwarding import (
     AssemblyEdge,
@@ -187,7 +187,9 @@ def _imports(tree: ast.Module, module: str, names: dict[str, str]) -> None:
         _require(_bindings(tree, module, name) == origin, "foreign binding: " + name)
 
 
-def _connection_uses(method, allowed_calls, *, binding=None):
+def _connection_uses(
+    method: ast.FunctionDef, allowed_calls: set[str], *, binding: ast.AST | None = None
+) -> None:
     """Every connection name occurrence must be a direct registered call position.
 
     This checks syntax, not the implementation of residual callees. Their
@@ -230,7 +232,7 @@ def _connection_uses(method, allowed_calls, *, binding=None):
             )
 
 
-def _prove_chain(runtime, reader):
+def _prove_chain(runtime: str, reader: str) -> None:
     rt = ast.parse(runtime)
     rd = ast.parse(reader)
     cls = _scope(rt, "R7PlanningRuntime")
@@ -362,13 +364,13 @@ def _prove_chain(runtime, reader):
             and isinstance(n.ctx, ast.Load)
         ):
             parents = {child: p for p in ast.walk(wrapper) for child in ast.iter_child_nodes(p)}
-            parent = parents.get(n)
-            call = parents.get(parent)
+            wrapper_parent = parents.get(n)
+            wrapper_call = parents.get(wrapper_parent) if wrapper_parent is not None else None
             _require(
-                isinstance(parent, ast.Attribute)
-                and parent.attr == "execute"
-                and isinstance(call, ast.Call)
-                and call.func is parent,
+                isinstance(wrapper_parent, ast.Attribute)
+                and wrapper_parent.attr == "execute"
+                and isinstance(wrapper_call, ast.Call)
+                and wrapper_call.func is wrapper_parent,
                 "reader field escapes its direct wrapper",
             )
     reader_init = _scope(broker, "__init__")
@@ -439,7 +441,7 @@ def _prove_chain(runtime, reader):
                 },
                 "SQLite module escapes or is mutated",
             )
-            if parent.attr == "connect":
+            if cast(ast.Attribute, parent).attr == "connect":
                 call = reader_parents[parent]
                 _require(
                     isinstance(call, ast.Call) and call.func is parent,
@@ -635,7 +637,9 @@ def _prove_runtime_planning_preparation(reader: ast.Module, leaf: ast.FunctionDe
     )
 
 
-def _preparation_origins(sources, corpus: CurrentSqlCorpus):
+def _preparation_origins(
+    sources: tuple[tuple[str, str], ...], corpus: CurrentSqlCorpus
+) -> tuple[PreparationOriginChain, ...]:
     """Prove only the closed source-local memory receiver chains, not SQL policy."""
     path = "src/chiplog/verification/sqlite_preparation.py"
     origin = "chiplog.verification.sqlite_preparation"
@@ -853,7 +857,7 @@ def _preparation_origins(sources, corpus: CurrentSqlCorpus):
                 )
             else:
                 fetch = parents.get(parent)
-                statement = parents.get(fetch)
+                statement = parents.get(fetch) if fetch is not None else None
                 _require(
                     isinstance(parent, ast.Attribute)
                     and parent.value is call
@@ -895,13 +899,13 @@ def _preparation_origins(sources, corpus: CurrentSqlCorpus):
                 "preparation connection escapes or enters a nested frame",
             )
             parent = parents[node]
-            call = parents.get(parent) if isinstance(parent, ast.Attribute) else parent
+            connection_call = parents.get(parent) if isinstance(parent, ast.Attribute) else parent
             _require(
-                call in allowed
+                connection_call in allowed
                 and (
                     (
                         isinstance(parent, ast.Attribute)
-                        and call.func is parent
+                        and connection_call.func is parent
                         and parent.value is node
                     )
                     or (isinstance(parent, ast.Call) and parent.args[0] is node)
@@ -910,22 +914,24 @@ def _preparation_origins(sources, corpus: CurrentSqlCorpus):
             )
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id == "_metadata_authorizer":
-            parent = parents.get(node)
+            authorizer_parent = parents.get(node)
             _require(
-                isinstance(parent, ast.Call)
-                and parent.func is node
-                and frame(parent) is scopes["_physical_schema"]
-                and _text(parent) == "_metadata_authorizer(objects)",
+                isinstance(authorizer_parent, ast.Call)
+                and authorizer_parent.func is node
+                and frame(authorizer_parent) is scopes["_physical_schema"]
+                and _text(authorizer_parent) == "_metadata_authorizer(objects)",
                 "private metadata authorizer escapes",
             )
         if isinstance(node, ast.Name) and node.id in scopes:
             _require(
-                parents.get(node) in allowed_forwards and parents[node].func is node,
+                parents.get(node) in allowed_forwards
+                and cast(ast.Call, parents[node]).func is node,
                 "private preparation helper escapes",
             )
         if isinstance(node, ast.Name) and node.id == "closing":
             _require(
-                parents.get(node) in contexts.values() and parents[node].func is node,
+                parents.get(node) in contexts.values()
+                and cast(ast.Call, parents[node]).func is node,
                 "private closing callable escapes",
             )
         if isinstance(node, ast.Name) and node.id == "sqlite3":
@@ -957,9 +963,10 @@ def _preparation_origins(sources, corpus: CurrentSqlCorpus):
                 },
                 "preparation SQLite module escapes or mutates",
             )
-            if parent.attr == "connect":
+            if cast(ast.Attribute, parent).attr == "connect":
                 _require(
-                    parents.get(parent) in factories.values() and parents[parent].func is parent,
+                    parents.get(parent) in factories.values()
+                    and cast(ast.Call, parents[parent]).func is parent,
                     "preparation factory escapes",
                 )
         _require(
@@ -1068,7 +1075,7 @@ def _preparation_origins(sources, corpus: CurrentSqlCorpus):
     for entrypoint in factories:
         factory = site(entrypoint, factories[entrypoint])
         for forward in forwards[entrypoint]:
-            helper = forward.func.id
+            helper = cast(ast.Name, forward.func).id
             for sink, role in actual_sinks[helper]:
                 chains.append(
                     PreparationOriginChain(
@@ -1096,7 +1103,11 @@ def _preparation_origins(sources, corpus: CurrentSqlCorpus):
     return tuple(chains)
 
 
-def _reader_scanners(corpus: CurrentSqlCorpus, occurrences, expressions):
+def _reader_scanners(
+    corpus: CurrentSqlCorpus,
+    occurrences: tuple[tuple[CorpusNode, ast.Call, ast.Module], ...],
+    expressions: SqlExpressionInventory,
+) -> tuple[ReaderScannerChain, ...]:
     """Conditional origins for the selected reader's five scanner/transaction sites."""
     path = "src/chiplog/platform/authority_reads.py"
     tree = _one(
@@ -1286,7 +1297,7 @@ def _reader_scanners(corpus: CurrentSqlCorpus, occurrences, expressions):
                     sink,
                     role,
                     "tenant_main",
-                    expression,
+                    cast(SqlExpressionResolution, expression),
                 )
             )
             allowed.add(sql_call)
@@ -1356,7 +1367,12 @@ def _reader_scanners(corpus: CurrentSqlCorpus, occurrences, expressions):
     return tuple(chains)
 
 
-def _read_ledger_origins(sources, corpus: CurrentSqlCorpus, occurrences, expressions):
+def _read_ledger_origins(
+    sources: tuple[tuple[str, str], ...],
+    corpus: CurrentSqlCorpus,
+    occurrences: tuple[tuple[CorpusNode, ast.Call, ast.Module], ...],
+    expressions: SqlExpressionInventory,
+) -> tuple[ReadLedgerOriginChain, ...]:
     "Selected base-runtime ledger provenance; other users and semantics stay residual."
     texts = dict(sources)
     path = "src/chiplog/platform/read_ledger.py"
@@ -1409,7 +1425,7 @@ def _read_ledger_origins(sources, corpus: CurrentSqlCorpus, occurrences, express
         "_authority_scope",
     }
 
-    def namespace_nodes(node):
+    def namespace_nodes(node: ast.AST) -> Iterator[ast.AST]:
         # Class assignments bind through Name targets; method-local row names do not.
         yield node
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -1472,14 +1488,15 @@ def _read_ledger_origins(sources, corpus: CurrentSqlCorpus, occurrences, express
             )
             if node.id == "sqlite3":
                 _require(
-                    parent.attr in {"connect", "IntegrityError"}, "unknown ledger SQLite member"
+                    cast(ast.Attribute, parent).attr in {"connect", "IntegrityError"},
+                    "unknown ledger SQLite member",
                 )
             else:
                 _require(
-                    parent.attr in {"contextmanager", "nullcontext"},
+                    cast(ast.Attribute, parent).attr in {"contextmanager", "nullcontext"},
                     "unknown ledger context member",
                 )
-            if parent.attr in {"connect", "nullcontext"}:
+            if cast(ast.Attribute, parent).attr in {"connect", "nullcontext"}:
                 call = parents[parent]
                 _require(
                     isinstance(call, ast.Call) and call.func is parent,
@@ -1620,7 +1637,7 @@ def _read_ledger_origins(sources, corpus: CurrentSqlCorpus, occurrences, express
             for parent in ast.walk(module_tree)
             for child in ast.iter_child_nodes(parent)
         }
-        annotations = set()
+        annotations: set[ast.AST] = set()
         for node in ast.walk(module_tree):
             annotation = (
                 node.annotation
@@ -1668,7 +1685,7 @@ def _read_ledger_origins(sources, corpus: CurrentSqlCorpus, occurrences, express
                         node.id == "R7PlanningRuntime"
                         and isinstance(parent, ast.keyword)
                         and parent.arg == "runtime_type"
-                        and _text(module_parents[parent].func) == "_open_runtime"
+                        and _text(cast(ast.Call, module_parents[parent]).func) == "_open_runtime"
                     ),
                     "selected producer class escapes direct constructor/type positions",
                 )
@@ -1958,10 +1975,11 @@ def _read_ledger_origins(sources, corpus: CurrentSqlCorpus, occurrences, express
             while parents.get(ancestor) is not init:
                 ancestor = parents[ancestor]
             _require(
-                init.body.index(path_field) < init.body.index(ancestor),
+                cast(ast.FunctionDef, init).body.index(path_field)
+                < cast(ast.FunctionDef, init).body.index(cast(ast.stmt, ancestor)),
                 "ledger factory precedes normalized path field",
             )
-        binding = item.optional_vars
+        binding = cast(ast.withitem, item).optional_vars
         _require(
             [n for n in ast.walk(method) if _binds(n, "connection")] == [binding],
             "ledger connection rebound",
@@ -2010,7 +2028,7 @@ def _read_ledger_origins(sources, corpus: CurrentSqlCorpus, occurrences, express
                 expression is not None and expression.kind == "FINITE_SYNTAX",
                 "ledger SQL lacks same-snapshot finite expression",
             )
-            forwards = () if name == "__init__" else prefix
+            forwards: tuple[CorpusNode, ...] = () if name == "__init__" else prefix
             if name != "__init__":
                 direct_name = "current_state" if name == "current_state_or_none" else name
                 forwards += (
@@ -2030,7 +2048,7 @@ def _read_ledger_origins(sources, corpus: CurrentSqlCorpus, occurrences, express
                     sink,
                     role,
                     "broker_read_ledger",
-                    expression,
+                    cast(SqlExpressionResolution, expression),
                 )
             )
             allowed.add(call)
@@ -2057,13 +2075,13 @@ def _read_ledger_origins(sources, corpus: CurrentSqlCorpus, occurrences, express
                 )
                 ancestor = parents[ancestor]
             parent = parents[node]
-            call = parents.get(parent)
+            connection_call = parents.get(parent)
             _require(
                 isinstance(node.ctx, ast.Load)
                 and isinstance(parent, ast.Attribute)
                 and parent.value is node
-                and call in allowed
-                and call.func is parent,
+                and connection_call in allowed
+                and connection_call.func is parent,
                 "ledger connection escapes exact SQL receiver position",
             )
     return tuple(chains)
@@ -2242,7 +2260,9 @@ def build_planning_descriptor_fragment(
             _require(
                 row is not None and row.kind == "FINITE_SYNTAX", "planning expression is unresolved"
             )
-            for alternative, expression in enumerate(row.alternatives):
+            for alternative, expression in enumerate(
+                cast(SqlExpressionResolution, row).alternatives
+            ):
                 rows.append(
                     PlanningDescriptorRow(
                         site,
