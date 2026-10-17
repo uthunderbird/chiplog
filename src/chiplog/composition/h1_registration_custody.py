@@ -18,7 +18,7 @@ import secrets
 import stat
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Literal, Never
 
@@ -191,7 +191,8 @@ def _read_registry(directory_fd: int) -> tuple[bytes, H1RegistrationCustodyV1]:
         raise H1RegistrationCustodyError("registry is absent") from None
     except OSError as exc:
         raise H1RegistrationCustodyError("registry cannot be opened safely") from exc
-    try:
+    with ExitStack() as resources:
+        resources.callback(os.close, fd)
         _private_regular(fd)
         chunks: list[bytes] = []
         remaining = _MAX_BYTES + 1
@@ -203,8 +204,6 @@ def _read_registry(directory_fd: int) -> tuple[bytes, H1RegistrationCustodyV1]:
             remaining -= len(chunk)
         raw = b"".join(chunks)
         _private_regular(fd)
-    finally:
-        os.close(fd)
     return raw, _decode(raw)
 
 

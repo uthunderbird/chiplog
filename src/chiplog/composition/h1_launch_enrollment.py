@@ -16,7 +16,7 @@ import os
 import secrets
 import stat
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import Never, Protocol
@@ -383,12 +383,11 @@ def _read_marker(custody_fd: int) -> tuple[bytes, H1LaunchEnrollmentV1]:
         raise H1LaunchEnrollmentError("enrollment marker is absent") from None
     except OSError as exc:
         raise H1LaunchEnrollmentError("enrollment marker cannot be opened safely") from exc
-    try:
+    with ExitStack() as resources:
+        resources.callback(os.close, fd)
         _private_regular(fd)
         raw = os.read(fd, _MAX_BYTES + 1)
         _private_regular(fd)
-    finally:
-        os.close(fd)
     return raw, _decode_marker(raw)
 
 
@@ -429,12 +428,11 @@ def _read_evidence_marker(custody_fd: int) -> tuple[bytes, H1EvidenceMountEnroll
         raise H1EvidenceMountError("enrolled evidence marker is absent") from None
     except OSError as exc:
         raise H1EvidenceMountError("enrolled evidence marker is unavailable") from exc
-    try:
+    with ExitStack() as resources:
+        resources.callback(os.close, fd)
         _private_regular(fd)
         raw = os.read(fd, _MAX_BYTES + 1)
         _private_regular(fd)
-    finally:
-        os.close(fd)
     if not raw or len(raw) > _MAX_BYTES:
         raise H1EvidenceMountError("enrolled evidence marker is corrupt")
     try:
@@ -456,12 +454,11 @@ def _read_recovery_marker(custody_fd: int) -> tuple[bytes, H1RecoveryMountEnroll
         raise H1RecoveryMountError("enrolled recovery marker is absent") from None
     except OSError as exc:
         raise H1RecoveryMountError("enrolled recovery marker is unavailable") from exc
-    try:
+    with ExitStack() as resources:
+        resources.callback(os.close, fd)
         _private_regular(fd)
         raw = os.read(fd, _MAX_BYTES + 1)
         _private_regular(fd)
-    finally:
-        os.close(fd)
     if not raw or len(raw) > _MAX_BYTES:
         raise H1RecoveryMountError("enrolled recovery marker is corrupt")
     try:
