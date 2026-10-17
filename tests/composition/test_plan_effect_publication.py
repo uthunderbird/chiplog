@@ -38,7 +38,7 @@ from chiplog.platform.broker import PublicPortCall, PublicPortResult
 from chiplog.platform.owner_decision_journal import (
     IndependentOwnerDecisionJournal,
     OwnerJournalIntegrityError,
-    OwnerJournalSnapshot,
+    _Scan,
 )
 from chiplog.platform.owner_publications import (
     OwnerPublicationUncertain,
@@ -236,15 +236,26 @@ async def test_repeated_journal_snapshot_reauthenticates_after_semantic_reuse(
             probes += 1
             return actual_entries()
 
-        def redundant_decode(operation: str, record: str) -> None:
-            raise AssertionError("unchanged authenticated bytes were decoded again")
+        semantic_decodes = 0
+        scan_entries = journal._scan_entries
+
+        def count_decode(
+            entries: tuple[tuple[str, str | None, bytes], ...],
+            operation: str,
+            record: str,
+            capture_head: str | None = None,
+        ) -> _Scan:
+            nonlocal semantic_decodes
+            semantic_decodes += 1
+            return scan_entries(entries, operation, record, capture_head)
 
         with monkeypatch.context() as patch:
             patch.setattr(journal._raw, "entries", fresh_entries)
-            patch.setattr(journal, "_scan", redundant_decode)
+            patch.setattr(journal, "_scan_entries", count_decode)
             assert journal.snapshot() == warm
             assert journal.snapshot() == warm
             assert probes == 2
+            assert semantic_decodes == 0
         raw = journal._raw
         if damage == "authenticated-malformed":
             raw.append(b'{"kind":"UNKNOWN"}', warm.head)
@@ -271,15 +282,31 @@ async def test_journal_snapshot_rejects_middle_cut_mismatch_before_cache(
         runtime = loop._planning
         assert isinstance(runtime, R14PlanningRuntime)
         journal = AnchoredOwnerDecisionJournal(runtime)
-        original = IndependentOwnerDecisionJournal.snapshot
+        # Construction already decoded the empty journal; exercise a cold read.
+        journal._snapshot_cache = None
+        original = IndependentOwnerDecisionJournal._scan_entries
+        semantic_decodes = 0
 
-        def middle_cut(self: IndependentOwnerDecisionJournal) -> OwnerJournalSnapshot:
-            return replace(original(self), head="different-middle-cut")
+        def middle_cut(
+            self: IndependentOwnerDecisionJournal,
+            entries: tuple[tuple[str, str | None, bytes], ...],
+            operation: str,
+            record: str,
+            capture_head: str | None = None,
+        ) -> _Scan:
+            nonlocal semantic_decodes
+            semantic_decodes += 1
+            return replace(
+                original(self, entries, operation, record, capture_head),
+                head="different-middle-cut",
+            )
 
         with monkeypatch.context() as patch:
-            patch.setattr(IndependentOwnerDecisionJournal, "snapshot", middle_cut)
+            patch.setattr(IndependentOwnerDecisionJournal, "_scan_entries", middle_cut)
             with pytest.raises(OwnerJournalIntegrityError):
                 journal.snapshot()
+        assert semantic_decodes == 1
+        assert journal._snapshot_cache is None
         # A failed read did not poison the cache, and authentic empty history works.
         assert journal.snapshot().head is None
 
