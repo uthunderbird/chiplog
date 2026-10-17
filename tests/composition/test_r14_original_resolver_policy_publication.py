@@ -21,6 +21,7 @@ from chiplog.composition.r14_original_resolver_policy_publication import (
     validate_selected,
 )
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.platform.authority_reads import capture_authority_storage_state
 
 
 @pytest.mark.asyncio
@@ -84,6 +85,28 @@ async def test_selected_policy_replays_and_reopens_with_physical_readback(tmp_pa
             == reducer_policy
         )
         assert await runtime.publish_original_resolver_authority_policy() == selected
+
+        from chiplog.composition import (
+            r14_original_resolver_policy_publication as policy_publication,
+        )
+
+        before = capture_authority_storage_state(runtime._database)
+        before_loop = runtime._loop_decisions().entries()
+        _, _, entry, batch = policy_publication._selected_entries(runtime)[0]
+        with pytest.MonkeyPatch.context() as missing_anchor:
+            missing_anchor.setattr(runtime._commitment_journal, "load", lambda tenant: None)
+            with runtime._authority_gate().hold():
+                for reader in (
+                    policy_publication.read_selected_original_resolver_authority_policy_source_held,
+                    policy_publication.read_selected_original_effect_evidence_reducer_policy_source_held,
+                ):
+                    for historical in (False, True):
+                        with pytest.raises(ValueError, match="commitment anchor is absent"):
+                            reader(runtime, historical=historical)
+                with pytest.raises(ValueError, match="commitment anchor is absent"):
+                    policy_publication._validate_startup_state(runtime, entry, batch)
+        assert capture_authority_storage_state(runtime._database) == before
+        assert runtime._loop_decisions().entries() == before_loop
 
 
 @pytest.mark.asyncio
@@ -420,3 +443,19 @@ async def test_invocation_publication_replays_exact_lost_ack_without_new_auth(
             side_effect=AssertionError("selected replay must not authenticate a new invocation"),
         ):
             assert await runtime.publish_original_resolver_invocation() == selected
+
+        before = capture_authority_storage_state(runtime._database)
+        before_loop = runtime._loop_decisions().entries()
+        _, _, entry, batch = publication._selected_entries(runtime)[0]
+        with monkeypatch.context() as missing_anchor:
+            missing_anchor.setattr(runtime._commitment_journal, "load", lambda tenant: None)
+            with runtime._authority_gate().hold():
+                for historical in (False, True):
+                    with pytest.raises(ValueError, match="commitment anchor is absent"):
+                        publication.read_selected_original_resolver_invocation_source_held(
+                            runtime, historical=historical
+                        )
+                with pytest.raises(ValueError, match="commitment anchor is absent"):
+                    publication._startup_state(runtime, entry, batch)
+        assert capture_authority_storage_state(runtime._database) == before
+        assert runtime._loop_decisions().entries() == before_loop

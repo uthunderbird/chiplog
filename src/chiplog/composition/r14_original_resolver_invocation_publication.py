@@ -8,6 +8,7 @@ import json
 import secrets
 import time
 from dataclasses import replace
+from typing import TYPE_CHECKING, Literal
 
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
 from chiplog.capabilities.agent_loop.original_recovery_contracts import (
@@ -42,6 +43,11 @@ from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, P
 from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
+if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+    from chiplog.composition.r14_execution_runtime import R14ExecutionRuntime
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
+
 OPERATION = "agent_loop.original-resolver-invocation.v1"
 OWNER_OPERATION = "agent_loop.prepare_original_resolver_invocation.v1"
 SCHEMA = "chiplog.loop.original-resolver-invocation.v1"
@@ -60,7 +66,9 @@ class RetainedOriginalResolverInvocationPublication(RecoveryDTO):
     predecessor: str
 
 
-def _validate_invocation_actor(runtime, evidence) -> None:
+def _validate_invocation_actor(
+    runtime: R14PlanningRuntime, evidence: RetainedOriginalResolverInvocationPublication
+) -> None:
     receipt = evidence.actor_budget_v1
     _validate_actor_history(runtime, receipt)
     result = runtime._decode_trust_result(receipt.response.canonical_payload)
@@ -75,7 +83,7 @@ def _validate_invocation_actor(runtime, evidence) -> None:
         raise ValueError("selected resolver invocation differs from its authenticated actor")
 
 
-def command(evidence: RetainedOriginalResolverInvocationPublication):
+def command(evidence: RetainedOriginalResolverInvocationPublication) -> PhysicalPublicationCommand:
     request = PrepareOriginalResolverInvocationV1.model_validate_json(
         evidence.request.canonical_bytes()
     )
@@ -130,7 +138,9 @@ def command(evidence: RetainedOriginalResolverInvocationPublication):
     )
 
 
-def _validate_invocation_actor_fields(receipt, invocation) -> None:
+def _validate_invocation_actor_fields(
+    receipt: RecoveryActorBudgetV1, invocation: OriginalResolverInvocationV1
+) -> None:
     validate_recovery_actor_budget(receipt)
     if (
         receipt.trust_journal_head != invocation.trust_journal_head
@@ -140,7 +150,9 @@ def _validate_invocation_actor_fields(receipt, invocation) -> None:
         raise ValueError("resolver invocation trust reference differs from retained actor receipt")
 
 
-def _selected_policy_source_records(runtime):
+def _selected_policy_source_records(
+    runtime: R14PlanningRuntime,
+) -> tuple[RecoverySourceRecord, ...] | None:
     from chiplog.composition import r14_original_resolver_policy_publication
 
     selected = r14_original_resolver_policy_publication._selected_entries(runtime)
@@ -192,7 +204,9 @@ def _selected_policy_source_records(runtime):
     return tuple(policy_sources)
 
 
-def _selected_open_sources_for_historical_suffix(runtime):
+def _selected_open_sources_for_historical_suffix(
+    runtime: R14PlanningRuntime,
+) -> tuple[RecoverySourceRecord, RecoverySourceRecord] | None:
     from chiplog.composition.r14_accepted_open_accounting_records import (
         ACCEPTED_OPEN_RECOVERY_OPERATION,
         RetainedAcceptedOpenRecoveryPublication,
@@ -205,7 +219,7 @@ def _selected_open_sources_for_historical_suffix(runtime):
 
     matches = []
     for decision_id, _, raw in runtime._loop_decisions().entries():
-        entry = json.loads(raw)
+        entry: dict[str, object] = json.loads(raw)
         if (
             entry.get("kind") == "DECIDED"
             and entry.get("operation_kind") == ACCEPTED_OPEN_RECOVERY_OPERATION
@@ -236,7 +250,7 @@ def _selected_open_sources_for_historical_suffix(runtime):
     )
 
 
-def _current_sources(runtime):
+def _current_sources(runtime: R14PlanningRuntime) -> tuple[RecoverySourceRecord, ...] | None:
     opened = read_selected_original_obligation_sources(runtime, historical=True)
     policy_sources = _selected_policy_source_records(runtime)
     if opened is None or policy_sources is None:
@@ -244,7 +258,9 @@ def _current_sources(runtime):
     return (*opened, *policy_sources)
 
 
-def validate_selected_for_historical_suffix(runtime, entry, batch):
+def validate_selected_for_historical_suffix(
+    runtime: R14PlanningRuntime, entry: dict[str, object], batch: PhysicalPublicationCommand
+) -> RetainedOriginalResolverInvocationPublication:
     """Validate invocation evidence against leaf selected sources without reentering history."""
     raw = entry.get(EVIDENCE_FIELD)
     if not isinstance(raw, str):
@@ -278,10 +294,12 @@ def validate_selected_for_historical_suffix(runtime, entry, batch):
     return evidence
 
 
-def _selected_entries(runtime):
+def _selected_entries(
+    runtime: R14PlanningRuntime,
+) -> list[tuple[str, bytes, dict[str, object], PhysicalPublicationCommand]]:
     matches = []
     for decision_id, _, raw in runtime._loop_decisions().entries():
-        entry = json.loads(raw)
+        entry: dict[str, object] = json.loads(raw)
         if entry.get("kind") != "DECIDED":
             continue
         rows = entry.get("records")
@@ -295,7 +313,9 @@ def _selected_entries(runtime):
     return matches
 
 
-def _validate_physical_catalog(runtime, batch: PhysicalPublicationCommand | None) -> None:
+def _validate_physical_catalog(
+    runtime: R14PlanningRuntime, batch: PhysicalPublicationCommand | None
+) -> None:
     with read_connection(runtime._database) as connection:
         records = tuple(
             connection.execute(
@@ -338,7 +358,9 @@ def _validate_physical_catalog(runtime, batch: PhysicalPublicationCommand | None
         raise ValueError("original resolver invocation physical catalog differs from selection")
 
 
-def validate_selected(runtime, entry, batch):
+def validate_selected(
+    runtime: R14PlanningRuntime, entry: dict[str, object], batch: PhysicalPublicationCommand
+) -> RetainedOriginalResolverInvocationPublication:
     raw = entry.get(EVIDENCE_FIELD)
     if not isinstance(raw, str):
         raise ValueError("selected original resolver invocation evidence missing")
@@ -369,7 +391,9 @@ def validate_selected(runtime, entry, batch):
     return evidence
 
 
-def read_selected_original_resolver_invocation_source_held(runtime, *, historical=False):
+def read_selected_original_resolver_invocation_source_held(
+    runtime: R14PlanningRuntime, *, historical: bool = False
+) -> tuple[OriginalResolverInvocationV1, RecoverySourceRecord] | None:
     runtime._pending()
     selected = _selected_entries(runtime)
     if not selected:
@@ -381,6 +405,8 @@ def read_selected_original_resolver_invocation_source_held(runtime, *, historica
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
+    if anchored is None:
+        raise ValueError("selected original resolver invocation commitment anchor is absent")
     historical_suffix = False
     if historical and actual != anchored:
         from chiplog.composition.r14_historical_suffix import (
@@ -426,11 +452,15 @@ def read_selected_original_resolver_invocation_source_held(runtime, *, historica
     return evidence.prepared.invocation, source
 
 
-def _startup_state(runtime, entry, batch):
+def _startup_state(
+    runtime: R14PlanningRuntime, entry: dict[str, object], batch: PhysicalPublicationCommand
+) -> None:
     with read_connection(runtime._database) as connection:
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
+    if anchored is None:
+        raise ValueError("selected original resolver invocation commitment anchor is absent")
     predecessor, resulting = str(entry["predecessor"]), str(entry["resulting"])
     materialized = any(
         json.loads(raw).get("kind") == "MATERIALIZED"
@@ -460,7 +490,7 @@ def _startup_state(runtime, entry, batch):
     raise ValueError("selected original resolver invocation has partial physical state")
 
 
-def validate_invocation_startup(runtime) -> None:
+def validate_invocation_startup(runtime: R14PlanningRuntime) -> None:
     runtime._pending()
     selected = _selected_entries(runtime)
     if not selected:
@@ -471,7 +501,9 @@ def validate_invocation_startup(runtime) -> None:
     _startup_state(runtime, entry, batch)
 
 
-async def _owner_exchange(runtime, request):
+async def _owner_exchange(
+    runtime: R14PlanningRuntime, request: PrepareOriginalResolverInvocationV1
+) -> tuple[PreparedOriginalResolverInvocationV1, PublicPortCall, PublicPortSuccess]:
     engine = runtime._supervisor.runtime()
     callee = engine.session("agent_loop")
     sent = PublicPortCall(
@@ -509,7 +541,9 @@ async def _owner_exchange(runtime, request):
     return result, sent, reply
 
 
-async def _finish(runtime, entry):
+async def _finish(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> OriginalResolverInvocationV1 | None:
     batch = runtime._publication(entry)
     with runtime._authority_gate().hold():
         validate_selected(runtime, entry, batch)
@@ -525,7 +559,9 @@ async def _finish(runtime, entry):
         return None if selected is None else selected[0]
 
 
-async def publish_original_resolver_invocation(runtime, peer="hermetic-ingress"):
+async def publish_original_resolver_invocation(
+    runtime: R14ExecutionRuntime, peer: str = "hermetic-ingress"
+) -> OriginalResolverInvocationV1 | None:
     with runtime._authority_gate().hold():
         selected = _selected_entries(runtime)
         if selected:
@@ -545,11 +581,9 @@ async def publish_original_resolver_invocation(runtime, peer="hermetic-ingress")
         else:
             selected_entry = None
         sources = None if selected_entry is not None else _current_sources(runtime)
-        if selected_entry is not None:
-            pass
-        elif sources is None:
-            raise LoopRejected("original resolver invocation sources are incomplete")
         if selected_entry is None:
+            if sources is None:
+                raise LoopRejected("original resolver invocation sources are incomplete")
             opening, terminal, resolver_source, reducer_source = sources
             from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
                 AcceptedOpenRecoveryOpeningV1,
@@ -586,9 +620,10 @@ async def publish_original_resolver_invocation(runtime, peer="hermetic-ingress")
                 invocation=invocation,
             )
             _validate_invocation_actor_fields(actor_budget, invocation)
-            predecessor = runtime._commitment_journal.load(runtime._tenant_id)
-            if predecessor is None:
+            anchored_predecessor = runtime._commitment_journal.load(runtime._tenant_id)
+            if anchored_predecessor is None:
                 raise LoopRejected("original resolver invocation predecessor is not anchored")
+            predecessor = anchored_predecessor
             with read_connection(runtime._database) as connection:
                 actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
                 row = connection.execute(
@@ -622,7 +657,7 @@ async def publish_original_resolver_invocation(runtime, peer="hermetic-ingress")
 
     admission_passed = False
 
-    def guard():
+    def guard() -> Literal["STALE"] | None:
         nonlocal admission_passed
         with runtime._authority_gate().hold():
             try:
@@ -646,7 +681,7 @@ async def publish_original_resolver_invocation(runtime, peer="hermetic-ingress")
             admission_passed = True
         return None
 
-    def decide(resulting):
+    def decide(resulting: str) -> None:
         with runtime._authority_gate().hold():
             # _publish keeps this gate and transaction from admission through commit:
             # source/trust journals cannot change here, so only monotonic expiry and

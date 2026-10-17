@@ -631,13 +631,13 @@ def capture_original_call_resolution_request(
         if before != anchored and selected_suffix is None:
             raise LoopRejected("original resolution source cut differs from authority anchor")
 
-        opened = runtime.read_selected_original_obligation_sources(  # type: ignore[no-untyped-call]
+        opened = runtime.read_selected_original_obligation_sources(
             historical=allow_selected_resolution
         )
-        resolver = read_selected_original_resolver_authority_policy_source_held(  # type: ignore[no-untyped-call]
+        resolver = read_selected_original_resolver_authority_policy_source_held(
             runtime, historical=True
         )
-        reducer = read_selected_original_effect_evidence_reducer_policy_source_held(  # type: ignore[no-untyped-call]
+        reducer = read_selected_original_effect_evidence_reducer_policy_source_held(
             runtime, historical=True
         )
         invocation = read_selected_original_resolver_invocation_source_held(

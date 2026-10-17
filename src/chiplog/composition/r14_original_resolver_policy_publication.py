@@ -9,6 +9,7 @@ import os
 import secrets
 import time
 from dataclasses import replace
+from typing import TYPE_CHECKING, Literal
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallPreparationRejected
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
@@ -37,6 +38,15 @@ from chiplog.platform.authority_reads import capture_authority_snapshot_commitme
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
+
+if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+    from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+        OriginalEffectEvidenceReducerPolicyV1,
+        OriginalResolverAuthorityPolicyV1,
+    )
+    from chiplog.composition.r14_execution_runtime import R14ExecutionRuntime
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 OPERATION = "agent_loop.original-resolver-authority-policy.v1"
 OWNER_OPERATION = "agent_loop.adopt_original_resolver_authority_policy.v1"
@@ -118,9 +128,9 @@ def command(evidence: RetainedOriginalResolverPolicyPublication) -> PhysicalPubl
     )
 
 
-def _validate_actor_history(runtime, receipt: RecoveryActorBudgetV1) -> None:
+def _validate_actor_history(runtime: R14PlanningRuntime, receipt: RecoveryActorBudgetV1) -> None:
+    from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
     from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
-        ExactHead,
         HermeticTrustObservationV1,
     )
 
@@ -168,7 +178,9 @@ def _validate_actor_history(runtime, receipt: RecoveryActorBudgetV1) -> None:
         raise ValueError("selected resolver actor identity or trust prefix differs")
 
 
-def _actor_matches_policy(runtime, evidence: RetainedOriginalResolverPolicyPublication) -> None:
+def _actor_matches_policy(
+    runtime: R14PlanningRuntime, evidence: RetainedOriginalResolverPolicyPublication
+) -> None:
     _validate_actor_history(runtime, evidence.actor_budget_v1)
     result = runtime._decode_trust_result(evidence.actor_budget_v1.response.canonical_payload)
     identity = json.loads(result.reference_bytes or b"{}")
@@ -179,7 +191,9 @@ def _actor_matches_policy(runtime, evidence: RetainedOriginalResolverPolicyPubli
         raise ValueError("authenticated adoption principal differs from resolver policy")
 
 
-def validate_selected(runtime, entry, batch):
+def validate_selected(
+    runtime: R14PlanningRuntime, entry: dict[str, object], batch: PhysicalPublicationCommand
+) -> RetainedOriginalResolverPolicyPublication:
     raw = entry.get(EVIDENCE_FIELD)
     if not isinstance(raw, str):
         raise ValueError("selected original resolver policy evidence missing")
@@ -198,10 +212,12 @@ def validate_selected(runtime, entry, batch):
     return evidence
 
 
-def _selected_entries(runtime):
+def _selected_entries(
+    runtime: R14PlanningRuntime,
+) -> list[tuple[str, bytes, dict[str, object], PhysicalPublicationCommand]]:
     matches = []
     for decision_id, _, raw in runtime._loop_decisions().entries():
-        entry = json.loads(raw)
+        entry: dict[str, object] = json.loads(raw)
         if entry.get("kind") != "DECIDED":
             continue
         rows = entry.get("records")
@@ -215,7 +231,9 @@ def _selected_entries(runtime):
     return matches
 
 
-def _validate_physical_catalog(runtime, batch: PhysicalPublicationCommand | None) -> None:
+def _validate_physical_catalog(
+    runtime: R14PlanningRuntime, batch: PhysicalPublicationCommand | None
+) -> None:
     expected_records = () if batch is None else batch.records
     with read_connection(runtime._database) as connection:
         records = tuple(
@@ -268,7 +286,9 @@ def _validate_physical_catalog(runtime, batch: PhysicalPublicationCommand | None
             raise ValueError("original resolver policy physical catalog differs from selection")
 
 
-def read_selected_original_resolver_authority_policy_source_held(runtime, *, historical=False):
+def read_selected_original_resolver_authority_policy_source_held(
+    runtime: R14PlanningRuntime, *, historical: bool = False
+) -> tuple[OriginalResolverAuthorityPolicyV1, RecoverySourceRecord] | None:
     runtime._pending()
     selected = _selected_entries(runtime)
     if not selected:
@@ -280,6 +300,8 @@ def read_selected_original_resolver_authority_policy_source_held(runtime, *, his
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
+    if anchored is None:
+        raise ValueError("selected original resolver policy commitment anchor is absent")
     historical_suffix = False
     if historical and actual != anchored:
         from chiplog.composition.r14_historical_suffix import (
@@ -334,7 +356,9 @@ def read_selected_original_resolver_authority_policy_source_held(runtime, *, his
     return evidence.request.policy, source
 
 
-def read_selected_original_effect_evidence_reducer_policy_source_held(runtime, *, historical=False):
+def read_selected_original_effect_evidence_reducer_policy_source_held(
+    runtime: R14PlanningRuntime, *, historical: bool = False
+) -> tuple[OriginalEffectEvidenceReducerPolicyV1, RecoverySourceRecord] | None:
     selected = read_selected_original_resolver_authority_policy_source_held(
         runtime, historical=historical
     )
@@ -371,18 +395,24 @@ def read_selected_original_effect_evidence_reducer_policy_source_held(runtime, *
     return policy, source
 
 
-def read_selected_original_resolver_authority_policy_held(runtime):
+def read_selected_original_resolver_authority_policy_held(
+    runtime: R14PlanningRuntime,
+) -> OriginalResolverAuthorityPolicyV1 | None:
     selected = read_selected_original_resolver_authority_policy_source_held(
         runtime, historical=True
     )
     return None if selected is None else selected[0]
 
 
-def _validate_startup_state(runtime, entry, batch) -> None:
+def _validate_startup_state(
+    runtime: R14PlanningRuntime, entry: dict[str, object], batch: PhysicalPublicationCommand
+) -> None:
     with read_connection(runtime._database) as connection:
         state = inspect_publication(connection, batch, batch.expected_head + 1)
         actual = capture_authority_snapshot_commitment(connection, runtime._tenant_id)
     anchored = runtime._commitment_journal.load(runtime._tenant_id)
+    if anchored is None:
+        raise ValueError("selected original resolver policy commitment anchor is absent")
     predecessor, resulting = str(entry["predecessor"]), str(entry["resulting"])
     materialized = any(
         json.loads(raw).get("kind") == "MATERIALIZED"
@@ -416,7 +446,7 @@ def _validate_startup_state(runtime, entry, batch) -> None:
     )
 
 
-def validate_policy_startup(runtime) -> None:
+def validate_policy_startup(runtime: R14PlanningRuntime) -> None:
     runtime._pending()
     selected = _selected_entries(runtime)
     if not selected:
@@ -427,7 +457,9 @@ def validate_policy_startup(runtime) -> None:
     _validate_startup_state(runtime, entry, batch)
 
 
-async def _owner_exchange(runtime, request):
+async def _owner_exchange(
+    runtime: R14PlanningRuntime, request: AdoptOriginalResolverAuthorityPolicyV1
+) -> tuple[PreparedOriginalResolverAuthorityPolicyV1, PublicPortCall, PublicPortSuccess]:
     engine = runtime._supervisor.runtime()
     callee = engine.session("agent_loop")
     sent = PublicPortCall(
@@ -465,7 +497,9 @@ async def _owner_exchange(runtime, request):
     return result, sent, reply
 
 
-async def _finish(runtime, entry):
+async def _finish(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> OriginalResolverAuthorityPolicyV1 | None:
     batch = runtime._publication(entry)
     with runtime._authority_gate().hold():
         validate_selected(runtime, entry, batch)
@@ -480,7 +514,9 @@ async def _finish(runtime, entry):
         return read_selected_original_resolver_authority_policy_held(runtime)
 
 
-async def publish_original_resolver_authority_policy(runtime, peer="hermetic-ingress"):
+async def publish_original_resolver_authority_policy(
+    runtime: R14ExecutionRuntime, peer: str = "hermetic-ingress"
+) -> OriginalResolverAuthorityPolicyV1 | None:
     observed, actor_budget = await issue_execution_recovery_actor_v1(runtime, peer)
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
@@ -524,7 +560,7 @@ async def publish_original_resolver_authority_policy(runtime, peer="hermetic-ing
     except (TypeError, ValueError) as error:
         raise LoopRejected("original resolver policy evidence failed validation") from error
 
-    def guard():
+    def guard() -> Literal["STALE"] | None:
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(observed)
@@ -539,7 +575,7 @@ async def publish_original_resolver_authority_policy(runtime, peer="hermetic-ing
                 return "STALE"
         return None
 
-    def decide(resulting):
+    def decide(resulting: str) -> None:
         if guard() is not None:
             raise LoopRejected("original resolver policy source changed at selection")
         runtime._require_no_pending()

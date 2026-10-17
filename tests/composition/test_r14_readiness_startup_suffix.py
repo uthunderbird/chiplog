@@ -483,7 +483,17 @@ async def test_old_startup_complete_requires_readiness_before_unanchored_suffix_
         "invocation": (invocation, invocation._startup_state),
         "resolution": (resolution, resolution._startup_state),
     }[family]
-    batch = SimpleNamespace(expected_head=0, idempotency_key="old-selected")
+    batch = PhysicalPublicationCommand(
+        tenant_id=runtime._tenant_id,
+        operation_kind=module.OPERATION,
+        idempotency_key="old-selected",
+        request_fingerprint="0" * 64,
+        expected_head=0,
+        fence_generation="r6",
+        expected_fence_frontier=0,
+        minimum_fence_frontier=0,
+        records=(),
+    )
     runtime._loop_decisions = lambda: SimpleNamespace(
         entries=lambda: (
             (
