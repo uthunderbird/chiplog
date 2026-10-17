@@ -14,7 +14,12 @@ from hashlib import sha256
 
 from pydantic import ValidationError
 
-from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
+    CallSubjectHead,
+    InitializedCallRecord,
+    SealedResponseRecord,
+)
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.native_one_call_accounting_contracts import (
     NATIVE_ONE_CALL_ACCOUNTING_REQUEST_SCHEMA,
     NATIVE_ONE_CALL_ACCOUNTING_RESULT_SCHEMA,
@@ -56,10 +61,10 @@ from chiplog.platform.workspace_snapshot import read_connection, workspace_snaps
 
 def _v1_request(
     facts: R14NativeCancelledCallSourceFacts,
-    captured_run: object,
-    sealed_run: object,
-    seal: object,
-    initialized: object,
+    captured_run: ExecutionRunRecord,
+    sealed_run: ExecutionRunRecord,
+    seal: SealedResponseRecord,
+    initialized: InitializedCallRecord,
 ) -> PrepareNativeOneCallCancelledAccounting:
     """Build the immutable V1 wire shared by the retained V23 producer and V24."""
     return PrepareNativeOneCallCancelledAccounting(
