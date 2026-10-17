@@ -638,6 +638,34 @@ def test_changed_actual_artifact_bytes_never_create_a_new_registration(
     assert isinstance(result, SourceRegistrationUnresolved)
 
 
+@pytest.mark.parametrize("stdlib", [False, True])
+def test_runtime_inventory_ignores_finder_metadata_and_rejects_metadata_symlinks(
+    tmp_path: Path, stdlib: bool
+) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    source = package / "core.py"
+    source.write_bytes(b"original")
+    original = _tree(package, stdlib=stdlib)
+    assert original == (("core.py", digest(b"original")),)
+    metadata = package / ".DS_Store"
+    metadata.write_bytes(b"finder layout")
+    assert _tree(package, stdlib=stdlib) == original
+    metadata.write_bytes(b"changed finder layout")
+    assert _tree(package, stdlib=stdlib) == original
+    extra = package / ".DS_Store.extra"
+    extra.write_bytes(b"ordinary artifact")
+    assert _tree(package, stdlib=stdlib) != original
+    extra.unlink()
+    source.write_bytes(b"changed")
+    assert _tree(package, stdlib=stdlib) != original
+    source.write_bytes(b"original")
+    metadata.unlink()
+    metadata.symlink_to(source)
+    with pytest.raises(ValueError, match="symbolic"):
+        _tree(package, stdlib=stdlib)
+
+
 def test_runtime_inventory_covers_artifact_set_and_rejects_symbolic_substitution(
     tmp_path: Path,
 ) -> None:

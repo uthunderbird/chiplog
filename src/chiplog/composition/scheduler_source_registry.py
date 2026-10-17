@@ -141,6 +141,8 @@ def _tree(root: Path, *, stdlib: bool = False) -> tuple[tuple[str, str], ...]:
             continue
         if path.is_symlink():
             raise ValueError("unsupported symbolic runtime tree")
+        if path.name == ".DS_Store":
+            continue
         if path.is_file():
             result.append((relative.as_posix(), _sha(path.read_bytes())))
     if not result:
