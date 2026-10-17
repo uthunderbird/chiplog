@@ -58,9 +58,10 @@ from chiplog.composition.r14_execution_cancellation_contracts import (
     RetainedExecutionCancellationPreparationV2,
 )
 from chiplog.composition.r14_execution_fanout_records import reference
+from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
 from chiplog.composition.r14_fanout_contracts import RetainedFanOutPreparation
 from chiplog.composition.r14_loop_history import (
-    ExecutionHistorySnapshot,
+    ExecutionRecoveryHistory,
     read_execution_recovery_history,
 )
 from chiplog.composition.r14_native_evidence_sources import (
@@ -184,7 +185,7 @@ def _accepted_open_cut_mismatches(
     runtime: CommonCliExecutionRuntime,
     cut,
     outcome,
-    authenticated_history,
+    authenticated_history: ExecutionRecoveryHistory,
     original_obligation: OriginalObligationBinding,
 ) -> tuple[str, ...]:
     """Name retained OPEN cut fields that disagree with accepted/Effects source cuts."""
@@ -322,10 +323,7 @@ def _selected_suspension_preserves_open_cut(
     from chiplog.composition import r14_execution_suspension as suspension
 
     operation_id = (
-        "execution-suspension:"
-        + cut.current_run.subject_id
-        + ":"
-        + cut.current_run.revision.head
+        "execution-suspension:" + cut.current_run.subject_id + ":" + cut.current_run.revision.head
     )
     try:
         selected_entry = suspension._entry_for(runtime, operation_id)
@@ -357,7 +355,7 @@ def _selected_suspension_preserves_open_cut(
             and result_run.canonical_bytes() == current_run.canonical_bytes()
             and len(matching_obligations) == 1
         )
-    except (LoopRejected, OSError, RuntimeError, TypeError, ValueError, KeyError):
+    except LoopRejected, OSError, RuntimeError, TypeError, ValueError, KeyError:
         return False
 
 
@@ -550,7 +548,7 @@ class R14NativeSelectedAccountingSource:
         target_run: CallSubjectHead | None = None,
         *,
         selected_only: bool = False,
-        authenticated_history=None,
+        authenticated_history: ExecutionRecoveryHistory | None = None,
         authenticated_projection: bool = False,
     ) -> R14NativeSelectedAccountingSourceFacts | None:
         """Collect one complete Run lineage; ``target_run`` can only anchor it exactly."""
@@ -585,10 +583,7 @@ class R14NativeSelectedAccountingSource:
         facts = self.collect(target_run)
         if facts is None:
             return None
-        if (
-            facts.target_legacy_seals
-            or len(facts.selected_native_seals) != 1
-        ):
+        if facts.target_legacy_seals or len(facts.selected_native_seals) != 1:
             return None
         seal = facts.selected_native_seals[0]
         if not seal.initialized_records or not seal.inventory_rows:
@@ -658,7 +653,7 @@ class R14NativeSelectedAccountingSource:
         self,
         selected_response: CallSubjectHead,
         *,
-        authenticated_history=None,
+        authenticated_history: ExecutionRecoveryHistory | None = None,
         authenticated_effects_history: ExecutionHistorySnapshot | None = None,
         authenticated_accepted_open_recoveries: tuple = (),
         authenticated_projection: bool = False,
@@ -675,16 +670,12 @@ class R14NativeSelectedAccountingSource:
         if facts is None or facts.target_legacy_seals:
             return None
         selected_seals = tuple(
-            seal
-            for seal in facts.selected_native_seals
-            if seal.response_seal == selected_response
+            seal for seal in facts.selected_native_seals if seal.response_seal == selected_response
         )
         if len(selected_seals) != 1:
             return None
         seal = selected_seals[0]
-        ordered_call_ids = tuple(
-            record.original_call_id for record in seal.initialized_records
-        )
+        ordered_call_ids = tuple(record.original_call_id for record in seal.initialized_records)
         if (
             not ordered_call_ids
             or len(set(ordered_call_ids)) != len(ordered_call_ids)
@@ -711,9 +702,7 @@ class R14NativeSelectedAccountingSource:
                 or row.terminal.kind != "ABSENT"
             ):
                 return None
-            accepted = self._accepted_member_facts(
-                facts, seal, row.original_call_id
-            )
+            accepted = self._accepted_member_facts(facts, seal, row.original_call_id)
             if accepted is None:
                 return None
             open_recoveries = tuple(
@@ -759,7 +748,7 @@ class R14NativeSelectedAccountingSource:
                         cut,
                         open_recoveries[0].result,
                     )
-                except (LoopRejected, TypeError, ValueError):
+                except LoopRejected, TypeError, ValueError:
                     return None
                 frontiers.append(frontier)
                 continue
@@ -783,9 +772,10 @@ class R14NativeSelectedAccountingSource:
             if frontier is None:
                 return None
             frontiers.append(frontier)
-        if len(frontiers) != len(ordered_call_ids) or tuple(
-            item.original_call_id for item in frontiers
-        ) != ordered_call_ids:
+        if (
+            len(frontiers) != len(ordered_call_ids)
+            or tuple(item.original_call_id for item in frontiers) != ordered_call_ids
+        ):
             return None
         try:
             return PrepareNativeSealedAccountingV3(
@@ -809,11 +799,7 @@ class R14NativeSelectedAccountingSource:
             for record in seal.initialized_records
             if record.original_call_id == original_call_id
         )
-        rows = tuple(
-            row
-            for row in seal.inventory_rows
-            if row.original_call_id == original_call_id
-        )
+        rows = tuple(row for row in seal.inventory_rows if row.original_call_id == original_call_id)
         cancellations = tuple(
             item
             for item in facts.target_cancellations
@@ -834,8 +820,7 @@ class R14NativeSelectedAccountingSource:
             or row.terminal != terminal_ref.revision
             or cancellation.request.initialized != initialized
             or cancellation.request.initialized_record != record
-            or cancellation.proposal.complete_ordered_record_manifest
-            != (terminal_ref, result_ref)
+            or cancellation.proposal.complete_ordered_record_manifest != (terminal_ref, result_ref)
             or terminal.original_call_id != original_call_id
             or terminal.initialized != initialized
             or result.original_call_id != original_call_id
@@ -926,7 +911,7 @@ class R14NativeSelectedAccountingSource:
         selected_only: bool = False,
         original_call_id: str | None = None,
         _source_facts: R14NativeSelectedAccountingSourceFacts | None = None,
-        authenticated_history=None,
+        authenticated_history: ExecutionRecoveryHistory | None = None,
     ) -> R14NativeOneCallAcceptedFacts | None:
         """Project one exact accepted member from the complete selected Run facts."""
         facts = (
@@ -963,8 +948,7 @@ class R14NativeSelectedAccountingSource:
             seal
             for seal in facts.selected_native_seals
             if any(
-                record.original_call_id == original_call_id
-                for record in seal.initialized_records
+                record.original_call_id == original_call_id for record in seal.initialized_records
             )
         )
         if len(matching_seals) != 1:
@@ -1035,7 +1019,7 @@ class R14NativeSelectedAccountingSource:
         original_call_id: str | None = None,
         _accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
         authenticated_effects_history: ExecutionHistorySnapshot | None = None,
-        authenticated_recovery_history=None,
+        authenticated_recovery_history: ExecutionRecoveryHistory | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join the retained OPEN cause to a still-open current R16 outcome."""
         return self._collect_one_accepted_outcome(
@@ -1097,7 +1081,7 @@ class R14NativeSelectedAccountingSource:
         accepted_facts: R14NativeOneCallAcceptedFacts | None = None,
         original_call_id: str | None = None,
         authenticated_effects_history: ExecutionHistorySnapshot | None = None,
-        authenticated_recovery_history=None,
+        authenticated_recovery_history: ExecutionRecoveryHistory | None = None,
         expected_closed_outcome_locator: R14NativeHistoricalClosedOutcomeLocator | None = None,
     ) -> R14NativeAcceptedOpenOutcome | None:
         """Join one accepted call's retained OPEN cause to its current outcome.
@@ -1107,11 +1091,9 @@ class R14NativeSelectedAccountingSource:
         cause and verify that its exact chain ends at the current closed member.
         Startup validation may provide the exact original member explicitly.
         """
-        if (
-            (expected_outcome_record_id is None) != (expected_selected_decision is None)
-            or (expected_outcome_record_id is None)
-            != (expected_tenant_commit_sequence is None)
-        ):
+        if (expected_outcome_record_id is None) != (expected_selected_decision is None) or (
+            expected_outcome_record_id is None
+        ) != (expected_tenant_commit_sequence is None):
             raise TypeError("historical OPEN locator requires its selected decision")
         if (
             expected_selected_decision is not None
@@ -1191,10 +1173,7 @@ class R14NativeSelectedAccountingSource:
                     return None
                 suffix_verifier = None
                 native_suffix_authenticated = False
-                if (
-                    expected_tenant_commit_sequence is not None
-                    or allow_authenticated_later_suffix
-                ):
+                if expected_tenant_commit_sequence is not None or allow_authenticated_later_suffix:
                     from chiplog.composition.r14_historical_suffix import (
                         authenticate_selected_open_prefix_held,
                         authenticate_selected_pending_r14_suffix_held,
@@ -1219,15 +1198,11 @@ class R14NativeSelectedAccountingSource:
                             return authenticate_selected_recovery_prefix_held(
                                 runtime, actual, anchored
                             )
-                        if authenticate_selected_resolution_prefix_held(
-                            runtime, actual, anchored
-                        ):
+                        if authenticate_selected_resolution_prefix_held(runtime, actual, anchored):
                             return True
                         if authenticate_selected_open_prefix_held(runtime, actual, anchored):
                             return True
-                        if authenticate_selected_pending_r14_suffix_held(
-                            runtime, actual, anchored
-                        ):
+                        if authenticate_selected_pending_r14_suffix_held(runtime, actual, anchored):
                             return True
                         native_suffix_authenticated = (
                             authenticate_selected_r14_native_terminal_suffix_held(
@@ -1260,11 +1235,9 @@ class R14NativeSelectedAccountingSource:
                     )
                 authenticated_suffix = False
                 if (
-                    expected_tenant_commit_sequence is not None
-                    or allow_authenticated_later_suffix
+                    expected_tenant_commit_sequence is not None or allow_authenticated_later_suffix
                 ) and (
-                    before != anchored_before
-                    or anchored_before != cut.materialization_commitment
+                    before != anchored_before or anchored_before != cut.materialization_commitment
                 ):
                     authenticated_suffix = bool(
                         suffix_verifier is not None
@@ -1358,8 +1331,7 @@ class R14NativeSelectedAccountingSource:
                             )[0],
                             DispatchOutcomeRecordV2,
                         )
-                        and latest[item[0].snapshot.intent.intent_id][0]
-                        .snapshot.obligation.state
+                        and latest[item[0].snapshot.intent.intent_id][0].snapshot.obligation.state
                         == "OPEN"
                     ]
                 else:
@@ -1425,9 +1397,7 @@ class R14NativeSelectedAccountingSource:
                     item for item in verified.v2_records if item.record.head in prefix_record_ids
                 )
                 prefix_members = tuple(
-                    item
-                    for item in verified.members
-                    if item.record.head in prefix_record_ids
+                    item for item in verified.members if item.record.head in prefix_record_ids
                 )
                 latest_outcome = _closed_outcome_join_is_valid(
                     expected_intent.subject_id,
@@ -1489,12 +1459,9 @@ class R14NativeSelectedAccountingSource:
             anchored_after = runtime._commitment_journal.load(runtime._tenant_id)
             if (
                 expected_tenant_commit_sequence is not None or allow_authenticated_later_suffix
-            ) and (
-                after != anchored_after or anchored_after != before
-            ):
+            ) and (after != anchored_after or anchored_after != before):
                 authenticated_suffix = bool(
-                    suffix_verifier is not None
-                    and suffix_verifier(runtime, after, anchored_after)
+                    suffix_verifier is not None and suffix_verifier(runtime, after, anchored_after)
                 )
             if (
                 after != before
@@ -1534,7 +1501,7 @@ class R14NativeSelectedAccountingSource:
         database_identity: tuple[str, int, int],
         *,
         selected_only: bool = False,
-        authenticated_history=None,
+        authenticated_history: ExecutionRecoveryHistory | None = None,
         authenticated_projection: bool = False,
     ) -> R14NativeSelectedAccountingSourceFacts | None:
         # Both values are public DTOs.  Reopen their only authenticated source
@@ -1572,9 +1539,7 @@ class R14NativeSelectedAccountingSource:
         ):
             return None
         if authenticated_history is None:
-            history = read_execution_recovery_history(
-                self._runtime, selected_only=selected_only
-            )
+            history = read_execution_recovery_history(self._runtime, selected_only=selected_only)
         else:
             if not selected_only:
                 return None
