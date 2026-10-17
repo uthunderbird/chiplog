@@ -15,6 +15,11 @@ from chiplog.capabilities.effects.contracts import (
 )
 from chiplog.capabilities.effects.dispatch_v2 import reference
 from chiplog.capabilities.effects.fences import Absent
+from chiplog.capabilities.effects.scoped_first_send_record_contracts import (
+    ScopedFirstSendRecordIntegrityError,
+    decode_scoped_first_send_owner_records,
+    make_scoped_first_send_owner_records,
+)
 
 
 def source(name: str) -> scope.ScopedAuthorityRecord:
@@ -188,6 +193,24 @@ def test_selected_authorization_and_exact_scope_survive_first_send_request() -> 
     assert (
         dispatch.ScopedFirstSendDecision.model_validate_json(decision.canonical_bytes()) == decision
     )
+    # These inert source DTOs must be rejected; this is not SEND acceptance evidence.
+    prepared = dispatch.PreparedScopedFirstSend(
+        source_request_fingerprint=decision.source_request_fingerprint,
+        decision=decision,
+        child=child(0),
+        parent=dispatch.ScopedFirstSendParent(
+            original_intent=decision.original_intent,
+            predecessor=decision.prior_parent,
+            send_decision=source("send").head,
+            first_child=source("child").head,
+        ),
+        complete_batch_fingerprint="c" * 64,
+    )
+    records = make_scoped_first_send_owner_records(prepared)
+    with pytest.raises(
+        ScopedFirstSendRecordIntegrityError, match="current first-send request differs"
+    ):
+        decode_scoped_first_send_owner_records(records, request=request)
 
 
 @pytest.mark.parametrize(

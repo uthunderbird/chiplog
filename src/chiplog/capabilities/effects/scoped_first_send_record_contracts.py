@@ -13,6 +13,7 @@ from chiplog.platform._owner_publication_contracts import OwnerRecordBytes
 
 from .contracts import ExactHead, TransmissionAttempt
 from .dispatch_v2 import reference
+from .h1_scoped_dispatch_semantics import PREPARE_SCOPED_FIRST_SEND_V3
 from .scoped_authorization_record_contracts import (
     REVISION_SCHEMA,
     scoped_dispatch_authorization_head,
@@ -195,7 +196,9 @@ def _require_request(
     if request.ordinal != 0 or request.observed.state != "DISPATCH_AUTHORIZED":
         raise ScopedFirstSendRecordIntegrityError("request is not an ordinal-zero authorized cut")
     try:
-        _require_current(request, request.observed.original_intent)
+        _require_current(
+            request, request.observed.original_intent, operation=PREPARE_SCOPED_FIRST_SEND_V3
+        )
     except ValueError as error:
         raise ScopedFirstSendRecordIntegrityError("current first-send request differs") from error
     intent_head = _require_selected_intent(request)
