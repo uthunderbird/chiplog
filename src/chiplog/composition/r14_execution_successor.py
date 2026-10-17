@@ -359,7 +359,9 @@ def _selected_matches(
     return True
 
 
-async def _finish_batch(runtime, entry):
+async def _finish_batch(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> RetainedExecutionSuccessor:
     stored = {k: v for k, v in entry.items() if k not in {"decision_id", "decision_bytes"}}
     with runtime._authority_gate().hold():
         evidence = _retained(stored)
@@ -381,7 +383,9 @@ async def _finish_batch(runtime, entry):
     return evidence
 
 
-async def _finish_start(runtime, entry):
+async def _finish_start(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> RetainedExecutionSuccessorStart:
     stored = {k: v for k, v in entry.items() if k not in {"decision_id", "decision_bytes"}}
     with runtime._authority_gate().hold():
         evidence = _retained(stored, START_EVIDENCE_FIELD, RetainedExecutionSuccessorStart)
