@@ -125,7 +125,7 @@ def test_unverifiable_snapshot_has_contextual_typed_failure(tmp_path: Path, inva
     ],
 )
 @pytest.mark.parametrize("table", ["sqliteXauthority", "unknown_authority", 'quoted"authority'])
-def test_snapshot_rejects_unknown_names_before_schema_pragma(capture, table):
+def test_snapshot_rejects_unknown_names_before_schema_pragma(capture, table: str) -> None:
     with closing(sqlite3.connect(":memory:")) as connection:
         connection.executescript(SCHEMA_SQL)
         escaped = table.replace('"', '""')
@@ -141,7 +141,7 @@ def test_snapshot_rejects_unknown_names_before_schema_pragma(capture, table):
 
 
 @pytest.mark.parametrize("change", ["DROP TABLE records", "ALTER TABLE records RENAME TO renamed"])
-def test_snapshot_rejects_missing_registered_table_before_schema_pragma(change):
+def test_snapshot_rejects_missing_registered_table_before_schema_pragma(change: str) -> None:
     with closing(sqlite3.connect(":memory:")) as connection:
         connection.executescript(SCHEMA_SQL)
         connection.execute(change)
@@ -153,7 +153,7 @@ def test_snapshot_rejects_missing_registered_table_before_schema_pragma(change):
         assert not any("table_info" in sql.lower() for sql in statements)
 
 
-def test_closed_schema_keeps_exact_v1_blob_null_and_scalar_preimage():
+def test_closed_schema_keeps_exact_v1_blob_null_and_scalar_preimage() -> None:
     # Literal table/column/row vocabulary is independent of the production manifest.
     expected = [
         {

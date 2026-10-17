@@ -341,7 +341,7 @@ async def _resumed_request():
     )
 
 
-async def test_next_turn_after_owner_produced_resume_preserves_historical_baseline():
+async def test_next_turn_after_owner_produced_resume_preserves_historical_baseline() -> None:
     request = await _resumed_request()
     _check_publication_bridge(request)
     assert request.run.head == "loop:" + request.run.model_copy(update={"head": "pending"}).digest()
@@ -357,7 +357,7 @@ async def test_next_turn_after_owner_produced_resume_preserves_historical_baseli
     assert result.run.turns[-1].ordinal == 2
 
 
-async def test_resumed_next_turn_verifier_preserves_all_frozen_fields():
+async def test_resumed_next_turn_verifier_preserves_all_frozen_fields() -> None:
     request = await _resumed_request()
     result = prepare_next_native_execution_turn(request)
     verify_next_native_execution_turn(request, result)
@@ -389,7 +389,7 @@ async def test_resumed_next_turn_verifier_preserves_all_frozen_fields():
         "baseline-original-closure-mismatch",
     ),
 )
-async def test_resumed_structural_proof_rejects_inexact_retained_preimages(mutation):
+async def test_resumed_structural_proof_rejects_inexact_retained_preimages(mutation: str) -> None:
     request = await _resumed_request()
     cut = request.cut
     rows = cut.complete_ordered_run_lineage

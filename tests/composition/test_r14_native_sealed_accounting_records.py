@@ -94,7 +94,7 @@ def _retained():
     )
 
 
-def test_v3_record_retains_mixed_per_seal_result_and_external_source_stamp():
+def test_v3_record_retains_mixed_per_seal_result_and_external_source_stamp() -> None:
     evidence = _retained()
 
     selected = validate_retained_sealed_accounting_v3_publication(evidence)
@@ -111,7 +111,7 @@ def test_v3_record_retains_mixed_per_seal_result_and_external_source_stamp():
     assert "source_stamp" not in evidence.request.model_dump()
 
 
-def test_v3_candidate_command_is_one_seal_scoped_atomic_physical_row():
+def test_v3_candidate_command_is_one_seal_scoped_atomic_physical_row() -> None:
     evidence = _retained()
 
     command = sealed_accounting_v3_command(evidence)
@@ -142,7 +142,7 @@ def test_v3_candidate_command_is_one_seal_scoped_atomic_physical_row():
     "mutation",
     ("request_bytes", "response_bytes", "selected_seal", "member_order"),
 )
-def test_v3_record_rejects_one_sided_owner_exchange_substitution(mutation: str):
+def test_v3_record_rejects_one_sided_owner_exchange_substitution(mutation: str) -> None:
     evidence = _retained()
     if mutation == "request_bytes":
         evidence = evidence.model_copy(

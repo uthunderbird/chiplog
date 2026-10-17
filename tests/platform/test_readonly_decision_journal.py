@@ -49,7 +49,7 @@ def test_readonly_snapshot_authenticates_real_journal_without_writable_opens(tmp
     assert _files(tmp_path) == before
 
 
-def test_readonly_snapshot_requires_preheld_gate_before_any_open(tmp_path, monkeypatch):
+def test_readonly_snapshot_requires_preheld_gate_before_any_open(tmp_path, monkeypatch) -> None:
     path, gate, _, _ = _provision(tmp_path)
     opened = []
 
@@ -81,7 +81,7 @@ def test_readonly_snapshot_requires_preheld_gate_before_any_open(tmp_path, monke
         "hardlink",
     ],
 )
-def test_readonly_snapshot_refuses_bad_sources_without_repair(tmp_path, damage):
+def test_readonly_snapshot_refuses_bad_sources_without_repair(tmp_path, damage: str) -> None:
     path, gate, _, _ = _provision(tmp_path)
     if damage.startswith("missing-"):
         suffix = {"body": "", "key": ".key", "head": ".head", "lock": ".lock"}[
@@ -115,7 +115,7 @@ def test_readonly_snapshot_refuses_bad_sources_without_repair(tmp_path, damage):
 
 
 @pytest.mark.parametrize("mutation", ["body", "key", "head-replacement", "head-new"])
-def test_readonly_snapshot_rechecks_sources_after_decoding(tmp_path, monkeypatch, mutation):
+def test_readonly_snapshot_rechecks_sources_after_decoding(tmp_path, monkeypatch, mutation: str):
     path, gate, _, _ = _provision(tmp_path)
     decode = journals._decode_authenticated_entries
     mutated = []
@@ -168,7 +168,7 @@ def test_readonly_snapshot_closes_partial_acquisition(tmp_path, monkeypatch):
     assert _files(tmp_path) == before
 
 
-def test_readonly_snapshot_preserves_authentic_legacy_bundle(tmp_path, monkeypatch):
+def test_readonly_snapshot_preserves_authentic_legacy_bundle(tmp_path, monkeypatch) -> None:
     import base64
     import gzip
     import hashlib

@@ -110,7 +110,7 @@ def test_ghost_edge_and_omitted_branch_are_not_registered() -> None:
 
 
 @pytest.mark.parametrize("mutation", ["dynamic", "forward", "conditional", "rebind"])
-def test_unsupported_expression_or_lexical_binding_refuses(mutation):
+def test_unsupported_expression_or_lexical_binding_refuses(mutation) -> None:
     source = SOURCE.read_text()
     if mutation == "dynamic":
         changed = _replace(
@@ -145,9 +145,11 @@ def test_identical_sql_at_distinct_sites_has_independent_callbacks() -> None:
     source = SOURCE.read_text()
     changed = _replace(
         source,
-        "        with _prepared_planning_statement(\n            connection, uniqueness_sql",
+        "        with _prepared_planning_statement(\n"
+        "            connection,\n            uniqueness_sql,",
         "        repeated = connection.execute(publication_sql, publication_parameters)\n"
-        "        with _prepared_planning_statement(\n            connection, uniqueness_sql",
+        "        with _prepared_planning_statement(\n"
+        "            connection,\n            uniqueness_sql,",
     )
     observed = planning_read_graph(changed, SCHEMA_SQL)
     first = [row.reads for row in observed if row.site == 1]
@@ -177,7 +179,7 @@ def test_count_star_preserves_table_level_dependency() -> None:
     assert observed[0].reads == (("main", "records", ""),)
 
 
-def test_schema_preparation_cannot_attach_and_create_external_file(tmp_path):
+def test_schema_preparation_cannot_attach_and_create_external_file(tmp_path: Path) -> None:
     sentinel = tmp_path / "escaped.sqlite"
     schema = SCHEMA_SQL + (
         f"\nATTACH DATABASE '{sentinel}' AS escaped;"
@@ -200,7 +202,7 @@ def test_schema_preparation_cannot_attach_and_create_external_file(tmp_path):
         "BEGIN",
     ],
 )
-def test_shared_engine_permissions_do_not_broaden_planning_read_policy(sql):
+def test_shared_engine_permissions_do_not_broaden_planning_read_policy(sql) -> None:
     changed = _replace_first_query(SOURCE.read_text(), sql)
     with pytest.raises(UnknownSqlExpression, match="prepare completely"):
         planning_read_graph(changed, SCHEMA_SQL)
@@ -213,7 +215,7 @@ def test_shared_engine_permissions_do_not_broaden_planning_read_policy(sql):
         "CREATE TABLE store_metadata AS SELECT 1 AS singleton, 1 AS store_version;",
     ],
 )
-def test_supplied_schema_rejects_business_dml_and_select(tail):
+def test_supplied_schema_rejects_business_dml_and_select(tail) -> None:
     if tail.startswith("INSERT"):
         schema = SCHEMA_SQL + tail
     else:
@@ -237,7 +239,7 @@ def test_supplied_schema_rejects_business_dml_and_select(tail):
         "SELECT record_id FROM records; SELECT tenant_id FROM records",
     ],
 )
-def test_incomplete_preparation_or_denied_action_never_returns_partial_graph(sql):
+def test_incomplete_preparation_or_denied_action_never_returns_partial_graph(sql) -> None:
     changed = _replace_first_query(SOURCE.read_text(), sql)
     with pytest.raises(UnknownSqlExpression, match="prepare completely"):
         planning_read_graph(changed, SCHEMA_SQL)
@@ -252,7 +254,7 @@ def test_incomplete_preparation_or_denied_action_never_returns_partial_graph(sql
         '(scope_sql := " ")',
     ],
 )
-def test_unsupported_rebinding_of_sql_local_is_not_resolved_from_first_assignment(store):
+def test_unsupported_rebinding_of_sql_local_is_not_resolved_from_first_assignment(store) -> None:
     changed = _replace(
         SOURCE.read_text(),
         "        publication_sql = (",
@@ -269,7 +271,7 @@ def test_unsupported_rebinding_of_sql_local_is_not_resolved_from_first_assignmen
         "connection.execute(publication_sql) if operation.variant else None",
     ],
 )
-def test_nested_or_conditional_execution_is_not_a_direct_statement(expression):
+def test_nested_or_conditional_execution_is_not_a_direct_statement(expression) -> None:
     changed = _replace(
         SOURCE.read_text(),
         "        duplicate_sequence = connection.execute(\n",

@@ -472,7 +472,7 @@ async def test_adopted_preview_prepares_both_real_owners_without_publication_or_
 
 async def test_call_writer_authority_requires_exact_issued_objects_and_current_scope(
     initialized: tuple[ExecutionDispatchRuntime, CallAcceptanceTarget, HermeticDispatchResources],
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from dataclasses import replace
 
@@ -524,7 +524,7 @@ async def test_call_writer_authority_requires_exact_issued_objects_and_current_s
 
 async def test_actual_atomic_call_acceptance_joins_both_owner_records_and_reopens(
     initialized: tuple[ExecutionDispatchRuntime, CallAcceptanceTarget, HermeticDispatchResources],
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from dataclasses import replace
 

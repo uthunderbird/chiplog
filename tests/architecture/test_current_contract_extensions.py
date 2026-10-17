@@ -82,7 +82,7 @@ def _shape(declaration):
     return {"base": "builtins:RuntimeError", "properties": properties}
 
 
-def test_current_extensions_pin_full_export_shapes_and_historical_union():
+def test_current_extensions_pin_full_export_shapes_and_historical_union() -> None:
     golden = json.loads(
         (
             Path(__file__).parent / "fixtures" / "current_contract_extension_shapes_v1.json"
@@ -127,7 +127,7 @@ def test_current_extensions_pin_full_export_shapes_and_historical_union():
         "wrong-boundary",
     ),
 )
-def test_current_extension_registry_rejects_unregistered_declarations(mutation):
+def test_current_extension_registry_rejects_unregistered_declarations(mutation: str) -> None:
     exports, records = CURRENT_EXPORT_EXTENSIONS, CURRENT_RECORD_EXTENSIONS
     first = exports[0]
     record = records[0]
@@ -166,7 +166,7 @@ def test_current_extension_registry_rejects_unregistered_declarations(mutation):
         verify_current_contract_extensions(exports, records)
 
 
-def test_equal_fresh_declarations_are_accepted_without_object_identity_permission():
+def test_equal_fresh_declarations_are_accepted_without_object_identity_permission() -> None:
     assert (
         verify_current_contract_extensions(
             tuple(replace(item) for item in CURRENT_EXPORT_EXTENSIONS),
@@ -176,7 +176,7 @@ def test_equal_fresh_declarations_are_accepted_without_object_identity_permissio
     )
 
 
-def test_each_current_extension_has_existing_owned_evidence_selector():
+def test_each_current_extension_has_existing_owned_evidence_selector() -> None:
     root = Path(__file__).resolve().parents[2]
     assert tuple(reference for reference, _ in CURRENT_RECORD_EXTENSION_EVIDENCE) == tuple(
         item.record_type_id for item in CURRENT_RECORD_EXTENSIONS

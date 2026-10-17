@@ -40,7 +40,7 @@ async def test_open_builder_uses_run_at_source_sequence_not_latest_lineage(
     monkeypatch,
     bound,
     damage,
-):
+) -> None:
     original = (await _cut()).complete_ordered_run_lineage[-1]
     suspended = original.model_copy(
         update={

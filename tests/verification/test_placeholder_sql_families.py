@@ -122,7 +122,7 @@ def _expected(case, n):
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case[1])
-def test_actual_six_families_bind_exact_generator_and_parameter_source(case):
+def test_actual_six_families_bind_exact_generator_and_parameter_source(case) -> None:
     (family,) = _extract(case)
     assert (
         family.qualname,
@@ -164,7 +164,7 @@ def _replace(source, old, new):
         "fixed_parameter_call",
     ],
 )
-def test_actual_placeholder_and_binder_mutations_are_unknown(mutation):
+def test_actual_placeholder_and_binder_mutations_are_unknown(mutation: str) -> None:
     case = CASES[2]
     source = (ROOT / case[0]).read_text()
     if mutation in {"element", "separator", "filter"}:
@@ -193,8 +193,10 @@ def test_actual_placeholder_and_binder_mutations_are_unknown(mutation):
     elif mutation == "fixed_parameter_call":
         changed = _replace(
             source,
-            "(runtime._tenant_id, source_tenant_commit_sequence,",
-            "(mutate(target_runs), source_tenant_commit_sequence,",
+            "                            runtime._tenant_id,\n"
+            "                            source_tenant_commit_sequence,",
+            "                            mutate(target_runs),\n"
+            "                            source_tenant_commit_sequence,",
         )
     elif mutation in {"conversion", "format"}:
         changed = _replace(

@@ -88,7 +88,7 @@ def selected():
     return _from_sources(sources())
 
 
-def test_physical_cases_units_and_metadata_do_not_become_business_amr(selected):
+def test_physical_cases_units_and_metadata_do_not_become_business_amr(selected) -> None:
     fragment = selected.fragment
     assert len(fragment.engine_evidence) == 35
     assert {(r.domain, r.initial_case) for r in fragment.domain_schemas} == {
@@ -140,7 +140,7 @@ def test_physical_cases_units_and_metadata_do_not_become_business_amr(selected):
 )
 def test_engine_observes_predicate_reads_before_independent_refusal(
     qualname, ordinal, domain, extra
-):
+) -> None:
     _, _, label, sql = next(r for r in EXPECTED_SQL if r[:2] == (qualname, ordinal))
     if domain == "tenant_main":
         changed = sql.replace("ORDER BY commit_sequence", extra + "ORDER BY commit_sequence")
@@ -169,7 +169,7 @@ def test_engine_observes_predicate_reads_before_independent_refusal(
         ("source_epoch INTEGER NOT NULL", "source_epoch INTEGER NOT NULL DEFAULT 0"),
     ],
 )
-def test_global_rejects_schema_constraint_type_null_pk_and_default_mutants(old, new):
+def test_global_rejects_schema_constraint_type_null_pk_and_default_mutants(old, new) -> None:
     path = "src/chiplog/platform/_sqlite.py"
     items = sources()
     assert dict(items)[path].count(old) == 1
@@ -190,7 +190,7 @@ def test_global_rejects_schema_constraint_type_null_pk_and_default_mutants(old, 
         ("CREATE TRIGGER extra AFTER INSERT ON records BEGIN DELETE FROM records; END;", ()),
     ],
 )
-def test_unexpected_index_view_trigger_never_passes_physical_contract(tail, extra_objects):
+def test_unexpected_index_view_trigger_never_passes_physical_contract(tail, extra_objects) -> None:
     ddl, objects, *_ = schema_contract("tenant_main")
     if "INDEX" not in tail:
         with pytest.raises(SqlPreparationRefused):
@@ -264,7 +264,7 @@ def test_second_if_not_exists_body_cannot_hide_behind_existing_success() -> None
         "metadata",
     ],
 )
-def test_mutually_forged_engine_records_fail_global_rederivation(selected, mutation):
+def test_mutually_forged_engine_records_fail_global_rederivation(selected, mutation) -> None:
     rows = list(selected.fragment.engine_evidence)
     index = next(i for i, r in enumerate(rows) if r.role == "SCHEMA_COLUMN_METADATA")
     row = rows[index]
@@ -304,7 +304,7 @@ def test_mutually_forged_engine_records_fail_global_rederivation(selected, mutat
 
 
 @pytest.mark.parametrize("mutation", ["drop", "swap", "columns", "indexes", "catalog", "version"])
-def test_domain_schema_forgery_fails_global_consumer(selected, mutation):
+def test_domain_schema_forgery_fails_global_consumer(selected, mutation) -> None:
     rows = list(selected.fragment.domain_schemas)
     if mutation == "drop":
         rows.pop()
@@ -325,7 +325,7 @@ def test_domain_schema_forgery_fails_global_consumer(selected, mutation):
         forged.require_exact_accounting()
 
 
-def test_semantic_comparison_records_engine_version_without_host_hardpin(selected):
+def test_semantic_comparison_records_engine_version_without_host_hardpin(selected) -> None:
     row = selected.fragment.engine_evidence[0]
     verify_preparation(
         replace(row.preparation, sqlite_version="another-engine-candidate"),
@@ -361,7 +361,7 @@ def test_unregistered_function_is_still_refused_and_pragma_qualification_is_visi
 
 
 @pytest.mark.parametrize("mutation", ["column", "filter", "amr"])
-def test_catalog_and_amr_mutations_refuse_global_independent_truth(mutation):
+def test_catalog_and_amr_mutations_refuse_global_independent_truth(mutation) -> None:
     items = sources()
     if mutation == "amr":
         path = "src/chiplog/architecture/r7_storage_surface.py"
@@ -380,7 +380,7 @@ def test_catalog_and_amr_mutations_refuse_global_independent_truth(mutation):
         _from_sources(tuple((p, s.replace(old, new) if p == path else s) for p, s in items))
 
 
-def test_schema_unit_check_dependencies_remain_raw_and_not_business_reads(selected):
+def test_schema_unit_check_dependencies_remain_raw_and_not_business_reads(selected) -> None:
     rows = [r for r in selected.fragment.engine_evidence if r.role == "SCHEMA_SCRIPT"]
     assert all(r.business_reads == () for r in rows)
     (fresh,) = (r for r in rows if r.initial_case == "EMPTY" and r.unit_ordinal == 2)

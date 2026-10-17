@@ -140,7 +140,7 @@ def test_startup_execution_allowlist_routes_successor_evidence(
     assert read == [((runtime,), {"selected_only": True})]
 
 
-def test_direct_terminal_frontier_without_history_keeps_fresh_read(monkeypatch):
+def test_direct_terminal_frontier_without_history_keeps_fresh_read(monkeypatch: pytest.MonkeyPatch):
     from chiplog.composition import r14_loop_history
 
     class Gate:

@@ -10,7 +10,7 @@ from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
 
 
 @pytest.mark.parametrize("replacement", ("instance", "class", "bound-other"))
-def test_replaced_native_authenticator_still_denies(monkeypatch, replacement):
+def test_replaced_native_authenticator_still_denies(monkeypatch, replacement: str):
     source = NativeRecoveryCutSource()
     denied = []
 

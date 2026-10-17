@@ -220,8 +220,8 @@ async def test_semantic_startup_proves_only_through_pending_readiness_predecesso
 @pytest.mark.parametrize("physical", ["ABSENT", "COMPLETE"])
 @pytest.mark.parametrize("materialized", [False, True])
 async def test_semantic_startup_keeps_own_publication_crash_windows(
-    tmp_path, monkeypatch, physical, materialized
-):
+    tmp_path, monkeypatch, physical: str, materialized
+) -> None:
     from chiplog.composition import r14_loop_semantic_reduction_publication as reduction
 
     runtime, pending, _ = await _semantic_prefix(
@@ -270,7 +270,7 @@ async def test_semantic_startup_keeps_own_publication_crash_windows(
 
 
 @pytest.mark.parametrize("damage", ["orphan", "duplicate", "unknown-kind", "changed-exact"])
-async def test_semantic_startup_keeps_exact_marker_history(tmp_path, monkeypatch, damage):
+async def test_semantic_startup_keeps_exact_marker_history(tmp_path, monkeypatch, damage: str):
     from chiplog.capabilities.agent_loop.contracts import LoopRejected
     from chiplog.composition import r14_loop_semantic_reduction_publication as reduction
 
@@ -335,8 +335,8 @@ async def test_semantic_startup_keeps_exact_marker_history(tmp_path, monkeypatch
     ],
 )
 async def test_semantic_readiness_rejection_preserves_sql_journal_and_anchor(
-    tmp_path, monkeypatch, damage
-):
+    tmp_path, monkeypatch, damage: str
+) -> None:
     from chiplog.capabilities.agent_loop.contracts import LoopRejected
     from chiplog.composition import r14_loop_semantic_reduction_publication as reduction
 
@@ -381,8 +381,8 @@ async def test_semantic_readiness_rejection_preserves_sql_journal_and_anchor(
 
 
 async def test_real_startup_rejects_unauthenticated_readiness_before_recovery(
-    tmp_path, monkeypatch
-):
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Real startup/semantic/recovery validators; other family authority is controlled."""
     from importlib import import_module
 
@@ -453,7 +453,7 @@ async def test_real_startup_rejects_unauthenticated_readiness_before_recovery(
     ],
 )
 async def test_old_startup_complete_requires_readiness_before_unanchored_suffix_proof(
-    tmp_path, monkeypatch, family, route
+    tmp_path, monkeypatch, family: str, route: str
 ):
     """Call-site routing only; old-family catalog/envelope authority is controlled."""
     from chiplog.composition import r14_historical_suffix as suffix

@@ -18,7 +18,7 @@ from chiplog.platform.workspace_snapshot import read_connection
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 
 
-async def test_mounted_suspension_holds_without_authenticated_active_run(tmp_path):
+async def test_mounted_suspension_holds_without_authenticated_active_run(tmp_path) -> None:
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
     )

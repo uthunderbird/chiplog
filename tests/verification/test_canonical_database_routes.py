@@ -75,7 +75,7 @@ def test_actual_canonical_constructor_routes_remain_distinct_and_unresolved() ->
         ),
     ],
 )
-def test_startup_frames_and_direct_context_entry_cannot_be_substituted(old, new):
+def test_startup_frames_and_direct_context_entry_cannot_be_substituted(old: str, new: str) -> None:
     source, leaf = _sources()
     extract_canonical_database_routes(source, leaf)
     changed = _replace(source, old, new)
@@ -100,7 +100,7 @@ def test_main_path_substitution_is_observed_before_domain_comparison() -> None:
 
 
 @pytest.mark.parametrize("suffix", [".trust.sqlite3", ".broker.sqlite3"])
-def test_read_ledger_suffix_swap_is_observed_then_rejected(suffix):
+def test_read_ledger_suffix_swap_is_observed_then_rejected(suffix: str) -> None:
     source, leaf = _sources()
     changed = _replace(
         source, 'database.suffix + ".reads.sqlite3"', f'database.suffix + "{suffix}"'
@@ -121,7 +121,7 @@ def test_read_ledger_suffix_swap_is_observed_then_rejected(suffix):
         "database.parent",
     ],
 )
-def test_unrecognized_path_expression_is_unknown_not_main(replacement):
+def test_unrecognized_path_expression_is_unknown_not_main(replacement: str) -> None:
     source, leaf = _sources()
     changed = _replace(
         source,
@@ -133,7 +133,7 @@ def test_unrecognized_path_expression_is_unknown_not_main(replacement):
 
 
 @pytest.mark.parametrize("mutation", ["rebind", "conditional", "foreign_import", "factory"])
-def test_non_dominating_rebound_or_unknown_producer_has_no_route_proof(mutation):
+def test_non_dominating_rebound_or_unknown_producer_has_no_route_proof(mutation: str) -> None:
     source, leaf = _sources()
     if mutation == "rebind":
         changed = _replace(
@@ -181,7 +181,7 @@ def test_leaf_constructor_must_really_forward_its_path_parameter() -> None:
 
 
 @pytest.mark.parametrize("placement", ["local", "module", "class"])
-def test_imported_constructor_name_cannot_be_shadowed(placement):
+def test_imported_constructor_name_cannot_be_shadowed(placement: str) -> None:
     source, leaf = _sources()
     if placement == "local":
         changed = _replace(
@@ -217,7 +217,7 @@ def test_same_module_import_alias_cannot_substitute_a_different_leaf() -> None:
         "if True:\n    class ProductionPlanningStore:\n        pass\n",
     ],
 )
-def test_leaf_module_cannot_rebind_the_inspected_class_before_import(replacement):
+def test_leaf_module_cannot_rebind_the_inspected_class_before_import(replacement: str) -> None:
     source, leaf = _sources()
     changed = leaf + "\n" + replacement
     with pytest.raises(UnknownDatabaseRoute, match=r"leaf.*(bound|shadow)"):
@@ -245,7 +245,7 @@ def test_nested_function_database_parameter_is_not_the_canonical_database() -> N
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "unknown_or"])
-def test_missing_duplicate_or_unknown_consumer_route_refuses(mutation):
+def test_missing_duplicate_or_unknown_consumer_route_refuses(mutation: str) -> None:
     source, leaf = _sources()
     if mutation == "missing":
         changed = _replace(

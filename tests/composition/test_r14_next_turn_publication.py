@@ -167,7 +167,7 @@ def test_unnamed_eligible_accounting_failure_after_named_still_rejects(
 
 
 @pytest.mark.asyncio
-async def test_selected_next_turn_restarts_and_replays(tmp_path: Path):
+async def test_selected_next_turn_restarts_and_replays(tmp_path: Path) -> None:
     database = tmp_path / "next-turn.sqlite"
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
@@ -249,7 +249,7 @@ async def test_selected_next_turn_restarts_and_replays(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_foreign_evidence_holds_next_turn_without_publication(tmp_path: Path):
+async def test_foreign_evidence_holds_next_turn_without_publication(tmp_path: Path) -> None:
     database = tmp_path / "next-turn-hold.sqlite"
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody-hold"
@@ -286,7 +286,7 @@ async def test_foreign_evidence_holds_next_turn_without_publication(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_selected_next_turn_physical_record_tamper_blocks_restart(tmp_path: Path):
+async def test_selected_next_turn_physical_record_tamper_blocks_restart(tmp_path: Path) -> None:
     database = tmp_path / "next-turn-physical-tamper.sqlite"
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody-tamper"

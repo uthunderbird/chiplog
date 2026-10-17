@@ -181,7 +181,7 @@ def test_bound_read_ledger_rejects_identical_copied_file(tmp_path: Path) -> None
 
 
 def test_materializer_last_close_holds_authority_gate_through_wal_cleanup(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from chiplog.platform.authority_gate import AuthorityGateError
 

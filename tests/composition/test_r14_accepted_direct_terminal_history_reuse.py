@@ -36,13 +36,13 @@ def _two_seal_history(*accepted_ids):
     return (SimpleNamespace(records=(object(),)), None, None, executions, (), acceptances)
 
 
-def test_direct_terminal_selects_the_requested_seal_among_two():
+def test_direct_terminal_selects_the_requested_seal_among_two() -> None:
     history = _two_seal_history("call-b")
     assert publication._native_response_for_call(history, "call-a").subject_id == "seal-a"
     assert publication._native_response_for_call(history, "call-b").subject_id == "seal-b"
 
 
-def test_direct_terminal_rejects_missing_or_ambiguous_target_seal():
+def test_direct_terminal_rejects_missing_or_ambiguous_target_seal() -> None:
     history = _two_seal_history("call-b")
     with pytest.raises(LoopRejected, match="for call"):
         publication._native_response_for_call(history, "absent")
@@ -51,7 +51,7 @@ def test_direct_terminal_rejects_missing_or_ambiguous_target_seal():
         publication._native_response_for_call(duplicated, "call-b")
 
 
-def test_direct_terminal_rejects_projection_for_another_seal():
+def test_direct_terminal_rejects_projection_for_another_seal() -> None:
     history = _two_seal_history("call-b")
     wrong = SimpleNamespace(
         selected_response_seal=publication._native_response_for_call(history, "call-a")
@@ -65,7 +65,7 @@ def test_direct_terminal_rejects_projection_for_another_seal():
         )
 
 
-def test_direct_terminal_keeps_unqualified_acceptance_ambiguous():
+def test_direct_terminal_keeps_unqualified_acceptance_ambiguous() -> None:
     assert (
         publication._current_cut(
             object(), authenticated_history=_two_seal_history("call-a", "call-b")
@@ -74,7 +74,7 @@ def test_direct_terminal_keeps_unqualified_acceptance_ambiguous():
     )
 
 
-def test_direct_terminal_rejects_a_different_explicit_historical_target():
+def test_direct_terminal_rejects_a_different_explicit_historical_target() -> None:
     with pytest.raises(LoopRejected, match="historical target differs"):
         publication._current_cut(
             object(),
@@ -85,7 +85,7 @@ def test_direct_terminal_rejects_a_different_explicit_historical_target():
 
 
 def test_selected_direct_terminal_reuses_strict_history_inside_authority_gate(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate_state = {"held": False}
     passed = {}

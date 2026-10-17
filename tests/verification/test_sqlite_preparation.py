@@ -203,7 +203,7 @@ def test_actual_bare_main_schema_is_not_rewritten_to_accept_existing_state() -> 
 
 
 @pytest.mark.parametrize("domain", ["trust", "read_ledger", "workspace", "gate"])
-def test_actual_sidecar_create_scripts_cover_empty_and_existing_states(domain):
+def test_actual_sidecar_create_scripts_cover_empty_and_existing_states(domain) -> None:
     if domain == "trust":
         schema = _sql("adapters/driven/deployment_trust/_sqlite.py", "CREATE TABLE IF NOT EXISTS")
         objects = TRUST_OBJECTS
@@ -245,7 +245,7 @@ def test_actual_sidecar_create_scripts_cover_empty_and_existing_states(domain):
         ("SELECT record_id FROM records WHERE tenant_id=? AND '?'='?' /* ? */", 1),
     ],
 )
-def test_sqlite_counts_bindings_without_duplicate_or_incomplete_actions(sql, bindings):
+def test_sqlite_counts_bindings_without_duplicate_or_incomplete_actions(sql, bindings) -> None:
     observed = _observe(sql)
     assert observed.bindings == bindings
     assert (
@@ -279,7 +279,7 @@ def test_count_star_rowid_and_current_builtins_remain_visible() -> None:
         ("PRAGMA query_only = ON", "query_only", "ON"),
     ],
 )
-def test_metadata_actions_preserve_pragma_name_and_argument(sql, first, second):
+def test_metadata_actions_preserve_pragma_name_and_argument(sql, first, second) -> None:
     assert ("PRAGMA", first, second, "main" if first == "table_info" else None, None) in _observe(
         sql
     ).actions
@@ -324,7 +324,7 @@ def test_sqlite_script_boundaries_preserve_quoted_and_commented_semicolons() -> 
         "CREATE TABLE records AS SELECT 1",
     ],
 )
-def test_schema_execution_never_accepts_business_sql_or_unregistered_ddl(tail):
+def test_schema_execution_never_accepts_business_sql_or_unregistered_ddl(tail) -> None:
     with pytest.raises(SqlPreparationRefused):
         observe_schema_script(
             tail, initial_schema_sql=SCHEMA_SQL, registered_objects=MAIN_OBJECTS, foreign_keys=True
@@ -340,7 +340,7 @@ def test_schema_execution_never_accepts_business_sql_or_unregistered_ddl(tail):
         (SCHEMA_SQL, "DELETE FROM records"),
     ],
 )
-def test_schema_business_sql_refuses_at_create_guard_or_select_authorizer(initial, sql):
+def test_schema_business_sql_refuses_at_create_guard_or_select_authorizer(initial, sql) -> None:
     with pytest.raises(SqlPreparationRefused) as failure:
         observe_schema_script(
             sql, initial_schema_sql=initial, registered_objects=MAIN_OBJECTS, foreign_keys=True
@@ -363,7 +363,7 @@ def test_later_denial_or_syntax_failure_never_returns_a_successful_script_prefix
 
 
 @pytest.mark.parametrize("prefix", ["EXPLAIN ", "EXPLAIN QUERY PLAN "])
-def test_schema_observation_requires_actual_ddl_not_explanation_of_ddl(prefix):
+def test_schema_observation_requires_actual_ddl_not_explanation_of_ddl(prefix) -> None:
     with pytest.raises(SqlPreparationRefused, match="schema"):
         observe_schema_script(
             prefix + "CREATE TABLE records(x)",
@@ -398,6 +398,6 @@ def test_index_callback_permission_does_not_authorize_standalone_reindex() -> No
         "SELECT record_id FROM records WHERE tenant_id=:tenant OR owner=:tenant",
     ],
 )
-def test_ordinary_observation_refuses_unknown_actions_and_partial_preparation(sql):
+def test_ordinary_observation_refuses_unknown_actions_and_partial_preparation(sql) -> None:
     with pytest.raises(SqlPreparationRefused):
         _observe(sql)

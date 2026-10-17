@@ -130,7 +130,7 @@ def test_history_validation_checks_retained_command_without_source_recapture() -
         ("fingerprint", "e" * 64),
     ),
 )
-def test_history_validation_rejects_selected_entry_substitution(field, value) -> None:
+def test_history_validation_rejects_selected_entry_substitution(field: str, value) -> None:
     evidence = publication_evidence()
     batch = command(evidence)
     runtime = SimpleNamespace(

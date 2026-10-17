@@ -173,7 +173,7 @@ def test_native_body_aliases_keep_physical_carriers_separate() -> None:
 
 
 @pytest.mark.parametrize("mutation", ("schema-digest-id", "foreign-id", "fingerprint"))
-def test_native_effect_carrier_must_match_actual_writer_projection(mutation):
+def test_native_effect_carrier_must_match_actual_writer_projection(mutation: str) -> None:
     cut, accounting = _native_cut_accounting()
     sources = list(cut.complete_sources)
     index = next(i for i, row in enumerate(sources) if row.owner == "effects")
@@ -226,7 +226,7 @@ def test_native_opening_terminal_physical_aliases_are_not_duplicate_logical_sour
 
 @pytest.mark.parametrize("family", ("terminal-disposition", "recovery-opening"))
 @pytest.mark.parametrize("mutation", ("duplicate", "subject", "body"))
-def test_native_logical_opening_terminal_source_remains_exact(family, mutation):
+def test_native_logical_opening_terminal_source_remains_exact(family: str, mutation: str) -> None:
     cut, accounting = _cut_with_opening_terminal_aliases()
     sources = list(cut.complete_sources)
     index = next(
@@ -270,7 +270,7 @@ def test_native_logical_opening_terminal_source_remains_exact(family, mutation):
         "extra_reduction",
     ],
 )
-def test_original_join_rejects_inexact_sources_and_projections(mutation):
+def test_original_join_rejects_inexact_sources_and_projections(mutation: str) -> None:
     cut, accounting = _original_cut_accounting()
     sources = list(cut.complete_sources)
     index = next(
@@ -322,7 +322,7 @@ def test_original_join_rejects_inexact_sources_and_projections(mutation):
 
 
 @pytest.mark.parametrize("mutation", ["prefix", "anchor_subject", "anchor_class", "stream"])
-def test_original_join_rejects_self_consistent_reduction_projection(mutation):
+def test_original_join_rejects_self_consistent_reduction_projection(mutation: str) -> None:
     from chiplog.capabilities.agent_loop.original_recovery_contracts import (
         LoopSemanticReductionRecord,
     )

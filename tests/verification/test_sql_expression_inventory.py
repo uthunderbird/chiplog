@@ -57,7 +57,7 @@ def run(connection, unknown):
 
 
 @pytest.mark.parametrize("mutation", ["omit", "duplicate", "ghost", "overlap", "digest", "shape"])
-def test_accounting_refuses_missing_duplicate_foreign_or_stale_evidence(mutation):
+def test_accounting_refuses_missing_duplicate_foreign_or_stale_evidence(mutation: str) -> None:
     inventory = _inspect((("src/example.py", 'connection.execute("SELECT 1")'),))
     (row,) = inventory.resolved
     if mutation == "omit":

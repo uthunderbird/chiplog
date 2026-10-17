@@ -31,7 +31,7 @@ def test_public_complete_genesis_retains_every_explicit_member_and_is_immutable(
 
 
 @pytest.mark.parametrize("member", tuple(VERSIONS))
-def test_complete_tuple_has_no_missing_member_defaults(member):
+def test_complete_tuple_has_no_missing_member_defaults(member) -> None:
     incomplete = {name: version for name, version in VERSIONS.items() if name != member}
     with pytest.raises(ValidationError, match=member):
         DatabaseVersionTuple(**incomplete)
@@ -40,7 +40,7 @@ def test_complete_tuple_has_no_missing_member_defaults(member):
 
 
 @pytest.mark.parametrize("version", (True, "2", 2.0, 0, 1, 3))
-def test_v2_genesis_does_not_coerce_or_reinterpret_another_genesis_version(version):
+def test_v2_genesis_does_not_coerce_or_reinterpret_another_genesis_version(version) -> None:
     with pytest.raises(ValidationError):
         DatabaseGenesisV2(
             **(

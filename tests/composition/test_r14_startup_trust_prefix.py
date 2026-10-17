@@ -139,7 +139,7 @@ async def test_incomplete_trust_companions_refuse_before_startup_constructors(
 @pytest.mark.parametrize("materialization", ["complete", "prefix", "empty_prefix", "absent"])
 async def test_genuine_complete_prefix_and_absent_recover_exactly_without_journal_append(
     tmp_path, materialization
-):
+) -> None:
     database, secret = _restore_legacy(tmp_path)
     trust = database.with_suffix(database.suffix + ".trust.sqlite3")
     journal = database.with_suffix(database.suffix + ".trust-journal")
@@ -190,7 +190,7 @@ def _journal_files(journal):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("remnant", ["-wal", "-journal", "-shm", "missing-main"])
-async def test_partial_bundle_namespace_refuses_without_creating_sources(tmp_path, remnant):
+async def test_partial_bundle_namespace_refuses_without_creating_sources(tmp_path, remnant) -> None:
     database, secret = _restore_legacy(tmp_path)
     trust = database.with_suffix(database.suffix + ".trust.sqlite3")
     if remnant == "missing-main":

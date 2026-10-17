@@ -214,7 +214,7 @@ def test_actual_all_src_direct_mounts_match_independent_expected_rows_and_stay_o
 
 
 @pytest.mark.parametrize("change", ["manifest", "runtime", "duplicate", "missing", "ghost"])
-def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change):
+def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change) -> None:
     sources = _sources()
     baseline = inspect_assembly_forwarding(sources)
     module = PREFIX + "r16_dispatch_runtime.py"
@@ -280,7 +280,7 @@ def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change):
 
 
 @pytest.mark.parametrize("change", ["alias", "foreign_import", "shadow", "escape", "nested"])
-def test_unknown_binding_or_frame_never_yields_resolved_identity(change):
+def test_unknown_binding_or_frame_never_yields_resolved_identity(change) -> None:
     sources = _sources()
     module = PREFIX + "r8.py"
     if change == "alias":
@@ -345,7 +345,7 @@ def test_same_spelling_foreign_manifest_origin_is_observed_and_independently_rej
         "match resources:\n        case {'key': manifest}:\n            pass",
     ],
 )
-def test_forwarded_manifest_parameter_cannot_be_rebound_by_other_binding_syntax(statement):
+def test_forwarded_manifest_parameter_cannot_be_rebound_by_other_binding_syntax(statement) -> None:
     changed = _mutate(
         _sources(),
         CLI,

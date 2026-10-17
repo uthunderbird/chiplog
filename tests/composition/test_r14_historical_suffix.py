@@ -20,8 +20,8 @@ from chiplog.composition import r14_historical_suffix as suffix
     ],
 )
 def test_pending_r14_suffix_dispatches_exactly_once_only_for_registered_operation(
-    monkeypatch, operation, expected_calls
-):
+    monkeypatch, operation: str, expected_calls
+) -> None:
     class Gate:
         def require_held(self):
             pass
@@ -400,7 +400,7 @@ def test_mixed_suffix_rejects_gaps_forks_and_incomplete_physical_state(
 )
 @pytest.mark.parametrize("foreign", [False, True])
 def test_native_suffix_keeps_unselected_effects_out_of_authenticated_run_members(
-    monkeypatch, operation, foreign
+    monkeypatch, operation: str, foreign
 ):
     from chiplog.composition import r14_accepted_direct_terminal_records as terminal
     from chiplog.composition import (
@@ -478,8 +478,8 @@ def test_native_suffix_keeps_unselected_effects_out_of_authenticated_run_members
     ],
 )
 def test_native_suffix_covers_existing_per_call_terminal_publication_families(
-    monkeypatch, operation
-):
+    monkeypatch, operation: str
+) -> None:
     """Physical sequence coverage; retained-envelope semantics have separate tests."""
     from chiplog.composition import r14_accepted_direct_terminal_records as terminal
 
@@ -521,7 +521,7 @@ def test_native_suffix_covers_existing_per_call_terminal_publication_families(
     assert operation in checked
 
 
-def test_native_v3_suffix_resolves_retained_evidence_reader():
+def test_native_v3_suffix_resolves_retained_evidence_reader() -> None:
     from types import SimpleNamespace
 
     with pytest.raises(ValueError, match="V3 evidence is absent"):
@@ -534,8 +534,8 @@ def test_native_v3_suffix_resolves_retained_evidence_reader():
 
 @pytest.mark.parametrize("operation", ["dispatch.consume_effect_send", "dispatch.foreign"])
 def test_native_suffix_authenticates_physical_send_consumption_and_holds_unknown_family(
-    monkeypatch, operation
-):
+    monkeypatch, operation: str
+) -> None:
     """Physical suffix composition; the outbox validator owns ticket/SEND semantics."""
     from chiplog.composition import r14_accepted_direct_terminal_records as terminal
     from chiplog.composition import r16_dispatch_outbox as outbox
@@ -582,7 +582,7 @@ def test_native_suffix_authenticates_physical_send_consumption_and_holds_unknown
 )
 def test_consumption_source_validation_binds_exact_prior_send_without_history_reentry(
     monkeypatch, damage
-):
+) -> None:
     """Exercise real retained-body validation; journal authentication is external."""
     from chiplog.capabilities.effects.dispatch_v2 import digest, reference
     from chiplog.composition import r16_dispatch_outbox as outbox
@@ -686,7 +686,7 @@ def test_consumption_source_validation_binds_exact_prior_send_without_history_re
 
 
 @pytest.mark.parametrize("damage", [None, "source-head", "predecessor", "tenant"])
-def test_selected_open_source_stamp_matches_publication_header(damage):
+def test_selected_open_source_stamp_matches_publication_header(damage) -> None:
     cut = SimpleNamespace(
         tenant_id="foreign" if damage == "tenant" else "tenant",
         tenant_commit_sequence=2 if damage == "source-head" else 1,
@@ -719,8 +719,8 @@ def test_selected_open_source_stamp_matches_publication_header(damage):
     ],
 )
 def test_exact_open_history_reaches_semantic_validation_before_pending_lifecycle_verdict(
-    tmp_path, monkeypatch, pending_operation, has_open
-):
+    tmp_path, monkeypatch, pending_operation: str, has_open
+) -> None:
     """Early gate reachability only; physical/callback proof remains separate."""
     from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
     from chiplog.composition import r14_accepted_open_accounting_records as open_records
@@ -797,8 +797,8 @@ def test_exact_open_history_reaches_semantic_validation_before_pending_lifecycle
 @pytest.mark.parametrize("state", ["ABSENT", "COMPLETE", "CONFLICT"])
 @pytest.mark.parametrize("allow_absent", [False, True])
 def test_lifecycle_physical_validation_keeps_default_strict_and_reaches_pending_semantics(
-    tmp_path, monkeypatch, family, state, allow_absent
-):
+    tmp_path, monkeypatch, family: str, state: str, allow_absent
+) -> None:
     """Real readback, inert owner-envelope acquisition; budget probe is explicit."""
     import hashlib
 
@@ -889,8 +889,8 @@ def test_lifecycle_physical_validation_keeps_default_strict_and_reaches_pending_
 )
 @pytest.mark.parametrize("damage", [None, "anchor-advanced", "predecessor", "unselected", "orphan"])
 def test_completed_pending_lifecycle_requires_exact_final_batch_and_current_anchor(
-    tmp_path, monkeypatch, family, damage
-):
+    tmp_path, monkeypatch, family: str, damage
+) -> None:
     import hashlib
 
     from chiplog.platform._sqlite import (

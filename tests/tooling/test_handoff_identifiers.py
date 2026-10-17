@@ -60,7 +60,7 @@ def test_corrupt_sequence_preserves_journal_and_refuses_mutation(
 
 
 def test_failed_journal_write_does_not_release_reserved_identifier(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / ".harness").mkdir()
     assert handoff.add(tmp_path, "решение", "", {"что": "first"}) == 1

@@ -85,7 +85,7 @@ def test_journal_capture_preserves_full_history_capture_and_ignores_candidate_po
 
 
 @pytest.mark.parametrize("stream", ["loop", "owner", "preview", "h1", "dashboard"])
-def test_same_head_journal_body_corruption_cannot_reuse_inputs(journals, stream):
+def test_same_head_journal_body_corruption_cannot_reuse_inputs(journals, stream: str):
     runtime, gate, streams, _, _ = journals
     _, path = streams[stream]
     with gate.hold():
@@ -100,7 +100,7 @@ def test_same_head_journal_body_corruption_cannot_reuse_inputs(journals, stream)
 
 
 @pytest.mark.parametrize("change", ["configuration", "unsupported-owner", "unsupported-loop"])
-def test_journal_capture_refuses_inputs_outside_closed_native_prefix(journals, change):
+def test_journal_capture_refuses_inputs_outside_closed_native_prefix(journals, change: str):
     runtime, gate, streams, state, _ = journals
     with gate.hold():
         assert witness.capture_call_history_journal_inputs(runtime) is not None
@@ -118,7 +118,7 @@ def test_journal_capture_refuses_inputs_outside_closed_native_prefix(journals, c
 
 
 @pytest.mark.parametrize("change", ["preview-key", "h1-replacement", "dashboard-append"])
-def test_authenticated_file_and_auxiliary_changes_invalidate_input_equality(journals, change):
+def test_authenticated_file_and_auxiliary_changes_invalidate_input_equality(journals, change: str):
     runtime, gate, streams, _, _ = journals
     with gate.hold():
         before = witness.capture_call_history_journal_inputs(runtime)

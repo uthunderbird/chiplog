@@ -153,7 +153,7 @@ def test_actual_predicate_mutation_reaches_engine_before_graph_refusal() -> None
         ),
     ),
 )
-def test_actual_unknown_relation_or_missing_family_refuses(old, new):
+def test_actual_unknown_relation_or_missing_family_refuses(old: str, new: str) -> None:
     with pytest.raises(UnknownCutoffSql):
         extract_h1_cutoff_sql(_replace(SOURCE.read_text(), old, new))
 

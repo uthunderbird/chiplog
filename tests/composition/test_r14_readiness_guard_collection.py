@@ -303,7 +303,7 @@ async def test_custom_source_keeps_final_collection_at_real_writer(tmp_path, mon
         "slow-fallback",
     ),
 )
-async def test_fabricated_witness_guard_wiring_at_real_writer(tmp_path, monkeypatch, stage):
+async def test_fabricated_witness_guard_wiring_at_real_writer(tmp_path, monkeypatch, stage: str):
     mutation = {
         "semantic-change": "semantic-change",
         "slow-fallback": "synthetic-actor-expiry",

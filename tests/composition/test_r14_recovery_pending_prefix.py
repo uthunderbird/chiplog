@@ -176,7 +176,7 @@ async def _fixture(tmp_path, complete, *, with_fence=False, prepare_prefix=None)
 
 
 @pytest.mark.parametrize("complete", (False, True))
-async def test_exact_pending_delta_only_reopens_structural_prefix(tmp_path, complete):
+async def test_exact_pending_delta_only_reopens_structural_prefix(tmp_path, complete) -> None:
     runtime, entry, _batch, predecessor, _resulting = await _fixture(tmp_path, complete)
     with runtime._authority_gate().hold():
         assert authenticate_selected_recovery_prefix_held(
@@ -268,7 +268,7 @@ async def test_open_effects_callback_uses_exact_pending_readiness_prefix(
 @pytest.mark.parametrize("damaged_result", [False, True])
 async def test_exact_history_checks_pending_readiness_prefix_before_selected_authority(
     tmp_path, monkeypatch, complete, damaged_result
-):
+) -> None:
     """Real pending SQL delta; full selected-authority validation is a sentinel."""
     from chiplog.adapters.driven.loop_sqlite import LoopIntegrityError
     from chiplog.composition import r14_loop_history as history
@@ -432,7 +432,7 @@ async def test_accepted_outcome_callback_rechecks_exact_pending_readiness(
         "changed_result",
     ),
 )
-async def test_pending_prefix_rejects_every_extra_or_incomplete_delta(tmp_path, mutation):
+async def test_pending_prefix_rejects_every_extra_or_incomplete_delta(tmp_path, mutation) -> None:
     runtime, entry, batch, predecessor, _resulting = await _fixture(tmp_path, True)
     with sqlite3.connect(runtime._database) as connection:
         if mutation == "extra_record":

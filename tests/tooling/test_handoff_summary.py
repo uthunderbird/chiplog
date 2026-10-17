@@ -19,7 +19,7 @@ def _script(tmp_path):
 
 
 @pytest.mark.parametrize("long_text", [False, True])
-def test_shell_summary_preserves_all_records_fields_and_durable_files(tmp_path, long_text):
+def test_shell_summary_preserves_all_records_fields_and_durable_files(tmp_path, long_text) -> None:
     script = _script(tmp_path)
     what = "не укорачивать " * 1000 if long_text else "выбран точный вариант"
     journal = tmp_path / ".harness/handoff.md"
@@ -49,7 +49,7 @@ def test_shell_summary_preserves_all_records_fields_and_durable_files(tmp_path, 
     assert full.returncode == 0 and full.stdout == journal.read_text()
 
 
-def test_empty_shell_summary_creates_no_journal_or_sequence(tmp_path):
+def test_empty_shell_summary_creates_no_journal_or_sequence(tmp_path: Path) -> None:
     script = _script(tmp_path)
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
     result = subprocess.run(["sh", str(script), "--summary"], capture_output=True, text=True)

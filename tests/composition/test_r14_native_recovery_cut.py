@@ -196,7 +196,7 @@ def test_inherited_no_retry_references_require_one_exact_inactive_source() -> No
     assert not _selected_no_retry_sources((reference,), (source,), (reference,))
 
 
-def test_selected_reduction_source_projection_keeps_the_complete_chain(monkeypatch):
+def test_selected_reduction_source_projection_keeps_the_complete_chain(monkeypatch) -> None:
     from chiplog.composition import r14_loop_semantic_reduction_publication as publication
 
     sources = {"opening": object(), "successor": object()}
@@ -213,7 +213,7 @@ def test_selected_reduction_source_projection_keeps_the_complete_chain(monkeypat
     )
 
 
-def test_closed_recovery_source_projection_keeps_resolver_authority(monkeypatch):
+def test_closed_recovery_source_projection_keeps_resolver_authority(monkeypatch) -> None:
     """Source acquisition is inert; the real projection must retain authority proofs."""
     from chiplog.capabilities.agent_loop.original_call_resolution_preparation import (
         prepare_original_call_resolution,
@@ -319,7 +319,7 @@ def test_closed_recovery_source_projection_keeps_resolver_authority(monkeypatch)
 @pytest.mark.parametrize(
     "damage", [None, "head", "fingerprint", "physical", "bytes", "owner", "schema"]
 )
-def test_original_resolver_source_requires_exact_independent_selection(damage):
+def test_original_resolver_source_requires_exact_independent_selection(damage) -> None:
     from chiplog.composition.r14_native_recovery_cut import _original_source_matches_selection
     from tests.capabilities.agent_loop.test_original_call_resolution_preparation import request
 
@@ -368,7 +368,7 @@ def test_original_resolver_source_requires_exact_independent_selection(damage):
         "logical-child",
     ],
 )
-def test_accepted_effect_join_distinguishes_carrier_and_body_fingerprints(variant):
+def test_accepted_effect_join_distinguishes_carrier_and_body_fingerprints(variant: str) -> None:
     from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
     from chiplog.composition.r14_native_recovery_cut import _accepted_source_preimages
     from tests.capabilities.effects.test_dispatch_outcomes import request
@@ -431,7 +431,7 @@ def test_accepted_effect_join_distinguishes_carrier_and_body_fingerprints(varian
 
 
 @pytest.mark.parametrize("conflict", [False, True])
-def test_original_terminal_aliases_share_one_exact_selected_decision(conflict):
+def test_original_terminal_aliases_share_one_exact_selected_decision(conflict) -> None:
     from chiplog.capabilities.agent_loop.execution_recovery_preparation import _source_for_revision
     from chiplog.capabilities.agent_loop.recovery_domain import RecoveryHold
     from chiplog.composition.r14_native_recovery_cut import _original_source_decisions
@@ -620,7 +620,7 @@ def test_v3_readback_routes_only_complete_direct_or_accepted_open_cuts() -> None
         "chiplog.loop.semantic-reduction.v1",
     ],
 )
-def test_original_source_producer_joins_exact_selected_decision_head(schema):
+def test_original_source_producer_joins_exact_selected_decision_head(schema: str) -> None:
     """Real source constructor, not proof of journal or native authority."""
     from chiplog.composition.r14_original_obligation_sources import selected_recovery_source
     from chiplog.platform._sqlite import PhysicalRecord
@@ -648,7 +648,7 @@ def test_original_source_producer_joins_exact_selected_decision_head(schema):
 
 
 @pytest.mark.parametrize("damage", ["head", "fingerprint", "subject", "owner", "unknown"])
-def test_original_source_decision_alias_rejects_substitutions(damage):
+def test_original_source_decision_alias_rejects_substitutions(damage: str) -> None:
     selected = CallSubjectHead(
         subject_id="original-command",
         revision=Present(head="selected-decision", fingerprint="a" * 64),
@@ -1098,7 +1098,7 @@ def test_direct_selector_holds_retained_rival_marker_under_foreign_operation() -
     assert selected is None
 
 
-def test_direct_selector_forwards_exact_authenticated_history_from_subset(monkeypatch):
+def test_direct_selector_forwards_exact_authenticated_history_from_subset(monkeypatch) -> None:
     from chiplog.composition import r14_accepted_direct_terminal_records as records
 
     operation = records.ACCEPTED_DIRECT_TERMINAL_OPERATION

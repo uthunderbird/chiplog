@@ -50,7 +50,7 @@ from tests.support.h1_cli_execution import admit_runtime_slot
 from tests.support.native_cancelled import native_response
 
 
-def test_call_history_cache_recognizes_authenticated_open_resolution_prefix():
+def test_call_history_cache_recognizes_authenticated_open_resolution_prefix() -> None:
     """The exact mounted OPEN/resolution loop families remain eligible for reuse."""
     expected = {
         "agent_loop.native-one-call-recovery-profile.v5": {
@@ -616,7 +616,7 @@ def test_pending_json_decoder_preserves_stdlib_duplicate_nan_and_large_integer_v
 @pytest.mark.parametrize("number", (-(2**63) - 1, -(2**63), 2**64 - 1, 2**64, 2**80 + 1, 1.25))
 @pytest.mark.parametrize("nested", (False, True))
 @pytest.mark.parametrize("byte_input", (False, True))
-def test_pending_json_decoder_preserves_numeric_value_and_type(number, nested, byte_input):
+def test_pending_json_decoder_preserves_numeric_value_and_type(number, nested, byte_input) -> None:
     value = {"items": [number]} if nested else number
     raw = json.dumps(value)
     if byte_input:

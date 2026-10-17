@@ -122,7 +122,7 @@ async def test_resume_artifacts_bind_exact_bytes_without_repreparation(monkeypat
 
 
 @pytest.mark.parametrize("damage", ["request", "result", "call", "reply", "budget"])
-async def test_resume_artifacts_reject_one_sided_evidence_change(damage):
+async def test_resume_artifacts_reject_one_sided_evidence_change(damage: str) -> None:
     evidence = await _evidence()
     artifacts = resume._prepare_resume_artifacts(
         evidence.request,

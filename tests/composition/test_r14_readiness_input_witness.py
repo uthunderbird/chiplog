@@ -8,7 +8,7 @@ from chiplog.composition import r14_recovery_publication as publication
 
 
 @pytest.mark.parametrize("change", ("different", "absent", "io-error", "type-error"))
-def test_disabled_readiness_witness_cannot_revive_after_input_restoration(monkeypatch, change):
+def test_disabled_readiness_witness_cannot_revive_after_input_restoration(monkeypatch, change: str):
     runtime = object()
     original = (object(), object())
     calls = []
@@ -59,7 +59,7 @@ def test_auxiliary_capture_does_not_read_trust_when_journal_inputs_unavailable(
     assert publication._capture_readiness_inputs(runtime) is None
 
 
-def test_auxiliary_capture_discards_journals_when_trust_capture_fails(monkeypatch):
+def test_auxiliary_capture_discards_journals_when_trust_capture_fails(monkeypatch) -> None:
     from chiplog.composition import r14_call_history_witness as history
 
     def unavailable():

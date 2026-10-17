@@ -96,7 +96,7 @@ def test_resolved_open_context_preserves_original_terminal_and_exact_recovered_r
         "duplicate-outcome",
     ),
 )
-def test_resolved_open_context_requires_exact_original_proof_pair(selected, mutation):
+def test_resolved_open_context_requires_exact_original_proof_pair(selected, mutation: str):
     _, evidence = selected
     cut = evidence.request.cut
     summary = cut.original_closures[0]

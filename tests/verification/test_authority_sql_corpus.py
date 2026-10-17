@@ -68,7 +68,7 @@ def test_blank_lines_preserve_identity_and_identical_calls_remain_distinct() -> 
 
 
 @pytest.mark.parametrize("change", ["add_mount", "remove_mount", "remove_site", "change_binding"])
-def test_bidirectional_accounting_rejects_added_removed_or_rebound_source(change):
+def test_bidirectional_accounting_rejects_added_removed_or_rebound_source(change: str) -> None:
     original = _inspect()
     if change == "add_mount":
         changed = SOURCE + (
@@ -151,7 +151,7 @@ def test_node_cannot_reference_a_file_missing_from_source_accounting() -> None:
         changed.require_closed()
 
 
-def test_another_src_package_cannot_hide_new_sql_or_mount_calls(tmp_path):
+def test_another_src_package_cannot_hide_new_sql_or_mount_calls(tmp_path: Path) -> None:
     package = tmp_path / "src/chiplog"
     package.mkdir(parents=True)
     (package / "sample.py").write_text(SOURCE)

@@ -58,7 +58,7 @@ async def test_readiness_binding_reuses_derivation_but_public_reconstruction_rev
         "whole-exchange",
     ),
 )
-async def test_readiness_binding_rejects_changed_validated_artifacts(tmp_path, damage):
+async def test_readiness_binding_rejects_changed_validated_artifacts(tmp_path, damage: str) -> None:
     evidence, issued = await _evidence(tmp_path / "original")
     artifacts = publication._prepare_readiness_artifacts(evidence)
     if damage == "request":
