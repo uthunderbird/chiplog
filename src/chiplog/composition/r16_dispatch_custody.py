@@ -52,8 +52,9 @@ def _has_prefixed_hex(value: object, prefix: str, hex_length: int) -> bool:
 
 
 def _read_existing_custody(path: Path) -> dict[str, object]:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    try:
+    with ExitStack() as resources:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        resources.callback(os.close, descriptor)
         metadata = os.fstat(descriptor)
         if (
             not stat.S_ISREG(metadata.st_mode)
@@ -70,8 +71,6 @@ def _read_existing_custody(path: Path) -> dict[str, object]:
             chunks.append(chunk)
             remaining -= len(chunk)
         raw = b"".join(chunks)
-    finally:
-        os.close(descriptor)
     if len(raw) > _MAX_CUSTODY_BYTES:
         raise ValueError("offline custody storage exceeds the bounded schema")
     try:

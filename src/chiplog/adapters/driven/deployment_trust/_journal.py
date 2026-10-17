@@ -109,23 +109,27 @@ def read_authenticated_journal_snapshot(
     try:
         parent = path.parent.resolve(strict=True)
         path = parent / path.name
-        paths = (path, *(path.with_name(path.name + suffix)
-                         for suffix in (".key", ".head", ".lock")))
+        paths = (
+            path,
+            *(path.with_name(path.name + suffix) for suffix in (".key", ".head", ".lock")),
+        )
         with ExitStack() as stack:
-            parent_descriptor = stack.enter_context(_descriptor(
-                parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-            ))
+            parent_descriptor = stack.enter_context(
+                _descriptor(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            )
 
             def check_parent() -> None:
                 opened, named = os.fstat(parent_descriptor), parent.stat()
-                if parent.resolve(strict=True) != parent or (
-                    opened.st_dev, opened.st_ino
-                ) != (named.st_dev, named.st_ino):
+                if parent.resolve(strict=True) != parent or (opened.st_dev, opened.st_ino) != (
+                    named.st_dev,
+                    named.st_ino,
+                ):
                     raise RuntimeError("journal parent identity changed")
 
             def open_source(source: Path) -> int:
                 descriptor = os.open(
-                    source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    source.name,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
                     dir_fd=parent_descriptor,
                 )
                 stack.callback(os.close, descriptor)
@@ -133,8 +137,9 @@ def read_authenticated_journal_snapshot(
 
             def check_head_publication() -> None:
                 try:
-                    os.stat(path.name + ".head.new", dir_fd=parent_descriptor,
-                            follow_symlinks=False)
+                    os.stat(
+                        path.name + ".head.new", dir_fd=parent_descriptor, follow_symlinks=False
+                    )
                 except FileNotFoundError:
                     return
                 raise RuntimeError("journal has an interrupted head publication")
@@ -151,14 +156,18 @@ def read_authenticated_journal_snapshot(
                 _checked_journal_source(source, parent_descriptor, descriptor)
                 for source, descriptor in zip(paths, descriptors, strict=True)
             )
-            raw = tuple(IndependentTenantDecisionJournal._read_descriptor(descriptor)
-                        for descriptor in descriptors[:-1])
+            raw = tuple(
+                IndependentTenantDecisionJournal._read_descriptor(descriptor)
+                for descriptor in descriptors[:-1]
+            )
             body, key, head = raw
             if len(key) != 32:
                 raise RuntimeError("journal authentication key is invalid")
             entries = _decode_authenticated_entries(body, key, head.decode("ascii"))
-            if raw != tuple(IndependentTenantDecisionJournal._read_descriptor(descriptor)
-                            for descriptor in descriptors[:-1]):
+            if raw != tuple(
+                IndependentTenantDecisionJournal._read_descriptor(descriptor)
+                for descriptor in descriptors[:-1]
+            ):
                 raise RuntimeError("journal sources changed during snapshot")
             for source, descriptor, identity in zip(paths, descriptors, identities, strict=True):
                 _checked_journal_source(source, parent_descriptor, descriptor, identity)
@@ -358,15 +367,14 @@ class IndependentTenantDecisionJournal:
         body = self._existing_identity("body", self._body_identity)
         key = self._existing_identity("key", self._key_identity)
         self._existing_identity("lock", self._lock_identity)
-        head_descriptor = self._open_existing("head", os.O_RDONLY)
-        try:
+        with ExitStack() as resources:
+            head_descriptor = self._open_existing("head", os.O_RDONLY)
+            resources.callback(os.close, head_descriptor)
             head = self._existing_identity("head", descriptor=head_descriptor)
             key_bytes = self._read_descriptor(self._existing_descriptors["key"])
             if not hmac.compare_digest(key_bytes, self._key):
                 raise RuntimeError("journal authentication key changed after opening")
             return body, key, head
-        finally:
-            os.close(head_descriptor)
 
     def _existing_head_new_present(self) -> bool:
         assert self._parent_descriptor is not None
@@ -458,21 +466,21 @@ class IndependentTenantDecisionJournal:
             os.write(body_descriptor, line)
             os.fsync(body_descriptor)
             assert self._parent_descriptor is not None
-            temporary = os.open(
-                self._head_new_path.name,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600,
-                dir_fd=self._parent_descriptor,
-            )
-            try:
+            with ExitStack() as resources:
+                temporary = os.open(
+                    self._head_new_path.name,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=self._parent_descriptor,
+                )
+                resources.callback(os.close, temporary)
                 os.write(temporary, decision_id.encode("ascii"))
                 os.fsync(temporary)
-            finally:
-                os.close(temporary)
             # The checked head is deliberately not pinned across appends, but it
             # must still be the name being replaced immediately before publication.
-            head = self._open_existing("head", os.O_RDONLY)
-            try:
+            with ExitStack() as resources:
+                head = self._open_existing("head", os.O_RDONLY)
+                resources.callback(os.close, head)
                 self._existing_identity("head", descriptor=head)
                 os.replace(
                     self._head_new_path.name,
@@ -480,8 +488,6 @@ class IndependentTenantDecisionJournal:
                     src_dir_fd=self._parent_descriptor,
                     dst_dir_fd=self._parent_descriptor,
                 )
-            finally:
-                os.close(head)
             os.fsync(self._parent_descriptor)
             self._existing_sources()
             self._entries()
@@ -518,15 +524,14 @@ class IndependentTenantDecisionJournal:
     def _read_head(self) -> str:
         if not self._existing_only:
             return self._head_path.read_text(encoding="ascii")
-        descriptor = self._open_existing("head", os.O_RDONLY)
-        try:
+        with ExitStack() as resources:
+            descriptor = self._open_existing("head", os.O_RDONLY)
+            resources.callback(os.close, descriptor)
             self._existing_identity("head", descriptor=descriptor)
             try:
                 return self._read_descriptor(descriptor).decode("ascii")
             except UnicodeDecodeError as error:
                 raise RuntimeError("journal rollback or incomplete head publication") from error
-        finally:
-            os.close(descriptor)
 
     def _authenticate(self, decision_id: str, predecessor: str | None, decision: bytes) -> str:
         return _entry_authentication(self._key, decision_id, predecessor, decision)

@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import tempfile
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -119,11 +120,10 @@ class LocalCliDeliveryProvider:
         # Operator provisions the parent; persist the newly created inbox entry.
         directory.mkdir(mode=0o700, exist_ok=True)
         self._check_owner()
-        parent_fd = os.open(directory.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
+        with ExitStack() as resources:
+            parent_fd = os.open(directory.parent, os.O_RDONLY | os.O_DIRECTORY)
+            resources.callback(os.close, parent_fd)
             os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
         self.endpoint_bytes = _canonical(
             [CONTRACT_VERSION, self.uid, principal_id, str(directory.resolve())]
         )
@@ -169,11 +169,10 @@ class LocalCliDeliveryProvider:
             return source.read()
 
     def _sync_directory(self) -> None:
-        fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
-        try:
+        with ExitStack() as resources:
+            fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
+            resources.callback(os.close, fd)
             os.fsync(fd)
-        finally:
-            os.close(fd)
 
     def _path(self, transmission_id: str) -> Path:
         if not transmission_id:

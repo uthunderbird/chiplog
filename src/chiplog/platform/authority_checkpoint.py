@@ -9,7 +9,7 @@ import math
 import os
 import stat
 import tempfile
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Literal
 
@@ -172,18 +172,16 @@ class AuthorityCheckpointStore:
                 directory.mkdir(mode=0o700)
             if directory.is_symlink() or not stat.S_ISDIR(directory.lstat().st_mode):
                 raise AuthorityCheckpointVerificationError("checkpoint directory is unsafe")
-            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
+            with ExitStack() as resources:
+                descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                resources.callback(os.close, descriptor)
                 os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-            parent_descriptor = os.open(
-                directory.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-            )
-            try:
+            with ExitStack() as resources:
+                parent_descriptor = os.open(
+                    directory.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                )
+                resources.callback(os.close, parent_descriptor)
                 os.fsync(parent_descriptor)
-            finally:
-                os.close(parent_descriptor)
 
     @staticmethod
     def _assert_safe_ancestry(path: Path) -> None:
@@ -209,7 +207,8 @@ class AuthorityCheckpointStore:
             descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         except OSError as error:
             raise AuthorityCheckpointVerificationError("checkpoint blob is unavailable") from error
-        try:
+        with ExitStack() as resources:
+            resources.callback(os.close, descriptor)
             actual = os.fstat(descriptor)
             if (
                 not stat.S_ISREG(named.st_mode)
@@ -231,8 +230,6 @@ class AuthorityCheckpointStore:
             if len(raw) > limit:
                 raise AuthorityCheckpointVerificationError("checkpoint blob exceeds limit")
             return raw
-        finally:
-            os.close(descriptor)
 
     def stage_verified(self, preimage: bytes) -> AuthorityCheckpointRefV1:
         try:
@@ -277,13 +274,12 @@ class AuthorityCheckpointStore:
                         "checkpoint digest collision or corruption"
                     ) from None
             else:
-                directory = os.open(
-                    destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-                )
-                try:
+                with ExitStack() as resources:
+                    directory = os.open(
+                        destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    )
+                    resources.callback(os.close, directory)
                     os.fsync(directory)
-                finally:
-                    os.close(directory)
         finally:
             temporary.unlink(missing_ok=True)
         verified = self.resolve_verified(
