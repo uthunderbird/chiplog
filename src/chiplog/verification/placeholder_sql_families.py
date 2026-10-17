@@ -57,7 +57,7 @@ def _method(tree: ast.Module, qualname: str) -> ast.FunctionDef | ast.AsyncFunct
 
 
 def _dominates(
-    definition: ast.Assign,
+    definition: ast.AST,
     consumer: ast.AST,
     method: ast.AST,
     parents: dict[ast.AST, ast.AST],
