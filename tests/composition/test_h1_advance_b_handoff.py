@@ -55,7 +55,9 @@ async def test_installed_advance_hands_its_h1_v2_seal_to_one_enrolled_b_session(
             assert record.cut is session._cut
             assert session._cut is not None
             assert session._cut.original_identity is request.identity
-            assert session._cut.original_fingerprint == request.original_driver_command_fingerprint()
+            assert (
+                session._cut.original_fingerprint == request.original_driver_command_fingerprint()
+            )
             assert session._completion_exchange is not None
             assert session._conversation_exchange is not None
             assert session._effects_exchange is not None

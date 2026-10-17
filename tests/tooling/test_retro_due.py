@@ -38,7 +38,11 @@ def repository(tmp_path: Path) -> Path:
 
 def add_entry(root: Path, name: str, outcome: str, *, similar_to: Path | None = None) -> Path:
     path = root / ".harness/retro" / name
-    body = similar_to.read_text() if similar_to else "---\ndate: fixture\noutcome: change\n---\nnotes: baseline\n"
+    body = (
+        similar_to.read_text()
+        if similar_to
+        else "---\ndate: fixture\noutcome: change\n---\nnotes: baseline\n"
+    )
     body = body.replace("outcome: change", f"outcome: {outcome}")
     path.write_text(body)
     return path
@@ -59,17 +63,35 @@ def test_similar_copy_keeps_its_exact_addition_as_latest_outcome(repository: Pat
     # The configured copy detector reproduces the old --follow misattribution.
     git(repository, "config", "diff.renames", "copies")
     copy_status = git(
-        repository, "diff-tree", "--no-commit-id", "--name-status", "-r", "-M", "-C",
-        "--find-copies-harder", new_commit,
+        repository,
+        "diff-tree",
+        "--no-commit-id",
+        "--name-status",
+        "-r",
+        "-M",
+        "-C",
+        "--find-copies-harder",
+        new_commit,
     )
     assert copy_status.startswith("C")
     followed_add = git(
-        repository, "log", "--follow", "--diff-filter=A", "-1", "--format=%H", "--",
+        repository,
+        "log",
+        "--follow",
+        "--diff-filter=A",
+        "-1",
+        "--format=%H",
+        "--",
         str(new.relative_to(repository)),
     )
     assert followed_add == old_commit
     exact_add = git(
-        repository, "log", "--diff-filter=A", "-1", "--format=%H", "--",
+        repository,
+        "log",
+        "--diff-filter=A",
+        "-1",
+        "--format=%H",
+        "--",
         str(new.relative_to(repository)),
     )
     assert exact_add == new_commit
@@ -87,13 +109,25 @@ def test_true_rename_keeps_original_entry_order(repository: Path) -> None:
     rename_commit = commit(repository, "rename retro path")
 
     rename_status = git(
-        repository, "diff-tree", "--no-commit-id", "--name-status", "-r", "-M",
+        repository,
+        "diff-tree",
+        "--no-commit-id",
+        "--name-status",
+        "-r",
+        "-M",
         rename_commit,
     )
     assert rename_status.startswith("R")
     followed_add = git(
-        repository, "log", "--follow", "--find-renames", "--diff-filter=A", "-1",
-        "--format=%H", "--", str(renamed.relative_to(repository)),
+        repository,
+        "log",
+        "--follow",
+        "--find-renames",
+        "--diff-filter=A",
+        "-1",
+        "--format=%H",
+        "--",
+        str(renamed.relative_to(repository)),
     )
     assert followed_add == original_commit
     assert retro_due.committed_retro_outcomes(repository) == ["change", "skip"]
@@ -127,13 +161,25 @@ def test_entry_created_by_merge_uses_merge_introduction(repository: Path) -> Non
     merge_commit = git(repository, "rev-parse", "--verify", "HEAD^{commit}")
 
     exact_add = git(
-        repository, "log", "--diff-filter=A", "-1", "--format=%H", "--",
+        repository,
+        "log",
+        "--diff-filter=A",
+        "-1",
+        "--format=%H",
+        "--",
         str(merged.relative_to(repository)),
     )
     assert exact_add == ""
     merge_add = git(
-        repository, "log", "--first-parent", "-m", "--diff-filter=A", "-1",
-        "--format=%H", "--", str(merged.relative_to(repository)),
+        repository,
+        "log",
+        "--first-parent",
+        "-m",
+        "--diff-filter=A",
+        "-1",
+        "--format=%H",
+        "--",
+        str(merged.relative_to(repository)),
     )
     assert merge_add == merge_commit
     assert retro_due.committed_retro_outcomes(repository) == ["change", "skip"]

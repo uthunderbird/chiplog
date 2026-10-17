@@ -15,12 +15,12 @@ import pytest
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.adapters.driven.loop_prompts import OwnedStaticPrompts
 from chiplog.capabilities.agent_loop.application import AgentLoop
+from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, EndpointSelection
 from chiplog.capabilities.agent_loop.delivery_preparation import (
     Commentary,
     DeliveryCompletion,
     ProposedDelivery,
 )
-from chiplog.capabilities.agent_loop.contracts import BudgetPolicy
 from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     CliCustodyOffer,
     CliCustodyResponse,
@@ -37,9 +37,9 @@ from chiplog.composition.common_execution_driver_contracts import (
 )
 from chiplog.composition.h1_selected_input_role import read_h1_selected_input_role
 from chiplog.composition.h1_selected_prepare import select_h1_v3_prepare_for_candidate
+from chiplog.composition.r14_loop_store import R14LoopStore
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.composition.r16_effects import R16EffectsProducer
-from chiplog.composition.r14_loop_store import R14LoopStore
 from chiplog.platform._owner_publication_contracts import SelectedPlanEffectBatchV2
 from chiplog.platform.ingress_custody_records import canonical
 from chiplog.platform.ingress_transition_contracts import (
@@ -47,7 +47,6 @@ from chiplog.platform.ingress_transition_contracts import (
     RetainedIngressSource,
 )
 from chiplog.platform.owner_decision_journal import OwnerJournalIntegrityError
-from chiplog.capabilities.agent_loop.contracts import EndpointSelection
 from tests.composition.test_plan_effect_publication import response
 
 
@@ -129,14 +128,25 @@ async def _publish_ordinary(database: Path, resources: HermeticDispatchResources
         model = HermeticModel((response(),))
         model.session = runtime
         loop = AgentLoop(
-            R14LoopStore(runtime), model, OwnedStaticPrompts(), tenant="hermetic-tenant",
-            principal="hermetic-principal", origin=EndpointSelection(
-                kind="ORIGIN_EXACT", ingress_binding_head="hermetic-ingress-v1",
-                endpoint_head="hermetic-endpoint-v1", endpoint_id="hermetic-local",
-                provider="hermetic-local", recipient="hermetic-principal",
-                canonical_address="local://hermetic-principal", credential_binding_head="hermetic-v1",
-            ), contour_head="hermetic-contour-v1", policy_head="hermetic-policy-v1",
-            worker_session=runtime.current_worker(), planning=runtime,
+            R14LoopStore(runtime),
+            model,
+            OwnedStaticPrompts(),
+            tenant="hermetic-tenant",
+            principal="hermetic-principal",
+            origin=EndpointSelection(
+                kind="ORIGIN_EXACT",
+                ingress_binding_head="hermetic-ingress-v1",
+                endpoint_head="hermetic-endpoint-v1",
+                endpoint_id="hermetic-local",
+                provider="hermetic-local",
+                recipient="hermetic-principal",
+                canonical_address="local://hermetic-principal",
+                credential_binding_head="hermetic-v1",
+            ),
+            contour_head="hermetic-contour-v1",
+            policy_head="hermetic-policy-v1",
+            worker_session=runtime.current_worker(),
+            planning=runtime,
         )
         created = await loop.create("r", "Propose my exact hermetic action", BudgetPolicy())
         active = await loop.activate("r", created.head)
@@ -265,12 +275,16 @@ async def test_mounted_selected_h0_r17_witness_accepts_prior_ordinary_claim(
         )
         corrupted_history = replace(
             history,
-            decisions=history.decisions[:ordinary_index]
-            + (corrupted,)
-            + history.decisions[ordinary_index + 1 :],
+            decisions=(
+                *history.decisions[:ordinary_index],
+                corrupted,
+                *history.decisions[ordinary_index + 1 :],
+            ),
         )
         monkeypatch.setattr(
-            runtime, "_owner_decisions", lambda: type("SnapshotOnly", (), {"snapshot": lambda _: corrupted_history})()
+            runtime,
+            "_owner_decisions",
+            lambda: type("SnapshotOnly", (), {"snapshot": lambda _: corrupted_history})(),
         )
         with pytest.raises(OwnerJournalIntegrityError, match="ingress_history"):
             read_h1_selected_input_role(runtime, selected, captured)

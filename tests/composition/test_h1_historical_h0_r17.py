@@ -13,8 +13,8 @@ import pytest
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.adapters.driven.loop_prompts import OwnedStaticPrompts
 from chiplog.capabilities.agent_loop.application import AgentLoop
+from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, EndpointSelection
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
-from chiplog.capabilities.agent_loop.contracts import BudgetPolicy
 from chiplog.capabilities.deployment_trust.cli_custody_contracts import (
     CliCustodyOffer,
     CliCustodyResponse,
@@ -37,9 +37,9 @@ from chiplog.composition.h1_historical_h0_r17 import read_historical_h0_r17
 from chiplog.composition.r14_execution_inbox_records import (
     EXECUTION_INBOX_INITIALIZATION_OPERATION,
 )
+from chiplog.composition.r14_loop_store import R14LoopStore
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.composition.r16_effects import R16EffectsProducer
-from chiplog.composition.r14_loop_store import R14LoopStore
 from chiplog.platform.ingress_authenticated_contracts import AuthenticatedCustodyRecord
 from chiplog.platform.ingress_custody_records import digest
 from chiplog.platform.ingress_record_contracts import canonical_ingress_record_bytes
@@ -47,7 +47,6 @@ from chiplog.platform.ingress_transition_contracts import (
     IngressCommandIdentity,
     RetainedIngressSource,
 )
-from chiplog.capabilities.agent_loop.contracts import EndpointSelection
 from tests.composition.test_plan_effect_publication import response
 
 
@@ -136,14 +135,25 @@ async def _publish_ordinary(database: Path, resources: HermeticDispatchResources
         model = HermeticModel((response(),))
         model.session = runtime
         loop = AgentLoop(
-            R14LoopStore(runtime), model, OwnedStaticPrompts(), tenant="hermetic-tenant",
-            principal="hermetic-principal", origin=EndpointSelection(
-                kind="ORIGIN_EXACT", ingress_binding_head="hermetic-ingress-v1",
-                endpoint_head="hermetic-endpoint-v1", endpoint_id="hermetic-local",
-                provider="hermetic-local", recipient="hermetic-principal",
-                canonical_address="local://hermetic-principal", credential_binding_head="hermetic-v1",
-            ), contour_head="hermetic-contour-v1", policy_head="hermetic-policy-v1",
-            worker_session=runtime.current_worker(), planning=runtime,
+            R14LoopStore(runtime),
+            model,
+            OwnedStaticPrompts(),
+            tenant="hermetic-tenant",
+            principal="hermetic-principal",
+            origin=EndpointSelection(
+                kind="ORIGIN_EXACT",
+                ingress_binding_head="hermetic-ingress-v1",
+                endpoint_head="hermetic-endpoint-v1",
+                endpoint_id="hermetic-local",
+                provider="hermetic-local",
+                recipient="hermetic-principal",
+                canonical_address="local://hermetic-principal",
+                credential_binding_head="hermetic-v1",
+            ),
+            contour_head="hermetic-contour-v1",
+            policy_head="hermetic-policy-v1",
+            worker_session=runtime.current_worker(),
+            planning=runtime,
         )
         created = await loop.create("r", "Propose my exact hermetic action", BudgetPolicy())
         active = await loop.activate("r", created.head)
