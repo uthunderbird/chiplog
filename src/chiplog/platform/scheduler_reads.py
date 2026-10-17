@@ -23,6 +23,7 @@ from chiplog.capabilities.agent_loop.scheduler_contracts import (
     LeaseTransitionCommand,
     PhysicalRootRolloverCommand,
     ResolveIntervalCommand,
+    SchedulerCommandIdentity,
 )
 from chiplog.capabilities.agent_loop.scheduler_mandate_lifecycle_contracts import (
     IssueScheduledMandateV1,
@@ -101,6 +102,7 @@ def _historical_request(decision: SelectedOwnerDecision) -> HistoricalSchedulerR
     raw = request.command.canonical_bytes
     operation = request.operation
     parsed: Preparation
+    identity: IssueScheduledMandateV1 | SchedulerCommandIdentity
     if operation == "scheduler.issue_mandate":
         schema = "chiplog.scheduler.mandate-issuance-preparation.v1"
         parsed = MandateIssuancePreparationRequest.model_validate_json(raw)
