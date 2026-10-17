@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Protocol, cast
 
 from chiplog.capabilities.agent_loop.delivery_preparation import DeliveryObservation
+from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 
 
 class H1PreissuanceSourceUnavailable(ValueError):
@@ -124,6 +125,14 @@ class H1PreissuanceRegistrationPort(Protocol):
     ) -> H1PreissuanceSelection: ...
 
     def check_current(self, selection: H1PreissuanceSelection) -> bool: ...
+
+    def validate_pre_model_selection(
+        self,
+        selection: H1PreissuanceSelection,
+        accumulated: ExecutionRunRecord,
+        prepared: ExecutionRunRecord,
+        emitted: ExecutionRunRecord,
+    ) -> bool: ...
 
     def resolved_workspace_policy(self, selection: H1PreissuanceSelection) -> object: ...
 
@@ -266,8 +275,7 @@ class H1PreissuanceRegistrationSource:
             state is not None
             and not state.consumed
             and callable(validator)
-            and validator(state.selection, old_observation, new_observation)
-            is True
+            and validator(state.selection, old_observation, new_observation) is True
         )
 
     def reopen_original(self, verified_v2_issuance: object) -> H1PreissuanceSelection:
@@ -302,6 +310,26 @@ class H1PreissuanceRegistrationSource:
             return False
         return port.check_current(state.selection) is True
 
+    def validate_pre_model_selection(
+        self,
+        selection: object,
+        accumulated: ExecutionRunRecord,
+        prepared: ExecutionRunRecord,
+        emitted: ExecutionRunRecord,
+    ) -> bool:
+        """Recheck the owner cut after this capture's exact three publications."""
+        try:
+            port = self._port()
+        except H1PreissuanceSourceUnavailable:
+            return False
+        state = _selection_state(selection, port)
+        if state is None or state.consumed:
+            return False
+        return (
+            port.validate_pre_model_selection(state.selection, accumulated, prepared, emitted)
+            is True
+        )
+
     def resolved_workspace_policy(self, selection: object) -> object:
         """Return the port-derived V2 policy retaining this exact selection."""
 
@@ -318,9 +346,7 @@ class H1PreissuanceRegistrationSource:
             )
         return policy
 
-    def validate_original_selection(
-        self, selection: object, verified_v2_issuance: object
-    ) -> bool:
+    def validate_original_selection(self, selection: object, verified_v2_issuance: object) -> bool:
         """Recheck the persisted V2 join before a later H1 transition."""
 
         try:
@@ -328,14 +354,19 @@ class H1PreissuanceRegistrationSource:
         except H1PreissuanceSourceUnavailable:
             return False
         state = _selection_state(selection, port)
-        if state is None or state.consumed or not _issued_by(
-            verified_v2_issuance, _issued_originals, port
+        if (
+            state is None
+            or state.consumed
+            or not _issued_by(verified_v2_issuance, _issued_originals, port)
         ):
             return False
-        return port.validate_original_selection(
-            state.selection,
-            cast(H1VerifiedOriginalWorkspaceIssuance, verified_v2_issuance),
-        ) is True
+        return (
+            port.validate_original_selection(
+                state.selection,
+                cast(H1VerifiedOriginalWorkspaceIssuance, verified_v2_issuance),
+            )
+            is True
+        )
 
     def build_delivery_observation(
         self, selection: object, authenticated_completion_inputs: object

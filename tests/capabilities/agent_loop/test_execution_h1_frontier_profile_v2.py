@@ -5,9 +5,9 @@ import hashlib
 import json
 import struct
 from pathlib import Path
-from typing import cast
 
 import pytest
+from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallSubjectHead,
@@ -33,7 +33,7 @@ from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition.common_cli_execution_runtime import (
     R17_RETAINED_READER_ID,
     CommonCliExecutionRuntime,
-    open_common_cli_execution_runtime,
+    open_installed_h1_runtime,
 )
 from chiplog.composition.common_execution_driver_contracts import (
     AdvanceExecutionRequestV1,
@@ -43,6 +43,7 @@ from chiplog.composition.common_execution_driver_contracts import (
     SelectedExecutionReceiptV1,
 )
 from chiplog.composition.h1_first_path_sources import H1FirstPathSources
+from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.r14_execution_complete_seal_records import (
     EXECUTION_COMPLETE_SEAL_OPERATION,
     RetainedExecutionCompleteSealV2,
@@ -122,61 +123,67 @@ async def _selected_request(runtime: CommonCliExecutionRuntime) -> DriveInputReq
 async def _genuine_v2_inputs(
     tmp_path: Path,
 ) -> tuple[ExecutionRunRecord, SelectedAdmittedRunInput, SealedResponseRecord, H1WorkspaceClosure]:
-    database = tmp_path / "profile-v2.sqlite"
+    slot, expected = installed_slot(tmp_path)
+    await prepare_installed_slot(slot, expected, tmp_path)
     custody = tmp_path / "dispatch-custody"
     resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
-    async with open_common_cli_execution_runtime(database, resources=resources) as runtime:
-        request = await _selected_request(runtime)
-        admitted = runtime._selected_input(request, resources.observe())
-        response = DeliveryCompletion(
-            tenant="hermetic-tenant",
-            run_id=runtime._run_id(admitted),
-            turn_id=runtime._run_id(admitted) + "/turn/1",
-            deliveries=(ProposedDelivery(payload=(Commentary(text="profile V2"),)),),
-        ).canonical_bytes()
-    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
-    async with open_common_cli_execution_runtime(
-        database, resources=resources, responses=(response,)
-    ) as runtime:
-        initial = cast("SelectedExecutionReceiptV1", await runtime.drive_input(request))
-        await runtime.advance_execution(
-            AdvanceExecutionRequestV1(
-                identity=request.identity,
-                original_driver_command_fingerprint=request.original_driver_command_fingerprint(),
-                expected_selected_run_head=initial.selected_run_head,
+    with _open_installed_h1_launch(slot) as launch:
+        async with open_installed_h1_runtime(launch, resources=resources) as runtime:
+            request = await _selected_request(runtime)
+            admitted = runtime._selected_input(request, resources.observe())
+            response = DeliveryCompletion(
+                tenant="hermetic-tenant",
+                run_id=runtime._run_id(admitted),
+                turn_id=runtime._run_id(admitted) + "/turn/1",
+                deliveries=(ProposedDelivery(payload=(Commentary(text="profile V2"),)),),
+            ).canonical_bytes()
+        resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
+        async with open_installed_h1_runtime(
+            launch, resources=resources, responses=(response,)
+        ) as runtime:
+            initial = await runtime.drive_input(request)
+            assert isinstance(initial, SelectedExecutionReceiptV1), initial
+            advanced = await runtime.advance_execution(
+                AdvanceExecutionRequestV1(
+                    identity=request.identity,
+                    original_driver_command_fingerprint=request.original_driver_command_fingerprint(),
+                    expected_selected_run_head=initial.selected_run_head,
+                )
             )
-        )
-        seals: list[CallSubjectHead] = []
-        for _, _, decision_bytes in runtime._loop_decisions().entries():
-            entry = json.loads(decision_bytes)
-            if entry.get("operation_kind") == EXECUTION_COMPLETE_SEAL_OPERATION:
-                retained = RetainedExecutionCompleteSealV2.model_validate_json(
-                    entry["execution_complete_seal"]
-                )
-                seal = retained.exchange.proposal.fan_out.response_seal
-                seals.append(
-                    CallSubjectHead(
-                        subject_id=seal.response_seal_id,
-                        revision=Present(head="record:" + seal.digest(), fingerprint=seal.digest()),
+            assert isinstance(advanced, SelectedExecutionReceiptV1), advanced
+            seals: list[CallSubjectHead] = []
+            for _, _, decision_bytes in runtime._loop_decisions().entries():
+                entry = json.loads(decision_bytes)
+                if entry.get("operation_kind") == EXECUTION_COMPLETE_SEAL_OPERATION:
+                    retained = RetainedExecutionCompleteSealV2.model_validate_json(
+                        entry["execution_complete_seal"]
                     )
-                )
-        assert len(seals) == 1
-        reader = H1FirstPathSources(runtime)
-        selected_raw = reader._read_selected_cut(
-            original_identity=request.identity,
-            original_fingerprint=request.original_driver_command_fingerprint(),
-            selected_seal=seals[0],
-        )
-        _, workspace = reader._resolve_workspace_closure(selected_raw, historical=False)
-        initialization = RetainedInboxExecutionInitialization.model_validate_json(
-            json.loads(selected_raw.initialization.raw)["inbox_initialization"]
-        )
-        return (
-            selected_raw.lineage[-1][1],
-            initialization.request.admitted,
-            selected_raw.sealed_response,
-            workspace,
-        )
+                    seal = retained.exchange.proposal.fan_out.response_seal
+                    seals.append(
+                        CallSubjectHead(
+                            subject_id=seal.response_seal_id,
+                            revision=Present(
+                                head="record:" + seal.digest(), fingerprint=seal.digest()
+                            ),
+                        )
+                    )
+            assert len(seals) == 1
+            reader = H1FirstPathSources(runtime)
+            selected_raw = reader._read_selected_cut(
+                original_identity=request.identity,
+                original_fingerprint=request.original_driver_command_fingerprint(),
+                selected_seal=seals[0],
+            )
+            _, workspace = reader._resolve_workspace_closure(selected_raw, historical=False)
+            initialization = RetainedInboxExecutionInitialization.model_validate_json(
+                json.loads(selected_raw.initialization.raw)["inbox_initialization"]
+            )
+            return (
+                selected_raw.lineage[-1][1],
+                initialization.request.admitted,
+                selected_raw.sealed_response,
+                workspace,
+            )
 
 
 def test_v2_extractor_requires_original_workspace_closure_before_carrier_use() -> None:

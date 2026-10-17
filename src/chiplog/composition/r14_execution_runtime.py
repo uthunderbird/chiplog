@@ -671,9 +671,7 @@ class R14ExecutionRuntime(R14PlanningRuntime):
             replace(command, admission_guard=guard, decision_guard=decide)
         )
         if published.disposition == "CONFLICT":
-            raise LoopRejected(
-                "selected ingress was claimed by a competing driver command"
-            )
+            raise LoopRejected("selected ingress was claimed by a competing driver command")
         if published.disposition not in ("COMMITTED", "REPLAY"):
             raise LoopRejected("inbox initialization publication " + published.disposition)
         self._finish_decision(command.idempotency_key)
@@ -903,7 +901,9 @@ class R14ExecutionRuntime(R14PlanningRuntime):
                 self._check_execution_actor(refreshed)
                 if h1_preissuance_selection is not None and (
                     h1_preissuance_source is None
-                    or not h1_preissuance_source.check_current(h1_preissuance_selection)
+                    or not h1_preissuance_source.validate_pre_model_selection(
+                        h1_preissuance_selection, accumulated, prepared, emitted
+                    )
                 ):
                     raise LoopRejected("H1 execution workspace selection is stale")
                 current = read_execution_history(self)

@@ -13,6 +13,7 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass, replace
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Never, cast
 
@@ -934,6 +935,50 @@ class _H1RuntimePreissuancePort:
                 return (
                     self._same_selected_inputs(fresh, cut.prepared)
                     and self._reopen_scope(cut.issued, cut.prepared) == cut.scope
+                    and self._runtime._trust.capture_verified_observation()
+                    == cut.append_receipt.after
+                )
+        except H1PreissuanceSourceViolation, LoopRejected, ValueError:
+            return False
+
+    def validate_pre_model_selection(
+        self,
+        selection: H1PreissuanceSelection,
+        accumulated: ExecutionRunRecord,
+        prepared: ExecutionRunRecord,
+        emitted: ExecutionRunRecord,
+    ) -> bool:
+        """Keep the original source current across only this capture's suffix."""
+        try:
+            with self._gate.hold():
+                cut = self._cut(selection)
+                state = _selection_state(selection, self)
+                if state is None or state.consumed:
+                    return False
+                self._assert_launch_and_trust()
+                suffix = (cut.prepared.run, accumulated, prepared, emitted)
+                lineage = tuple(
+                    run
+                    for run in read_execution_history(self._runtime).records
+                    if run.run_id == cut.prepared.run.run_id
+                )
+                if (
+                    lineage[-4:] != suffix
+                    or tuple(run.event for run in suffix)
+                    != (
+                        "TurnStarted",
+                        "TurnVisibilityAccumulated",
+                        "ModelAttemptPrepared",
+                        "ModelAttemptEmitted",
+                    )
+                    or any(right.predecessor != left.head for left, right in pairwise(suffix))
+                    or any(run.worker_session != self._runtime.current_worker() for run in suffix)
+                ):
+                    return False
+                _, _, custody_digest, custody_generation = self._selected_scope_join(cut)
+                return (
+                    custody_digest == cut.prepared.custody_digest
+                    and custody_generation == cut.prepared.custody_generation
                     and self._runtime._trust.capture_verified_observation()
                     == cut.append_receipt.after
                 )

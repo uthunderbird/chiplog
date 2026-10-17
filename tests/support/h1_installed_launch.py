@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import stat
 from pathlib import Path
 
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
@@ -85,6 +86,16 @@ def active_registration_custody(expected: ExpectedH1Genesis) -> H1RegistrationCu
 async def prepare_installed_slot(
     slot: InstalledH1Slot, expected: ExpectedH1Genesis, tmp_path: Path
 ) -> None:
+    # installed_slot also serves raw launch-negative tests. Its empty file is
+    # a placeholder, not an initialized authority bundle: let the real
+    # initializer create that bundle for positive installed-runtime tests.
+    placeholder = slot.database_path.lstat()
+    assert stat.S_ISREG(placeholder.st_mode) and placeholder.st_size == 0
+    assert not any(
+        path.name.startswith((slot.database_path.name + ".", slot.database_path.name + "-"))
+        for path in slot.database_path.parent.iterdir()
+    )
+    slot.database_path.unlink()
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "bootstrap-custody"
     )
@@ -98,6 +109,7 @@ async def prepare_installed_slot(
             DATABASE,
             expected.digest,
         )
+    slot.database_path.chmod(0o600)
     slot._trust = ActiveTrust(expected.digest)
     registry = active_registration_custody(expected)
     _provision_h1_enrollment(slot, expected, registry)
