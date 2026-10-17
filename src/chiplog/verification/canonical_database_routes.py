@@ -2,6 +2,7 @@
 
 import ast
 from dataclasses import dataclass
+from typing import cast
 
 
 class UnknownDatabaseRoute(ValueError):
@@ -33,39 +34,63 @@ def extract_canonical_database_routes(
     tree = ast.parse(opener_source)
     _require_imports(tree)
     _require_path_leaf(ast.parse(leaf_source))
-    methods = [node for node in tree.body
-               if isinstance(node, ast.AsyncFunctionDef) and node.name == "_open_runtime"]
+    methods = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_open_runtime"
+    ]
     if len(methods) != 1:
         raise UnknownDatabaseRoute("expected one canonical opener")
-    method, = methods
+    (method,) = methods
     parents = {child: node for node in ast.walk(method) for child in ast.iter_child_nodes(node)}
-    resources_frames = [node for node in method.body
-                        if isinstance(node, ast.With) and len(node.items) == 1
-                        and ast.unparse(node.items[0].context_expr) == "ExitStack()"
-                        and node.items[0].optional_vars is not None
-                        and ast.unparse(node.items[0].optional_vars) == "resources"]
+    resources_frames = [
+        node
+        for node in method.body
+        if isinstance(node, ast.With)
+        and len(node.items) == 1
+        and ast.unparse(node.items[0].context_expr) == "ExitStack()"
+        and node.items[0].optional_vars is not None
+        and ast.unparse(node.items[0].optional_vars) == "resources"
+    ]
     if len(resources_frames) != 1:
         raise UnknownDatabaseRoute("unknown resources frame")
-    resources, = resources_frames
-    startup_frames = [node for node in resources.body
-                      if isinstance(node, ast.With) and len(node.items) == 1
-                      and ast.unparse(node.items[0].context_expr) == "startup_scope"
-                      and node.items[0].optional_vars is None]
+    (resources,) = resources_frames
+    startup_frames = [
+        node
+        for node in resources.body
+        if isinstance(node, ast.With)
+        and len(node.items) == 1
+        and ast.unparse(node.items[0].context_expr) == "startup_scope"
+        and node.items[0].optional_vars is None
+    ]
     if len(startup_frames) != 1:
         raise UnknownDatabaseRoute("unknown startup frame")
-    startup, = startup_frames
+    (startup,) = startup_frames
 
     def definition(name: str) -> ast.Assign | ast.AnnAssign:
         body = method.body if name in {"authority_gate", "database"} else startup.body
-        definitions = [node for node in body if (
-            isinstance(node, ast.Assign) and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name
-        ) or (
-            isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
-            and node.target.id == name
-        )]
-        stores = [node for node in ast.walk(method) if isinstance(node, ast.Name)
-                  and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del))]
+        definitions = [
+            node
+            for node in body
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == name
+            )
+            or (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == name
+            )
+        ]
+        stores = [
+            node
+            for node in ast.walk(method)
+            if isinstance(node, ast.Name)
+            and node.id == name
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+        ]
         if len(definitions) != 1 or len(stores) != 1:
             raise UnknownDatabaseRoute(f"route lacks one dominating definition: {name}")
         if definitions[0].value is None:
@@ -73,22 +98,32 @@ def extract_canonical_database_routes(
         return definitions[0]
 
     gate = definition("authority_gate")
-    _call(gate.value, "AuthorityGate.for_database", 1)
-    if ast.unparse(gate.value.args[0]) != "database" or gate.value.keywords:
+    gate_call = _call(cast(ast.expr, gate.value), "AuthorityGate.for_database", 1)
+    if ast.unparse(gate_call.args[0]) != "database" or gate_call.keywords:
         raise UnknownDatabaseRoute("gate does not receive the selected database parameter")
     canonical = definition("database")
-    if ast.unparse(canonical.value) != "authority_gate.database" or canonical.lineno <= gate.lineno:
+    if (
+        ast.unparse(cast(ast.expr, canonical.value)) != "authority_gate.database"
+        or canonical.lineno <= gate.lineno
+    ):
         raise UnknownDatabaseRoute("database is not normalized through the selected gate")
     for node in ast.walk(method):
-        if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)) and (
-            isinstance(node.value, ast.Name) and node.value.id in {
-                "planning_store", "authority_gate",
-            }
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and (
+                isinstance(node.value, ast.Name)
+                and node.value.id
+                in {
+                    "planning_store",
+                    "authority_gate",
+                }
+            )
         ):
             raise UnknownDatabaseRoute("route carrier attribute is rebound")
 
     planning = definition("planning_store")
-    planning_call = _call(planning.value, "ProductionPlanningStore", 1)
+    planning_call = _call(cast(ast.expr, planning.value), "ProductionPlanningStore", 1)
     if planning_call.keywords:
         raise UnknownDatabaseRoute("unknown planning leaf arguments")
     if planning.lineno <= canonical.lineno:
@@ -105,7 +140,7 @@ def extract_canonical_database_routes(
         declaration = definition(name)
         if declaration.lineno <= canonical.lineno:
             raise UnknownDatabaseRoute(f"{name} precedes canonical database definition")
-        call = _call(declaration.value, callee, index + 1, exact=False)
+        call = _call(cast(ast.expr, declaration.value), callee, index + 1, exact=False)
         _require_gate_argument(call)
         routes.append(ForwardedDatabaseRoute(sink, _paths(call.args[index], planning_paths)))
 
@@ -120,8 +155,11 @@ def extract_canonical_database_routes(
     kwargs = definition("materializer_kwargs")
     if not isinstance(kwargs.value, ast.Dict) or any(key is None for key in kwargs.value.keys):
         raise UnknownDatabaseRoute("materializer keyword provenance is unknown")
-    gate_values = [value for key, value in zip(kwargs.value.keys, kwargs.value.values, strict=True)
-                   if isinstance(key, ast.Constant) and key.value == "authority_gate"]
+    gate_values = [
+        value
+        for key, value in zip(kwargs.value.keys, kwargs.value.values, strict=True)
+        if isinstance(key, ast.Constant) and key.value == "authority_gate"
+    ]
     if len(gate_values) != 1 or ast.unparse(gate_values[0]) != "authority_gate":
         raise UnknownDatabaseRoute("materializer does not receive the selected gate")
     materializer = _one_call(method, "factory")
@@ -131,38 +169,53 @@ def extract_canonical_database_routes(
     if (
         not isinstance(enter_context, ast.Call)
         or ast.unparse(enter_context.func) != "resources.enter_context"
-        or enter_context.args != [materializer] or enter_context.keywords
+        or enter_context.args != [materializer]
+        or enter_context.keywords
         or store.value is not enter_context
-        or factory.lineno >= materializer.lineno or kwargs.lineno >= materializer.lineno
+        or factory.lineno >= materializer.lineno
+        or kwargs.lineno >= materializer.lineno
         or canonical.lineno >= materializer.lineno
-        or len(materializer.keywords) != 1 or materializer.keywords[0].arg is not None
+        or len(materializer.keywords) != 1
+        or materializer.keywords[0].arg is not None
         or ast.unparse(materializer.keywords[0].value) != "materializer_kwargs"
     ):
         raise UnknownDatabaseRoute("unknown main materializer construction placement or arguments")
-    routes.append(ForwardedDatabaseRoute("materializer.argument",
-                                         _paths(materializer.args[0], planning_paths)))
+    routes.append(
+        ForwardedDatabaseRoute(
+            "materializer.argument", _paths(materializer.args[0], planning_paths)
+        )
+    )
 
     runtime = _one_call(method, "runtime_type")
     _call(runtime, "runtime_type", 4, exact=False)
     owner = parents.get(runtime)
     if (
-        not isinstance(owner, ast.Assign) or owner.value is not runtime
-        or planning.lineno >= runtime.lineno or canonical.lineno >= runtime.lineno
+        not isinstance(owner, ast.Assign)
+        or owner.value is not runtime
+        or planning.lineno >= runtime.lineno
+        or canonical.lineno >= runtime.lineno
     ):
         raise UnknownDatabaseRoute("runtime is not a direct consumer after path production")
-    routes.append(ForwardedDatabaseRoute("runtime.database_argument",
-                                         _paths(runtime.args[3], planning_paths)))
+    routes.append(
+        ForwardedDatabaseRoute("runtime.database_argument", _paths(runtime.args[3], planning_paths))
+    )
     commitment = _one_call(method, "AuthorityCommitmentJournal")
     _call(commitment, "AuthorityCommitmentJournal", 1, exact=False)
     _require_gate_argument(commitment)
-    routes.append(ForwardedDatabaseRoute("commitment.argument",
-                                         _paths(commitment.args[0], planning_paths)))
-    return CanonicalDatabaseRoutes(tuple(sorted(routes, key=lambda route: route.sink)), (
-        "preflight callback effects", "store_setup callback effects",
-        "runtime_setup callback effects", "extra_leaves and supervisor path-carrier effects",
-        "caller runtime_type and manifest binding",
-        "downstream constructor, inherited receiver and filesystem identity contracts",
-    ))
+    routes.append(
+        ForwardedDatabaseRoute("commitment.argument", _paths(commitment.args[0], planning_paths))
+    )
+    return CanonicalDatabaseRoutes(
+        tuple(sorted(routes, key=lambda route: route.sink)),
+        (
+            "preflight callback effects",
+            "store_setup callback effects",
+            "runtime_setup callback effects",
+            "extra_leaves and supervisor path-carrier effects",
+            "caller runtime_type and manifest binding",
+            "downstream constructor, inherited receiver and filesystem identity contracts",
+        ),
+    )
 
 
 def _paths(expression: ast.expr, planning_paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -171,30 +224,40 @@ def _paths(expression: ast.expr, planning_paths: tuple[str, ...]) -> tuple[str, 
     if ast.unparse(expression) == "planning_store.path" and planning_paths:
         return planning_paths
     if isinstance(expression, ast.BoolOp) and isinstance(expression.op, ast.Or):
-        return tuple(sorted({path for value in expression.values
-                             for path in _paths(value, planning_paths)}))
+        return tuple(
+            sorted({path for value in expression.values for path in _paths(value, planning_paths)})
+        )
     if (
-        isinstance(expression, ast.Call) and isinstance(expression.func, ast.Attribute)
-        and expression.func.attr == "with_suffix" and len(expression.args) == 1
+        isinstance(expression, ast.Call)
+        and isinstance(expression.func, ast.Attribute)
+        and expression.func.attr == "with_suffix"
+        and len(expression.args) == 1
         and not expression.keywords
     ):
         suffix = expression.args[0]
         if (
-            isinstance(suffix, ast.BinOp) and isinstance(suffix.op, ast.Add)
-            and isinstance(suffix.left, ast.Attribute) and suffix.left.attr == "suffix"
+            isinstance(suffix, ast.BinOp)
+            and isinstance(suffix.op, ast.Add)
+            and isinstance(suffix.left, ast.Attribute)
+            and suffix.left.attr == "suffix"
             and ast.dump(suffix.left.value) == ast.dump(expression.func.value)
-            and isinstance(suffix.right, ast.Constant) and isinstance(suffix.right.value, str)
-            and suffix.right.value.startswith(".") and "/" not in suffix.right.value
+            and isinstance(suffix.right, ast.Constant)
+            and isinstance(suffix.right.value, str)
+            and suffix.right.value.startswith(".")
+            and "/" not in suffix.right.value
         ):
-            return tuple(path + suffix.right.value
-                         for path in _paths(expression.func.value, planning_paths))
+            return tuple(
+                path + suffix.right.value for path in _paths(expression.func.value, planning_paths)
+            )
     raise UnknownDatabaseRoute(f"unknown database path expression: {ast.unparse(expression)}")
 
 
 def _call(expression: ast.expr, callee: str, count: int, *, exact: bool = True) -> ast.Call:
     if (
-        not isinstance(expression, ast.Call) or ast.unparse(expression.func) != callee
-        or len(expression.args) < count or (exact and len(expression.args) != count)
+        not isinstance(expression, ast.Call)
+        or ast.unparse(expression.func) != callee
+        or len(expression.args) < count
+        or (exact and len(expression.args) != count)
         or any(isinstance(arg, ast.Starred) for arg in expression.args)
     ):
         raise UnknownDatabaseRoute(f"unknown route producer: {callee}")
@@ -202,17 +265,29 @@ def _call(expression: ast.expr, callee: str, count: int, *, exact: bool = True) 
 
 
 def _one_call(method: ast.AsyncFunctionDef, callee: str) -> ast.Call:
-    calls = [node for node in ast.walk(method) if isinstance(node, ast.Call)
-             and ast.unparse(node.func) == callee]
+    calls = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == callee
+    ]
     if len(calls) != 1:
         raise UnknownDatabaseRoute(f"missing or duplicate route consumer: {callee}")
     parents = {child: node for node in ast.walk(method) for child in ast.iter_child_nodes(node)}
     parent = parents.get(calls[0])
     while parent is not method:
-        if parent is None or isinstance(parent, (
-            ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
-            ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
-        )):
+        if parent is None or isinstance(
+            parent,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+                ast.Lambda,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+            ),
+        ):
             raise UnknownDatabaseRoute(
                 f"route consumer belongs to another execution frame: {callee}"
             )
@@ -239,57 +314,78 @@ def _require_imports(tree: ast.Module) -> None:
     }
     for node in ast.walk(tree):
         if (
-            isinstance(node, ast.Name) and node.id in expected
-            and isinstance(node.ctx, (ast.Store, ast.Del))
-        ) or (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and node.name in expected
-        ) or (isinstance(node, ast.arg) and node.arg in expected):
+            (
+                isinstance(node, ast.Name)
+                and node.id in expected
+                and isinstance(node.ctx, (ast.Store, ast.Del))
+            )
+            or (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and node.name in expected
+            )
+            or (isinstance(node, ast.arg) and node.arg in expected)
+        ):
             raise UnknownDatabaseRoute("constructor name is rebound or shadowed")
         if isinstance(node, ast.Import) and any(
             (alias.asname or alias.name.split(".")[0]) in expected for alias in node.names
         ):
             raise UnknownDatabaseRoute("constructor name is rebound by a module import")
     for name, origin in expected.items():
-        imports = [(node.level, node.module, alias.name, node in tree.body)
-                   for node in ast.walk(tree)
-                   if isinstance(node, ast.ImportFrom) for alias in node.names
-                   if (alias.asname or alias.name) == name]
+        imports = [
+            (node.level, node.module, alias.name, node in tree.body)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+            if (alias.asname or alias.name) == name
+        ]
         if imports != [(*origin, name, True)]:
             raise UnknownDatabaseRoute(f"unrecognized constructor import: {name}")
 
 
 def _require_path_leaf(tree: ast.Module) -> None:
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Name) and node.id == "ProductionPlanningStore") or (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "ProductionPlanningStore"
-        ) or (isinstance(node, ast.alias) and (
-            node.asname or node.name.split(".")[0]
-        ) == "ProductionPlanningStore"):
+        if (
+            (isinstance(node, ast.Name) and node.id == "ProductionPlanningStore")
+            or (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == "ProductionPlanningStore"
+            )
+            or (
+                isinstance(node, ast.alias)
+                and (node.asname or node.name.split(".")[0]) == "ProductionPlanningStore"
+            )
+        ):
             raise UnknownDatabaseRoute("leaf class symbol is rebound, shadowed or escapes")
-    classes = [node for node in ast.walk(tree)
-               if isinstance(node, ast.ClassDef) and node.name == "ProductionPlanningStore"]
+    classes = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "ProductionPlanningStore"
+    ]
     if len(classes) != 1 or classes[0] not in tree.body:
         raise UnknownDatabaseRoute("leaf class binding is missing, duplicated or shadowed")
-    leaf, = classes
+    (leaf,) = classes
     if leaf.bases or leaf.keywords or leaf.decorator_list or len(leaf.body) != 1:
         raise UnknownDatabaseRoute("path leaf has unsupported class behavior")
-    constructor, = leaf.body
+    (constructor,) = leaf.body
     if (
-        not isinstance(constructor, ast.FunctionDef) or constructor.name != "__init__"
-        or constructor.decorator_list or len(constructor.body) != 1
+        not isinstance(constructor, ast.FunctionDef)
+        or constructor.name != "__init__"
+        or constructor.decorator_list
+        or len(constructor.body) != 1
         or [arg.arg for arg in constructor.args.args] != ["self", "path"]
-        or constructor.args.posonlyargs or constructor.args.kwonlyargs
-        or constructor.args.vararg or constructor.args.kwarg
+        or constructor.args.posonlyargs
+        or constructor.args.kwonlyargs
+        or constructor.args.vararg
+        or constructor.args.kwarg
         or len(constructor.args.defaults) != 1
         or not isinstance(constructor.args.defaults[0], ast.Constant)
         or constructor.args.defaults[0].value is not None
     ):
         raise UnknownDatabaseRoute("path leaf constructor is not the closed holder")
-    assignment, = constructor.body
+    (assignment,) = constructor.body
     if not isinstance(assignment, ast.Assign) or (
-        len(assignment.targets) != 1 or ast.unparse(assignment.targets[0]) != "self.path"
+        len(assignment.targets) != 1
+        or ast.unparse(assignment.targets[0]) != "self.path"
         or ast.unparse(assignment.value) != "path"
     ):
         raise UnknownDatabaseRoute("path leaf does not forward its path parameter")
@@ -302,29 +398,40 @@ def _require_declarative_leaf_module(tree: ast.Module) -> None:
         body = body[1:]
     if not body or ast.unparse(body[0]) != "from __future__ import annotations":
         raise UnknownDatabaseRoute("leaf module annotation evaluation is not closed")
-    imports = [ast.unparse(node) for node in body
-               if isinstance(node, (ast.Import, ast.ImportFrom))]
-    if sorted(imports) != sorted((
-        "from __future__ import annotations", "import time", "from pathlib import Path",
-    )):
+    imports = [ast.unparse(node) for node in body if isinstance(node, (ast.Import, ast.ImportFrom))]
+    if sorted(imports) != sorted(
+        (
+            "from __future__ import annotations",
+            "import time",
+            "from pathlib import Path",
+        )
+    ):
         raise UnknownDatabaseRoute("leaf module import effects are not closed")
     for node in body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             continue
         if isinstance(node, ast.Assign) and (
-            len(node.targets) == 1 and ast.unparse(node.targets[0]) == "__all__"
+            len(node.targets) == 1
+            and ast.unparse(node.targets[0]) == "__all__"
             and isinstance(node.value, ast.List)
-            and all(isinstance(item, ast.Constant) and isinstance(item.value, str)
-                    for item in node.value.elts)
+            and all(
+                isinstance(item, ast.Constant) and isinstance(item.value, str)
+                for item in node.value.elts
+            )
         ):
             continue
-        if isinstance(node, ast.ClassDef) and not (
-            node.bases or node.keywords or node.decorator_list
-        ) and all(
-            isinstance(method, ast.FunctionDef) and not method.decorator_list
-            and all(default is None or isinstance(default, ast.Constant)
-                    for default in (*method.args.defaults, *method.args.kw_defaults))
-            for method in node.body
+        if (
+            isinstance(node, ast.ClassDef)
+            and not (node.bases or node.keywords or node.decorator_list)
+            and all(
+                isinstance(method, ast.FunctionDef)
+                and not method.decorator_list
+                and all(
+                    default is None or isinstance(default, ast.Constant)
+                    for default in (*method.args.defaults, *method.args.kw_defaults)
+                )
+                for method in node.body
+            )
         ):
             continue
         raise UnknownDatabaseRoute("leaf module has unsupported executable statements")
