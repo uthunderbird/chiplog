@@ -49,7 +49,7 @@ def test_auxiliary_capture_does_not_read_trust_when_journal_inputs_unavailable(
 
     runtime = NoTrust()
 
-    def unavailable(actual):
+    def unavailable(actual) -> None:
         assert actual is runtime
         if failure is not None:
             raise failure("journal unavailable")
@@ -62,7 +62,7 @@ def test_auxiliary_capture_does_not_read_trust_when_journal_inputs_unavailable(
 def test_auxiliary_capture_discards_journals_when_trust_capture_fails(monkeypatch) -> None:
     from chiplog.composition import r14_call_history_witness as history
 
-    def unavailable():
+    def unavailable() -> None:
         raise ValueError("trust materialization differs")
 
     runtime = SimpleNamespace(_trust=SimpleNamespace(capture_verified_observation=unavailable))

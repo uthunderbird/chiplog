@@ -23,7 +23,7 @@ def test_pending_r14_suffix_dispatches_exactly_once_only_for_registered_operatio
     monkeypatch, operation: str, expected_calls
 ) -> None:
     class Gate:
-        def require_held(self):
+        def require_held(self) -> None:
             pass
 
     runtime = SimpleNamespace(
@@ -673,7 +673,7 @@ def test_consumption_source_validation_binds_exact_prior_send_without_history_re
         decisions = (*decisions, selected_consumption)
     journal = SimpleNamespace(decisions=decisions)
 
-    def reentry(*args, **kwargs):
+    def reentry(*args, **kwargs) -> None:
         raise AssertionError("consumption validation must use supplied journal")
 
     monkeypatch.setattr(outbox, "_capture_sources", reentry)
@@ -776,7 +776,7 @@ def test_exact_open_history_reaches_semantic_validation_before_pending_lifecycle
     )
     monkeypatch.setattr(historical, "_make_authenticated_loop_decision_cut", lambda *args: args[1])
 
-    def reach_semantics(entry):
+    def reach_semantics(entry) -> None:
         raise ReachedSemanticValidation
 
     monkeypatch.setattr(open_records, "retained_accepted_open_recovery", reach_semantics)
@@ -864,7 +864,7 @@ def test_lifecycle_physical_validation_keeps_default_strict_and_reaches_pending_
     monkeypatch.setattr(suspension, "_command", lambda _: command)
     monkeypatch.setattr(successor, "_command", lambda _: command)
 
-    def check_budget(_):
+    def check_budget(_) -> None:
         raise BudgetValidationReached
 
     monkeypatch.setattr(suspension, "validate_recovery_actor_budget", check_budget)

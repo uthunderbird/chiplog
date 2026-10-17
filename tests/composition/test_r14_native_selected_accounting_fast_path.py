@@ -53,7 +53,7 @@ def test_open_cut_validation_reuses_authenticated_history_without_skipping_gate(
     class Gate:
         held = False
 
-        def require_held(self):
+        def require_held(self) -> None:
             assert self.held
             events.append("held")
 
@@ -70,7 +70,7 @@ def test_open_cut_validation_reuses_authenticated_history_without_skipping_gate(
     runtime = SimpleNamespace(_authority_gate=lambda: gate)
     source = object.__new__(NativeRecoveryCutSource)
 
-    def frontier(actual_runtime, *, _authenticated_history=None):
+    def frontier(actual_runtime, *, _authenticated_history=None) -> None:
         assert actual_runtime is runtime
         assert gate.held
         assert _authenticated_history is history
@@ -113,7 +113,7 @@ def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(
         def _authority_gate(self):
             return gate
 
-        def _check_database_identity(self):
+        def _check_database_identity(self) -> None:
             events.append("identity")
 
         def _owner_decisions(self):
@@ -162,7 +162,7 @@ def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(
 
     from chiplog.composition import r16_effects
 
-    def stop_after_selected_source(*_args, **_kwargs):
+    def stop_after_selected_source(*_args, **_kwargs) -> None:
         raise RuntimeError("stop after source collection")
 
     monkeypatch.setattr(
@@ -307,7 +307,7 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
     monkeypatch.setattr(r16_effects, "_read_materialized_effects_with_history", effects_read)
     monkeypatch.setattr(r16_dispatch_history, "verify_dispatch_history", lambda *_: object())
 
-    def semantic_verifier(runtime, journal, call_id, *, allowed_intent_ids):
+    def semantic_verifier(runtime, journal, call_id, *, allowed_intent_ids) -> None:
         assert call_id == "call-first"
         assert allowed_intent_ids == frozenset({"effect-first", "effect-second"})
         raise ReachedSemanticVerifier
@@ -503,7 +503,7 @@ async def _open_cut_probe(monkeypatch, case):
         def _authority_gate(self):
             return SimpleNamespace(hold=held)
 
-        def _check_database_identity(self):
+        def _check_database_identity(self) -> None:
             pass
 
     monkeypatch.setattr(cuts, "CommonCliExecutionRuntime", Runtime)
@@ -686,7 +686,7 @@ async def test_open_causal_source_joins_captured_prefix_and_excludes_future_clos
         _tenant_id=cut.tenant_id, _database_identity=selected.database_identity
     )
 
-    def reentry(*args, **kwargs):
+    def reentry(*args, **kwargs) -> None:
         raise AssertionError("causal join must consume captured history")
 
     monkeypatch.setattr(accounting_module, "read_execution_recovery_history", reentry)
@@ -768,7 +768,7 @@ async def test_open_effects_history_keeps_only_exact_physical_runs(
         physical_head = 2 if state in ("COMPLETE", "conflict") else 1
         db.execute("INSERT INTO tenant_heads VALUES (?, ?)", (original.tenant, physical_head))
 
-        def publish(cmd):
+        def publish(cmd) -> None:
             record = cmd.records[0]
             db.execute(
                 "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?)",
@@ -1175,7 +1175,7 @@ async def test_open_startup_validation_does_not_project_incomplete_whole_seal(
     monkeypatch.setattr(publication, "accepted_open_recovery_command", lambda _: command)
     monkeypatch.setattr(publication, "_current_cut", lambda *a, **kw: (facts, cut))
 
-    def incomplete_projection(*args):
+    def incomplete_projection(*args) -> None:
         raise AssertionError("startup must validate the exact call, not an incomplete whole seal")
 
     monkeypatch.setattr(publication, "_accepted_open_sealed_accounting", incomplete_projection)
@@ -1437,7 +1437,7 @@ def test_open_current_cut_reuses_history_but_keeps_original_historical_selection
     facts = object()
 
     class PrepareSource:
-        def __init__(self, runtime):
+        def __init__(self, runtime) -> None:
             pass
 
         def collect(self, seal_ref):
@@ -1445,7 +1445,7 @@ def test_open_current_cut_reuses_history_but_keeps_original_historical_selection
             return SimpleNamespace(selected_response_seal=seal_ref)
 
     class AccountingSource:
-        def __init__(self, *args):
+        def __init__(self, *args) -> None:
             pass
 
         def collect_one_accepted_open_outcome(self, target, **kwargs):
@@ -1457,10 +1457,10 @@ def test_open_current_cut_reuses_history_but_keeps_original_historical_selection
             events.append("historical-selection")
             return facts
 
-    def duplicate(*args, **kwargs):
+    def duplicate(*args, **kwargs) -> None:
         pytest.fail("fresh held history was read again")
 
-    def build(runtime, selected, **kwargs):
+    def build(runtime, selected, **kwargs) -> None:
         assert selected is facts and kwargs["authenticated_history"] is history
         assert events == ["held", "prepare", "held", "historical-selection"]
         raise ReachedBuilder
@@ -1501,7 +1501,7 @@ async def test_current_cut_and_real_builder_read_historical_sources_once(
     class Gate:
         depth = 0
 
-        def require_held(self):
+        def require_held(self) -> None:
             assert self.depth > 0
 
         @contextmanager
@@ -1545,7 +1545,7 @@ async def test_current_cut_and_real_builder_read_historical_sources_once(
         return history
 
     class PrepareSource:
-        def __init__(self, actual_runtime):
+        def __init__(self, actual_runtime) -> None:
             assert actual_runtime is runtime
 
         def collect(self, seal_ref):
@@ -1553,7 +1553,7 @@ async def test_current_cut_and_real_builder_read_historical_sources_once(
             return SimpleNamespace(selected_response_seal=seal_ref)
 
     class AccountingSource:
-        def __init__(self, *args):
+        def __init__(self, *args) -> None:
             pass
 
         def collect_one_accepted_open_outcome(self, target, **kwargs):
@@ -1673,7 +1673,7 @@ def test_open_builder_reuses_held_history_after_current_source_checks(
         accepted=SimpleNamespace(source=SimpleNamespace(target_run_lineage=())),
     )
 
-    def duplicate(*args, **kwargs):
+    def duplicate(*args, **kwargs) -> None:
         pytest.fail("builder read an already authenticated history again")
 
     monkeypatch.setattr(builder, "CommonCliExecutionRuntime", SimpleNamespace)

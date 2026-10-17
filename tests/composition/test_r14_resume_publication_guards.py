@@ -131,11 +131,11 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
         budget = NS(request=NS(budget=NS(absolute_deadline_ns=state.now + 30_000_000_000)))
         return actor, budget
 
-    def check_actor(_):
+    def check_actor(_) -> None:
         if state.issued is not None and state.now >= state.issued + 30_000_000_000:
             raise LoopRejected("inert actor deadline expired")
 
-    def require_no_pending():
+    def require_no_pending() -> None:
         if state.pending:
             raise LoopRejected("inert publication pending")
 
@@ -157,7 +157,7 @@ async def test_resume_validates_once_and_preserves_both_writer_guards(
         _same_execution_actor_identity=lambda *_: True,
     )
 
-    def append_decision(entry):
+    def append_decision(entry) -> None:
         state.selected = ("selected", None, entry)
 
     runtime._append_decision = append_decision

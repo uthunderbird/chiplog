@@ -193,7 +193,7 @@ async def test_root_append_uncertainty_reopens_and_reconciles_without_a_second_a
     original_append = H1PostSealRecoveryJournal.append_transition
     append_calls = 0
 
-    def append_then_lose_readback(self, record, *, expected_global_tip):
+    def append_then_lose_readback(self, record, *, expected_global_tip) -> None:
         nonlocal append_calls
         append_calls += 1
         original_append(self, record, expected_global_tip=expected_global_tip)

@@ -304,7 +304,7 @@ async def test_native_post_owner_admission_uses_same_verified_history_with_fresh
             captures.append(kwargs.get("execution_call_history"))
             return original_capture(*args, **kwargs)
 
-        def no_semantic_replay(*args, **kwargs):
+        def no_semantic_replay(*args, **kwargs) -> None:
             raise AssertionError("post-owner writer repeated full semantic history")
 
         monkeypatch.setattr(call_authority, "capture_dispatch", fresh_capture)
@@ -440,7 +440,7 @@ async def test_public_accept_seeds_exact_history_cache_and_main_commitment_chang
         fallback_cache_results = []
         fallback_history_reads = []
 
-        def unsupported_dispatch_cache_inputs(_runtime):
+        def unsupported_dispatch_cache_inputs(_runtime) -> None:
             return None
 
         def observed_fallback_cache_reader(current_runtime):
@@ -510,7 +510,7 @@ async def test_public_accept_seeds_exact_history_cache_and_main_commitment_chang
         assert cached_history[0].tenant_head == before[0].tenant_head + 1
         assert inputs.authority_commitment == capture_authority_storage_state(runtime._database)[0]
 
-        def unexpected_full_history_read(*args, **kwargs):
+        def unexpected_full_history_read(*args, **kwargs) -> None:
             raise AssertionError("unchanged post-accept preview join missed verified history cache")
 
         original_preview_reader = call_preview.read_execution_call_history
@@ -650,5 +650,5 @@ def test_r8_registers_native_json_dependency_only_at_reviewed_readers(tmp_path, 
         verify_offline_import_boundary(tmp_path)
 
 
-def no_replay(*args, **kwargs):
+def no_replay(*args, **kwargs) -> None:
     raise AssertionError("post-owner writer repeated full semantic history")

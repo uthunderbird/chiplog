@@ -367,7 +367,7 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert joined.calls[0].disposition.recovered_outcome.outcome.kind == "ABSENT"
         from chiplog.composition import r14_next_turn_publication
 
-        async def reject_successor_prepare(*_args, **_kwargs):
+        async def reject_successor_prepare(*_args, **_kwargs) -> None:
             raise AssertionError("next-turn owner preparation must not run for OPEN obligation")
 
         monkeypatch.setattr(

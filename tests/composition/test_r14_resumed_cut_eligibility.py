@@ -105,7 +105,7 @@ async def test_resumed_active_run_requires_exact_resume_before_inventory(
 
     monkeypatch.setattr(source, "_selected_resume_for_run", selected_resume, raising=False)
 
-    def inventory(_):
+    def inventory(_) -> None:
         raise InventoryReached
 
     monkeypatch.setattr(collector, "collect_r16_native_inventory", inventory)

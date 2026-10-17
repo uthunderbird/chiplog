@@ -198,10 +198,10 @@ def test_capture_builds_cut_from_selected_sources_and_closed_effect_member(
         def _authority_gate(self):
             return Gate()
 
-        def _pending(self):
+        def _pending(self) -> None:
             return None
 
-        def _check_database_identity(self):
+        def _check_database_identity(self) -> None:
             return None
 
         def read_selected_original_obligation_sources(self, *, historical=False):
@@ -286,7 +286,7 @@ def test_capture_builds_cut_from_selected_sources_and_closed_effect_member(
     )
 
     class Accounting:
-        def __init__(self, *_args):
+        def __init__(self, *_args) -> None:
             pass
 
         def collect_one_accepted_closed_outcome(self, *_args, **_kwargs):

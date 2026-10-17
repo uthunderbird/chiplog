@@ -59,7 +59,7 @@ def test_prepare_selection_is_turn_qualified_but_validates_the_whole_prefix(monk
         runs.append(runs[-1])
     verified = []
 
-    def verify(request, *_args):
+    def verify(request, *_args) -> None:
         verified.append(request.manifest.turn_id)
         if case == "bad-earlier" and request.manifest.turn_id == "turn-1":
             raise ValueError("bad earlier Prepare")

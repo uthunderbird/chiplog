@@ -54,7 +54,7 @@ async def _semantic_prefix(tmp_path, monkeypatch, *, complete, bridge):
         batches[batch.idempotency_key] = batch
         return selected
 
-    def prefix(database):
+    def prefix(database) -> None:
         nonlocal resume_evidence
         # The initial committed prefix is an explicit control, not native authority.
         with sqlite3.connect(database) as connection:
@@ -415,7 +415,7 @@ async def test_real_startup_rejects_unauthenticated_readiness_before_recovery(
             monkeypatch.setattr(module, name, lambda *a, **kw: None)
     recovery_calls = []
 
-    async def recover(*args, **kwargs):
+    async def recover(*args, **kwargs) -> None:
         recovery_calls.append(True)
 
     runtime._recover_exact = recover

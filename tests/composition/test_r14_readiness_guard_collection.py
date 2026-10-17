@@ -43,7 +43,7 @@ async def _exercise_custom_source_writer(tmp_path, monkeypatch, mutation, *, wit
         actor = object()
         state = SimpleNamespace(now=1, issued=False, tampered_preimage=None)
 
-        def check_actor(observed):
+        def check_actor(observed) -> None:
             assert observed is actor
             if state.issued and state.now >= receipt.request.budget.absolute_deadline_ns:
                 raise LoopRejected("synthetic actor deadline expired")
@@ -265,7 +265,7 @@ async def _exercise_custom_source_writer(tmp_path, monkeypatch, mutation, *, wit
             == public_batch
         )
 
-        def unexpected_guard(*args):
+        def unexpected_guard(*args) -> None:
             raise AssertionError("SQL replay must not run fresh-publication guards")
 
         replay = await appender.submit(

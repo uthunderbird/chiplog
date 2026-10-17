@@ -34,8 +34,10 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     CancelledBeforeAcceptResult,
     ConsequentialAcceptedCall,
     InitializedCall,
+    RecoveryFrontier,
     RecoveryRequiredResult,
     SuccessResult,
+    TerminalCallFrontier,
     UnknownResult,
 )
 from chiplog.capabilities.effects.contracts import ExactHead
@@ -545,16 +547,30 @@ def test_closed_accepted_recovery_retains_only_exact_selected_open_preimages(mon
     )
 
 
-def _v3_route_cut(acceptance_type, disposition_type, *, closures=(), reductions=()):
-    call = SimpleNamespace(
+def _v3_route_cut(
+    acceptance_type, disposition_type, *, closures=(), reductions=()
+) -> ExecutionRecoveryCut:
+    # Partial DTOs exercise only route selection; mounted tests authenticate full cuts.
+    call = TerminalCallFrontier.model_construct(
         acceptance=acceptance_type.model_construct(),
         disposition=disposition_type.model_construct(),
     )
-    return SimpleNamespace(
-        frontier=SimpleNamespace(ordered_calls=(call,)),
+    return ExecutionRecoveryCut.model_construct(
+        frontier=RecoveryFrontier.model_construct(ordered_calls=(call,)),
         original_closures=closures,
         current_reductions=reductions,
     )
+
+
+def test_v3_readback_does_not_select_a_terminal_route_for_pending_retry() -> None:
+    from tests.support.successor_records import pending
+
+    cut = ExecutionRecoveryCut.model_construct(
+        frontier=RecoveryFrontier.model_construct(ordered_calls=(pending(),)),
+        original_closures=(),
+        current_reductions=(),
+    )
+    assert _v3_accepted_cut_route(cut) is None
 
 
 def test_v3_readback_routes_only_complete_direct_or_accepted_open_cuts() -> None:
@@ -673,7 +689,10 @@ def test_original_source_decision_alias_rejects_substitutions(damage: str) -> No
         source.owner = "effects"
     else:
         source.schema_id = "chiplog.unknown.record.v1"
-    assert not _selected_decision_matches_source(source, selected)
+    # The partial source tests only the selected-decision alias, not source authentication.
+    assert not _selected_decision_matches_source(
+        RecoverySourceRecord.model_construct(**vars(source)), selected
+    )
 
 
 def test_original_resolver_anchor_producer_joins_selected_command_decision() -> None:
@@ -706,21 +725,22 @@ def test_r16_effect_source_joins_selected_decision_by_exact_head() -> None:
         subject_id="owner-decision",
         revision=Present(head="owner-decision", fingerprint="a" * 64),
     )
-    source = SimpleNamespace(
+    # Unused source fields stay absent so this remains an isolated alias-join test.
+    source = RecoverySourceRecord.model_construct(
         schema_id="chiplog.effects.dispatch-record.v2",
         selected_decision=semantic_decision,
     )
 
     assert _selected_decision_matches_source(source, journal_decision)
     assert _selected_decision_matches_source(
-        SimpleNamespace(
+        RecoverySourceRecord.model_construct(
             schema_id="chiplog.effects.external-action-intent.v2",
             selected_decision=semantic_decision,
         ),
         journal_decision,
     )
     assert not _selected_decision_matches_source(
-        SimpleNamespace(
+        RecoverySourceRecord.model_construct(
             schema_id="chiplog.effects.dispatch-record.v2",
             selected_decision=semantic_decision.model_copy(
                 update={"revision": Present(head="other", fingerprint="a" * 64)}
@@ -729,7 +749,7 @@ def test_r16_effect_source_joins_selected_decision_by_exact_head() -> None:
         journal_decision,
     )
     assert not _selected_decision_matches_source(
-        SimpleNamespace(
+        RecoverySourceRecord.model_construct(
             schema_id="chiplog.other.record.v1",
             selected_decision=semantic_decision,
         ),

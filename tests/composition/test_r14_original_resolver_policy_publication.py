@@ -144,7 +144,7 @@ async def test_lost_acknowledgement_recovers_exact_pending_policy_selection(
     ) as runtime:
         original = runtime._appender.submit
 
-        async def lose_ack(batch):
+        async def lose_ack(batch) -> None:
             await original(batch)
             raise LostCommitAcknowledgement("resolver policy ack lost")
 
@@ -355,7 +355,7 @@ async def test_invocation_publication_replays_exact_lost_ack_without_new_auth(
 
         if decision_case == "commit":
 
-            async def commit_then_lose_ack(batch):
+            async def commit_then_lose_ack(batch) -> None:
                 await submit(batch)
                 raise LostCommitAcknowledgement("invocation acknowledgement lost")
 

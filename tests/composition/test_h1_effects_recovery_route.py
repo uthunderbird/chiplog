@@ -95,7 +95,7 @@ async def test_installed_effects_recovery_reuses_pinned_inner_request_across_fre
 
         original = H1CompletionPreparationSession.prepare_local_commentary
 
-        async def crash_after_real_effects_reply(self: H1CompletionPreparationSession):
+        async def crash_after_real_effects_reply(self: H1CompletionPreparationSession) -> None:
             exchange = await original(self)
             first_effects.append(exchange)
             raise _CrashAfterEffectsReply()

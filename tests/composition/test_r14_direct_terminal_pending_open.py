@@ -30,7 +30,7 @@ def test_complete_terminal_requires_exact_target_and_authenticated_pending_prefi
     calls = []
 
     class Gate:
-        def require_held(self):
+        def require_held(self) -> None:
             assert held
 
     gate = Gate()

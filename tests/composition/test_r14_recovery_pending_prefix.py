@@ -40,7 +40,7 @@ def _hash(database):
         return capture_authority_snapshot_commitment(connection, "tenant")
 
 
-def _insert(connection, batch):
+def _insert(connection, batch) -> None:
     sequence = batch.expected_head + 1
     for row in batch.records:
         connection.execute(
@@ -298,7 +298,7 @@ async def test_exact_history_checks_pending_readiness_prefix_before_selected_aut
     monkeypatch.setattr(historical, "_make_authenticated_loop_decision_cut", lambda *a: a[1])
     selected_calls = []
 
-    def selected_authority(actual_runtime, selected_entry, selected_batch, **kwargs):
+    def selected_authority(actual_runtime, selected_entry, selected_batch, **kwargs) -> None:
         runtime._authority_gate().require_held()
         assert actual_runtime is runtime and selected_entry == entry and selected_batch == batch
         selected_calls.append(selected_entry)
@@ -383,7 +383,7 @@ async def test_accepted_outcome_callback_rechecks_exact_pending_readiness(
     )
     verdicts = []
 
-    def read_effects(actual_runtime, owners, *, authenticate_later_suffix, **kwargs):
+    def read_effects(actual_runtime, owners, *, authenticate_later_suffix, **kwargs) -> None:
         # Repeated uses must re-read evidence; no cached success after corruption.
         for attempt in range(3):
             if damaged_result or attempt == 2:
@@ -484,7 +484,7 @@ async def test_stale_final_complete_scan_prevents_decision(tmp_path, monkeypatch
     async def actor_read(peer):
         return actor
 
-    def check_actor(observed):
+    def check_actor(observed) -> None:
         if clock["now"] >= observed.request.budget.absolute_deadline_ns:
             raise LoopRejected("execution caller authentication unavailable or stale")
 
@@ -522,7 +522,7 @@ async def test_stale_final_complete_scan_prevents_decision(tmp_path, monkeypatch
     runtime._require_no_pending = lambda: None
     runtime._append_decision = decisions.append
 
-    async def submit(batch):
+    async def submit(batch) -> None:
         assert batch.admission_guard() is None
         batch.decision_guard("0" * 64)
         pytest.fail("expired final scan selected a decision")

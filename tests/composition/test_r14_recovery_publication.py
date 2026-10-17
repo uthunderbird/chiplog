@@ -119,7 +119,7 @@ async def test_profile_lost_ack_recovers_exact_selection(tmp_path) -> None:
     ) as runtime:
         original = runtime._appender.submit
 
-        async def lose_ack(batch):
+        async def lose_ack(batch) -> None:
             await original(batch)
             raise LostCommitAcknowledgement("profile ack lost")
 

@@ -499,10 +499,10 @@ async def test_append_suffix_authenticates_real_selected_owner_lineage(
                 batch.expected.expected_materialization_commitment,
             )
 
-        def authenticate_replay(self, query):
+        def authenticate_replay(self, query) -> None:
             return None
 
-        def check_prepared(self, prepared):
+        def check_prepared(self, prepared) -> None:
             return None
 
         def materialization_state(self, decision):

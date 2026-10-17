@@ -84,7 +84,7 @@ async def test_v3_live_writer_checks_physical_preimage_before_publishing(
     )
 
     class Source:
-        def __init__(self, *args):
+        def __init__(self, *args) -> None:
             pass
 
         def collect(self, *args, **kwargs):

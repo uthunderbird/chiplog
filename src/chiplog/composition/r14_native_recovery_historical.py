@@ -45,6 +45,11 @@ from chiplog.platform.authority_reads import capture_authority_snapshot_commitme
 from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.execution_recovery_observations import (
+        ExecutionRecoveryCut,
+        RecoverySourceRecord,
+    )
+
     from .common_cli_execution_runtime import CommonCliExecutionRuntime
     from .r14_native_recovery_cut import NativeRecoveryCutSource
     from .r14_recovery_publication import RetainedRecoveryPublication
@@ -119,7 +124,7 @@ def _make_authenticated_loop_decision_cut(runtime, decisions):
     return _AuthenticatedLoopDecisionCut(_LOOP_CUT_TOKEN, runtime, decisions)
 
 
-def _v3_accepted_cut_route(cut) -> str | None:
+def _v3_accepted_cut_route(cut: ExecutionRecoveryCut) -> str | None:
     """Select the V3 semantic validator from the exact one-call terminal shape."""
     from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
         CancelledBeforeAcceptResult,
@@ -128,11 +133,14 @@ def _v3_accepted_cut_route(cut) -> str | None:
         InitializedCall,
         RecoveryRequiredResult,
         SuccessResult,
+        TerminalCallFrontier,
     )
 
     if len(cut.frontier.ordered_calls) != 1:
         return None
     call = cut.frontier.ordered_calls[0]
+    if not isinstance(call, TerminalCallFrontier):
+        return None
     if isinstance(call.acceptance, ConsequentialAcceptedCall):
         if isinstance(call.disposition, (SuccessResult, DefiniteFailureResult)):
             return (
@@ -154,7 +162,9 @@ def _v3_accepted_cut_route(cut) -> str | None:
     return None
 
 
-def _selected_decision_matches_source(item, selected_decision: CallSubjectHead) -> bool:
+def _selected_decision_matches_source(
+    item: RecoverySourceRecord, selected_decision: CallSubjectHead
+) -> bool:
     """Join closed physical decision aliases without changing retained source IDs."""
     if item.selected_decision == selected_decision:
         return True
@@ -186,7 +196,7 @@ def _selected_decision_matches_source(item, selected_decision: CallSubjectHead) 
     )
 
 
-def _selected_source_carrier_id(item) -> str:
+def _selected_source_carrier_id(item: RecoverySourceRecord) -> str:
     """Resolve nested R16 intent children through their selected dispatch carrier."""
     if item.schema_id == "chiplog.effects.external-action-intent.v2":
         revision = item.physical_record.revision
@@ -196,7 +206,9 @@ def _selected_source_carrier_id(item) -> str:
     return item.physical_record.subject_id
 
 
-def _external_intent_matches_dispatch_carrier(item, row) -> bool:
+def _external_intent_matches_dispatch_carrier(
+    item: RecoverySourceRecord, row: tuple[str, str, str, bytes, int]
+) -> bool:
     """Authenticate the nested intent bytes and reference against its dispatch row."""
     from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2
     from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference

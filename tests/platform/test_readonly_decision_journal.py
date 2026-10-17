@@ -53,7 +53,7 @@ def test_readonly_snapshot_requires_preheld_gate_before_any_open(tmp_path, monke
     path, gate, _, _ = _provision(tmp_path)
     opened = []
 
-    def forbidden(*args, **kwargs):
+    def forbidden(*args, **kwargs) -> None:
         opened.append(args)
         pytest.fail("unheld snapshot opened a journal component")
 
@@ -189,7 +189,7 @@ def test_readonly_snapshot_preserves_authentic_legacy_bundle(tmp_path, monkeypat
     gate = AuthorityGate.for_database(database)
     before = _files(tmp_path)
 
-    def forbidden(*args, **kwargs):
+    def forbidden(*args, **kwargs) -> None:
         pytest.fail("snapshot constructed a writer or opened SQLite")
 
     monkeypatch.setattr(journals.IndependentTenantDecisionJournal, "__init__", forbidden)

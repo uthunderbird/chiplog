@@ -66,7 +66,7 @@ def test_failed_journal_write_does_not_release_reserved_identifier(
     assert handoff.add(tmp_path, "решение", "", {"что": "first"}) == 1
     original_write = handoff.write
 
-    def fail_write(*args):
+    def fail_write(*args) -> None:
         raise OSError("interrupted journal write")
 
     monkeypatch.setattr(handoff, "write", fail_write)

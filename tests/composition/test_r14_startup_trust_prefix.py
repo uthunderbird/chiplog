@@ -207,7 +207,7 @@ async def test_partial_bundle_namespace_refuses_without_creating_sources(tmp_pat
     assert _files(tmp_path) == before
 
 
-def _write_remnant(trust, remnant):
+def _write_remnant(trust, remnant) -> None:
     Path(str(trust) + remnant).write_bytes(b"partial-bundle-remnant")
 
 
@@ -272,7 +272,7 @@ async def test_existing_cut_is_held_through_store_setup_and_released_before_asyn
         observed.append("preflight")
         return "installed-role-evidence"
 
-    def store_setup(store, actual_gate, evidence):
+    def store_setup(store, actual_gate, evidence) -> None:
         actual_gate.require_held()
         assert evidence == "installed-role-evidence"
         observed.append("store_setup")

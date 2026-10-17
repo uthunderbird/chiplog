@@ -108,7 +108,7 @@ def test_historical_custody_preserves_repeated_provider_attempts(tmp_path, monke
     before = path.read_bytes()
     paths = tuple(sorted(tmp_path.iterdir()))
 
-    def no_live_provider(*args, **kwargs):
+    def no_live_provider(*args, **kwargs) -> None:
         pytest.fail("historical read must not provision a live provider")
 
     monkeypatch.setattr(registry, "HermeticEffectsProvider", no_live_provider)

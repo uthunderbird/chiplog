@@ -111,7 +111,7 @@ def test_selected_direct_terminal_reuses_strict_history_inside_authority_gate(
         assert kwargs == {}
         return history
 
-    def validate(actual_runtime, **kwargs):
+    def validate(actual_runtime, **kwargs) -> None:
         assert actual_runtime is runtime
         assert gate_state["held"]
         passed.update(kwargs)

@@ -185,7 +185,7 @@ async def test_fresh_readiness_does_not_reprepare_after_actor_issuance(tmp_path,
     class BeforeWrite(Exception):
         pass
 
-    async def submit(batch):
+    async def submit(batch) -> None:
         assert phase == "after_actor"
         assert batch.records[0].canonical_bytes == (
             evidence.accounting_result.complete_accounting[0].canonical_bytes()

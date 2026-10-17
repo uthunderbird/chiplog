@@ -94,7 +94,7 @@ async def test_next_turn_holds_if_trust_changes_between_authentication_and_cut(
         )
         submit_called = False
 
-        async def submit_must_not_run(_command):
+        async def submit_must_not_run(_command) -> None:
             nonlocal submit_called
             submit_called = True
             raise AssertionError("changed trust must be rejected before writer admission")
@@ -163,7 +163,7 @@ async def test_next_turn_holds_if_trust_changes_during_owner_exchange(
         monkeypatch.setattr(next_turn_publication, "issue_execution_recovery_actor_v1", refresh)
         submit_called = False
 
-        async def submit_must_not_run(_command):
+        async def submit_must_not_run(_command) -> None:
             nonlocal submit_called
             submit_called = True
             raise AssertionError("changed trust must be rejected before writer admission")

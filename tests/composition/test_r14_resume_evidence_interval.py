@@ -379,7 +379,7 @@ def test_historical_interval_with_later_exact_pending_readiness_control(
         monkeypatch.setattr(reductions, "validate_selected_witness_at_cut", lambda *a, **kw: None)
         with gate.hold():
 
-            def verify():
+            def verify() -> None:
                 _authenticate_append_evidence_suffix(
                     runtime,
                     base_sequence=frontier,
