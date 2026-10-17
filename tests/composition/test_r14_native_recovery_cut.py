@@ -16,7 +16,10 @@ from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
     CallSubjectHead,
 )
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import PrepareExecutionAccounting
-from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+from chiplog.capabilities.agent_loop.execution_recovery_observations import (
+    ExecutionRecoveryCut,
+    RecoverySourceRecord,
+)
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
     prepare_execution_accounting,
 )
@@ -1154,7 +1157,7 @@ async def test_selected_native_cut_reopens_and_legacy_prepare_holds(
         with runtime._authority_gate().hold():
             cut = source._collect_held(runtime)
         if bound:
-            assert cut is not None
+            assert isinstance(cut, ExecutionRecoveryCut)
             validate_native_recovery_cut(cut)
             cross_family_bindings = cut.current_bindings.model_copy(
                 update={"semantic_bindings": (cut.current_bindings.policy,)}
@@ -1247,7 +1250,7 @@ async def test_selected_native_cut_reopens_and_legacy_prepare_holds(
     ) as runtime:
         assert source.collect(runtime) == cut
         if bound:
-            assert cut is not None
+            assert isinstance(cut, ExecutionRecoveryCut)
             with runtime._authority_gate().hold():
                 candidate, inert_entry = inert_recovery_candidate(runtime, cut)
                 assert not source.authenticate_selected_held(runtime, candidate, inert_entry)
