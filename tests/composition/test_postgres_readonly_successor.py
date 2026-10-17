@@ -15,7 +15,8 @@ def unavailable(*args: object) -> bytes:
 
 
 async def test_successors_share_counter_and_snapshot_after_reopen(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database, runtime, original, model = await selected_call(postgres_server)
     monkeypatch.setattr(runtime, "read_history_snapshot", unavailable)
@@ -40,34 +41,49 @@ async def test_successors_share_counter_and_snapshot_after_reopen(
     assert third.budget_exhausted and third.attempts_consumed == 3
     assert third.selection == first.selection and third.query == first.query
     assert third.lineage_id == first.lineage_id
-    assert [attempt.run_id for attempt in third.attempts] == [
-        "run", "successor-2", "successor-3"
-    ]
+    assert [attempt.run_id for attempt in third.attempts] == ["run", "successor-2", "successor-3"]
     before = runtime.snapshot()
-    assert await retry_readonly_in_successor(
-        runtime, PEER, original, first.head, source.head, "successor-2"
-    ) == third
+    assert (
+        await retry_readonly_in_successor(
+            runtime, PEER, original, first.head, source.head, "successor-2"
+        )
+        == third
+    )
     assert runtime.snapshot() == before
     with pytest.raises(LoopRejected):
         await retry_readonly_in_successor(
-            runtime, PEER, original, third.head,
-            runtime.execution_record("successor-3").head, "fourth"
+            runtime,
+            PEER,
+            original,
+            third.head,
+            runtime.execution_record("successor-3").head,
+            "fourth",
         )
     assert runtime.snapshot() == before
     assert len(model.requests) == 1
 
 
 async def test_successful_successor_continues_model_with_original_seal(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database, runtime, original, original_model = await selected_call(postgres_server)
     with monkeypatch.context() as patched:
         patched.setattr(runtime, "read_history_snapshot", unavailable)
         first = await runtime.execute_readonly_call(PEER, original)
     source = runtime.execution_record("run")
-    response = json.dumps({"kind": "Continue", "tool_calls": [{
-        "call_id": "next", "tool": "propose_intent", "text": "next",
-    }]}).encode()
+    response = json.dumps(
+        {
+            "kind": "Continue",
+            "tool_calls": [
+                {
+                    "call_id": "next",
+                    "tool": "propose_intent",
+                    "text": "next",
+                }
+            ],
+        }
+    ).encode()
     model = HermeticModel((response,))
     runtime = opened(database, model)
     complete = await retry_readonly_in_successor(
@@ -87,14 +103,18 @@ async def test_successful_successor_continues_model_with_original_seal(
     assert len(original_model.requests) == len(model.requests) == 1
     before = runtime.snapshot()
     reopened = opened(database, HermeticModel())
-    assert await retry_readonly_in_successor(
-        reopened, PEER, original, first.head, source.head, "successor"
-    ) == complete
+    assert (
+        await retry_readonly_in_successor(
+            reopened, PEER, original, first.head, source.head, "successor"
+        )
+        == complete
+    )
     assert reopened.snapshot() == before
 
 
 async def test_accepted_successor_interruption_reopens_without_another_read(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database, runtime, original, _ = await selected_call(postgres_server)
     with monkeypatch.context() as patched:
@@ -107,7 +127,8 @@ async def test_accepted_successor_interruption_reopens_without_another_read(
         assert runtime.execution_record("run").state == "SUPERSEDED"
         assert runtime.execution_record("successor").state == "ACTIVE"
         accepted = [
-            record for record in runtime.snapshot().batches[-1].records
+            record
+            for record in runtime.snapshot().batches[-1].records
             if record.schema_id == "chiplog.readonly.lineage.v2"
         ]
         assert len(accepted) == 1
@@ -128,13 +149,18 @@ async def test_accepted_successor_interruption_reopens_without_another_read(
     assert reads == ["read"]
     with pytest.raises(LoopRejected):
         await retry_readonly_in_successor(
-            reopened, PEER, original, selected.head,
-            reopened.execution_record("successor").head, "third"
+            reopened,
+            PEER,
+            original,
+            selected.head,
+            reopened.execution_record("successor").head,
+            "third",
         )
 
 
 async def test_stale_pending_and_worker_cannot_select_successor(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database, stale, original, _ = await selected_call(postgres_server)
     monkeypatch.setattr(stale, "read_history_snapshot", unavailable)
@@ -158,18 +184,36 @@ async def test_stale_pending_and_worker_cannot_select_successor(
 
 
 async def test_inherited_turn_origin_survives_four_edges_across_two_lineages(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database, runtime, original, _ = await selected_call(postgres_server)
     monkeypatch.setattr(runtime, "read_history_snapshot", unavailable)
     pending = await runtime.execute_readonly_call(PEER, original)
-    history = json.dumps({"kind": "Continue", "tool_calls": [{
-        "call_id": "history-again", "tool": "read_conversation_history",
-        "arguments": {"limit": 10, "after_cursor": None},
-    }]}).encode()
-    proposal = json.dumps({"kind": "Continue", "tool_calls": [{
-        "call_id": "next", "tool": "propose_intent", "text": "next",
-    }]}).encode()
+    history = json.dumps(
+        {
+            "kind": "Continue",
+            "tool_calls": [
+                {
+                    "call_id": "history-again",
+                    "tool": "read_conversation_history",
+                    "arguments": {"limit": 10, "after_cursor": None},
+                }
+            ],
+        }
+    ).encode()
+    proposal = json.dumps(
+        {
+            "kind": "Continue",
+            "tool_calls": [
+                {
+                    "call_id": "next",
+                    "tool": "propose_intent",
+                    "text": "next",
+                }
+            ],
+        }
+    ).encode()
     model = HermeticModel((history, proposal))
     runtime = opened(database, model)
     monkeypatch.setattr(runtime, "read_history_snapshot", unavailable)
@@ -201,18 +245,30 @@ async def test_inherited_turn_origin_survives_four_edges_across_two_lineages(
 
 
 async def test_pending_sibling_holds_and_successor_acceptance_is_one_batch(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from tests.composition.test_postgres_execution import bootstrap
     from tests.composition.test_postgres_execution import opened as execution_opened
 
     database = await bootstrap(postgres_server)
-    response = json.dumps({"kind": "Continue", "tool_calls": [
-        {"call_id": "history", "tool": "read_conversation_history",
-         "arguments": {"limit": 10, "after_cursor": None}},
-        {"call_id": "effect", "tool": "request_self_effect",
-         "arguments": {"payload": "aGVsbG8=", "bundle_members": ["effect"]}},
-    ]}).encode()
+    response = json.dumps(
+        {
+            "kind": "Continue",
+            "tool_calls": [
+                {
+                    "call_id": "history",
+                    "tool": "read_conversation_history",
+                    "arguments": {"limit": 10, "after_cursor": None},
+                },
+                {
+                    "call_id": "effect",
+                    "tool": "request_self_effect",
+                    "arguments": {"payload": "aGVsbG8=", "bundle_members": ["effect"]},
+                },
+            ],
+        }
+    ).encode()
     runtime = execution_opened(database, HermeticModel((response,)))
     created = await runtime.create_execution(PEER, "mixed", "Read history", BudgetPolicy())
     started = await runtime.begin_execution(PEER, created.run_id, created.head)
@@ -239,9 +295,14 @@ async def test_pending_sibling_holds_and_successor_acceptance_is_one_batch(
     assert len(admission[0].records) == 4
     assert {record.schema_id for record in admission[0].records} == {
         "chiplog.agent-loop.execution-record.v3",
-        "chiplog.readonly.successor.v2", "chiplog.readonly.lineage.v2",
+        "chiplog.readonly.successor.v2",
+        "chiplog.readonly.lineage.v2",
     }
-    assert sum(
-        record.schema_id == "chiplog.conversation.entry.pg.v1"
-        for batch in batches for record in batch.records
-    ) == 1
+    assert (
+        sum(
+            record.schema_id == "chiplog.conversation.entry.pg.v1"
+            for batch in batches
+            for record in batch.records
+        )
+        == 1
+    )

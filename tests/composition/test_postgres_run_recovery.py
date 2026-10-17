@@ -31,7 +31,9 @@ from tests.support.deployment_gate import signature
 
 @pytest.mark.parametrize("terminate", [False, True])
 async def test_original_effect_recovers_after_suspend_or_abort_without_resend(
-    postgres_server: PostgresServer, tmp_path: Path, terminate: bool,
+    postgres_server: PostgresServer,
+    tmp_path: Path,
+    terminate: bool,
 ) -> None:
     runtime, binding, original, _, current, request = await setup_effect(
         postgres_server, tmp_path, "LOST_RESPONSE_AFTER_EFFECT"
@@ -44,8 +46,14 @@ async def test_original_effect_recovers_after_suspend_or_abort_without_resend(
     transition = abort_execution if terminate else suspend_execution
     stopped = await transition(runtime, PEER, "run", source.head)
     fresh = PostgresExecutionRuntime(
-        runtime.database, "t", SECRET, **IDENTITY, model=HermeticModel((RESPONSE,)),
-        origin=origin(), effects_binding=binding, authenticate_entitlement=verifier,
+        runtime.database,
+        "t",
+        SECRET,
+        **IDENTITY,
+        model=HermeticModel((RESPONSE,)),
+        origin=origin(),
+        effects_binding=binding,
+        authenticate_entitlement=verifier,
     )
     if not terminate:
         before = fresh.snapshot()
@@ -72,7 +80,8 @@ async def test_original_effect_recovers_after_suspend_or_abort_without_resend(
 
 
 async def test_resume_preserves_unclaimed_effect_as_actionable_pending_work(
-    postgres_server: PostgresServer, tmp_path: Path,
+    postgres_server: PostgresServer,
+    tmp_path: Path,
 ) -> None:
     runtime, binding, original, _, current, request = await setup_effect(
         postgres_server, tmp_path, "CONFIRM"
@@ -93,7 +102,9 @@ async def test_resume_preserves_unclaimed_effect_as_actionable_pending_work(
 
 @pytest.mark.parametrize("after_successor", [False, True])
 async def test_suspended_readonly_source_selects_active_successor_with_same_counter(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch, after_successor: bool,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
+    after_successor: bool,
 ) -> None:
     database, runtime, original, _ = await selected_call(postgres_server)
     with monkeypatch.context() as patched:
@@ -101,8 +112,12 @@ async def test_suspended_readonly_source_selects_active_successor_with_same_coun
         pending = await runtime.execute_readonly_call(PEER, original)
         if after_successor:
             pending = await retry_readonly_in_successor(
-                runtime, PEER, original, pending.head,
-                runtime.execution_record("run").head, "first-successor",
+                runtime,
+                PEER,
+                original,
+                pending.head,
+                runtime.execution_record("run").head,
+                "first-successor",
             )
     source = runtime.execution_record(pending.attempts[-1].run_id)
     suspended = await suspend_execution(runtime, PEER, source.run_id, source.head)
@@ -143,15 +158,14 @@ async def test_abort_interrupts_paused_model_without_waiting_for_lane_or_allowin
 
 
 async def test_resume_keeps_readonly_pending_and_does_not_reset_its_counter(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, runtime, original, model = await selected_call(postgres_server)
     with monkeypatch.context() as patched:
         patched.setattr(runtime, "read_history_snapshot", unavailable)
         pending = await runtime.execute_readonly_call(PEER, original)
-    suspended = await suspend_execution(
-        runtime, PEER, "run", runtime.execution_record("run").head
-    )
+    suspended = await suspend_execution(runtime, PEER, "run", runtime.execution_record("run").head)
     resumed = await resume_execution(runtime, PEER, "run", suspended.head)
     with pytest.raises(LoopHold):
         await runtime.continue_execution(PEER, "run", resumed.head)

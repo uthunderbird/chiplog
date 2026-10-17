@@ -41,11 +41,11 @@ async def test_driver_runs_from_creation_holds_for_adoption_and_resumes_after_ca
                 {
                     "kind": "Continue",
                     "tool_calls": [
-                            {
-                                "call_id": "effect",
-                                "tool": "request_self_effect",
-                                "arguments": {"payload": "aGVsbG8=", "bundle_members": ["one"]},
-                            },
+                        {
+                            "call_id": "effect",
+                            "tool": "request_self_effect",
+                            "arguments": {"payload": "aGVsbG8=", "bundle_members": ["one"]},
+                        },
                     ],
                 }
             ).encode(),

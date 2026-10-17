@@ -20,9 +20,18 @@ from chiplog.composition.postgres_model_recovery import (
 from chiplog.platform.postgres import PostgresServer
 from tests.composition.test_postgres_execution import SECRET, bootstrap, opened, origin
 
-RESPONSE = json.dumps({"kind": "Continue", "tool_calls": [{
-    "call_id": "proposal", "tool": "propose_intent", "text": "replacement",
-}]}).encode()
+RESPONSE = json.dumps(
+    {
+        "kind": "Continue",
+        "tool_calls": [
+            {
+                "call_id": "proposal",
+                "tool": "propose_intent",
+                "text": "replacement",
+            }
+        ],
+    }
+).encode()
 
 
 class PausedModel(HermeticModel):
@@ -39,7 +48,9 @@ class PausedModel(HermeticModel):
 @pytest.mark.parametrize("version", ["v2", "v3"])
 @pytest.mark.parametrize("rotate", [False, True])
 async def test_fenced_unstarted_attempt_replaces_once_and_preserves_lineage(
-    postgres_server: PostgresServer, version: Literal["v2", "v3"], rotate: bool,
+    postgres_server: PostgresServer,
+    version: Literal["v2", "v3"],
+    rotate: bool,
 ) -> None:
     database = await bootstrap(postgres_server)
     old_model = PausedModel()
@@ -57,15 +68,19 @@ async def test_fenced_unstarted_attempt_replaces_once_and_preserves_lineage(
             old._actor(connection, trust, "local-cli")
             credential = trust.rotate_credential("credential:1", "rotated-credential")
         current = PostgresExecutionRuntime(
-            database, "t", SECRET, principal_id="p", credential_id=credential.credential_id,
-            session_id=credential.session_id, model=model, origin=origin(),
+            database,
+            "t",
+            SECRET,
+            principal_id="p",
+            credential_id=credential.credential_id,
+            session_id=credential.session_id,
+            model=model,
+            origin=origin(),
         )
     else:
         current = opened(database, model)
     try:
-        captured = await replace_unstarted_model_attempt(
-            current, "local-cli", "run", original.head
-        )
+        captured = await replace_unstarted_model_attempt(current, "local-cli", "run", original.head)
     finally:
         old_model.release.set()
     with pytest.raises((LoopHold, PermissionError), match=r"stale|authenticated"):
@@ -80,9 +95,10 @@ async def test_fenced_unstarted_attempt_replaces_once_and_preserves_lineage(
         assert attempts[1].worker_session != attempts[0].worker_session
     assert json.loads(attempts[1].request)["manifest"] == attempts[1].manifest.digest()
     before = current.snapshot()
-    assert await replace_unstarted_model_attempt(
-        current, "local-cli", "run", original.head
-    ) == captured
+    assert (
+        await replace_unstarted_model_attempt(current, "local-cli", "run", original.head)
+        == captured
+    )
     assert current.snapshot() == before
     assert old_model.requests == [] and len(model.requests) == 1
     assert old_model.custody is not None
@@ -93,7 +109,8 @@ async def test_fenced_unstarted_attempt_replaces_once_and_preserves_lineage(
 
 
 async def test_replacement_publication_ack_loss_never_becomes_a_send_permit(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = await bootstrap(postgres_server)
     old_model = PausedModel()
@@ -124,9 +141,9 @@ async def test_replacement_publication_ack_loss_never_becomes_a_send_permit(
         await task
     emitted = current.execution_record("run")
     assert emitted.turns[-1].attempts[-1].generation == 1
-    assert await replace_unstarted_model_attempt(
-        current, "local-cli", "run", original.head
-    ) == emitted
+    assert (
+        await replace_unstarted_model_attempt(current, "local-cli", "run", original.head) == emitted
+    )
     assert model.requests == old_model.requests == []
     with pytest.raises(LoopHold, match="unknown"):
         await recover_model_response(current, "local-cli", "run", emitted.head)

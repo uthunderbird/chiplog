@@ -22,13 +22,24 @@ from tests.composition.test_postgres_execution import IDENTITY, SECRET, bootstra
 @pytest.mark.parametrize("version", ["v2", "v3"])
 @pytest.mark.parametrize("fault", ["before_capture", "lost_capture_ack"])
 async def test_retained_model_response_recovers_after_reopen_without_resend(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
-    version: Literal["v2", "v3"], fault: str,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
+    version: Literal["v2", "v3"],
+    fault: str,
 ) -> None:
     database = await bootstrap(postgres_server)
-    raw = json.dumps({"kind": "Continue", "tool_calls": [{
-        "call_id": "proposal", "tool": "propose_intent", "text": "hello",
-    }]}).encode()
+    raw = json.dumps(
+        {
+            "kind": "Continue",
+            "tool_calls": [
+                {
+                    "call_id": "proposal",
+                    "tool": "propose_intent",
+                    "text": "hello",
+                }
+            ],
+        }
+    ).encode()
     model = HermeticModel((raw,))
     runtime = opened(database, model)
     created = await runtime.create_execution(
@@ -48,8 +59,7 @@ async def test_retained_model_response_recovers_after_reopen_without_resend(
     with pytest.raises(RuntimeError, match="capture interrupted"):
         await runtime.capture_execution("local-cli", "run", started.head)
     emitted = next(
-        run for run in runtime._runs(runtime.snapshot())
-        if run.event == "ModelAttemptEmitted"
+        run for run in runtime._runs(runtime.snapshot()) if run.event == "ModelAttemptEmitted"
     )
     fresh_model = HermeticModel()
     reopened = opened(database, fresh_model)
@@ -67,7 +77,9 @@ async def test_retained_model_response_recovers_after_reopen_without_resend(
 
 
 async def test_actual_codex_response_custody_survives_lost_capture(
-    postgres_server: PostgresServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = await bootstrap(postgres_server)
     storage = CodexTokenStorage(tmp_path / "oauth")
@@ -82,22 +94,40 @@ async def test_actual_codex_response_custody_survives_lost_capture(
     )
     requests: list[str] = []
     original_client = httpx.AsyncClient
-    raw = json.dumps({"kind": "Continue", "tool_calls": [{
-        "call_id": "proposal", "tool": "propose_intent", "text": "hello",
-    }]})
+    raw = json.dumps(
+        {
+            "kind": "Continue",
+            "tool_calls": [
+                {
+                    "call_id": "proposal",
+                    "tool": "propose_intent",
+                    "text": "hello",
+                }
+            ],
+        }
+    )
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(request.method)
-        event = {"type": "response.completed", "response": {
-            "id": "retained-response", "status": "completed", "output": [{
-                "type": "message", "role": "assistant",
-                "content": [{"type": "output_text", "text": raw}],
-            }],
-        }}
+        event = {
+            "type": "response.completed",
+            "response": {
+                "id": "retained-response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": raw}],
+                    }
+                ],
+            },
+        }
         return httpx.Response(200, content="data: " + json.dumps(event) + "\n\n")
 
     monkeypatch.setattr(
-        httpx, "AsyncClient",
+        httpx,
+        "AsyncClient",
         lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs),
     )
     created = await runtime.create_execution(
@@ -125,7 +155,8 @@ async def test_actual_codex_response_custody_survives_lost_capture(
 
 
 async def test_started_without_retained_response_holds_and_cannot_start_again(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = await bootstrap(postgres_server)
     model = HermeticModel((b"not retained",))
@@ -155,7 +186,9 @@ async def test_started_without_retained_response_holds_and_cannot_start_again(
 
 @pytest.mark.parametrize("stop", ["takeover", "abort"])
 async def test_actual_late_codex_response_retains_facts_after_worker_takeover_or_abort(
-    postgres_server: PostgresServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     stop: Literal["takeover", "abort"],
 ) -> None:
     database = await bootstrap(postgres_server)
@@ -177,19 +210,37 @@ async def test_actual_late_codex_response_retains_facts_after_worker_takeover_or
         requests.append(request.method)
         entered.set()
         await release.wait()
-        raw = json.dumps({"kind": "Continue", "tool_calls": [{
-            "call_id": "proposal", "tool": "propose_intent", "text": "late",
-        }]})
-        event = {"type": "response.completed", "response": {
-            "id": "late-response", "status": "completed", "output": [{
-                "type": "message", "role": "assistant",
-                "content": [{"type": "output_text", "text": raw}],
-            }],
-        }}
+        raw = json.dumps(
+            {
+                "kind": "Continue",
+                "tool_calls": [
+                    {
+                        "call_id": "proposal",
+                        "tool": "propose_intent",
+                        "text": "late",
+                    }
+                ],
+            }
+        )
+        event = {
+            "type": "response.completed",
+            "response": {
+                "id": "late-response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": raw}],
+                    }
+                ],
+            },
+        }
         return httpx.Response(200, content="data: " + json.dumps(event) + "\n\n")
 
     monkeypatch.setattr(
-        httpx, "AsyncClient",
+        httpx,
+        "AsyncClient",
         lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs),
     )
     created = await runtime.create_execution(
@@ -228,7 +279,8 @@ async def test_actual_late_codex_response_retains_facts_after_worker_takeover_or
 
 
 async def test_start_ack_loss_does_not_invoke_transport_or_authorize_another_start(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = await bootstrap(postgres_server)
     model = HermeticModel((b"never sent",))

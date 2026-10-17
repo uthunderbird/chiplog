@@ -17,17 +17,20 @@ from chiplog.platform.postgres import PostgresServer, UserDatabase
 from tests.support.scheduler_execution import origin
 
 SECRET = b"readonly-client-fixture"
-IDENTITY = {
-    "principal_id": "principal", "credential_id": "credential", "session_id": "session"
-}
+IDENTITY = {"principal_id": "principal", "credential_id": "credential", "session_id": "session"}
 PEER = "local-cli"
 
 
 def opened(database: UserDatabase, model: HermeticModel) -> PostgresExecutionRuntime:
     return PostgresExecutionRuntime(
-        database, "account", SECRET, principal_id=IDENTITY["principal_id"],
-        credential_id=IDENTITY["credential_id"], session_id=IDENTITY["session_id"],
-        model=model, origin=origin(),
+        database,
+        "account",
+        SECRET,
+        principal_id=IDENTITY["principal_id"],
+        credential_id=IDENTITY["credential_id"],
+        session_id=IDENTITY["session_id"],
+        model=model,
+        origin=origin(),
     )
 
 
@@ -39,10 +42,18 @@ async def selected_call(
     await PostgresPlanningRuntime(database, "account", SECRET).bootstrap(
         database_instance_id="readonly-db", token="token", **IDENTITY
     )
-    response = json.dumps({"kind": "Continue", "tool_calls": [{
-        "call_id": "history", "tool": "read_conversation_history",
-        "arguments": {"limit": 10, "after_cursor": None},
-    }]}).encode()
+    response = json.dumps(
+        {
+            "kind": "Continue",
+            "tool_calls": [
+                {
+                    "call_id": "history",
+                    "tool": "read_conversation_history",
+                    "arguments": {"limit": 10, "after_cursor": None},
+                }
+            ],
+        }
+    ).encode()
     model = HermeticModel((response,))
     runtime = opened(database, model)
     created = await runtime.create_execution(PEER, "run", "Read history", BudgetPolicy())
@@ -55,7 +66,8 @@ async def selected_call(
 
 
 async def test_history_retry_reopens_with_shared_three_attempt_budget(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database, runtime, original, model = await selected_call(postgres_server)
     reads: list[int] = []
@@ -75,18 +87,15 @@ async def test_history_retry_reopens_with_shared_three_attempt_budget(
     fresh_model = HermeticModel()
     runtime = opened(database, fresh_model)
     monkeypatch.setattr(runtime, "read_history_snapshot", unavailable)
-    second = await execute_readonly_call(
-        runtime, PEER, original, expected_counter_head=first.head
-    )
-    third = await execute_readonly_call(
-        runtime, PEER, original, expected_counter_head=second.head
-    )
+    second = await execute_readonly_call(runtime, PEER, original, expected_counter_head=first.head)
+    third = await execute_readonly_call(runtime, PEER, original, expected_counter_head=second.head)
     assert third.state == "FAILED_DEFINITE_FINAL" and third.budget_exhausted
     assert third.selection == first.selection and third.lineage_id == first.lineage_id
     before = runtime.snapshot().head
-    assert await execute_readonly_call(
-        runtime, PEER, original, expected_counter_head=third.head
-    ) == third
+    assert (
+        await execute_readonly_call(runtime, PEER, original, expected_counter_head=third.head)
+        == third
+    )
     assert runtime.snapshot().head == before
     assert reads == [1, 2, 3]
     assert len(model.requests) == 1 and fresh_model.requests == []
@@ -117,7 +126,8 @@ async def test_real_history_success_replays_without_another_read_or_model_reques
 
 
 async def test_accepted_without_outcome_reopens_on_hold_without_reinvoking_reader(
-    postgres_server: PostgresServer, monkeypatch: pytest.MonkeyPatch,
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database, runtime, original, _ = await selected_call(postgres_server)
     reads: list[str] = []
