@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
+from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -16,8 +18,22 @@ from chiplog.composition.r14_native_selected_accounting_source import (
     R14NativeSelectedAccountingSource,
 )
 
+if TYPE_CHECKING:
+    from chiplog.adapters.driven.effects_queries import StoredEffectRow
+    from chiplog.capabilities.effects.dispatch_authority_contracts import (
+        Identity,
+        SelectedEffectHistoryMember,
+    )
+    from chiplog.capabilities.effects.dispatch_outcome_contracts import (
+        DispatchOutcomePreparationV2,
+        DispatchOutcomeRecordV2,
+    )
+    from chiplog.capabilities.effects.dispatch_v2 import DispatchRecordV2
 
-def test_open_cut_validation_reuses_authenticated_history_without_skipping_gate(monkeypatch):
+
+def test_open_cut_validation_reuses_authenticated_history_without_skipping_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The fresh subset's selected-history proof is forwarded within the held gate."""
     from chiplog.composition import r14_accepted_open_accounting_publication as publication
     from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
@@ -66,7 +82,9 @@ def test_open_cut_validation_reuses_authenticated_history_without_skipping_gate(
     assert events == ["held", "frontier"]
 
 
-def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(monkeypatch, tmp_path):
+def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     events: list[str] = []
 
     class Gate:
@@ -169,8 +187,8 @@ def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(monkey
     ],
 )
 def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_seals(
-    monkeypatch, tmp_path, prefix_kind
-):
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, prefix_kind: str
+) -> None:
     """Probe the caller/verifier boundary; source authentication is tested elsewhere."""
     from chiplog.composition import r14_historical_suffix as suffix
     from chiplog.composition import r14_original_call_resolution_source as resolution
@@ -197,12 +215,14 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
         _check_database_identity=lambda: None,
         _owner_decisions=lambda: owners,
         _pending=lambda: (
-            ({
-                "operation_kind": {
-                    "pending-resolver-invocation": "agent_loop.original-resolver-invocation.v1",
-                    "pending-original-resolution": "agent_loop.original-call-resolution.v1",
-                }[prefix_kind]
-            },)
+            (
+                {
+                    "operation_kind": {
+                        "pending-resolver-invocation": "agent_loop.original-resolver-invocation.v1",
+                        "pending-original-resolution": "agent_loop.original-call-resolution.v1",
+                    }[prefix_kind]
+                },
+            )
             if prefix_kind in {"pending-resolver-invocation", "pending-original-resolution"}
             else ()
         ),
@@ -253,11 +273,13 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
         resolution, "authenticate_selected_resolution_prefix_held", lambda *_: False
     )
     monkeypatch.setattr(
-        suffix, "authenticate_selected_r14_native_terminal_suffix_held",
+        suffix,
+        "authenticate_selected_r14_native_terminal_suffix_held",
         lambda *_, **kw: prefix_kind == "native-direct",
     )
     monkeypatch.setattr(
-        suffix, "authenticate_selected_open_prefix_held",
+        suffix,
+        "authenticate_selected_open_prefix_held",
         lambda *_: prefix_kind == "pending-open",
     )
     pending_suffix_calls = []
@@ -301,7 +323,15 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
     assert len(pending_suffix_calls) == int(prefix_kind != "pending-open")
 
 
-def _outcome_request(previous, send, positive=(), negative=(), *, close=False, name="receipt"):
+def _outcome_request(
+    previous: DispatchRecordV2 | DispatchOutcomeRecordV2,
+    send: DispatchRecordV2,
+    positive: tuple[Identity, ...] = (),
+    negative: tuple[Identity, ...] = (),
+    *,
+    close: bool = False,
+    name: str = "receipt",
+) -> DispatchOutcomePreparationV2:
     from chiplog.capabilities.effects.contracts import CommandIdentity
     from chiplog.capabilities.effects.dispatch_outcome_contracts import (
         DispatchEvidenceV2,
@@ -349,7 +379,9 @@ def _outcome_request(previous, send, positive=(), negative=(), *, close=False, n
     )
 
 
-def _selected_outcome_tuple(outcome, *, ordinal=1, commit_sequence=1):
+def _selected_outcome_tuple[SelectedRecord: (DispatchRecordV2, DispatchOutcomeRecordV2)](
+    outcome: SelectedRecord, *, ordinal: int = 1, commit_sequence: int = 1
+) -> tuple[SelectedRecord, SelectedEffectHistoryMember, StoredEffectRow]:
     import hashlib
 
     from chiplog.adapters.driven.effects_queries import StoredEffectRow
@@ -489,7 +521,9 @@ async def _open_cut_probe(monkeypatch, case):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["second-member", "missing", "duplicate"])
-async def test_open_cut_uses_exact_member_instead_of_first_inventory_row(monkeypatch, case):
+async def test_open_cut_uses_exact_member_instead_of_first_inventory_row(
+    monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
     result, branch, call_id, *_ = await _open_cut_probe(monkeypatch, case)
     if case == "second-member":
         assert result is not None
@@ -503,8 +537,8 @@ async def test_open_cut_uses_exact_member_instead_of_first_inventory_row(monkeyp
 @pytest.mark.asyncio
 @pytest.mark.parametrize("damage", [None, "history", "actual", "anchor-after"])
 async def test_historical_open_cut_consumes_exact_history_proof_before_anchor_gate(
-    monkeypatch, damage
-):
+    monkeypatch: pytest.MonkeyPatch, damage: str | None
+) -> None:
     """Real cut builder; source facts and outer history acquisition are inert."""
     from chiplog.composition import r14_native_accepted_open_cut as cuts
     from chiplog.composition import r14_original_call_resolution_source as resolutions
@@ -528,9 +562,11 @@ async def test_historical_open_cut_consumes_exact_history_proof_before_anchor_ga
         def execute(sql, parameters):
             assert "commit_sequence<=?" in sql
             assert parameters == (runtime._tenant_id, 8, run.head)
-            return SimpleNamespace(fetchall=lambda: (
-                (run.head, "agent_loop", run.schema_id, run.canonical_bytes(), 1),
-            ))
+            return SimpleNamespace(
+                fetchall=lambda: (
+                    (run.head, "agent_loop", run.schema_id, run.canonical_bytes(), 1),
+                )
+            )
 
         yield SimpleNamespace(execute=execute)
 
@@ -540,14 +576,17 @@ async def test_historical_open_cut_consumes_exact_history_proof_before_anchor_ga
     )
     monkeypatch.setattr(cuts, "read_execution_recovery_history", history)
     monkeypatch.setattr(
-        cuts, "capture_authority_snapshot_commitment",
+        cuts,
+        "capture_authority_snapshot_commitment",
         lambda *_: "c" * 64 if damage == "actual" else facts.materialization_commitment,
     )
     monkeypatch.setattr(
         resolutions, "authenticate_selected_resolution_prefix_held", lambda *a: False
     )
     result = cuts.build_accepted_open_recovery_cut(
-        runtime, facts, source_materialization_commitment="b" * 64,
+        runtime,
+        facts,
+        source_materialization_commitment="b" * 64,
         source_tenant_commit_sequence=8,
     )
     if damage is None:
@@ -575,8 +614,8 @@ async def test_historical_open_cut_consumes_exact_history_proof_before_anchor_ga
     ],
 )
 async def test_open_causal_source_joins_captured_prefix_and_excludes_future_closure(
-    monkeypatch, damage
-):
+    monkeypatch: pytest.MonkeyPatch, damage: str | None
+) -> None:
     """Inert preauthenticated inputs isolate the causal join, not IPC provenance."""
     from dataclasses import replace
 
@@ -679,8 +718,8 @@ async def test_open_causal_source_joins_captured_prefix_and_excludes_future_clos
     ],
 )
 async def test_open_effects_history_keeps_only_exact_physical_runs(
-    tmp_path, monkeypatch, family, state
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str, state: str
+) -> None:
     """Real physical readback; owner transition semantics are authenticated by the caller."""
     import hashlib
     import sqlite3
@@ -804,7 +843,9 @@ async def test_open_effects_history_keeps_only_exact_physical_runs(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("damage", [None, "absent-prefix-run", "future-prefix-run"])
-async def test_open_outer_fold_reads_effects_once_with_physical_history(monkeypatch, damage):
+async def test_open_outer_fold_reads_effects_once_with_physical_history(
+    monkeypatch: pytest.MonkeyPatch, damage: str | None
+) -> None:
     """Boundary wiring probe; actual source causality is exercised separately."""
     from chiplog.composition import r14_historical_suffix as suffix
     from chiplog.composition import r16_dispatch_history, r16_effects
@@ -869,12 +910,17 @@ async def test_open_outer_fold_reads_effects_once_with_physical_history(monkeypa
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "pending_operation",
-    [None, "agent_loop.accepted-open-accounting.v1", "agent_loop.accepted-open-recovery.v1",
-     "agent_loop.execution-suspension.v1", "agent_loop.execution-accounting-readiness.v1"],
+    [
+        None,
+        "agent_loop.accepted-open-accounting.v1",
+        "agent_loop.accepted-open-recovery.v1",
+        "agent_loop.execution-suspension.v1",
+        "agent_loop.execution-accounting-readiness.v1",
+    ],
 )
 async def test_open_historical_cut_selects_call_seal_among_two_native_executions(
-    monkeypatch, pending_operation
-):
+    monkeypatch: pytest.MonkeyPatch, pending_operation: str | None
+) -> None:
     from chiplog.composition import r14_accepted_open_accounting_publication as publication
 
     cut, _, call_id, _, snapshot, acceptance, *_ = await _open_cut_probe(
@@ -912,8 +958,10 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
     from chiplog.composition import r14_historical_suffix as suffix
 
     monkeypatch.setattr(
-        suffix, "_materialized_native_open_run_history_held",
-        lambda *a, **kw: physical_snapshot, raising=False,
+        suffix,
+        "_materialized_native_open_run_history_held",
+        lambda *a, **kw: physical_snapshot,
+        raising=False,
     )
     monkeypatch.setattr(publication, "read_connection", lambda _: nullcontext(object()))
 
@@ -921,10 +969,15 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
         assert kwargs["original_call_id"] == call_id
         assert kwargs["expected_outcome_record_id"] == cut.selected_outcome_record_id
         assert kwargs.get("authenticated_effects_history") is (
-            snapshot if pending_operation in (
-                "agent_loop.accepted-open-accounting.v1", "agent_loop.accepted-open-recovery.v1",
+            snapshot
+            if pending_operation
+            in (
+                "agent_loop.accepted-open-accounting.v1",
+                "agent_loop.accepted-open-recovery.v1",
                 "agent_loop.execution-accounting-readiness.v1",
-            ) else physical_snapshot if pending_operation == "agent_loop.execution-suspension.v1"
+            )
+            else physical_snapshot
+            if pending_operation == "agent_loop.execution-suspension.v1"
             else None
         )
         assert kwargs.get("authenticated_recovery_history") is recovery_history
@@ -947,7 +1000,9 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
         _authority_gate=lambda: SimpleNamespace(require_held=lambda: None),
     )
     assert publication._current_cut(
-        runtime, selected_only=True, expected_source_cut=cut,
+        runtime,
+        selected_only=True,
+        expected_source_cut=cut,
         authenticated_history=recovery_history,
     ) == (facts, cut)
     assert projections == [cut.response_id]
@@ -957,8 +1012,8 @@ async def test_open_historical_cut_selects_call_seal_among_two_native_executions
 @pytest.mark.parametrize("supplied", [False, True])
 @pytest.mark.parametrize("damage", [None, "missing-run", "run-bytes", "frontier"])
 async def test_effects_run_snapshot_reuse_keeps_exact_sql_checks(
-    tmp_path, monkeypatch, supplied, damage
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, supplied: bool, damage: str | None
+) -> None:
     """Real Run reconstruction and SQL; outer history acquisition is a counted control."""
     import sqlite3
 
@@ -976,14 +1031,23 @@ async def test_effects_run_snapshot_reuse_keeps_exact_sql_checks(
     with sqlite3.connect(database) as connection:
         connection.executescript(SCHEMA_SQL)
         for run in runs:
-            connection.execute("INSERT INTO records VALUES(?,?,?,?,?,?)", (
-                cut.tenant_id, run.head, "agent_loop", run.schema_id, run.canonical_bytes(), 1,
-            ))
+            connection.execute(
+                "INSERT INTO records VALUES(?,?,?,?,?,?)",
+                (
+                    cut.tenant_id,
+                    run.head,
+                    "agent_loop",
+                    run.schema_id,
+                    run.canonical_bytes(),
+                    1,
+                ),
+            )
         if damage == "missing-run":
             connection.execute("DELETE FROM records WHERE record_id=?", (runs[0].head,))
         elif damage == "run-bytes":
-            connection.execute("UPDATE records SET canonical_bytes=? WHERE record_id=?",
-                               (b"changed", runs[0].head))
+            connection.execute(
+                "UPDATE records SET canonical_bytes=? WHERE record_id=?", (b"changed", runs[0].head)
+            )
         elif damage == "frontier":
             snapshot = snapshot.model_copy(update={"tenant_head": 2})
         runtime = object.__new__(R14PlanningRuntime)
@@ -1015,7 +1079,9 @@ async def test_effects_run_snapshot_reuse_keeps_exact_sql_checks(
         assert len(reads) == (0 if supplied else 1)
 
 
-def test_open_unqualified_cut_holds_for_multiple_accepted_calls(monkeypatch):
+def test_open_unqualified_cut_holds_for_multiple_accepted_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from chiplog.composition import r14_accepted_open_accounting_publication as publication
 
     acceptances = tuple(
@@ -1037,7 +1103,9 @@ def test_open_unqualified_cut_holds_for_multiple_accepted_calls(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_open_startup_validation_does_not_project_incomplete_whole_seal(monkeypatch):
+async def test_open_startup_validation_does_not_project_incomplete_whole_seal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Validator boundary: selected owner/source acquisition is inert here."""
     import json
 
@@ -1123,7 +1191,9 @@ async def test_open_startup_validation_does_not_project_incomplete_whole_seal(mo
         "read_selected_accepted_open_recovery",
     ],
 )
-async def test_public_open_api_forwards_exact_original_call(monkeypatch, method):
+async def test_public_open_api_forwards_exact_original_call(
+    monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
     from chiplog.composition import r14_accepted_open_accounting_publication as publication
     from chiplog.composition import r14_loop_history as history
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
@@ -1162,8 +1232,8 @@ async def test_public_open_api_forwards_exact_original_call(monkeypatch, method)
 @pytest.mark.parametrize("recovery", [False, True])
 @pytest.mark.parametrize("damage", [None, "other-envelope", "duplicate-call"])
 async def test_open_writer_replays_requested_call_after_validating_all_marked_envelopes(
-    monkeypatch, recovery, damage
-):
+    monkeypatch: pytest.MonkeyPatch, recovery: bool, damage: str | None
+) -> None:
     """Prior selection boundary; actual owner builders are replaced explicitly."""
     import json
 
@@ -1263,8 +1333,8 @@ async def test_open_writer_replays_requested_call_after_validating_all_marked_en
 @pytest.mark.parametrize("physical_ahead", [False, True])
 @pytest.mark.parametrize("damage", [None, "source", "anchor"])
 def test_open_source_authentication_binds_current_physical_cut(
-    monkeypatch, state, physical_ahead, damage
-):
+    monkeypatch: pytest.MonkeyPatch, state: str, physical_ahead: bool, damage: str | None
+) -> None:
     """Source acquisition is inert; this checks its current-cut trust boundary."""
     from chiplog.capabilities.agent_loop.contracts import LoopRejected
     from chiplog.composition import r14_accepted_open_accounting_publication as publication
@@ -1316,9 +1386,12 @@ def test_open_source_authentication_binds_current_physical_cut(
     monkeypatch.setattr(publication, "_current_cut", collect)
     valid = damage is None and (state == "COMPLETE" or (state == "ABSENT" and not physical_ahead))
     if valid:
-        assert publication._authenticate_selected_open_source(
-            runtime, {"predecessor": "source"}, object(), cut
-        )[1] is cut
+        assert (
+            publication._authenticate_selected_open_source(
+                runtime, {"predecessor": "source"}, object(), cut
+            )[1]
+            is cut
+        )
     else:
         with pytest.raises(LoopRejected):
             publication._authenticate_selected_open_source(
@@ -1326,7 +1399,9 @@ def test_open_source_authentication_binds_current_physical_cut(
             )
 
 
-def test_open_current_cut_reuses_history_but_keeps_original_historical_selection(monkeypatch):
+def test_open_current_cut_reuses_history_but_keeps_original_historical_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from chiplog.composition import r14_accepted_open_accounting_publication as publication
 
     class ReachedBuilder(BaseException):
@@ -1334,14 +1409,28 @@ def test_open_current_cut_reuses_history_but_keeps_original_historical_selection
 
     seal = SimpleNamespace(response_seal_id="seal", digest=lambda: "a" * 64)
     history = (
-        SimpleNamespace(records=(object(),)), None, None,
-        (SimpleNamespace(proposal=SimpleNamespace(fan_out=SimpleNamespace(
-            initialized_records=(SimpleNamespace(original_call_id="call"),), response_seal=seal,
-        ))),), None, (),
+        SimpleNamespace(records=(object(),)),
+        None,
+        None,
+        (
+            SimpleNamespace(
+                proposal=SimpleNamespace(
+                    fan_out=SimpleNamespace(
+                        initialized_records=(SimpleNamespace(original_call_id="call"),),
+                        response_seal=seal,
+                    )
+                )
+            ),
+        ),
+        None,
+        (),
     )
     retained = SimpleNamespace(
-        original_call_id="call", current_run=object(), selected_outcome_record_id="original",
-        selected_decision=object(), tenant_commit_sequence=7,
+        original_call_id="call",
+        current_run=object(),
+        selected_outcome_record_id="original",
+        selected_decision=object(),
+        tenant_commit_sequence=7,
     )
     events = []
     facts = object()
@@ -1386,8 +1475,11 @@ def test_open_current_cut_reuses_history_but_keeps_original_historical_selection
     monkeypatch.setattr(publication, "build_accepted_open_recovery_cut", build)
     with pytest.raises(ReachedBuilder):
         publication._current_cut(
-            runtime, selected_only=True, expected_source_cut=retained,
-            source_materialization_commitment="historical", source_tenant_commit_sequence=7,
+            runtime,
+            selected_only=True,
+            expected_source_cut=retained,
+            source_materialization_commitment="historical",
+            source_tenant_commit_sequence=7,
             authenticated_history=history,
         )
 
@@ -1396,8 +1488,8 @@ def test_open_current_cut_reuses_history_but_keeps_original_historical_selection
 @pytest.mark.parametrize("supplied", [False, True])
 @pytest.mark.parametrize("damage", [None, "initial-sql", "final-sql", "final-anchor", "history"])
 async def test_current_cut_and_real_builder_read_historical_sources_once(
-    monkeypatch, supplied, damage
-):
+    monkeypatch: pytest.MonkeyPatch, supplied: bool, damage: str | None
+) -> None:
     """Real caller/builder seam; producer facts and physical rows are controls."""
     from chiplog.composition import r14_accepted_open_accounting_publication as publication
     from chiplog.composition import r14_native_accepted_open_cut as cuts
@@ -1424,10 +1516,21 @@ async def test_current_cut_and_real_builder_read_historical_sources_once(
     runtime._pending = lambda: ()
     seal = SimpleNamespace(response_seal_id="seal", digest=lambda: "a" * 64)
     history = (
-        snapshot, None, None,
-        (SimpleNamespace(proposal=SimpleNamespace(fan_out=SimpleNamespace(
-            initialized_records=(SimpleNamespace(original_call_id=call_id),), response_seal=seal,
-        ))),), None, (),
+        snapshot,
+        None,
+        None,
+        (
+            SimpleNamespace(
+                proposal=SimpleNamespace(
+                    fan_out=SimpleNamespace(
+                        initialized_records=(SimpleNamespace(original_call_id=call_id),),
+                        response_seal=seal,
+                    )
+                )
+            ),
+        ),
+        None,
+        (),
     )
     reads, source_calls, builder_proofs = [], [], []
 
@@ -1469,9 +1572,11 @@ async def test_current_cut_and_real_builder_read_historical_sources_once(
         def execute(sql, parameters):
             assert "commit_sequence<=?" in sql
             assert parameters == (runtime._tenant_id, 8, run.head)
-            return SimpleNamespace(fetchall=lambda: (
-                (run.head, "agent_loop", run.schema_id, run.canonical_bytes(), 1),
-            ))
+            return SimpleNamespace(
+                fetchall=lambda: (
+                    (run.head, "agent_loop", run.schema_id, run.canonical_bytes(), 1),
+                )
+            )
 
         yield SimpleNamespace(execute=execute)
 
@@ -1505,8 +1610,10 @@ async def test_current_cut_and_real_builder_read_historical_sources_once(
     monkeypatch.setattr(cuts, "read_connection", connection)
     monkeypatch.setattr(cuts, "capture_authority_snapshot_commitment", commitment)
     kwargs = dict(
-        selected_only=True, expected_source_cut=retained,
-        source_materialization_commitment="b" * 64, source_tenant_commit_sequence=8,
+        selected_only=True,
+        expected_source_cut=retained,
+        source_materialization_commitment="b" * 64,
+        source_tenant_commit_sequence=8,
         authenticated_history=history if supplied else None,
     )
     with gate.hold():
@@ -1532,7 +1639,9 @@ async def test_current_cut_and_real_builder_read_historical_sources_once(
 
 
 @pytest.mark.parametrize("damage", [None, "commitment", "identity", "tenant"])
-def test_open_builder_reuses_held_history_after_current_source_checks(monkeypatch, damage):
+def test_open_builder_reuses_held_history_after_current_source_checks(
+    monkeypatch: pytest.MonkeyPatch, damage: str | None
+) -> None:
     from chiplog.composition import r14_native_accepted_open_cut as builder
 
     class ReachedRunJoin(BaseException):
@@ -1550,7 +1659,9 @@ def test_open_builder_reuses_held_history_after_current_source_checks(monkeypatc
         _authority_gate=lambda: SimpleNamespace(
             hold=lambda: connection(None), require_held=lambda: None
         ),
-        _check_database_identity=lambda: None, _database="database", _tenant_id="tenant",
+        _check_database_identity=lambda: None,
+        _database="database",
+        _tenant_id="tenant",
         _database_identity=("database", 1, 2),
         _commitment_journal=SimpleNamespace(load=lambda *_: "current"),
     )
@@ -1569,7 +1680,8 @@ def test_open_builder_reuses_held_history_after_current_source_checks(monkeypatc
     monkeypatch.setattr(builder, "capture_authority_snapshot_commitment", lambda *_: "current")
     monkeypatch.setattr(builder, "read_execution_recovery_history", duplicate)
     kwargs = dict(
-        source_materialization_commitment="historical", source_tenant_commit_sequence=7,
+        source_materialization_commitment="historical",
+        source_tenant_commit_sequence=7,
         authenticated_history=(SimpleNamespace(records=Records()), None, None, (), (), ()),
     )
     if damage is None:
