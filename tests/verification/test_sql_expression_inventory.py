@@ -10,6 +10,7 @@ from chiplog.platform._sqlite import SCHEMA_SQL
 from chiplog.verification.authority_sql_corpus import UnresolvedSqlCorpus, inspect_sources
 from chiplog.verification.sql_expression_inventory import (
     SqlExpressionAccountingError,
+    SqlExpressionInventory,
     SqlExpressionSnapshotChanged,
     extract_sql_expression_inventory,
 )
@@ -23,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PLANNING = "src/chiplog/platform/authority_reads.py"
 
 
-def _inspect(sources):
+def _inspect(sources: tuple[tuple[str, str], ...]) -> SqlExpressionInventory:
     return extract_sql_expression_inventory(sources, inspect_sources(sources))
 
 
@@ -229,12 +230,13 @@ def test_current_tree_accounts_all_candidates_without_hiding_verifier_sql_or_unk
         for row in inventory.unresolved
         if (row.site.module.removeprefix("src/chiplog/"), row.site.qualname) in known
     ]
-    dynamic = [
-        row
-        for row in inventory.resolved
-        if (row.site.module.removeprefix("src/chiplog/"), row.site.qualname) in known
-        and not isinstance(ast.parse(row.site.expression, mode="eval").body.args[0], ast.Constant)
-    ]
+    dynamic = []
+    for row in inventory.resolved:
+        if (row.site.module.removeprefix("src/chiplog/"), row.site.qualname) in known:
+            expression = ast.parse(row.site.expression, mode="eval").body
+            assert isinstance(expression, ast.Call)
+            if not isinstance(expression.args[0], ast.Constant):
+                dynamic.append(row)
     # The uniqueness statement now has an explicit SQL local, joining the other
     # planning sites rather than remaining a literal execute argument.
     assert len(dynamic) == 22
