@@ -12,7 +12,7 @@ import hashlib
 import json
 import time
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
@@ -61,6 +61,7 @@ from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 OPERATION = "agent_loop.execution-successor.v1"
 START_OPERATION = "agent_loop.execution-successor-start.v1"
@@ -83,7 +84,7 @@ def _run_ref(run: ExecutionRunRecord) -> CallSubjectHead:
     )
 
 
-def _run_id(admitted) -> str:
+def _run_id(admitted: SelectedAdmittedRunInput) -> str:
     raw = json.dumps(
         [admitted.tenant_id, admitted.database_id, admitted.inbox.subject_id],
         separators=(",", ":"),
@@ -252,7 +253,9 @@ def _selected_decision(entry: dict[str, object]) -> CallSubjectHead:
     )
 
 
-def _entry_for(runtime, operation_id: str, operation: str = OPERATION):
+def _entry_for(
+    runtime: R14PlanningRuntime, operation_id: str, operation: str = OPERATION
+) -> tuple[str, bytes, dict[str, object]] | None:
     matches = []
     for decision_id, _, raw in runtime._loop_decisions().entries():
         entry = json.loads(raw)
@@ -268,7 +271,27 @@ def _entry_for(runtime, operation_id: str, operation: str = OPERATION):
     return matches[0] if matches else None
 
 
-def _retained(entry, field=EVIDENCE_FIELD, cls=RetainedExecutionSuccessor):
+@overload
+def _retained(
+    entry: dict[str, object],
+    field: str = EVIDENCE_FIELD,
+    cls: type[RetainedExecutionSuccessor] = RetainedExecutionSuccessor,
+) -> RetainedExecutionSuccessor: ...
+
+
+@overload
+def _retained(
+    entry: dict[str, object], field: str, cls: type[RetainedExecutionSuccessorStart]
+) -> RetainedExecutionSuccessorStart: ...
+
+
+def _retained(
+    entry: dict[str, object],
+    field: str = EVIDENCE_FIELD,
+    cls: type[RetainedExecutionSuccessor] | type[RetainedExecutionSuccessorStart] = (
+        RetainedExecutionSuccessor
+    ),
+) -> RetainedExecutionSuccessor | RetainedExecutionSuccessorStart:
     raw = entry.get(field)
     if not isinstance(raw, str):
         raise ValueError("selected successor evidence absent")
@@ -380,7 +403,9 @@ async def _finish_start(runtime, entry):
     return evidence
 
 
-def _find_replay(runtime, request: DriveInputRequestV1):
+def _find_replay(
+    runtime: R14PlanningRuntime, request: DriveInputRequestV1
+) -> dict[str, object] | None:
     fingerprint = request.original_driver_command_fingerprint()
     found = []
     for decision_id, _, raw in runtime._loop_decisions().entries():
@@ -401,7 +426,9 @@ def _find_replay(runtime, request: DriveInputRequestV1):
     return found[0] if found else None
 
 
-def find_by_driver_request(runtime, driver_request: DriveInputRequestV1):
+def find_by_driver_request(
+    runtime: R14PlanningRuntime, driver_request: DriveInputRequestV1
+) -> tuple[RetainedExecutionSuccessor, str, PhysicalPublicationCommand] | None:
     """Return validated selected owner evidence, decision ID and physical batch."""
     with runtime._authority_gate().hold():
         entry = _find_replay(runtime, driver_request)
@@ -413,7 +440,9 @@ def find_by_driver_request(runtime, driver_request: DriveInputRequestV1):
         return evidence, str(entry["decision_id"]), command
 
 
-def find_started_by_driver_request(runtime, driver_request: DriveInputRequestV1):
+def find_started_by_driver_request(
+    runtime: R14PlanningRuntime, driver_request: DriveInputRequestV1
+) -> tuple[RetainedExecutionSuccessorStart, str, PhysicalPublicationCommand] | None:
     """Return the selected ACTIVE publication that created the first Turn."""
     with runtime._authority_gate().hold():
         source_entry = _find_replay(runtime, driver_request)

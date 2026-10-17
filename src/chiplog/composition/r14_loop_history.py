@@ -927,51 +927,52 @@ def _read_call_history(
                             raise ValueError(
                                 "execution successor start has a substituted operation"
                             )
-                        retained_entry = successor._entry_for(
+                        start_retained_entry = successor._entry_for(
                             runtime, identity, successor.START_OPERATION
                         )
-                        if retained_entry is None:
+                        if start_retained_entry is None:
                             raise ValueError("selected execution successor start entry is absent")
-                        retained = successor._retained(
-                            retained_entry[2],
+                        start_retained = successor._retained(
+                            start_retained_entry[2],
                             successor.START_EVIDENCE_FIELD,
                             successor.RetainedExecutionSuccessorStart,
                         )
-                        request = retained.request
-                        created = request.created_run
-                        active = retained.result.run
-                        selected_source = successor_publications.get(created.run_id)
+                        start_request = start_retained.request
+                        start_created = start_request.created_run
+                        start_active = start_retained.result.run
+                        selected_source = successor_publications.get(start_created.run_id)
                         if (
                             replace(
-                                successor._start_command(retained),
+                                successor._start_command(start_retained),
                                 expected_preimage_commitment=None,
                             )
                             != command
                             or selected_source is None
-                            or retained.source != selected_source[0]
-                            or retained.source_resulting_commitment != selected_source[1]
-                            or created != latest.get(created.run_id)
-                            or created.state != "CREATED"
-                            or active.state != "ACTIVE"
-                            or active.run_id != created.run_id
-                            or active.predecessor != created.head
-                            or active.tenant != created.tenant
-                            or active.principal != created.principal
-                            or active.prompt != created.prompt
-                            or active.policy != created.policy
-                            or active.origin != created.origin
-                            or active.original_obligations != created.original_obligations
-                            or active.no_retry_references != created.no_retry_references
-                            or active.suspension_baseline is not None
+                            or start_retained.source != selected_source[0]
+                            or start_retained.source_resulting_commitment != selected_source[1]
+                            or start_created != latest.get(start_created.run_id)
+                            or start_created.state != "CREATED"
+                            or start_active.state != "ACTIVE"
+                            or start_active.run_id != start_created.run_id
+                            or start_active.predecessor != start_created.head
+                            or start_active.tenant != start_created.tenant
+                            or start_active.principal != start_created.principal
+                            or start_active.prompt != start_created.prompt
+                            or start_active.policy != start_created.policy
+                            or start_active.origin != start_created.origin
+                            or start_active.original_obligations
+                            != start_created.original_obligations
+                            or start_active.no_retry_references != start_created.no_retry_references
+                            or start_active.suspension_baseline is not None
                         ):
                             raise ValueError(
                                 "selected execution successor start differs from exact CREATED Run"
                             )
                         successor._selected_matches(
                             runtime,
-                            retained_entry[2],
+                            start_retained_entry[2],
                             command,
-                            retained,
+                            start_retained,
                             start=True,
                             source_validated=True,
                         )
@@ -979,8 +980,8 @@ def _read_call_history(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
                         expected_publications.add((command.operation_kind, identity))
-                        latest[active.run_id] = active
-                        mixed_records.append(active)
+                        latest[start_active.run_id] = start_active
+                        mixed_records.append(start_active)
                         continue
                     if (
                         command.operation_kind == "agent_loop.execution-resume.v1"
@@ -1007,13 +1008,13 @@ def _read_call_history(
 
                         if command.operation_kind != RESUME_OPERATION:
                             raise ValueError("execution resume has a substituted operation")
-                        retained_entry = resume_entry_for(runtime, identity)
-                        if retained_entry is None:
+                        resume_retained_entry = resume_entry_for(runtime, identity)
+                        if resume_retained_entry is None:
                             raise ValueError("selected execution resume entry is absent")
-                        retained = retained_resume(retained_entry[2])
-                        request = retained.request
-                        before = request.run
-                        proposed = retained.result.run
+                        resume_retained = retained_resume(resume_retained_entry[2])
+                        resume_request = resume_retained.request
+                        before = resume_request.run
+                        proposed = resume_retained.result.run
                         previous = latest.get(before.run_id)
                         prior_lineage = tuple(
                             row
@@ -1021,13 +1022,16 @@ def _read_call_history(
                             if isinstance(row, ExecutionRunRecord) and row.run_id == before.run_id
                         )
                         if (
-                            replace(resume_command(retained), expected_preimage_commitment=None)
+                            replace(
+                                resume_command(resume_retained), expected_preimage_commitment=None
+                            )
                             != command
-                            or request.cut.tenant_id != tenant
-                            or request.cut.tenant_commit_sequence != command.expected_head
-                            or request.cut.materialization_commitment != entry.get("predecessor")
-                            or request.cut.current_run != resume_run_ref(before)
-                            or request.cut.complete_ordered_run_lineage != prior_lineage
+                            or resume_request.cut.tenant_id != tenant
+                            or resume_request.cut.tenant_commit_sequence != command.expected_head
+                            or resume_request.cut.materialization_commitment
+                            != entry.get("predecessor")
+                            or resume_request.cut.current_run != resume_run_ref(before)
+                            or resume_request.cut.complete_ordered_run_lineage != prior_lineage
                             or before != previous
                             or before.state != "SUSPENDED"
                             or proposed.state != "ACTIVE"
@@ -1042,7 +1046,9 @@ def _read_call_history(
                             raise ValueError(
                                 "selected execution resume differs from exact Run history"
                             )
-                        validate_resume(runtime, retained_entry[2], command, check_history=False)
+                        validate_resume(
+                            runtime, resume_retained_entry[2], command, check_history=False
+                        )
                         expected_ids.update(
                             row.record_id for row in command.records if row.owner == OWNER
                         )
@@ -1075,12 +1081,12 @@ def _read_call_history(
 
                         if command.operation_kind != SUSPENSION_OPERATION:
                             raise ValueError("execution suspension has a substituted operation")
-                        retained_entry = suspension_entry_for(runtime, identity)
-                        if retained_entry is None:
+                        suspension_retained_entry = suspension_entry_for(runtime, identity)
+                        if suspension_retained_entry is None:
                             raise ValueError("selected execution suspension entry is absent")
-                        retained = retained_suspension(retained_entry[2])
-                        suspension_request = retained.request
-                        proposed = retained.result.run
+                        suspension_retained = retained_suspension(suspension_retained_entry[2])
+                        suspension_request = suspension_retained.request
+                        proposed = suspension_retained.result.run
                         previous = latest.get(proposed.run_id)
                         prior_lineage = tuple(
                             row
@@ -1094,7 +1100,7 @@ def _read_call_history(
                         )
                         suspension_checks = {
                             "command": replace(
-                                suspension_command(retained),
+                                suspension_command(suspension_retained),
                                 expected_preimage_commitment=None,
                             )
                             == command,
@@ -1124,9 +1130,9 @@ def _read_call_history(
                             )
                         validate_suspension_evidence(
                             runtime,
-                            retained_entry[2],
+                            suspension_retained_entry[2],
                             command,
-                            retained,
+                            suspension_retained,
                             check_history=False,
                             allow_pending_absent=allow_pending_absent,
                         )
