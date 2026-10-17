@@ -9,6 +9,7 @@ from .execution_recovery_contracts import (
     AcceptedOpenRecoveryOpeningV1,
     AcceptedOpenTerminalDispositionV1,
 )
+from .execution_recovery_observations import RecoverySourceRecord
 from .original_recovery_contracts import (
     OriginalEffectEvidenceReducerPolicyV1,
     OriginalResolverAuthorityPolicyV1,
@@ -19,7 +20,7 @@ from .original_recovery_contracts import (
 )
 
 
-def _exact_source(source, owner: str, schema: str) -> None:
+def _exact_source(source: RecoverySourceRecord, owner: str, schema: str) -> None:
     if (
         source.owner != owner
         or source.schema_id != schema

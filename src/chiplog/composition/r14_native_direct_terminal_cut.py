@@ -13,7 +13,8 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     ConsequentialAcceptedCall,
 )
 from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
-from chiplog.composition.r14_loop_history import ExecutionHistorySnapshot, read_execution_history
+from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
+from chiplog.composition.r14_loop_history import read_execution_history
 from chiplog.composition.r14_native_selected_accounting_source import (
     R14NativeAcceptedOpenOutcome,
 )
@@ -128,9 +129,7 @@ def build_accepted_direct_terminal_cut(
                 external_effect_intent=acceptance.loop_proposal.execution_intent.external_intent,
                 selected_outcome_record_id=closed.latest_outcome_record_id,
                 selected_outcome_bytes=outcome.canonical_bytes(),
-                selected_outcome_fingerprint=hashlib.sha256(
-                    outcome.canonical_bytes()
-                ).hexdigest(),
+                selected_outcome_fingerprint=hashlib.sha256(outcome.canonical_bytes()).hexdigest(),
                 selected_effect_member_bytes=member.canonical_bytes(),
                 selected_decision=CallSubjectHead(
                     subject_id=member.selected_decision.subject_id,
@@ -168,7 +167,7 @@ def build_accepted_direct_terminal_cut(
             ):
                 return None
             return cut
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError):
+    except OSError, RuntimeError, TypeError, ValueError, KeyError, AttributeError:
         return None
 
 

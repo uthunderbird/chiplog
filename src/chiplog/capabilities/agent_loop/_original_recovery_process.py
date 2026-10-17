@@ -76,10 +76,10 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
         return _execution_recovery_process.dispatch(operation, payload)
     if operation == PREPARE_SEALED_ACCOUNTING_V3_OPERATION:
         try:
-            request = PrepareNativeSealedAccountingV3.model_validate_json(payload)
-            if request.canonical_bytes() != payload:
+            sealed_request = PrepareNativeSealedAccountingV3.model_validate_json(payload)
+            if sealed_request.canonical_bytes() != payload:
                 raise ValueError("noncanonical native sealed accounting V3 request")
-            result = prepare_native_sealed_accounting_v3(request)
+            result = prepare_native_sealed_accounting_v3(sealed_request)
             return {
                 "payload": base64.b64encode(result.canonical_bytes()).decode(),
                 "schema_id": NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA,

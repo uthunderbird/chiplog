@@ -32,15 +32,13 @@ def authenticate_selected_next_turn_prefix_held(
             return False
         evidence = retained_next_turn(entry)
         batch = next_turn_command(evidence)
-        predecessor = evidence.request.cut.materialization_commitment
+        expected_predecessor = evidence.request.cut.materialization_commitment
         if (
-            replace(
-                runtime._publication(entry), expected_preimage_commitment=predecessor
-            )
+            replace(runtime._publication(entry), expected_preimage_commitment=expected_predecessor)
             != batch
             or batch.tenant_id != runtime._tenant_id
             or evidence.request.cut.database_id != runtime._database_identity[0]
-            or entry.get("predecessor") != predecessor
+            or entry.get("predecessor") != expected_predecessor
             or batch.expected_head != evidence.request.cut.tenant_commit_sequence
             or anchored != runtime._commitment_journal.load(runtime._tenant_id)
         ):
@@ -63,16 +61,22 @@ def authenticate_selected_next_turn_prefix_held(
                 historical.execute("BEGIN")
                 if state == "COMPLETE":
                     for row in batch.records:
-                        if historical.execute(
-                            "DELETE FROM records WHERE tenant_id=? AND record_id=?",
-                            (runtime._tenant_id, row.record_id),
-                        ).rowcount != 1:
+                        if (
+                            historical.execute(
+                                "DELETE FROM records WHERE tenant_id=? AND record_id=?",
+                                (runtime._tenant_id, row.record_id),
+                            ).rowcount
+                            != 1
+                        ):
                             return False
-                    if historical.execute(
-                        "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
-                        "AND idempotency_key=?",
-                        (runtime._tenant_id, batch.operation_kind, batch.idempotency_key),
-                    ).rowcount != 1:
+                    if (
+                        historical.execute(
+                            "DELETE FROM publications WHERE tenant_id=? AND operation_kind=? "
+                            "AND idempotency_key=?",
+                            (runtime._tenant_id, batch.operation_kind, batch.idempotency_key),
+                        ).rowcount
+                        != 1
+                    ):
                         return False
                     historical.execute(
                         "UPDATE tenant_heads SET head=? WHERE tenant_id=?",
@@ -118,5 +122,5 @@ def authenticate_selected_next_turn_prefix_held(
                     return False
         runtime._check_database_identity()
         return True
-    except (ValueError, TypeError, RuntimeError, OSError, sqlite3.Error):
+    except ValueError, TypeError, RuntimeError, OSError, sqlite3.Error:
         return False
