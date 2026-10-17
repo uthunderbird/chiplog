@@ -182,7 +182,7 @@ def test_preparation_paths_join_all_metadata_and_statement_sinks_to_private_fact
         ("_physical_schema", 16, "PHYSICAL_COLUMNS"),
         ("_physical_schema", 21, "PHYSICAL_INDEXES"),
         ("_physical_schema", 26, "PHYSICAL_INDEX_COLUMNS"),
-        ("_schema_steps", 18, "SCHEMA_UNIT"),
+        ("_schema_steps", 19, "SCHEMA_UNIT"),
         ("observe_statement", 17, "EXPLAIN_FIRST"),
         ("observe_statement", 25, "EXPLAIN_BINDING_RETRY"),
     }
@@ -377,8 +377,8 @@ def test_scanner_connection_forwarding_and_eager_consumption_mutants_refuse(
         ),
         (
             "_schema_steps",
-            "connection, script, objects, foreign_keys, initial_schema_sql",
-            "script, connection, objects, foreign_keys, initial_schema_sql",
+            "connection: Connection,\n    script: str,",
+            "script: str,\n    connection: Connection,",
         ),
         (
             "_configure",
