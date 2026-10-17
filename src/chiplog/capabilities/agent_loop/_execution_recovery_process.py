@@ -5,8 +5,9 @@ from __future__ import annotations
 import base64
 
 from . import _native_one_call_accounting_v2_process
+from .call_acceptance_contracts import CallPreparationRejected
 from .execution_recovery_contracts import (
-    CallPreparationRejected,
+    ExecutionRecoveryResult,
     PreparedExecutionSuspension,
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
@@ -85,6 +86,7 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
     try:
         decoded = decode_execution_recovery_request(REQUEST_SCHEMA, payload)
         request = decoded.value
+        result: ExecutionRecoveryResult
         if operation == ACCOUNTING_OPERATION:
             if not isinstance(request, PrepareExecutionAccounting):
                 raise ValueError("accounting operation requires accounting request")
@@ -94,7 +96,9 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
                 raise ValueError("continuation operation requires continuation request")
             result = prepare_execution_continuation(request)
         elif operation in (
-            RESUME_OPERATION, RESUME_OBLIGATION_OPERATION, RESUME_CURRENT_ACTOR_OPERATION,
+            RESUME_OPERATION,
+            RESUME_OBLIGATION_OPERATION,
+            RESUME_CURRENT_ACTOR_OPERATION,
         ):
             if not isinstance(request, PrepareExecutionResume):
                 raise ValueError("resume operation requires resume request")

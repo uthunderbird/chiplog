@@ -6,6 +6,7 @@ import base64
 
 from . import _execution_next_turn_process
 from .execution_recovery_contracts import (
+    ExecutionRecoveryResult,
     PrepareAcceptedOpenAccounting,
     PrepareAcceptedOpenRecoveryV1,
 )
@@ -55,6 +56,7 @@ def dispatch(operation: str, payload: bytes) -> dict[str, object]:
     try:
         decoded = decode_execution_recovery_request(REQUEST_SCHEMA, payload)
         request = decoded.value
+        result: ExecutionRecoveryResult
         if operation == ACCEPTED_OPEN_ACCOUNTING_OPERATION:
             if not isinstance(request, PrepareAcceptedOpenAccounting):
                 raise ValueError("accepted/open accounting operation requires accounting request")
