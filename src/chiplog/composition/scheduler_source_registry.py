@@ -515,18 +515,20 @@ def _historical_v3_registration(current_profile: dict[str, object]) -> Scheduler
     )
 
 
-def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegistrationUnresolved:
+def _capture_scheduler_registration() -> tuple[
+    SchedulerSourceRegistration | SourceRegistrationUnresolved, dict[str, object]
+]:
     """Match reviewed V3 bytes; retain V1 through V2d selected history."""
     try:
         _require_v2b_closure()
         _original_v3_profile()
         raw_manifest = _MANIFEST_V3_REVISION2.read_bytes()
         if _sha(raw_manifest) != _MANIFEST_V3_REVISION2_SHA:
-            return SourceRegistrationUnresolved("reviewed V3 manifest bytes differ")
+            return SourceRegistrationUnresolved("reviewed V3 manifest bytes differ"), {}
         expected = json.loads(raw_manifest)
         observed, sources, _ = _observe(v3=True)
         if observed != expected:
-            return SourceRegistrationUnresolved("reviewed source/runtime artifacts differ")
+            return SourceRegistrationUnresolved("reviewed source/runtime artifacts differ"), {}
         require_v1_compatible(_v1_compatibility_profile(observed))
         prefix = "chiplog.capabilities.agent_loop."
         graph = derive_schema_manifest(
@@ -537,11 +539,21 @@ def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegi
             {"profile": expected, "generated_dependency_manifest": asdict(graph)}
         )
         digest = _sha(canonical)
-        return SchedulerSourceRegistration(
-            Present(head="scheduler-source-registry-v3:" + digest, fingerprint=digest), canonical
+        return (
+            SchedulerSourceRegistration(
+                Present(head="scheduler-source-registry-v3:" + digest, fingerprint=digest),
+                canonical,
+            ),
+            observed,
         )
     except (OSError, ValueError, TypeError, ImportError, KeyError) as error:
-        return SourceRegistrationUnresolved(str(error))
+        return SourceRegistrationUnresolved(str(error)), {}
+
+
+def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegistrationUnresolved:
+    """Match a fresh observation against the reviewed source and runtime bytes."""
+    registration, _ = _capture_scheduler_registration()
+    return registration
 
 
 def _historical_v2d_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
@@ -772,11 +784,10 @@ def read_admitted_scheduler_startup(
     commitments: AuthorityCommitmentJournal,
 ) -> AdmittedSchedulerStartup | SourceRegistrationUnresolved:
     """Acquire the physical cut here; source admission does not release authority."""
-    registration = current_scheduler_registration()
+    registration, observed = _capture_scheduler_registration()
     if isinstance(registration, SourceRegistrationUnresolved):
         return registration
     cut = read_materialized_scheduler(database, tenant_id, journal, commitments)
-    observed, _, _ = _observe(v3=True)
     legacy = _historical_v1_registration(observed)
     v2a = _historical_v2a_registration(observed)
     v2b = _historical_v2b_registration(observed)

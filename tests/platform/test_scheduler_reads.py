@@ -566,6 +566,40 @@ async def test_registered_actual_producer_history_is_source_admitted(tmp_path: P
         assert joined == result
 
 
+@pytest.mark.parametrize("changed_at_final_observation", [False, True])
+async def test_startup_observes_once_before_and_once_after_historical_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_at_final_observation: bool
+) -> None:
+    registration = current_scheduler_registration()
+    assert isinstance(registration, SchedulerSourceRegistration)
+    fixture = await materialized(tmp_path, registry=registration.reference)
+    original_observe = source_registry._observe
+    calls = 0
+
+    def observe(
+        *, v3: bool = False
+    ) -> tuple[dict[str, object], dict[str, bytes], dict[str, object]]:
+        nonlocal calls
+        calls += 1
+        profile, sources, inventories = original_observe(v3=v3)
+        if changed_at_final_observation and calls == 2:
+            profile = dict(profile, lock_sha256="changed-after-historical-validation")
+        return profile, sources, inventories
+
+    monkeypatch.setattr(source_registry, "_observe", observe)
+    result = read_admitted_scheduler_startup(
+        fixture.database, "tenant", fixture.journal, fixture.anchor
+    )
+    assert calls == 2
+    if changed_at_final_observation:
+        assert isinstance(result, SourceRegistrationUnresolved)
+        assert result.reason == "source/runtime changed during historical validation"
+    else:
+        assert isinstance(result, AdmittedSchedulerStartup)
+        assert result.registration == registration
+        assert result.cut.historical_requests[0].preparation == fixture.original
+
+
 async def test_immutable_v1_selected_history_is_admitted_by_v2_runtime(tmp_path: Path) -> None:
     observed, _, _ = source_registry._observe()
     legacy = source_registry._historical_v1_registration(observed)

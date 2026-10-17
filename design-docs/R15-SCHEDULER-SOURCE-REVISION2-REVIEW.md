@@ -47,7 +47,13 @@ the full actual lock. The separate V1 archived lock remains unchanged.
 - GREEN: `uv run pytest -q -p no:timeout tests/platform/test_scheduler_reads.py`: 63 passed, including original-V3 digest retention, source/lock mutations, immutable manifests and revision-order checks.
 - `uv run pytest -q -p no:timeout tests/composition/test_r15_lease_v2b_history.py`: 5 passed, including actual committed V2b/V2c selected bytes and evaluator tampering rejection.
 - `uv run mypy src/chiplog/composition/scheduler_source_registry.py`: no issues.
-- Mounted interval-service runtime validation is still running; its SKIP case has failed and the terminal traceback is pending. This checkpoint does not close that runtime failure.
+- The initial mounted interval-service suite returned 1 failed/3 passed. SKIP failed during genesis configuration, before policy execution: its retained AUTHENTICATE request expired at `issue_invocation`.
+- A real mcp-debugger stop on the already-selected expiry return observed `VALID`, no admission deadline override, unchanged owner session and trust observation, and no owner draining. The logpoint immediately before the comparison recorded monotonic time 1521576161546541 against deadline 1521575880731166: 0.281 seconds late. The debugger did not pause before that comparison.
+- Startup had repeated the complete runtime inventory three times. It now shares the initial authenticated observation with historical registration and retains the independent final observation. There is no cross-call cache or production deadline change.
+- RED: `uv run pytest -q -p no:timeout tests/platform/test_scheduler_reads.py -k startup_observes`: 2 failed before the repair. The tests demand exactly two observations and reject a changed final observation.
+- GREEN: `uv run pytest -q -p no:timeout tests/platform/test_scheduler_reads.py tests/composition/test_r15_lease_v2b_history.py`: 70 passed. Module mypy and Ruff passed.
+- After the repair, the actual SKIP policy scenario passed under mcp-debugger in 46.14 seconds without hitting the expiry breakpoint. The standalone command is `uv run pytest -q -p no:timeout 'tests/composition/test_r15_interval_service_runtime.py::test_signed_service_publishes_complete_policy_algebra[SKIP-30-2-0]'`. The full mounted suite still needs rerunning on the final snapshot.
+- Before the repair, a separate unpaused timing run also passed, in 52.16 seconds. The failure is timing-sensitive; these separate runs do not establish a whole-scenario speedup or eliminate every possible deadline expiry.
 
 This is a checkpoint review, not final merge acceptance. Full regression,
 strict R8 inventory, remaining static diagnostics and final review remain open.
