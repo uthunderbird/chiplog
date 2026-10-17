@@ -24,7 +24,9 @@ from chiplog.composition.codex_chat import open_codex_chat
 def add_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     auth = sub.add_parser("auth", help="Manage the separate Chiplog Codex OAuth session")
     auth.add_argument("auth_action", choices=("login", "status", "logout"))
-    chat = sub.add_parser("chat", help="Talk to Chiplog using Codex OAuth")
+    chat = sub.add_parser(
+        "chat", help="Legacy OAuth dialogue; native-chat uses authenticated inbox/delivery"
+    )
     chat.add_argument("--model", default="gpt-5.6-terra")
     chat.add_argument(
         "--effort", choices=("none", "low", "medium", "high", "xhigh", "max"), default="low"

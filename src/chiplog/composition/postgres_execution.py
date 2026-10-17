@@ -54,6 +54,7 @@ from chiplog.capabilities.agent_loop.readonly_runtime_contracts import (
     ReadOnlyLineageV2,
 )
 from chiplog.capabilities.deployment_trust._model import DeploymentTrustService
+from chiplog.composition.postgres_delivery_contracts import NativeDeliveryBinding
 from chiplog.composition.postgres_model_recovery import PostgresModelCustody
 from chiplog.composition.postgres_planning import PostgresPlanningRuntime
 from chiplog.platform.deployment_gate import DeploymentGateRequest
@@ -110,10 +111,12 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
         origin: OriginSelection,
         peer: str = "local-cli",
         effects_binding: PostgresEffectsBinding | None = None,
+        delivery_binding: NativeDeliveryBinding | None = None,
         authenticate_entitlement: Callable[[bytes, bytes], bool] | None = None,
     ) -> None:
         super().__init__(database, tenant, operator_secret, authenticate_entitlement)
         self.effects_binding = effects_binding
+        self.delivery_binding = delivery_binding
         self.scheduler: PostgresScheduler | None = None
         if model.session is not None:
             raise LoopRejected("model adapter already bound; provide a fresh adapter per runtime")
@@ -1176,6 +1179,7 @@ async def open_postgres_execution_runtime(
     origin: OriginSelection,
     peer: str = "local-cli",
     effects_binding: PostgresEffectsBinding | None = None,
+    delivery_binding: NativeDeliveryBinding | None = None,
     authenticate_entitlement: Callable[[bytes, bytes], bool] | None = None,
 ) -> AsyncIterator[PostgresExecutionRuntime]:
     """Primary native PostgreSQL client factory, also exposed by chiplog.client."""
@@ -1192,5 +1196,6 @@ async def open_postgres_execution_runtime(
         origin=origin,
         peer=peer,
         effects_binding=effects_binding,
+        delivery_binding=delivery_binding,
         authenticate_entitlement=authenticate_entitlement,
     )

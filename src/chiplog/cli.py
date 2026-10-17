@@ -90,6 +90,14 @@ def main() -> None:
     from chiplog.codex_cli import add_commands, run_command
 
     add_commands(sub)
+    from chiplog.native_cli import (
+        add_commands as add_native_commands,
+    )
+    from chiplog.native_cli import (
+        run_command as run_native_command,
+    )
+
+    add_native_commands(sub)
     bootstrap = sub.add_parser("bootstrap")
     _identity_arguments(bootstrap)
     bootstrap.add_argument("--database-instance", required=True)
@@ -109,7 +117,9 @@ def main() -> None:
     migrate.add_argument("--tenant", required=True)
     migrate.add_argument("--source", required=True, type=Path)
     args = parser.parse_args()
-    if args.action in {"auth", "chat"}:
+    if args.action == "native-chat":
+        run_native_command(args, _operator_secret())
+    elif args.action in {"auth", "chat"}:
         run_command(args)
     elif args.action == "migrate-sqlite-chat":
         from chiplog.composition.postgres_import import import_local_chat

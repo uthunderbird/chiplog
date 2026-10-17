@@ -1,10 +1,54 @@
 # R15–R17: parallel functional implementation
 
-Status: preparation, 2026-10-17. User instruction: work on R15–R17 in parallel;
+Status: implementation, 2026-10-17. User instruction: work on R15–R17 in parallel;
 make the client scenarios work and defer unnecessary assurance and rare cases.
 This replaces the old serial milestone order, not authorization, data ownership,
 atomicity or no-repeat-SEND requirements. R14 functional baseline is `4576ae4`.
 No R15/R16/R17 completion or deployment eligibility is claimed here.
+
+## Current integrated evidence and remaining client boundary
+
+Native services are integrated through `386203e`: scheduler cycles/model lease
+fences, Plan/effect atomicity, compensation/outbox recovery, authenticated channel
+custody and the shared driver. The actual-PG functional union passed 91 tests in
+43.58s with `CHIPLOG_TEST_POSTGRES_DSN` and `uv run pytest -q -p no:timeout` over
+`test_postgres_{scheduler,scheduler_actions,effects,ingress,application,planning,
+execution,model_recovery,completion}.py`, `test_native_channel_delivery.py` and
+the four scheduler/ingress/effects contract consumer modules.
+
+Cold source/consumer audit independently ran 40 actual-PG tests. Completion is
+still OPEN: canonical `chiplog chat` uses the separate AgentLoop rather than the
+new native clients. Mount a usable native CLI command with actual trust/session
+authorization; OAuth alone must not become Planning authority. Also finish the
+single ordinary ingress→adopted effect→reconciliation→completion→delivery witness
+and scheduled final-delivery/reopen witness. These are current functional work,
+not optional assurance backlog. Plan-specific lost-ACK/fresh-provider recovery
+evidence is still weaker than the existing tool/delivery witnesses.
+
+Native CLI closure plan and assumptions, reread: add an explicit `native-chat`
+command, keeping legacy OAuth chat separate. Require real tenant/principal/
+credential/session and operator secret, plus independently signed entitlement
+and pinned verification key for delivery. OAuth identifies only the model
+credential. One invocation composes ingress, the existing driver and a private
+per-UID local delivery inbox. The inbox atomically retains exact issued ticket,
+payload and authenticated receipt; CLI display reads that selected payload.
+No stdout-write receipt, inline READY issuance or second execution loop.
+
+Boundary preparation: `composition/postgres_delivery_contracts.py` describes
+the narrow delivery transport/binding and receipt observation. The current
+hermetic leaf and new local CLI inbox consume the same existing delivery
+intent/SEND/claim/receipt/reconcile lifecycle. Root owns completion/runtime/CLI
+wiring; the local leaf delegate owns its new adapter and focused tests.
+
+CLI evidence rows: exact accepted bytes → selected delivery intent + local
+ticket/payload → subprocess stdout and reopened inbox → forbidden direct model
+text printing → actual command/replay fixture. Authentication → current PG trust
+and OS identity plus signed operator entitlement → forged/current-key-negative
+refusal before delivery → forbidden OAuth-as-principal/auto-grant → command
+fixture. Durable once → PG claim and atomic local inbox record → one retained
+delivery after restart → forbidden stdout success as durable receipt → injected
+postclaim/pre-receipt loss and reconciliation fixture. Stress/FIFO/universal
+transport support remains backlog.
 
 ## Plan and assumptions
 

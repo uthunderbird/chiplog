@@ -59,6 +59,7 @@ from chiplog.capabilities.effects.effect_work_contracts import (
     CompensationEffectIntent,
     PlanEffectIntent,
 )
+from chiplog.composition.postgres_delivery_contracts import DeliveryReceiptObservation
 from chiplog.composition.r16_dispatch_registry import SEMANTICS
 from chiplog.platform.deployment_gate import DeploymentGateRequest
 from chiplog.platform.postgres import PostgresIntegrityError, Record, Snapshot
@@ -99,6 +100,18 @@ def record(value: DispatchObservationDTO | NativeCallStateV1) -> Record:
 class PostgresEffectsBinding:
     provider: HermeticEffectsProvider
     receipt_key: bytes = field(repr=False)
+
+    @property
+    def adapter_contract_version(self) -> str:
+        return "chiplog.hermetic-effects.v1"
+
+    def verify_receipt(
+        self, ticket: IssuedEffectSendTicket, raw: bytes
+    ) -> DeliveryReceiptObservation:
+        value = verify_hermetic_receipt(ticket, raw, registered_receipt_key=self.receipt_key)
+        return DeliveryReceiptObservation(
+            value.occurred_members, value.permanently_incapable_members
+        )
 
     def __post_init__(self) -> None:
         if (

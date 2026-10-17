@@ -40,6 +40,7 @@ async def test_scheduled_effect_send_cannot_claim_after_expiry_or_takeover(
         reconcile_effect,
         resolve_original_effect,
     )
+    from chiplog.platform.postgres_gate import canonical
     from tests.composition.test_native_channel_delivery import binding
     from tests.composition.test_postgres_completion import eligibility
     from tests.composition.test_postgres_planning import verifier
@@ -47,7 +48,7 @@ async def test_scheduled_effect_send_cannot_claim_after_expiry_or_takeover(
     from tests.support.deployment_gate import signature
 
     clock = Clock(11)
-    transport = binding(tmp_path)
+    transport = binding(tmp_path, with_effect=True)
     scheduler = await opened(postgres_server, clock, transport)
     selected = await adopted(scheduler)
     cycle = await scheduler.scheduler_cycle(
@@ -121,9 +122,38 @@ async def test_scheduled_effect_send_cannot_claim_after_expiry_or_takeover(
         assert len(runtime.model.requests) == 2
         assert len(runtime.delivery_intents(PEER, execution.run_id)) == 1
         assert len(transport.provider.transfers) == 1
+        delivery = runtime.delivery_intents(PEER, execution.run_id)[0]
+        delivery_entitlement, delivery_gate = eligibility(
+            delivery.canonical_bytes(), "delivery.first_send", "scheduled-delivery"
+        )
+        runtime.import_entitlement(
+            delivery_entitlement,
+            signature(delivery_entitlement),
+            previous=canonical(entitlement.model_dump(mode="json")),
+        )
+        await runtime.commit_delivery_send(PEER, delivery.delivery_id, delivery_gate)
+        delivery_claim = await runtime.emit_delivery(PEER, delivery.delivery_id)
+        assert len(transport.provider.transfers) == 2
+        assert transport.provider.transfers[-1].ticket.payload == delivery.delivery.rendered_bytes
         clock.now = 21
         assert await emit_effect(runtime, transport, PEER, call.original_call_id) == claim
-        assert len(transport.provider.transfers) == 1
+        fresh = PostgresExecutionRuntime(
+            runtime.database,
+            "t",
+            SECRET,
+            principal_id="hermetic-principal",
+            credential_id="c",
+            session_id="s",
+            model=HermeticModel(()),
+            origin=bound_origin(transport),
+            effects_binding=transport,
+            authenticate_entitlement=verifier,
+        )
+        assert await PostgresApplicationDriver(fresh).drive_run(PEER, execution.run_id) == result
+        assert await fresh.emit_delivery(PEER, delivery.delivery_id) == delivery_claim
+        receipt = await fresh.reconcile_delivery(PEER, delivery.delivery_id)
+        assert receipt is not None and receipt.outcome == "CONFIRMED"
+        assert fresh.model.requests == [] and len(transport.provider.transfers) == 2
         return
     clock.now = 21
     before = runtime.snapshot()

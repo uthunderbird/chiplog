@@ -172,10 +172,18 @@ def test_offline_gate_accepts_only_registered_scheduler_version_query(tmp_path: 
     verify_offline_import_boundary(tmp_path)
 
 
-def test_offline_gate_accepts_exact_operator_policy_ed25519_import(tmp_path: Path) -> None:
-    target = (
-        tmp_path / "src/chiplog/capabilities/deployment_trust/operator_policy_command_verifier.py"
-    )
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "capabilities/deployment_trust/operator_policy_command_verifier.py",
+        "composition/postgres_native_cli.py",
+    ],
+)
+def test_offline_gate_accepts_exact_operator_policy_ed25519_import(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    target = tmp_path / "src/chiplog" / relative
     target.parent.mkdir(parents=True)
     target.write_text(
         "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey\n"

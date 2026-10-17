@@ -259,7 +259,10 @@ def verify_offline_import_boundary(root: Path) -> None:
                 continue
             if (
                 relative
-                == "chiplog/capabilities/deployment_trust/operator_policy_command_verifier.py"
+                in {
+                    "chiplog/capabilities/deployment_trust/operator_policy_command_verifier.py",
+                    "chiplog/composition/postgres_native_cli.py",
+                }
                 and isinstance(node, ast.ImportFrom)
                 and node.level == 0
                 and node.module == "cryptography.hazmat.primitives.asymmetric.ed25519"

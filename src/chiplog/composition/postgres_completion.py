@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, TypedDict
 from chiplog.adapters.driven.effects_hermetic import (
     HermeticResponseLost,
     IssuedEffectSendTicket,
-    verify_hermetic_receipt,
 )
 from chiplog.capabilities.agent_loop.completion_client_contracts import (
     NativeCompletionAcceptanceV1,
@@ -49,8 +48,8 @@ from chiplog.capabilities.effects.client_effect_contracts import (
     NativeEffectIntentV1,
     NativeEffectReductionV1,
 )
+from chiplog.composition.postgres_delivery_contracts import NativeDeliveryBinding
 from chiplog.composition.postgres_effects import (
-    PostgresEffectsBinding,
     current_effect_result,
     decode_ticket,
     digest,
@@ -71,15 +70,19 @@ def ref(identity: str, head: str, raw: bytes) -> ExactHead:
 
 
 def recipient(
-    runtime: PostgresExecutionRuntime, binding: PostgresEffectsBinding
+    runtime: PostgresExecutionRuntime, binding: NativeDeliveryBinding
 ) -> ProviderRecipient:
-    target = binding.target(runtime)
+    target = binding.target_for_principal(runtime.principal_id)
     return ProviderRecipient(
         provider_id=target.provider,
         account_id=target.account,
         recipient_id=target.recipient,
         canonical_address=target.canonical_address,
-        endpoint=ref(target.endpoint.subject_id, target.endpoint.head, b"hermetic-effects.v1"),
+        endpoint=ExactHead(
+            identity=target.endpoint.subject_id,
+            head=target.endpoint.head,
+            fingerprint=target.endpoint.fingerprint,
+        ),
         credential_binding=ExactHead(
             identity=target.credential_binding.subject_id,
             head=target.credential_binding.head,
@@ -88,10 +91,11 @@ def recipient(
     )
 
 
-def binding(runtime: PostgresExecutionRuntime) -> PostgresEffectsBinding:
-    if runtime.effects_binding is None:
+def binding(runtime: PostgresExecutionRuntime) -> NativeDeliveryBinding:
+    selected = runtime.delivery_binding or runtime.effects_binding
+    if selected is None:
         raise LoopHold("registered durable delivery transport unavailable")
-    return runtime.effects_binding
+    return selected
 
 
 class Common(TypedDict):
@@ -463,7 +467,7 @@ async def commit_delivery_send(
             connection, runtime.tenant_id, runtime._authenticate_entitlement
         )
         gate.require(request, "delivery.first_send", intent.canonical_bytes(), live=True)
-        target = binding(runtime).target(runtime)
+        target = binding(runtime).target_for_principal(runtime.principal_id)
         issued = IssuedEffectSendTicket(
             tenant_id=runtime.tenant_id,
             issued_operation_id=request.operation_id,
@@ -480,7 +484,7 @@ async def commit_delivery_send(
             canonical_address=target.canonical_address,
             endpoint_head=target.endpoint.head,
             credential_binding_head=target.credential_binding.head,
-            adapter_contract_version="chiplog.hermetic-effects.v1",
+            adapter_contract_version=binding(runtime).adapter_contract_version,
             payload=intent.delivery.rendered_bytes,
             payload_fingerprint=digest(intent.delivery.rendered_bytes),
             idempotency_key=delivery_id + "/first-send",
@@ -588,9 +592,7 @@ async def retain_delivery_receipt(
     if len(claims) != 1 or len(sends) != 1 or claims[0].send_head != sends[0].head:
         raise LoopHold("delivery receipt lacks its original claimed transmission")
     send = sends[0]
-    observed = verify_hermetic_receipt(
-        decode_ticket(send.ticket_bytes), raw, registered_receipt_key=binding(runtime).receipt_key
-    )
+    observed = binding(runtime).verify_receipt(decode_ticket(send.ticket_bytes), raw)
     if observed.occurred_members == (delivery_id,) and not observed.permanently_incapable_members:
         outcome = "CONFIRMED"
     elif observed.permanently_incapable_members == (delivery_id,) and not observed.occurred_members:
