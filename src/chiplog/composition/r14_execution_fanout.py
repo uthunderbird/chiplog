@@ -181,6 +181,7 @@ async def publish_execution_fanout(
     # actor deadline is copied into retained evidence or the physical command.
     h1_v2_pe_capture_route = (
         complete_profile == "H1_V2"
+        and getattr(runtime, "_h1_recovery_mount", None) is not None
         and complete_registry
         and h1_preflight is not None
         and h1_runtime is runtime

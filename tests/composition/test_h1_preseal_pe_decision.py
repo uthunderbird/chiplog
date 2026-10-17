@@ -335,11 +335,10 @@ async def test_v2_capture_can_expire_its_preseal_observation_before_fresh_owner_
                 runtime, request, sealed, decision_id, raw, decision
             )
             assert anchor.canonical_bytes() == _text(decision, "h1_preseal_pe_anchor").encode()
-            assert len(observed) >= 2
-            assert observed[0].request.budget.absolute_deadline_ns <= time.monotonic_ns()
-            assert observed[1] is not observed[0]
-            assert events.index("actor:1") < events.index("capture:start")
-            assert events.index("capture:end") < events.index("actor:2")
+            assert len(observed) == 3
+            assert observed[1].request.budget.absolute_deadline_ns <= time.monotonic_ns()
+            assert observed[2] is not observed[1]
+            assert events == ["actor:1", "actor:2", "capture:start", "capture:end", "actor:3"]
 
 
 @pytest.mark.asyncio

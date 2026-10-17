@@ -29,7 +29,11 @@ from chiplog.platform._owner_publication_contracts import (
     RegisteredPublication,
     SingleOwnerBatch,
 )
-from chiplog.platform._sqlite import PhysicalPublicationCommand, PublicationResult
+from chiplog.platform._sqlite import (
+    AuthorityMutationAdmissionError,
+    PhysicalPublicationCommand,
+    PublicationResult,
+)
 from chiplog.platform.authority_reads import capture_authority_storage_state
 from chiplog.platform.broker import PublicPortCall, PublicPortResult
 from chiplog.platform.owner_decision_journal import OwnerJournalIntegrityError
@@ -73,7 +77,13 @@ async def _effect(loop: AgentLoop, run_id: str = "r") -> tuple[R14PlanningRuntim
         "hermetic-ingress", display.display_id, display.display_digest, display.adoption_act_id
     )
     assert isinstance(result, JournalSelectedPublication), result
-    return runtime, EffectRecord.model_validate_json(result.complete_records[-1].canonical_bytes)
+    effect_records = tuple(
+        member
+        for member in result.complete_records
+        if member.owner == "effects" and member.schema_id == "chiplog.effects.record.v1"
+    )
+    assert len(effect_records) == 1
+    return runtime, EffectRecord.model_validate_json(effect_records[0].canonical_bytes)
 
 
 def _ingress(
@@ -422,6 +432,14 @@ async def test_pending_denial_replay_denied_cannot_materialize_then_authorized_r
         assert runtime._pending_owners() == (selected,)
         authority = DenialAuthority(runtime)
         assert authority.materialization_state(selected) == "ABSENT"
+        command = runtime._owner_command(selected)
+        with pytest.raises(AuthorityMutationAdmissionError, match="decision is pending"):
+            await runtime._appender.submit(command)
+        with pytest.raises(AuthorityMutationAdmissionError, match="foreign authority recovery"):
+            await runtime._appender._submit_exact_recovery(
+                command, selected.prepared.predecessor_commitment, "0" * 64
+            )
+        assert capture_authority_storage_state(runtime._database) == before
         denied_calls = 0
 
         def deny(authority: DenialAuthority, query: ExactReplayQuery) -> PublicationRejected:
@@ -437,9 +455,15 @@ async def test_pending_denial_replay_denied_cannot_materialize_then_authorized_r
         async def forbidden_submit(command: PhysicalPublicationCommand) -> PublicationResult:
             pytest.fail("denied public replay attempted physical recovery submit")
 
+        async def forbidden_recovery(
+            command: PhysicalPublicationCommand, predecessor: str, resulting: str
+        ) -> PublicationResult:
+            pytest.fail("denied public replay attempted exact recovery submit")
+
         with monkeypatch.context() as patch:
             patch.setattr(DenialAuthority, "authenticate_replay", deny)
             patch.setattr(runtime._appender, "submit", forbidden_submit)
+            patch.setattr(runtime._appender, "_submit_exact_recovery", forbidden_recovery)
             result = await runtime.dispose_effect("hermetic-ingress", "r", ingress)
         assert denied_calls == 1
         assert isinstance(result, PublicationRejected) and result.kind == "DENIED"
@@ -497,3 +521,11 @@ async def test_pending_denial_predecessor_guard_rejects_durable_rival_loop_decis
         assert runtime._pending_owners() == (selected,)
         assert capture_authority_storage_state(runtime._database) == before
         assert not authority.check_selected_predecessor(selected)
+        coordinator = BrokerPublicationCoordinator(runtime._appender, authority, journal)
+        recovered = await coordinator.recover_selected(
+            runtime._tenant_id, selected.prepared.request.identity.command_id
+        )
+        assert isinstance(recovered, PublicationRejected)
+        assert recovered.kind == "INTEGRITY_FAULT"
+        assert capture_authority_storage_state(runtime._database) == before
+        assert authority.materialization_state(selected) == "CONFLICT"

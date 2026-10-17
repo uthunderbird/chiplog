@@ -225,7 +225,7 @@ class BrokerPublicationCoordinator:
             if commitment != decision.resulting_commitment:
                 raise OwnerPublicationIntegrityError("selected materialization commitment differs")
 
-        result = await self._appender.submit(
+        result = await self._appender._submit_exact_recovery(
             PhysicalPublicationCommand(
                 tenant_id=tenant_id,
                 operation_kind=request.operation,
@@ -247,7 +247,9 @@ class BrokerPublicationCoordinator:
                 ),
                 admission_guard=guard,
                 decision_guard=exact_commitment,
-            )
+            ),
+            prepared.predecessor_commitment,
+            decision.resulting_commitment,
         )
         if result.disposition not in ("COMMITTED", "REPLAY"):
             raise OwnerPublicationUncertain(command_id)

@@ -375,6 +375,7 @@ def _scan_entries(
     current-tail check performed by :meth:`snapshot_at` without decoding its
     valid prefix for a second time.
     """
+    diagnostic_record = record
     try:
         selected: dict[str, SelectedOwnerDecision] = {}
         materialized: set[str] = set()
@@ -382,6 +383,7 @@ def _scan_entries(
         captured: _Scan | None = None
         matches = 0
         for entry_id, entry_predecessor, payload in entries:
+            diagnostic_record = entry_id
             if (
                 not isinstance(entry_id, str)
                 or (entry_predecessor is not None and not isinstance(entry_predecessor, str))
@@ -459,13 +461,14 @@ def _scan_entries(
             if capture_head == entry_id:
                 matches += 1
                 captured = _Scan(entry_id, selected.copy(), frozenset(materialized))
+        diagnostic_record = record
         if capture_head is not None:
             if matches != 1 or captured is None:
                 raise ValueError("requested owner journal head is absent or ambiguous")
             return captured
         return _Scan(entries[-1][0] if entries else None, selected, frozenset(materialized))
     except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
-        raise OwnerJournalIntegrityError(operation, tenant, record) from error
+        raise OwnerJournalIntegrityError(operation, tenant, diagnostic_record) from error
 
 
 @dataclass(frozen=True)
