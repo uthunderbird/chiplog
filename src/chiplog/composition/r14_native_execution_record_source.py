@@ -22,6 +22,7 @@ from chiplog.composition.r14_execution_fanout_contracts import EXECUTION_RUN_SCH
 from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_fanout_contracts import INITIALIZED_SCHEMA, SEAL_SCHEMA
 from chiplog.composition.r14_native_selected_accounting_source import R14NativeOneCallCancelledFacts
+from chiplog.platform._sqlite import PhysicalPublicationCommand
 from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
@@ -122,7 +123,7 @@ class _R14NativeExecutionRecordSource:
             result = self._collect_held(selected, source_stamp)
             self._runtime._check_database_identity()
             return result
-        except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+        except OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError:
             return None
 
     def _collect_held(
@@ -137,8 +138,7 @@ class _R14NativeExecutionRecordSource:
         terminal_ref = reference(terminal.terminal_id, terminal)
         result_ref = reference(result.result_id, result)
         run_members = [
-            (EXECUTION_RUN_SCHEMA, ref.revision.head, None)
-            for ref in source.target_run_lineage
+            (EXECUTION_RUN_SCHEMA, ref.revision.head, None) for ref in source.target_run_lineage
         ]
         initialized_member = (
             INITIALIZED_SCHEMA,
@@ -158,7 +158,7 @@ class _R14NativeExecutionRecordSource:
         # A decision is the only authority that selects a command.  The history
         # reader already authenticated the command semantics; here we retain its
         # raw decision identity/bytes and demand one selected command per member.
-        decisions: list[tuple[str, bytes, str, object]] = []
+        decisions: list[tuple[str, bytes, str, PhysicalPublicationCommand]] = []
         for decision_id, _predecessor, raw in self._runtime._loop_decisions().entries():
             entry = json.loads(raw)
             if entry.get("kind") != "DECIDED":
@@ -173,15 +173,14 @@ class _R14NativeExecutionRecordSource:
                 candidates = []
                 for decision_id, raw, decision_fingerprint, command in decisions:
                     matches = [
-                        item for item in command.records
+                        item
+                        for item in command.records
                         if item.record_id == record_id and item.schema_id == schema
                     ]
                     if len(matches) > 1:
                         return None
                     if matches:
-                        state = inspect_publication(
-                            connection, command, command.expected_head + 1
-                        )
+                        state = inspect_publication(connection, command, command.expected_head + 1)
                         if state != "COMPLETE":
                             return None
                         candidates.append(
@@ -203,21 +202,44 @@ class _R14NativeExecutionRecordSource:
                     or row[3] != command.expected_head + 1
                 ):
                     return None
-                members.append(R14NativeExecutionRecordSourceMember(
-                    member.owner, member.schema_id, member.record_id, member.canonical_bytes,
-                    decision_id, raw, decision_fingerprint, command.operation_kind, int(row[3]),
-                ))
+                members.append(
+                    R14NativeExecutionRecordSourceMember(
+                        member.owner,
+                        member.schema_id,
+                        member.record_id,
+                        member.canonical_bytes,
+                        decision_id,
+                        raw,
+                        decision_fingerprint,
+                        command.operation_kind,
+                        int(row[3]),
+                    )
+                )
         ordered = tuple(members)
         if len({item.record_id for item in ordered}) != len(ordered):
             return None
         prepared = source.original_prepare.prepared_run
         manifest_fingerprint = _fingerprint(
-            source.tenant_id, source_stamp, prepared, selected.selected_seal.response_seal,
-            selected.initialized, terminal_ref, result_ref, source.target_run_lineage, ordered,
+            source.tenant_id,
+            source_stamp,
+            prepared,
+            selected.selected_seal.response_seal,
+            selected.initialized,
+            terminal_ref,
+            result_ref,
+            source.target_run_lineage,
+            ordered,
         )
         return R14NativeExecutionRecordSourceManifest(
-            source.tenant_id, source_stamp, prepared, selected.selected_seal.response_seal,
-            selected.initialized, terminal_ref, result_ref, source.target_run_lineage, ordered,
+            source.tenant_id,
+            source_stamp,
+            prepared,
+            selected.selected_seal.response_seal,
+            selected.initialized,
+            terminal_ref,
+            result_ref,
+            source.target_run_lineage,
+            ordered,
             manifest_fingerprint,
         )
 

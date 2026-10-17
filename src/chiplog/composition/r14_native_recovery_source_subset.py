@@ -230,18 +230,18 @@ class R14NativeRecoverySourceSubsetReader:
                     cancellations,
                     authenticated_execution_history=authenticated_history,
                 )
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             return None
 
     @staticmethod
     def _collect_accepted(
-        runtime,
-        identity,
-        before,
-        execution_snapshot,
-        seals,
-        cancellations,
-        acceptances,
+        runtime: CommonCliExecutionRuntime,
+        identity: tuple[str, int, int],
+        before: str | None,
+        execution_snapshot: ExecutionHistorySnapshot,
+        seals: tuple[RetainedExecutionFanOutPreparation, ...],
+        cancellations: tuple[RetainedExecutionCancellationPreparation, ...],
+        acceptances: tuple[RetainedAcceptancePreparationV2, ...],
         authenticated_history: ExecutionRecoveryHistory,
     ) -> R14NativeRecoverySourceSubset | None:
         if (
