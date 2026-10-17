@@ -206,13 +206,14 @@ async def publish_native_sealed_accounting_v3(
         raise LoopRejected("native sealed accounting V3 owner result is noncanonical")
 
     source_adapter = TypeAdapter(R14NativeSelectedAccountingSourceFacts)
+    source_bytes = source_adapter.dump_json(facts)
     evidence = RetainedNativeSealedAccountingV3Publication(
         request=request,
         response=response,
         owner_request=owner_call,
         owner_response=reply,
-        selected_source_bytes=source_adapter.dump_json(facts),
-        physical_source_bytes=source_adapter.dump_json(facts),
+        selected_source_bytes=source_bytes,
+        physical_source_bytes=source_bytes,
         source_stamp=stamp,
         record=sealed_accounting_v3_record(request, response, stamp),
     )
@@ -266,7 +267,6 @@ async def publish_native_sealed_accounting_v3(
             ):
                 raise LoopRejected("native sealed accounting V3 source changed after owner IPC")
 
-
     final_actor = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
         if not runtime._same_execution_actor_identity(refreshed_actor, final_actor):
@@ -286,7 +286,7 @@ async def publish_native_sealed_accounting_v3(
                     or _selected(runtime, identity) is not None
                 ):
                     return "STALE"
-            except (LoopRejected, OSError, RuntimeError, TypeError, ValueError):
+            except LoopRejected, OSError, RuntimeError, TypeError, ValueError:
                 return "STALE"
         return None
 

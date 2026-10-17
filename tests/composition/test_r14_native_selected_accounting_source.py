@@ -13,8 +13,10 @@ from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic import TypeAdapter
 
 import chiplog.composition.r14_loop_history as loop_history
+import chiplog.composition.r14_native_sealed_accounting_v3_publication as v3_publication
 import chiplog.composition.r14_native_selected_accounting_source as selected_source
 import chiplog.composition.r14_original_prepare_source as original_source
 from chiplog.architecture.r7_runtime import (
@@ -55,6 +57,9 @@ from chiplog.composition.r14_loop_history import (
     read_execution_history,
     read_execution_recovery_history,
     read_selected_native_sealed_accounting_v3,
+)
+from chiplog.composition.r14_native_accounting_records import (
+    RetainedNativeSealedAccountingV3Publication,
 )
 from chiplog.composition.r14_native_preparation_bindings import (
     bind_native_execution_preparation_v2,
@@ -172,9 +177,7 @@ async def _close_accepted_member(
     )
     assert outcome.snapshot.state == expected_state
     assert outcome.snapshot.obligation.state == "CLOSED"
-    return await runtime.publish_accepted_direct_terminal(
-        original_call_id=original_call_id
-    )
+    return await runtime.publish_accepted_direct_terminal(original_call_id=original_call_id)
 
 
 async def _accept_native_member(
@@ -284,9 +287,7 @@ async def _selected_v23_native_fanout(
                 "publish recovery profile",
                 runtime.publish_native_recovery_profile(version=recovery_profile_version),
             )
-        request = await timed_phase(
-            "admit initial slot", admit_runtime_slot(runtime, "native-v23")
-        )
+        request = await timed_phase("admit initial slot", admit_runtime_slot(runtime, "native-v23"))
         initial = await timed_phase("drive initial input", runtime.drive_input(request))
         assert isinstance(initial, SelectedExecutionReceiptV1)
         started = await timed_phase(
@@ -310,15 +311,11 @@ async def _selected_v23_native_fanout(
                 "hermetic-ingress", initial.stable_run_lineage_id, captured.head
             ),
         )
-        _snapshot, inventory, _legacy, seals, _cancellations, _acceptances = (
-            timed_sync_phase(
-                "first recovery history read", lambda: read_execution_recovery_history(runtime)
-            )
+        _snapshot, inventory, _legacy, seals, _cancellations, _acceptances = timed_sync_phase(
+            "first recovery history read", lambda: read_execution_recovery_history(runtime)
         )
         if phase_counts is not None:
-            phase_counts.append(
-                ("first recovery view", len(inventory.ordered_calls), len(seals))
-            )
+            phase_counts.append(("first recovery view", len(inventory.ordered_calls), len(seals)))
         accepted_ids = accepted_call_ids or (
             () if accepted_call_id is None else (accepted_call_id,)
         )
@@ -332,8 +329,7 @@ async def _selected_v23_native_fanout(
                 (
                     item
                     for item in inventory.ordered_calls
-                    if item.initialized_record.call.original.model_call_label
-                    == cancelled_call_id
+                    if item.initialized_record.call.original.model_call_label == cancelled_call_id
                 ),
                 None,
             )
@@ -375,10 +371,15 @@ async def _selected_v23_native_fanout(
             assert outcome.snapshot.obligation.state == "CLOSED"
             await runtime.publish_accepted_direct_terminal()
         seal = seals[0].proposal.fan_out.response_seal
-        yield cast(CommonCliExecutionRuntime, runtime), CallSubjectHead(
-            subject_id=seal.response_seal_id,
-            revision=Present(head="record:" + seal.digest(), fingerprint=seal.digest()),
-        ), accepted, sealed.run_id
+        yield (
+            cast(CommonCliExecutionRuntime, runtime),
+            CallSubjectHead(
+                subject_id=seal.response_seal_id,
+                revision=Present(head="record:" + seal.digest(), fingerprint=seal.digest()),
+            ),
+            accepted,
+            sealed.run_id,
+        )
 
 
 @pytest.mark.asyncio
@@ -420,18 +421,20 @@ async def test_cancelled_member_projection_uses_call_identity_in_multi_call_seal
         )
         assert facts is not None
         assert tuple(
-            item.call.original.model_call_label
-            for item in facts.selected_seal.initialized_records
+            item.call.original.model_call_label for item in facts.selected_seal.initialized_records
         ) == ("first-effect", "second-effect")
         assert facts.original_call_id == second_original_id
-        assert source.collect_one_cancelled(
-            projection.prepared_run,
-            original_call_id=next(
-                row.original_call_id
-                for row in source_facts.target_inventory_rows
-                if row.initialized_record.call.original.model_call_label == "first-effect"
-            ),
-        ) is None
+        assert (
+            source.collect_one_cancelled(
+                projection.prepared_run,
+                original_call_id=next(
+                    row.original_call_id
+                    for row in source_facts.target_inventory_rows
+                    if row.initialized_record.call.original.model_call_label == "first-effect"
+                ),
+            )
+            is None
+        )
         first_original_id = next(
             row.original_call_id
             for row in source_facts.target_inventory_rows
@@ -503,15 +506,17 @@ async def test_v3_source_projects_mixed_terminal_members_in_seal_order(
         request = source.prepare_sealed_accounting_v3(seal)
         assert request is not None
         assert tuple(
-            labels_by_id[item.original_call_id]
-            for item in request.complete_ordered_frontiers
+            labels_by_id[item.original_call_id] for item in request.complete_ordered_frontiers
         ) == ("first-effect", "second-effect")
-        assert source.prepare_sealed_accounting_v3(
-            CallSubjectHead(
-                subject_id="unselected-response",
-                revision=Present(head="record:" + "0" * 64, fingerprint="0" * 64),
+        assert (
+            source.prepare_sealed_accounting_v3(
+                CallSubjectHead(
+                    subject_id="unselected-response",
+                    revision=Present(head="record:" + "0" * 64, fingerprint="0" * 64),
+                )
             )
-        ) is None
+            is None
+        )
         engine = runtime._supervisor.runtime()
         callee = engine.session("agent_loop")
         caller = BrokerSession(
@@ -542,9 +547,7 @@ async def test_v3_source_projects_mixed_terminal_members_in_seal_order(
         assert result.request_id == owner_call.request_id
         assert result.responder == callee
         assert result.schema_id == NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA
-        prepared = PreparedNativeSealedAccountingV3.model_validate_json(
-            result.canonical_payload
-        )
+        prepared = PreparedNativeSealedAccountingV3.model_validate_json(result.canonical_payload)
         assert prepared.selected_response == request.selected_response
         assert prepared.sealed_manifest_fingerprint == request.sealed_manifest_fingerprint
         assert prepared.complete_ordered_calls == request.complete_ordered_frontiers
@@ -583,7 +586,7 @@ async def test_v3_source_holds_when_one_member_is_not_terminal(
 
 @pytest.mark.asyncio
 async def test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = (
         ConsequentialToolCall(
@@ -607,21 +610,54 @@ async def test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once(
         manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
         terminalize_accepted=True,
     ) as (runtime, seal, _accepted, _run_id):
+        source_adapter = TypeAdapter(selected_source.R14NativeSelectedAccountingSourceFacts)
+        serialization_calls = 0
+        serialized_source_bytes: bytes | None = None
+
+        class CountingSourceAdapter:
+            def dump_json(
+                self, value: selected_source.R14NativeSelectedAccountingSourceFacts
+            ) -> bytes:
+                nonlocal serialization_calls, serialized_source_bytes
+                serialization_calls += 1
+                payload = source_adapter.dump_json(value)
+                if serialized_source_bytes is None:
+                    serialized_source_bytes = payload
+                else:
+                    assert serialized_source_bytes == payload
+                return payload
+
+        def counting_adapter(schema: object) -> CountingSourceAdapter:
+            assert schema is selected_source.R14NativeSelectedAccountingSourceFacts
+            return CountingSourceAdapter()
+
+        monkeypatch.setattr(v3_publication, "TypeAdapter", counting_adapter)
         record = await publish_native_sealed_accounting_v3(runtime, seal)
+        assert serialization_calls == 1
+        assert serialized_source_bytes is not None
+        with runtime._authority_gate().hold():
+            entry = v3_publication._selected(
+                runtime, "native-sealed-accounting:" + seal.revision.fingerprint
+            )
+        assert entry is not None
+        raw = entry["native_sealed_accounting_v3_evidence"]
+        assert isinstance(raw, str)
+        evidence = RetainedNativeSealedAccountingV3Publication.model_validate_json(raw)
+        assert evidence.selected_source_bytes == serialized_source_bytes
+        assert evidence.physical_source_bytes == serialized_source_bytes
         assert record.selected_response_fingerprint == seal.revision.fingerprint
         assert record.ordered_sealed_call_ids == tuple(
             item.original_call_id for item in record.result.complete_ordered_calls
         )
-        assert tuple(
-            item.disposition.kind for item in record.result.complete_ordered_calls
-        ) == ("SUCCEEDED", "CANCELLED_BEFORE_ACCEPT")
-        assert read_selected_native_sealed_accounting_v3(
-            runtime, seal.revision.fingerprint
-        ) == record
+        assert tuple(item.disposition.kind for item in record.result.complete_ordered_calls) == (
+            "SUCCEEDED",
+            "CANCELLED_BEFORE_ACCEPT",
+        )
+        assert (
+            read_selected_native_sealed_accounting_v3(runtime, seal.revision.fingerprint) == record
+        )
 
-    resources = HermeticDispatchResources(
-        scenarios=("CONFIRM",), cap=1, custody_path=custody
-    )
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
@@ -641,9 +677,9 @@ async def test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once(
                 reader_depth -= 1
 
         monkeypatch.setattr(loop_history, "_read_call_history", reject_nested_history_read)
-        assert read_selected_native_sealed_accounting_v3(
-            reopened, seal.revision.fingerprint
-        ) == record
+        assert (
+            read_selected_native_sealed_accounting_v3(reopened, seal.revision.fingerprint) == record
+        )
         before = len(reopened._loop_decisions().entries())
         before_head = read_execution_history(reopened).tenant_head
         assert await publish_native_sealed_accounting_v3(reopened, seal) == record
@@ -656,6 +692,7 @@ async def test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once(
                 (reopened._tenant_id,),
             ).fetchone()
         assert count == (1,)
+        assert serialization_calls == 1
 
 
 @pytest.mark.asyncio
@@ -817,7 +854,9 @@ async def test_v23_native_prepare_reopen_holds_for_locator_physical_or_prompt_su
                         selected.captured_run.turns[0].model_copy(
                             update={
                                 "attempts": (
-                                    selected.captured_run.turns[0].attempts[0].model_copy(
+                                    selected.captured_run.turns[0]
+                                    .attempts[0]
+                                    .model_copy(
                                         update={
                                             "manifest": selected.captured_run.turns[0]
                                             .attempts[0]
@@ -1025,6 +1064,8 @@ async def test_v3_interleaves_two_sequentially_accepted_members_across_replay_an
         )
         assert await publish_native_sealed_accounting_v3(reopened, seal) == published
         assert tenant_head(reopened) == reopened_head
+
+
 @pytest.mark.asyncio
 async def test_v3_reads_three_accepted_members_across_delayed_dispatch_and_replay(
     tmp_path: Path,
@@ -1060,9 +1101,7 @@ async def test_v3_reads_three_accepted_members_across_delayed_dispatch_and_repla
     ) as (runtime, seal, first_accepted, run_id):
         assert first_accepted is not None
         first_call = first_accepted.original_call_id
-        first_terminal = await _close_accepted_member(
-            runtime, first_call, first_accepted, run_id
-        )
+        first_terminal = await _close_accepted_member(runtime, first_call, first_accepted, run_id)
         second_call, second_accepted, second_run_id = await _accept_native_member(
             runtime, "second-effect", 1
         )
@@ -1080,31 +1119,34 @@ async def test_v3_reads_three_accepted_members_across_delayed_dispatch_and_repla
             runtime, third_call, third_accepted, third_run_id
         )
         published = await publish_native_sealed_accounting_v3(runtime, seal)
-        assert tuple(
-            item.original_call_id for item in published.result.complete_ordered_calls
-        ) == (first_call, second_call, third_call)
-        assert tuple(
-            item.disposition.kind for item in published.result.complete_ordered_calls
-        ) == ("SUCCEEDED", "FAILED_DEFINITE", "SUCCEEDED")
+        assert tuple(item.original_call_id for item in published.result.complete_ordered_calls) == (
+            first_call,
+            second_call,
+            third_call,
+        )
+        assert tuple(item.disposition.kind for item in published.result.complete_ordered_calls) == (
+            "SUCCEEDED",
+            "FAILED_DEFINITE",
+            "SUCCEEDED",
+        )
 
         with read_connection(runtime._database) as connection:
             head = connection.execute(
                 "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
             ).fetchone()[0]
-        replayed_first = await runtime.publish_accepted_direct_terminal(
-            original_call_id=first_call
-        )
+        replayed_first = await runtime.publish_accepted_direct_terminal(original_call_id=first_call)
         replayed_second = await runtime.publish_accepted_direct_terminal(
             original_call_id=second_call
         )
-        replayed_third = await runtime.publish_accepted_direct_terminal(
-            original_call_id=third_call
-        )
+        replayed_third = await runtime.publish_accepted_direct_terminal(original_call_id=third_call)
         replayed_v3 = await publish_native_sealed_accounting_v3(runtime, seal)
         with read_connection(runtime._database) as connection:
-            assert connection.execute(
-                "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
-            ).fetchone()[0] == head
+            assert (
+                connection.execute(
+                    "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+                ).fetchone()[0]
+                == head
+            )
         assert replayed_first == first_terminal
         assert replayed_second == second_terminal
         assert replayed_third == third_terminal
@@ -1113,15 +1155,16 @@ async def test_v3_reads_three_accepted_members_across_delayed_dispatch_and_repla
         before_entries = runtime._loop_decisions().entries()
         before_owner = runtime._owner_decisions().snapshot()
         with pytest.raises(LoopRejected):
-            await runtime.publish_accepted_direct_terminal(
-                original_call_id="unselected-call"
-            )
+            await runtime.publish_accepted_direct_terminal(original_call_id="unselected-call")
         assert runtime._loop_decisions().entries() == before_entries
         assert runtime._owner_decisions().snapshot() == before_owner
         with read_connection(runtime._database) as connection:
-            assert connection.execute(
-                "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
-            ).fetchone()[0] == head
+            assert (
+                connection.execute(
+                    "SELECT head FROM tenant_heads WHERE tenant_id=?", (runtime._tenant_id,)
+                ).fetchone()[0]
+                == head
+            )
 
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM", "PERMANENT_NO_EFFECT", "CONFIRM"),
@@ -1133,15 +1176,18 @@ async def test_v3_reads_three_accepted_members_across_delayed_dispatch_and_repla
         resources=resources,
         manifest=R14_EXECUTION_NATIVE_SEALED_ACCOUNTING_V39_PRODUCTION_MANIFEST,
     ) as reopened:
-        assert reopened.read_selected_accepted_direct_terminal(
-            original_call_id=first_call
-        ) == first_terminal
-        assert reopened.read_selected_accepted_direct_terminal(
-            original_call_id=second_call
-        ) == second_terminal
-        assert reopened.read_selected_accepted_direct_terminal(
-            original_call_id=third_call
-        ) == third_terminal
+        assert (
+            reopened.read_selected_accepted_direct_terminal(original_call_id=first_call)
+            == first_terminal
+        )
+        assert (
+            reopened.read_selected_accepted_direct_terminal(original_call_id=second_call)
+            == second_terminal
+        )
+        assert (
+            reopened.read_selected_accepted_direct_terminal(original_call_id=third_call)
+            == third_terminal
+        )
 
 
 @pytest.mark.asyncio
@@ -1156,9 +1202,7 @@ async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_orde
             ConsequentialToolCall(
                 call_id="followup-effect",
                 tool="request_self_effect",
-                arguments=SelfEffectArguments(
-                    payload=b"followup", bundle_members=("followup",)
-                ),
+                arguments=SelfEffectArguments(payload=b"followup", bundle_members=("followup",)),
             ),
         ),
     ).canonical_bytes()
@@ -1221,19 +1265,19 @@ async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_orde
         before_replay = read_execution_history(runtime).tenant_head
         assert second_v3.selected_response_fingerprint == second_seal.revision.fingerprint
         assert first_v3.selected_response_fingerprint == first_seal.revision.fingerprint
-        assert read_selected_native_sealed_accounting_v3(
-            runtime, second_seal.revision.fingerprint
-        ) == second_v3
-        assert read_selected_native_sealed_accounting_v3(
-            runtime, first_seal.revision.fingerprint
-        ) == first_v3
+        assert (
+            read_selected_native_sealed_accounting_v3(runtime, second_seal.revision.fingerprint)
+            == second_v3
+        )
+        assert (
+            read_selected_native_sealed_accounting_v3(runtime, first_seal.revision.fingerprint)
+            == first_v3
+        )
         assert await publish_native_sealed_accounting_v3(runtime, first_seal) == first_v3
         assert await publish_native_sealed_accounting_v3(runtime, second_seal) == second_v3
         assert read_execution_history(runtime).tenant_head == before_replay
 
-    resources = HermeticDispatchResources(
-        scenarios=("CONFIRM",), cap=1, custody_path=custody
-    )
+    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1, custody_path=custody)
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
@@ -1241,24 +1285,30 @@ async def test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_orde
         recovery_cut_source=NativeRecoveryCutSource(),
     ) as reopened:
         reopened_head = read_execution_history(reopened).tenant_head
-        assert read_selected_native_sealed_accounting_v3(
-            reopened, first_seal.revision.fingerprint
-        ) == first_v3
-        assert read_selected_native_sealed_accounting_v3(
-            reopened, second_seal.revision.fingerprint
-        ) == second_v3
+        assert (
+            read_selected_native_sealed_accounting_v3(reopened, first_seal.revision.fingerprint)
+            == first_v3
+        )
+        assert (
+            read_selected_native_sealed_accounting_v3(reopened, second_seal.revision.fingerprint)
+            == second_v3
+        )
         assert await publish_native_sealed_accounting_v3(reopened, second_seal) == second_v3
         assert await publish_native_sealed_accounting_v3(reopened, first_seal) == first_v3
         assert read_execution_history(reopened).tenant_head == reopened_head
-        assert reopened.read_selected_accepted_direct_terminal(
-            original_call_id=second_call.original_call_id
-        ) == second_terminal
+        assert (
+            reopened.read_selected_accepted_direct_terminal(
+                original_call_id=second_call.original_call_id
+            )
+            == second_terminal
+        )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("observer_raises", [False, True])
 async def test_readiness_submit_observer_restores_real_workspace_dispatch(
-    tmp_path: Path, observer_raises: bool,
+    tmp_path: Path,
+    observer_raises: bool,
 ) -> None:
     from chiplog.capabilities.projections.r9_boundary import WorkspaceRejected
     from tests.support.workspace_batch import workspace
@@ -1384,9 +1434,7 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
                 return recovery_source.collect_held(actual_runtime)
 
             def authenticate_selected_held(self, actual_runtime, evidence, entry):
-                return recovery_source.authenticate_selected_held(
-                    actual_runtime, evidence, entry
-                )
+                return recovery_source.authenticate_selected_held(actual_runtime, evidence, entry)
 
         runtime._full_recovery_cut_source = CountingRecoverySource()
         suspension = await runtime.suspend_execution(run_id, first_run.head, ())
@@ -1397,9 +1445,12 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
         closed = await runtime.resolve_dispatch_outcome(
             "hermetic-ingress", first_open_intent, "close-first-open"
         )
-        assert DispatchOutcomeRecordV2.model_validate_json(
-            closed.complete_records[0].canonical_bytes
-        ).snapshot.state == "CONFIRMED"
+        assert (
+            DispatchOutcomeRecordV2.model_validate_json(
+                closed.complete_records[0].canonical_bytes
+            ).snapshot.state
+            == "CONFIRMED"
+        )
         await runtime.publish_original_resolver_authority_policy()
         await runtime.publish_original_resolver_invocation()
         first_resolution = await runtime.publish_original_call_resolution()
@@ -1430,13 +1481,18 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
                 readiness_guards.append("decision")
                 return batch.decision_guard(resulting)
 
-            return await original_submit(replace(
-                batch, admission_guard=admission, decision_guard=decision,
-            ))
+            return await original_submit(
+                replace(
+                    batch,
+                    admission_guard=admission,
+                    decision_guard=decision,
+                )
+            )
 
         assert "submit" not in vars(runtime._appender)
-        with monkeypatch.context() as readiness_patch, patch.object(
-            runtime._appender, "submit", count_readiness_guards
+        with (
+            monkeypatch.context() as readiness_patch,
+            patch.object(runtime._appender, "submit", count_readiness_guards),
         ):
             readiness_patch.setattr(
                 NativeRecoveryCutSource, "collect_held", count_readiness_collect
@@ -1463,11 +1519,13 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
                 "hermetic-ingress", next_run.run_id, next_run.head
             )
         assert len(rendered_contexts) == 1
-        assert rendered_contexts[0]["prior_turns"][0]["results"] == [{
-            "original_call_id": first_open_call_id,
-            "terminal": first_open_result.terminal.model_dump(mode="json"),
-            "result": first_resolution.recovered_outcome.model_dump(mode="json"),
-        }]
+        assert rendered_contexts[0]["prior_turns"][0]["results"] == [
+            {
+                "original_call_id": first_open_call_id,
+                "terminal": first_open_result.terminal.model_dump(mode="json"),
+                "result": first_resolution.recovered_outcome.model_dump(mode="json"),
+            }
+        ]
         second_run = await runtime.seal_execution(
             "hermetic-ingress", captured.run_id, captured.head
         )
@@ -1538,18 +1596,17 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
         outer = read_execution_recovery_history(
             runtime, selected_only=True, exact_historical_sources=True
         )
-        assert {
-            item.proposal.sealed_run.turns[-1].response_seal for item in outer[3]
-        } >= {first_seal, second_seal}
+        assert {item.proposal.sealed_run.turns[-1].response_seal for item in outer[3]} >= {
+            first_seal,
+            second_seal,
+        }
         assert {
             item.initialized_record.call.original.model_call_label
             for item in outer[1].ordered_calls
         } == {"first-open-effect", "second-open-effect"}
         assert first_open_result.accounting.kind == "RECOVERY_REQUIRED"
 
-    resources = HermeticDispatchResources(
-        scenarios=scenarios, cap=2, custody_path=custody
-    )
+    resources = HermeticDispatchResources(scenarios=scenarios, cap=2, custody_path=custody)
     async with open_common_cli_execution_runtime(
         database,
         resources=resources,
@@ -1557,26 +1614,33 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
         recovery_cut_source=NativeRecoveryCutSource(),
     ) as reopened:
         assert not reopened._pending()
-        assert reopened.read_selected_accepted_open_recovery(
-            original_call_id=first_open_call_id
-        ) == first_open_result
-        assert reopened.read_selected_accepted_open_recovery(
-            original_call_id=second_call.original_call_id
-        ) == pending_evidence.result
+        assert (
+            reopened.read_selected_accepted_open_recovery(original_call_id=first_open_call_id)
+            == first_open_result
+        )
+        assert (
+            reopened.read_selected_accepted_open_recovery(
+                original_call_id=second_call.original_call_id
+            )
+            == pending_evidence.result
+        )
 
         projection = R14OriginalNativePrepareSource(reopened).collect(second_seal)
         assert projection is not None
         source = selected_source.R14NativeSelectedAccountingSource(
             reopened, projection, bind_native_execution_preparation_v2(projection)
         )
-        assert source.collect_one_accepted_open_outcome(
-            second_open_cut.current_run,
-            selected_only=True,
-            original_call_id=second_open_cut.original_call_id,
-            expected_outcome_record_id=second_open_cut.selected_outcome_record_id,
-            expected_selected_decision=second_open_cut.selected_decision,
-            expected_tenant_commit_sequence=second_open_cut.tenant_commit_sequence,
-        ) is not None
+        assert (
+            source.collect_one_accepted_open_outcome(
+                second_open_cut.current_run,
+                selected_only=True,
+                original_call_id=second_open_cut.original_call_id,
+                expected_outcome_record_id=second_open_cut.selected_outcome_record_id,
+                expected_selected_decision=second_open_cut.selected_decision,
+                expected_tenant_commit_sequence=second_open_cut.tenant_commit_sequence,
+            )
+            is not None
+        )
         substitutions = (
             (
                 "outcome_record_id",
@@ -1601,15 +1665,18 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
                 selected_only=True,
                 original_call_id=second_open_cut.original_call_id,
                 expected_outcome_record_id=(
-                    foreign_value if field == "outcome_record_id"
+                    foreign_value
+                    if field == "outcome_record_id"
                     else second_open_cut.selected_outcome_record_id
                 ),
                 expected_selected_decision=(
-                    foreign_value if field == "selected_decision"
+                    foreign_value
+                    if field == "selected_decision"
                     else second_open_cut.selected_decision
                 ),
                 expected_tenant_commit_sequence=(
-                    foreign_value if field == "tenant_commit_sequence"
+                    foreign_value
+                    if field == "tenant_commit_sequence"
                     else second_open_cut.tenant_commit_sequence
                 ),
             )
@@ -1623,17 +1690,18 @@ async def test_accepted_open_recovery_reopens_across_seals_and_rejects_each_fore
         ) == ("RECOVERY_REQUIRED",)
         reopened_head = read_execution_history(reopened).tenant_head
         assert (
-            await publish_native_sealed_accounting_v3(reopened, second_seal)
-            == second_v3_reopened
+            await publish_native_sealed_accounting_v3(reopened, second_seal) == second_v3_reopened
+        )
+        assert await publish_native_sealed_accounting_v3(reopened, first_seal) == first_v3_reopened
+        assert (
+            await reopened.publish_accepted_open_recovery(
+                original_call_id=second_call.original_call_id
+            )
+            == pending_evidence.result
         )
         assert (
-            await publish_native_sealed_accounting_v3(reopened, first_seal) == first_v3_reopened
+            await reopened.publish_accepted_open_recovery(original_call_id=first_open_call_id)
+            == first_open_result
         )
-        assert await reopened.publish_accepted_open_recovery(
-            original_call_id=second_call.original_call_id
-        ) == pending_evidence.result
-        assert await reopened.publish_accepted_open_recovery(
-            original_call_id=first_open_call_id
-        ) == first_open_result
         assert read_execution_history(reopened).tenant_head == reopened_head
         assert len(resources.require_original_provider().transfers) == 2
