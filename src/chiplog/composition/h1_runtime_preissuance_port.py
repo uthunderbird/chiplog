@@ -2894,6 +2894,7 @@ class _H1RuntimePreissuancePort:
         from chiplog.composition.h1_completion_preparation_session import (
             H1CompletionPreparationSession,
         )
+        from chiplog.composition.h1_live_completion_enrollment import _H1TerminalClearance
 
         if getattr(session, "_recovery", None) is not None:
             return await self._capture_recovery_final_completion_fence(session)

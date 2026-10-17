@@ -1,9 +1,7 @@
-"""RED replay witnesses for the separate installed H1 issuance-V2 finalizer.
+"""Replay witnesses for the separate installed H1 issuance-V2 finalizer.
 
-Nothing in this module manufactures a batch, issuance, marker, ROOT or owner
-decision.  Every observation begins at the installed H1 driver and reaches the
-already implemented, durable four-stage recovery cut.  The sole current RED
-seam is the documented but uninstalled ``finalize_execution`` operation.
+Every observation begins at the installed H1 driver and reaches its durable
+four-stage recovery cut before using the installed ``finalize_execution`` API.
 """
 
 from __future__ import annotations
@@ -26,6 +24,10 @@ from chiplog.composition.common_cli_execution_runtime import (
     CommonCliExecutionRuntime,
     open_installed_h1_runtime,
 )
+from chiplog.composition.common_execution_driver_contracts import (
+    SelectedExecutionReceiptV1,
+    UncertainExecutionPublicationV1,
+)
 from chiplog.composition.h1_completion_issuance import decode_h1_completion_issuance
 from chiplog.composition.h1_completion_preparation_session import H1CompletionPreparationSession
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
@@ -42,14 +44,7 @@ V2_SCHEMA = "chiplog.composition.h1-completion-issuance.v2"
 
 
 class H1CompletionIssuanceV2Unavailable(RuntimeError):
-    """The frozen installed finalizer has not been installed yet."""
-
-
-_RED = pytest.mark.xfail(
-    strict=True,
-    raises=H1CompletionIssuanceV2Unavailable,
-    reason="separate installed H1 finalize_execution / issuance-V2 writer is absent",
-)
+    """The required installed finalizer is unavailable."""
 
 
 class _CrashAfterDecided(RuntimeError):
@@ -72,6 +67,7 @@ async def _durable_recovery(
     """Reach the real recovery cut before asking for the separate finalizer."""
     request = await _admit(runtime)
     initial = await runtime.drive_input(request)
+    assert isinstance(initial, SelectedExecutionReceiptV1)
     private = cast(Any, runtime)
     private._execution_model._responses = (
         DeliveryCompletion(
@@ -116,7 +112,12 @@ async def _require_installed_v2_finalization(
     finalizer = getattr(runtime, "finalize_execution", None)
     if not callable(finalizer):
         raise H1CompletionIssuanceV2Unavailable("installed finalize_execution is absent")
-    await finalizer(request.identity, request.original_driver_command_fingerprint())
+    result = await finalizer(request.identity, request.original_driver_command_fingerprint())
+    assert isinstance(result, SelectedExecutionReceiptV1)
+    assert result.identity == request.identity
+    assert result.original_driver_command_fingerprint == (
+        request.original_driver_command_fingerprint()
+    )
     selected = _selected_v2(runtime)
     if len(selected) != 1:
         raise H1CompletionIssuanceV2Unavailable(
@@ -177,7 +178,6 @@ def _record_bytes(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("window", ("decided", "selected_before_readback"))
-@_RED
 async def test_v2_selected_or_pending_restart_reuses_authenticated_bytes_without_new_b_or_current(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, window: str
 ) -> None:
@@ -186,6 +186,7 @@ async def test_v2_selected_or_pending_restart_reuses_authenticated_bytes_without
     await prepare_installed_slot(slot, expected, tmp_path)
     resources = _resources(tmp_path)
     opened_b_sessions = 0
+    injected_faults = 0
     original_bind = H1CompletionPreparationSession._bind_recovery
 
     def count_b_session(self: Any, **kwargs: Any) -> None:
@@ -201,34 +202,48 @@ async def test_v2_selected_or_pending_restart_reuses_authenticated_bytes_without
             original_select = AnchoredOwnerDecisionJournal.select
 
             def crash_after_select(self: Any, prepared: Any, commitment: str) -> Any:
+                nonlocal injected_faults
                 selected = original_select(self, prepared, commitment)
                 if type(selected.prepared.request) is CompleteDeliveryBatchV2:
+                    injected_faults += 1
                     raise _CrashAfterDecided()
                 return selected
 
             monkeypatch.setattr(AnchoredOwnerDecisionJournal, "select", crash_after_select)
-            crash = _CrashAfterDecided
         else:
             original_append = IndependentTenantDecisionJournal.append
 
             def crash_after_append(self: Any, raw: bytes, predecessor: str | None) -> str:
+                nonlocal injected_faults
                 entry_id = original_append(self, raw, predecessor)
                 entry = json.loads(raw)
                 if (
                     entry.get("kind") == "SELECTED"
                     and entry.get("request", {}).get("kind") == "COMPLETE_DELIVERY_ATOMIC_V2"
                 ):
+                    injected_faults += 1
                     raise _CrashAfterSelectedReadback()
                 return entry_id
 
             monkeypatch.setattr(IndependentTenantDecisionJournal, "append", crash_after_append)
-            crash = _CrashAfterSelectedReadback
 
         monkeypatch.setattr(H1CompletionPreparationSession, "_bind_recovery", count_b_session)
         async with open_installed_h1_runtime(launch, resources=resources) as crashed:
-            with pytest.raises(crash):
-                await _require_installed_v2_finalization(crashed, request)
+            finalizer = getattr(crashed, "finalize_execution", None)
+            if not callable(finalizer):
+                raise H1CompletionIssuanceV2Unavailable("installed finalize_execution is absent")
+            result = await finalizer(
+                request.identity, request.original_driver_command_fingerprint()
+            )
+            assert isinstance(result, UncertainExecutionPublicationV1)
+            assert result.operation == "h1.finalize_execution"
+            assert result.identity == request.identity
+            assert result.original_driver_command_fingerprint == (
+                request.original_driver_command_fingerprint()
+            )
+            assert injected_faults == 1
             decision = _selected_v2(crashed)[0]
+            assert decision in crashed._pending_owners()
             _assert_exact_v2_selection(crashed, decision)
             selected_before = _selected_raw(crashed, decision)
             b_before = opened_b_sessions
@@ -245,7 +260,6 @@ async def test_v2_selected_or_pending_restart_reuses_authenticated_bytes_without
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", ("missing", "unknown", "outer_inner_mismatch"))
-@_RED
 async def test_v2_dispatch_rejects_missing_unknown_or_mismatched_applicability_versions(
     tmp_path: Path, mutation: str
 ) -> None:

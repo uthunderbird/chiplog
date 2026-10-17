@@ -344,10 +344,14 @@ def test_h1_verify_fresh_modes_check_only_absent_and_returns_precommit_selection
     ) == ("decision", "a" * 64, "b" * 64, 1)
 
 
+@pytest.mark.parametrize("startup_only", (False, True))
 def test_h1_verify_selected_recovery_checks_predecessor_only_when_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, startup_only: bool
 ) -> None:
     authority, command, prepared, journal = _verify_fixture(tmp_path, monkeypatch)
+    if startup_only:
+        authority._selected_recovery_runtime = authority._runtime
+        authority._runtime = None
     authority._prepared.clear()
     journal.selected = SimpleNamespace(
         prepared=prepared,
@@ -383,6 +387,27 @@ def test_h1_verify_selected_recovery_checks_predecessor_only_when_absent(
 
     monkeypatch.setattr(authority, "check_selected_predecessor", lambda _decision: False)
     with pytest.raises(StoreAdmissionError):
+        authority.verify(command, "ABSENT")
+
+
+def test_h1_startup_recovery_cannot_admit_an_unselected_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority, command, prepared, _journal = _verify_fixture(tmp_path, monkeypatch)
+    authority._selected_recovery_runtime = authority._runtime
+    authority._runtime = None
+    monkeypatch.setattr(
+        authority, "check_prepared", lambda _prepared: pytest.fail("startup used live preparation")
+    )
+    for mode in ("ABSENT", "PRESELECT", "PRECOMMIT", "REPLAY"):
+        with pytest.raises(StoreAdmissionError, match="capability differs"):
+            authority.verify(command, mode)
+    monkeypatch.undo()
+    assert authority.check_prepared(prepared) == "DENIED"
+
+    authority._revoke_all()
+    assert authority._selected_recovery_runtime is None
+    with pytest.raises(StoreAdmissionError, match="revoked"):
         authority.verify(command, "ABSENT")
 
 

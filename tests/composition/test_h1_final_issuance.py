@@ -50,12 +50,14 @@ async def _advance_to_durable_recovery(runtime: Any) -> tuple[Any, SelectedExecu
     request = await _admit(runtime)
     initial = await runtime.drive_input(request)
     assert isinstance(initial, SelectedExecutionReceiptV1)
-    runtime._execution_model._responses = DeliveryCompletion(
-        tenant=TENANT,
-        run_id=initial.stable_run_lineage_id,
-        turn_id=initial.stable_run_lineage_id + "/turn/1",
-        deliveries=(ProposedDelivery(payload=(Commentary(text="final issuance"),)),),
-    ).canonical_bytes()
+    runtime._execution_model._responses = (
+        DeliveryCompletion(
+            tenant=TENANT,
+            run_id=initial.stable_run_lineage_id,
+            turn_id=initial.stable_run_lineage_id + "/turn/1",
+            deliveries=(ProposedDelivery(payload=(Commentary(text="final issuance"),)),),
+        ).canonical_bytes(),
+    )
     recovered = await runtime.advance_execution(advance(initial, request))
     if not isinstance(recovered, SelectedExecutionReceiptV1) or recovered.phase != "RUNNING":
         raise H1FinalIssuanceUnavailable(

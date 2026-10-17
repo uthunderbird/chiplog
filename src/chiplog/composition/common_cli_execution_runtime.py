@@ -2975,6 +2975,7 @@ async def _open_installed_h1_runtime(
             native_sources=runtime._h1_native_member_sources,
             scope_port=runtime._h1_preissuance_registration_source_port,
         )
+        authority._bind_selected_recovery_runtime(runtime)
 
     with _configured(resources):
         try:

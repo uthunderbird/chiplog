@@ -73,7 +73,45 @@ class H1LivePublicationAuthority:
         # admission path.
         self._revoked = False
         self._runtime: CommonCliExecutionRuntime | None = None
+        self._selected_recovery_runtime: CommonCliExecutionRuntime | None = None
         self._prepared: dict[str, tuple[PreparedOwnerPublication | None, Any]] = {}
+
+    def _bind_selected_recovery_runtime(self, runtime: CommonCliExecutionRuntime) -> None:
+        """Make authenticated selected batches recoverable before live enrollment."""
+        from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+        from chiplog.composition.h1_publication_resolver_mux import H1PublicationResolverMux
+        from chiplog.composition.r14_runtime import AnchoredOwnerDecisionJournal
+        from chiplog.platform.owner_publications import BrokerPublicationCoordinator
+
+        if type(runtime) is not CommonCliExecutionRuntime:
+            raise TypeError("H1 selected recovery requires the canonical installed runtime")
+        if (
+            self._revoked
+            or self._runtime is not None
+            or self._selected_recovery_runtime is not None
+        ):
+            raise RuntimeError("H1 selected recovery runtime binding is unavailable")
+        coordinator = getattr(runtime, "_h1_live_publication_coordinator", None)
+        mux = getattr(runtime, "_h1_publication_resolver_mux", None)
+        journal = runtime._owner_decisions()
+        mount = getattr(runtime, "_h1_live_completion_mount", None)
+        recovery_mount = getattr(runtime, "_h1_recovery_mount", None)
+        if (
+            getattr(runtime, "_h1_live_publication_authority", None) is not self
+            or type(mux) is not H1PublicationResolverMux
+            or mux._completion is not self
+            or type(coordinator) is not BrokerPublicationCoordinator
+            or coordinator._authority is not self
+            or coordinator._appender is not runtime._appender
+            or coordinator._journal is not journal
+            or type(journal) is not AnchoredOwnerDecisionJournal
+            or journal._runtime is not runtime
+            or getattr(mount, "_runtime", None) is not runtime
+            or getattr(mount, "_authority", None) is not self
+            or getattr(recovery_mount, "authority_gate", None) is not runtime._authority_gate()
+        ):
+            raise RuntimeError("H1 selected recovery installation graph differs")
+        self._selected_recovery_runtime = runtime
 
     def _bind_installed_runtime(self, runtime: CommonCliExecutionRuntime) -> None:
         """Bind this authority once to the one installed H1 object graph.
@@ -92,7 +130,14 @@ class H1LivePublicationAuthority:
 
         if type(runtime) is not CommonCliExecutionRuntime:
             raise TypeError("live H1 authority requires the canonical installed runtime")
-        if self._revoked or self._runtime is not None:
+        if (
+            self._revoked
+            or self._runtime is not None
+            or (
+                self._selected_recovery_runtime is not None
+                and self._selected_recovery_runtime is not runtime
+            )
+        ):
             raise RuntimeError("live H1 authority runtime binding is unavailable")
         enrollment = getattr(runtime, "_h1_live_completion_enrollment", None)
         mount = getattr(runtime, "_h1_live_completion_mount", None)
@@ -133,7 +178,7 @@ class H1LivePublicationAuthority:
         from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
 
         del connection
-        runtime = self._runtime
+        runtime = self._runtime or self._selected_recovery_runtime
         if self._revoked:
             raise StoreAdmissionError("live H1 publication authority is revoked")
         if runtime is None:
@@ -145,6 +190,8 @@ class H1LivePublicationAuthority:
                 selected = runtime._owner_decisions().lookup(
                     command.tenant_id, command.idempotency_key
                 )
+                if self._runtime is None and selected is None:
+                    raise ValueError("H1 startup recovery has no selected decision")
                 prepared = None if entry is None else entry[0]
                 retained = None if entry is None else getattr(entry[1], "batch", None)
                 if selected is not None:
@@ -200,6 +247,7 @@ class H1LivePublicationAuthority:
         """Invalidate this installation before its evidence-root issuer unbinds."""
         self._revoked = True
         self._runtime = None
+        self._selected_recovery_runtime = None
 
     async def _recover_finalization_held(
         self,
@@ -759,7 +807,7 @@ class H1LivePublicationAuthority:
     def materialization_state(
         self, decision: SelectedOwnerDecision
     ) -> Literal["ABSENT", "EXACT_PREFIX", "COMPLETE", "CONFLICT"]:
-        runtime = self._runtime
+        runtime = self._runtime or self._selected_recovery_runtime
         if self._revoked or runtime is None:
             return "CONFLICT"
         try:

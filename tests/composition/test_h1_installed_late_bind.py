@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import sqlite3
+import stat
 import struct
 from dataclasses import replace
 from pathlib import Path
@@ -51,6 +52,7 @@ from chiplog.composition.h1_launch_enrollment import (
     _open_installed_h1_launch,
     _provision_h1_enrollment,
     _provision_h1_evidence_mount,
+    _provision_h1_recovery_mount,
 )
 from chiplog.composition.h1_registration_custody import H1RegistrationCustodyV1
 from chiplog.composition.h1_workspace_policy_v2 import (
@@ -60,6 +62,7 @@ from chiplog.composition.h1_workspace_policy_v2 import (
 from chiplog.composition.r14_h1_workspace_issuance import H1WorkspaceIssuanceJournal
 from chiplog.composition.r14_h1_workspace_issuance_contracts import H1WorkspaceIssuanceRefV1
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.platform.broker import PublicPortCall, PublicPortResult
 from chiplog.platform.ingress_transition_contracts import (
     IngressCommandIdentity,
     RetainedIngressSource,
@@ -135,6 +138,13 @@ async def _bootstrap_installed_slot(
     slot: InstalledH1Slot, expected: ExpectedH1Genesis, tmp_path: Path
 ) -> None:
     """Create the runtime's durable ACTIVE trust before installer enrollment."""
+    placeholder = slot.database_path.lstat()
+    assert stat.S_ISREG(placeholder.st_mode) and placeholder.st_size == 0
+    assert not any(
+        path.name.startswith((slot.database_path.name + ".", slot.database_path.name + "-"))
+        for path in slot.database_path.parent.iterdir()
+    )
+    slot.database_path.unlink()
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "bootstrap-custody"
     )
@@ -149,6 +159,7 @@ async def _bootstrap_installed_slot(
             observed.database_instance_id,
             observed.genesis_head,
         ) == (TENANT, DATABASE, expected.digest)
+    slot.database_path.chmod(0o600)
     # The installer receives the independently observed expected trust state;
     # it does not create runtime trust on behalf of launch.
     slot._trust = _ActiveTrust(expected.digest)
@@ -271,6 +282,7 @@ async def test_installed_launch_drives_native_h1_v2_workspace_after_physical_sco
     await _bootstrap_installed_slot(slot, expected, tmp_path)
     _provision_h1_enrollment(slot, expected, _registry(expected.digest))
     _provision_h1_evidence_mount(slot, expected)
+    _provision_h1_recovery_mount(slot, expected)
 
     with _open_installed_h1_launch(slot) as launch:
         opener = getattr(common_cli_execution_runtime, "open_installed_h1_runtime", None)
@@ -352,6 +364,7 @@ async def test_installed_h1_rejects_unrelated_append_after_scope_before_model(
     await _bootstrap_installed_slot(slot, expected, tmp_path)
     _provision_h1_enrollment(slot, expected, _registry(expected.digest))
     _provision_h1_evidence_mount(slot, expected)
+    _provision_h1_recovery_mount(slot, expected)
     with _open_installed_h1_launch(slot) as launch:
         resources = HermeticDispatchResources(
             scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
@@ -397,6 +410,7 @@ async def test_installed_h1_keeps_original_actor_deadline_at_final_invoke(
     await _bootstrap_installed_slot(slot, expected, tmp_path)
     _provision_h1_enrollment(slot, expected, _registry(expected.digest))
     _provision_h1_evidence_mount(slot, expected)
+    _provision_h1_recovery_mount(slot, expected)
     with _open_installed_h1_launch(slot) as launch:
         resources = HermeticDispatchResources(
             scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
@@ -441,12 +455,13 @@ async def test_installed_h1_keeps_original_actor_deadline_at_final_invoke(
 
 @pytest.mark.asyncio
 async def test_installed_h1_repeats_identical_current_read_with_distinct_owner_wire(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     slot, expected = _installed_slot(tmp_path)
     await _bootstrap_installed_slot(slot, expected, tmp_path)
     _provision_h1_enrollment(slot, expected, _registry(expected.digest))
     _provision_h1_evidence_mount(slot, expected)
+    _provision_h1_recovery_mount(slot, expected)
     with _open_installed_h1_launch(slot) as launch:
         resources = HermeticDispatchResources(
             scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
@@ -488,14 +503,32 @@ async def test_installed_h1_repeats_identical_current_read_with_distinct_owner_w
                 expected_worker_session_id=cut.prepared.run.worker_session,
                 selected_resource_observation_ref=cut.scope.selected_resource_observation_ref,
             )
-            before = tuple(runtime._h1_scope_wires)
+            captured: list[PublicPortCall] = []
+            original_record = runtime._record_h1_scope_wire
+
+            def record_wire(
+                key: common_cli_execution_runtime._H1ScopeWireKey,
+                call: PublicPortCall,
+                result: PublicPortResult,
+                *,
+                sent_at_ns: int,
+                returned_at_ns: int,
+            ) -> None:
+                original_record(
+                    key, call, result, sent_at_ns=sent_at_ns, returned_at_ns=returned_at_ns
+                )
+                wire = runtime._h1_scope_wires[key]
+                assert wire is not None
+                captured.append(wire.sent)
+
+            monkeypatch.setattr(runtime, "_record_h1_scope_wire", record_wire)
+            before = dict(runtime._h1_scope_wires)
             first = await runtime.read_current_hermetic_output_scope(current_request)
             second = await runtime.read_current_hermetic_output_scope(current_request)
             assert type(first) is CurrentHermeticExecutionScopeV1
             assert type(second) is CurrentHermeticExecutionScopeV1
-            added = [key for key in runtime._h1_scope_wires if key not in before]
-            assert len(added) == 2
-            captured = [runtime._h1_scope_wires[key][0] for key in added]
+            assert runtime._h1_scope_wires == before
+            assert len(captured) == 2
             assert captured[0].request_id != captured[1].request_id
             wires = [
                 TrustOwnerCall.model_validate_json(call.canonical_payload) for call in captured
