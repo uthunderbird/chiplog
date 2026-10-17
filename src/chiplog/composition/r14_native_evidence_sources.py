@@ -137,7 +137,7 @@ def complete_ordered_dispatch_sources(
     ):
         return None
     sources: list[RecoverySourceRecord] = []
-    seen: set[CallSubjectHead] = set()
+    seen: set[ExactHead] = set()
     for member, record in zip(selected, expected_records, strict=True):
         if records.get(member.record) != record:
             return None

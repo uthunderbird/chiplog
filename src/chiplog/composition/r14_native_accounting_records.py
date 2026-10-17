@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field
 
@@ -28,15 +28,11 @@ from chiplog.composition.r14_native_execution_record_source import (
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.broker import PublicPortCall, PublicPortSuccess
 
-NATIVE_ACCOUNTING_OPERATION = "agent_loop.native-one-call-cancelled-accounting.v1"
+NATIVE_ACCOUNTING_OPERATION: Final = "agent_loop.native-one-call-cancelled-accounting.v1"
 NATIVE_ACCOUNTING_SCHEMA = "chiplog.agent-loop.native-one-call-cancelled-accounting.v1"
 NATIVE_SEALED_ACCOUNTING_V3_OPERATION = "agent_loop.prepare_native_sealed_accounting.v3"
-NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA = (
-    "chiplog.agent-loop.native-sealed-accounting.v3"
-)
-NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION = (
-    "agent_loop.native-sealed-accounting.v3"
-)
+NATIVE_SEALED_ACCOUNTING_V3_RECORD_SCHEMA = "chiplog.agent-loop.native-sealed-accounting.v3"
+NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION: Final = "agent_loop.native-sealed-accounting.v3"
 MAX_NATIVE_ACCOUNTING_RECORD_BYTES = 1_048_576
 
 
@@ -158,8 +154,7 @@ def sealed_accounting_v3_record(
     )
 
     if (
-        response.source_request_fingerprint
-        != hashlib.sha256(request.canonical_bytes()).hexdigest()
+        response.source_request_fingerprint != hashlib.sha256(request.canonical_bytes()).hexdigest()
         or response.selected_response != request.selected_response
         or response.sealed_manifest_fingerprint != request.sealed_manifest_fingerprint
         or tuple(call.original_call_id for call in response.complete_ordered_calls)
@@ -183,19 +178,13 @@ def validate_retained_sealed_accounting_v3_publication(
         or sent.canonical_payload != evidence.request.canonical_bytes()
         or sent.caller.owner_id != "broker"
         or sent.callee.owner_id != "agent_loop"
-        or not (
-            sent.caller.tenant_id
-            == sent.callee.tenant_id
-            == evidence.source_stamp.tenant_id
-        )
+        or not (sent.caller.tenant_id == sent.callee.tenant_id == evidence.source_stamp.tenant_id)
         or returned.request_id != sent.request_id
         or returned.responder != sent.callee
         or returned.schema_id != NATIVE_SEALED_ACCOUNTING_V3_RESULT_SCHEMA
         or returned.canonical_payload != evidence.response.canonical_bytes()
         or evidence.record
-        != sealed_accounting_v3_record(
-            evidence.request, evidence.response, evidence.source_stamp
-        )
+        != sealed_accounting_v3_record(evidence.request, evidence.response, evidence.source_stamp)
     ):
         raise ValueError("native sealed accounting V3 retained exchange differs")
     return evidence.record

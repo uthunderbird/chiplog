@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import TYPE_CHECKING
 
+from chiplog.composition.r14_execution_fanout_contracts import RetainedExecutionFanOutPreparation
 from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_native_accounting_records import (
     NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION,
@@ -13,6 +15,9 @@ from chiplog.composition.r14_native_accounting_records import (
 )
 from chiplog.platform._sqlite import PhysicalPublicationCommand
 from chiplog.platform.publication_readback import inspect_publication
+
+if TYPE_CHECKING:
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 
 def retained_selected_native_sealed_accounting_v3(
@@ -28,11 +33,11 @@ def retained_selected_native_sealed_accounting_v3(
 
 
 def decode_selected_native_sealed_accounting_v3(
-    runtime,
+    runtime: R14PlanningRuntime,
     connection: sqlite3.Connection,
     command: PhysicalPublicationCommand,
     entry: dict[str, object],
-    fanouts: list,
+    fanouts: list[RetainedExecutionFanOutPreparation],
 ) -> NativeSealedAccountingV3Record:
     """Decode the stored result bound to its selected seal and physical publication."""
     if command.operation_kind != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION:
@@ -54,10 +59,8 @@ def decode_selected_native_sealed_accounting_v3(
         command != expected
         or entry.get("operation_kind") != NATIVE_SEALED_ACCOUNTING_V3_PUBLICATION_OPERATION
         or entry.get("operation_id") != expected.idempotency_key
-        or entry.get("native_sealed_accounting_v3_envelope")
-        != envelope.canonical_bytes().decode()
-        or entry.get("predecessor")
-        != evidence.source_stamp.authority_materialization_commitment
+        or entry.get("native_sealed_accounting_v3_envelope") != envelope.canonical_bytes().decode()
+        or entry.get("predecessor") != evidence.source_stamp.authority_materialization_commitment
         or entry.get("expected_head") != expected.expected_head
         or entry.get("fingerprint") != expected.request_fingerprint
         or evidence.source_stamp.tenant_id != runtime._tenant_id
