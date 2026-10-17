@@ -4,6 +4,7 @@ import base64
 import gzip
 import hashlib
 import json
+import os
 import sqlite3
 import stat
 from contextlib import closing
@@ -383,4 +384,46 @@ async def test_unmaterialized_journal_suffix_is_authenticated_before_constructor
         ):
             pytest.fail("unauthenticated journal suffix admitted")
     assert entered == []
+    assert _files(tmp_path) == before
+
+
+@pytest.mark.asyncio
+async def test_fresh_uninitialized_runtime_reopens_with_private_empty_journal_head(
+    tmp_path: Path,
+) -> None:
+    previous_umask = os.umask(0o022)
+    try:
+        database = tmp_path / "uninitialized.sqlite"
+        async with r7_planning.open_r7_runtime(
+            database, tenant_id="empty-tenant", operator_secret=b"empty-runtime-test"
+        ):
+            pass
+        head = database.with_suffix(database.suffix + ".trust-journal.head")
+        assert head.read_bytes() == b""
+        assert stat.S_IMODE(head.stat().st_mode) == 0o600
+        async with r7_planning.open_r7_runtime(
+            database, tenant_id="empty-tenant", operator_secret=b"empty-runtime-test"
+        ):
+            pass
+    finally:
+        os.umask(previous_umask)
+
+
+@pytest.mark.asyncio
+async def test_existing_uninitialized_journal_head_with_public_permissions_is_not_repaired(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "uninitialized.sqlite"
+    async with r7_planning.open_r7_runtime(
+        database, tenant_id="empty-tenant", operator_secret=b"empty-runtime-test"
+    ):
+        pass
+    head = database.with_suffix(database.suffix + ".trust-journal.head")
+    head.chmod(0o644)
+    before = _files(tmp_path)
+    with pytest.raises(StartupTrustPrefixIntegrityError, match="operation=startup_trust_prefix"):
+        async with r7_planning.open_r7_runtime(
+            database, tenant_id="empty-tenant", operator_secret=b"empty-runtime-test"
+        ):
+            pytest.fail("runtime accepted public journal head")
     assert _files(tmp_path) == before

@@ -268,7 +268,8 @@ class IndependentTenantDecisionJournal:
         if not self._head_path.exists():
             if path.stat().st_size:
                 raise RuntimeError("non-empty journal has no protected head")
-            self._head_path.write_text("", encoding="ascii")
+            with _descriptor(self._head_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY):
+                pass
         self._body_identity = checked_file_identity(self._path)
         self._key_identity = checked_file_identity(self._key_path)
         self.entries()
