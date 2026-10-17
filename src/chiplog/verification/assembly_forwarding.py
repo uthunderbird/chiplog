@@ -3,6 +3,7 @@
 import ast
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 
 class UnknownAssemblyForwarding(ValueError):
@@ -52,7 +53,7 @@ def _module(path: str) -> str:
 def _import_module(module: str, node: ast.ImportFrom) -> str:
     if not node.level:
         return node.module or ""
-    parts = module.split(".")[:-node.level]
+    parts = module.split(".")[: -node.level]
     if node.module:
         parts.extend(node.module.split("."))
     return ".".join(parts)
@@ -60,18 +61,33 @@ def _import_module(module: str, node: ast.ImportFrom) -> str:
 
 def _binds(node: ast.AST, name: str) -> bool:
     return (
-        isinstance(node, ast.Name) and node.id == name
-        and isinstance(node.ctx, (ast.Store, ast.Del))
-    ) or (isinstance(node, ast.arg) and node.arg == name) or (
-        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        and node.name == name
-    ) or (isinstance(node, ast.ExceptHandler) and node.name == name) or (
-        isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names
-    ) or (isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-        (alias.asname or (alias.name if isinstance(node, ast.ImportFrom)
-                          else alias.name.split(".")[0])) == name for alias in node.names
-    )) or (isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name) or (
-        isinstance(node, ast.MatchMapping) and node.rest == name
+        (
+            isinstance(node, ast.Name)
+            and node.id == name
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+        )
+        or (isinstance(node, ast.arg) and node.arg == name)
+        or (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.name == name
+        )
+        or (isinstance(node, ast.ExceptHandler) and node.name == name)
+        or (isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names)
+        or (
+            isinstance(node, (ast.Import, ast.ImportFrom))
+            and any(
+                (
+                    alias.asname
+                    or (
+                        alias.name if isinstance(node, ast.ImportFrom) else alias.name.split(".")[0]
+                    )
+                )
+                == name
+                for alias in node.names
+            )
+        )
+        or (isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name)
+        or (isinstance(node, ast.MatchMapping) and node.rest == name)
     )
 
 
@@ -98,7 +114,10 @@ def _bindings(tree: ast.Module, module: str, name: str) -> str:
 
 
 def _symbol(
-    expression: ast.expr, method: ast.AsyncFunctionDef, tree: ast.Module, module: str,
+    expression: ast.expr,
+    method: ast.AsyncFunctionDef,
+    tree: ast.Module,
+    module: str,
 ) -> AssemblySymbol:
     if not isinstance(expression, ast.Name):
         raise UnknownAssemblyForwarding("unsupported assembly argument expression")
@@ -117,11 +136,17 @@ def _symbol(
             raise UnknownAssemblyForwarding("unsupported assembly parameter default")
         origin = None if default is None else _bindings(tree, module, default.id)
         return AssemblySymbol(name, "parameter", f"{module}:{method.name}.{name}", origin)
-    local_imports = [node for node in ast.walk(method) if isinstance(node, ast.ImportFrom)
-                     and any((alias.asname or alias.name) == name for alias in node.names)]
+    local_imports = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.ImportFrom)
+        and any((alias.asname or alias.name) == name for alias in node.names)
+    ]
     if local_imports:
-        if len(local_imports) != 1 or local_imports[0] not in method.body or (
-            local_imports[0].lineno >= expression.lineno
+        if (
+            len(local_imports) != 1
+            or local_imports[0] not in method.body
+            or (local_imports[0].lineno >= expression.lineno)
         ):
             raise UnknownAssemblyForwarding("assembly local import does not dominate consumer")
         local_scope = ast.Module(body=method.body, type_ignores=[])
@@ -144,9 +169,16 @@ def inspect_assembly_forwarding(sources: tuple[tuple[str, str], ...]) -> Assembl
                         raise UnknownAssemblyForwarding("aliased assembly opener is unresolved")
             if isinstance(node, ast.Attribute) and node.attr in _OWNERS:
                 raise UnknownAssemblyForwarding("attribute assembly opener is unresolved")
-        calls = sorted((node for node in ast.walk(tree) if isinstance(node, ast.Call)
-                        and isinstance(node.func, ast.Name) and node.func.id in _OWNERS),
-                       key=lambda node: (node.lineno, node.col_offset))
+        calls = sorted(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in _OWNERS
+            ),
+            key=lambda node: (node.lineno, node.col_offset),
+        )
         for node in ast.walk(tree):
             if isinstance(node, ast.Name) and node.id in _OWNERS:
                 parent = parents.get(node)
@@ -154,20 +186,32 @@ def inspect_assembly_forwarding(sources: tuple[tuple[str, str], ...]) -> Assembl
                     raise UnknownAssemblyForwarding("assembly opener escapes direct calls")
         ordinals: dict[str, int] = {}
         for call in calls:
-            name = call.func.id
+            name = cast(ast.Name, call.func).id
             callee = _bindings(tree, module, name)
             if callee != f"{_OWNERS[name]}:{name}":
                 raise UnknownAssemblyForwarding("foreign assembly opener binding")
             parent = parents.get(call)
             frames = []
             while parent is not None:
-                if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
-                                       ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
-                                       ast.GeneratorExp)):
+                if isinstance(
+                    parent,
+                    (
+                        ast.FunctionDef,
+                        ast.AsyncFunctionDef,
+                        ast.ClassDef,
+                        ast.Lambda,
+                        ast.ListComp,
+                        ast.SetComp,
+                        ast.DictComp,
+                        ast.GeneratorExp,
+                    ),
+                ):
                     frames.append(parent)
                 parent = parents.get(parent)
-            if len(frames) != 1 or not isinstance(frames[0], ast.AsyncFunctionDef) or (
-                frames[0] not in tree.body
+            if (
+                len(frames) != 1
+                or not isinstance(frames[0], ast.AsyncFunctionDef)
+                or (frames[0] not in tree.body)
             ):
                 raise UnknownAssemblyForwarding("unsupported assembly consumer frame")
             method = frames[0]
@@ -187,22 +231,35 @@ def inspect_assembly_forwarding(sources: tuple[tuple[str, str], ...]) -> Assembl
                 raise UnknownAssemblyForwarding("installed helper has no runtime parameter")
             manifest = _symbol(keywords["manifest"], method, tree, module)
             ordinals[method.name] = ordinals.get(method.name, 0) + 1
-            edges.append(AssemblyEdge(path, method.name, ordinals[method.name], callee,
-                                      runtime, manifest))
-    return AssemblyForwarding(tuple(sorted(edges, key=lambda row: (
-        row.module, row.caller, row.ordinal,
-    ))))
+            edges.append(
+                AssemblyEdge(path, method.name, ordinals[method.name], callee, runtime, manifest)
+            )
+    return AssemblyForwarding(
+        tuple(
+            sorted(
+                edges,
+                key=lambda row: (
+                    row.module,
+                    row.caller,
+                    row.ordinal,
+                ),
+            )
+        )
+    )
 
 
 def current_assembly_forwarding(root: Path) -> AssemblyForwarding:
-    return inspect_assembly_forwarding(tuple(
-        (str(path.relative_to(root / "src")), path.read_text())
-        for path in sorted((root / "src").rglob("*.py"))
-    ))
+    return inspect_assembly_forwarding(
+        tuple(
+            (str(path.relative_to(root / "src")), path.read_text())
+            for path in sorted((root / "src").rglob("*.py"))
+        )
+    )
 
 
 def verify_assembly_forwarding(
-    observed: tuple[AssemblyEdge, ...], expected: tuple[AssemblyEdge, ...],
+    observed: tuple[AssemblyEdge, ...],
+    expected: tuple[AssemblyEdge, ...],
 ) -> None:
     if observed != expected:
         raise UnregisteredAssemblyMount("direct assembly edges differ from registered inventory")
