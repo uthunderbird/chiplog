@@ -269,8 +269,7 @@ def validate_service_interval_batch(batch: SingleOwnerBatch) -> IntervalServiceI
         or clock.valid_until_monotonic_ns
         > authentication["request"]["budget"]["absolute_deadline_ns"]
         or request.operation != batch.operation
-        or batch.identity.command_id
-        != service_interval_id(evidence.act_id, execution.principal_id)
+        or batch.identity.command_id != service_interval_id(evidence.act_id, execution.principal_id)
         or batch.identity.command_fingerprint != _digest(request.command_bytes)
     ):
         raise ValueError("service interval clock, operation or replay identity differs")
@@ -320,13 +319,11 @@ def validate_service_interval_batch(batch: SingleOwnerBatch) -> IntervalServiceI
         or command.boundary.missed_occurrence_policy_head != policy_head(config.policy)
         or command.bound_head != config.bound
         or request.snapshot.cut.authorized_command_fingerprint != _digest(request.command_bytes)
-        or request.snapshot.cut.authority_proof
-        != cut_proof(request.context, evidence.source_cut)
+        or request.snapshot.cut.authority_proof != cut_proof(request.context, evidence.source_cut)
         or request.snapshot.cut.tenant_frontier != evidence.source_cut.tenant_frontier
         or request.snapshot.cut.materialization_commitment
         != evidence.source_cut.materialization_commitment
-        or request.snapshot.cut.submission_id
-        != "r15-service-submission:" + evidence.issuance_nonce
+        or request.snapshot.cut.submission_id != "r15-service-submission:" + evidence.issuance_nonce
     ):
         raise ValueError("service interval original command differs")
     from chiplog.composition.r15_tick_runtime import _manifest
@@ -373,6 +370,7 @@ def validate_service_interval_batch(batch: SingleOwnerBatch) -> IntervalServiceI
     ):
         raise ValueError("service interval complete owner output differs")
     return evidence
+
 
 if TYPE_CHECKING:
     from chiplog.composition.r15_interval_service_auth import IntervalServiceSession
@@ -505,7 +503,7 @@ class ServiceIntervalPublicationAuthority(SchedulerPublicationAuthority):
                 self._policy_sources,
                 self._clock_observation,
             )
-        except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+        except OSError, RuntimeError, ValueError, TypeError, KeyError:
             return "STALE"
         return None
 

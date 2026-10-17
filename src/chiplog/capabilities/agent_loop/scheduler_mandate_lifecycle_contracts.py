@@ -218,8 +218,7 @@ class PreparedMandateRevocationV1(SchedulerExecutionDTO):
         revocation = self.terminal_revocation.revocation
         if (
             self.selected_budget.budget.mandate_id != self.selected_mandate.mandate.scope.mandate_id
-            or
-            revocation.mandate_id != self.selected_mandate.mandate.scope.mandate_id
+            or revocation.mandate_id != self.selected_mandate.mandate.scope.mandate_id
             or revocation.mandate_head != self.selected_mandate.mandate_head
             or not isinstance(revocation.predecessor, Absent)
         ):

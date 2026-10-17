@@ -150,8 +150,10 @@ def _progress(
             )
             if result.boundary.schedule_definition_head == preview.schedule:
                 current_ids.update(item.occurrence.occurrence_id for item in result.dispositions)
-    return previous, predecessor, tuple(
-        item for item in disposed if item.occurrence_id in current_ids
+    return (
+        previous,
+        predecessor,
+        tuple(item for item in disposed if item.occurrence_id in current_ids),
     )
 
 

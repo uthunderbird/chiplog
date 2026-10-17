@@ -66,6 +66,22 @@ _MANIFEST_V3_SHA = "36041f23cf61e8834cfe3ac89ce7e884f1224f68be9e9694f501950e719a
 _MANIFEST_V3_REVISION2 = Path(__file__).with_name("scheduler_source_manifest_v3_revision2.json")
 _MANIFEST_V3_REVISION2_SHA = "5d01204db2e1bf02c02fbd815d682a4d707b66d88ca34ea95fe13e636bdc7eec"
 _V2B_CLOSURE_SHA = "928b044048cfed0e9cd62677c5e8e040e221bd7d649945959b90918d17e3d49a"
+_MANIFEST_V3_REVISION3 = Path(__file__).with_name("scheduler_source_manifest_v3_revision3.json")
+_MANIFEST_V3_REVISION3_SHA = "384e474aa8260710972b7e447eadaeb35ea5d482fca8c10acff06b2a44ab7582"
+_REVIEWED_FORMATTED_SOURCE_HASHES: dict[str, tuple[str, str]] = {
+    "chiplog.capabilities.agent_loop.scheduler_mandate_lifecycle_contracts": (
+        "f1fb581e0fe34d32ae0e45a0592b8e5792843c82fb5f47fd0d076554e195e365",
+        "aea44a2e955bea4026dae719e3753e5fa0372c62e64653726c0bce43d4aa0791",
+    ),
+    "chiplog.composition.r15_interval_service": (
+        "96a91c9cc34f2c216a935cbad8c06088169c27a8c8bae393b37013777a10f995",
+        "e30e268d3bca91dc9a94556ab62777f854e332c6d5bad2292ef15d69372604c0",
+    ),
+    "chiplog.composition.r15_tick_runtime": (
+        "a4522bf0df4a6abc78d7277a20dacc6381a7c253052a52824eb875f307c18be6",
+        "797a14de2280add3ac8829e27a99a8c683f53c519d7e8a3353f2c02366354ff5",
+    ),
+}
 _MODULES = (
     "chiplog.composition.r15_lease_service_auth",
     "chiplog.composition.r15_lease_publication_v2b",
@@ -359,9 +375,12 @@ def _require_historical_equality(
 
 
 def _historical_source_matches(name: str, raw: bytes, fingerprint: str) -> bool:
-    """Recognize only the reviewed additive declarations; retain every old byte pin."""
+    """Recognize only reviewed exact source changes; retain every historical byte pin."""
     if _sha(raw) == fingerprint:
         return True
+    formatted = _REVIEWED_FORMATTED_SOURCE_HASHES.get(name)
+    if formatted is not None:
+        return (fingerprint, _sha(raw)) == formatted
     if name == "chiplog.capabilities.agent_loop.contracts":
         addition = (
             b"class LoopHold(LoopRejected):\n"
@@ -425,6 +444,7 @@ def _v1_compatibility_profile(current_profile: dict[str, object]) -> dict[str, o
             not in {
                 "chiplog.capabilities.agent_loop.contracts",
                 "chiplog.capabilities.agent_loop.delivery_work_contracts",
+                "chiplog.capabilities.agent_loop.scheduler_mandate_lifecycle_contracts",
                 "chiplog.platform._owner_publication_contracts",
             }
             or sources.get(name) == fingerprint
@@ -493,8 +513,26 @@ def _original_v3_profile() -> dict[str, object]:
     return cast(dict[str, object], json.loads(raw))
 
 
+def _revision2_v3_profile() -> dict[str, object]:
+    raw = _MANIFEST_V3_REVISION2.read_bytes()
+    if _sha(raw) != _MANIFEST_V3_REVISION2_SHA:
+        raise ValueError("revision 2 V3 reviewed manifest changed")
+    return cast(dict[str, object], json.loads(raw))
+
+
 def _historical_v3_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
-    old = _original_v3_profile()
+    return _historical_v3_profile_registration(current_profile, _original_v3_profile())
+
+
+def _historical_v3_revision2_registration(
+    current_profile: dict[str, object],
+) -> SchedulerSourceRegistration:
+    return _historical_v3_profile_registration(current_profile, _revision2_v3_profile())
+
+
+def _historical_v3_profile_registration(
+    current_profile: dict[str, object], old: dict[str, object]
+) -> SchedulerSourceRegistration:
     for name, fingerprint in cast(dict[str, str], old["sources"]).items():
         if not _historical_profile_source_matches(current_profile, name, fingerprint):
             raise ValueError("historical V3 evaluator artifact changed: " + name)
@@ -522,8 +560,9 @@ def _capture_scheduler_registration() -> tuple[
     try:
         _require_v2b_closure()
         _original_v3_profile()
-        raw_manifest = _MANIFEST_V3_REVISION2.read_bytes()
-        if _sha(raw_manifest) != _MANIFEST_V3_REVISION2_SHA:
+        _revision2_v3_profile()
+        raw_manifest = _MANIFEST_V3_REVISION3.read_bytes()
+        if _sha(raw_manifest) != _MANIFEST_V3_REVISION3_SHA:
             return SourceRegistrationUnresolved("reviewed V3 manifest bytes differ"), {}
         expected = json.loads(raw_manifest)
         observed, sources, _ = _observe(v3=True)
@@ -794,6 +833,7 @@ def read_admitted_scheduler_startup(
     v2c = _historical_v2c_registration(observed)
     v2d = _historical_v2d_registration(observed)
     original_v3 = _historical_v3_registration(observed)
+    revision2_v3 = _historical_v3_revision2_registration(observed)
     from chiplog.composition.r15_interval_policy_publication import (
         validate_selected_interval_policy_decision,
         validate_selected_interval_service_decision,
@@ -814,7 +854,8 @@ def read_admitted_scheduler_startup(
             v2c.reference.head: (3, v2c.reference),
             v2d.reference.head: (4, v2d.reference),
             original_v3.reference.head: (5, original_v3.reference),
-            registration.reference.head: (6, registration.reference),
+            revision2_v3.reference.head: (6, revision2_v3.reference),
+            registration.reference.head: (7, registration.reference),
         }
         candidate = admitted.get(historical.registry.head)
         if candidate is None or historical.registry != candidate[1] or candidate[0] < rank:
@@ -831,6 +872,7 @@ def read_admitted_scheduler_startup(
             4,
             5,
             6,
+            7,
         ):
             return SourceRegistrationUnresolved("lease acquire requires V2b selected source")
         if (
@@ -860,12 +902,12 @@ def read_admitted_scheduler_startup(
                 None,
             )
             == "chiplog.scheduler.interval-service-issuance.v3"
-            and rank not in (5, 6)
+            and rank not in (5, 6, 7)
         ):
             return SourceRegistrationUnresolved("interval service requires V3 selected source")
         if (
             historical.selection.prepared.request.operation == "scheduler.resolve_interval"
-            and rank not in (5, 6)
+            and rank not in (5, 6, 7)
         ):
             return SourceRegistrationUnresolved("interval resolution requires V3 selected source")
         _require_historical_equality(historical, selected)

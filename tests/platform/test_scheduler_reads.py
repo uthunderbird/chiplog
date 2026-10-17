@@ -870,9 +870,14 @@ def test_historical_lock_compatibility_rejects_old_or_unreviewed_dependency_chan
 
 
 @pytest.mark.parametrize(
-    "name", ["scheduler_source_manifest_v3.json", "scheduler_source_manifest_v3_revision2.json"]
+    "name",
+    [
+        "scheduler_source_manifest_v3.json",
+        "scheduler_source_manifest_v3_revision2.json",
+        "scheduler_source_manifest_v3_revision3.json",
+    ],
 )
-def test_both_original_and_current_v3_manifests_remain_immutable(
+def test_all_reviewed_v3_manifests_remain_immutable(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     original = Path.read_bytes
@@ -909,15 +914,47 @@ async def test_original_v3_selected_history_keeps_its_exact_registration(tmp_pat
     assert result.registration == current
 
 
+async def test_revision2_v3_selected_history_keeps_its_exact_registration(tmp_path: Path) -> None:
+    observed, _, _ = source_registry._observe(v3=True)
+    retained = source_registry._historical_v3_revision2_registration(observed)
+    assert retained.reference.head == (
+        "scheduler-source-registry-v3:"
+        "a5e10b466ae5f091808159882d007da4b4f6757d0fffdd872f0db85c4f4a19bd"
+    )
+    current = current_scheduler_registration()
+    assert isinstance(current, SchedulerSourceRegistration)
+    assert current.reference != retained.reference
+    fixture = await materialized(tmp_path, registry=retained.reference)
+    result = read_admitted_scheduler_startup(
+        fixture.database, "tenant", fixture.journal, fixture.anchor
+    )
+    assert isinstance(result, AdmittedSchedulerStartup)
+    assert result.cut.historical_requests[0].registry == retained.reference
+    assert result.registration == current
+
+
+@pytest.mark.parametrize(
+    "older_name,newer_name",
+    [("original", "current"), ("revision2", "current"), ("original", "revision2")],
+)
 @pytest.mark.parametrize("regressed", [False, True])
 async def test_v3_source_order_is_checked_before_replaying_a_later_selected_request(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, regressed: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    regressed: bool,
+    older_name: str,
+    newer_name: str,
 ) -> None:
     """Order unit uses independently authenticated cuts; it makes no combined-cut claim."""
     observed, _, _ = source_registry._observe(v3=True)
-    original = source_registry._historical_v3_registration(observed)
-    current = current_scheduler_registration()
-    assert isinstance(current, SchedulerSourceRegistration)
+    registered = current_scheduler_registration()
+    assert isinstance(registered, SchedulerSourceRegistration)
+    versions = {
+        "original": source_registry._historical_v3_registration(observed),
+        "revision2": source_registry._historical_v3_revision2_registration(observed),
+        "current": registered,
+    }
+    original, current = versions[older_name], versions[newer_name]
     cuts = []
     for name, registration in (("old", original), ("current", current)):
         directory = tmp_path / name
@@ -987,3 +1024,20 @@ def test_historical_lock_authenticates_archive_and_observed_file(
             {"lock_sha256": observed},
             "e2dfa2959958ab82de7a1f690bf97da3cfe429697b032a9a85ee45993cca3f8f",
         )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "chiplog.capabilities.agent_loop.scheduler_mandate_lifecycle_contracts",
+        "chiplog.composition.r15_interval_service",
+        "chiplog.composition.r15_tick_runtime",
+    ],
+)
+def test_reviewed_formatting_recognizes_only_exact_whole_file_pairs(name: str) -> None:
+    historical, formatted = source_registry._REVIEWED_FORMATTED_SOURCE_HASHES[name]
+    raw = (source_registry._ROOT / "src" / Path(*name.split(".")).with_suffix(".py")).read_bytes()
+    assert digest(raw) == formatted
+    assert source_registry._historical_source_matches(name, raw, historical)
+    assert not source_registry._historical_source_matches(name, raw + b"\n", historical)
+    assert not source_registry._historical_source_matches(name, raw, "0" * 64)
