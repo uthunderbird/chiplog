@@ -8,7 +8,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -131,8 +131,7 @@ class BrokerAuthorityLedger:
             with sqlite3.connect(self._path) as connection:
                 connection.executescript(_SCHEMA)
                 columns = {
-                    str(row[1])
-                    for row in connection.execute("PRAGMA table_info(broker_epochs)")
+                    str(row[1]) for row in connection.execute("PRAGMA table_info(broker_epochs)")
                 }
                 if "epochbinding_required" not in columns:
                     connection.execute(
@@ -222,7 +221,7 @@ class BrokerAuthorityLedger:
                 return None
             return RuntimeGenerationIdentity(
                 generation_id=str(row[0]),
-                mode=str(row[1]),
+                mode=cast(Literal["development", "release"], str(row[1])),
                 source_snapshot_digest=str(row[2]),
                 selected_manifest_fingerprint=str(row[3]),
             )
