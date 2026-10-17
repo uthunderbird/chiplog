@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, LoopRejected
+from chiplog.composition.r7_planning import PreparedPlanningCandidate
 from chiplog.composition.r13 import open_r13_loop
 from chiplog.composition.r13_planning import R13PlanningRuntime
 from chiplog.composition.r16_effects import EffectPreviewBinding, R16EffectsProducer
@@ -37,7 +38,18 @@ async def test_retained_actual_frames_send_original_display_request(
 
         monkeypatch.setattr(broker, "call", capture)
         producer = R16EffectsProducer(runtime)
+        original_check = producer._require_current_preparation
+        preparation_checks = 0
+
+        def check(prepared: PreparedPlanningCandidate) -> None:
+            nonlocal preparation_checks
+            runtime._authority_gate().require_held()
+            preparation_checks += 1
+            original_check(prepared)
+
+        monkeypatch.setattr(producer, "_require_current_preparation", check)
         display = await producer.display_effect("r/turn/1/proposal/effect")
+        assert preparation_checks == 1
         binding = EffectPreviewBinding.model_validate_json(display.canonical_command)
         displayed_request = base64.b64decode(binding.planning_request_base64, validate=True)
         preview_call = frames[-1][0]
@@ -45,6 +57,7 @@ async def test_retained_actual_frames_send_original_display_request(
         adoption = await producer.adopt_effect(
             "hermetic-ingress", display.display_id, display.display_digest, display.adoption_act_id
         )
+        assert preparation_checks == 2
         trust, planning = frames[-2:]
         assert adoption.observed_trust.request is trust[0]
         assert adoption.observed_trust.response is trust[1]
@@ -55,6 +68,15 @@ async def test_retained_actual_frames_send_original_display_request(
         assert planning[0].request_id != preview_call.request_id
         with runtime._authority_gate().hold():
             assert runtime._trust_observation_guard(adoption.observed_trust) is None
+        await producer._prepare(
+            producer._command(
+                "standalone",
+                "r/turn/1/proposal/effect",
+                "Standalone preparation",
+                runtime._tenant_id,
+            )
+        )
+        assert preparation_checks == 3
 
 
 @pytest.mark.parametrize("owner", ("planning", "deployment_trust"))

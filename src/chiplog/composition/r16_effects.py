@@ -170,6 +170,8 @@ class R16EffectsProducer:
 
     async def _prepare(self, command: CreateIntentionLine) -> PreparedPlanningCandidate:
         candidate, _ = await self._prepare_observed(command)
+        with self._runtime._authority_gate().hold():
+            self._require_current_preparation(candidate)
         return candidate
 
     async def _prepare_observed(
@@ -222,7 +224,6 @@ class R16EffectsProducer:
                 raise LoopRejected("effect composite preparation: " + candidate.disposition)
             if candidate.request_bytes != request.canonical_bytes():
                 raise LoopRejected("effect prepared request differs from sent request")
-            self._require_current_preparation(candidate)
         return candidate, observed
 
     def _require_observed_trust(self, observed: ObservedTrustCall) -> None:
