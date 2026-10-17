@@ -6,7 +6,7 @@ import base64
 import hashlib
 import json
 from dataclasses import replace
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
@@ -56,8 +56,22 @@ from chiplog.composition.r14_recovery_publication import (
 from chiplog.platform.authority_reads import capture_authority_snapshot_commitment
 from chiplog.platform.workspace_snapshot import read_connection
 
+if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        AcceptedOpenAccountingRecordV1,
+    )
+    from chiplog.composition.r14_native_selected_accounting_source import (
+        R14NativeAcceptedOpenOutcome,
+        R14NativeOneCallAcceptedFacts,
+    )
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
-def _accepted_open_call_frontier(accepted_facts, cut, result) -> TerminalCallFrontier:
+
+def _accepted_open_call_frontier(
+    accepted_facts: R14NativeOneCallAcceptedFacts,
+    cut: AcceptedOpenRecoveryCutV1,
+    result: PreparedAcceptedOpenRecoveryV1,
+) -> TerminalCallFrontier:
     """Build one exact RECOVERY_REQUIRED frontier from selected OPEN records."""
     opening, terminal = result.opening, result.terminal
     opening_raw, terminal_raw = opening.canonical_bytes(), terminal.canonical_bytes()
@@ -125,7 +139,11 @@ def _accepted_open_call_frontier(accepted_facts, cut, result) -> TerminalCallFro
     return call
 
 
-def _accepted_open_sealed_accounting(facts, cut, result):
+def _accepted_open_sealed_accounting(
+    facts: R14NativeAcceptedOpenOutcome,
+    cut: AcceptedOpenRecoveryCutV1,
+    result: PreparedAcceptedOpenRecoveryV1,
+) -> SealedAccounting:
     """Build the legacy whole-seal accounting projection for one call."""
     call = _accepted_open_call_frontier(facts.accepted, cut, result)
     seal = facts.accepted.selected_seal
@@ -223,9 +241,9 @@ def _accepted_open_publication_state_is_valid(
     return state == "ABSENT" and actual == predecessor
 
 
-def _selected(runtime, identity: str) -> dict[str, object] | None:
+def _selected(runtime: R14PlanningRuntime, identity: str) -> dict[str, object] | None:
     runtime._pending()
-    entries = [
+    entries: list[dict[str, object]] = [
         json.loads(raw)
         for _, _, raw in runtime._loop_decisions().entries()
         if (entry := json.loads(raw)).get("kind") == "DECIDED"
@@ -433,7 +451,9 @@ def _cut_is_preserved_by_selected_suspension(
     )
 
 
-async def _finish(runtime, entry: dict[str, object]):
+async def _finish(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> AcceptedOpenAccountingRecordV1 | None:
     from chiplog.composition.r14_loop_history import read_selected_accepted_open_accounting
 
     evidence = retained_accepted_open_accounting(entry)
@@ -455,12 +475,14 @@ async def _finish(runtime, entry: dict[str, object]):
     return selected
 
 
-def _selected_open_for_call(runtime, operation: str, original_call_id: str | None):
+def _selected_open_for_call(
+    runtime: R14PlanningRuntime, operation: str, original_call_id: str | None
+) -> list[dict[str, object]]:
     """Authenticate every marked OPEN envelope before choosing a replay target."""
-    selected = []
-    seen = set()
+    selected: list[dict[str, object]] = []
+    seen: set[tuple[str, str, str]] = set()
     for _, _, raw in runtime._loop_decisions().entries():
-        entry = json.loads(raw)
+        entry: dict[str, object] = json.loads(raw)
         if entry.get("kind") != "DECIDED":
             continue
         command = runtime._publication(entry)
@@ -487,6 +509,9 @@ def _selected_open_for_call(runtime, operation: str, original_call_id: str | Non
             and "accepted_open_accounting_evidence" in entry
         ):
             raise LoopRejected("selected accepted/open envelope mixes publication families")
+        evidence: (
+            RetainedAcceptedOpenRecoveryPublication | RetainedAcceptedOpenAccountingPublication
+        )
         if recovery_marker:
             evidence = retained_accepted_open_recovery(entry)
             expected = accepted_open_recovery_command(evidence)
@@ -842,9 +867,9 @@ def _reduction_matches_resolution(resolution, reduction) -> bool:
     )
 
 
-def _selected_recovery(runtime, identity: str) -> dict[str, object] | None:
+def _selected_recovery(runtime: R14PlanningRuntime, identity: str) -> dict[str, object] | None:
     runtime._pending()
-    entries = [
+    entries: list[dict[str, object]] = [
         json.loads(raw)
         for _, _, raw in runtime._loop_decisions().entries()
         if (entry := json.loads(raw)).get("kind") == "DECIDED"
@@ -860,7 +885,9 @@ def _selected_recovery(runtime, identity: str) -> dict[str, object] | None:
     return entry
 
 
-async def _finish_recovery(runtime, entry: dict[str, object]):
+async def _finish_recovery(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> PreparedAcceptedOpenRecoveryV1:
     from chiplog.composition.r14_loop_history import read_selected_accepted_open_recovery
 
     evidence = retained_accepted_open_recovery(entry)

@@ -7,7 +7,7 @@ import json
 import secrets
 import time
 from dataclasses import replace
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import TypeAdapter
 
@@ -37,10 +37,14 @@ from chiplog.platform.authority_reads import capture_authority_snapshot_commitme
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 from chiplog.platform.workspace_snapshot import read_connection
 
+if TYPE_CHECKING:
+    from chiplog.composition.r14_native_accounting_records import NativeSealedAccountingV3Record
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
-def _selected(runtime, identity: str) -> dict[str, object] | None:
+
+def _selected(runtime: R14PlanningRuntime, identity: str) -> dict[str, object] | None:
     runtime._pending()
-    entries = [
+    entries: list[dict[str, object]] = [
         json.loads(raw)
         for _, _, raw in runtime._loop_decisions().entries()
         if (entry := json.loads(raw)).get("kind") == "DECIDED"
@@ -78,7 +82,9 @@ def _authenticated_accepted_open_recoveries(runtime) -> tuple:
     return found
 
 
-async def _finish(runtime, entry: dict[str, object]):
+async def _finish(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> NativeSealedAccountingV3Record | None:
     from chiplog.composition.r14_loop_history import read_selected_native_sealed_accounting_v3
     from chiplog.composition.r14_native_sealed_accounting_v3_history import (
         retained_selected_native_sealed_accounting_v3,

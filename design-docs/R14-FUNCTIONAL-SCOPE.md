@@ -84,6 +84,13 @@ named pressure is present; these items do not hold intermediate R14 work.
 | B-R14-A07 | Exhaustive writer applicability inventory, lifecycle/rollover matrices and final OS-owner termination proof (handoff 69). | Scheduler/takeover integration or an observed surviving-owner failure. |
 | B-R14-A08 | Separate durable terminal-recovery-fault recipe and exhaustive fault classification (handoff 23). Normal unresolved work remains HOLD and explicit abort is available. | A concrete client workflow needs a durable terminal fault distinct from HOLD/abort. |
 
+H1 owner-inventory whole-runtime closure is part of B-R14-A01. Its deferred
+criterion remains that `unsupported_runtime_record_pairs(CommonCliExecutionRuntime)`
+returns `frozenset()`; the helper continues to expose the actual gap. The retained
+completion inventory tests require the H1 completion pairs, and actual unknown
+rows still reject with `UNSUPPORTED`. This does not claim complete decoder
+coverage for every writer schema advertised by the runtime.
+
 Investigation: cold full Swarm artifact
 `/private/tmp/r14-simplification-swarm.md`; source-backed recommendations, no
 runtime test or performance verdict. Root inspected the relevant helpers and

@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+import stat
 import struct
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -35,6 +36,7 @@ from chiplog.composition.h1_launch_enrollment import (
     _open_installed_h1_launch,
     _provision_h1_enrollment,
     _provision_h1_evidence_mount,
+    _provision_h1_recovery_mount,
 )
 from chiplog.composition.h1_preissuance_registration import H1PreissuanceSourceViolation
 from chiplog.composition.h1_registration_custody import H1RegistrationCustodyV1
@@ -113,6 +115,13 @@ def _installed_slot(tmp_path: Path) -> tuple[InstalledH1Slot, ExpectedH1Genesis]
 
 
 async def _bootstrap(slot: InstalledH1Slot, expected: ExpectedH1Genesis, tmp_path: Path) -> None:
+    placeholder = slot.database_path.lstat()
+    assert stat.S_ISREG(placeholder.st_mode) and placeholder.st_size == 0
+    assert not any(
+        path.name.startswith((slot.database_path.name + ".", slot.database_path.name + "-"))
+        for path in slot.database_path.parent.iterdir()
+    )
+    slot.database_path.unlink()
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "bootstrap-custody"
     )
@@ -122,6 +131,7 @@ async def _bootstrap(slot: InstalledH1Slot, expected: ExpectedH1Genesis, tmp_pat
         observed = runtime._trust.verify()
         assert observed is not None and observed.phase == "ACTIVE"
         assert observed.genesis_head == expected.digest
+    slot.database_path.chmod(0o600)
     slot._trust = _ActiveTrust(expected.digest)
 
 
@@ -188,6 +198,7 @@ async def test_installed_selected_v3_original_reopens_through_issuer_current_sco
     await _bootstrap(slot, expected, tmp_path)
     _provision_h1_enrollment(slot, expected, _registry(expected.digest))
     _provision_h1_evidence_mount(slot, expected)
+    _provision_h1_recovery_mount(slot, expected)
 
     with _open_installed_h1_launch(slot) as launch:
         resources = HermeticDispatchResources(
@@ -197,7 +208,8 @@ async def test_installed_selected_v3_original_reopens_through_issuer_current_sco
             launch, resources=resources
         ) as runtime:
             request = await _admit(runtime)
-            initial = cast(SelectedExecutionReceiptV1, await runtime.drive_input(request))
+            initial = await runtime.drive_input(request)
+            assert isinstance(initial, SelectedExecutionReceiptV1)
             completion = DeliveryCompletion(
                 tenant=_TENANT,
                 run_id=initial.stable_run_lineage_id,

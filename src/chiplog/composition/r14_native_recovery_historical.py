@@ -58,7 +58,7 @@ if TYPE_CHECKING:
 _LOOP_CUT_TOKEN = object()
 
 
-def _freeze_json(value):
+def _freeze_json(value: object) -> object:
     if isinstance(value, dict):
         return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
     if isinstance(value, list):
@@ -431,7 +431,7 @@ def _authenticate_v3_accepted_cut(
         rows_by_id = {row[0]: row for row in rows}
         if len(rows_by_id) != len(rows):
             return False
-        carriers = {}
+        carriers: dict[str, list[RecoverySourceRecord]] = {}
         for item in cut.complete_sources:
             if item.owner == "deployment_trust":
                 continue
@@ -630,12 +630,12 @@ def _authenticate_native_recovery_selected(
             captured_owner = snapshot_from_captured_entries(owner_entries, cut.tenant_id)
             if captured_owner != owner_journal.snapshot():
                 return False
-            owner_raw_by_decision = {}
+            owner_raw_by_decision: dict[str, bytes] = {}
             for key, _, raw in owner_entries:
                 owner_raw_by_decision.setdefault(key, raw)
             for decision in captured_owner.decisions:
-                raw = owner_raw_by_decision.get(decision.decision_id)
-                if raw is None:
+                owner_raw = owner_raw_by_decision.get(decision.decision_id)
+                if owner_raw is None:
                     return False
                 for owner_record in decision.prepared.request.complete_records:
                     row = next((row for row in rows if row[0] == owner_record.record_id), None)
@@ -646,7 +646,9 @@ def _authenticate_native_recovery_selected(
                     members[owner_record.record_id] = (
                         owner_record,
                         _ref(
-                            decision.prepared.request.identity.command_id, raw, decision.decision_id
+                            decision.prepared.request.identity.command_id,
+                            owner_raw,
+                            decision.decision_id,
                         ),
                     )
             if set(members) != {row[0] for row in rows}:
@@ -725,18 +727,18 @@ def _authenticate_native_recovery_selected(
                     return False
                 route = _v3_accepted_cut_route(cut)
                 if route == "direct-terminal":
-                    authenticated = _authenticate_v3_accepted_cut(
+                    v3_authenticated = _authenticate_v3_accepted_cut(
                         runtime, cut, rows, members, direct_terminal=True
                     )
-                    return authenticated and (
+                    return v3_authenticated and (
                         tuple(owner_journal._raw.entries()) == owner_entries
                         and owner_journal.snapshot() == captured_owner
                     )
                 if route == "accepted-open":
-                    authenticated = _authenticate_v3_accepted_cut(
+                    v3_authenticated = _authenticate_v3_accepted_cut(
                         runtime, cut, rows, members, direct_terminal=False
                     )
-                    return authenticated and (
+                    return v3_authenticated and (
                         tuple(owner_journal._raw.entries()) == owner_entries
                         and owner_journal.snapshot() == captured_owner
                     )
@@ -801,11 +803,11 @@ def _authenticate_native_recovery_selected(
             native_refs.update({row.revision.head: row for row in exact_refs})
             physical = []
             for record_id, owner, schema, raw, _sequence in rows:
-                selected_record, selected_decision = members[record_id]
+                selected_physical_record, selected_decision = members[record_id]
                 if (
-                    selected_record.owner,
-                    selected_record.schema_id,
-                    selected_record.canonical_bytes,
+                    selected_physical_record.owner,
+                    selected_physical_record.schema_id,
+                    selected_physical_record.canonical_bytes,
                 ) != (owner, schema, raw):
                     return False
                 digest = hashlib.sha256(raw).hexdigest()

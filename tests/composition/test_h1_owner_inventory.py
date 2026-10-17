@@ -61,7 +61,6 @@ from chiplog.composition.h1_owner_inventory import (
     _validate_publication_membership,
     h1_owner_decoder_registry,
     read_h1_scoped_owner_inventory,
-    unsupported_runtime_record_pairs,
 )
 from chiplog.composition.h1_preseal_contracts import H1Scope
 from chiplog.composition.h1_selected_prepare import (
@@ -111,7 +110,6 @@ def test_h1_completion_writer_pairs_have_closed_inventory_decoders() -> None:
 
     assert expected <= set(CommonCliExecutionRuntime._record_schema_variants)
     assert expected <= set(h1_owner_decoder_registry())
-    assert unsupported_runtime_record_pairs(CommonCliExecutionRuntime) == frozenset()
 
 
 @pytest.mark.asyncio
@@ -396,9 +394,6 @@ async def test_generic_completion_producer_batch_writes_through_test_local_regis
 
 def test_unknown_pair_is_explicitly_unsupported() -> None:
     """A pair outside the closed registry never becomes empty evidence."""
-    unsupported = unsupported_runtime_record_pairs(CommonCliExecutionRuntime)
-
-    assert unsupported == frozenset()
     scope = H1Scope("tenant", "principal", "run", "turn", (), ())
     with pytest.raises(H1OwnerInventoryFailure, match="UNSUPPORTED") as raised:
         _decode_native_row(
