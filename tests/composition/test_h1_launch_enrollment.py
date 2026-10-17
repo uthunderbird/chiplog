@@ -13,6 +13,7 @@ from chiplog.composition.h1_launch_enrollment import (
     InstalledH1Slot,
     _open_installed_h1_launch,
     _provision_h1_enrollment,
+    _write_named_marker,
 )
 from chiplog.composition.h1_registration_custody import H1RegistrationCustodyV1
 from chiplog.platform.r7_trust_durability import TrustDurabilityObservation
@@ -211,3 +212,27 @@ def test_final_fsync_failure_returns_no_capability_but_valid_later_launch_needs_
     # Valid observed files are readable later; launch must not write or repair them.
     with _open_installed_h1_launch(slot) as launch:
         launch.assert_current()
+
+
+def test_marker_close_failure_refuses_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_close = os.close
+    closed: list[int] = []
+
+    def close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+        raise OSError("injected marker close failure")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "close", close)
+            with pytest.raises(H1LaunchEnrollmentError, match="persistence uncertain"):
+                _write_named_marker(directory_fd, "marker", b"marker-proof")
+        assert len(closed) == 1
+        assert not (tmp_path / "marker").exists()
+        assert tuple(tmp_path.iterdir()) == ()
+    finally:
+        real_close(directory_fd)

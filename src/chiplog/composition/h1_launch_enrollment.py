@@ -596,6 +596,11 @@ def _pair_lock_name(database_id: str, digest: str) -> str:
     )
 
 
+def _close_descriptor(fd: int) -> None:
+    with suppress(OSError):
+        os.close(fd)
+
+
 def _verify_pair_lock(custody_fd: int, database_id: str, digest: str) -> None:
     try:
         fd = os.open(
@@ -607,10 +612,9 @@ def _verify_pair_lock(custody_fd: int, database_id: str, digest: str) -> None:
         raise H1LaunchEnrollmentError(
             "P0 pair lock is absent; read-only launch will not create it"
         ) from exc
-    try:
+    with ExitStack() as resources:
+        resources.callback(os.close, fd)
         _private_regular(fd)
-    finally:
-        os.close(fd)
 
 
 def _verify_active(slot: InstalledH1Slot, expected: ExpectedH1Genesis) -> None:
@@ -680,24 +684,23 @@ def _acquire_install_lock(root_fd: int, *, create: bool) -> int:
 
 def _write_named_marker(custody_fd: int, name: str, raw: bytes) -> None:
     temporary = "." + name + "-" + secrets.token_hex(16) + ".tmp"
-    fd = -1
     try:
-        fd = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-            0o600,
-            dir_fd=custody_fd,
-        )
-        _private_regular(fd)
-        offset = 0
-        while offset < len(raw):
-            written = os.write(fd, raw[offset:])
-            if written <= 0:
-                raise OSError("incomplete enrollment write")
-            offset += written
-        os.fsync(fd)
-        os.close(fd)
-        fd = -1
+        with ExitStack() as resources:
+            fd = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=custody_fd,
+            )
+            resources.callback(os.close, fd)
+            _private_regular(fd)
+            offset = 0
+            while offset < len(raw):
+                written = os.write(fd, raw[offset:])
+                if written <= 0:
+                    raise OSError("incomplete enrollment write")
+                offset += written
+            os.fsync(fd)
         os.link(
             temporary, name, src_dir_fd=custody_fd, dst_dir_fd=custody_fd, follow_symlinks=False
         )
@@ -708,8 +711,6 @@ def _write_named_marker(custody_fd: int, name: str, raw: bytes) -> None:
     except OSError as exc:
         raise H1LaunchEnrollmentError("enrollment persistence uncertain") from exc
     finally:
-        if fd >= 0:
-            os.close(fd)
         with suppress(FileNotFoundError):
             os.unlink(temporary, dir_fd=custody_fd)
 
@@ -739,49 +740,48 @@ def _provision_h1_enrollment(
         expected.digest,
     ):
         raise H1LaunchEnrollmentError("P0 registry differs from explicit installed identity")
-    root_fd = custody_fd = db_fd = lock_fd = -1
-    try:
-        root_fd = _open_directory(slot.root)
-        lock_fd = _acquire_install_lock(root_fd, create=True)
-        os.fsync(root_fd)
-        custody_fd = _open_directory(slot.root / slot.custody_name)
-        db_fd, identity = _open_database(slot)
-        if not _same_path_identity(slot.database_path, identity):
-            raise H1LaunchEnrollmentError("database changed during enrollment")
+    with ExitStack() as resources:
         try:
-            _read_marker(custody_fd)
-        except H1LaunchEnrollmentError as exc:
-            if "absent" not in str(exc):
-                raise
-        else:
-            raise H1LaunchEnrollmentError("enrollment marker already exists")
-        binding = _trusted_launcher_binding_for_canonical_runtime(
-            custody_fd, slot.deployment_id, slot.database_id, expected.digest
-        )
-        H1RegistrationCustody.install(binding, registry)
-        _verify_pair_lock(custody_fd, slot.database_id, expected.digest)
-        os.fsync(custody_fd)
-        marker = H1LaunchEnrollmentV1(
-            deployment_id=slot.deployment_id,
-            database_id=slot.database_id,
-            tenant_id=slot.tenant_id,
-            database_genesis_digest=expected.digest,
-            database_path=str(slot.database_path),
-            database_dev=identity[0],
-            database_ino=identity[1],
-        )
-        _write_marker(custody_fd, marker.canonical_bytes())
-        raw, observed = _read_marker(custody_fd)
-        _check_marker(slot, observed, identity)
-        if raw != marker.canonical_bytes():
-            raise H1LaunchEnrollmentError("enrollment marker bytes differ")
-    except H1RegistrationCustodyError as exc:
-        raise H1LaunchEnrollmentError("P0 registry installation failed") from exc
-    finally:
-        for fd in (db_fd, custody_fd, lock_fd, root_fd):
-            if fd >= 0:
-                with suppress(OSError):
-                    os.close(fd)
+            root_fd = _open_directory(slot.root)
+            resources.callback(_close_descriptor, root_fd)
+            lock_fd = _acquire_install_lock(root_fd, create=True)
+            resources.callback(_close_descriptor, lock_fd)
+            os.fsync(root_fd)
+            custody_fd = _open_directory(slot.root / slot.custody_name)
+            resources.callback(_close_descriptor, custody_fd)
+            db_fd, identity = _open_database(slot)
+            resources.callback(_close_descriptor, db_fd)
+            if not _same_path_identity(slot.database_path, identity):
+                raise H1LaunchEnrollmentError("database changed during enrollment")
+            try:
+                _read_marker(custody_fd)
+            except H1LaunchEnrollmentError as exc:
+                if "absent" not in str(exc):
+                    raise
+            else:
+                raise H1LaunchEnrollmentError("enrollment marker already exists")
+            binding = _trusted_launcher_binding_for_canonical_runtime(
+                custody_fd, slot.deployment_id, slot.database_id, expected.digest
+            )
+            H1RegistrationCustody.install(binding, registry)
+            _verify_pair_lock(custody_fd, slot.database_id, expected.digest)
+            os.fsync(custody_fd)
+            marker = H1LaunchEnrollmentV1(
+                deployment_id=slot.deployment_id,
+                database_id=slot.database_id,
+                tenant_id=slot.tenant_id,
+                database_genesis_digest=expected.digest,
+                database_path=str(slot.database_path),
+                database_dev=identity[0],
+                database_ino=identity[1],
+            )
+            _write_marker(custody_fd, marker.canonical_bytes())
+            raw, observed = _read_marker(custody_fd)
+            _check_marker(slot, observed, identity)
+            if raw != marker.canonical_bytes():
+                raise H1LaunchEnrollmentError("enrollment marker bytes differ")
+        except H1RegistrationCustodyError as exc:
+            raise H1LaunchEnrollmentError("P0 registry installation failed") from exc
 
 
 def _provision_h1_evidence_mount(slot: InstalledH1Slot, expected: ExpectedH1Genesis) -> None:
@@ -790,12 +790,15 @@ def _provision_h1_evidence_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
         raise TypeError("evidence provisioning requires trusted slot and explicit expected genesis")
     _check_slot_expected(slot, expected)
     _verify_active(slot, expected)
-    root_fd = custody_fd = db_fd = lock_fd = body_fd = key_fd = head_fd = role_lock_fd = -1
-    try:
+    with ExitStack() as resources:
         root_fd = _open_directory(slot.root)
+        resources.callback(_close_descriptor, root_fd)
         lock_fd = _acquire_install_lock(root_fd, create=True)
+        resources.callback(_close_descriptor, lock_fd)
         custody_fd = _open_directory(slot.root / slot.custody_name)
+        resources.callback(_close_descriptor, custody_fd)
         db_fd, database_identity = _open_database(slot)
+        resources.callback(_close_descriptor, db_fd)
         if not _same_path_identity(slot.database_path, database_identity):
             raise H1EvidenceMountError("database changed during evidence provisioning")
         raw, launch_marker = _read_marker(custody_fd)
@@ -810,11 +813,15 @@ def _provision_h1_evidence_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
                 raise
         else:
             body_fd, body_identity = _open_private_role_file(custody_fd, _EVIDENCE_BODY)
+            resources.callback(_close_descriptor, body_fd)
             key_fd, key_identity = _open_private_role_file(custody_fd, _EVIDENCE_BODY + ".key")
+            resources.callback(_close_descriptor, key_fd)
             head_fd, _ = _open_private_role_file(custody_fd, _EVIDENCE_BODY + ".head")
+            resources.callback(_close_descriptor, head_fd)
             role_lock_fd, role_lock_identity = _open_private_role_file(
                 custody_fd, _EVIDENCE_BODY + ".lock"
             )
+            resources.callback(_close_descriptor, role_lock_fd)
             key_bytes = os.read(key_fd, 33)
             _check_evidence_marker(
                 slot,
@@ -852,12 +859,14 @@ def _provision_h1_evidence_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
         key_fd, observed_key_identity = _open_private_role_file(
             custody_fd, _EVIDENCE_BODY + ".key", key_identity
         )
+        resources.callback(_close_descriptor, key_fd)
         key_bytes = os.read(key_fd, 33)
         if len(key_bytes) != 32:
             raise H1EvidenceMountError("provisioned evidence key is corrupt")
         role_lock_fd, role_lock_identity = _open_private_role_file(
             custody_fd, _EVIDENCE_BODY + ".lock"
         )
+        resources.callback(_close_descriptor, role_lock_fd)
         marker = H1EvidenceMountEnrollmentV1(
             deployment_id=slot.deployment_id,
             database_id=slot.database_id,
@@ -886,11 +895,6 @@ def _provision_h1_evidence_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
         )
         if written != marker.canonical_bytes():
             raise H1EvidenceMountError("enrolled evidence marker bytes differ")
-    finally:
-        for fd in (role_lock_fd, head_fd, key_fd, body_fd, db_fd, custody_fd, lock_fd, root_fd):
-            if fd >= 0:
-                with suppress(OSError):
-                    os.close(fd)
 
 
 def _require_absent_recovery_sidecars(custody_fd: int) -> None:
@@ -938,13 +942,15 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
         raise TypeError("recovery provisioning requires trusted slot and explicit expected genesis")
     _check_slot_expected(slot, expected)
     _verify_active(slot, expected)
-    root_fd = custody_fd = db_fd = lock_fd = body_fd = key_fd = head_fd = role_lock_fd = -1
-    fence_fd = -1
-    try:
+    with ExitStack() as resources:
         root_fd = _open_directory(slot.root)
+        resources.callback(_close_descriptor, root_fd)
         lock_fd = _acquire_install_lock(root_fd, create=True)
+        resources.callback(_close_descriptor, lock_fd)
         custody_fd = _open_directory(slot.root / slot.custody_name)
+        resources.callback(_close_descriptor, custody_fd)
         db_fd, database_identity = _open_database(slot)
+        resources.callback(_close_descriptor, db_fd)
         if not _same_path_identity(slot.database_path, database_identity):
             raise H1RecoveryMountError("database changed during recovery provisioning")
         launch_raw, launch_marker = _read_marker(custody_fd)
@@ -959,14 +965,19 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
                 raise
         else:
             body_fd, body_identity = _open_recovery_role_file(custody_fd, _RECOVERY_BODY)
+            resources.callback(_close_descriptor, body_fd)
             key_fd, key_identity = _open_recovery_role_file(custody_fd, _RECOVERY_BODY + ".key")
+            resources.callback(_close_descriptor, key_fd)
             head_fd, _ = _open_recovery_role_file(custody_fd, _RECOVERY_BODY + ".head")
+            resources.callback(_close_descriptor, head_fd)
             role_lock_fd, lock_identity = _open_recovery_role_file(
                 custody_fd, _RECOVERY_BODY + ".lock"
             )
+            resources.callback(_close_descriptor, role_lock_fd)
             fence_fd, fence_identity = _open_recovery_role_file(
                 custody_fd, _RECOVERY_EXECUTION_FENCE
             )
+            resources.callback(_close_descriptor, fence_fd)
             key_bytes = os.read(key_fd, 33)
             if len(key_bytes) != 32:
                 raise H1RecoveryMountError("enrolled recovery key is corrupt")
@@ -1002,10 +1013,12 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
         key_fd, key_identity = _open_recovery_role_file(
             custody_fd, _RECOVERY_BODY + ".key", (key[1], key[2])
         )
+        resources.callback(_close_descriptor, key_fd)
         key_bytes = os.read(key_fd, 33)
         if len(key_bytes) != 32:
             raise H1RecoveryMountError("provisioned recovery key is corrupt")
         role_lock_fd, lock_identity = _open_recovery_role_file(custody_fd, _RECOVERY_BODY + ".lock")
+        resources.callback(_close_descriptor, role_lock_fd)
         try:
             fence_fd = os.open(
                 _RECOVERY_EXECUTION_FENCE,
@@ -1013,6 +1026,7 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
                 0o600,
                 dir_fd=custody_fd,
             )
+            resources.callback(_close_descriptor, fence_fd)
             os.fsync(fence_fd)
             os.fsync(custody_fd)
         except OSError as exc:
@@ -1050,21 +1064,6 @@ def _provision_h1_recovery_mount(slot: InstalledH1Slot, expected: ExpectedH1Gene
         )
         if written != marker.canonical_bytes():
             raise H1RecoveryMountError("enrolled recovery marker bytes differ")
-    finally:
-        for fd in (
-            fence_fd,
-            role_lock_fd,
-            head_fd,
-            key_fd,
-            body_fd,
-            db_fd,
-            custody_fd,
-            lock_fd,
-            root_fd,
-        ):
-            if fd >= 0:
-                with suppress(OSError):
-                    os.close(fd)
 
 
 class InstalledH1Launch:
@@ -1215,53 +1214,52 @@ class EnrolledH1EvidenceMount:
             raise H1EvidenceMountError("enrolled evidence mount is poisoned")
         launch = self._launch
         launch.assert_current()
-        body_fd = key_fd = head_fd = role_lock_fd = -1
-        try:
-            raw, marker = _read_evidence_marker(launch._custody_fd)
-            body_fd, body_identity = _open_private_role_file(
-                launch._custody_fd,
-                _EVIDENCE_BODY,
-                None if self._body_identity == (0, 0) else self._body_identity,
-            )
-            key_fd, key_identity = _open_private_role_file(
-                launch._custody_fd,
-                _EVIDENCE_BODY + ".key",
-                None if self._key_identity == (0, 0) else self._key_identity,
-            )
-            head_fd, head_identity = _open_private_role_file(
-                launch._custody_fd, _EVIDENCE_BODY + ".head"
-            )
-            role_lock_fd, lock_identity = _open_private_role_file(
-                launch._custody_fd,
-                _EVIDENCE_BODY + ".lock",
-                None if self._lock_identity == (0, 0) else self._lock_identity,
-            )
-            key_bytes = os.read(key_fd, 33)
-            if len(key_bytes) != 32:
-                raise H1EvidenceMountError("enrolled evidence key is corrupt")
-            _check_evidence_marker(
-                launch._slot,
-                marker,
-                body_identity=body_identity,
-                key_identity=key_identity,
-                key_bytes=key_bytes,
-                lock_identity=lock_identity,
-            )
-            if self._marker_raw and raw != self._marker_raw:
-                raise H1EvidenceMountError("enrolled evidence marker changed")
-            self._marker_raw = raw
-            self._body_identity, self._key_identity = body_identity, key_identity
-            self._head_identity, self._lock_identity = head_identity, lock_identity
-        except BaseException as exc:
-            self._poisoned = True
-            if isinstance(exc, H1EvidenceMountError):
-                raise
-            raise H1EvidenceMountError("enrolled evidence validation is unavailable") from exc
-        finally:
-            for fd in (role_lock_fd, head_fd, key_fd, body_fd):
-                if fd >= 0:
-                    with suppress(OSError):
-                        os.close(fd)
+        with ExitStack() as resources:
+            try:
+                raw, marker = _read_evidence_marker(launch._custody_fd)
+                body_fd, body_identity = _open_private_role_file(
+                    launch._custody_fd,
+                    _EVIDENCE_BODY,
+                    None if self._body_identity == (0, 0) else self._body_identity,
+                )
+                resources.callback(_close_descriptor, body_fd)
+                key_fd, key_identity = _open_private_role_file(
+                    launch._custody_fd,
+                    _EVIDENCE_BODY + ".key",
+                    None if self._key_identity == (0, 0) else self._key_identity,
+                )
+                resources.callback(_close_descriptor, key_fd)
+                head_fd, head_identity = _open_private_role_file(
+                    launch._custody_fd, _EVIDENCE_BODY + ".head"
+                )
+                resources.callback(_close_descriptor, head_fd)
+                role_lock_fd, lock_identity = _open_private_role_file(
+                    launch._custody_fd,
+                    _EVIDENCE_BODY + ".lock",
+                    None if self._lock_identity == (0, 0) else self._lock_identity,
+                )
+                resources.callback(_close_descriptor, role_lock_fd)
+                key_bytes = os.read(key_fd, 33)
+                if len(key_bytes) != 32:
+                    raise H1EvidenceMountError("enrolled evidence key is corrupt")
+                _check_evidence_marker(
+                    launch._slot,
+                    marker,
+                    body_identity=body_identity,
+                    key_identity=key_identity,
+                    key_bytes=key_bytes,
+                    lock_identity=lock_identity,
+                )
+                if self._marker_raw and raw != self._marker_raw:
+                    raise H1EvidenceMountError("enrolled evidence marker changed")
+                self._marker_raw = raw
+                self._body_identity, self._key_identity = body_identity, key_identity
+                self._head_identity, self._lock_identity = head_identity, lock_identity
+            except BaseException as exc:
+                self._poisoned = True
+                if isinstance(exc, H1EvidenceMountError):
+                    raise
+                raise H1EvidenceMountError("enrolled evidence validation is unavailable") from exc
 
     def assert_current(self) -> None:
         self._refresh_current()
@@ -1369,70 +1367,70 @@ class EnrolledH1RecoveryMount:
         if self._poisoned:
             raise H1RecoveryMountError("enrolled recovery mount is closed or poisoned")
         launch = self._launch
-        body_fd = key_fd = head_fd = lock_fd = fence_fd = -1
-        try:
-            launch.assert_current()
-            raw, marker = _read_recovery_marker(launch._custody_fd)
-            body_fd, body_identity = _open_recovery_role_file(
-                launch._custody_fd,
-                _RECOVERY_BODY,
-                None if self._body_identity == (0, 0) else self._body_identity,
-            )
-            key_fd, key_identity = _open_recovery_role_file(
-                launch._custody_fd,
-                _RECOVERY_BODY + ".key",
-                None if self._key_identity == (0, 0) else self._key_identity,
-            )
-            # The head is deliberately live: append replaces it atomically.
-            head_fd, _ = _open_recovery_role_file(launch._custody_fd, _RECOVERY_BODY + ".head")
-            lock_fd, lock_identity = _open_recovery_role_file(
-                launch._custody_fd,
-                _RECOVERY_BODY + ".lock",
-                None if self._lock_identity == (0, 0) else self._lock_identity,
-            )
-            fence_fd, fence_identity = _open_recovery_role_file(
-                launch._custody_fd,
-                _RECOVERY_EXECUTION_FENCE,
-                None
-                if self._execution_fence_identity == (0, 0)
-                else self._execution_fence_identity,
-            )
-            key_bytes = os.read(key_fd, 33)
-            if len(key_bytes) != 32:
-                raise H1RecoveryMountError("enrolled recovery key is corrupt")
-            _check_recovery_marker(
-                launch._slot,
-                marker,
-                body_identity=body_identity,
-                key_identity=key_identity,
-                key_bytes=key_bytes,
-                lock_identity=lock_identity,
-                execution_fence_identity=fence_identity,
-            )
-            if self._marker_raw and raw != self._marker_raw:
-                raise H1RecoveryMountError("enrolled recovery marker changed")
-            self._marker_raw = raw
-            (
-                self._body_identity,
-                self._key_identity,
-                self._lock_identity,
-                self._execution_fence_identity,
-            ) = (
-                body_identity,
-                key_identity,
-                lock_identity,
-                fence_identity,
-            )
-        except BaseException as exc:
-            self._poisoned = True
-            if isinstance(exc, H1RecoveryMountError):
-                raise
-            raise H1RecoveryMountError("enrolled recovery validation is unavailable") from exc
-        finally:
-            for fd in (fence_fd, lock_fd, head_fd, key_fd, body_fd):
-                if fd >= 0:
-                    with suppress(OSError):
-                        os.close(fd)
+        with ExitStack() as resources:
+            try:
+                launch.assert_current()
+                raw, marker = _read_recovery_marker(launch._custody_fd)
+                body_fd, body_identity = _open_recovery_role_file(
+                    launch._custody_fd,
+                    _RECOVERY_BODY,
+                    None if self._body_identity == (0, 0) else self._body_identity,
+                )
+                resources.callback(_close_descriptor, body_fd)
+                key_fd, key_identity = _open_recovery_role_file(
+                    launch._custody_fd,
+                    _RECOVERY_BODY + ".key",
+                    None if self._key_identity == (0, 0) else self._key_identity,
+                )
+                resources.callback(_close_descriptor, key_fd)
+                # The head is deliberately live: append replaces it atomically.
+                head_fd, _ = _open_recovery_role_file(launch._custody_fd, _RECOVERY_BODY + ".head")
+                resources.callback(_close_descriptor, head_fd)
+                lock_fd, lock_identity = _open_recovery_role_file(
+                    launch._custody_fd,
+                    _RECOVERY_BODY + ".lock",
+                    None if self._lock_identity == (0, 0) else self._lock_identity,
+                )
+                resources.callback(_close_descriptor, lock_fd)
+                fence_fd, fence_identity = _open_recovery_role_file(
+                    launch._custody_fd,
+                    _RECOVERY_EXECUTION_FENCE,
+                    None
+                    if self._execution_fence_identity == (0, 0)
+                    else self._execution_fence_identity,
+                )
+                resources.callback(_close_descriptor, fence_fd)
+                key_bytes = os.read(key_fd, 33)
+                if len(key_bytes) != 32:
+                    raise H1RecoveryMountError("enrolled recovery key is corrupt")
+                _check_recovery_marker(
+                    launch._slot,
+                    marker,
+                    body_identity=body_identity,
+                    key_identity=key_identity,
+                    key_bytes=key_bytes,
+                    lock_identity=lock_identity,
+                    execution_fence_identity=fence_identity,
+                )
+                if self._marker_raw and raw != self._marker_raw:
+                    raise H1RecoveryMountError("enrolled recovery marker changed")
+                self._marker_raw = raw
+                (
+                    self._body_identity,
+                    self._key_identity,
+                    self._lock_identity,
+                    self._execution_fence_identity,
+                ) = (
+                    body_identity,
+                    key_identity,
+                    lock_identity,
+                    fence_identity,
+                )
+            except BaseException as exc:
+                self._poisoned = True
+                if isinstance(exc, H1RecoveryMountError):
+                    raise
+                raise H1RecoveryMountError("enrolled recovery validation is unavailable") from exc
 
     def assert_current(self) -> None:
         self._refresh_current()
