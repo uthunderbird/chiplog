@@ -129,9 +129,11 @@ def test_historical_publications_reuse_exact_commands_and_keep_all_decisions() -
     }
     fallback_command = SimpleNamespace(expected_head=1)
     runtime = SimpleNamespace(
-        _publication=lambda entry: fallback_command
-        if entry.get("operation_id") == "workspace-policy"
-        else pytest.fail("cached command should not be rebuilt")
+        _publication=lambda entry: (
+            fallback_command
+            if entry.get("operation_id") == "workspace-policy"
+            else pytest.fail("cached command should not be rebuilt")
+        )
     )
     decisions = (
         (
@@ -245,16 +247,16 @@ def test_closed_recovery_source_projection_keeps_resolver_authority(monkeypatch)
         resolutions, "read_selected_original_call_resolution_source_held", lambda _: resolution
     )
     monkeypatch.setattr(
-        resolutions, "_read_selected_original_call_resolution_evidence_held",
-        lambda _: retained_resolution, raising=False,
+        resolutions,
+        "_read_selected_original_call_resolution_evidence_held",
+        lambda _: retained_resolution,
+        raising=False,
     )
     monkeypatch.setattr(reductions, "_selected_entries", lambda _: ("selected",))
     monkeypatch.setattr(
         reductions, "validate_selected_command", lambda *args: SimpleNamespace(request=request)
     )
-    monkeypatch.setattr(
-        reductions, "_selected_value", lambda *args: (None, selected_reduction)
-    )
+    monkeypatch.setattr(reductions, "_selected_value", lambda *args: (None, selected_reduction))
     monkeypatch.setattr(reductions, "capture_request", lambda _: request)
     runtime = SimpleNamespace(
         read_selected_accepted_open_frontier=lambda: SimpleNamespace(
@@ -283,7 +285,8 @@ def test_closed_recovery_source_projection_keeps_resolver_authority(monkeypatch)
     from chiplog.composition.h1_inventory_leaf_contracts import H1RawInventoryItem
 
     monkeypatch.setattr(
-        cuts, "AuthenticatedCustodyRecord",
+        cuts,
+        "AuthenticatedCustodyRecord",
         SimpleNamespace(model_validate_json=lambda _: object()),
     )
     scope = SimpleNamespace(selected_admission_bytes=b"inert custody acquisition")
@@ -319,33 +322,49 @@ def test_original_resolver_source_requires_exact_independent_selection(damage):
 
     source = request().cut.current_obligation
     record = SimpleNamespace(
-        record_id=source.physical_record.subject_id, owner=source.owner,
-        schema_id=source.schema_id, canonical_bytes=source.canonical_record_bytes,
+        record_id=source.physical_record.subject_id,
+        owner=source.owner,
+        schema_id=source.schema_id,
+        canonical_bytes=source.canonical_record_bytes,
     )
     decision = source.selected_decision.model_copy(update={"subject_id": "command-id"})
     if damage in {"head", "fingerprint"}:
         revision = source.selected_decision.revision.model_copy(update={damage: "f" * 64})
-        source = source.model_copy(update={
-            "selected_decision": source.selected_decision.model_copy(update={"revision": revision})
-        })
+        source = source.model_copy(
+            update={
+                "selected_decision": source.selected_decision.model_copy(
+                    update={"revision": revision}
+                )
+            }
+        )
     elif damage == "physical":
-        source = source.model_copy(update={
-            "physical_record": source.physical_record.model_copy(update={"subject_id": "foreign"})
-        })
+        source = source.model_copy(
+            update={
+                "physical_record": source.physical_record.model_copy(
+                    update={"subject_id": "foreign"}
+                )
+            }
+        )
     elif damage == "bytes":
-        source = source.model_copy(update={
-            "canonical_record_bytes": source.canonical_record_bytes + b" "
-        })
+        source = source.model_copy(
+            update={"canonical_record_bytes": source.canonical_record_bytes + b" "}
+        )
     elif damage in {"owner", "schema"}:
-        source = source.model_copy(update={
-            "schema_id" if damage == "schema" else "owner": "foreign"
-        })
+        source = source.model_copy(
+            update={"schema_id" if damage == "schema" else "owner": "foreign"}
+        )
     assert _original_source_matches_selection(source, record, decision) is (damage is None)
 
 
-@pytest.mark.parametrize("variant", [
-    "carrier-and-marker", "marker-only", "duplicate-carrier", "logical-child",
-])
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "carrier-and-marker",
+        "marker-only",
+        "duplicate-carrier",
+        "logical-child",
+    ],
+)
 def test_accepted_effect_join_distinguishes_carrier_and_body_fingerprints(variant):
     from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
     from chiplog.composition.r14_native_recovery_cut import _accepted_source_preimages
@@ -360,8 +379,11 @@ def test_accepted_effect_join_distinguishes_carrier_and_body_fingerprints(varian
         revision=Present(head=record.record.head, fingerprint=record.record.fingerprint),
     )
     selected = RecoverySourceRecord(
-        owner="effects", schema_id=record.schema_id, subject=marker,
-        canonical_record_bytes=raw, physical_record=marker,
+        owner="effects",
+        schema_id=record.schema_id,
+        subject=marker,
+        canonical_record_bytes=raw,
+        physical_record=marker,
         selected_decision=CallSubjectHead(
             subject_id="decision", revision=Present(head="decision", fingerprint="d" * 64)
         ),
@@ -370,23 +392,28 @@ def test_accepted_effect_join_distinguishes_carrier_and_body_fingerprints(varian
         subject_id=record.record.head,
         revision=Present(head="record:" + digest, fingerprint=digest),
     )
-    carrier = selected.model_copy(update={
-        "subject": marker.model_copy(update={
-            "revision": marker.revision.model_copy(update={"fingerprint": digest})
-        }), "physical_record": physical,
-    })
+    carrier = selected.model_copy(
+        update={
+            "subject": marker.model_copy(
+                update={"revision": marker.revision.model_copy(update={"fingerprint": digest})}
+            ),
+            "physical_record": physical,
+        }
+    )
     body_alias = selected.model_copy(update={"physical_record": physical})
     assert carrier.subject != body_alias.subject
     if variant == "logical-child":
-        child = selected.model_copy(update={
-            "subject": marker.model_copy(update={"subject_id": "nested-evidence"})
-        })
+        child = selected.model_copy(
+            update={"subject": marker.model_copy(update={"subject_id": "nested-evidence"})}
+        )
         retained_child = child.model_copy(update={"physical_record": physical})
-        wrong_child = retained_child.model_copy(update={
-            "subject": retained_child.subject.model_copy(update={
-                "revision": marker.revision.model_copy(update={"fingerprint": digest})
-            })
-        })
+        wrong_child = retained_child.model_copy(
+            update={
+                "subject": retained_child.subject.model_copy(
+                    update={"revision": marker.revision.model_copy(update={"fingerprint": digest})}
+                )
+            }
+        )
         assert _accepted_source_preimages((child,), (retained_child, wrong_child)) == (
             retained_child,
         )
@@ -410,13 +437,18 @@ def test_original_terminal_aliases_share_one_exact_selected_decision(conflict):
     original = request().cut.call_terminal
     physical = original.physical_record
     record = SimpleNamespace(
-        record_id=physical.subject_id, owner=original.owner,
-        schema_id=original.schema_id, canonical_bytes=original.canonical_record_bytes,
+        record_id=physical.subject_id,
+        owner=original.owner,
+        schema_id=original.schema_id,
+        canonical_bytes=original.canonical_record_bytes,
     )
     generic_decision = original.selected_decision.model_copy(update={"subject_id": "command-id"})
-    raw = original.model_copy(update={
-        "subject": physical, "selected_decision": generic_decision,
-    })
+    raw = original.model_copy(
+        update={
+            "subject": physical,
+            "selected_decision": generic_decision,
+        }
+    )
     cut = SimpleNamespace(complete_sources=(raw, original))
     with pytest.raises(RecoveryHold, match="missing or duplicate accepted-recovery source"):
         _source_for_revision(cut, original.subject.revision, original.schema_id)
@@ -522,12 +554,10 @@ def _v3_route_cut(acceptance_type, disposition_type, *, closures=(), reductions=
     )
 
 
-def test_v3_readback_routes_only_complete_direct_or_accepted_open_cuts():
+def test_v3_readback_routes_only_complete_direct_or_accepted_open_cuts() -> None:
     proof = (object(),)
     assert (
-        _v3_accepted_cut_route(
-            _v3_route_cut(ConsequentialAcceptedCall, SuccessResult)
-        )
+        _v3_accepted_cut_route(_v3_route_cut(ConsequentialAcceptedCall, SuccessResult))
         == "direct-terminal"
     )
     assert (
@@ -542,15 +572,11 @@ def test_v3_readback_routes_only_complete_direct_or_accepted_open_cuts():
         == "accepted-open"
     )
     assert (
-        _v3_accepted_cut_route(
-            _v3_route_cut(InitializedCall, CancelledBeforeAcceptResult)
-        )
+        _v3_accepted_cut_route(_v3_route_cut(InitializedCall, CancelledBeforeAcceptResult))
         == "legacy-cancellation"
     )
     assert (
-        _v3_accepted_cut_route(
-            _v3_route_cut(ConsequentialAcceptedCall, RecoveryRequiredResult)
-        )
+        _v3_accepted_cut_route(_v3_route_cut(ConsequentialAcceptedCall, RecoveryRequiredResult))
         is None
     )
     assert (
@@ -573,12 +599,7 @@ def test_v3_readback_routes_only_complete_direct_or_accepted_open_cuts():
         )
         is None
     )
-    assert (
-        _v3_accepted_cut_route(
-            _v3_route_cut(ConsequentialAcceptedCall, UnknownResult)
-        )
-        is None
-    )
+    assert _v3_accepted_cut_route(_v3_route_cut(ConsequentialAcceptedCall, UnknownResult)) is None
 
 
 @pytest.mark.parametrize(
@@ -652,7 +673,7 @@ def test_original_source_decision_alias_rejects_substitutions(damage):
     assert not _selected_decision_matches_source(source, selected)
 
 
-def test_original_resolver_anchor_producer_joins_selected_command_decision():
+def test_original_resolver_anchor_producer_joins_selected_command_decision() -> None:
     from chiplog.composition.r14_loop_semantic_reduction_publication import _selected_anchor_sources
     from chiplog.composition.r14_original_call_resolution_publication import command
     from tests.composition.test_r14_original_call_resolution_publication import publication_evidence
@@ -673,7 +694,7 @@ def test_original_resolver_anchor_producer_joins_selected_command_decision():
         assert _selected_decision_matches_source(source, selected)
 
 
-def test_r16_effect_source_joins_selected_decision_by_exact_head():
+def test_r16_effect_source_joins_selected_decision_by_exact_head() -> None:
     journal_decision = CallSubjectHead(
         subject_id="dispatch-command",
         revision=Present(head="owner-decision", fingerprint="a" * 64),
@@ -713,7 +734,7 @@ def test_r16_effect_source_joins_selected_decision_by_exact_head():
     )
 
 
-def test_external_intent_preimage_binds_nested_bytes_to_selected_dispatch_carrier():
+def test_external_intent_preimage_binds_nested_bytes_to_selected_dispatch_carrier() -> None:
     dispatch = original_send()
     raw = dispatch.canonical_bytes()
     physical = CallSubjectHead(
@@ -779,24 +800,26 @@ def test_external_intent_preimage_binds_nested_bytes_to_selected_dispatch_carrie
     wrong_reference = reference.model_copy(
         update={"revision": Present(head=reference.revision.head, fingerprint="b" * 64)}
     )
-    assert _selected_external_intent_preimage(
-        wrong_reference, dispatch, (carrier,), (member,)
-    ) is None
-    assert _selected_external_intent_preimage(
-        reference,
-        dispatch,
-        (carrier.model_copy(update={"canonical_record_bytes": b"{}"}),),
-        (member,),
-    ) is None
+    assert (
+        _selected_external_intent_preimage(wrong_reference, dispatch, (carrier,), (member,)) is None
+    )
+    assert (
+        _selected_external_intent_preimage(
+            reference,
+            dispatch,
+            (carrier.model_copy(update={"canonical_record_bytes": b"{}"}),),
+            (member,),
+        )
+        is None
+    )
     altered_intent = original_intent(members=("different-child",))
     altered_dispatch = dispatch.model_copy(
-        update={
-            "snapshot": dispatch.snapshot.model_copy(update={"intent": altered_intent})
-        }
+        update={"snapshot": dispatch.snapshot.model_copy(update={"intent": altered_intent})}
     )
-    assert _selected_external_intent_preimage(
-        reference, altered_dispatch, (carrier,), (member,)
-    ) is None
+    assert (
+        _selected_external_intent_preimage(reference, altered_dispatch, (carrier,), (member,))
+        is None
+    )
     assert not _external_intent_matches_dispatch_carrier(
         source.model_copy(update={"canonical_record_bytes": b"different intent"}), row
     )
@@ -827,9 +850,10 @@ def test_external_intent_preimage_binds_nested_bytes_to_selected_dispatch_carrie
             )
         }
     )
-    assert _selected_external_intent_preimage(
-        reference, dispatch, (substituted_carrier,), (member,)
-    ) is None
+    assert (
+        _selected_external_intent_preimage(reference, dispatch, (substituted_carrier,), (member,))
+        is None
+    )
     substituted_member = member.model_copy(
         update={
             "selected_decision": member.selected_decision.model_copy(
@@ -837,12 +861,13 @@ def test_external_intent_preimage_binds_nested_bytes_to_selected_dispatch_carrie
             )
         }
     )
-    assert _selected_external_intent_preimage(
-        reference, dispatch, (carrier,), (substituted_member,)
-    ) is None
+    assert (
+        _selected_external_intent_preimage(reference, dispatch, (carrier,), (substituted_member,))
+        is None
+    )
 
 
-def test_r17_scope_children_are_exactly_bound_to_authenticated_trust_carrier():
+def test_r17_scope_children_are_exactly_bound_to_authenticated_trust_carrier() -> None:
     from chiplog.composition.r14_native_recovery_cut import _ref
 
     scope_bytes = b"authenticated scope"
@@ -872,9 +897,7 @@ def test_r17_scope_children_are_exactly_bound_to_authenticated_trust_carrier():
         selected_admission_bytes=admission_bytes,
         selected_admission_ref=admission_ref,
         recipient=recipient,
-        disclosure_policy=SimpleNamespace(
-            canonical_source_bytes=policy_bytes, ref=policy_ref
-        ),
+        disclosure_policy=SimpleNamespace(canonical_source_bytes=policy_bytes, ref=policy_ref),
     )
     scope_source = RecoverySourceRecord(
         owner="deployment_trust",
@@ -896,8 +919,7 @@ def test_r17_scope_children_are_exactly_bound_to_authenticated_trust_carrier():
         RecoverySourceRecord(
             owner="deployment_trust",
             subject=_ref(
-                "native-recipient:"
-                + hashlib.sha256(recipient_bytes).hexdigest(),
+                "native-recipient:" + hashlib.sha256(recipient_bytes).hexdigest(),
                 recipient_bytes,
             ),
             schema_id="chiplog.native-recovery.recipient.v1",
@@ -908,8 +930,7 @@ def test_r17_scope_children_are_exactly_bound_to_authenticated_trust_carrier():
         RecoverySourceRecord(
             owner="deployment_trust",
             subject=_ref(
-                "native-context-policy:"
-                + hashlib.sha256(policy_bytes).hexdigest(),
+                "native-context-policy:" + hashlib.sha256(policy_bytes).hexdigest(),
                 policy_bytes,
                 policy_revision.head,
             ),
@@ -939,7 +960,7 @@ def test_r17_scope_children_are_exactly_bound_to_authenticated_trust_carrier():
         "chiplog.loop.semantic-reducer-policy.v1",
     ),
 )
-def test_direct_selector_holds_rival_r14_schema_under_foreign_operation(schema_id: str):
+def test_direct_selector_holds_rival_r14_schema_under_foreign_operation(schema_id: str) -> None:
     raw = json.dumps({"kind": "DECIDED"}).encode()
     command = SimpleNamespace(
         operation_kind="custom.foreign-operation.v1",
@@ -987,7 +1008,7 @@ def test_direct_selector_holds_rival_r14_schema_under_foreign_operation(schema_i
 )
 def test_direct_selector_routes_selected_recovery_operations_to_recovery_path(
     operation: str, schema_id: str
-):
+) -> None:
     raw = json.dumps({"kind": "DECIDED"}).encode()
     command = SimpleNamespace(
         operation_kind=operation,
@@ -1004,7 +1025,7 @@ def test_direct_selector_routes_selected_recovery_operations_to_recovery_path(
     assert selected is None
 
 
-def test_direct_selector_holds_recovery_route_competing_with_direct_terminal_marker():
+def test_direct_selector_holds_recovery_route_competing_with_direct_terminal_marker() -> None:
     recovery_raw = json.dumps({"kind": "DECIDED", "route": "recovery"}).encode()
     terminal_raw = json.dumps(
         {
@@ -1017,9 +1038,7 @@ def test_direct_selector_holds_recovery_route_competing_with_direct_terminal_mar
         "recovery": SimpleNamespace(
             operation_kind="agent_loop.original-resolver-authority-policy.v1",
             records=(
-                SimpleNamespace(
-                    schema_id="chiplog.loop.original-resolver-authority-policy.v1"
-                ),
+                SimpleNamespace(schema_id="chiplog.loop.original-resolver-authority-policy.v1"),
             ),
         ),
         "terminal": SimpleNamespace(
@@ -1045,15 +1064,11 @@ def test_direct_selector_holds_recovery_route_competing_with_direct_terminal_mar
     assert selected is None
 
 
-def test_direct_selector_holds_terminal_marker_embedded_in_recovery_operation():
-    raw = json.dumps(
-        {"kind": "DECIDED", "accepted_direct_terminal_evidence": "retained"}
-    ).encode()
+def test_direct_selector_holds_terminal_marker_embedded_in_recovery_operation() -> None:
+    raw = json.dumps({"kind": "DECIDED", "accepted_direct_terminal_evidence": "retained"}).encode()
     command = SimpleNamespace(
         operation_kind="agent_loop.original-resolver-authority-policy.v1",
-        records=(
-            SimpleNamespace(schema_id="chiplog.loop.original-resolver-authority-policy.v1"),
-        ),
+        records=(SimpleNamespace(schema_id="chiplog.loop.original-resolver-authority-policy.v1"),),
     )
     log = SimpleNamespace(entries=lambda: (("decision", "unused", raw),))
     runtime = SimpleNamespace(_loop_decisions=lambda: log, _publication=lambda entry: command)
@@ -1066,7 +1081,7 @@ def test_direct_selector_holds_terminal_marker_embedded_in_recovery_operation():
     assert selected is None
 
 
-def test_direct_selector_holds_retained_rival_marker_under_foreign_operation():
+def test_direct_selector_holds_retained_rival_marker_under_foreign_operation() -> None:
     raw = json.dumps({"kind": "DECIDED", "original_call_resolution_evidence": "retained"}).encode()
     command = SimpleNamespace(operation_kind="custom.foreign-operation.v1", records=())
     log = SimpleNamespace(entries=lambda: (("decision", "unused", raw),))
@@ -1114,7 +1129,9 @@ def test_direct_selector_forwards_exact_authenticated_history_from_subset(monkey
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bound", (True, False))
-async def test_selected_native_cut_reopens_and_legacy_prepare_holds(tmp_path: Path, bound: bool):
+async def test_selected_native_cut_reopens_and_legacy_prepare_holds(
+    tmp_path: Path, bound: bool
+) -> None:
     database = tmp_path / "native-cut.sqlite"
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "custody"
@@ -1163,9 +1180,7 @@ async def test_selected_native_cut_reopens_and_legacy_prepare_holds(tmp_path: Pa
             frontier_value = omitted_family_frontier.model_dump(mode="json")
             del frontier_value["fingerprint"]
             omitted_family_frontier = omitted_family_frontier.model_copy(
-                update={
-                    "fingerprint": native_recovery_fingerprint("frontier", frontier_value)
-                }
+                update={"fingerprint": native_recovery_fingerprint("frontier", frontier_value)}
             )
             omitted_family_cut = cut.model_copy(update={"frontier": omitted_family_frontier})
             cut_value = omitted_family_cut.model_dump(mode="json")
@@ -1232,6 +1247,7 @@ async def test_selected_native_cut_reopens_and_legacy_prepare_holds(tmp_path: Pa
     ) as runtime:
         assert source.collect(runtime) == cut
         if bound:
+            assert cut is not None
             with runtime._authority_gate().hold():
                 candidate, inert_entry = inert_recovery_candidate(runtime, cut)
                 assert not source.authenticate_selected_held(runtime, candidate, inert_entry)

@@ -1,5 +1,9 @@
 """Actual selected native cancellation builders shared by recovery readers."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.execution_contracts import (
     ConsequentialToolCall,
@@ -7,10 +11,14 @@ from chiplog.capabilities.agent_loop.execution_contracts import (
     SelfEffectArguments,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.composition.common_execution_driver_contracts import SelectedExecutionReceiptV1
 from chiplog.composition.r14_cancellation_contracts import CancelCallSubmission
 from chiplog.composition.r14_execution_fanout_records import reference
 from chiplog.composition.r14_loop_history import read_execution_recovery_history
 from tests.support.h1_cli_execution import admit_runtime_slot
+
+if TYPE_CHECKING:
+    from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 
 
 def native_response() -> bytes:
@@ -26,9 +34,12 @@ def native_response() -> bytes:
     ).canonical_bytes()
 
 
-async def selected_native_cancelled(runtime, *, bound=True):
+async def selected_native_cancelled(
+    runtime: CommonCliExecutionRuntime, *, bound: bool = True
+) -> None:
     wire = await admit_runtime_slot(runtime, "native-recovery")
     receipt = await runtime.drive_input(wire)
+    assert isinstance(receipt, SelectedExecutionReceiptV1)
     started = await runtime.begin_execution(
         "hermetic-ingress", receipt.stable_run_lineage_id, receipt.selected_run_head.head
     )

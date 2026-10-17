@@ -1,13 +1,19 @@
 """A valid inert recovery candidate with an independently predicted SQL delta."""
 
+from __future__ import annotations
+
 import base64
 import sqlite3
 from contextlib import closing
+from typing import TYPE_CHECKING
 
 from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+    PreparedExecutionAccounting,
+    PreparedExecutionContinuation,
     PrepareExecutionAccounting,
     PrepareExecutionContinuation,
 )
+from chiplog.capabilities.agent_loop.execution_recovery_observations import ExecutionRecoveryCut
 from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
     prepare_execution_accounting,
     prepare_execution_continuation,
@@ -25,15 +31,22 @@ from chiplog.platform.authority_reads import capture_authority_snapshot_commitme
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 from chiplog.platform.workspace_snapshot import read_connection
 
+if TYPE_CHECKING:
+    from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 
-def inert_recovery_candidate(runtime, cut):
+
+def inert_recovery_candidate(
+    runtime: CommonCliExecutionRuntime, cut: ExecutionRecoveryCut
+) -> tuple[RetainedRecoveryPublication, dict[str, object]]:
     identity = "execution-accounting-readiness:" + cut.digest()
     a = PrepareExecutionAccounting(command_id=identity, cut=cut)
     ar = prepare_execution_accounting(a)
+    assert isinstance(ar, PreparedExecutionAccounting)
     c = PrepareExecutionContinuation(
         command_id=identity, cut=cut, complete_accounting=ar.complete_accounting
     )
     cr = prepare_execution_continuation(c)
+    assert isinstance(cr, PreparedExecutionContinuation)
     callee = runtime._supervisor.runtime().session("agent_loop")
     caller = BrokerSession(
         tenant_id=cut.tenant_id,
@@ -43,7 +56,11 @@ def inert_recovery_candidate(runtime, cut):
         session_id="broker:" + callee.generation_id,
     )
 
-    def exchange(request, result, operation):
+    def exchange(
+        request: PrepareExecutionAccounting | PrepareExecutionContinuation,
+        result: PreparedExecutionAccounting | PreparedExecutionContinuation,
+        operation: str,
+    ) -> tuple[PublicPortCall, PublicPortSuccess]:
         sent = PublicPortCall(
             operation_id=operation,
             request_id="inert:" + operation,
@@ -109,7 +126,7 @@ def inert_recovery_candidate(runtime, cut):
             "UPDATE tenant_heads SET head=? WHERE tenant_id=?", (sequence, cut.tenant_id)
         )
         resulting = capture_authority_snapshot_commitment(predicted, cut.tenant_id)
-    entry = dict(
+    entry: dict[str, object] = dict(
         version=1,
         kind="DECIDED",
         operation_id=identity,
