@@ -13,7 +13,7 @@ from chiplog.verification.authority_sql_corpus import (
     inspect_sources,
 )
 
-SOURCE = '''import sqlite3 as db
+SOURCE = """import sqlite3 as db
 from sqlite3 import connect as open_db
 from chiplog.composition.r7_planning import _open_runtime as shared_open
 
@@ -28,7 +28,7 @@ def query(database):
 
 async def open_example(database):
     return shared_open(database, runtime_type=Runtime, manifest=MANIFEST)
-'''
+"""
 
 
 def _inspect(source=SOURCE):
@@ -51,8 +51,10 @@ def test_renamed_import_bound_alias_reflection_and_callback_remain_in_accounting
 
 
 def test_blank_lines_preserve_identity_and_identical_calls_remain_distinct():
-    source = ('def read(connection):\n    connection.execute("SELECT 1")\n'
-              '    connection.execute("SELECT 1")\n')
+    source = (
+        'def read(connection):\n    connection.execute("SELECT 1")\n'
+        '    connection.execute("SELECT 1")\n'
+    )
     original = _inspect(source)
     spaced = _inspect("\n\n" + source.replace("    connection", "\n    connection"))
     original.require_exact_inventory(spaced)
@@ -69,32 +71,37 @@ def test_blank_lines_preserve_identity_and_identical_calls_remain_distinct():
 def test_bidirectional_accounting_rejects_added_removed_or_rebound_source(change):
     original = _inspect()
     if change == "add_mount":
-        changed = SOURCE + ('\nasync def open_other(database):\n'
-                            '    return shared_open(database, runtime_type=Runtime, '
-                            'manifest=OTHER)\n')
+        changed = SOURCE + (
+            "\nasync def open_other(database):\n"
+            "    return shared_open(database, runtime_type=Runtime, "
+            "manifest=OTHER)\n"
+        )
     elif change == "remove_mount":
-        changed = SOURCE[:SOURCE.index("async def open_example")]
+        changed = SOURCE[: SOURCE.index("async def open_example")]
     elif change == "remove_site":
         changed = SOURCE.replace('    later("SELECT tenant_id FROM tenant_heads")\n', "")
     else:
-        changed = SOURCE.replace("execute_query = connection.execute",
-                                 "execute_query = other.execute")
+        changed = SOURCE.replace(
+            "execute_query = connection.execute", "execute_query = other.execute"
+        )
     with pytest.raises(CorpusInventoryChanged):
         _inspect(changed).require_exact_inventory(original)
 
 
 def test_nested_scopes_and_unknown_dynamic_call_targets_are_retained_without_imports():
-    source = '''raise RuntimeError("must never execute source")
+    source = """raise RuntimeError("must never execute source")
 def outer(connection):
     def inner():
         return getattr(connection, operation)(payload)
     return inner()
-'''
+"""
     corpus = _inspect(source)
-    assert any(node.qualname == "outer.inner" and node.kind == "dynamic_call"
-               for node in corpus.nodes)
-    assert any(node.expression == "RuntimeError('must never execute source')"
-               for node in corpus.nodes)
+    assert any(
+        node.qualname == "outer.inner" and node.kind == "dynamic_call" for node in corpus.nodes
+    )
+    assert any(
+        node.expression == "RuntimeError('must never execute source')" for node in corpus.nodes
+    )
 
 
 def test_duplicate_source_names_and_empty_source_tree_refuse():
@@ -113,19 +120,25 @@ def test_current_tree_accounts_every_call_and_remains_unresolved():
     root = Path(__file__).resolve().parents[2]
     corpus = current_sql_corpus(root)
     # Independent AST count includes unknown callees, not just terminal SQL names.
-    calls = sum(isinstance(node, ast.Call)
-                for path in (root / "src").rglob("*.py")
-                for node in ast.walk(ast.parse(path.read_bytes())))
-    assert sum(node.kind.endswith("call") or node.kind.endswith("call_candidate")
-               for node in corpus.nodes) == calls
+    calls = sum(
+        isinstance(node, ast.Call)
+        for path in (root / "src").rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_bytes()))
+    )
+    assert (
+        sum(
+            node.kind.endswith("call") or node.kind.endswith("call_candidate")
+            for node in corpus.nodes
+        )
+        == calls
+    )
     with pytest.raises(UnresolvedSqlCorpus):
         corpus.require_closed()
 
 
 def test_empty_file_addition_is_not_silently_absent_from_exact_inventory():
     original = _inspect()
-    changed = inspect_sources((("src/chiplog/sample.py", SOURCE),
-                               ("src/chiplog/new_empty.py", "")))
+    changed = inspect_sources((("src/chiplog/sample.py", SOURCE), ("src/chiplog/new_empty.py", "")))
     with pytest.raises(CorpusInventoryChanged):
         changed.require_exact_inventory(original)
 

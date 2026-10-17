@@ -15,29 +15,53 @@ from chiplog.verification.sqlite_preparation import (
 )
 
 SOURCE = Path(__file__).resolve().parents[2] / "src/chiplog/composition/h1_owner_inventory.py"
-TABLES = ("deletion_fences", "derivatives", "evidence_inbox", "publications", "records",
-          "store_metadata", "tenant_heads")
+TABLES = (
+    "deletion_fences",
+    "derivatives",
+    "evidence_inbox",
+    "publications",
+    "records",
+    "store_metadata",
+    "tenant_heads",
+)
 OBJECTS = tuple(("table", name) for name in TABLES) + tuple(
     ("index", "sqlite_autoindex_" + name + "_1") for name in TABLES if name != "store_metadata"
 )
 COLUMNS = (
-    ("publications", ("operation_kind", "idempotency_key", "request_fingerprint",
-                      "commit_sequence", "record_ids", "tenant_id")),
-    ("records", ("record_id", "owner", "schema_id", "canonical_bytes", "commit_sequence",
-                 "tenant_id")),
+    (
+        "publications",
+        (
+            "operation_kind",
+            "idempotency_key",
+            "request_fingerprint",
+            "commit_sequence",
+            "record_ids",
+            "tenant_id",
+        ),
+    ),
+    (
+        "records",
+        ("record_id", "owner", "schema_id", "canonical_bytes", "commit_sequence", "tenant_id"),
+    ),
 )
 
 
 def _expected(index):
     table, columns = COLUMNS[index]
-    return tuple(sorted([("SELECT", None, None, None, None), *(
-        ("READ", table, column, "main", None) for column in columns
-    )]))
+    return tuple(
+        sorted(
+            [
+                ("SELECT", None, None, None, None),
+                *(("READ", table, column, "main", None) for column in columns),
+            ]
+        )
+    )
 
 
 def _prepare(sql):
-    return observe_statement(sql, registered_schema_sql=SCHEMA_SQL,
-                             registered_objects=OBJECTS, foreign_keys=True)
+    return observe_statement(
+        sql, registered_schema_sql=SCHEMA_SQL, registered_objects=OBJECTS, foreign_keys=True
+    )
 
 
 def _replace(source, old, new):
@@ -49,7 +73,8 @@ def test_actual_both_sites_keep_two_correlated_branches_and_independent_actions(
     source = SOURCE.read_text()
     families = extract_h1_cutoff_sql(source)
     assert [(family.site, family.receiver) for family in families] == [
-        (2, "connection"), (3, "connection"),
+        (2, "connection"),
+        (3, "connection"),
     ]
     for index, family in enumerate(families):
         assert family.parameters == (("scope.tenant",), ("scope.tenant", "boundary"))
@@ -63,10 +88,12 @@ def test_actual_both_sites_keep_two_correlated_branches_and_independent_actions(
 
 
 def test_actual_predicate_mutation_reaches_engine_before_graph_refusal():
-    source = _replace(SOURCE.read_text(),
+    source = _replace(
+        SOURCE.read_text(),
         '+ " ORDER BY commit_sequence,operation_kind,idempotency_key"',
         '+ " AND EXISTS (SELECT 1 FROM deletion_fences WHERE frontier>=0)"'
-        ' + " ORDER BY commit_sequence,operation_kind,idempotency_key"')
+        ' + " ORDER BY commit_sequence,operation_kind,idempotency_key"',
+    )
     family, _ = extract_h1_cutoff_sql(source)
     for sql in family.sql:
         observed = _prepare(sql)
@@ -75,32 +102,57 @@ def test_actual_predicate_mutation_reaches_engine_before_graph_refusal():
             verify_sql_actions(observed.actions, _expected(0))
 
 
-@pytest.mark.parametrize("old,new", (
-    ('(scope.tenant,) if boundary is None else (scope.tenant, boundary)',
-     '(scope.tenant,) if boundary is not None else (scope.tenant, boundary)'),
-    ('else (scope.tenant, boundary)', 'else (scope.tenant, other)'),
-    ('limit = "" if boundary is None else " AND commit_sequence <= ?"',
-     'limit = "" if boundary is None else " AND commit_sequence >= ?"'),
-    ('params: tuple[object, ...] = (',
-     'boundary = None\n                params: tuple[object, ...] = ('),
-    ('publications = tuple(\n                    connection.execute(',
-     'boundary = None\n                publications = tuple(\n'
-     '                    connection.execute('),
-    ('publications = tuple(\n                    connection.execute(',
-     'limit = ""\n                publications = tuple(\n                    connection.execute('),
-    ('+ limit\n                        '
-     '+ " ORDER BY commit_sequence,operation_kind,idempotency_key"',
-     '+ ""\n                        + " ORDER BY commit_sequence,operation_kind,idempotency_key"'),
-    ('+ limit\n                        '
-     '+ " ORDER BY commit_sequence,operation_kind,idempotency_key"',
-     '+ opaque(limit)\n                        '
-     '+ " ORDER BY commit_sequence,operation_kind,idempotency_key"'),
-    ('"WHERE tenant_id=?" + limit + " ORDER BY commit_sequence,record_id"',
-     '"WHERE tenant_id=?" + limit + " ORDER BY commit_sequence,record_id" + limit'),
-    ('limit = "" if boundary is None else " AND commit_sequence <= ?"',
-     'if flag:\n                    '
-     'limit = "" if boundary is None else " AND commit_sequence <= ?"'),
-))
+@pytest.mark.parametrize(
+    "old,new",
+    (
+        (
+            "(scope.tenant,) if boundary is None else (scope.tenant, boundary)",
+            "(scope.tenant,) if boundary is not None else (scope.tenant, boundary)",
+        ),
+        ("else (scope.tenant, boundary)", "else (scope.tenant, other)"),
+        (
+            'limit = "" if boundary is None else " AND commit_sequence <= ?"',
+            'limit = "" if boundary is None else " AND commit_sequence >= ?"',
+        ),
+        (
+            "params: tuple[object, ...] = (",
+            "boundary = None\n                params: tuple[object, ...] = (",
+        ),
+        (
+            "publications = tuple(\n                    connection.execute(",
+            "boundary = None\n                publications = tuple(\n"
+            "                    connection.execute(",
+        ),
+        (
+            "publications = tuple(\n                    connection.execute(",
+            'limit = ""\n                publications '
+            "= tuple(\n                    connection."
+            "execute(",
+        ),
+        (
+            "+ limit\n                        "
+            '+ " ORDER BY commit_sequence,operation_kind,idempotency_key"',
+            '+ ""\n                        + " ORDER B'
+            "Y commit_sequence,operation_kind,idempot"
+            'ency_key"',
+        ),
+        (
+            "+ limit\n                        "
+            '+ " ORDER BY commit_sequence,operation_kind,idempotency_key"',
+            "+ opaque(limit)\n                        "
+            '+ " ORDER BY commit_sequence,operation_kind,idempotency_key"',
+        ),
+        (
+            '"WHERE tenant_id=?" + limit + " ORDER BY commit_sequence,record_id"',
+            '"WHERE tenant_id=?" + limit + " ORDER BY commit_sequence,record_id" + limit',
+        ),
+        (
+            'limit = "" if boundary is None else " AND commit_sequence <= ?"',
+            "if flag:\n                    "
+            'limit = "" if boundary is None else " AND commit_sequence <= ?"',
+        ),
+    ),
+)
 def test_actual_unknown_relation_or_missing_family_refuses(old, new):
     with pytest.raises(UnknownCutoffSql):
         extract_h1_cutoff_sql(_replace(SOURCE.read_text(), old, new))
@@ -108,12 +160,22 @@ def test_actual_unknown_relation_or_missing_family_refuses(old, new):
 
 def test_nested_consumer_frame_refuses_with_cutoff_error():
     tree = ast.parse(SOURCE.read_text())
-    method, = [node for node in tree.body if isinstance(node, ast.FunctionDef)
-               and node.name == "read_h1_scoped_owner_inventory"]
-    calls = [node for node in ast.walk(method) if isinstance(node, ast.Call)
-             and isinstance(node.func, ast.Attribute) and node.func.attr == "execute"
-             and node.args and any(isinstance(part, ast.Name) and part.id == "limit"
-                                   for part in ast.walk(node.args[0]))]
+    (method,) = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "read_h1_scoped_owner_inventory"
+    ]
+    calls = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "execute"
+        and node.args
+        and any(
+            isinstance(part, ast.Name) and part.id == "limit" for part in ast.walk(node.args[0])
+        )
+    ]
     target = min(calls, key=lambda node: node.lineno)
 
     class Wrap(ast.NodeTransformer):
@@ -130,8 +192,10 @@ def test_nested_consumer_frame_refuses_with_cutoff_error():
 
 
 def test_global_boundary_is_not_local_correlation_proof():
-    source = _replace(SOURCE.read_text(),
-        '        boundary: int | None = None',
-        '        global boundary\n        boundary = None')
+    source = _replace(
+        SOURCE.read_text(),
+        "        boundary: int | None = None",
+        "        global boundary\n        boundary = None",
+    )
     with pytest.raises(UnknownCutoffSql):
         extract_h1_cutoff_sql(source)

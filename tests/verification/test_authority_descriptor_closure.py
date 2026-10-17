@@ -27,16 +27,25 @@ PATHS = (
     "src/chiplog/platform/read_ledger.py",
 )
 CALL_KINDS = {
-    "sql_call_candidate", "factory_or_wrapper_call_candidate", "mount_call_candidate",
-    "reflection_call", "dynamic_call", "other_call", "callable_reference_candidate",
+    "sql_call_candidate",
+    "factory_or_wrapper_call_candidate",
+    "mount_call_candidate",
+    "reflection_call",
+    "dynamic_call",
+    "other_call",
+    "callable_reference_candidate",
 }
 
 
-def _anchor_mutation(actual: AuthorityDescriptorInspection, old: str,
-                     new: str) -> tuple[tuple[str, str], ...]:
+def _anchor_mutation(
+    actual: AuthorityDescriptorInspection, old: str, new: str
+) -> tuple[tuple[str, str], ...]:
     """Change one real selected origin, leaving the complete corpus in place."""
-    path = ("src/chiplog/composition/r7_planning.py" if "AuthorityCommitmentJournal(" in old
-            else "src/chiplog/platform/authority_reads.py")
+    path = (
+        "src/chiplog/composition/r7_planning.py"
+        if "AuthorityCommitmentJournal(" in old
+        else "src/chiplog/platform/authority_reads.py"
+    )
     text = dict(actual.sources)[path]
     assert text.count(old) == 1
     changed = text.replace(old, new)
@@ -53,16 +62,29 @@ def test_base_read_authority_graph_contains_protected_anchor_to_release_chain(
     chain = chains[0]
     assert chain.domain == "protected_commitment_anchor"
     assert tuple(stage.role for stage in chain.stages) == (
-        "ANCHOR_ORIGIN", "RUNTIME_FORWARD", "ANCHOR_LOAD", "DESCRIPTOR_OPEN",
-        "DESCRIPTOR_STREAM", "IDENTITY_BEFORE", "ANCHOR_BYTES", "IDENTITY_AFTER",
-        "ENVELOPE", "AUTHENTICATION", "TENANT_BINDING", "ANCHOR_COMPARISON",
-        "STATE_PUBLICATION", "STATE_CONSUMPTION", "SNAPSHOT_COMPARISON",
-        "PLANNING_READ", "RESULT_RELEASE", "RESULT_DEQUEUE",
+        "ANCHOR_ORIGIN",
+        "RUNTIME_FORWARD",
+        "ANCHOR_LOAD",
+        "DESCRIPTOR_OPEN",
+        "DESCRIPTOR_STREAM",
+        "IDENTITY_BEFORE",
+        "ANCHOR_BYTES",
+        "IDENTITY_AFTER",
+        "ENVELOPE",
+        "AUTHENTICATION",
+        "TENANT_BINDING",
+        "ANCHOR_COMPARISON",
+        "STATE_PUBLICATION",
+        "STATE_CONSUMPTION",
+        "SNAPSHOT_COMPARISON",
+        "PLANNING_READ",
+        "RESULT_RELEASE",
+        "RESULT_DEQUEUE",
     )
     assert chain.ledger_chains == actual.fragment.ledger_chains
     assert chain.scanner_chains == actual.fragment.scanner_chains
     assert chain.runtime_preparation_chains == actual.fragment.runtime_preparation_chains
-    preparation, = [row for row in actual.calls if row.role == "RUNTIME_PREPARATION_SQL"]
+    (preparation,) = [row for row in actual.calls if row.role == "RUNTIME_PREPARATION_SQL"]
     assert preparation.site.module == "src/chiplog/platform/authority_reads.py"
     assert preparation.site.qualname == "_prepared_planning_statement"
     assert preparation.site.expression == "connection.execute('EXPLAIN ' + sql, parameters)"
@@ -78,12 +100,14 @@ def test_base_read_authority_graph_contains_protected_anchor_to_release_chain(
 def test_anchor_domain_substitution_refuses_before_graph_admission(
     actual: AuthorityDescriptorInspection,
 ) -> None:
-    changed = _anchor_mutation(actual,
+    changed = _anchor_mutation(
+        actual,
         "commitment_journal = AuthorityCommitmentJournal(\n"
         "                database, operator_secret, authority_gate=authority_gate\n",
         "commitment_journal = AuthorityCommitmentJournal(\n"
         "                database.with_suffix(database.suffix + '.reads.sqlite3'), "
-        "operator_secret, authority_gate=authority_gate\n")
+        "operator_secret, authority_gate=authority_gate\n",
+    )
     with pytest.raises(DescriptorClosureRefused, match="unexpected database role"):
         _from_sources(changed)
 
@@ -91,9 +115,11 @@ def test_anchor_domain_substitution_refuses_before_graph_admission(
 def test_anchor_selected_file_domain_substitution_refuses(
     actual: AuthorityDescriptorInspection,
 ) -> None:
-    changed = _anchor_mutation(actual,
+    changed = _anchor_mutation(
+        actual,
         'self._path = database.with_suffix(database.suffix + ".r7-authority-commitment.json")',
-        'self._path = database.with_suffix(database.suffix + ".reads.sqlite3")')
+        'self._path = database.with_suffix(database.suffix + ".reads.sqlite3")',
+    )
     with pytest.raises(DescriptorClosureRefused, match=r"anchor.*path|anchor.*domain"):
         _from_sources(changed)
 
@@ -101,28 +127,43 @@ def test_anchor_selected_file_domain_substitution_refuses(
 def test_anchor_handle_escape_refuses_before_graph_admission(
     actual: AuthorityDescriptorInspection,
 ) -> None:
-    changed = _anchor_mutation(actual,
+    changed = _anchor_mutation(
+        actual,
         'with os.fdopen(descriptor, "rb") as stream:\n',
-        'foreign(descriptor)\n        with os.fdopen(descriptor, "rb") as stream:\n')
+        'foreign(descriptor)\n        with os.fdopen(descriptor, "rb") as stream:\n',
+    )
     with pytest.raises(DescriptorClosureRefused, match=r"anchor.*descriptor|anchor.*escape"):
         _from_sources(changed)
 
 
-@pytest.mark.parametrize(("path", "old", "new"), [
-    ("src/chiplog/platform/authority_reads.py",
-     'raise RuntimeError("authority commitment journal changed before read")',
-     'raise RuntimeError("authority commitment journal changed before read") '
-     'from foreign(descriptor)'),
-    ("src/chiplog/composition/r7_planning.py",
-     'record_id = "unknown"\n',
-     'foreign(self._commitment_journal)\n            record_id = "unknown"\n'),
-    ("src/chiplog/platform/authority_reads.py",
-     'raise AuthorityReadFailure(\n'
-     '                    "full raw AMR commitment differs from authenticated state"\n'
-     '                )', 'raise foreign(self._ledger)'),
-])
+@pytest.mark.parametrize(
+    ("path", "old", "new"),
+    [
+        (
+            "src/chiplog/platform/authority_reads.py",
+            'raise RuntimeError("authority commitment journal changed before read")',
+            'raise RuntimeError("authority commitment journal changed before read") '
+            "from foreign(descriptor)",
+        ),
+        (
+            "src/chiplog/composition/r7_planning.py",
+            'record_id = "unknown"\n',
+            'foreign(self._commitment_journal)\n            record_id = "unknown"\n',
+        ),
+        (
+            "src/chiplog/platform/authority_reads.py",
+            "raise AuthorityReadFailure(\n"
+            '                    "full raw AMR commitment differs from authenticated state"\n'
+            "                )",
+            "raise foreign(self._ledger)",
+        ),
+    ],
+)
 def test_selected_anchor_carriers_cannot_escape_in_failure_paths(
-    actual: AuthorityDescriptorInspection, path: str, old: str, new: str,
+    actual: AuthorityDescriptorInspection,
+    path: str,
+    old: str,
+    new: str,
 ) -> None:
     text = dict(actual.sources)[path]
     assert text.count(old) == 1
@@ -131,19 +172,31 @@ def test_selected_anchor_carriers_cannot_escape_in_failure_paths(
         _from_sources(changed)
 
 
-@pytest.mark.parametrize(("path", "old", "new"), [
-    ("src/chiplog/platform/authority_reads.py",
-     'class AuthorityCommitmentJournal:\n',
-     'class AuthorityCommitmentJournal:\n'
-     '    def __getattribute__(self, name):\n'
-     '        return foreign(self, name)\n\n'),
-    ("src/chiplog/platform/read_ledger.py",
-     '            raise ReadLedgerConflict("authority read state is absent")\n        return state',
-     '            raise ReadLedgerConflict("authority read state is absent")\n'
-     '        return foreign()'),
-])
+@pytest.mark.parametrize(
+    ("path", "old", "new"),
+    [
+        (
+            "src/chiplog/platform/authority_reads.py",
+            "class AuthorityCommitmentJournal:\n",
+            "class AuthorityCommitmentJournal:\n"
+            "    def __getattribute__(self, name):\n"
+            "        return foreign(self, name)\n\n",
+        ),
+        (
+            "src/chiplog/platform/read_ledger.py",
+            '            raise ReadLedgerConflict("au'
+            'thority read state is absent")\n        r'
+            "eturn state",
+            '            raise ReadLedgerConflict("authority read state is absent")\n'
+            "        return foreign()",
+        ),
+    ],
+)
 def test_selected_anchor_object_model_and_persisted_state_forwarding_refuse(
-    actual: AuthorityDescriptorInspection, path: str, old: str, new: str,
+    actual: AuthorityDescriptorInspection,
+    path: str,
+    old: str,
+    new: str,
 ) -> None:
     text = dict(actual.sources)[path]
     assert text.count(old) == 1
@@ -152,76 +205,167 @@ def test_selected_anchor_object_model_and_persisted_state_forwarding_refuse(
         _from_sources(changed)
 
 
-@pytest.mark.parametrize(("path", "scope", "old", "new"), [
-    (PATHS[1], "AuthorityCommitmentJournal._load",
-     'hmac.new(self._secret, payload, hashlib.sha256)',
-     'hmac.new(b"foreign", payload, hashlib.sha256)'),
-    (PATHS[1], "AuthorityCommitmentJournal._load",
-     'not hmac.compare_digest(envelope["mac"], expected)', 'False'),
-    (PATHS[1], "AuthorityCommitmentJournal._load",
-     'value["tenant_id"] != tenant_id', 'value["tenant_id"] == tenant_id'),
-    (PATHS[1], "AuthorityCommitmentJournal._load",
-     'object_pairs_hook=self._unique_object', 'object_pairs_hook=dict'),
-    (PATHS[1], "AuthorityCommitmentJournal._load",
-     'return str(value["commitment"])', 'return str(envelope["mac"])'),
-    (PATHS[1], "AuthorityCommitmentJournal._check_descriptor",
-     'or named.st_nlink != 1', 'or named.st_nlink != 2'),
-    (PATHS[1], "AuthorityCommitmentJournal._load",
-     'raw = stream.read()', 'raw = foreign(stream)'),
-    (PATHS[1], "AuthorityCommitmentJournal.load",
-     'return self._load(tenant_id)', 'return self._load("foreign")'),
-    (PATHS[0], "R7PlanningRuntime.__init__",
-     'self._commitment_journal = commitment_journal',
-     'self._commitment_journal = read_ledger'),
-    (PATHS[0], "_open_runtime",
-     '                commitment_journal,\n', '                read_ledger,\n'),
-    (PATHS[0], "R7PlanningRuntime._locked_reconcile_read_generation",
-     'not secrets.compare_digest(authenticated_commitment, commitment)', 'False'),
-    (PATHS[0], "R7PlanningRuntime._locked_reconcile_read_generation",
-     'materialization_commitment=authenticated_commitment',
-     'materialization_commitment=commitment'),
-    (PATHS[0], "R7PlanningRuntime._locked_reconcile_read_generation",
-     'if populated:', 'if False:'),
-    (PATHS[0], "R7PlanningRuntime._locked_reconcile_read_generation",
-     'record_id = "unknown"',
-     'self._commitment_journal.commit(self._tenant_id, commitment)\n'
-     '            record_id = "unknown"'),
-    (PATHS[0], "R7PlanningRuntime._locked_reconcile_read_generation",
-     'record_id = "unknown"',
-     'foreign(self._read_ledger)\n            record_id = "unknown"'),
-    (PATHS[7], "BrokerReadLedger.reconcile_generation",
-     'state.canonical_bytes()', 'foreign()'),
-    (PATHS[7], "BrokerReadLedger.current_state_or_none",
-     'if state.fingerprint() != str(row[1]):', 'if False:'),
-    (PATHS[7], "BrokerReadLedger.current_state_or_none",
-     '"""Absence before first bootstrap is distinct from corrupt durable state."""',
-     'foreign(self._path)'),
-    (PATHS[7], "BrokerReadLedger.current_state_or_none",
-     '"""Absence before first bootstrap is distinct from corrupt durable state."""',
-     'self._path'),
-    (PATHS[1], "BrokerAuthorityReader.execute",
-     'observed_schema = _schema_members(connection)',
-     'observed_schema = _schema_members(connection)\n                return foreign()'),
-    (PATHS[1], "BrokerAuthorityReader.execute",
-     'observed_schema = _schema_members(connection)',
-     'observed_schema = _schema_members(connection)\n                return None'),
-    (PATHS[1], "BrokerAuthorityReader.execute",
-     'commitment != state.materialization_commitment', 'False'),
-    (PATHS[1], "BrokerAuthorityReader.execute",
-     'self._ledger.release(operation, state, proof_fingerprint, result_bytes)',
-     'self._ledger.release(operation, state, proof_fingerprint, b"foreign")'),
-    (PATHS[1], "BrokerAuthorityReader.execute",
-     'canonical_result_bytes=emitted', 'canonical_result_bytes=b"foreign"'),
-])
+@pytest.mark.parametrize(
+    ("path", "scope", "old", "new"),
+    [
+        (
+            PATHS[1],
+            "AuthorityCommitmentJournal._load",
+            "hmac.new(self._secret, payload, hashlib.sha256)",
+            'hmac.new(b"foreign", payload, hashlib.sha256)',
+        ),
+        (
+            PATHS[1],
+            "AuthorityCommitmentJournal._load",
+            'not hmac.compare_digest(envelope["mac"], expected)',
+            "False",
+        ),
+        (
+            PATHS[1],
+            "AuthorityCommitmentJournal._load",
+            'value["tenant_id"] != tenant_id',
+            'value["tenant_id"] == tenant_id',
+        ),
+        (
+            PATHS[1],
+            "AuthorityCommitmentJournal._load",
+            "object_pairs_hook=self._unique_object",
+            "object_pairs_hook=dict",
+        ),
+        (
+            PATHS[1],
+            "AuthorityCommitmentJournal._load",
+            'return str(value["commitment"])',
+            'return str(envelope["mac"])',
+        ),
+        (
+            PATHS[1],
+            "AuthorityCommitmentJournal._check_descriptor",
+            "or named.st_nlink != 1",
+            "or named.st_nlink != 2",
+        ),
+        (
+            PATHS[1],
+            "AuthorityCommitmentJournal._load",
+            "raw = stream.read()",
+            "raw = foreign(stream)",
+        ),
+        (
+            PATHS[1],
+            "AuthorityCommitmentJournal.load",
+            "return self._load(tenant_id)",
+            'return self._load("foreign")',
+        ),
+        (
+            PATHS[0],
+            "R7PlanningRuntime.__init__",
+            "self._commitment_journal = commitment_journal",
+            "self._commitment_journal = read_ledger",
+        ),
+        (
+            PATHS[0],
+            "_open_runtime",
+            "                commitment_journal,\n",
+            "                read_ledger,\n",
+        ),
+        (
+            PATHS[0],
+            "R7PlanningRuntime._locked_reconcile_read_generation",
+            "not secrets.compare_digest(authenticated_commitment, commitment)",
+            "False",
+        ),
+        (
+            PATHS[0],
+            "R7PlanningRuntime._locked_reconcile_read_generation",
+            "materialization_commitment=authenticated_commitment",
+            "materialization_commitment=commitment",
+        ),
+        (
+            PATHS[0],
+            "R7PlanningRuntime._locked_reconcile_read_generation",
+            "if populated:",
+            "if False:",
+        ),
+        (
+            PATHS[0],
+            "R7PlanningRuntime._locked_reconcile_read_generation",
+            'record_id = "unknown"',
+            "self._commitment_journal.commit(self._tenant_id, commitment)\n"
+            '            record_id = "unknown"',
+        ),
+        (
+            PATHS[0],
+            "R7PlanningRuntime._locked_reconcile_read_generation",
+            'record_id = "unknown"',
+            'foreign(self._read_ledger)\n            record_id = "unknown"',
+        ),
+        (PATHS[7], "BrokerReadLedger.reconcile_generation", "state.canonical_bytes()", "foreign()"),
+        (
+            PATHS[7],
+            "BrokerReadLedger.current_state_or_none",
+            "if state.fingerprint() != str(row[1]):",
+            "if False:",
+        ),
+        (
+            PATHS[7],
+            "BrokerReadLedger.current_state_or_none",
+            '"""Absence before first bootstrap is distinct from corrupt durable state."""',
+            "foreign(self._path)",
+        ),
+        (
+            PATHS[7],
+            "BrokerReadLedger.current_state_or_none",
+            '"""Absence before first bootstrap is distinct from corrupt durable state."""',
+            "self._path",
+        ),
+        (
+            PATHS[1],
+            "BrokerAuthorityReader.execute",
+            "observed_schema = _schema_members(connection)",
+            "observed_schema = _schema_members(connection)\n                return foreign()",
+        ),
+        (
+            PATHS[1],
+            "BrokerAuthorityReader.execute",
+            "observed_schema = _schema_members(connection)",
+            "observed_schema = _schema_members(connection)\n                return None",
+        ),
+        (
+            PATHS[1],
+            "BrokerAuthorityReader.execute",
+            "commitment != state.materialization_commitment",
+            "False",
+        ),
+        (
+            PATHS[1],
+            "BrokerAuthorityReader.execute",
+            "self._ledger.release(operation, state, proof_fingerprint, result_bytes)",
+            'self._ledger.release(operation, state, proof_fingerprint, b"foreign")',
+        ),
+        (
+            PATHS[1],
+            "BrokerAuthorityReader.execute",
+            "canonical_result_bytes=emitted",
+            'canonical_result_bytes=b"foreign"',
+        ),
+    ],
+)
 def test_anchor_security_guards_and_exact_state_edges_refuse(
-    path: str, scope: str, old: str, new: str,
+    path: str,
+    scope: str,
+    old: str,
+    new: str,
 ) -> None:
     selected = dict(sources())
     text = selected[path]
     node: ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef = ast.parse(text)
     for part in scope.split("."):
-        matches = [n for n in node.body if isinstance(n, (
-            ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == part]
+        matches = [
+            n
+            for n in node.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and n.name == part
+        ]
         assert len(matches) == 1
         node = matches[0]
     lines = text.splitlines(keepends=True)
@@ -239,7 +383,7 @@ def test_anchor_security_guards_and_exact_state_edges_refuse(
 @pytest.mark.parametrize("mutation", ["omit", "duplicate", "domain", "stage", "ledger", "sql"])
 def test_anchor_chain_cannot_certify_forged_evidence(mutation: str) -> None:
     result = _from_sources(sources())
-    chain, = result.protected_anchor_chains
+    (chain,) = result.protected_anchor_chains
     chains = result.protected_anchor_chains
     if mutation == "omit":
         chains = ()
@@ -278,7 +422,8 @@ def test_actual_tree_joins_every_call_and_mount_but_cannot_grant_admission(actua
     }
     assert any(row.disposition == "UNRESOLVED" for row in actual.calls)
     assert {row.domain for row in actual.calls if row.disposition == "CONDITIONAL_LOCAL"} >= {
-        "tenant_main", "private_memory",
+        "tenant_main",
+        "private_memory",
     }
     assert {row.site for row in actual.calls if row.role == "PLANNING_READ"} == {
         row.site for row in actual.fragment.rows
@@ -290,8 +435,7 @@ def test_actual_tree_joins_every_call_and_mount_but_cannot_grant_admission(actua
         row.sink for row in actual.fragment.scanner_chains
     }
     ledger_rows = [row for row in actual.calls if row.role == "LEDGER_SQL"]
-    assert {row.site for row in ledger_rows} == {
-        row.sink for row in actual.fragment.ledger_chains}
+    assert {row.site for row in ledger_rows} == {row.sink for row in actual.fragment.ledger_chains}
     assert len(ledger_rows) == 11
     assert {row.domain for row in ledger_rows} == {"broker_read_ledger"}
     actual.recheck_source_tree(ROOT)
@@ -299,9 +443,17 @@ def test_actual_tree_joins_every_call_and_mount_but_cannot_grant_admission(actua
         actual.require_closed()
 
 
-@pytest.mark.parametrize("mutation", [
-    "omit", "duplicate", "ghost", "domain", "promote", "fragment",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "omit",
+        "duplicate",
+        "ghost",
+        "domain",
+        "promote",
+        "fragment",
+    ],
+)
 def test_accounting_rederives_from_source_instead_of_trusting_mutually_forged_rows(mutation):
     result = _from_sources(sources())
     calls = list(result.calls)
@@ -318,11 +470,18 @@ def test_accounting_rederives_from_source_instead_of_trusting_mutually_forged_ro
     else:
         calls[index] = replace(calls[index], domain="read_ledger")
         if mutation == "fragment":
-            result = replace(result, fragment=replace(result.fragment, rows=tuple(
-                replace(row, database_domain="read_ledger")
-                if row.site == calls[index].site else row
-                for row in result.fragment.rows
-            )))
+            result = replace(
+                result,
+                fragment=replace(
+                    result.fragment,
+                    rows=tuple(
+                        replace(row, database_domain="read_ledger")
+                        if row.site == calls[index].site
+                        else row
+                        for row in result.fragment.rows
+                    ),
+                ),
+            )
     with pytest.raises(DescriptorClosureRefused):
         replace(result, calls=tuple(calls)).require_exact_accounting()
 
@@ -350,13 +509,20 @@ def test_forged_scanner_paths_and_expressions_cannot_self_certify(mutation):
         chains[0] = replace(chains[0], domain="read_ledger")
     else:
         expression = chains[0].expression
-        chains[0] = replace(chains[0], expression=replace(expression, alternatives=(
-            replace(expression.alternatives[0], sql="SELECT 1"),
-        )))
+        chains[0] = replace(
+            chains[0],
+            expression=replace(
+                expression, alternatives=(replace(expression.alternatives[0], sql="SELECT 1"),)
+            ),
+        )
     with pytest.raises(DescriptorClosureRefused):
-        replace(result, fragment=replace(
-            result.fragment, scanner_chains=tuple(chains),
-        )).require_exact_accounting()
+        replace(
+            result,
+            fragment=replace(
+                result.fragment,
+                scanner_chains=tuple(chains),
+            ),
+        ).require_exact_accounting()
 
 
 @pytest.mark.parametrize("mutation", ["omit", "ghost", "statement-label"])
@@ -366,28 +532,48 @@ def test_assembly_and_read_label_forgery_refuses(mutation):
         result = replace(result, mounts=())
     elif mutation == "ghost":
         mount = result.mounts[0]
-        result = replace(result, mounts=(replace(
-            mount, site=replace(mount.site, ordinal=99999),
-        ),))
+        result = replace(
+            result,
+            mounts=(
+                replace(
+                    mount,
+                    site=replace(mount.site, ordinal=99999),
+                ),
+            ),
+        )
     else:
         rows = result.fragment.rows
-        result = replace(result, fragment=replace(
-            result.fragment, rows=(replace(rows[0], statement=99999), *rows[1:]),
-        ))
+        result = replace(
+            result,
+            fragment=replace(
+                result.fragment,
+                rows=(replace(rows[0], statement=99999), *rows[1:]),
+            ),
+        )
     with pytest.raises(DescriptorClosureRefused):
         result.require_exact_accounting()
 
 
 def test_literal_sql_and_renamed_callable_both_remain_unresolved_without_receiver_proof():
-    result = _from_sources((*sources(), ("src/chiplog/extra.py", '''
+    result = _from_sources(
+        (
+            *sources(),
+            (
+                "src/chiplog/extra.py",
+                """
 def run(connection):
     reader = connection.execute
     reader("SELECT 1")
     foreign.execute("SELECT 2")
-''')))
+""",
+            ),
+        )
+    )
     rows = [row for row in result.calls if row.site.module == "src/chiplog/extra.py"]
     assert {row.site.kind for row in rows} == {
-        "callable_reference_candidate", "other_call", "sql_call_candidate",
+        "callable_reference_candidate",
+        "other_call",
+        "sql_call_candidate",
     }
     assert all(row.disposition == "UNRESOLVED" and row.domain is None for row in rows)
 
@@ -396,16 +582,25 @@ def run(connection):
 def test_wrong_receiver_and_new_read_dependency_refuse_before_local_classification(mutation):
     path = "src/chiplog/platform/authority_reads.py"
     original = dict(sources())[path]
-    broker, = [node for node in ast.parse(original).body
-               if isinstance(node, ast.ClassDef) and node.name == "BrokerAuthorityReader"]
+    (broker,) = [
+        node
+        for node in ast.parse(original).body
+        if isinstance(node, ast.ClassDef) and node.name == "BrokerAuthorityReader"
+    ]
     method_name = "execute" if mutation == "receiver" else "_execute_planning_read"
-    method, = [node for node in broker.body if isinstance(node, ast.FunctionDef)
-               and node.name == method_name]
+    (method,) = [
+        node
+        for node in broker.body
+        if isinstance(node, ast.FunctionDef) and node.name == method_name
+    ]
     segment = ast.get_source_segment(original, method)
     assert segment is not None
     if mutation == "receiver":
-        factory, = [node for node in ast.walk(method) if isinstance(node, ast.Call)
-                    and ast.unparse(node.func) == "sqlite3.connect"]
+        (factory,) = [
+            node
+            for node in ast.walk(method)
+            if isinstance(node, ast.Call) and ast.unparse(node.func) == "sqlite3.connect"
+        ]
         old = ast.get_source_segment(original, factory)
         assert old is not None
         new = 'sqlite3.connect(":memory:")'
@@ -418,14 +613,15 @@ def test_wrong_receiver_and_new_read_dependency_refuse_before_local_classificati
     assert original.count(segment) == 1
     mutated = original.replace(segment, segment.replace(old, new))
     assert mutated != original
-    canonical, = [node for node in ast.parse(original).body
-                  if isinstance(node, ast.FunctionDef)
-                  and node.name == "_canonical_planning_statements"]
+    (canonical,) = [
+        node
+        for node in ast.parse(original).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_canonical_planning_statements"
+    ]
     canonical_segment = ast.get_source_segment(original, canonical)
     assert canonical_segment is not None
     assert canonical_segment in mutated
-    changed = tuple((name, mutated if name == path else text)
-                    for name, text in sources())
+    changed = tuple((name, mutated if name == path else text) for name, text in sources())
     with pytest.raises(DescriptorClosureRefused):
         _from_sources(changed)
 
@@ -496,13 +692,24 @@ def test_forged_selected_ledger_provenance_cannot_self_certify(mutation):
 
 def test_ledger_replay_dto_helper_semantics_stay_unresolved():
     items = sources()
-    path = 'src/chiplog/platform/read_ledger.py'
-    old = 'return self._release_from_row(operation, release)'
+    path = "src/chiplog/platform/read_ledger.py"
+    old = "return self._release_from_row(operation, release)"
     assert dict(items)[path].count(old) == 1
-    changed = tuple((name, text.replace(old, 'return self.foreign_replay(operation, release)')
-                     if name == path else text) for name, text in items)
+    changed = tuple(
+        (
+            name,
+            text.replace(old, "return self.foreign_replay(operation, release)")
+            if name == path
+            else text,
+        )
+        for name, text in items
+    )
     result = _from_sources(changed)
-    row, = [row for row in result.calls if row.site.module == path
-            and row.site.expression == 'self.foreign_replay(operation, release)']
-    assert row.disposition == 'UNRESOLVED' and row.domain is None
-    assert any('_release_from_row' in item for item in result.fragment.residual_obligations)
+    (row,) = [
+        row
+        for row in result.calls
+        if row.site.module == path
+        and row.site.expression == "self.foreign_replay(operation, release)"
+    ]
+    assert row.disposition == "UNRESOLVED" and row.domain is None
+    assert any("_release_from_row" in item for item in result.fragment.residual_obligations)

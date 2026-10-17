@@ -16,24 +16,43 @@ from chiplog.verification.authority_read_graph import (
 
 SOURCE = Path(__file__).resolve().parents[2] / "src/chiplog/platform/authority_reads.py"
 PUBLICATION_COLUMNS = (
-    "commit_sequence", "idempotency_key", "operation_kind", "record_ids",
-    "request_fingerprint", "tenant_id",
+    "commit_sequence",
+    "idempotency_key",
+    "operation_kind",
+    "record_ids",
+    "request_fingerprint",
+    "tenant_id",
 )
 RECORD_COLUMNS = (
-    "canonical_bytes", "commit_sequence", "owner", "record_id", "schema_id", "tenant_id",
+    "canonical_bytes",
+    "commit_sequence",
+    "owner",
+    "record_id",
+    "schema_id",
+    "tenant_id",
 )
 
 
 def _expected():
     publications = tuple(("main", "publications", column) for column in PUBLICATION_COLUMNS)
-    selection = tuple(("main", "publications", column) for column in (
-        "commit_sequence", "idempotency_key", "operation_kind", "tenant_id",
-    ))
+    selection = tuple(
+        ("main", "publications", column)
+        for column in (
+            "commit_sequence",
+            "idempotency_key",
+            "operation_kind",
+            "tenant_id",
+        )
+    )
     records = tuple(("main", "records", column) for column in RECORD_COLUMNS)
     return (
-        StatementReads(1, 0, (("main", "publications", "commit_sequence"),
-                              ("main", "publications", "tenant_id"))),
-        StatementReads(2, 0, publications), StatementReads(2, 1, publications),
+        StatementReads(
+            1,
+            0,
+            (("main", "publications", "commit_sequence"), ("main", "publications", "tenant_id")),
+        ),
+        StatementReads(2, 0, publications),
+        StatementReads(2, 1, publications),
         StatementReads(3, 0, (*selection, *records)),
         StatementReads(3, 1, (*selection, *records)),
     )
@@ -53,12 +72,19 @@ def test_actual_planning_source_has_exact_per_site_and_branch_reads():
 def test_predicate_subquery_changes_extracted_business_edges():
     source = SOURCE.read_text()
     # Mutate executable publication SQL, preserving the independent canonical literals.
-    broker, = [node for node in ast.parse(source).body
-               if isinstance(node, ast.ClassDef) and node.name == "BrokerAuthorityReader"]
-    leaf, = [node for node in broker.body if isinstance(node, ast.FunctionDef)
-             and node.name == "_execute_planning_read"]
+    (broker,) = [
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.ClassDef) and node.name == "BrokerAuthorityReader"
+    ]
+    (leaf,) = [
+        node
+        for node in broker.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_execute_planning_read"
+    ]
     segment = ast.get_source_segment(source, leaf)
-    changed_segment = _replace(segment,
+    changed_segment = _replace(
+        segment,
         '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "',
         '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "\n'
         '            "AND EXISTS (SELECT 1 FROM deletion_fences WHERE frontier >= 0) "',
@@ -87,28 +113,41 @@ def test_ghost_edge_and_omitted_branch_are_not_registered():
 def test_unsupported_expression_or_lexical_binding_refuses(mutation):
     source = SOURCE.read_text()
     if mutation == "dynamic":
-        changed = _replace(source, "        scope_sql = (",
-                           "        scope_sql = external_sql()\n        unused_sql = (")
+        changed = _replace(
+            source,
+            "        scope_sql = (",
+            "        scope_sql = external_sql()\n        unused_sql = (",
+        )
     elif mutation == "forward":
-        changed = _replace(source, "        publication_sql = (",
-                           "        publications = connection.execute(publication_sql)\n"
-                           "        publication_sql = (")
+        changed = _replace(
+            source,
+            "        publication_sql = (",
+            "        publications = connection.execute(publication_sql)\n"
+            "        publication_sql = (",
+        )
     elif mutation == "conditional":
-        changed = _replace(source, "        scope_sql = (",
-                           "        if operation.variant:\n            scope_sql = (")
+        changed = _replace(
+            source,
+            "        scope_sql = (",
+            "        if operation.variant:\n            scope_sql = (",
+        )
     else:
-        changed = _replace(source, "        scope_sql = (",
-                           "        connection = other_connection\n        scope_sql = (")
+        changed = _replace(
+            source,
+            "        scope_sql = (",
+            "        connection = other_connection\n        scope_sql = (",
+        )
     with pytest.raises(UnknownSqlExpression):
         planning_read_graph(changed, SCHEMA_SQL)
 
 
 def test_identical_sql_at_distinct_sites_has_independent_callbacks():
     source = SOURCE.read_text()
-    changed = _replace(source,
-        '        with _prepared_planning_statement(\n            connection, uniqueness_sql',
-        '        repeated = connection.execute(publication_sql, publication_parameters)\n'
-        '        with _prepared_planning_statement(\n            connection, uniqueness_sql',
+    changed = _replace(
+        source,
+        "        with _prepared_planning_statement(\n            connection, uniqueness_sql",
+        "        repeated = connection.execute(publication_sql, publication_parameters)\n"
+        "        with _prepared_planning_statement(\n            connection, uniqueness_sql",
     )
     observed = planning_read_graph(changed, SCHEMA_SQL)
     first = [row.reads for row in observed if row.site == 1]
@@ -125,11 +164,11 @@ def _replace_first_query(source, sql):
 
 
 def test_engine_binding_count_ignores_question_marks_in_literals_and_comments():
-    changed = _replace_first_query(SOURCE.read_text(),
-        "SELECT record_id FROM records WHERE tenant_id=? AND '?'='?' /* ? */")
+    changed = _replace_first_query(
+        SOURCE.read_text(), "SELECT record_id FROM records WHERE tenant_id=? AND '?'='?' /* ? */"
+    )
     observed = planning_read_graph(changed, SCHEMA_SQL)
-    assert observed[0].reads == (("main", "records", "record_id"),
-                                 ("main", "records", "tenant_id"))
+    assert observed[0].reads == (("main", "records", "record_id"), ("main", "records", "tenant_id"))
 
 
 def test_count_star_preserves_table_level_dependency():
@@ -152,20 +191,28 @@ def test_schema_preparation_cannot_attach_and_create_external_file(tmp_path):
     assert (rejected, sentinel.exists()) == (True, False)
 
 
-@pytest.mark.parametrize("sql", [
-    "UPDATE records SET owner=owner", "SELECT max(record_id) FROM records",
-    "PRAGMA user_version", "BEGIN",
-])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "UPDATE records SET owner=owner",
+        "SELECT max(record_id) FROM records",
+        "PRAGMA user_version",
+        "BEGIN",
+    ],
+)
 def test_shared_engine_permissions_do_not_broaden_planning_read_policy(sql):
     changed = _replace_first_query(SOURCE.read_text(), sql)
     with pytest.raises(UnknownSqlExpression, match="prepare completely"):
         planning_read_graph(changed, SCHEMA_SQL)
 
 
-@pytest.mark.parametrize("tail", [
-    "INSERT INTO store_metadata VALUES (1, 1);",
-    "CREATE TABLE store_metadata AS SELECT 1 AS singleton, 1 AS store_version;",
-])
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "INSERT INTO store_metadata VALUES (1, 1);",
+        "CREATE TABLE store_metadata AS SELECT 1 AS singleton, 1 AS store_version;",
+    ],
+)
 def test_supplied_schema_rejects_business_dml_and_select(tail):
     if tail.startswith("INSERT"):
         schema = SCHEMA_SQL + tail
@@ -180,35 +227,53 @@ def test_supplied_schema_rejects_business_dml_and_select(tail):
         planning_read_graph(SOURCE.read_text(), schema)
 
 
-@pytest.mark.parametrize("sql", [
-    "SELECT missing FROM records", "SELECT load_extension(?)",
-    "ATTACH DATABASE ? AS foreign_db", "PRAGMA user_version = 17",
-    "SELECT record_id FROM records; SELECT tenant_id FROM records",
-])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT missing FROM records",
+        "SELECT load_extension(?)",
+        "ATTACH DATABASE ? AS foreign_db",
+        "PRAGMA user_version = 17",
+        "SELECT record_id FROM records; SELECT tenant_id FROM records",
+    ],
+)
 def test_incomplete_preparation_or_denied_action_never_returns_partial_graph(sql):
     changed = _replace_first_query(SOURCE.read_text(), sql)
     with pytest.raises(UnknownSqlExpression, match="prepare completely"):
         planning_read_graph(changed, SCHEMA_SQL)
 
 
-@pytest.mark.parametrize("store", [
-    'scope_sql += " "', 'del scope_sql', 'for scope_sql in ("",):\n            pass',
-    '(scope_sql := " ")',
-])
+@pytest.mark.parametrize(
+    "store",
+    [
+        'scope_sql += " "',
+        "del scope_sql",
+        'for scope_sql in ("",):\n            pass',
+        '(scope_sql := " ")',
+    ],
+)
 def test_unsupported_rebinding_of_sql_local_is_not_resolved_from_first_assignment(store):
-    changed = _replace(SOURCE.read_text(), "        publication_sql = (",
-                       f"        {store}\n        publication_sql = (")
+    changed = _replace(
+        SOURCE.read_text(),
+        "        publication_sql = (",
+        f"        {store}\n        publication_sql = (",
+    )
     with pytest.raises(UnknownSqlExpression, match="dominating definition"):
         planning_read_graph(changed, SCHEMA_SQL)
 
 
-@pytest.mark.parametrize("expression", [
-    "lambda connection: connection.execute(publication_sql)",
-    "connection.execute(publication_sql) if operation.variant else None",
-])
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "lambda connection: connection.execute(publication_sql)",
+        "connection.execute(publication_sql) if operation.variant else None",
+    ],
+)
 def test_nested_or_conditional_execution_is_not_a_direct_statement(expression):
-    changed = _replace(SOURCE.read_text(), "        duplicate_sequence = connection.execute(\n",
-                       f"        unused = {expression}\n"
-                       "        duplicate_sequence = connection.execute(\n")
+    changed = _replace(
+        SOURCE.read_text(),
+        "        duplicate_sequence = connection.execute(\n",
+        f"        unused = {expression}\n        duplicate_sequence = connection.execute(\n",
+    )
     with pytest.raises(UnknownSqlExpression, match="placement"):
         planning_read_graph(changed, SCHEMA_SQL)
