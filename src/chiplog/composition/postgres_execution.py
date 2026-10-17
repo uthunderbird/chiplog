@@ -24,6 +24,7 @@ from chiplog.capabilities.agent_loop.contracts import (
     BudgetPolicy,
     LoopHold,
     LoopRejected,
+    SchedulerRootReference,
     WorkerSessionPort,
 )
 from chiplog.capabilities.agent_loop.delivery_contracts import OriginSelection
@@ -257,6 +258,53 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
         if not matches:
             raise PostgresIntegrityError("selected execution batch has no Run")
         return matches[-1]
+
+    def prepare_execution_records(
+        self,
+        snapshot: Snapshot,
+        *,
+        run_id: str,
+        prompt: str,
+        policy: BudgetPolicy,
+        origin: OriginSelection,
+        worker: str,
+        root_binding: Literal["NOT_APPLICABLE"] | SchedulerRootReference = "NOT_APPLICABLE",
+        execution_version: Literal["v2", "v3"] = "v3",
+        history_offset: int = 0,
+    ) -> tuple[ExecutionRun, tuple[Record, ...]]:
+        """Prepare companions; caller authenticates and atomically publishes the same cut.
+
+        This performs no I/O and grants no authority. Scheduler callers verify
+        the complete selected root/lineage; ingress callers verify their source.
+        """
+        if history_offset < 0:
+            raise ValueError("history offset must be nonnegative")
+        if any(row.run_id == run_id for row in self._runs(snapshot)):
+            raise LoopRejected("execution Run already exists")
+        run = create(
+            version=execution_version,
+            tenant=self.tenant_id,
+            principal=self.principal_id,
+            run_id=run_id,
+            prompt=prompt,
+            policy=policy,
+            origin=origin,
+            worker=worker,
+            root_binding=root_binding,
+        )
+        entries = self._history(snapshot, snapshot.head, self.principal_id)
+        entry = ConversationEntryV1(
+            entry_id=run_id + "/ingress",
+            tenant=self.tenant_id,
+            principal=self.principal_id,
+            ordinal=len(entries) + history_offset + 1,
+            role="principal",
+            text=prompt,
+        )
+        return run, (
+            _run_record(run),
+            Record(entry.entry_id, "conversation", entry.schema_id, entry.canonical_bytes()),
+        )
 
     async def create_execution(
         self,

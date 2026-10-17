@@ -6,8 +6,17 @@ import base64
 import json
 from typing import Literal
 
+from pydantic import TypeAdapter
+
 from .call_acceptance_contracts import CallSubjectHead
-from .contracts import BudgetPolicy, DisclosureLabel, Frozen, LoopRejected, VisibilityMember
+from .contracts import (
+    BudgetPolicy,
+    DisclosureLabel,
+    Frozen,
+    LoopRejected,
+    SchedulerRootReference,
+    VisibilityMember,
+)
 from .delivery_contracts import OriginSelection
 from .domain import join_labels
 from .execution_contracts import (
@@ -24,7 +33,7 @@ from .execution_history_contracts import (
     ExecutionTurnV3,
     ExecutionVisibilityManifestV3,
 )
-from .recovery_contracts import Present, RecoveryDTO
+from .recovery_contracts import ExecutionLineageSubject, Present, RecoveryDTO
 
 type ExecutionRun = ExecutionRunRecord | ExecutionRunRecordV3
 type ExecutionAttempt = ExecutionModelAttempt | ExecutionModelAttemptV3
@@ -67,7 +76,17 @@ def create(
     policy: BudgetPolicy,
     origin: OriginSelection,
     worker: str,
+    root_binding: Literal["NOT_APPLICABLE"] | SchedulerRootReference = "NOT_APPLICABLE",
 ) -> ExecutionRun:
+    if isinstance(root_binding, SchedulerRootReference):
+        if version != "v3":
+            raise LoopRejected("scheduled creation requires V3")
+        if root_binding.initial_run_id != run_id:
+            raise LoopRejected("scheduler root initial Run differs")
+        raw = base64.b64decode(root_binding.subject_canonical_base64, validate=True)
+        subject: ExecutionLineageSubject = TypeAdapter(ExecutionLineageSubject).validate_json(raw)
+        if subject.canonical_bytes() != raw:
+            raise LoopRejected("scheduler subject is not canonical")
     record_type = ExecutionRunRecordV3 if version == "v3" else ExecutionRunRecord
     return headed(
         record_type(
@@ -80,7 +99,7 @@ def create(
             contour_head="postgres-local.v1",
             policy_head="explicit-execution.v1",
             worker_session=worker,
-            root_binding="NOT_APPLICABLE",
+            root_binding=root_binding,
             state="CREATED",
             head="pending",
             predecessor=None,
