@@ -63,13 +63,13 @@ def _replace(source, before, after):
     return source.replace(before, after)
 
 
-def test_actual_planning_source_has_exact_per_site_and_branch_reads():
+def test_actual_planning_source_has_exact_per_site_and_branch_reads() -> None:
     observed = planning_read_graph(SOURCE.read_text(), SCHEMA_SQL)
     verify_read_graph(observed, _expected())
     assert observed == _expected()
 
 
-def test_predicate_subquery_changes_extracted_business_edges():
+def test_predicate_subquery_changes_extracted_business_edges() -> None:
     source = SOURCE.read_text()
     # Mutate executable publication SQL, preserving the independent canonical literals.
     (broker,) = [
@@ -101,7 +101,7 @@ def test_predicate_subquery_changes_extracted_business_edges():
         verify_read_graph(observed, _expected())
 
 
-def test_ghost_edge_and_omitted_branch_are_not_registered():
+def test_ghost_edge_and_omitted_branch_are_not_registered() -> None:
     observed = planning_read_graph(SOURCE.read_text(), SCHEMA_SQL)
     ghost = StatementReads(99, 0, (("main", "records", "tenant_id"),))
     for expected in ((*_expected(), ghost), _expected()[:-1]):
@@ -141,7 +141,7 @@ def test_unsupported_expression_or_lexical_binding_refuses(mutation):
         planning_read_graph(changed, SCHEMA_SQL)
 
 
-def test_identical_sql_at_distinct_sites_has_independent_callbacks():
+def test_identical_sql_at_distinct_sites_has_independent_callbacks() -> None:
     source = SOURCE.read_text()
     changed = _replace(
         source,
@@ -163,7 +163,7 @@ def _replace_first_query(source, sql):
     return _replace(source, old, repr(sql))
 
 
-def test_engine_binding_count_ignores_question_marks_in_literals_and_comments():
+def test_engine_binding_count_ignores_question_marks_in_literals_and_comments() -> None:
     changed = _replace_first_query(
         SOURCE.read_text(), "SELECT record_id FROM records WHERE tenant_id=? AND '?'='?' /* ? */"
     )
@@ -171,7 +171,7 @@ def test_engine_binding_count_ignores_question_marks_in_literals_and_comments():
     assert observed[0].reads == (("main", "records", "record_id"), ("main", "records", "tenant_id"))
 
 
-def test_count_star_preserves_table_level_dependency():
+def test_count_star_preserves_table_level_dependency() -> None:
     changed = _replace_first_query(SOURCE.read_text(), "SELECT count(*) FROM main.records")
     observed = planning_read_graph(changed, SCHEMA_SQL)
     assert observed[0].reads == (("main", "records", ""),)

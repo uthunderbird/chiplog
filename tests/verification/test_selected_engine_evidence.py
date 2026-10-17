@@ -46,7 +46,7 @@ def sources():
     return tuple((p, (ROOT / p).read_text()) for p in PATHS)
 
 
-def test_actual_catalog_prepares_with_only_finite_glob_function_permission():
+def test_actual_catalog_prepares_with_only_finite_glob_function_permission() -> None:
     result = _from_sources(sources())
     (chain,) = (r for r in result.fragment.scanner_chains if r.role == "SCHEMA_CATALOG_METADATA")
     from chiplog.platform._sqlite import SCHEMA_SQL
@@ -72,7 +72,7 @@ def test_actual_catalog_prepares_with_only_finite_glob_function_permission():
     assert ("FUNCTION", None, "glob", None, None) in observed.actions
 
 
-def test_same_fragment_retains_both_domain_schemas_and_selected_engine_rows():
+def test_same_fragment_retains_both_domain_schemas_and_selected_engine_rows() -> None:
     result = _from_sources(sources())
     assert {r.domain for r in result.fragment.domain_schemas} == {
         "tenant_main",
@@ -214,7 +214,7 @@ def test_unexpected_index_view_trigger_never_passes_physical_contract(tail, extr
             )
 
 
-def test_second_if_not_exists_body_cannot_hide_behind_existing_success():
+def test_second_if_not_exists_body_cannot_hide_behind_existing_success() -> None:
     ddl, objects, *_ = schema_contract("broker_read_ledger")
     changed = ddl.replace("dequeued IN (0, 1)", "dequeued IN (0, 1, 2)")
     existing = observe_registered_schema(
@@ -335,7 +335,7 @@ def test_semantic_comparison_records_engine_version_without_host_hardpin(selecte
     )
 
 
-def test_unregistered_function_is_still_refused_and_pragma_qualification_is_visible():
+def test_unregistered_function_is_still_refused_and_pragma_qualification_is_visible() -> None:
     ddl, objects, *_ = schema_contract("tenant_main")
     with pytest.raises(SqlPreparationRefused):
         observe_statement(
@@ -395,7 +395,7 @@ def test_schema_unit_check_dependencies_remain_raw_and_not_business_reads(select
     assert all(r.metadata_schema_case == "EMPTY" for r in metadata)
 
 
-def test_selected_semantics_refuse_a_different_actual_foreign_key_setup():
+def test_selected_semantics_refuse_a_different_actual_foreign_key_setup() -> None:
     ddl, objects, *_ = schema_contract("tenant_main")
     observed = observe_statement(
         "BEGIN", registered_schema_sql=ddl, registered_objects=objects, foreign_keys=True

@@ -27,7 +27,7 @@ def _inspect(sources):
     return extract_sql_expression_inventory(sources, inspect_sources(sources))
 
 
-def test_literal_bare_duplicate_and_unknown_candidates_each_keep_their_corpus_event():
+def test_literal_bare_duplicate_and_unknown_candidates_each_keep_their_corpus_event() -> None:
     sources = (
         (
             "src/example.py",
@@ -84,7 +84,7 @@ def test_accounting_refuses_missing_duplicate_foreign_or_stale_evidence(mutation
         inventory.require_exact_accounting()
 
 
-def test_same_call_shapes_with_changed_source_bytes_do_not_reuse_old_corpus():
+def test_same_call_shapes_with_changed_source_bytes_do_not_reuse_old_corpus() -> None:
     before = (("src/example.py", 'VALUE = 1\nconnection.execute("SELECT 1")'),)
     after = (("src/example.py", 'VALUE = 2\nconnection.execute("SELECT 1")'),)
     # Blank lines alone keep every corpus node shape but change byte identity.
@@ -94,7 +94,7 @@ def test_same_call_shapes_with_changed_source_bytes_do_not_reuse_old_corpus():
             extract_sql_expression_inventory(sources, inspect_sources(before))
 
 
-def test_named_planning_families_join_after_non_sql_and_bare_sql_events():
+def test_named_planning_families_join_after_non_sql_and_bare_sql_events() -> None:
     source = (ROOT / PLANNING).read_text()
     marker = "        duplicate_sequence = connection.execute(\n"
     assert source.count(marker) == 1
@@ -114,7 +114,7 @@ def test_named_planning_families_join_after_non_sql_and_bare_sql_events():
     inventory.require_exact_accounting()
 
 
-def test_partial_identifier_sources_keep_missing_dependency_reason():
+def test_partial_identifier_sources_keep_missing_dependency_reason() -> None:
     path = "src/chiplog/platform/_sqlite.py"
     inventory = _inspect(((path, (ROOT / path).read_text()),))
     rows = [row for row in inventory.unresolved if row.site.qualname == "SQLiteMaterializer._admit"]
@@ -122,7 +122,7 @@ def test_partial_identifier_sources_keep_missing_dependency_reason():
     inventory.require_exact_accounting()
 
 
-def test_dynamic_predicate_mutation_is_retained_in_joined_sql_before_engine_observation():
+def test_dynamic_predicate_mutation_is_retained_in_joined_sql_before_engine_observation() -> None:
     source = (ROOT / PLANNING).read_text()
     marker = '"commit_sequence, record_ids FROM publications WHERE tenant_id = ? "'
     (broker,) = [
@@ -193,7 +193,7 @@ def test_dynamic_predicate_mutation_is_retained_in_joined_sql_before_engine_obse
             verify_sql_actions(observed.actions, expected)
 
 
-def test_current_tree_accounts_all_candidates_without_hiding_verifier_sql_or_unknowns():
+def test_current_tree_accounts_all_candidates_without_hiding_verifier_sql_or_unknowns() -> None:
     sources = tuple(
         (str(path.relative_to(ROOT)), path.read_text())
         for path in sorted((ROOT / "src").rglob("*.py"))
@@ -254,7 +254,7 @@ def test_current_tree_accounts_all_candidates_without_hiding_verifier_sql_or_unk
     inventory.require_exact_accounting()
 
 
-def test_named_route_refusal_keeps_each_dynamic_candidate_with_its_reason():
+def test_named_route_refusal_keeps_each_dynamic_candidate_with_its_reason() -> None:
     source = (ROOT / PLANNING).read_text()
     marker = "        scope_sql = ("
     assert source.count(marker) == 1
@@ -270,7 +270,7 @@ def test_named_route_refusal_keeps_each_dynamic_candidate_with_its_reason():
     inventory.require_exact_accounting()
 
 
-def test_nested_sql_keeps_its_nearest_scope_when_enclosing_family_refuses():
+def test_nested_sql_keeps_its_nearest_scope_when_enclosing_family_refuses() -> None:
     source = (ROOT / PLANNING).read_text()
     marker = "            duplicate_sequence = connection.execute(\n"
     assert source.count(marker) == 1

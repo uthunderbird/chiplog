@@ -186,7 +186,7 @@ def _expected_edges():
     return tuple(edges)
 
 
-def test_actual_all_src_direct_mounts_match_independent_expected_rows_and_stay_open():
+def test_actual_all_src_direct_mounts_match_independent_expected_rows_and_stay_open() -> None:
     observed = current_assembly_forwarding(ROOT)
     assert _summary(observed) == EXPECTED
     verify_assembly_forwarding(observed.edges, _expected_edges())
@@ -321,7 +321,7 @@ def test_unknown_binding_or_frame_never_yields_resolved_identity(change):
         inspect_assembly_forwarding(changed)
 
 
-def test_same_spelling_foreign_manifest_origin_is_observed_and_independently_rejected():
+def test_same_spelling_foreign_manifest_origin_is_observed_and_independently_rejected() -> None:
     changed = _mutate(
         _sources(),
         PREFIX + "r8.py",

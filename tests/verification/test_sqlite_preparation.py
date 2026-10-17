@@ -85,7 +85,7 @@ def _observe(sql):
     )
 
 
-def test_actual_records_insert_is_prepared_without_executing_bound_nulls():
+def test_actual_records_insert_is_prepared_without_executing_bound_nulls() -> None:
     # Executing this INSERT with the dummy bindings would violate NOT NULL.
     sql = _sql("platform/_sqlite.py", "INSERT INTO records(")
     observed = _observe(sql)
@@ -97,7 +97,7 @@ def test_actual_records_insert_is_prepared_without_executing_bound_nulls():
     assert _observe(sql) == observed  # fresh preparation still reports every callback
 
 
-def test_actual_upsert_records_its_read_and_write_actions():
+def test_actual_upsert_records_its_read_and_write_actions() -> None:
     sql = _sql("platform/_sqlite.py", "INSERT INTO tenant_heads(tenant_id, head)")
     observed = _observe(sql)
     assert observed.bindings == 2
@@ -111,7 +111,7 @@ def test_actual_upsert_records_its_read_and_write_actions():
     )
 
 
-def test_actual_update_predicate_mutation_adds_a_read_before_expected_refusal():
+def test_actual_update_predicate_mutation_adds_a_read_before_expected_refusal() -> None:
     sql = _sql("platform/_sqlite.py", "UPDATE evidence_inbox\n                       SET")
     observed = _observe(sql)
     expected = tuple(
@@ -136,7 +136,7 @@ def test_actual_update_predicate_mutation_adds_a_read_before_expected_refusal():
         verify_sql_actions(foreign.actions, expected)
 
 
-def test_actual_historical_delete_observes_predicate_and_subquery_reads():
+def test_actual_historical_delete_observes_predicate_and_subquery_reads() -> None:
     sql = _sql(
         "composition/r14_original_call_resolution_source.py",
         "DELETE FROM records WHERE tenant_id=? AND commit_sequence>?",
@@ -153,7 +153,7 @@ def test_actual_historical_delete_observes_predicate_and_subquery_reads():
         verify_sql_actions(changed.actions, expected)
 
 
-def test_trust_foreign_key_setting_is_explicit_and_changes_preparation_reads():
+def test_trust_foreign_key_setting_is_explicit_and_changes_preparation_reads() -> None:
     schema = _sql("adapters/driven/deployment_trust/_sqlite.py", "CREATE TABLE IF NOT EXISTS")
     sql = _sql("adapters/driven/deployment_trust/_sqlite.py", "INSERT INTO trust_records(")
     off = observe_statement(
@@ -170,7 +170,7 @@ def test_trust_foreign_key_setting_is_explicit_and_changes_preparation_reads():
     assert off.foreign_keys is False and on.foreign_keys is True
 
 
-def test_actual_ledger_schema_advances_empty_state_through_partial_index():
+def test_actual_ledger_schema_advances_empty_state_through_partial_index() -> None:
     schema = _constant("platform/authority_ledger.py", "_SCHEMA")
     fresh = observe_schema_script(
         schema, initial_schema_sql="", registered_objects=LEDGER_OBJECTS, foreign_keys=False
@@ -187,7 +187,7 @@ def test_actual_ledger_schema_advances_empty_state_through_partial_index():
     assert reopened[1].actions != fresh[1].actions  # IF NOT EXISTS skips the index body
 
 
-def test_actual_bare_main_schema_is_not_rewritten_to_accept_existing_state():
+def test_actual_bare_main_schema_is_not_rewritten_to_accept_existing_state() -> None:
     fresh = observe_schema_script(
         SCHEMA_SQL, initial_schema_sql="", registered_objects=MAIN_OBJECTS, foreign_keys=True
     )
@@ -254,7 +254,7 @@ def test_sqlite_counts_bindings_without_duplicate_or_incomplete_actions(sql, bin
     )
 
 
-def test_count_star_rowid_and_current_builtins_remain_visible():
+def test_count_star_rowid_and_current_builtins_remain_visible() -> None:
     count = _observe("SELECT count(*) FROM records")
     assert ("READ", "records", "", None, None) in count.actions
     assert ("FUNCTION", None, "count", None, None) in count.actions
@@ -285,7 +285,7 @@ def test_metadata_actions_preserve_pragma_name_and_argument(sql, first, second):
     ).actions
 
 
-def test_sqlite_script_boundaries_preserve_quoted_and_commented_semicolons():
+def test_sqlite_script_boundaries_preserve_quoted_and_commented_semicolons() -> None:
     script = "CREATE TABLE a(x TEXT DEFAULT ';'); /* ; */CREATE TABLE b(y);-- ;\n"
     assert split_sql_script(script) == (
         "CREATE TABLE a(x TEXT DEFAULT ';');",
@@ -351,7 +351,7 @@ def test_schema_business_sql_refuses_at_create_guard_or_select_authorizer(initia
         assert str(failure.value) == "schema statement is not a supported CREATE form"
 
 
-def test_later_denial_or_syntax_failure_never_returns_a_successful_script_prefix():
+def test_later_denial_or_syntax_failure_never_returns_a_successful_script_prefix() -> None:
     for tail in ("SELECT 1", "CREATE TABLE broken("):
         with pytest.raises(SqlPreparationRefused):
             observe_schema_script(
@@ -373,7 +373,7 @@ def test_schema_observation_requires_actual_ddl_not_explanation_of_ddl(prefix):
         )
 
 
-def test_index_callback_permission_does_not_authorize_standalone_reindex():
+def test_index_callback_permission_does_not_authorize_standalone_reindex() -> None:
     with pytest.raises(SqlPreparationRefused, match="schema"):
         observe_schema_script(
             "REINDEX one_current_broker_epoch",

@@ -35,7 +35,7 @@ def _inspect(source=SOURCE):
     return inspect_sources((("src/chiplog/sample.py", source),))
 
 
-def test_renamed_import_bound_alias_reflection_and_callback_remain_in_accounting():
+def test_renamed_import_bound_alias_reflection_and_callback_remain_in_accounting() -> None:
     corpus = _inspect()
     expressions = {node.expression for node in corpus.nodes}
     assert "execute_query('SELECT record_id FROM records')" in expressions
@@ -50,7 +50,7 @@ def test_renamed_import_bound_alias_reflection_and_callback_remain_in_accounting
         corpus.require_closed()
 
 
-def test_blank_lines_preserve_identity_and_identical_calls_remain_distinct():
+def test_blank_lines_preserve_identity_and_identical_calls_remain_distinct() -> None:
     source = (
         'def read(connection):\n    connection.execute("SELECT 1")\n'
         '    connection.execute("SELECT 1")\n'
@@ -88,7 +88,7 @@ def test_bidirectional_accounting_rejects_added_removed_or_rebound_source(change
         _inspect(changed).require_exact_inventory(original)
 
 
-def test_nested_scopes_and_unknown_dynamic_call_targets_are_retained_without_imports():
+def test_nested_scopes_and_unknown_dynamic_call_targets_are_retained_without_imports() -> None:
     source = """raise RuntimeError("must never execute source")
 def outer(connection):
     def inner():
@@ -104,7 +104,7 @@ def outer(connection):
     )
 
 
-def test_duplicate_source_names_and_empty_source_tree_refuse():
+def test_duplicate_source_names_and_empty_source_tree_refuse() -> None:
     with pytest.raises(UnresolvedSqlCorpus):
         inspect_sources(())
     with pytest.raises(UnresolvedSqlCorpus):
@@ -116,7 +116,7 @@ def test_duplicate_source_names_and_empty_source_tree_refuse():
         empty.require_closed()
 
 
-def test_current_tree_accounts_every_call_and_remains_unresolved():
+def test_current_tree_accounts_every_call_and_remains_unresolved() -> None:
     root = Path(__file__).resolve().parents[2]
     corpus = current_sql_corpus(root)
     # Independent AST count includes unknown callees, not just terminal SQL names.
@@ -136,14 +136,14 @@ def test_current_tree_accounts_every_call_and_remains_unresolved():
         corpus.require_closed()
 
 
-def test_empty_file_addition_is_not_silently_absent_from_exact_inventory():
+def test_empty_file_addition_is_not_silently_absent_from_exact_inventory() -> None:
     original = _inspect()
     changed = inspect_sources((("src/chiplog/sample.py", SOURCE), ("src/chiplog/new_empty.py", "")))
     with pytest.raises(CorpusInventoryChanged):
         changed.require_exact_inventory(original)
 
 
-def test_node_cannot_reference_a_file_missing_from_source_accounting():
+def test_node_cannot_reference_a_file_missing_from_source_accounting() -> None:
     corpus = _inspect()
     orphan = replace(corpus.nodes[0], module="absent.py")
     changed = replace(corpus, nodes=(orphan, *corpus.nodes[1:]))

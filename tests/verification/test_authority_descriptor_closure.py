@@ -486,7 +486,7 @@ def test_accounting_rederives_from_source_instead_of_trusting_mutually_forged_ro
         replace(result, calls=tuple(calls)).require_exact_accounting()
 
 
-def test_forged_empty_call_inventory_still_cannot_grant_admission():
+def test_forged_empty_call_inventory_still_cannot_grant_admission() -> None:
     result = _from_sources(sources())
     with pytest.raises(DescriptorClosureIncomplete):
         replace(result, calls=(), mounts=()).require_closed()
@@ -554,7 +554,7 @@ def test_assembly_and_read_label_forgery_refuses(mutation):
         result.require_exact_accounting()
 
 
-def test_literal_sql_and_renamed_callable_both_remain_unresolved_without_receiver_proof():
+def test_literal_sql_and_renamed_callable_both_remain_unresolved_without_receiver_proof() -> None:
     result = _from_sources(
         (
             *sources(),
@@ -690,7 +690,7 @@ def test_forged_selected_ledger_provenance_cannot_self_certify(mutation):
         forged.require_exact_accounting()
 
 
-def test_ledger_replay_dto_helper_semantics_stay_unresolved():
+def test_ledger_replay_dto_helper_semantics_stay_unresolved() -> None:
     items = sources()
     path = "src/chiplog/platform/read_ledger.py"
     old = "return self._release_from_row(operation, release)"

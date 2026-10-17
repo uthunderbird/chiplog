@@ -69,7 +69,7 @@ def _replace(source, old, new):
     return source.replace(old, new)
 
 
-def test_actual_both_sites_keep_two_correlated_branches_and_independent_actions():
+def test_actual_both_sites_keep_two_correlated_branches_and_independent_actions() -> None:
     source = SOURCE.read_text()
     families = extract_h1_cutoff_sql(source)
     assert [(family.site, family.receiver) for family in families] == [
@@ -87,7 +87,7 @@ def test_actual_both_sites_keep_two_correlated_branches_and_independent_actions(
             verify_sql_actions(observed.actions, _expected(index))
 
 
-def test_actual_predicate_mutation_reaches_engine_before_graph_refusal():
+def test_actual_predicate_mutation_reaches_engine_before_graph_refusal() -> None:
     source = _replace(
         SOURCE.read_text(),
         '+ " ORDER BY commit_sequence,operation_kind,idempotency_key"',
@@ -158,7 +158,7 @@ def test_actual_unknown_relation_or_missing_family_refuses(old, new):
         extract_h1_cutoff_sql(_replace(SOURCE.read_text(), old, new))
 
 
-def test_nested_consumer_frame_refuses_with_cutoff_error():
+def test_nested_consumer_frame_refuses_with_cutoff_error() -> None:
     tree = ast.parse(SOURCE.read_text())
     (method,) = [
         node
@@ -191,7 +191,7 @@ def test_nested_consumer_frame_refuses_with_cutoff_error():
         extract_h1_cutoff_sql(changed)
 
 
-def test_global_boundary_is_not_local_correlation_proof():
+def test_global_boundary_is_not_local_correlation_proof() -> None:
     source = _replace(
         SOURCE.read_text(),
         "        boundary: int | None = None",

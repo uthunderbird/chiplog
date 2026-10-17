@@ -74,7 +74,7 @@ def test_actual_script_constant_and_consumer_identity(
     assert script.source_sha256 == sha256(source.encode()).hexdigest()
 
 
-def test_changed_actual_literal_exposes_added_schema_action_before_comparison():
+def test_changed_actual_literal_exposes_added_schema_action_before_comparison() -> None:
     source = (ROOT / "platform/read_ledger.py").read_text()
     (original,) = extract_constant_sql_scripts(source, "BrokerReadLedger.__init__", "_SCHEMA")
     tree = ast.parse(source)
@@ -144,7 +144,7 @@ def test_unknown_binding_expression_or_frame_refuses(source):
         extract_constant_sql_scripts(source, "use", "SQL")
 
 
-def test_repeated_script_consumers_keep_separate_ordinals():
+def test_repeated_script_consumers_keep_separate_ordinals() -> None:
     source = BASE + '    connection.execute("SELECT 1")\n    connection.executescript(SQL)\n'
     scripts = extract_constant_sql_scripts(source, "use", "SQL")
     assert [script.site for script in scripts] == [1, 3]

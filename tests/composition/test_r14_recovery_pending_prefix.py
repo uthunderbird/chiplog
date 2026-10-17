@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 from types import SimpleNamespace
+from typing import TypedDict
 
 import pytest
 
@@ -80,7 +81,8 @@ async def _fixture(tmp_path, complete, *, with_fence=False, prepare_prefix=None)
     frontier_head = call_record_reference("recovery-frontier:" + frontier.run_id, frontier)
     cut = original_cut.model_copy(
         update={
-            "materialization_commitment": predecessor, "database_id": str(database),
+            "materialization_commitment": predecessor,
+            "database_id": str(database),
             "tenant_commit_sequence": expected_head,
             "frontier": frontier,
             "complete_ordered_responses": tuple(
@@ -278,8 +280,10 @@ async def test_exact_history_checks_pending_readiness_prefix_before_selected_aut
 
     runtime, entry, batch, _, _ = await _fixture(tmp_path, complete, with_fence=True)
     entry.update(
-        kind="DECIDED", operation_id=batch.idempotency_key,
-        expected_head=batch.expected_head, fingerprint=batch.request_fingerprint,
+        kind="DECIDED",
+        operation_id=batch.idempotency_key,
+        expected_head=batch.expected_head,
+        fingerprint=batch.request_fingerprint,
     )
     if damaged_result:
         entry["resulting"] = "0" * 64
@@ -337,7 +341,8 @@ async def test_accepted_outcome_callback_rechecks_exact_pending_readiness(
     if route in {"registered", "unknown"}:
         entry["operation_kind"] = (
             "agent_loop.original-resolver-invocation.v1"
-            if route == "registered" else "agent_loop.unknown.v1"
+            if route == "registered"
+            else "agent_loop.unknown.v1"
         )
     elif route == "multiple":
         runtime._pending = lambda: (entry, entry)
@@ -389,13 +394,20 @@ async def test_accepted_outcome_callback_rechecks_exact_pending_readiness(
         raise ReachedPrefixVerdict
 
     monkeypatch.setattr(r16_effects, "_read_materialized_effects_with_history", read_effects)
-    locator = (
+
+    class HistoricalOutcomeLocator(TypedDict, total=False):
+        expected_outcome_record_id: str
+        expected_selected_decision: CallSubjectHead
+        expected_tenant_commit_sequence: int
+
+    locator: HistoricalOutcomeLocator = (
         dict(
             expected_outcome_record_id="outcome",
             expected_selected_decision=CallSubjectHead(subject_id="decision", revision=reference),
             expected_tenant_commit_sequence=1,
         )
-        if historical_locator else {}
+        if historical_locator
+        else {}
     )
     with pytest.raises(ReachedPrefixVerdict):
         source_reader._collect_one_accepted_outcome(

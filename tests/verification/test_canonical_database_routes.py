@@ -26,7 +26,7 @@ def _replace(source, old, new):
     return source.replace(old, new)
 
 
-def test_actual_canonical_constructor_routes_remain_distinct_and_unresolved():
+def test_actual_canonical_constructor_routes_remain_distinct_and_unresolved() -> None:
     observed = extract_canonical_database_routes(*_sources())
     verify_forwarded_database_roles(observed)
     routes = {route.sink: route.paths for route in observed.routes}
@@ -83,7 +83,7 @@ def test_startup_frames_and_direct_context_entry_cannot_be_substituted(old, new)
         extract_canonical_database_routes(changed, leaf)
 
 
-def test_main_path_substitution_is_observed_before_domain_comparison():
+def test_main_path_substitution_is_observed_before_domain_comparison() -> None:
     source, leaf = _sources()
     changed = _replace(
         source,
@@ -165,7 +165,7 @@ def test_non_dominating_rebound_or_unknown_producer_has_no_route_proof(mutation)
         extract_canonical_database_routes(changed, leaf)
 
 
-def test_leaf_constructor_must_really_forward_its_path_parameter():
+def test_leaf_constructor_must_really_forward_its_path_parameter() -> None:
     source, leaf = _sources()
     # There are two analogous leaf classes; change only the production class.
     start = leaf.index("class ProductionPlanningStore:")
@@ -198,7 +198,7 @@ def test_imported_constructor_name_cannot_be_shadowed(placement):
         extract_canonical_database_routes(changed, leaf)
 
 
-def test_same_module_import_alias_cannot_substitute_a_different_leaf():
+def test_same_module_import_alias_cannot_substitute_a_different_leaf() -> None:
     source, leaf = _sources()
     changed = _replace(
         source,
@@ -224,7 +224,7 @@ def test_leaf_module_cannot_rebind_the_inspected_class_before_import(replacement
         extract_canonical_database_routes(source, changed)
 
 
-def test_nested_function_database_parameter_is_not_the_canonical_database():
+def test_nested_function_database_parameter_is_not_the_canonical_database() -> None:
     source, leaf = _sources()
     changed = _replace(
         source,
@@ -268,7 +268,7 @@ def test_missing_duplicate_or_unknown_consumer_route_refuses(mutation):
         extract_canonical_database_routes(changed, leaf)
 
 
-def test_unsupported_leaf_module_execution_cannot_delete_export_binding():
+def test_unsupported_leaf_module_execution_cannot_delete_export_binding() -> None:
     source, leaf = _sources()
     changed = leaf + (
         "\ntry:\n    raise ValueError()\nexcept ValueError as ProductionPlanningStore:\n    pass\n"

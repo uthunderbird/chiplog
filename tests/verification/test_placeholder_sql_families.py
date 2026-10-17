@@ -234,7 +234,7 @@ def test_actual_placeholder_and_binder_mutations_are_unknown(mutation):
         _extract(case, changed)
 
 
-def test_added_predicate_edge_is_extracted_before_independent_graph_refusal():
+def test_added_predicate_edge_is_extracted_before_independent_graph_refusal() -> None:
     case = CASES[0]
     source = (ROOT / case[0]).read_text()
     changed = _replace(
@@ -255,7 +255,7 @@ def test_added_predicate_edge_is_extracted_before_independent_graph_refusal():
             verify_sql_actions(observed.actions, _expected(case, n))
 
 
-def test_repeated_source_sites_are_not_deduplicated_and_missing_consumer_refuses():
+def test_repeated_source_sites_are_not_deduplicated_and_missing_consumer_refuses() -> None:
     case = CASES[3]
     source = (ROOT / case[0]).read_text()
     changed = _replace(
