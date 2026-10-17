@@ -248,7 +248,7 @@ def verify_offline_import_boundary(root: Path) -> None:
                 and isinstance(node, ast.Import)
                 and tuple(alias.name for alias in node.names) == ("orjson",)
             ):
-                # Native JSON parsing only; this adds no transport or adapter surface.
+                # Native JSON codec only; this adds no transport or adapter surface.
                 continue
             if relative == "chiplog/platform/postgres.py" and (
                 (isinstance(node, ast.Import) and modules == ("psycopg",))

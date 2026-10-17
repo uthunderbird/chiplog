@@ -425,16 +425,15 @@ class IndependentTenantDecisionJournal:
                 (predecessor or "GENESIS").encode() + b"\x00" + decision
             ).hexdigest()
             line = (
-                json.dumps(
+                orjson.dumps(
                     {
                         "authentication": self._authenticate(decision_id, predecessor, decision),
                         "decision": decision.hex(),
                         "decision_id": decision_id,
                         "predecessor": predecessor,
                     },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
+                    option=orjson.OPT_SORT_KEYS,
+                )
                 + b"\n"
             )
             with _descriptor(self._path, os.O_APPEND | os.O_WRONLY) as descriptor:
@@ -462,16 +461,15 @@ class IndependentTenantDecisionJournal:
                 (predecessor or "GENESIS").encode() + b"\x00" + decision
             ).hexdigest()
             line = (
-                json.dumps(
+                orjson.dumps(
                     {
                         "authentication": self._authenticate(decision_id, predecessor, decision),
                         "decision": decision.hex(),
                         "decision_id": decision_id,
                         "predecessor": predecessor,
                     },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
+                    option=orjson.OPT_SORT_KEYS,
+                )
                 + b"\n"
             )
             body_descriptor = self._existing_descriptors["body"]
