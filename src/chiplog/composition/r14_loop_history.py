@@ -126,7 +126,19 @@ from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.direct_terminal_contracts import (
+        PreparedAcceptedDirectTerminalV1,
+    )
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        AcceptedOpenAccountingRecordV1,
+        PreparedAcceptedOpenRecoveryV1,
+    )
+    from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+    from chiplog.composition.r14_native_accounting_records import (
+        NativeOneCallCancelledAccountingRecord,
+        NativeSealedAccountingV3Record,
+    )
     from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 
@@ -2254,7 +2266,9 @@ def read_execution_recovery_history(
     )
 
 
-def read_selected_native_accounting(runtime: R14PlanningRuntime):
+def read_selected_native_accounting(
+    runtime: R14PlanningRuntime,
+) -> NativeOneCallCancelledAccountingRecord | None:
     """Canonical read-only observation of the selected bounded accounting record."""
     from chiplog.composition.r14_native_accounting_history import (
         retained_selected_native_accounting,
@@ -2277,7 +2291,7 @@ def read_selected_native_accounting(runtime: R14PlanningRuntime):
 
 def read_selected_native_sealed_accounting_v3(
     runtime: R14PlanningRuntime, selected_response_fingerprint: str
-):
+) -> NativeSealedAccountingV3Record | None:
     """Read one exact V3 per-seal record after full selected-history validation."""
     from chiplog.composition.r14_native_sealed_accounting_v3_history import (
         retained_selected_native_sealed_accounting_v3,
@@ -2300,7 +2314,7 @@ def read_selected_native_sealed_accounting_v3(
 
 def read_selected_accepted_open_accounting(
     runtime: R14PlanningRuntime, *, original_call_id: str | None = None
-):
+) -> AcceptedOpenAccountingRecordV1 | None:
     """Read the unique effects-specific account record after selected-source validation."""
     from chiplog.composition.r14_accepted_open_accounting_publication import (
         validate_selected_accepted_open_accounting,
@@ -2329,7 +2343,7 @@ def read_selected_accepted_open_accounting(
 
 def read_selected_accepted_open_recovery(
     runtime: R14PlanningRuntime, *, original_call_id: str | None = None
-):
+) -> PreparedAcceptedOpenRecoveryV1 | None:
     """Read the atomic accepted/open terminal and obligation publication."""
     from chiplog.composition.r14_accepted_open_accounting_publication import (
         validate_selected_accepted_open_recovery,
@@ -2358,7 +2372,7 @@ def read_selected_accepted_open_recovery(
 
 def read_selected_original_obligation_sources(
     runtime: R14PlanningRuntime, *, historical: bool = False
-):
+) -> tuple[RecoverySourceRecord, RecoverySourceRecord] | None:
     """Return exact selected R14 opening and terminal source records, or no cut."""
     from chiplog.composition.r14_accepted_open_accounting_publication import (
         validate_selected_accepted_open_recovery,
@@ -2403,7 +2417,7 @@ def read_selected_original_obligation_sources(
 
 def read_selected_accepted_direct_terminal(
     runtime: R14PlanningRuntime, *, original_call_id: str | None = None
-):
+) -> PreparedAcceptedDirectTerminalV1 | None:
     """Read one exact selected terminal; unqualified reads require a singleton."""
     from chiplog.composition.r14_accepted_direct_terminal_publication import (
         validate_selected_accepted_direct_terminal,
