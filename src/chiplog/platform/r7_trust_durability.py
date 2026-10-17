@@ -151,6 +151,10 @@ class HistoricalTrustPrefix:
     physical_entries: tuple[tuple[str, str | None, bytes], ...]
 
 
+class TrustMaterializationIntegrityError(RuntimeError):
+    """Authenticated trust records cannot be read from their durable materialization."""
+
+
 class BrokerTrustDurability:
     """Applies owner-authorized bytes and verifies their authenticated durable envelope."""
 
@@ -1452,6 +1456,8 @@ class BrokerTrustDurability:
         if self._materializer.decision_ids() != tuple(decision_id for decision_id, _, _ in entries):
             raise RuntimeError("trust materialization differs from authenticated journal")
         self._verify_operator_authentication(entries)
+        first = json.loads(entries[0][2])
+        genesis = first["payload"]["genesis"]
         for decision_id, _, raw in entries:
             if not self._materializer.materialized(decision_id):
                 raise RuntimeError("trust decision is not materialized")
@@ -1461,15 +1467,19 @@ class BrokerTrustDurability:
             expected_records = self._expected_records(
                 decision_id, envelope["kind"], envelope["payload"]
             )
-            actual = tuple(
-                self._materializer.record(decision_id, ordinal)
-                for ordinal in range(len(expected_records))
-            )
+            try:
+                actual = tuple(
+                    self._materializer.record(decision_id, ordinal)
+                    for ordinal in range(len(expected_records))
+                )
+            except RuntimeError as error:
+                raise TrustMaterializationIntegrityError(
+                    "trust materialization differs from authenticated journal: "
+                    f"operation=verify tenant={genesis['tenant_id']} record={decision_id}"
+                ) from error
             if actual != expected_records:
                 raise RuntimeError("trust materialization differs from authenticated journal")
         logical_head = self._logical_head(entries)
-        first = json.loads(entries[0][2])
-        genesis = first["payload"]["genesis"]
         binding = first["payload"]["binding"]
         unsigned = {key: value for key, value in binding.items() if key != "signature"}
         expected = hmac.new(self._operator_secret, _canonical(unsigned), hashlib.sha256).hexdigest()

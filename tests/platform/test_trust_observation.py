@@ -28,7 +28,11 @@ from chiplog.platform._sqlite import (
 )
 from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.r7_trust import encode_trust_journal
-from chiplog.platform.r7_trust_durability import BrokerTrustDurability, FrozenTrustObservation
+from chiplog.platform.r7_trust_durability import (
+    BrokerTrustDurability,
+    FrozenTrustObservation,
+    TrustMaterializationIntegrityError,
+)
 
 _FACTORY_WORKER = """
 import sys
@@ -277,8 +281,19 @@ def test_materialized_record_corruption_rejects_despite_retained_decision_row(
                     (decision_id, 999, b"{}"),
                 )
         assert bundle.materializer.materialized(decision_id)
-        with pytest.raises(RuntimeError, match="materialization differs"):
+        with sqlite3.connect(bundle.materializer_path) as connection:
+            corrupted = tuple(connection.iterdump())
+        with pytest.raises(
+            TrustMaterializationIntegrityError, match="materialization differs"
+        ) as error:
             bundle.durability.capture_verified_observation()
+        assert "operation=verify" in str(error.value)
+        assert "tenant=tenant-1" in str(error.value)
+        assert f"record={decision_id}" in str(error.value)
+        assert isinstance(error.value.__cause__, RuntimeError)
+        assert "integrity failure" in str(error.value.__cause__)
+        with sqlite3.connect(bundle.materializer_path) as connection:
+            assert tuple(connection.iterdump()) == corrupted
 
 
 def test_empty_journal_cannot_hide_orphan_materialized_record(tmp_path: Path) -> None:
