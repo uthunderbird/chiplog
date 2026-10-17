@@ -1380,6 +1380,8 @@ class AuthorityBrokerRuntime:
             if process.is_alive():
                 process.terminate()
                 process.join(timeout=5)
+                if process.is_alive():
+                    raise OwnerProcessFailure(f"owner {owner_id} survived termination")
             self._processes.pop(owner_id, None)
         self._identities.clear()
         self._owner_secrets.clear()

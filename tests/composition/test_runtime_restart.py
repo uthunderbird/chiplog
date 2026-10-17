@@ -9,6 +9,7 @@ import pytest
 from chiplog.architecture.r7_runtime import R7_PRODUCTION_MANIFEST
 from chiplog.composition.r7_supervisor import R7RuntimeSupervisor, RuntimeAdmissionEvidence
 from chiplog.platform.authority_ledger import BrokerAuthorityLedger, OperationToken
+from chiplog.platform.r7_runtime import AuthorityBrokerRuntime, OwnerProcessFailure
 
 
 class Admission:
@@ -132,3 +133,44 @@ def _process_exists(process_id: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def test_surviving_owner_blocks_replacement_and_remains_reachable_for_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supervisor = _supervisor(tmp_path / "authority.sqlite3")
+    try:
+        supervisor.start_generation("generation-1")
+        old = supervisor.runtime()
+        owner_id, process = next(iter(old._processes.items()))
+        started: list[str] = []
+        original_start = AuthorityBrokerRuntime.start
+
+        def track_start(runtime: AuthorityBrokerRuntime) -> None:
+            started.append(runtime._generation_id)
+            original_start(runtime)
+
+        with monkeypatch.context() as patch:
+            # Model the process API reporting survival after the final join.
+            # The real owner still receives its ordinary shutdown IPC.
+            patch.setattr(process, "is_alive", lambda: True)
+            patch.setattr(process, "terminate", lambda: None)
+            patch.setattr(AuthorityBrokerRuntime, "start", track_start)
+            with pytest.raises(BaseExceptionGroup) as caught:
+                supervisor.start_generation("generation-2")
+            failures = caught.value.subgroup(OwnerProcessFailure)
+            assert failures is not None
+            assert "survived termination" in str(failures.exceptions[0])
+            assert started == []
+            assert old._processes[owner_id] is process
+            assert old in supervisor._retiring
+            assert old._temporary is not None
+            with pytest.raises(RuntimeError, match="not admitted"):
+                supervisor.runtime()
+        supervisor.start_generation("generation-3")
+        assert supervisor.runtime() is not old
+        assert old not in supervisor._retiring
+        assert old._processes == {}
+        assert old._temporary is None
+    finally:
+        supervisor.close()
