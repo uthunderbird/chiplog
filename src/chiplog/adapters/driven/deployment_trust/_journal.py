@@ -12,6 +12,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 
+import orjson
+
 from chiplog.platform.authority_gate import AuthorityGate, FileIdentity, checked_file_identity
 
 
@@ -48,7 +50,18 @@ def _decode_authenticated_entries(
     predecessor: str | None = None
     for raw in body.splitlines():
         try:
-            item = json.loads(raw)
+            try:
+                item = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                # Preserve historical UTF-16 and non-standard JSON acceptance.
+                item = json.loads(raw)
+            else:
+                if isinstance(item, dict) and any(
+                    isinstance(item.get(field), float)
+                    for field in ("decision", "decision_id", "predecessor", "authentication")
+                ):
+                    # Native decoding can round oversized integers to floats.
+                    item = json.loads(raw)
             decision = bytes.fromhex(item["decision"])
             decision_id = str(item["decision_id"])
             observed_predecessor = item["predecessor"]

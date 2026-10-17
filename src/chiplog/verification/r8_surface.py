@@ -240,7 +240,11 @@ def verify_offline_import_boundary(root: Path) -> None:
             elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
                 modules = (node.module,)
             if (
-                relative == "chiplog/composition/r13_runtime.py"
+                relative
+                in {
+                    "chiplog/composition/r13_runtime.py",
+                    "chiplog/adapters/driven/deployment_trust/_journal.py",
+                }
                 and isinstance(node, ast.Import)
                 and tuple(alias.name for alias in node.names) == ("orjson",)
             ):
