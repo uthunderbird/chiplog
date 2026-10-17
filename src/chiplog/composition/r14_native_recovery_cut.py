@@ -1991,7 +1991,7 @@ class NativeRecoveryCutSource:
                 return None
             retained_reduction = reduction_publication.validate_selected_command(
                 runtime, reduction_entries[-1][2], reduction_entries[-1][3]
-            )  # type: ignore[no-untyped-call]
+            )
             reduction_sources = _selected_reduction_sources(runtime, reduction_entries)
             current_request = reduction_publication.capture_request(runtime)
             evidence_sources = closed.complete_ordered_evidence_sources

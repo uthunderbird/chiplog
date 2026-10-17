@@ -1,4 +1,4 @@
-"""Installed RED witnesses for the separate H1 post-seal finalizer.
+"""Installed witnesses for the separate H1 post-seal finalizer.
 
 The tests build their recovery evidence through the mounted driver.  They never
 construct a recovery ROOT, owner result, issuance, batch, or authority marker.
@@ -20,7 +20,10 @@ from chiplog.composition.common_cli_execution_runtime import (
     CommonCliExecutionRuntime,
     open_installed_h1_runtime,
 )
-from chiplog.composition.common_execution_driver_contracts import ExecutionDriverRejectedV1
+from chiplog.composition.common_execution_driver_contracts import (
+    ExecutionDriverRejectedV1,
+    SelectedExecutionReceiptV1,
+)
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_postseal_recovery import H1PostSealRecoveryJournal
 from chiplog.composition.h1_postseal_recovery_coordinator import (
@@ -35,14 +38,7 @@ _STAGES = ("COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK")
 
 
 class H1PostSealFinalizationUnavailable(RuntimeError):
-    """The frozen private finalization entry has not been installed yet."""
-
-
-_RED = pytest.mark.xfail(
-    strict=True,
-    raises=H1PostSealFinalizationUnavailable,
-    reason="separate installed H1 finalize_execution is absent",
-)
+    """The required installed finalization entry is unavailable."""
 
 
 class _RecordingEngine:
@@ -90,6 +86,7 @@ async def _seal_v3_then_v2_without_recovery(
     private = cast(Any, runtime)
     request = await _admit(runtime)
     initial = await runtime.drive_input(request)
+    assert isinstance(initial, SelectedExecutionReceiptV1)
     private._execution_model._responses = (
         DeliveryCompletion(
             tenant=TENANT,
@@ -118,6 +115,7 @@ async def _durable_four_stage_chain(
     """Reach the genuine four-result recovery cut through normal advance."""
     request = await _admit(runtime)
     initial = await runtime.drive_input(request)
+    assert isinstance(initial, SelectedExecutionReceiptV1)
     private = cast(Any, runtime)
     private._execution_model._responses = (
         DeliveryCompletion(
@@ -144,10 +142,25 @@ async def _finalize(runtime: CommonCliExecutionRuntime, request: Any) -> Any:
     return await finalizer(request.identity, request.original_driver_command_fingerprint())
 
 
+def _assert_authenticated_without_b(engine: _RecordingEngine) -> None:
+    (authentication,) = engine.calls
+    assert (
+        authentication.operation_id,
+        authentication.caller.owner_id,
+        authentication.callee.owner_id,
+        authentication.schema_id,
+    ) == (
+        "deployment_trust.authenticate",
+        "broker",
+        "deployment_trust",
+        "chiplog.deployment-trust.owner-call.v1",
+    )
+
+
 def _assert_held_without_b(result: object, engine: _RecordingEngine) -> None:
     assert isinstance(result, ExecutionDriverRejectedV1)
     assert result.code == "HOLD"
-    assert engine.calls == []
+    _assert_authenticated_without_b(engine)
 
 
 def _corrupt_open_recovery_body(runtime: CommonCliExecutionRuntime) -> None:
@@ -289,10 +302,7 @@ async def test_installed_finalizer_holds_on_missing_root_before_any_b_call(
 
         async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as restarted:
             engine = _install_recorder(restarted, monkeypatch)
-            try:
-                result = await _finalize(restarted, request)
-            except H1PostSealFinalizationUnavailable:
-                pytest.xfail("separate installed H1 finalize_execution is absent")
+            result = await _finalize(restarted, request)
             _assert_held_without_b(result, engine)
 
 
@@ -309,29 +319,45 @@ async def test_installed_finalizer_holds_on_corrupt_root_before_any_b_call(
         async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as restarted:
             engine = _install_recorder(restarted, monkeypatch)
             _corrupt_open_recovery_body(restarted)
-            try:
-                result = await _finalize(restarted, request)
-            except H1PostSealFinalizationUnavailable:
-                pytest.xfail("separate installed H1 finalize_execution is absent")
+            result = await _finalize(restarted, request)
             _assert_held_without_b(result, engine)
 
 
 @pytest.mark.asyncio
-@_RED
+@pytest.mark.parametrize(
+    "replace_resource_issuer", (False, True), ids=("worker-restart", "issuer-rollover")
+)
 async def test_installed_private_finalizer_is_available_after_durable_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace_resource_issuer: bool
 ) -> None:
     """A complete durable chain is prerequisite evidence, never live authority."""
     slot, expected = installed_slot(tmp_path)
     await prepare_installed_slot(slot, expected, tmp_path)
+    resources = _resources(tmp_path)
     with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
+        async with open_installed_h1_runtime(launch, resources=resources) as runtime:
             request, initial = await _durable_four_stage_chain(runtime)
 
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as restarted:
+        reopened_resources = _resources(tmp_path) if replace_resource_issuer else resources
+        async with open_installed_h1_runtime(launch, resources=reopened_resources) as restarted:
             engine = _install_recorder(restarted, monkeypatch)
             replay = await restarted.advance_execution(advance(initial, request))
+            assert isinstance(replay, SelectedExecutionReceiptV1)
             assert replay.phase == "RUNNING"
             assert replay.disposition == "EXACT_REPLAY"
-            assert engine.calls == []
-            await _finalize(restarted, request)
+            _assert_authenticated_without_b(engine)
+            before = _recovery_body_and_tip(restarted)
+            result = await _finalize(restarted, request)
+            if replace_resource_issuer:
+                assert isinstance(result, ExecutionDriverRejectedV1)
+                assert result.code == "HOLD"
+                assert result.reason == "H1 recovery preterminal current is stale"
+                assert _recovery_body_and_tip(restarted) == before
+                return
+            assert isinstance(result, SelectedExecutionReceiptV1)
+            assert result.phase == "TERMINAL"
+            assert result.selected_run_state == "SUCCEEDED"
+            assert result.identity == request.identity
+            assert result.original_driver_command_fingerprint == (
+                request.original_driver_command_fingerprint()
+            )

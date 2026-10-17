@@ -38,7 +38,15 @@ from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+    from chiplog.composition.r14_original_call_resolution_publication import (
+        OriginalResolutionHistoryRuntime,
+        RetainedOriginalCallResolutionPublication,
+        SelectedEntry,
+    )
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 OPERATION = "agent_loop.loop-semantic-reduction.v1"
 OWNER_OPERATION = "agent_loop.prepare_loop_semantic_reduction.v1"
@@ -129,7 +137,11 @@ def _selected_entries(runtime: CommonCliExecutionRuntime):
     return found
 
 
-def validate_selected_command(runtime, entry, batch):
+def validate_selected_command(
+    runtime: OriginalResolutionHistoryRuntime,
+    entry: dict[str, object],
+    batch: PhysicalPublicationCommand,
+) -> RetainedLoopSemanticReductionPublication:
     raw = entry.get(EVIDENCE_FIELD)
     if not isinstance(raw, str):
         raise ValueError("selected semantic reduction evidence missing")
@@ -155,7 +167,12 @@ def validate_selected_command(runtime, entry, batch):
     return evidence
 
 
-def _selected_anchor_sources(runtime, selected, retained, current_witness=None):
+def _selected_anchor_sources(
+    runtime: object,
+    selected: SelectedEntry,
+    retained: RetainedOriginalCallResolutionPublication,
+    current_witness: RecoverySourceRecord | None = None,
+) -> tuple[RecoverySourceRecord, ...]:
     decision_id, decision_bytes, _, batch = selected
     decision_raw = decision_bytes.encode() if isinstance(decision_bytes, str) else decision_bytes
     decision_digest = _sha(decision_raw)
@@ -192,7 +209,10 @@ def _selected_anchor_sources(runtime, selected, retained, current_witness=None):
     return (*sources, current_witness or retained.request.cut.selected_witness)
 
 
-def _selection_prefix(selected, current) -> bool:
+def _selection_prefix(
+    selected: Sequence[tuple[object, object, object, object]],
+    current: Sequence[tuple[object, object, object, object]],
+) -> bool:
     """Require the full previously authenticated selection chain unchanged."""
     return len(current) >= len(selected) and all(
         before[0] == after[0] and before[1] == after[1] and before[3] == after[3]
@@ -440,7 +460,7 @@ def validate_loop_semantic_reduction_startup(runtime) -> None:
                 base_commitment=resulting,
                 end_sequence=current_sequence,
                 end_commitment=actual,
-                base_witness=prior_request.request.complete_anchor_sources[-1],
+                base_witness=base_witness,
                 owner_snapshot=owner_snapshot,
                 loop_entries=loop_entries,
             )
@@ -480,7 +500,7 @@ def validate_loop_semantic_reduction_startup(runtime) -> None:
                 base_commitment=resulting,
                 end_sequence=pending_batch.expected_head,
                 end_commitment=anchored,
-                base_witness=prior_request.request.complete_anchor_sources[-1],
+                base_witness=base_witness,
                 owner_snapshot=owner_snapshot,
                 loop_entries=loop_entries,
             )
@@ -527,7 +547,7 @@ def capture_request(runtime: CommonCliExecutionRuntime) -> PrepareLoopSemanticRe
         if prepared is None or prepared != retained.prepared:
             raise LoopRejected("selected original resolver anchors are unavailable")
         existing_reductions = _selected_entries(runtime)
-        expected = Absent()
+        expected: Absent | SelectedLoopSemanticReduction = Absent()
         if existing_reductions:
             validate_loop_semantic_reduction_startup(runtime)
             current_reduction = runtime.read_selected_loop_semantic_reduction()
@@ -582,7 +602,9 @@ def capture_request(runtime: CommonCliExecutionRuntime) -> PrepareLoopSemanticRe
         )
 
 
-async def _owner_exchange(runtime, request):
+async def _owner_exchange(
+    runtime: R14PlanningRuntime, request: PrepareLoopSemanticReduction
+) -> tuple[PreparedLoopSemanticReduction, PublicPortCall, PublicPortSuccess]:
     engine = runtime._supervisor.runtime()
     callee = engine.session("agent_loop")
     sent = PublicPortCall(
@@ -620,7 +642,9 @@ async def _owner_exchange(runtime, request):
     return prepared, sent, reply
 
 
-async def _finish(runtime, entry):
+async def _finish(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> PreparedLoopSemanticReduction:
     batch = runtime._publication(entry)
     evidence = validate_selected_command(runtime, entry, batch)
     await runtime._recover_exact(
