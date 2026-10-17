@@ -546,10 +546,16 @@ def test_partial_chain_cannot_admit_runtime() -> None:
 @pytest.mark.parametrize(
     "old,new",
     [
-        (
-            'f"file:{self._database}?mode=ro", uri=True,\n'
-            "                isolation_level=None, cached_statements=0",
-            '":memory:", cached_statements=0',
+        pytest.param(
+            (
+                'f"file:{self._database}?mode=ro",\n                uri=True,\n          '
+                "      isolation_level=None,\n                cached_statements=0,"
+            ),
+            ('":memory:", cached_statements=0'),
+            id=(
+                'f"file:{self._database}?mode=ro", uri=True,\n                isolation_'
+                'level=None, cached_statements=0-":memory:", cached_statements=0'
+            ),
         ),
         (
             "self._execute_planning_read(connection, operation, snapshot)",
@@ -1083,13 +1089,27 @@ def test_runtime_preparation_retains_each_actual_sql_and_parameter_forwarding() 
 @pytest.mark.parametrize(
     "old,new",
     [
-        (
-            "isolation_level=None, cached_statements=0",
-            "isolation_level=None, cached_statements=128",
+        pytest.param(
+            ("isolation_level=None,\n                cached_statements=0,"),
+            ("isolation_level=None,\n                cached_statements=128,"),
+            id=(
+                "isolation_level=None, cached_statements=0-isolation_level=None, cached"
+                "_statements=128"
+            ),
         ),
-        (
-            "connection, publication_sql, publication_parameters, publication_reads,",
-            "connection, record_sql, publication_parameters, publication_reads,",
+        pytest.param(
+            (
+                "connection,\n            publication_sql,\n            publication_param"
+                "eters,\n            publication_reads,"
+            ),
+            (
+                "connection,\n            record_sql,\n            publication_parameters"
+                ",\n            publication_reads,"
+            ),
+            id=(
+                "connection, publication_sql, publication_parameters, publication_reads"
+                ",-connection, record_sql, publication_parameters, publication_reads,"
+            ),
         ),
         (
             "canonical_statement=canonical_statements[1]",
