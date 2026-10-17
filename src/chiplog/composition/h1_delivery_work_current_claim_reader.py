@@ -75,14 +75,12 @@ class H1DeliveryWorkCurrentClaimReader:
         runtime, sources = self._require_open()
         try:
             with runtime._authority_gate().hold():
-                connection = runtime._appender._materializer._connection  # type: ignore[attr-defined]
+                connection = runtime._appender._materializer._connection
                 connection.execute("BEGIN")
                 try:
                     source, genesis = sources._selected_source_held(intent_id)
                     g0 = sources._read_exact_g0(genesis, source, connection)
-                    claim, binding, decision = self._selected_claim(
-                        intent_id, source, genesis, g0
-                    )
+                    claim, binding, decision = self._selected_claim(intent_id, source, genesis, g0)
                     self._require_current(runtime, source.tenant_id, binding)
                     g1 = self._read_exact_g1(connection, claim, decision, binding)
                     return H1DeliveryWorkCurrentClaimEvidence(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from chiplog.capabilities.agent_loop.delivery_work_contracts import prepare_delivery_work_genesis
 from chiplog.composition.h1_delivery_work_sources import (
@@ -56,7 +56,7 @@ class DeliveryWorkGenesisAuthority:
         runtime = self._runtime
         if runtime is None:
             return False
-        source = runtime._h1_delivery_work_sources.read_absent(  # type: ignore[attr-defined]
+        source = cast(H1DeliveryWorkSources, runtime._h1_delivery_work_sources).read_absent(  # type: ignore[attr-defined]
             DeliveryWorkLocatorV1(request.selected_source.intent_id)
         )
         return (
@@ -133,7 +133,7 @@ class DeliveryWorkGenesisAuthority:
             return "CONFLICT"
         try:
             with runtime._authority_gate().hold():
-                connection = runtime._appender._materializer._connection  # type: ignore[attr-defined]
+                connection = runtime._appender._materializer._connection
                 record = request.complete_records[0]
                 expectation = PublicationExpectation(
                     request.identity.tenant_id,
@@ -167,7 +167,7 @@ class DeliveryWorkGenesisAuthority:
         if type(request) is not DeliveryWorkGenesisBatchV1 or runtime is None:
             return False
         try:
-            connection = runtime._appender._materializer._connection  # type: ignore[attr-defined]
+            connection = runtime._appender._materializer._connection
             if not connection.in_transaction:
                 return False
             record = request.complete_records[0]

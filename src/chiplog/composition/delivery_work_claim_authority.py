@@ -241,7 +241,7 @@ class DeliveryWorkClaimAuthority:
                 and epoch == clock.clock_epoch
                 and clock.trusted_clock_ns <= now_ns < clock.lease_expires_at_ns
             )
-        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        except AttributeError, OSError, RuntimeError, TypeError, ValueError:
             return False
 
     def materialization_state(
@@ -252,13 +252,13 @@ class DeliveryWorkClaimAuthority:
             return "CONFLICT"
         try:
             with runtime._authority_gate().hold():
-                connection = runtime._appender._materializer._connection  # type: ignore[attr-defined]
+                connection = runtime._appender._materializer._connection
                 connection.execute("BEGIN")
                 try:
                     return self._state_on_connection(decision, connection)
                 finally:
                     connection.rollback()
-        except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError):
+        except sqlite3.Error, OSError, RuntimeError, TypeError, ValueError:
             return "CONFLICT"
 
     def check_selected_predecessor(self, decision: SelectedOwnerDecision) -> bool:
@@ -266,11 +266,11 @@ class DeliveryWorkClaimAuthority:
         if runtime is None:
             return False
         try:
-            connection = runtime._appender._materializer._connection  # type: ignore[attr-defined]
+            connection = runtime._appender._materializer._connection
             if not connection.in_transaction:
                 return False
             return self._state_on_connection(decision, connection) == "ABSENT"
-        except (sqlite3.Error, OSError, RuntimeError, TypeError, ValueError):
+        except sqlite3.Error, OSError, RuntimeError, TypeError, ValueError:
             return False
 
     def _state_on_connection(
@@ -291,11 +291,7 @@ class DeliveryWorkClaimAuthority:
         request = decision.prepared.request
         binding = decision.prepared.delivery_work_claim_binding
         runtime = self._runtime
-        if (
-            type(request) is not DeliveryWorkClaimBatchV1
-            or binding is None
-            or runtime is None
-        ):
+        if type(request) is not DeliveryWorkClaimBatchV1 or binding is None or runtime is None:
             raise ValueError("selected delivery-work claim binding is absent")
         validate_delivery_work_claim_binding(request, binding)
         candidates = tuple(
@@ -365,12 +361,17 @@ class DeliveryWorkClaimAuthority:
             "WHERE tenant_id=? AND record_id=?",
             (request.identity.tenant_id, record.record_id),
         ).fetchone()
-        return row is not None and tuple(row) == (
-            record.owner,
-            record.schema_id,
-            record.canonical_bytes,
-            genesis.tenant_commit_sequence,
-        ) and record.canonical_bytes == binding.claim_projection.predecessor.canonical_bytes()
+        return (
+            row is not None
+            and tuple(row)
+            == (
+                record.owner,
+                record.schema_id,
+                record.canonical_bytes,
+                genesis.tenant_commit_sequence,
+            )
+            and record.canonical_bytes == binding.claim_projection.predecessor.canonical_bytes()
+        )
 
     def verify(
         self,
@@ -390,9 +391,9 @@ class DeliveryWorkClaimAuthority:
             selected is not None and selected.prepared.request != request
         ):
             raise StoreAdmissionError("delivery-work claim selected decision differs")
-        binding = (
-            None if selected is None else selected.prepared.delivery_work_claim_binding
-        ) or (None if prepared is None else prepared.delivery_work_claim_binding)
+        binding = (None if selected is None else selected.prepared.delivery_work_claim_binding) or (
+            None if prepared is None else prepared.delivery_work_claim_binding
+        )
         if binding is None:
             raise StoreAdmissionError("delivery-work claim binding is absent")
         try:
@@ -422,8 +423,10 @@ class DeliveryWorkClaimAuthority:
             raise StoreAdmissionError("delivery-work claim physical projection differs")
         if mode in ("PRECOMMIT", "REPLAY") and selected is None:
             raise StoreAdmissionError("delivery-work claim has no selected decision")
-        if mode == "PRESELECT" and selected is None and not self._current_claimant_clock_matches(
-            binding
+        if (
+            mode == "PRESELECT"
+            and selected is None
+            and not self._current_claimant_clock_matches(binding)
         ):
             raise StoreAdmissionError(
                 "delivery-work claim current authority expired before selection"
