@@ -74,7 +74,7 @@ def _dominates(
     return False
 
 
-def _frame(call: ast.Call, method: ast.AST, parents: dict[ast.AST, ast.AST]) -> None:
+def _frame(call: ast.AST, method: ast.AST, parents: dict[ast.AST, ast.AST]) -> None:
     parent = parents[call]
     while parent is not method:
         if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
