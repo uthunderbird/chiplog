@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal, NotRequired, TypedDict
 
 import pytest
 
@@ -54,10 +55,23 @@ def _root() -> H1PostSealRecoveryRootV1:
     )
 
 
+class _StageFields(TypedDict):
+    stage: str
+    stage_ordinal: int
+    semantic_input: NotRequired[bytes]
+    semantic_input_digest: NotRequired[str]
+    effects_command_id: NotRequired[str | None]
+    result_bytes: NotRequired[bytes]
+    result_digest: NotRequired[str]
+
+
 def _record(
-    entry_id: str, raw: bytes, kind: str, stage: str | None
+    entry_id: str,
+    raw: bytes,
+    kind: Literal["ROOT", "STAGE_INPUT", "STAGE_RESULT"],
+    stage: str | None,
 ) -> H1PostSealRecoverySelectedRecord:
-    return H1PostSealRecoverySelectedRecord(entry_id, raw, kind, stage)  # type: ignore[arg-type]
+    return H1PostSealRecoverySelectedRecord(entry_id, raw, kind, stage)
 
 
 def _effects_prefix(
@@ -69,7 +83,7 @@ def _effects_prefix(
         _record("root", root_record.canonical_bytes(), "ROOT", None)
     ]
     predecessor = "root"
-    stages: list[tuple[str, str]] = [
+    stages: list[tuple[Literal["STAGE_INPUT", "STAGE_RESULT"], str]] = [
         ("STAGE_INPUT", "COMPLETION"),
         ("STAGE_RESULT", "COMPLETION"),
         ("STAGE_INPUT", "CONVERSATION"),
@@ -83,20 +97,24 @@ def _effects_prefix(
     stage_names = ("COMPLETION", "CONVERSATION", "EFFECTS", "TERMINAL_WORK")
     for index, (kind, stage) in enumerate(stages):
         payload = f"{kind}:{stage}".encode()
-        kwargs: dict[str, object] = {
+        kwargs: _StageFields = {
             "stage": stage,
             "stage_ordinal": stage_names.index(stage),
         }
         if kind == "STAGE_INPUT":
             kwargs.update(
-                semantic_input=payload,
-                semantic_input_digest=hashlib.sha256(payload).hexdigest(),
-                effects_command_id="effects-command" if stage == "EFFECTS" else None,
+                {
+                    "semantic_input": payload,
+                    "semantic_input_digest": hashlib.sha256(payload).hexdigest(),
+                    "effects_command_id": "effects-command" if stage == "EFFECTS" else None,
+                }
             )
         else:
-            kwargs.update(result_bytes=payload, result_digest=hashlib.sha256(payload).hexdigest())
+            kwargs.update(
+                {"result_bytes": payload, "result_digest": hashlib.sha256(payload).hexdigest()}
+            )
         raw = H1PostSealRecoveryRecordV1(
-            kind,  # type: ignore[arg-type]
+            kind,
             root.root_id(),
             predecessor,
             **kwargs,

@@ -13,7 +13,7 @@ from chiplog.platform.r7_trust import TrustOwnerCall, TrustOwnerResult
 from tests.capabilities.agent_loop.test_execution_recovery_preparation import _resume_request
 
 
-def _session(owner, tenant):
+def _session(owner: str, tenant: str) -> BrokerSession:
     return BrokerSession(
         tenant_id=tenant,
         broker_epoch=1,
