@@ -77,6 +77,43 @@ PostgreSQL target одной транзакцией. SQLite-источник о�
 формат: planning/R14 authority bundles и их sidecars требуют отдельного пути
 миграции и целиком отклоняются.
 
+## Native CLI
+
+`native-chat` использует аутентифицированный durable inbox, общий native driver
+и доставку в приватный inbox текущего UID. Это отдельный вход; `chat` выше
+остаётся legacy-диалогом. OAuth разрешает обращение к модели, но не заменяет
+tenant/principal/credential/session и не выдаёт deployment entitlement.
+
+Для нового пользователя сначала выполните `bootstrap` с нужной идентичностью.
+Создайте приватный каталог состояния, например `mkdir -m 700 ~/.chiplog/native`.
+Оператор отдельно предоставляет актуальный подписанный `CurrentEntitlement`
+для `delivery.first_send`: JSON, Ed25519-подпись (64 raw bytes) и доверенный
+публичный ключ (32 raw bytes). Команда не создаёт READY и не заменяет уже
+выбранный другой entitlement.
+
+```sh
+uv run chiplog native-chat \
+  --tenant me --principal me --credential local --session shell \
+  --request-id message-001 --message 'Помоги продумать план на неделю' \
+  --state-dir ~/.chiplog/native \
+  --entitlement /path/to/grant.json \
+  --entitlement-proof /path/to/grant.sig \
+  --verification-key /path/to/operator-public.key
+```
+
+Нужны `CHIPLOG_POSTGRES_DSN`, `CHIPLOG_R6_OPERATOR_SECRET` и, для провайдера
+Codex по умолчанию, сохранённая OAuth-сессия. `--model` и `--effort` задают модель.
+Повторите тот же request-id с теми же сообщением, каталогом и настройками,
+чтобы прочитать уже принятый ответ без нового model/SEND. Изменённые входные
+байты под тем же ID отклоняются. Перед выводом stdout команда подтверждает
+точные принятые байты в локальном inbox; stdout не считается durable receipt.
+Запрос модели на consequential action возвращает HOLD до явного принятия через
+native effects API, а не выполняется командой автоматически.
+
+Для герметичного offline-прогона есть явный `--model-provider hermetic` и
+повторяемый `--response-file` с точными model JSON bytes; автоматического fallback
+с Codex нет. При replay завершённого Run файлы ответов не нужны.
+
 ## Программный native client
 
 Новый default entrypoint для V2/V3 execution —

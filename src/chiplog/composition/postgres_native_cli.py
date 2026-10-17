@@ -26,6 +26,7 @@ from chiplog.composition.postgres_ingress import (
     subject,
 )
 from chiplog.composition.postgres_local_delivery import PostgresLocalDeliveryBinding
+from chiplog.composition.postgres_planning import open_postgres_planning_runtime
 from chiplog.platform.deployment_gate import CurrentEntitlement, DeploymentGateRequest
 from chiplog.platform.postgres_gate import PostgresDeploymentGate, canonical
 
@@ -69,6 +70,12 @@ async def run_native_chat(
     proof = config.entitlement_proof.read_bytes()
     if not verify(encoded, proof):
         raise PermissionError("independent entitlement proof rejected")
+    # Authenticate before the local provider creates or pins any durable state.
+    async with open_postgres_planning_runtime(
+        tenant_id=config.tenant, operator_secret=operator_secret
+    ) as admission:
+        with admission._transaction() as (_connection, trust):
+            admission._context(trust, config.principal, config.credential, config.session)
     scope = canonical([config.tenant, config.principal, os.getuid()])
     receipt_key = hmac.digest(operator_secret, b"native-cli.receipt.v1\x00" + scope, "sha256")
     issuer_key = hmac.digest(operator_secret, b"native-cli.ingress.v1\x00" + scope, "sha256")

@@ -38,7 +38,7 @@ def test_actual_native_chat_command_delivers_locally_and_replays_without_model(
     }
     prefix = [sys.executable, "-m", "chiplog.cli"]
     bootstrap = subprocess.run(
-        prefix + ["bootstrap", *identity, "--database-instance", "db", "--token", "bootstrap"],
+        [*prefix, "bootstrap", *identity, "--database-instance", "db", "--token", "bootstrap"],
         env=environment,
         capture_output=True,
     )
@@ -79,7 +79,8 @@ def test_actual_native_chat_command_delivers_locally_and_replays_without_model(
         ],
     }
     (tmp_path / "response.json").write_text(json.dumps(response))
-    command = prefix + [
+    command = [
+        *prefix,
         "native-chat",
         *identity,
         "--request-id",
@@ -97,8 +98,14 @@ def test_actual_native_chat_command_delivers_locally_and_replays_without_model(
         "--model-provider",
         "hermetic",
     ]
+    for option in ("--principal", "--session"):
+        forged = list(command)
+        forged[forged.index(option) + 1] = "forged"
+        denied = subprocess.run(forged, env=environment, capture_output=True)
+        assert denied.returncode != 0 and denied.stdout == b""
+        assert not (tmp_path / "inbox").exists()
     first = subprocess.run(
-        command + ["--response-file", str(tmp_path / "response.json")],
+        [*command, "--response-file", str(tmp_path / "response.json")],
         env=environment,
         capture_output=True,
     )
