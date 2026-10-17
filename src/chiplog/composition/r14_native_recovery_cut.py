@@ -106,6 +106,13 @@ from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import join_workspace_snapshot, read_connection
 
 if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.execution_initialization_contracts import (
+        SelectedAdmittedRunInput,
+    )
+    from chiplog.composition.common_execution_driver_contracts import DriveInputRequestV1
+    from chiplog.composition.r17_ingress_history import HistoryRecord
+    from chiplog.platform.owner_publications import SelectedOwnerDecision
+
     from .r14_recovery_publication import RetainedRecoveryPublication
 
 
@@ -608,8 +615,8 @@ def classify_native_occurrences(
 def _current_successor_ingress_occurrences(
     runtime: CommonCliExecutionRuntime,
     inventory: R16NativeInventory,
-    driver_request,
-    admitted,
+    driver_request: DriveInputRequestV1,
+    admitted: SelectedAdmittedRunInput,
 ) -> tuple[dict[str, tuple[str, str, bytes]], dict[str, tuple[str, str, bytes]]] | None:
     """Return only the exact selected R17 chain for this current CLI request.
 
@@ -664,7 +671,7 @@ def _current_successor_ingress_occurrences(
         ):
             return None
 
-        matching: list[tuple[object, object]] = []
+        matching: list[tuple[SelectedOwnerDecision, HistoryRecord]] = []
         for decision, record in zip(decisions, records, strict=True):
             if record.command.token.token_id == admitted_record.command.token.token_id:
                 matching.append((decision, record))
@@ -840,8 +847,8 @@ class NativeRecoveryCutSource:
     def collect_for_successor_held(
         self,
         runtime: CommonCliExecutionRuntime,
-        driver_request,
-        admitted,
+        driver_request: DriveInputRequestV1,
+        admitted: SelectedAdmittedRunInput,
     ) -> tuple[ExecutionRecoveryCut, SelectedExecutionSuspension] | None:
         """Collect a suspended cut with the exact current selected CLI admission."""
         if type(runtime) is not CommonCliExecutionRuntime:
@@ -869,7 +876,7 @@ class NativeRecoveryCutSource:
         runtime: CommonCliExecutionRuntime,
         *,
         allow_suspended: bool = False,
-        successor_input=None,
+        successor_input: tuple[DriveInputRequestV1, SelectedAdmittedRunInput] | None = None,
     ) -> ExecutionRecoveryCut | tuple[ExecutionRecoveryCut, SelectedExecutionSuspension] | None:
         runtime._check_database_identity()
         if runtime._pending() or runtime._pending_gate_publications():
@@ -1569,33 +1576,43 @@ class NativeRecoveryCutSource:
                     return None
                 selected_ref = _ref(batch.identity.command_id, decision_raw, decision.decision_id)
                 manifest = retained.loop_proposal.complete_acceptance_manifest
-                for record in batch.complete_records:
+                for acceptance_record in batch.complete_records:
                     physical = next(
-                        (row for row in inventory.records if row.record_id == record.record_id),
+                        (
+                            row
+                            for row in inventory.records
+                            if row.record_id == acceptance_record.record_id
+                        ),
                         None,
                     )
                     if physical is None or (physical.owner, physical.schema, physical.raw) != (
-                        record.owner,
-                        record.schema_id,
-                        record.canonical_bytes,
+                        acceptance_record.owner,
+                        acceptance_record.schema_id,
+                        acceptance_record.canonical_bytes,
                     ):
                         return None
                     logical_subject = next(
-                        (member for member in manifest if member.subject_id == record.record_id),
+                        (
+                            member
+                            for member in manifest
+                            if member.subject_id == acceptance_record.record_id
+                        ),
                         None,
                     )
-                    native_sources.setdefault(record.record_id, []).append(
+                    native_sources.setdefault(acceptance_record.record_id, []).append(
                         RecoverySourceRecord(
-                            owner=record.owner,
+                            owner=acceptance_record.owner,
                             subject=logical_subject
-                            or _ref(record.record_id, record.canonical_bytes),
-                            schema_id=record.schema_id,
-                            canonical_record_bytes=record.canonical_bytes,
+                            or _ref(acceptance_record.record_id, acceptance_record.canonical_bytes),
+                            schema_id=acceptance_record.schema_id,
+                            canonical_record_bytes=acceptance_record.canonical_bytes,
                             selected_decision=selected_ref,
-                            physical_record=_ref(record.record_id, record.canonical_bytes),
+                            physical_record=_ref(
+                                acceptance_record.record_id, acceptance_record.canonical_bytes
+                            ),
                         )
                     )
-                    known.add(record.record_id)
+                    known.add(acceptance_record.record_id)
         if successor_input is not None:
             selected_ingress = _current_successor_ingress_occurrences(
                 runtime, inventory, *successor_input
@@ -2643,7 +2660,7 @@ class NativeRecoveryCutSource:
             if closure is not None or reduction is not None:
                 raise ValueError("direct terminal cannot carry recovery closure or reduction")
             resolver_sources: tuple[RecoverySourceRecord, ...] = ()
-            call_result_ref = disposition.result
+            call_result_ref: HeadMarker = disposition.result
             obligation_heads: tuple[HeadMarker, ...] = ()
             reduction_heads: tuple[HeadMarker, ...] = ()
             evidence_heads: tuple[HeadMarker, ...]
@@ -2802,7 +2819,7 @@ class NativeRecoveryCutSource:
                 children.append(intent_source)
         acceptance_manifest = acceptance.complete_acceptance_manifest
         if direct_result is not None:
-            resolved_manifest: list[HeadMarker] = []
+            resolved_manifest: list[Present] = []
             for manifest_reference in acceptance_manifest:
                 revision = _selected_source_revision(
                     manifest_reference, (*physical_sources, *children)
