@@ -22,7 +22,7 @@ from chiplog.composition.r14_recovery_profile_publication import (
 )
 
 
-def test_native_recovery_profile_v2_is_closed_and_distinct_from_v1():
+def test_native_recovery_profile_v2_is_closed_and_distinct_from_v1() -> None:
     old = native_one_call_recovery_profile()
     current = native_one_call_recovery_profile_v2()
 
@@ -43,7 +43,7 @@ def test_native_recovery_profile_v2_is_closed_and_distinct_from_v1():
         decode_native_one_call_recovery_profile(current.canonical_bytes())
 
 
-def test_profile_command_keeps_exact_v1_decoder_and_selects_v2_schema():
+def test_profile_command_keeps_exact_v1_decoder_and_selects_v2_schema() -> None:
     old = RetainedNativeProfilePublication(
         tenant_id="tenant",
         database_id="db",
@@ -64,7 +64,7 @@ def test_profile_command_keeps_exact_v1_decoder_and_selects_v2_schema():
     assert current_command.records[0].schema_id.endswith(".v2")
 
 
-def test_native_recovery_profile_v3_preserves_v2_and_registers_accepted_transitions():
+def test_native_recovery_profile_v3_preserves_v2_and_registers_accepted_transitions() -> None:
     v2 = native_one_call_recovery_profile_v2()
     v3 = native_one_call_recovery_profile_v3()
 
@@ -122,7 +122,7 @@ def test_v2_selection_guard_rejects_v1_rows_and_late_lineage(tmp_path):
         _assert_v2_precedes_covered_lineage(runtime, profile_sequence=1)
 
 
-def test_v5_adds_obligation_suspend_transitions_without_reinterpreting_v4():
+def test_v5_adds_obligation_suspend_transitions_without_reinterpreting_v4() -> None:
     v4 = native_one_call_recovery_profile_v4()
     v5 = native_one_call_recovery_profile_v5()
 

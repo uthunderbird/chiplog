@@ -19,7 +19,7 @@ VERSIONS = {
 }
 
 
-def test_public_complete_genesis_retains_every_explicit_member_and_is_immutable():
+def test_public_complete_genesis_retains_every_explicit_member_and_is_immutable() -> None:
     value = VERSIONS | {"tenant_id": "tenant", "database_instance_id": "database"}
     genesis = DatabaseGenesisV2(**value)
     assert genesis.model_dump() == value
@@ -47,14 +47,14 @@ def test_v2_genesis_does_not_coerce_or_reinterpret_another_genesis_version(versi
         }))
 
 
-def test_tuple_can_represent_unknown_positive_version_without_admitting_it():
+def test_tuple_can_represent_unknown_positive_version_without_admitting_it() -> None:
     observed = DatabaseVersionTuple(**(VERSIONS | {"registry_version": 999}))
     assert observed.registry_version == 999
     # No initializer, parser, registered running tuple or admission result is
     # inferred from this observation; the startup implementation is still absent.
 
 
-def test_unsupported_failure_has_fixed_typed_code_and_adoption_status():
+def test_unsupported_failure_has_fixed_typed_code_and_adoption_status() -> None:
     failure = UnsupportedSchemaVersion("registry version differs")
     assert str(failure) == "registry version differs"
     assert failure.code == "UNSUPPORTED_SCHEMA_VERSION"

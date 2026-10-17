@@ -122,7 +122,7 @@ def _original_cut_accounting():
     return cut, accounting
 
 
-def test_original_resolver_witness_is_independent_of_consumed_append_evidence():
+def test_original_resolver_witness_is_independent_of_consumed_append_evidence() -> None:
     cut, accounting = _original_cut_accounting()
     assert _continuation_closures(cut, accounting) == (
         cut.original_closures,
@@ -164,7 +164,7 @@ def _native_cut_accounting():
     return cut, accounting
 
 
-def test_native_body_aliases_keep_physical_carriers_separate():
+def test_native_body_aliases_keep_physical_carriers_separate() -> None:
     cut, accounting = _native_cut_accounting()
     assert _continuation_closures(cut, accounting) == (
         cut.original_closures,
@@ -216,7 +216,7 @@ def _cut_with_opening_terminal_aliases():
     return cut, accounting
 
 
-def test_native_opening_terminal_physical_aliases_are_not_duplicate_logical_sources():
+def test_native_opening_terminal_physical_aliases_are_not_duplicate_logical_sources() -> None:
     cut, accounting = _cut_with_opening_terminal_aliases()
     assert _continuation_closures(cut, accounting) == (
         cut.original_closures,
@@ -375,7 +375,7 @@ def test_original_join_rejects_self_consistent_reduction_projection(mutation):
         _continuation_closures(cut, accounting)
 
 
-def test_original_join_rejects_terminal_for_another_intent():
+def test_original_join_rejects_terminal_for_another_intent() -> None:
     from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
         AcceptedOpenTerminalDispositionV1,
     )
@@ -403,7 +403,7 @@ def test_original_join_rejects_terminal_for_another_intent():
         _continuation_closures(cut, accounting)
 
 
-def test_compatible_append_preserves_immutable_accepted_witness():
+def test_compatible_append_preserves_immutable_accepted_witness() -> None:
     from tests.capabilities.agent_loop.test_original_call_resolution_preparation import _head
     from tests.capabilities.effects.support.dispatch_outcomes import original_send
     from tests.capabilities.effects.test_dispatch_outcomes import request as outcome_request

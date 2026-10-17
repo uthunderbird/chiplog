@@ -45,7 +45,9 @@ class RetainedNativeProfilePublication(RecoveryDTO):
     predecessor: str
 
 
-def profile_command(evidence):
+def profile_command(evidence: RetainedNativeProfilePublication) -> PhysicalPublicationCommand:
+    profile: RecoveryDTO
+    schema: str
     try:
         profile = decode_native_one_call_recovery_profile(evidence.record_bytes)
         operation, schema = PROFILE_OPERATION, SCHEMA

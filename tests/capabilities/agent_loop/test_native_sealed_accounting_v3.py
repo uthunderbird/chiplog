@@ -103,7 +103,7 @@ def _accepted_frontier(call_id, disposition):
     )
 
 
-def test_v3_accounts_complete_ordered_members_of_exact_selected_seal():
+def test_v3_accounts_complete_ordered_members_of_exact_selected_seal() -> None:
     first, second = _two_frontiers()
 
     prepared = prepare_native_sealed_accounting_v3(_request((first, second)))
@@ -116,7 +116,7 @@ def test_v3_accounts_complete_ordered_members_of_exact_selected_seal():
     assert not hasattr(prepared, "continuation")
 
 
-def test_v3_accounts_three_accepted_members_with_distinct_existing_outcomes():
+def test_v3_accounts_three_accepted_members_with_distinct_existing_outcomes() -> None:
     recovery_call_id = "call-recovery"
     obligation = OriginalObligationBinding(
         original_run_id="run",
@@ -179,7 +179,7 @@ def test_v3_accounts_three_accepted_members_with_distinct_existing_outcomes():
     )
 
 
-def test_v3_holds_reordered_members_instead_of_sorting_them():
+def test_v3_holds_reordered_members_instead_of_sorting_them() -> None:
     first, second = _two_frontiers()
 
     with pytest.raises(RecoveryHold, match="ordered sealed manifest"):
@@ -193,7 +193,7 @@ def test_v3_holds_reordered_members_instead_of_sorting_them():
         )
 
 
-def test_v3_rejects_duplicate_members_and_cross_seal_substitution():
+def test_v3_rejects_duplicate_members_and_cross_seal_substitution() -> None:
     first, second = _two_frontiers()
     with pytest.raises(RecoveryIntegrityFault, match="duplicate"):
         prepare_native_sealed_accounting_v3(
@@ -211,7 +211,7 @@ def test_v3_rejects_duplicate_members_and_cross_seal_substitution():
         )
 
 
-def test_v3_static_owner_route_uses_its_versioned_wire_schemas():
+def test_v3_static_owner_route_uses_its_versioned_wire_schemas() -> None:
     first, second = _two_frontiers()
     request = _request((first, second))
     route = next(
