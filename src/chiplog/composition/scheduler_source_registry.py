@@ -12,6 +12,7 @@ import hashlib
 import json
 import sys
 import sysconfig
+import tomllib
 from dataclasses import asdict, dataclass
 from importlib.metadata import version
 from pathlib import Path
@@ -62,6 +63,8 @@ _MANIFEST_V2D = Path(__file__).with_name("scheduler_source_manifest_v2d.json")
 _MANIFEST_V2D_SHA = "2f0fa7506bd3edbd3f097104f4f868eb9fe907061468df326b1a2af37a2ce385"
 _MANIFEST_V3 = Path(__file__).with_name("scheduler_source_manifest_v3.json")
 _MANIFEST_V3_SHA = "36041f23cf61e8834cfe3ac89ce7e884f1224f68be9e9694f501950e719a8ca2"
+_MANIFEST_V3_REVISION2 = Path(__file__).with_name("scheduler_source_manifest_v3_revision2.json")
+_MANIFEST_V3_REVISION2_SHA = "5d01204db2e1bf02c02fbd815d682a4d707b66d88ca34ea95fe13e636bdc7eec"
 _V2B_CLOSURE_SHA = "928b044048cfed0e9cd62677c5e8e040e221bd7d649945959b90918d17e3d49a"
 _MODULES = (
     "chiplog.composition.r15_lease_service_auth",
@@ -355,18 +358,176 @@ def _require_historical_equality(
         raise SchedulerStartupHold(selected.tenant_id, selected.command_id, str(error)) from error
 
 
+def _historical_source_matches(name: str, raw: bytes, fingerprint: str) -> bool:
+    """Recognize only the reviewed additive declarations; retain every old byte pin."""
+    if _sha(raw) == fingerprint:
+        return True
+    if name == "chiplog.capabilities.agent_loop.contracts":
+        addition = (
+            b"class LoopHold(LoopRejected):\n"
+            b'    """A valid transition is intentionally held pending reco'
+            b'very or authority."""\n\n\n'
+        )
+        return raw.count(addition) == 1 and _sha(raw.replace(addition, b"")) == fingerprint
+    if name == "chiplog.capabilities.agent_loop.delivery_work_contracts":
+        changes: tuple[tuple[bytes, bytes], ...] = (
+            (b"from typing import Final, Literal\n", b"from typing import Literal\n"),
+            (b"DELIVERY_WORK_SCHEMA: Final = ", b"DELIVERY_WORK_SCHEMA = "),
+            (
+                b"DELIVERY_WORK_GENESIS_COMMAND_SCHEMA: Final = ",
+                b"DELIVERY_WORK_GENESIS_COMMAND_SCHEMA = ",
+            ),
+            (
+                b"DELIVERY_WORK_CLAIM_COMMAND_SCHEMA: Final = ",
+                b"DELIVERY_WORK_CLAIM_COMMAND_SCHEMA = ",
+            ),
+        )
+        if any(raw.count(before) != 1 for before, _ in changes):
+            return False
+        for before, after in changes:
+            raw = raw.replace(before, after)
+        return _sha(raw) == fingerprint
+    if name == "chiplog.platform._owner_publication_contracts":
+        changes = (
+            (
+                b"from typing import Annotated, Final, Literal, Protocol\n",
+                b"from typing import Annotated, Literal, Protocol\n",
+            ),
+            (b"DELIVERY_WORK_CLAIM_OPERATION: Final = ", b"DELIVERY_WORK_CLAIM_OPERATION = "),
+        )
+        if all(raw.count(before) == 1 for before, _ in changes):
+            for before, after in changes:
+                raw = raw.replace(before, after)
+        if _sha(raw) == fingerprint:
+            return True
+        addition = b'    "r15.adopt_interval_service_policy",\n'
+        return raw.count(addition) == 1 and _sha(raw.replace(addition, b"")) == fingerprint
+    return False
+
+
+def _historical_profile_source_matches(
+    current_profile: dict[str, object], name: str, fingerprint: str
+) -> bool:
+    raw = (_ROOT / "src" / Path(*name.split(".")).with_suffix(".py")).read_bytes()
+    sources = cast(dict[str, str], current_profile["sources"])
+    return sources.get(name) == _sha(raw) and _historical_source_matches(name, raw, fingerprint)
+
+
+def _v1_compatibility_profile(current_profile: dict[str, object]) -> dict[str, object]:
+    raw = _MANIFEST.read_bytes()
+    if _sha(raw) != _MANIFEST_SHA:
+        raise ValueError("immutable V1 scheduler manifest differs")
+    old = json.loads(raw)
+    sources = dict(cast(dict[str, str], current_profile["sources"]))
+    for name, fingerprint in old["sources"].items():
+        if (
+            name
+            not in {
+                "chiplog.capabilities.agent_loop.contracts",
+                "chiplog.capabilities.agent_loop.delivery_work_contracts",
+                "chiplog.platform._owner_publication_contracts",
+            }
+            or sources.get(name) == fingerprint
+        ):
+            continue
+        if not _historical_profile_source_matches(current_profile, name, fingerprint):
+            raise ValueError("V1 shared source differs: " + name)
+        sources[name] = fingerprint
+    projected = dict(current_profile)
+    projected["sources"] = sources
+    return projected
+
+
+def _require_historical_lock(current_profile: dict[str, object], fingerprint: str) -> None:
+    raw = (_ROOT / "uv.lock").read_bytes()
+    if _sha(raw) != current_profile["lock_sha256"]:
+        raise ValueError("observed dependency lock differs")
+    if _sha(raw) == fingerprint:
+        return
+    archived = (
+        Path(__file__).with_name("scheduler_v2b_sources").joinpath("uv.lock.source").read_bytes()
+    )
+    if _sha(archived) != fingerprint:
+        raise ValueError("historical dependency lock archive differs")
+    old = tomllib.loads(archived.decode())
+    current = tomllib.loads(raw.decode())
+    packages = cast(list[dict[str, object]], current["package"])
+    old_packages = cast(list[dict[str, object]], old["package"])
+    names = [cast(str, item["name"]) for item in packages]
+    old_names = [cast(str, item["name"]) for item in old_packages]
+    if len(set(names)) != len(names) or len(set(old_names)) != len(old_names):
+        raise ValueError("duplicate dependency lock package")
+    additions = {"orjson", "psycopg", "psycopg-binary", "tzdata"}
+    if set(names) - set(old_names) != additions:
+        raise ValueError("unreviewed dependency lock additions")
+    projected = [item for item in packages if item["name"] not in additions]
+    project = next(item for item in projected if item["name"] == "chiplog")
+    dependencies = cast(list[dict[str, object]], project["dependencies"])
+    metadata = cast(dict[str, object], project["metadata"])
+    requirements = cast(list[dict[str, object]], metadata["requires-dist"])
+    dependency_additions: tuple[dict[str, object], ...] = (
+        {"name": "orjson"},
+        {"name": "psycopg", "extra": ["binary"]},
+    )
+    for item in dependency_additions:
+        if dependencies.count(item) != 1:
+            raise ValueError("reviewed dependency lock extension differs")
+        dependencies.remove(item)
+    requirement_additions: tuple[dict[str, object], ...] = (
+        {"name": "orjson", "specifier": ">=3.13.0"},
+        {"name": "psycopg", "extras": ["binary"], "specifier": ">=3.3,<4"},
+    )
+    for item in requirement_additions:
+        if requirements.count(item) != 1:
+            raise ValueError("reviewed dependency lock requirement differs")
+        requirements.remove(item)
+    current["package"] = projected
+    if current != old:
+        raise ValueError("historical dependency lock contents changed")
+
+
+def _original_v3_profile() -> dict[str, object]:
+    raw = _MANIFEST_V3.read_bytes()
+    if _sha(raw) != _MANIFEST_V3_SHA:
+        raise ValueError("original V3 reviewed manifest changed")
+    return cast(dict[str, object], json.loads(raw))
+
+
+def _historical_v3_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
+    old = _original_v3_profile()
+    for name, fingerprint in cast(dict[str, str], old["sources"]).items():
+        if not _historical_profile_source_matches(current_profile, name, fingerprint):
+            raise ValueError("historical V3 evaluator artifact changed: " + name)
+    _require_historical_lock(current_profile, cast(str, old["lock_sha256"]))
+    projected = dict(current_profile)
+    projected["sources"] = old["sources"]
+    projected["lock_sha256"] = old["lock_sha256"]
+    if projected != old:
+        raise ValueError("historical V3 source closure changed")
+    graph = derive_schema_manifest(
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_materialization.py").read_bytes(),
+        (_ROOT / "src/chiplog/capabilities/agent_loop/scheduler_rollover.py").read_bytes(),
+    )
+    canonical = _canonical({"profile": old, "generated_dependency_manifest": asdict(graph)})
+    digest = _sha(canonical)
+    return SchedulerSourceRegistration(
+        Present(head="scheduler-source-registry-v3:" + digest, fingerprint=digest), canonical
+    )
+
+
 def current_scheduler_registration() -> SchedulerSourceRegistration | SourceRegistrationUnresolved:
     """Match reviewed V3 bytes; retain V1 through V2d selected history."""
     try:
         _require_v2b_closure()
-        raw_manifest = _MANIFEST_V3.read_bytes()
-        if _sha(raw_manifest) != _MANIFEST_V3_SHA:
+        _original_v3_profile()
+        raw_manifest = _MANIFEST_V3_REVISION2.read_bytes()
+        if _sha(raw_manifest) != _MANIFEST_V3_REVISION2_SHA:
             return SourceRegistrationUnresolved("reviewed V3 manifest bytes differ")
         expected = json.loads(raw_manifest)
         observed, sources, _ = _observe(v3=True)
         if observed != expected:
             return SourceRegistrationUnresolved("reviewed source/runtime artifacts differ")
-        require_v1_compatible(observed)
+        require_v1_compatible(_v1_compatibility_profile(observed))
         prefix = "chiplog.capabilities.agent_loop."
         graph = derive_schema_manifest(
             sources[prefix + "scheduler_materialization"],
@@ -388,15 +549,14 @@ def _historical_v2d_registration(current_profile: dict[str, object]) -> Schedule
     if _sha(raw) != _MANIFEST_V2D_SHA:
         raise ValueError("historical V2d reviewed manifest changed")
     old = json.loads(raw)
-    current_sources = cast(dict[str, str], current_profile["sources"])
+    _require_historical_lock(current_profile, old["lock_sha256"])
     for name, fingerprint in old["sources"].items():
-        if current_sources.get(name) != fingerprint:
+        if not _historical_profile_source_matches(current_profile, name, fingerprint):
             raise ValueError("historical V2d evaluator artifact changed: " + name)
     for key in (
         "canonicalization",
         "runtime",
         "packages",
-        "lock_sha256",
         "historical_v1",
         "historical_v2c",
         "historical_v2b_closure_sha256",
@@ -428,16 +588,13 @@ def _require_v2b_closure() -> None:
                 .joinpath("_owner_publication_contracts.py.source")
                 .read_bytes()
             )
-            additive = b'    "r15.adopt_interval_service_policy",\n'
             current = path.read_bytes()
-            if (
-                _sha(archived) != fingerprint
-                or current.count(additive) != 1
-                or current.replace(additive, b"") != archived
+            if _sha(archived) != fingerprint or not _historical_source_matches(
+                name, current, fingerprint
             ):
                 raise ValueError("historical V2b broker operation extension differs")
             continue
-        if _sha(path.read_bytes()) != fingerprint:
+        if not _historical_source_matches(name, path.read_bytes(), fingerprint):
             raise ValueError("historical V2b evaluator dependency changed: " + name)
 
 
@@ -447,6 +604,7 @@ def _historical_v2b_registration(current_profile: dict[str, object]) -> Schedule
     if _sha(raw) != _MANIFEST_V2B_SHA:
         raise ValueError("historical V2b reviewed manifest changed")
     old = json.loads(raw)
+    _require_historical_lock(current_profile, old["lock_sha256"])
     for name, fingerprint in old["sources"].items():
         path = _ROOT / "src" / Path(*name.split(".")).with_suffix(".py")
         if name == "chiplog.composition.r15_lease_publication":
@@ -455,9 +613,9 @@ def _historical_v2b_registration(current_profile: dict[str, object]) -> Schedule
                 .with_name("scheduler_v2b_sources")
                 .joinpath("r15_lease_publication.py.source")
             )
-        if _sha(path.read_bytes()) != fingerprint:
+        if not _historical_source_matches(name, path.read_bytes(), fingerprint):
             raise ValueError("historical V2b evaluator artifact changed: " + name)
-    for key in ("runtime", "packages", "lock_sha256", "historical_v1"):
+    for key in ("runtime", "packages", "historical_v1"):
         if old[key] != current_profile[key]:
             raise ValueError("historical V2b source closure changed: " + key)
     graph = derive_schema_manifest(
@@ -529,19 +687,19 @@ def _historical_v2c_registration(current_profile: dict[str, object]) -> Schedule
     if _sha(raw) != _MANIFEST_V2C_SHA:
         raise ValueError("historical V2c reviewed manifest changed")
     old = json.loads(raw)
+    _require_historical_lock(current_profile, old["lock_sha256"])
     _require_v2b_closure()
     _require_v2c_evaluator_equivalent(old)
     for name, fingerprint in old["sources"].items():
         if (
             name != "chiplog.composition.r15_lease_publication_v2b"
-            and cast(dict[str, str], current_profile["sources"]).get(name) != fingerprint
+            and not _historical_profile_source_matches(current_profile, name, fingerprint)
         ):
             raise ValueError("historical V2c evaluator artifact changed: " + name)
     for key in (
         "canonicalization",
         "runtime",
         "packages",
-        "lock_sha256",
         "historical_v1",
         "execution_crypto",
     ):
@@ -563,10 +721,11 @@ def _historical_v2a_registration(current_profile: dict[str, object]) -> Schedule
     if _sha(raw) != _MANIFEST_V2_SHA:
         raise ValueError("historical V2a reviewed manifest changed")
     old = json.loads(raw)
+    _require_historical_lock(current_profile, old["lock_sha256"])
     for name, fingerprint in old["sources"].items():
-        if cast(dict[str, str], current_profile["sources"]).get(name) != fingerprint:
+        if not _historical_profile_source_matches(current_profile, name, fingerprint):
             raise ValueError("historical V2a evaluator artifact changed: " + name)
-    for key in ("runtime", "packages", "lock_sha256", "historical_v1"):
+    for key in ("runtime", "packages", "historical_v1"):
         if old[key] != current_profile[key]:
             raise ValueError("historical V2a source closure changed: " + key)
     graph = derive_schema_manifest(
@@ -581,7 +740,7 @@ def _historical_v2a_registration(current_profile: dict[str, object]) -> Schedule
 
 
 def _historical_v1_registration(current_profile: dict[str, object]) -> SchedulerSourceRegistration:
-    old = require_v1_compatible(current_profile)
+    old = require_v1_compatible(_v1_compatibility_profile(current_profile))
     sources = cast(dict[str, str], old["sources"])
     prefix = "chiplog.capabilities.agent_loop."
     graph = derive_schema_manifest(
@@ -623,6 +782,7 @@ def read_admitted_scheduler_startup(
     v2b = _historical_v2b_registration(observed)
     v2c = _historical_v2c_registration(observed)
     v2d = _historical_v2d_registration(observed)
+    original_v3 = _historical_v3_registration(observed)
     from chiplog.composition.r15_interval_policy_publication import (
         validate_selected_interval_policy_decision,
         validate_selected_interval_service_decision,
@@ -642,7 +802,8 @@ def read_admitted_scheduler_startup(
             v2b.reference.head: (2, v2b.reference),
             v2c.reference.head: (3, v2c.reference),
             v2d.reference.head: (4, v2d.reference),
-            registration.reference.head: (5, registration.reference),
+            original_v3.reference.head: (5, original_v3.reference),
+            registration.reference.head: (6, registration.reference),
         }
         candidate = admitted.get(historical.registry.head)
         if candidate is None or historical.registry != candidate[1] or candidate[0] < rank:
@@ -658,6 +819,7 @@ def read_admitted_scheduler_startup(
             3,
             4,
             5,
+            6,
         ):
             return SourceRegistrationUnresolved("lease acquire requires V2b selected source")
         if (
@@ -687,12 +849,12 @@ def read_admitted_scheduler_startup(
                 None,
             )
             == "chiplog.scheduler.interval-service-issuance.v3"
-            and rank != 5
+            and rank not in (5, 6)
         ):
             return SourceRegistrationUnresolved("interval service requires V3 selected source")
         if (
             historical.selection.prepared.request.operation == "scheduler.resolve_interval"
-            and rank != 5
+            and rank not in (5, 6)
         ):
             return SourceRegistrationUnresolved("interval resolution requires V3 selected source")
         _require_historical_equality(historical, selected)

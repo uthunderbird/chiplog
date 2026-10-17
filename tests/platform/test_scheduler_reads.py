@@ -5,10 +5,12 @@ These tests do not establish canonical scheduler issuance or source admission.
 
 import base64
 import hashlib
+import json
 import sqlite3
 import sys
+import tomllib
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -35,6 +37,7 @@ from chiplog.capabilities.agent_loop.scheduler_preparation import (
     ConfigurationPreparationSnapshot,
     prepare_configuration,
 )
+from chiplog.capabilities.agent_loop.scheduler_startup import SelectedSchedulerBatch
 from chiplog.composition.scheduler_source_registry import (
     AdmittedSchedulerStartup,
     SchedulerSourceRegistration,
@@ -730,3 +733,223 @@ def test_source_profile_never_loads_a_missing_module(
     assert "not loaded" in result.reason
     assert sys.modules.get(name) is None
     assert (name in sys.modules) == present_none
+
+
+@pytest.mark.parametrize(
+    "name,before,after",
+    [
+        (
+            "chiplog.capabilities.agent_loop.contracts",
+            b"class LoopHold(LoopRejected):",
+            b"class LoopHold(ValueError):",
+        ),
+        (
+            "chiplog.capabilities.agent_loop.contracts",
+            b"RunState = Literal[",
+            b"OtherRunState = Literal[",
+        ),
+        (
+            "chiplog.capabilities.agent_loop.delivery_work_contracts",
+            b"DELIVERY_WORK_SCHEMA: Final = ",
+            b"DELIVERY_WORK_SCHEMA: str = ",
+        ),
+        (
+            "chiplog.capabilities.agent_loop.delivery_work_contracts",
+            b'DELIVERY_WORK_SCHEMA: Final = "chiplog.delivery-work.subject.v1"',
+            b'DELIVERY_WORK_SCHEMA: Final = "chiplog.delivery-work.subject.v9"',
+        ),
+        (
+            "chiplog.platform._owner_publication_contracts",
+            b'    "r15.adopt_interval_service_policy",',
+            b'    "r15.other_operation",',
+        ),
+        (
+            "chiplog.platform._owner_publication_contracts",
+            b'DELIVERY_WORK_CLAIM_OPERATION: Final = "agent_loop.delivery_work.claim.v1"',
+            b'DELIVERY_WORK_CLAIM_OPERATION: Final = "agent_loop.delivery_work.claim.v9"',
+        ),
+        (
+            "chiplog.capabilities.agent_loop.scheduler_preparation",
+            b"def prepare_configuration(",
+            b"def changed_prepare_configuration(",
+        ),
+    ],
+)
+def test_historical_source_compatibility_rejects_unreviewed_changes(
+    name: str, before: bytes, after: bytes
+) -> None:
+    closure: dict[str, str] = json.loads(
+        Path(source_registry.__file__)
+        .with_name("scheduler_v2b_sources")
+        .joinpath("closure.json")
+        .read_bytes()
+    )
+    raw = (source_registry._ROOT / "src" / Path(*name.split(".")).with_suffix(".py")).read_bytes()
+    assert source_registry._historical_source_matches(name, raw, closure[name])
+    assert raw.count(before) == 1
+    assert not source_registry._historical_source_matches(
+        name, raw.replace(before, after), closure[name]
+    )
+    assert not source_registry._historical_source_matches(name, raw + b"\n", closure[name])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["wheel", "dependency", "constraint", "extras", "specifier", "unlisted", "duplicate"],
+)
+def test_historical_lock_compatibility_rejects_old_or_unreviewed_dependency_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    raw = (source_registry._ROOT / "uv.lock").read_bytes()
+    if mutation == "wheel":
+        wheel = tomllib.loads(raw.decode())["package"][0]["wheels"][0]["hash"]
+        before = ('hash = "' + wheel + '"').encode()
+        after = b'hash = "sha256:' + b"0" * 64 + b'"'
+    elif mutation == "dependency":
+        before, after = b'{ name = "dishka" }', b'{ name = "dishka", extras = ["changed"] }'
+    elif mutation == "constraint":
+        before, after = b'requires-python = "==3.14.*"', b'requires-python = ">=3.14"'
+    elif mutation == "extras":
+        before = b'{ name = "psycopg", extra = ["binary"] }'
+        after = b'{ name = "psycopg", extra = ["pool"] }'
+    elif mutation == "specifier":
+        before, after = b'specifier = ">=3.3,<4"', b'specifier = ">=3.3"'
+    else:
+        before = b""
+        after = (
+            b'\n[[package]]\nname = "'
+            + (b"unlisted" if mutation == "unlisted" else b"chiplog")
+            + b'"\nversion = "1"\n'
+        )
+    if before:
+        assert raw.count(before) == 1
+        raw = raw.replace(before, after)
+    else:
+        raw += after
+    (tmp_path / "uv.lock").write_bytes(raw)
+    monkeypatch.setattr(source_registry, "_ROOT", tmp_path)
+    with pytest.raises(ValueError):
+        source_registry._require_historical_lock(
+            {"lock_sha256": digest(raw)},
+            "e2dfa2959958ab82de7a1f690bf97da3cfe429697b032a9a85ee45993cca3f8f",
+        )
+
+
+@pytest.mark.parametrize(
+    "name", ["scheduler_source_manifest_v3.json", "scheduler_source_manifest_v3_revision2.json"]
+)
+def test_both_original_and_current_v3_manifests_remain_immutable(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    original = Path.read_bytes
+    reached: list[Path] = []
+
+    def read(path: Path) -> bytes:
+        raw = original(path)
+        if path.name == name:
+            reached.append(path)
+            return raw + b"\nchanged manifest"
+        return raw
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    assert isinstance(current_scheduler_registration(), SourceRegistrationUnresolved)
+    assert reached
+
+
+async def test_original_v3_selected_history_keeps_its_exact_registration(tmp_path: Path) -> None:
+    observed, _, _ = source_registry._observe(v3=True)
+    original = source_registry._historical_v3_registration(observed)
+    assert original.reference.head == (
+        "scheduler-source-registry-v3:"
+        "b84bf53c30142dac8a8487341b9e64e6a3768e35b4393da7df0325056a25f1a5"
+    )
+    current = current_scheduler_registration()
+    assert isinstance(current, SchedulerSourceRegistration)
+    assert current.reference != original.reference
+    fixture = await materialized(tmp_path, registry=original.reference)
+    result = read_admitted_scheduler_startup(
+        fixture.database, "tenant", fixture.journal, fixture.anchor
+    )
+    assert isinstance(result, AdmittedSchedulerStartup)
+    assert result.cut.historical_requests[0].registry == original.reference
+    assert result.registration == current
+
+
+@pytest.mark.parametrize("regressed", [False, True])
+async def test_v3_source_order_is_checked_before_replaying_a_later_selected_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, regressed: bool
+) -> None:
+    """Order unit uses independently authenticated cuts; it makes no combined-cut claim."""
+    observed, _, _ = source_registry._observe(v3=True)
+    original = source_registry._historical_v3_registration(observed)
+    current = current_scheduler_registration()
+    assert isinstance(current, SchedulerSourceRegistration)
+    cuts = []
+    for name, registration in (("old", original), ("current", current)):
+        directory = tmp_path / name
+        directory.mkdir()
+        fixture = await materialized(directory, registry=registration.reference)
+        cuts.append(
+            read_materialized_scheduler(fixture.database, "tenant", fixture.journal, fixture.anchor)
+        )
+    ordered = tuple(reversed(cuts)) if regressed else tuple(cuts)
+    combined = replace(
+        cuts[-1],
+        historical_requests=tuple(item for cut in ordered for item in cut.historical_requests),
+        selected=tuple(item for cut in ordered for item in cut.selected),
+    )
+    monkeypatch.setattr(source_registry, "read_materialized_scheduler", lambda *args: combined)
+    original_equality = source_registry._require_historical_equality
+    replayed: list[str] = []
+
+    class ReachedSecondReplay(BaseException):
+        pass
+
+    def equality(
+        historical: reader_module.HistoricalSchedulerRequest, selected: SelectedSchedulerBatch
+    ) -> None:
+        original_equality(historical, selected)
+        replayed.append(historical.registry.head)
+        if len(replayed) == 2:
+            raise ReachedSecondReplay
+
+    monkeypatch.setattr(source_registry, "_require_historical_equality", equality)
+    if regressed:
+        result = read_admitted_scheduler_startup(
+            fixture.database, "tenant", fixture.journal, fixture.anchor
+        )
+        assert isinstance(result, SourceRegistrationUnresolved)
+        assert "regressed" in result.reason
+        assert replayed == [current.reference.head]
+    else:
+        with pytest.raises(ReachedSecondReplay):
+            read_admitted_scheduler_startup(
+                fixture.database, "tenant", fixture.journal, fixture.anchor
+            )
+        assert replayed == [original.reference.head, current.reference.head]
+
+
+@pytest.mark.parametrize("tampered", ["archive", "observed_lock"])
+def test_historical_lock_authenticates_archive_and_observed_file(
+    monkeypatch: pytest.MonkeyPatch, tampered: str
+) -> None:
+    raw = (source_registry._ROOT / "uv.lock").read_bytes()
+    observed = digest(raw)
+    if tampered == "archive":
+        archive = (
+            Path(source_registry.__file__).with_name("scheduler_v2b_sources") / "uv.lock.source"
+        )
+        original = Path.read_bytes
+
+        def read(path: Path) -> bytes:
+            contents = original(path)
+            return contents + b"changed" if path == archive else contents
+
+        monkeypatch.setattr(Path, "read_bytes", read)
+    else:
+        observed = "0" * 64
+    with pytest.raises(ValueError, match=r"archive|observed"):
+        source_registry._require_historical_lock(
+            {"lock_sha256": observed},
+            "e2dfa2959958ab82de7a1f690bf97da3cfe429697b032a9a85ee45993cca3f8f",
+        )
