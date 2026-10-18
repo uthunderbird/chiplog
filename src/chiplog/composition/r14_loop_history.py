@@ -9,6 +9,8 @@ import sqlite3
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, cast
 
+import orjson
+
 from chiplog.adapters.driven.loop_sqlite import OWNER, LoopIntegrityError
 from chiplog.adapters.driven.loop_sqlite import SCHEMA as RUN_SCHEMA
 from chiplog.adapters.driven.r9_fence import CONVERSATION_OWNER, CONVERSATION_SCHEMA
@@ -145,6 +147,28 @@ if TYPE_CHECKING:
 
 def _strict_json(raw: bytes | str, *, canonical: bool = True) -> dict[str, object]:
     """Decode a selected JSON object, always rejecting duplicate keys."""
+    if canonical:
+        try:
+            value = orjson.loads(raw)
+            if isinstance(value, dict):
+                pending: list[object] = [value]
+                while pending:
+                    item = pending.pop()
+                    if isinstance(item, float):
+                        break
+                    if isinstance(item, dict):
+                        pending.extend(item.values())
+                    elif isinstance(item, list):
+                        pending.extend(item)
+                else:
+                    encoded = orjson.dumps(value, option=orjson.OPT_SORT_KEYS)
+                    original = raw.encode() if isinstance(raw, str) else raw
+                    # Native ASCII integer/string encoding matches the historical
+                    # encoder except for DEL; other forms retain the strict path.
+                    if encoded.isascii() and b"\x7f" not in encoded and encoded == original:
+                        return value
+        except orjson.JSONDecodeError, TypeError, UnicodeError:
+            pass
 
     def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
         value: dict[str, object] = {}

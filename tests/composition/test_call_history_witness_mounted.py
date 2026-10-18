@@ -631,9 +631,15 @@ def test_pending_json_decoder_preserves_numeric_value_and_type(number, nested, b
 
 @pytest.mark.parametrize(
     "relative",
-    ["chiplog/composition/r13_runtime.py", "chiplog/adapters/driven/deployment_trust/_journal.py"],
+    [
+        "chiplog/composition/r13_runtime.py",
+        "chiplog/adapters/driven/deployment_trust/_journal.py",
+        "chiplog/composition/r14_loop_history.py",
+    ],
 )
-def test_r8_registers_native_json_dependency_only_at_reviewed_readers(tmp_path, relative) -> None:
+def test_r8_registers_native_json_dependency_only_at_reviewed_readers(
+    tmp_path: Path, relative: str
+) -> None:
     pending_reader = tmp_path / "src" / relative
     composition = pending_reader.parent
     composition.mkdir(parents=True)

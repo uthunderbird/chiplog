@@ -244,6 +244,7 @@ def verify_offline_import_boundary(root: Path) -> None:
                 in {
                     "chiplog/composition/r13_runtime.py",
                     "chiplog/adapters/driven/deployment_trust/_journal.py",
+                    "chiplog/composition/r14_loop_history.py",
                 }
                 and isinstance(node, ast.Import)
                 and tuple(alias.name for alias in node.names) == ("orjson",)
