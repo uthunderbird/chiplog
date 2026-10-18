@@ -88,6 +88,7 @@ async def _selected_v3_prepare(
 async def _seal_installed_v3(runtime: CommonCliExecutionRuntime) -> CallSubjectHead:
     request = await _admit(runtime)
     initial = await runtime.drive_input(request)
+    assert isinstance(initial, SelectedExecutionReceiptV1)
     completion = DeliveryCompletion(
         tenant=TENANT,
         run_id=initial.stable_run_lineage_id,
