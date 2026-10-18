@@ -1272,6 +1272,7 @@ class EnrolledH1EvidenceMount:
         opener = getattr(IndependentTenantDecisionJournal, "for_existing_authority_bundle", None)
         if opener is None:
             raise H1EvidenceMountError("existing-only evidence journal opener is unavailable")
+        journal: IndependentTenantDecisionJournal | None = None
         try:
             journal = opener(
                 self._launch._slot.root / self._launch._slot.custody_name / _EVIDENCE_BODY,
@@ -1306,8 +1307,12 @@ class EnrolledH1EvidenceMount:
             self.assert_current()
             return journal
         except H1EvidenceMountError:
+            if journal is not None:
+                journal.close()
             raise
         except BaseException as exc:
+            if journal is not None:
+                journal.close()
             raise H1EvidenceMountError("existing evidence journal is unavailable") from exc
 
 
