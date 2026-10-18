@@ -8,6 +8,7 @@ import secrets
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -38,7 +39,10 @@ from chiplog.composition.h1_completion_preparation_session import (
 )
 from chiplog.composition.h1_conversation_sources import H1ConversationSources
 from chiplog.composition.h1_first_path_sources import H1FirstPathCapture, H1FirstPathSources
-from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionEnrollment
+from chiplog.composition.h1_live_completion_enrollment import (
+    _H1LiveCompletionEnrollment,
+    _RecoveryEnrollmentRecord,
+)
 from chiplog.composition.h1_recovery_stage_source import H1RecoveryStageSource
 from chiplog.platform.broker import (
     BrokerSession,
@@ -600,7 +604,11 @@ async def _live_session(
     PrepareExecutionCompletionFirstPathV2,
     PublicPortSuccess,
 ]:
-    """Bind the issuer-held builder seam to a real owner-process request."""
+    """Build a fake transport; missing installed owners must deny before IPC.
+
+    Historical response/cancellation nodeids below only exercise this preflight
+    refusal. They do not certify downstream response or cancellation handling.
+    """
     request = await real_first_path_request(canonical_response=True)
     reply = completion_process.dispatch(
         completion_process.FIRST_PATH_OPERATION, request.canonical_bytes()
@@ -653,8 +661,15 @@ async def test_session_refuses_fake_engine_wires_without_the_installed_preflight
     monkeypatch.setattr(secrets, "token_hex", lambda _: "a" * 48)
     session, engine, _request, _returned = await _live_session(monkeypatch=monkeypatch)
 
-    with pytest.raises(H1CompletionPreparationUnavailable, match="installed B/P/E"):
+    with pytest.raises(
+        H1CompletionPreparationUnavailable,
+        match=r"^H1 completion source returned invalid canonical evidence$",
+    ) as denied:
         await session.prepare_first_path_completion()
+    assert type(denied.value.__cause__) is H1CompletionPreparationUnavailable
+    assert str(denied.value.__cause__) == (
+        "H1 completion requires one installed B/P/E completion mount"
+    )
     assert engine.calls == []
     assert session._completion_exchange is None
 
@@ -664,13 +679,21 @@ async def test_session_denies_obsolete_completion_owner_response_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(secrets, "token_hex", lambda _: "a" * 48)
-    session, _, _, _ = await _live_session(
+    session, engine, _, _ = await _live_session(
         monkeypatch=monkeypatch,
         response_schema="chiplog.agent-loop.prepared-execution-completion.v1",
     )
 
-    with pytest.raises(H1CompletionPreparationUnavailable, match="installed B/P/E"):
+    with pytest.raises(
+        H1CompletionPreparationUnavailable,
+        match=r"^H1 completion source returned invalid canonical evidence$",
+    ) as denied:
         await session.prepare_first_path_completion()
+    assert type(denied.value.__cause__) is H1CompletionPreparationUnavailable
+    assert str(denied.value.__cause__) == (
+        "H1 completion requires one installed B/P/E completion mount"
+    )
+    assert engine.calls == []
     assert session._completion_exchange is None
     with pytest.raises(H1CompletionPreparationUnavailable, match="already started"):
         await session.prepare_first_path_completion()
@@ -685,9 +708,11 @@ async def test_session_denies_uncorrelated_or_noncanonical_completion_result(
 ) -> None:
     monkeypatch.setattr(secrets, "token_hex", lambda _: "a" * 48)
     if defect == "request_id":
-        session, _, _, _ = await _live_session(monkeypatch=monkeypatch, response_id="wrong-request")
+        session, engine, _, _ = await _live_session(
+            monkeypatch=monkeypatch, response_id="wrong-request"
+        )
     elif defect == "responder":
-        session, _, _, _ = await _live_session(
+        session, engine, _, _ = await _live_session(
             monkeypatch=monkeypatch,
             responder=BrokerSession(
                 tenant_id="tenant",
@@ -699,7 +724,7 @@ async def test_session_denies_uncorrelated_or_noncanonical_completion_result(
         )
     else:
         if defect == "noncanonical":
-            session, _, _, _ = await _live_session(
+            session, engine, _, _ = await _live_session(
                 monkeypatch=monkeypatch, noncanonical_payload=True
             )
         else:
@@ -707,12 +732,20 @@ async def test_session_denies_uncorrelated_or_noncanonical_completion_result(
             substituted = PreparedExecutionCompletion.model_validate_json(
                 genuine.canonical_payload
             ).model_copy(update={"source_request_fingerprint": "0" * 64})
-            session, _, _, _ = await _live_session(
+            session, engine, _, _ = await _live_session(
                 monkeypatch=monkeypatch, response_payload=substituted.canonical_bytes()
             )
 
-    with pytest.raises(H1CompletionPreparationUnavailable, match="installed B/P/E"):
+    with pytest.raises(
+        H1CompletionPreparationUnavailable,
+        match=r"^H1 completion source returned invalid canonical evidence$",
+    ) as denied:
         await session.prepare_first_path_completion()
+    assert type(denied.value.__cause__) is H1CompletionPreparationUnavailable
+    assert str(denied.value.__cause__) == (
+        "H1 completion requires one installed B/P/E completion mount"
+    )
+    assert engine.calls == []
 
     assert session._completion_exchange is None
 
@@ -725,8 +758,16 @@ async def test_session_is_one_use_across_sequential_and_concurrent_completion_ca
     session, engine, _, _ = await _live_session(monkeypatch=monkeypatch, block_call=True)
 
     first = asyncio.create_task(session.prepare_first_path_completion())
-    with pytest.raises(H1CompletionPreparationUnavailable, match="installed B/P/E"):
+    with pytest.raises(
+        H1CompletionPreparationUnavailable,
+        match=r"^H1 completion source returned invalid canonical evidence$",
+    ) as denied:
         await first
+    assert type(denied.value.__cause__) is H1CompletionPreparationUnavailable
+    assert str(denied.value.__cause__) == (
+        "H1 completion requires one installed B/P/E completion mount"
+    )
+    assert engine.calls == []
     error: H1CompletionPreparationUnavailable | None = None
     try:
         await session.prepare_first_path_completion()
@@ -746,8 +787,16 @@ async def test_session_remains_consumed_when_its_owner_call_is_cancelled(
     monkeypatch.setattr(secrets, "token_hex", lambda _: "a" * 48)
     session, engine, _, _ = await _live_session(monkeypatch=monkeypatch, block_call=True)
 
-    with pytest.raises(H1CompletionPreparationUnavailable, match="installed B/P/E"):
+    with pytest.raises(
+        H1CompletionPreparationUnavailable,
+        match=r"^H1 completion source returned invalid canonical evidence$",
+    ) as denied:
         await session.prepare_first_path_completion()
+    assert type(denied.value.__cause__) is H1CompletionPreparationUnavailable
+    assert str(denied.value.__cause__) == (
+        "H1 completion requires one installed B/P/E completion mount"
+    )
+    assert engine.calls == []
     with pytest.raises(H1CompletionPreparationUnavailable, match="already started"):
         await session.prepare_first_path_completion()
     assert engine.calls == []
@@ -879,10 +928,24 @@ async def test_recovery_completion_uses_enrolled_guard_and_retains_the_actual_ex
     enrollment._burn_recovery_clearance = lambda clearance: None  # type: ignore[method-assign]
 
     session = H1CompletionPreparationSession(first_path_sources=source)
+    # Unit transport seam only: this record does not prove mounted enrollment.
+    record: _RecoveryEnrollmentRecord = create_autospec(
+        _RecoveryEnrollmentRecord, instance=True, spec_set=True
+    )
+    record.preflight = None
+    record_reads: list[object] = []
+
+    def require_recovery_record(actual_session: object) -> _RecoveryEnrollmentRecord:
+        assert actual_session is session
+        record_reads.append(actual_session)
+        return record
+
+    enrollment._require_recovery_record = require_recovery_record
     session._bind_recovery(source=recovery_source, context=context, lease=lease)
     session._bind_recovery_stage(stage="COMPLETION", semantic_input=request.canonical_bytes())
     exchange = await session.prepare_first_path_completion()
 
+    assert record_reads == [session]
     assert recorded == [exchange]
     assert admitted == [exchange.sent]
     assert session._completion_exchange is exchange
@@ -960,12 +1023,26 @@ async def test_recovery_rejection_preserves_failure_kind_and_burns_unadmitted_cl
     enrollment._burn_recovery_clearance = lambda value: burned.append(value)  # type: ignore[method-assign]
 
     session = H1CompletionPreparationSession(first_path_sources=source)
+    # Unit transport seam only: this record does not prove mounted enrollment.
+    record: _RecoveryEnrollmentRecord = create_autospec(
+        _RecoveryEnrollmentRecord, instance=True, spec_set=True
+    )
+    record.preflight = None
+    record_reads: list[object] = []
+
+    def require_recovery_record(actual_session: object) -> _RecoveryEnrollmentRecord:
+        assert actual_session is session
+        record_reads.append(actual_session)
+        return record
+
+    enrollment._require_recovery_record = require_recovery_record
     session._bind_recovery(source=recovery_source, context=context, lease=lease)
     session._bind_recovery_stage(stage="COMPLETION", semantic_input=request.canonical_bytes())
 
     with pytest.raises(H1CompletionPreparationUnavailable, match="DEADLINE_EXCEEDED"):
         await session.prepare_first_path_completion()
 
+    assert record_reads == [session]
     assert guard_calls == []
     assert admitted_calls == []
     assert recorded == []
@@ -994,8 +1071,15 @@ async def test_session_refuses_to_send_a_caller_owned_completion_dto_without_a_b
         conversation=None,
     )
 
-    with pytest.raises(H1CompletionPreparationUnavailable, match="installed B/P/E"):
+    with pytest.raises(
+        H1CompletionPreparationUnavailable,
+        match=r"^H1 completion source returned invalid canonical evidence$",
+    ) as denied:
         await session.prepare_first_path_completion()
+    assert type(denied.value.__cause__) is H1CompletionPreparationUnavailable
+    assert str(denied.value.__cause__) == (
+        "H1 completion requires one installed B/P/E completion mount"
+    )
 
 
 def test_session_rejects_copied_or_stale_source_before_terminal_work() -> None:
