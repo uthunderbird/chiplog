@@ -180,6 +180,7 @@ from chiplog.platform.broker import (
 from chiplog.platform.ingress_authenticated_contracts import AdmittedInboxObservation
 from chiplog.platform.ingress_custody_records import canonical, reference
 from chiplog.platform.ingress_transition_contracts import RetainedIngressSource
+from chiplog.platform.owner_publications import OwnerPublicationPending
 from chiplog.platform.prepared_external_delivery_grant_lineage import (
     AuthenticatedPreparedExternalDeliveryGrant,
 )
@@ -2070,7 +2071,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
             return self._reject(request, "INVALID_INPUT", "selected CLI prompt is not UTF-8")
         except LoopHold as error:
             return self._reject(request, "HOLD", str(error))
-        except LoopRejected as error:
+        except (LoopRejected, OwnerPublicationPending) as error:
             return self._reject(request, "STALE", str(error))
         except ValueError as error:
             return self._reject(request, "INVALID_INPUT", str(error))
