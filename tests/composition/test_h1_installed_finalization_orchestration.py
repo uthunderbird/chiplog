@@ -53,7 +53,10 @@ from chiplog.composition.h1_postseal_recovery_coordinator import (
     _H1FinalizationRejection,
     _H1PostSealRecoveryCoordinator,
 )
-from chiplog.composition.h1_recovery_execution_fence import _H1RecoveryExecutionFence
+from chiplog.composition.h1_recovery_execution_fence import (
+    _H1RecoveryExecutionFence,
+    _H1RecoveryExecutionLease,
+)
 from chiplog.composition.r14_execution_completion_records import COMPLETE_ACCEPTANCE_OPERATION
 from chiplog.composition.r14_execution_inbox_records import RetainedInboxExecutionInitialization
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
@@ -61,6 +64,7 @@ from chiplog.platform._ingress_contracts import Head, SourceBinding, UnknownEndp
 from chiplog.platform._owner_publication_contracts import (
     CompleteDeliveryBatchV2,
     JournalSelectedPublication,
+    OwnerRecordBytes,
     PublicationRejected,
     WorkerAuthentication,
 )
@@ -178,14 +182,26 @@ def _synthetic_finalization_inputs() -> tuple[
         ),
         proposal=SimpleNamespace(run=terminal),
     )
-    publication = JournalSelectedPublication.model_construct(
+    publication = JournalSelectedPublication(
         kind="COMMITTED",
+        tenant_id=request.identity.tenant_id,
         command_id="command",
         decision_id="decision",
         decision_head="decision-head",
         decision_fingerprint="a" * 64,
+        predecessor_commitment="a" * 64,
         resulting_commitment="a" * 64,
         tenant_commit_sequence=1,
+        complete_records=(
+            OwnerRecordBytes(
+                owner="agent_loop",
+                record_kind="Run",
+                record_id=terminal_record.record_id,
+                schema_id=terminal_record.schema_id,
+                canonical_bytes=terminal_record.canonical_bytes,
+                fingerprint=terminal_record.fingerprint,
+            ),
+        ),
     )
     selected = SelectedOwnerDecision(
         prepared=PreparedOwnerPublication(
@@ -459,8 +475,14 @@ async def test_finalizer_worker_owns_lease_and_settles_after_repeated_caller_can
     release = asyncio.Event()
 
     original_acquire = _H1RecoveryExecutionFence.acquire
+    # These patched classification/readback seams test task ownership, not a mint.
+    _evidence, _request, synthetic = _synthetic_finalization_inputs()
+    publication = synthetic.publication
+    readback = synthetic.readback
+    assert type(publication) is JournalSelectedPublication
+    assert type(readback) is _H1SelectedTerminalReadback
 
-    async def record_acquire(fence: _H1RecoveryExecutionFence) -> object:
+    async def record_acquire(fence: _H1RecoveryExecutionFence) -> _H1RecoveryExecutionLease:
         task = asyncio.current_task()
         assert task is not None
         observed_tasks.append(task)
@@ -469,10 +491,10 @@ async def test_finalizer_worker_owns_lease_and_settles_after_repeated_caller_can
     async def parked_recover(
         self: H1LivePublicationAuthority,
         *,
-        identity: object,
-        original_fingerprint: object,
-        lease: Any,
-    ) -> object:
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        lease: _H1RecoveryExecutionLease,
+    ) -> JournalSelectedPublication:
         del self, identity, original_fingerprint
         lease.require_owned()
         task = asyncio.current_task()
@@ -480,20 +502,21 @@ async def test_finalizer_worker_owns_lease_and_settles_after_repeated_caller_can
         observed_tasks.append(task)
         entered.set()
         await release.wait()
-        return object()
+        return publication
 
     async def record_readback(
         self: H1LivePublicationAuthority,
         *,
-        identity: object,
-        original_fingerprint: object,
-        publication: object,
-    ) -> object:
-        del self, identity, original_fingerprint, publication
+        identity: DriverCommandIdentityV1,
+        original_fingerprint: str,
+        publication: JournalSelectedPublication,
+    ) -> _H1SelectedTerminalReadback:
+        del self, identity, original_fingerprint
+        assert publication is synthetic.publication
         task = asyncio.current_task()
         assert task is not None
         observed_tasks.append(task)
-        return object()
+        return readback
 
     with _open_installed_h1_launch(slot) as launch:
         async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
