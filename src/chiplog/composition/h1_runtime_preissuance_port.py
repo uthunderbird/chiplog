@@ -664,9 +664,9 @@ class _H1RuntimePreissuancePort:
                 entry = json.loads(raw)
                 if entry.get("kind") != "DECIDED" or "execution_next_turn_evidence" not in entry:
                     continue
-                evidence = retained_next_turn(entry)
-                if evidence.result.run == run:
-                    selected.append(evidence)
+                next_turn_evidence = retained_next_turn(entry)
+                if next_turn_evidence.result.run == run:
+                    selected.append(next_turn_evidence)
             if len(selected) == 1:
                 predecessor = selected[0].request.run
                 fresh_same_run_turn_two = (

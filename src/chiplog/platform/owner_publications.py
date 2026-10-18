@@ -102,7 +102,7 @@ class BrokerPublicationAuthority(Protocol):
 def source_commands(request: RegisteredPublication) -> tuple[OwnerCommandBytes, ...]:
     if request.kind == "SINGLE_OWNER":
         return (request.command,)
-    if request.kind in ("PLAN_EFFECT_ATOMIC", "PLAN_EFFECT_ATOMIC_V2"):
+    if request.kind == "PLAN_EFFECT_ATOMIC" or request.kind == "PLAN_EFFECT_ATOMIC_V2":
         return (request.planning_command, request.effects_command)
     if request.kind == "CALL_EFFECT_ATOMIC":
         return (

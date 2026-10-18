@@ -200,7 +200,9 @@ def _source_preimage_is_valid(source: RecoverySourceRecord) -> bool:
         or evidence is None
     ):
         return False
-    reference = evidence_head(evidence)
-    return source.subject.subject_id == reference.subject_id and source.subject.revision == Present(
-        head=reference.head, fingerprint=reference.fingerprint
+    evidence_reference = evidence_head(evidence)
+    return (
+        source.subject.subject_id == evidence_reference.subject_id
+        and source.subject.revision
+        == Present(head=evidence_reference.head, fingerprint=evidence_reference.fingerprint)
     )
