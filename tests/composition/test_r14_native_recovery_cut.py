@@ -6,6 +6,7 @@ import operator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -44,7 +45,10 @@ from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
 from chiplog.capabilities.effects.contracts import ExactHead
 from chiplog.capabilities.effects.dispatch_authority_contracts import SelectedEffectHistoryMember
 from chiplog.capabilities.effects.dispatch_v2 import reference as effects_reference
-from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
+from chiplog.composition.common_cli_execution_runtime import (
+    CommonCliExecutionRuntime,
+    open_common_cli_execution_runtime,
+)
 from chiplog.composition.r14_native_recovery_cut import (
     NativeRecoveryCutSource,
     _selected_accepted_open_recovery_preimages,
@@ -105,18 +109,16 @@ def test_historical_loop_cut_rechecks_every_fresh_journal_row() -> None:
             None,
         ),
     )
-    runtime = SimpleNamespace(
-        _loop_decisions=lambda: SimpleNamespace(
-            entries=lambda: tuple((row[0], row[1], row[2]) for row in decisions)
-        )
+    runtime = create_autospec(CommonCliExecutionRuntime, instance=True)
+    runtime._loop_decisions = lambda: SimpleNamespace(
+        entries=lambda: tuple((row[0], row[1], row[2]) for row in decisions)
     )
 
     cut = _make_authenticated_loop_decision_cut(runtime, decisions)
     assert _authenticated_loop_cut_matches(runtime, cut)
-    foreign_runtime = SimpleNamespace(
-        _loop_decisions=lambda: SimpleNamespace(
-            entries=lambda: tuple((row[0], row[1], row[2]) for row in decisions)
-        )
+    foreign_runtime = create_autospec(CommonCliExecutionRuntime, instance=True)
+    foreign_runtime._loop_decisions = lambda: SimpleNamespace(
+        entries=lambda: tuple((row[0], row[1], row[2]) for row in decisions)
     )
     assert not _authenticated_loop_cut_matches(foreign_runtime, cut)
     assert not _authenticated_loop_cut_matches(runtime, decisions)

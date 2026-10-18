@@ -344,7 +344,7 @@ def _authenticated_scope_sources(cut, scope_source, authenticated) -> bool:
     return True
 
 
-def _authenticated_loop_cut_matches(runtime, cut) -> bool:
+def _authenticated_loop_cut_matches(runtime: CommonCliExecutionRuntime, cut: object) -> bool:
     """Recheck the complete current journal against one caller-authenticated cut."""
     if not isinstance(cut, _AuthenticatedLoopDecisionCut) or cut.runtime is not runtime:
         return False
@@ -353,13 +353,13 @@ def _authenticated_loop_cut_matches(runtime, cut) -> bool:
     return current == supplied
 
 
-def _native_recovery_derivation_allowed(runtime) -> bool:
+def _native_recovery_derivation_allowed(runtime: CommonCliExecutionRuntime) -> bool:
     from .r14_native_recovery_cut import (
         _NATIVE_AUTHENTICATE_SELECTED_HELD,
         NativeRecoveryCutSource,
     )
 
-    source = getattr(runtime, "_full_recovery_cut_source", None)
+    source: object = getattr(runtime, "_full_recovery_cut_source", None)
     return (
         type(source) is NativeRecoveryCutSource
         and callable(getattr(source, "collect_held", None))
@@ -369,7 +369,11 @@ def _native_recovery_derivation_allowed(runtime) -> bool:
     )
 
 
-def _recovery_derivation_row(runtime, entry, cut):
+def _recovery_derivation_row(
+    runtime: CommonCliExecutionRuntime,
+    entry: Mapping[str, object],
+    cut: _AuthenticatedLoopDecisionCut,
+) -> _AuthenticatedLoopDecision:
     from .r14_recovery_publication import OPERATION
 
     runtime._authority_gate().require_held()
@@ -390,7 +394,11 @@ def _recovery_derivation_row(runtime, entry, cut):
     return rows[0]
 
 
-def _read_derived_recovery(runtime, entry, cut):
+def _read_derived_recovery(
+    runtime: CommonCliExecutionRuntime,
+    entry: Mapping[str, object],
+    cut: _AuthenticatedLoopDecisionCut,
+) -> tuple[RetainedRecoveryPublication, PhysicalPublicationCommand]:
     """Derive pure owner-result bytes once; never cache source authentication."""
     from .r14_recovery_publication import command, retained
 
@@ -410,7 +418,12 @@ def _read_derived_recovery(runtime, entry, cut):
     return result
 
 
-def _read_cached_recovery_command(runtime, entry, evidence, cut):
+def _read_cached_recovery_command(
+    runtime: CommonCliExecutionRuntime,
+    entry: Mapping[str, object],
+    evidence: RetainedRecoveryPublication,
+    cut: _AuthenticatedLoopDecisionCut | None,
+) -> PhysicalPublicationCommand | None:
     """Next-turn lookup accepts only evidence returned by this read's producer."""
     if cut is None or not _native_recovery_derivation_allowed(runtime):
         return None

@@ -20,10 +20,29 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.direct_terminal_contracts import (
+        PreparedAcceptedDirectTerminalV1,
+    )
+    from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        AcceptedOpenAccountingRecordV1,
+        PreparedAcceptedOpenRecoveryV1,
+    )
+    from chiplog.capabilities.agent_loop.execution_recovery_observations import (
+        RecoverySourceRecord,
+        SelectedExecutionSuspension,
+    )
     from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+        OriginalEffectEvidenceReducerPolicyV1,
+        OriginalResolverAuthorityPolicyV1,
+        OriginalResolverInvocationV1,
+        PreparedLoopSemanticReduction,
         PreparedOriginalCallResolution,
     )
     from chiplog.composition.r14_loop_history import ExecutionRecoveryHistory
+    from chiplog.composition.r14_native_accounting_records import (
+        NativeOneCallCancelledAccountingRecord,
+    )
 
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import (
@@ -942,7 +961,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await cancel_execution_call(self, peer, submission)
 
-    async def publish_native_one_call_cancelled_accounting(self, peer: str = "hermetic-ingress"):
+    async def publish_native_one_call_cancelled_accounting(
+        self, peer: str = "hermetic-ingress"
+    ) -> NativeOneCallCancelledAccountingRecord:
         """Publish the supported selected accounting through the installed writer."""
         from chiplog.composition.r14_native_accounting_publication import (
             publish_native_one_call_cancelled_accounting,
@@ -959,14 +980,18 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await publish_native_recovery_profile(self, peer, version=version)
 
-    async def publish_original_resolver_authority_policy(self, peer: str = "hermetic-ingress"):
+    async def publish_original_resolver_authority_policy(
+        self, peer: str = "hermetic-ingress"
+    ) -> OriginalResolverAuthorityPolicyV1 | None:
         from chiplog.composition.r14_original_resolver_policy_publication import (
             publish_original_resolver_authority_policy,
         )
 
         return await publish_original_resolver_authority_policy(self, peer)
 
-    def read_selected_original_resolver_authority_policy(self):
+    def read_selected_original_resolver_authority_policy(
+        self,
+    ) -> OriginalResolverAuthorityPolicyV1 | None:
         from chiplog.composition.r14_original_resolver_policy_publication import (
             read_selected_original_resolver_authority_policy_held,
         )
@@ -974,7 +999,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         with self._authority_gate().hold():
             return read_selected_original_resolver_authority_policy_held(self)
 
-    def read_selected_original_resolver_authority_policy_source(self):
+    def read_selected_original_resolver_authority_policy_source(
+        self,
+    ) -> tuple[OriginalResolverAuthorityPolicyV1, RecoverySourceRecord] | None:
         from chiplog.composition.r14_original_resolver_policy_publication import (
             read_selected_original_resolver_authority_policy_source_held,
         )
@@ -984,7 +1011,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 self, historical=True
             )
 
-    def read_selected_original_effect_evidence_reducer_policy_source(self):
+    def read_selected_original_effect_evidence_reducer_policy_source(
+        self,
+    ) -> tuple[OriginalEffectEvidenceReducerPolicyV1, RecoverySourceRecord] | None:
         from chiplog.composition.r14_original_resolver_policy_publication import (
             read_selected_original_effect_evidence_reducer_policy_source_held,
         )
@@ -994,14 +1023,18 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
                 self, historical=True
             )
 
-    async def publish_original_resolver_invocation(self, peer: str = "hermetic-ingress"):
+    async def publish_original_resolver_invocation(
+        self, peer: str = "hermetic-ingress"
+    ) -> OriginalResolverInvocationV1 | None:
         from chiplog.composition.r14_original_resolver_invocation_publication import (
             publish_original_resolver_invocation,
         )
 
         return await publish_original_resolver_invocation(self, peer)
 
-    def read_selected_original_resolver_invocation_source(self):
+    def read_selected_original_resolver_invocation_source(
+        self,
+    ) -> tuple[OriginalResolverInvocationV1, RecoverySourceRecord] | None:
         from chiplog.composition.r14_original_resolver_invocation_publication import (
             read_selected_original_resolver_invocation_source_held,
         )
@@ -1009,7 +1042,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         with self._authority_gate().hold():
             return read_selected_original_resolver_invocation_source_held(self, historical=True)
 
-    async def publish_original_call_resolution(self, peer: str = "hermetic-ingress"):
+    async def publish_original_call_resolution(
+        self, peer: str = "hermetic-ingress"
+    ) -> PreparedOriginalCallResolution:
         from chiplog.composition.r14_original_call_resolution_publication import (
             publish_original_call_resolution,
         )
@@ -1024,7 +1059,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         with self._authority_gate().hold():
             return read_selected_original_call_resolution_source_held(self)
 
-    async def publish_loop_semantic_reduction(self, peer: str = "hermetic-ingress"):
+    async def publish_loop_semantic_reduction(
+        self, peer: str = "hermetic-ingress"
+    ) -> PreparedLoopSemanticReduction:
         from chiplog.composition.r14_loop_semantic_reduction_publication import (
             publish_loop_semantic_reduction,
         )
@@ -1055,7 +1092,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await publish_accepted_open_accounting(self, peer, original_call_id=original_call_id)
 
-    def read_selected_accepted_open_accounting(self, *, original_call_id: str | None = None):
+    def read_selected_accepted_open_accounting(
+        self, *, original_call_id: str | None = None
+    ) -> AcceptedOpenAccountingRecordV1 | None:
         from chiplog.composition.r14_loop_history import (
             read_selected_accepted_open_accounting,
         )
@@ -1071,12 +1110,16 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await publish_accepted_open_recovery(self, peer, original_call_id=original_call_id)
 
-    def read_selected_accepted_open_recovery(self, *, original_call_id: str | None = None):
+    def read_selected_accepted_open_recovery(
+        self, *, original_call_id: str | None = None
+    ) -> PreparedAcceptedOpenRecoveryV1 | None:
         from chiplog.composition.r14_loop_history import read_selected_accepted_open_recovery
 
         return read_selected_accepted_open_recovery(self, original_call_id=original_call_id)
 
-    def read_selected_original_obligation_sources(self, *, historical: bool = False):
+    def read_selected_original_obligation_sources(
+        self, *, historical: bool = False
+    ) -> tuple[RecoverySourceRecord, RecoverySourceRecord] | None:
         from chiplog.composition.r14_loop_history import (
             read_selected_original_obligation_sources,
         )
@@ -1095,14 +1138,16 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         peer: str = "hermetic-ingress",
         *,
         original_call_id: str | None = None,
-    ):
+    ) -> PreparedAcceptedDirectTerminalV1:
         from chiplog.composition.r14_accepted_direct_terminal_publication import (
             publish_accepted_direct_terminal,
         )
 
         return await publish_accepted_direct_terminal(self, peer, original_call_id=original_call_id)
 
-    def read_selected_accepted_direct_terminal(self, *, original_call_id: str | None = None):
+    def read_selected_accepted_direct_terminal(
+        self, *, original_call_id: str | None = None
+    ) -> PreparedAcceptedDirectTerminalV1 | None:
         from chiplog.composition.r14_loop_history import (
             read_selected_accepted_direct_terminal,
         )
@@ -1124,7 +1169,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
     async def start_next_execution_turn(
         self, run_id: str, expected_head: str, peer: str = "hermetic-ingress"
-    ):
+    ) -> ExecutionRunRecord:
         from chiplog.composition.r14_next_turn_publication import start_next_execution_turn
 
         return await start_next_execution_turn(self, peer, run_id, expected_head)
@@ -1133,9 +1178,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         self,
         run_id: str,
         expected_head: str,
-        activation_blocking_predicates,
+        activation_blocking_predicates: tuple[CallSubjectHead, ...],
         peer: str = "hermetic-ingress",
-    ):
+    ) -> SelectedExecutionSuspension:
         from chiplog.composition.r14_execution_suspension import suspend_execution
 
         return await suspend_execution(
@@ -1148,12 +1193,12 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         expected_head: str,
         activation_payload: bytes,
         peer: str = "hermetic-ingress",
-    ):
+    ) -> ExecutionRunRecord:
         from chiplog.composition.r14_execution_resume import resume_execution
 
         return await resume_execution(self, peer, run_id, expected_head, activation_payload)
 
-    def read_selected_execution_resume(self):
+    def read_selected_execution_resume(self) -> ExecutionRunRecord | None:
         from chiplog.composition.r14_execution_resume import (
             read_selected_execution_resume_held,
         )
@@ -1161,7 +1206,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         with self._authority_gate().hold():
             return read_selected_execution_resume_held(self)
 
-    def read_selected_execution_suspension(self):
+    def read_selected_execution_suspension(self) -> SelectedExecutionSuspension | None:
         from chiplog.composition.r14_execution_suspension import (
             read_selected_execution_suspension_held,
         )
@@ -1169,7 +1214,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         with self._authority_gate().hold():
             return read_selected_execution_suspension_held(self)
 
-    def read_native_one_call_cancelled_accounting(self):
+    def read_native_one_call_cancelled_accounting(
+        self,
+    ) -> NativeOneCallCancelledAccountingRecord | None:
         """Canonical read-only accounting observation after selected-history validation."""
         from chiplog.composition.r14_loop_history import read_selected_native_accounting
 

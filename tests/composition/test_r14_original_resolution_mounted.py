@@ -120,8 +120,10 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert len(resources.require_original_provider().transfers) == 1
 
         policy = await runtime.publish_original_resolver_authority_policy()
+        assert policy is not None
         assert policy.principal_id == "hermetic-principal"
         invocation = await runtime.publish_original_resolver_invocation()
+        assert invocation is not None
         assert invocation.original == open_recovery.opening.original
         resolution = await runtime.publish_original_call_resolution()
         assert isinstance(resolution, PreparedOriginalCallResolution)
@@ -157,7 +159,9 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         recovery_cut_source=NativeRecoveryCutSource(),
     ) as reopened:
         assert reopened.read_selected_original_resolver_authority_policy() == policy
-        assert reopened.read_selected_original_resolver_invocation_source()[0] == invocation
+        reopened_invocation_source = reopened.read_selected_original_resolver_invocation_source()
+        assert reopened_invocation_source is not None
+        assert reopened_invocation_source[0] == invocation
         history_reads: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         original_history_reader = r14_loop_history._read_call_history
 

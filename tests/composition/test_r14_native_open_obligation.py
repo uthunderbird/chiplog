@@ -510,7 +510,9 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
                 "SELECT head FROM tenant_heads WHERE tenant_id=?", (reopened._tenant_id,)
             ).fetchone()[0]
         assert after_v3_replay == before_v3_replay
-        assert reopened.read_selected_execution_suspension().baseline.original_obligations == (
+        selected_suspension = reopened.read_selected_execution_suspension()
+        assert selected_suspension is not None
+        assert selected_suspension.baseline.original_obligations == (
             joined.calls[0].disposition.obligation,
         )
         assert len(resources.require_original_provider().transfers) == 1

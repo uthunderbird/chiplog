@@ -40,10 +40,14 @@ async def test_selected_policy_replays_and_reopens_with_physical_readback(tmp_pa
         assert selected.tenant_id == runtime._tenant_id
         assert selected.principal_id == "hermetic-principal"
         assert runtime.read_selected_original_resolver_authority_policy() == selected
-        source_policy, source = runtime.read_selected_original_resolver_authority_policy_source()
-        reducer_policy, reducer_source = (
+        policy_source = runtime.read_selected_original_resolver_authority_policy_source()
+        assert policy_source is not None
+        source_policy, source = policy_source
+        reducer_policy_source = (
             runtime.read_selected_original_effect_evidence_reducer_policy_source()
         )
+        assert reducer_policy_source is not None
+        reducer_policy, reducer_source = reducer_policy_source
         assert reducer_policy.reducer_id == "R14_ORIGINAL_EFFECT_EVIDENCE_REDUCER"
         assert reducer_policy.reducer_version == "r14-effect-evidence.v1"
         assert reducer_source.schema_id == (
@@ -79,11 +83,14 @@ async def test_selected_policy_replays_and_reopens_with_physical_readback(tmp_pa
         manifest=R14_EXECUTION_ORIGINAL_RESOLVER_POLICY_V31_PRODUCTION_MANIFEST,
     ) as runtime:
         assert runtime.read_selected_original_resolver_authority_policy() == selected
-        assert runtime.read_selected_original_resolver_authority_policy_source()[0] == selected
-        assert (
-            runtime.read_selected_original_effect_evidence_reducer_policy_source()[0]
-            == reducer_policy
+        reopened_policy_source = runtime.read_selected_original_resolver_authority_policy_source()
+        assert reopened_policy_source is not None
+        assert reopened_policy_source[0] == selected
+        reopened_reducer_source = (
+            runtime.read_selected_original_effect_evidence_reducer_policy_source()
         )
+        assert reopened_reducer_source is not None
+        assert reopened_reducer_source[0] == reducer_policy
         assert await runtime.publish_original_resolver_authority_policy() == selected
 
         from chiplog.composition import (
@@ -434,7 +441,9 @@ async def test_invocation_publication_replays_exact_lost_ack_without_new_auth(
         resources=resources,
         manifest=R14_EXECUTION_ORIGINAL_RESOLVER_INVOCATION_V32_PRODUCTION_MANIFEST,
     ) as runtime:
-        selected, source = runtime.read_selected_original_resolver_invocation_source()
+        invocation_source = runtime.read_selected_original_resolver_invocation_source()
+        assert invocation_source is not None
+        selected, source = invocation_source
         assert selected.original == binding
         assert source.canonical_record_bytes == selected.canonical_bytes()
         with patch.object(
