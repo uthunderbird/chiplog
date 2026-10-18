@@ -336,3 +336,49 @@ def test_execution_prompt_registration_does_not_expand_other_imports(
     # Direct negative input: rejection must come from this boundary, not catalog drift.
     with pytest.raises(R8SurfaceViolation):
         verify_offline_import_boundary(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "composition/r13_runtime.py",
+        "composition/r14_loop_history.py",
+        "adapters/driven/deployment_trust/_journal.py",
+        "capabilities/agent_loop/execution_first_path_completion_contracts.py",
+    ],
+)
+def test_native_json_codec_registration_accepts_exact_existing_leaves(
+    tmp_path: Path, relative: str
+) -> None:
+    target = tmp_path / "src/chiplog" / relative
+    target.parent.mkdir(parents=True)
+    target.write_text("import orjson\n")
+    verify_offline_import_boundary(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "relative,statement",
+    [
+        ("capabilities/agent_loop/neighbor.py", "import orjson"),
+        (
+            "capabilities/agent_loop/execution_first_path_completion_contracts.py",
+            "from orjson import dumps",
+        ),
+        (
+            "capabilities/agent_loop/execution_first_path_completion_contracts.py",
+            "import orjson.unknown",
+        ),
+        (
+            "capabilities/agent_loop/execution_first_path_completion_contracts.py",
+            "import orjson, json",
+        ),
+    ],
+)
+def test_native_json_codec_registration_rejects_other_paths_and_import_forms(
+    tmp_path: Path, relative: str, statement: str
+) -> None:
+    target = tmp_path / "src/chiplog" / relative
+    target.parent.mkdir(parents=True)
+    target.write_text(statement + "\n")
+    with pytest.raises(R8SurfaceViolation, match="unregistered dependency"):
+        verify_offline_import_boundary(tmp_path)

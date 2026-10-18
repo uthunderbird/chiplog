@@ -12,6 +12,7 @@ import hashlib
 import json
 from typing import Annotated, Literal, Self
 
+import orjson
 from pydantic import Field, TypeAdapter, model_validator
 
 from .call_acceptance_contracts import CallSubjectHead, SealedResponseRecord
@@ -46,23 +47,30 @@ def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _content_fingerprint(domain: str, value: dict[str, object], excluded: str) -> str:
-    content = {key: item for key, item in value.items() if key != excluded}
-    return _sha(
-        json.dumps(
-            {"domain": domain, "content": content},
+def _content_fingerprint(
+    domain: str,
+    value: FrontierMember | RecoveryFrontier | FirstPathCompletionCutV2,
+    excluded: str,
+) -> str:
+    content = {key: item for key, item in value.model_dump(mode="json").items() if key != excluded}
+    preimage = {"domain": domain, "content": content}
+    try:
+        raw = orjson.dumps(preimage, option=orjson.OPT_SORT_KEYS)
+    except orjson.JSONEncodeError:
+        raw = json.dumps(
+            preimage,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
         ).encode()
-    )
+    return _sha(raw)
 
 
 def first_path_frontier_member_fingerprint(member: FrontierMember) -> str:
     """First-path profile only; never reinterpret an existing recovery preimage."""
     return _content_fingerprint(
         "chiplog.execution.first-path-frontier-member.v2",
-        member.model_dump(mode="json"),
+        member,
         "fingerprint",
     )
 
@@ -70,7 +78,7 @@ def first_path_frontier_member_fingerprint(member: FrontierMember) -> str:
 def first_path_frontier_fingerprint(frontier: RecoveryFrontier) -> str:
     return _content_fingerprint(
         "chiplog.execution.first-path-frontier.v2",
-        frontier.model_dump(mode="json"),
+        frontier,
         "fingerprint",
     )
 
@@ -349,9 +357,7 @@ class FirstPathCompletionCutV2(ExecutionRecoveryDTO):
 
 def first_path_inventory_fingerprint(source: FirstPathCompletionCutV2) -> str:
     """Hash every cut field except its own embedded fingerprint."""
-    return _content_fingerprint(
-        FIRST_PATH_CUT_SCHEMA, source.model_dump(mode="json"), "complete_inventory_fingerprint"
-    )
+    return _content_fingerprint(FIRST_PATH_CUT_SCHEMA, source, "complete_inventory_fingerprint")
 
 
 class PrepareExecutionCompletionFirstPathV2(ExecutionRecoveryDTO):

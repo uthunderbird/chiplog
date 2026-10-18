@@ -3,7 +3,10 @@
 import base64
 import hashlib
 import json
+from collections.abc import Callable
+from types import SimpleNamespace
 
+import orjson
 import pytest
 from pydantic import TypeAdapter, ValidationError
 from tests.support.capabilities.agent_loop.execution_first_path_completion_contracts import (
@@ -29,6 +32,10 @@ from chiplog.capabilities.agent_loop.post_terminal_contracts import (
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import (
     Absent,
+)
+from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
+    FrontierMember,
+    RecoveryFrontier,
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
     RECOVERY_FRONTIER_REGISTRY_SCHEMA,
@@ -318,3 +325,167 @@ async def test_first_path_owner_rejects_noncanonical_and_rehashed_splice(mutatio
     reply = process.dispatch(process.FIRST_PATH_OPERATION, payload)
 
     assert reply["failure"] == "PROTOCOL_REJECTED"
+
+
+async def test_first_path_fingerprints_encode_each_real_dto_once_natively(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real producer DTOs exercise consistency only, not selected-history authority.
+    prepared = await request()
+    cut = prepared.source
+    frontier = cut.frontier
+    member = frontier.ordered_members[0]
+    cases: tuple[
+        tuple[
+            str,
+            str,
+            FrontierMember | RecoveryFrontier | contracts.FirstPathCompletionCutV2,
+            Callable[[], str],
+        ],
+        ...,
+    ] = (
+        (
+            "chiplog.execution.first-path-frontier-member.v2",
+            "fingerprint",
+            member,
+            lambda: contracts.first_path_frontier_member_fingerprint(member),
+        ),
+        (
+            "chiplog.execution.first-path-frontier.v2",
+            "fingerprint",
+            frontier,
+            lambda: contracts.first_path_frontier_fingerprint(frontier),
+        ),
+        (
+            contracts.FIRST_PATH_CUT_SCHEMA,
+            "complete_inventory_fingerprint",
+            cut,
+            lambda: contracts.first_path_inventory_fingerprint(cut),
+        ),
+    )
+    original_std_dumps = json.dumps
+    original_native_dumps = orjson.dumps
+    for domain, excluded, value, fingerprint in cases:
+        content = value.model_dump(mode="json")
+        del content[excluded]
+        expected = original_std_dumps(
+            {"domain": domain, "content": content},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        std_calls = 0
+        native_calls = 0
+        preimages: list[bytes] = []
+
+        def std_dumps(
+            value: object,
+            *,
+            sort_keys: bool,
+            separators: tuple[str, str],
+            ensure_ascii: bool,
+        ) -> str:
+            nonlocal std_calls
+            std_calls += 1
+            return original_std_dumps(
+                value, sort_keys=sort_keys, separators=separators, ensure_ascii=ensure_ascii
+            )
+
+        def native_dumps(value: object, *, option: int) -> bytes:
+            nonlocal native_calls
+            native_calls += 1
+            return original_native_dumps(value, option=option)
+
+        def observed_sha(raw: bytes, observed: list[bytes] = preimages) -> str:
+            observed.append(raw)
+            return hashlib.sha256(raw).hexdigest()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(contracts, "json", SimpleNamespace(dumps=std_dumps))
+            patch.setattr(
+                contracts,
+                "orjson",
+                SimpleNamespace(
+                    dumps=native_dumps,
+                    OPT_SORT_KEYS=orjson.OPT_SORT_KEYS,
+                    JSONEncodeError=orjson.JSONEncodeError,
+                ),
+                raising=False,
+            )
+            patch.setattr(contracts, "_sha", observed_sha)
+            assert fingerprint() == hashlib.sha256(expected).hexdigest()
+        assert preimages == [expected]
+        assert std_calls == 0
+        assert native_calls == 1
+
+
+@pytest.mark.parametrize("sequence", [0, 2**63, 2**64 - 1])
+async def test_first_path_native_fingerprint_preserves_unicode_and_uint64_bytes(
+    sequence: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = (await request()).source.frontier
+    fields = original.model_dump(mode="python")
+    fields.update(tenant_id="тенант\n\t\x00é😀", tenant_commit_sequence=sequence)
+    frontier = RecoveryFrontier.model_validate(fields)
+    content = frontier.model_dump(mode="json")
+    del content["fingerprint"]
+    expected = json.dumps(
+        {"domain": "chiplog.execution.first-path-frontier.v2", "content": content},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    observed: list[bytes] = []
+
+    def sha(raw: bytes) -> str:
+        observed.append(raw)
+        return hashlib.sha256(raw).hexdigest()
+
+    monkeypatch.setattr(contracts, "_sha", sha)
+    assert (
+        contracts.first_path_frontier_fingerprint(frontier) == hashlib.sha256(expected).hexdigest()
+    )
+    assert observed == [expected]
+
+
+async def test_first_path_native_encoding_error_retains_legacy_preimage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    member = (await request()).source.frontier.ordered_members[0]
+    content = member.model_dump(mode="json")
+    del content["fingerprint"]
+    expected = json.dumps(
+        {"domain": "chiplog.execution.first-path-frontier-member.v2", "content": content},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    calls = 0
+    observed: list[bytes] = []
+
+    def unavailable(value: object, *, option: int) -> bytes:
+        nonlocal calls
+        calls += 1
+        raise orjson.JSONEncodeError("native encoding refused")
+
+    def sha(raw: bytes) -> str:
+        observed.append(raw)
+        return hashlib.sha256(raw).hexdigest()
+
+    monkeypatch.setattr(
+        contracts,
+        "orjson",
+        SimpleNamespace(
+            dumps=unavailable,
+            OPT_SORT_KEYS=orjson.OPT_SORT_KEYS,
+            JSONEncodeError=orjson.JSONEncodeError,
+        ),
+    )
+    monkeypatch.setattr(contracts, "_sha", sha)
+    assert (
+        contracts.first_path_frontier_member_fingerprint(member)
+        == hashlib.sha256(expected).hexdigest()
+    )
+    assert calls == 1
+    assert observed == [expected]
