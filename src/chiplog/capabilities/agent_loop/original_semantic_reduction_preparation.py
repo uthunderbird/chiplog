@@ -5,10 +5,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from typing import Literal
 
 from pydantic import TypeAdapter, ValidationError
 
-from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallPreparationRejected
+from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
+    CallPreparationRejected,
+    CallSubjectHead,
+)
+from chiplog.capabilities.agent_loop.contracts import Frozen
 from chiplog.capabilities.agent_loop.direct_effect_terminal_contracts import (
     translate_selected_outcome_v1,
 )
@@ -33,6 +38,7 @@ from chiplog.capabilities.agent_loop.original_recovery_contracts import (
     original_resolver_authority_policy_v1,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent, Present
+from chiplog.capabilities.effects.dispatch_authority_contracts import DispatchObservationDTO
 from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
 from chiplog.capabilities.effects.dispatch_outcomes import evidence_head
 
@@ -50,7 +56,9 @@ def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _decode(source: RecoverySourceRecord, type_: type, owner: str, schema: str):
+def _decode[T: Frozen | DispatchObservationDTO](
+    source: RecoverySourceRecord, type_: type[T], owner: str, schema: str
+) -> T:
     if source.owner != owner or source.schema_id != schema:
         raise ValueError(
             "semantic reduction source is not an exact selected physical record: "
@@ -140,7 +148,7 @@ def prepare_loop_semantic_reduction(
 
         anchors: dict[str, object] = {}
         anchor_sources: dict[str, RecoverySourceRecord] = {}
-        schemas = {
+        schemas: dict[str, tuple[type[Frozen] | type[DispatchObservationDTO], str]] = {
             _BASIS_SCHEMA: (OriginalResolutionBasis, "basis"),
             _CLOSURE_SCHEMA: (OriginalObligationClosureRecord, "closure"),
             _OUTCOME_SCHEMA: (RecoveredCallOutcomeRecord, "outcome"),
@@ -180,7 +188,7 @@ def prepare_loop_semantic_reduction(
         ):
             raise ValueError("semantic reduction anchors do not form the selected resolver chain")
 
-        evidence_refs = []
+        evidence_refs: list[CallSubjectHead] = []
         for source, expected_head in zip(
             request.complete_ordered_evidence, witness.snapshot.evidence_heads, strict=True
         ):
@@ -198,21 +206,13 @@ def prepare_loop_semantic_reduction(
             ):
                 raise ValueError("semantic reduction evidence belongs to another stream")
             evidence_refs.append(source.physical_record)
-        if tuple(witness.snapshot.evidence_heads) != tuple(
-            evidence_head(evidence.command.evidence)
-            for evidence in (
-                _decode(source, DispatchOutcomeRecordV2, "effects", _EVIDENCE_SCHEMA)
-                for source in request.complete_ordered_evidence
-            )
-        ):
-            raise ValueError("semantic reduction evidence inventory is incomplete")
         if (
             len(evidence_refs) < len(basis.complete_evidence_manifest)
             or tuple(evidence_refs[: len(basis.complete_evidence_manifest)])
             != basis.complete_evidence_manifest
         ):
             raise ValueError("semantic reduction no longer extends its accepted evidence manifest")
-        hold_reason = None
+        hold_reason: Literal["CONTRADICTORY", "MEANING_CHANGED"] | None = None
         try:
             status = translate_selected_outcome_v1(witness)
         except ValueError:
@@ -221,7 +221,7 @@ def prepare_loop_semantic_reduction(
             if status.semantic_class != basis.accepted_semantic_class:
                 hold_reason = "MEANING_CHANGED"
 
-        predecessor = Absent()
+        predecessor: Absent | Present = Absent()
         reduction_id = basis.reduction_id
         if isinstance(request.expected, SelectedLoopSemanticReduction):
             prior = request.expected.record

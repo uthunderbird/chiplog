@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from tests.capabilities.effects.support.dispatch_outcomes import original_send
 from tests.support.capabilities.agent_loop.original_call_resolution_preparation import (
     _head,
@@ -12,8 +13,11 @@ from tests.support.capabilities.agent_loop.original_semantic_reduction_preparati
 )
 from tests.support.capabilities.effects.dispatch_outcomes import request as outcome_request
 
+from chiplog.capabilities.agent_loop import original_semantic_reduction_preparation as preparation
+from chiplog.capabilities.agent_loop.contracts import Frozen
 from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
 from chiplog.capabilities.agent_loop.original_recovery_contracts import (
+    IndependentResolverAuthority,
     PreparedLoopSemanticReduction,
     SelectedLoopSemanticReduction,
 )
@@ -21,6 +25,7 @@ from chiplog.capabilities.agent_loop.original_semantic_reduction_preparation imp
     prepare_loop_semantic_reduction,
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Absent
+from chiplog.capabilities.effects.dispatch_authority_contracts import DispatchObservationDTO
 from chiplog.capabilities.effects.dispatch_outcomes import evidence_head, prepare_outcome
 
 
@@ -34,6 +39,58 @@ def test_preparation_builds_consumable_resolved_reduction() -> None:
     assert prepared.record.disposition.kind == "CONSUMABLE"
     assert prepared.record.anchor.kind == "RESOLVED"
     assert prepared.source_request_fingerprint == source.digest()
+
+
+@pytest.mark.parametrize("include_predecessor", (False, True))
+def test_each_selected_role_is_decoded_once(
+    monkeypatch: pytest.MonkeyPatch, include_predecessor: bool
+) -> None:
+    source = request()
+    if include_predecessor:
+        first = prepare_loop_semantic_reduction(source)
+        assert isinstance(first, PreparedLoopSemanticReduction)
+        raw = first.record.canonical_bytes()
+        digest = first.record.digest()
+        prior_source = _source(
+            first.record,
+            record_id="chiplog.loop.semantic-reduction.v1:" + digest,
+            owner="agent_loop",
+            schema="chiplog.loop.semantic-reduction.v1",
+            subject=_head(source.stream.stream_id, "record:" + digest, digest),
+        )
+        assert prior_source.canonical_record_bytes == raw
+        source = source.model_copy(
+            update={
+                "expected": SelectedLoopSemanticReduction(record=first.record, source=prior_source)
+            }
+        )
+    assert isinstance(source.authority, IndependentResolverAuthority)
+    expected_sources = (
+        source.reducer_policy,
+        source.authority.registered_authority,
+        source.authority.authenticated_invocation,
+        *source.complete_anchor_sources,
+        *source.complete_ordered_evidence,
+        *(
+            (source.expected.source,)
+            if isinstance(source.expected, SelectedLoopSemanticReduction)
+            else ()
+        ),
+    )
+    decodes: list[RecoverySourceRecord] = []
+    decode = preparation._decode
+
+    def counted[T: Frozen | DispatchObservationDTO](
+        source: RecoverySourceRecord, type_: type[T], owner: str, schema: str
+    ) -> T:
+        decodes.append(source)
+        return decode(source, type_, owner, schema)
+
+    monkeypatch.setattr(preparation, "_decode", counted)
+    prepared = prepare_loop_semantic_reduction(source)
+    assert isinstance(prepared, PreparedLoopSemanticReduction)
+    assert prepared.record.disposition.kind == "CONSUMABLE"
+    assert tuple(decodes) == expected_sources
 
 
 def test_preparation_holds_on_missing_evidence() -> None:
