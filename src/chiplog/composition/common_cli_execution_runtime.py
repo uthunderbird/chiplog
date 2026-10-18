@@ -38,11 +38,14 @@ if TYPE_CHECKING:
         OriginalResolverInvocationV1,
         PreparedLoopSemanticReduction,
         PreparedOriginalCallResolution,
+        SelectedLoopSemanticReduction,
     )
+    from chiplog.capabilities.agent_loop.recovery_domain import SealedAccounting
     from chiplog.composition.r14_loop_history import ExecutionRecoveryHistory
     from chiplog.composition.r14_native_accounting_records import (
         NativeOneCallCancelledAccountingRecord,
     )
+    from chiplog.composition.r14_recovery_publication import RetainedRecoveryPublication
 
 from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import (
@@ -974,7 +977,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
     async def publish_native_recovery_profile(
         self, peer: str = "hermetic-ingress", *, version: str = "v2"
-    ):
+    ) -> RecoverySourceRecord | None:
         from chiplog.composition.r14_recovery_profile_publication import (
             publish_native_recovery_profile,
         )
@@ -1069,7 +1072,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return await publish_loop_semantic_reduction(self, peer)
 
-    def read_selected_loop_semantic_reduction(self):
+    def read_selected_loop_semantic_reduction(self) -> SelectedLoopSemanticReduction | None:
         from chiplog.composition.r14_loop_semantic_reduction_publication import (
             read_selected_loop_semantic_reduction_source_held,
         )
@@ -1077,7 +1080,9 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
         with self._authority_gate().hold():
             return read_selected_loop_semantic_reduction_source_held(self)
 
-    async def publish_execution_accounting_readiness(self, peer: str = "hermetic-ingress"):
+    async def publish_execution_accounting_readiness(
+        self, peer: str = "hermetic-ingress"
+    ) -> RetainedRecoveryPublication:
         from chiplog.composition.r14_recovery_publication import (
             publish_execution_accounting_readiness,
         )
@@ -1086,7 +1091,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
     async def publish_accepted_open_accounting(
         self, peer: str = "hermetic-ingress", *, original_call_id: str | None = None
-    ):
+    ) -> AcceptedOpenAccountingRecordV1 | None:
         from chiplog.composition.r14_accepted_open_accounting_publication import (
             publish_accepted_open_accounting,
         )
@@ -1104,7 +1109,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
     async def publish_accepted_open_recovery(
         self, peer: str = "hermetic-ingress", *, original_call_id: str | None = None
-    ):
+    ) -> PreparedAcceptedOpenRecoveryV1:
         from chiplog.composition.r14_accepted_open_accounting_publication import (
             publish_accepted_open_recovery,
         )
@@ -1127,7 +1132,7 @@ class CommonCliExecutionRuntime(R17IngressRuntime, ExecutionDispatchRuntime):
 
         return read_selected_original_obligation_sources(self, historical=historical)
 
-    def read_selected_accepted_open_frontier(self):
+    def read_selected_accepted_open_frontier(self) -> SealedAccounting | None:
         from chiplog.composition.r14_accepted_open_accounting_publication import (
             read_selected_accepted_open_frontier,
         )

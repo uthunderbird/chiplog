@@ -1326,7 +1326,7 @@ def _continuation_closures(
     cut: ExecutionRecoveryCut, accounting: SealedAccounting
 ) -> tuple[tuple[OriginalRecoveredClosure, ...], tuple[EvidenceReduction, ...]]:
     required = {
-        call.original_call_id: call
+        call.original_call_id: call.disposition
         for call in accounting.calls
         if call.disposition.kind == "RECOVERY_REQUIRED"
     }
@@ -1339,9 +1339,8 @@ def _continuation_closures(
     if set(closures) != set(required):
         raise RecoveryHold("recovered closure membership is incomplete or contains extra subjects")
     joined: list[_OriginalContinuationJoin] = []
-    for call_id, call in required.items():
+    for call_id, disposition in required.items():
         summary = closures[call_id]
-        disposition = call.disposition
         reduction = reductions.get(summary.reduction_id)
         if (
             reduction is None

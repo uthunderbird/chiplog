@@ -546,7 +546,7 @@ def _selected_open_for_call(
 
 async def publish_accepted_open_accounting(
     runtime, peer: str = "hermetic-ingress", *, original_call_id: str | None = None
-):
+) -> AcceptedOpenAccountingRecordV1 | None:
     """Select one account-only record for the exact current accepted/open obligation."""
     observed = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
@@ -917,7 +917,7 @@ async def _finish_recovery(
 
 async def publish_accepted_open_recovery(
     runtime, peer: str = "hermetic-ingress", *, original_call_id: str | None = None
-):
+) -> PreparedAcceptedOpenRecoveryV1:
     """Atomically publish OPEN accounting, terminal disposition, and loop obligation."""
     observed = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
@@ -1093,7 +1093,9 @@ def _validated_selected_accepted_open_recoveries(runtime, *, authenticated_histo
     return tuple(selected)
 
 
-def _validated_selected_accepted_open_recovery(runtime, *, authenticated_history=None):
+def _validated_selected_accepted_open_recovery(
+    runtime, *, authenticated_history=None
+) -> tuple[dict[str, object], RetainedAcceptedOpenRecoveryPublication, SealedAccounting] | None:
     """Legacy whole-seal accessor remains singleton-only."""
     selected = _validated_selected_accepted_open_recoveries(
         runtime, authenticated_history=authenticated_history
@@ -1112,7 +1114,9 @@ def validate_selected_accepted_open_recovery(runtime) -> None:
     _validated_selected_accepted_open_recoveries(runtime)
 
 
-def read_selected_accepted_open_frontier(runtime, *, _authenticated_history=None):
+def read_selected_accepted_open_frontier(
+    runtime, *, _authenticated_history=None
+) -> SealedAccounting | None:
     """Return selected recovery accounting, with an exact outcome when resolved."""
     from chiplog.composition.r14_original_call_resolution_publication import (
         read_selected_original_call_resolution_source_held,

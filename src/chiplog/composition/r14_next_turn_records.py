@@ -424,7 +424,7 @@ def _validate_eligible_accounting_candidates(
     named_validated = False
     for decision_id, _, candidate, candidate_batch in selected:
         if int(candidate.get("expected_head", -1)) + 1 <= through_sequence:
-            evidence = validate_accounting_selected(  # type: ignore[no-untyped-call]
+            evidence = validate_accounting_selected(
                 runtime,
                 candidate,
                 candidate_batch,

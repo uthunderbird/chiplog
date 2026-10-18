@@ -359,6 +359,7 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
             == exact_open.outcome.canonical_bytes()
         )
         joined = runtime.read_selected_accepted_open_frontier()
+        assert joined is not None
         assert len(joined.calls) == 1
         assert joined.calls[0].original_call_id == calls[0].original_call_id
         assert joined.calls[0].acceptance.kind == "CONSEQUENTIAL_ACCEPTED"
@@ -572,6 +573,7 @@ async def test_selected_native_open_obligation_remains_outcome_unknown(
         assert selected_recovery.accounting.batch_record_ids == exact_open.batch_record_ids
         assert reopened.read_selected_execution_suspension() == suspension
         recovered_frontier = reopened.read_selected_accepted_open_frontier()
+        assert recovered_frontier is not None
         assert len(recovered_frontier.calls) == 1
         assert recovered_frontier.calls[0].disposition.kind == "RECOVERY_REQUIRED"
         assert recovered_frontier.calls[0].disposition.obligation == (

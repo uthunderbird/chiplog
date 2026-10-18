@@ -344,7 +344,7 @@ def validate_selected(
     through_sequence=None,
     authenticated_loop_decisions=None,
     verified_h1_prepares=None,
-):
+) -> RetainedRecoveryPublication:
     evidence = retained(entry)
     if evidence.actor_budget_v1 is not None:
         from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
@@ -505,7 +505,7 @@ async def _exchange[T: RecoveryDTO](
     return result, sent, reply
 
 
-async def _finish(runtime, entry):
+async def _finish(runtime, entry) -> RetainedRecoveryPublication:
     with runtime._authority_gate().hold():
         evidence = validate_selected(runtime, entry, runtime._publication(entry))
         batch = command(evidence)
@@ -574,13 +574,15 @@ def _resumed_original_readiness_cut(cut: ExecutionRecoveryCut) -> bool:
     )
 
 
-async def publish_execution_accounting_readiness(runtime, peer="hermetic-ingress"):
+async def publish_execution_accounting_readiness(
+    runtime, peer="hermetic-ingress"
+) -> RetainedRecoveryPublication:
     observed = await runtime._execution_actor(peer)
     with runtime._authority_gate().hold():
         runtime._check_execution_actor(observed)
         runtime._pending()
         prior = [
-            json.loads(raw)
+            entry
             for _, _, raw in runtime._loop_decisions().entries()
             if (entry := json.loads(raw)).get("kind") == "DECIDED"
             and entry.get("operation_kind") == OPERATION

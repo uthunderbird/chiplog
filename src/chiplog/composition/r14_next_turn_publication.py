@@ -108,9 +108,7 @@ def _selected_pair_held(
             selected.append((str(decision_id), raw, entry))
     current = []
     for decision_id, raw, entry in selected:
-        evidence = validate_accounting_selected(  # type: ignore[no-untyped-call]
-            runtime, entry, runtime._publication(entry)
-        )
+        evidence = validate_accounting_selected(runtime, entry, runtime._publication(entry))
         retained_cut = evidence.accounting_request.cut
         if (
             int(entry.get("expected_head", -1)) + 1 == cut.tenant_commit_sequence

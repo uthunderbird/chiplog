@@ -511,7 +511,9 @@ def validate_loop_semantic_reduction_startup(runtime) -> None:
     raise ValueError("selected semantic reduction has partial physical state")
 
 
-def read_selected_loop_semantic_reduction_source_held(runtime):
+def read_selected_loop_semantic_reduction_source_held(
+    runtime,
+) -> SelectedLoopSemanticReduction | None:
     runtime._pending()
     validate_loop_semantic_reduction_startup(runtime)
     selected = _selected_entries(runtime)

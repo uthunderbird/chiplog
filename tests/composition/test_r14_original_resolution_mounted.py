@@ -140,8 +140,10 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
         assert isinstance(reduction, PreparedLoopSemanticReduction)
         assert reduction.record.disposition.kind == "CONSUMABLE"
         selected_reduction = runtime.read_selected_loop_semantic_reduction()
+        assert selected_reduction is not None
         assert selected_reduction.record == reduction.record
         resolved_frontier = runtime.read_selected_accepted_open_frontier()
+        assert resolved_frontier is not None
         resolved_disposition = resolved_frontier.calls[0].disposition
         assert resolved_disposition.kind == "RECOVERY_REQUIRED"
         assert resolved_disposition.result.kind == "ABSENT"
@@ -177,8 +179,11 @@ async def test_original_resolution_publishes_closed_outcome_and_reopens_without_
             (reopened,),
             {"selected_only": True, "exact_historical_sources": False},
         )
-        assert reopened.read_selected_loop_semantic_reduction().record == reduction.record
+        selected_reduction = reopened.read_selected_loop_semantic_reduction()
+        assert selected_reduction is not None
+        assert selected_reduction.record == reduction.record
         resolved_frontier = reopened.read_selected_accepted_open_frontier()
+        assert resolved_frontier is not None
         resolved_disposition = resolved_frontier.calls[0].disposition
         assert resolved_disposition.kind == "RECOVERY_REQUIRED"
         assert resolved_disposition.result.kind == "ABSENT"

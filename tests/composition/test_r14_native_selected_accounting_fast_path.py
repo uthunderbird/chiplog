@@ -20,7 +20,10 @@ from chiplog.composition.r14_native_selected_accounting_source import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from chiplog.adapters.driven.effects_queries import StoredEffectRow
+    from chiplog.capabilities.agent_loop.contracts import RunRecord
     from chiplog.capabilities.effects.dispatch_authority_contracts import (
         Identity,
         SelectedEffectHistoryMember,
@@ -58,7 +61,7 @@ def test_open_cut_validation_reuses_authenticated_history_without_skipping_gate(
             events.append("held")
 
         @contextmanager
-        def hold(self):
+        def hold(self) -> Iterator[None]:
             was_held = self.held
             self.held = True
             try:
@@ -92,7 +95,7 @@ def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(
         held = False
 
         @contextmanager
-        def hold(self):
+        def hold(self) -> Iterator[None]:
             assert not self.held
             self.held = True
             try:
@@ -202,7 +205,7 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
         pass
 
     @contextmanager
-    def held():
+    def held() -> Iterator[None]:
         yield
 
     journal = SimpleNamespace(decisions=())
@@ -491,7 +494,7 @@ async def _open_cut_probe(monkeypatch, case):
     )
 
     @contextmanager
-    def held():
+    def held() -> Iterator[None]:
         yield
 
     class Runtime:
@@ -740,7 +743,9 @@ async def test_open_effects_history_keeps_only_exact_physical_runs(
     later = original.model_copy(update={"predecessor": original.head, "head": "loop:later"})
     assert later.head != original.head
 
-    def command(record, sequence, operation):
+    def command(
+        record: RunRecord | ExecutionRunRecord, sequence: int, operation: str
+    ) -> PhysicalPublicationCommand:
         raw = record.canonical_bytes()
         fingerprint = hashlib.sha256(raw).hexdigest()
         return PhysicalPublicationCommand(
@@ -768,7 +773,7 @@ async def test_open_effects_history_keeps_only_exact_physical_runs(
         physical_head = 2 if state in ("COMPLETE", "conflict") else 1
         db.execute("INSERT INTO tenant_heads VALUES (?, ?)", (original.tenant, physical_head))
 
-        def publish(cmd) -> None:
+        def publish(cmd: PhysicalPublicationCommand) -> None:
             record = cmd.records[0]
             db.execute(
                 "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?)",
@@ -1201,13 +1206,13 @@ async def test_public_open_api_forwards_exact_original_call(
 
     runtime = object()
     result = object()
-    calls = []
+    calls: list[tuple[object, str, str] | tuple[object, str]] = []
 
-    async def write(actual_runtime, peer, *, original_call_id):
+    async def write(actual_runtime: object, peer: str, *, original_call_id: str) -> object:
         calls.append((actual_runtime, peer, original_call_id))
         return result
 
-    def read(actual_runtime, *, original_call_id):
+    def read(actual_runtime: object, *, original_call_id: str) -> object:
         calls.append((actual_runtime, original_call_id))
         return result
 
@@ -1248,6 +1253,18 @@ async def test_open_writer_replays_requested_call_after_validating_all_marked_en
     )
     entries, commands, evidence = [], {}, {}
     checked, finished = [], []
+    from unittest.mock import create_autospec
+
+    from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
+        AcceptedOpenAccountingRecordV1,
+        PreparedAcceptedOpenRecoveryV1,
+    )
+
+    prepared = create_autospec(
+        PreparedAcceptedOpenRecoveryV1 if recovery else AcceptedOpenAccountingRecordV1,
+        instance=True,
+        spec_set=True,
+    )
     for label in ("A", "B"):
         call = "call-B" if damage == "duplicate-call" else "call-" + label
         seal = "seal-B" if damage == "duplicate-call" else "seal-" + label
@@ -1279,7 +1296,7 @@ async def test_open_writer_replays_requested_call_after_validating_all_marked_en
         )
 
     @contextmanager
-    def held():
+    def held() -> Iterator[None]:
         yield
 
     async def actor(_):
@@ -1305,7 +1322,7 @@ async def test_open_writer_replays_requested_call_after_validating_all_marked_en
     async def finish(actual_runtime, entry):
         assert actual_runtime is runtime
         finished.append(entry["operation_id"])
-        return entry["operation_id"]
+        return prepared
 
     retained_name = (
         "retained_accepted_open_recovery" if recovery else "retained_accepted_open_accounting"
@@ -1322,7 +1339,7 @@ async def test_open_writer_replays_requested_call_after_validating_all_marked_en
         else publication.publish_accepted_open_accounting
     )
     if damage is None:
-        assert await write(runtime, original_call_id="call-B") == "B"
+        assert await write(runtime, original_call_id="call-B") is prepared
         assert checked == ["A", "B"] and finished == ["B"]
     else:
         with pytest.raises(LoopRejected, match=r"envelope|duplicate"):
@@ -1346,7 +1363,7 @@ def test_open_source_authentication_binds_current_physical_cut(
     acquired = False
 
     @contextmanager
-    def hold():
+    def hold() -> Iterator[None]:
         nonlocal gate_held
         assert not gate_held
         gate_held = True
@@ -1505,7 +1522,7 @@ async def test_current_cut_and_real_builder_read_historical_sources_once(
             assert self.depth > 0
 
         @contextmanager
-        def hold(self):
+        def hold(self) -> Iterator[None]:
             self.depth += 1
             try:
                 yield

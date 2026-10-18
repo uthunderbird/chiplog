@@ -1928,18 +1928,17 @@ class NativeRecoveryCutSource:
                         runtime, _authenticated_history=history
                     )
             else:
-                accounting = runtime.read_selected_accepted_open_frontier()  # type: ignore[no-untyped-call]
+                accounting = runtime.read_selected_accepted_open_frontier()
             resolution_evidence = _read_selected_original_call_resolution_evidence_held(runtime)
             resolution = resolution_evidence.prepared if resolution_evidence is not None else None
-            selected_reduction = runtime.read_selected_loop_semantic_reduction()  # type: ignore[no-untyped-call]
-            if (
-                accounting is None
-                or len(accounting.calls) != 1
-                or not isinstance(accounting.calls[0].acceptance, ConsequentialAcceptedCall)
-                or not isinstance(accounting.calls[0].disposition, RecoveryRequiredResult)
-            ):
+            selected_reduction = runtime.read_selected_loop_semantic_reduction()
+            if accounting is None or len(accounting.calls) != 1:
                 return None
             call = accounting.calls[0]
+            if not isinstance(call.acceptance, ConsequentialAcceptedCall) or not isinstance(
+                call.disposition, RecoveryRequiredResult
+            ):
+                return None
             if closed is None:
                 if (
                     opened is None
@@ -2031,10 +2030,11 @@ class NativeRecoveryCutSource:
             from chiplog.composition.r14_execution_fanout_records import reference
 
             disposition = call.disposition
+            recovered_outcome = resolution.batch.recovered_outcome.revision
             closure = OriginalRecoveredClosure(
                 original=disposition.obligation,
                 terminal_disposition=disposition.terminal,
-                recovered_outcome=disposition.recovered_outcome.outcome,
+                recovered_outcome=recovered_outcome,
                 accepted_evidence=resolution.closure.accepted_witness.revision,
                 closure=reference(resolution.closure.closure_id, resolution.closure).revision,
                 resolver_batch=reference(resolution.batch.batch_id, resolution.batch).revision,
@@ -2048,10 +2048,10 @@ class NativeRecoveryCutSource:
                 reducer_version=selected_reduction.record.reducer_version,
                 current_reduction=selected_reduction.source.subject.revision,
                 ordered_consumed_evidence=tuple(item.revision for item in evidence_refs),
-                accepted_witness=selected_reduction.record.anchor.accepted_witness.revision,
-                accepted_outcome=selected_reduction.record.anchor.recovered_outcome.revision,
-                obligation_closure=selected_reduction.record.anchor.closure.revision,
-                resolver_batch=selected_reduction.record.anchor.resolver_batch.revision,
+                accepted_witness=resolution.basis.selected_witness.revision,
+                accepted_outcome=recovered_outcome,
+                obligation_closure=closure.closure,
+                resolver_batch=closure.resolver_batch,
                 semantic_class=selected_reduction.record.disposition.semantic_class,
                 consumability="CONSUMABLE",
             )

@@ -4,7 +4,12 @@ Synthetic wire cuts are not selected authority and cannot publish via the defaul
 source. These tests intentionally make no full-cut or continuation claim.
 """
 
+import json
+from collections import Counter
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -14,6 +19,7 @@ from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
     PreparedExecutionAccounting,
     PrepareExecutionAccounting,
 )
+from chiplog.composition import r14_recovery_publication as publication
 from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
 from chiplog.composition.r14_recovery_publication import (
     _exchange,
@@ -227,3 +233,42 @@ async def test_v26_actor_budget_is_issued_before_ipc_and_expires(tmp_path: Path)
         ):
             runtime._check_execution_actor(observed)
         assert time.monotonic_ns() < observed.request.budget.absolute_deadline_ns
+
+
+class _ReachedCutCollector(Exception):
+    pass
+
+
+async def test_readiness_scans_each_retained_entry_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A unit scan probe stops before cut validation; these entries confer no authority.
+    raws = (
+        json.dumps({"kind": "DECIDED", "operation_kind": publication.OPERATION}).encode(),
+        b'{"kind":"DECIDED","operation_kind":"other"}',
+        b'{"kind":"MATERIALIZED"}',
+    )
+    entries = tuple((str(index), None, raw) for index, raw in enumerate(raws))
+    observed: Counter[bytes] = Counter()
+    original_loads = json.loads
+
+    def counted_loads(raw: bytes) -> dict[str, object]:
+        observed[raw] += 1
+        value = original_loads(raw)
+        assert isinstance(value, dict)
+        return value
+
+    runtime = SimpleNamespace(
+        _execution_actor=AsyncMock(return_value=object()),
+        _authority_gate=Mock(return_value=SimpleNamespace(hold=nullcontext)),
+        _check_execution_actor=Mock(),
+        _pending=Mock(),
+        _loop_decisions=Mock(return_value=SimpleNamespace(entries=lambda: entries)),
+    )
+    collector = Mock()
+    collector.collect_held.side_effect = _ReachedCutCollector
+    monkeypatch.setattr(publication, "json", SimpleNamespace(loads=counted_loads))
+    monkeypatch.setattr(publication, "_capture_readiness_inputs", lambda _: None)
+    monkeypatch.setattr(publication, "source", lambda _: collector)
+    with pytest.raises(_ReachedCutCollector):
+        await publication.publish_execution_accounting_readiness(runtime)
+    collector.collect_held.assert_called_once_with(runtime)
+    assert observed == Counter(dict.fromkeys(raws, 1))
