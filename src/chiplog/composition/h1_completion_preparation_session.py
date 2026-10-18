@@ -91,7 +91,9 @@ from chiplog.platform.broker import (
 )
 
 if TYPE_CHECKING:
+    from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
     from chiplog.composition.h1_live_completion_enrollment import _H1LiveCompletionIssuance
+    from chiplog.composition.h1_scoped_delivery_producer import H1ScopedDeliveryProducer
 
 
 class H1CompletionPreparationUnavailable(ValueError):
@@ -522,10 +524,13 @@ class H1CompletionPreparationSession:
         raise H1CompletionPreparationUnavailable("H1 scoped recovery pin schema is malformed")
 
     @staticmethod
-    def _scoped_recovery_producer(runtime: Any, *, semantic_input: bytes | None) -> Any:
+    def _scoped_recovery_producer(
+        runtime: CommonCliExecutionRuntime, *, semantic_input: bytes | None
+    ) -> H1ScopedDeliveryProducer:
         """Select V2 only for a new V22 request; retained wire chooses replay."""
         from chiplog.architecture.r7_runtime import (
             R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
+            bind_execution_manifest,
         )
         from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
             PrepareH1ScopedDeliveryV2,
@@ -543,10 +548,15 @@ class H1CompletionPreparationSession:
                 if type(request) is PrepareH1ScopedDeliveryV2
                 else H1ScopedDeliveryProducer(runtime, reader)
             )
-        manifest = getattr(getattr(runtime, "_supervisor", None), "_manifest", None)
+        supervisor = runtime._supervisor
+        identity = supervisor._execution_identity
         return (
             H1ScopedDeliveryProducerV2(runtime, reader)
-            if manifest is R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST
+            if identity is not None
+            and supervisor._manifest
+            == bind_execution_manifest(
+                R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST, identity
+            )
             else H1ScopedDeliveryProducer(runtime, reader)
         )
 

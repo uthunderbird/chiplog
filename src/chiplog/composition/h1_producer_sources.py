@@ -203,19 +203,28 @@ class H1ProducerSourceReader:
             R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
             R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
             R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
+            bind_execution_manifest,
         )
 
         self._runtime._authority_gate().require_held()
         if self._closed:
             raise H1ProducerSourceViolation("H1 producer source reader is closed")
-        manifest = getattr(getattr(self._runtime, "_supervisor", None), "_manifest", None)
+        supervisor = self._runtime._supervisor
+        manifest = supervisor._manifest
+        identity = supervisor._execution_identity
         # These are installed only by the scoped H1 runtime opener and removed
         # before it yields a closed runtime back to its caller.
         if (
-            (
-                manifest is not R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST
-                and manifest is not R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST
-                and manifest is not R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST
+            identity is None
+            or manifest
+            not in (
+                bind_execution_manifest(R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST, identity),
+                bind_execution_manifest(
+                    R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST, identity
+                ),
+                bind_execution_manifest(
+                    R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST, identity
+                ),
             )
             or getattr(self._runtime, "_h1_preissuance_registration_source_port", None) is None
             or getattr(self._runtime, "_h1_completion_exchange_registry", None) is None

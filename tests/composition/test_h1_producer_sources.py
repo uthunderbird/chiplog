@@ -12,6 +12,10 @@ import pytest
 import chiplog.composition.h1_producer_sources as sources
 import chiplog.composition.h1_scoped_delivery_authority as authority
 from chiplog.adapters.driven.effects_queries import StoredEffectRow
+from chiplog.architecture.r7_runtime import (
+    R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
+    bind_execution_manifest,
+)
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts import (
     BoundedExternalSelfSendMandateV1,
     ExternalDeliveryResourcesV1,
@@ -194,6 +198,19 @@ async def test_reader_uses_real_mounted_physical_cut_and_rejects_foreign_capture
             reader = sources.H1ProducerSourceReader(runtime, authority_reader)
             forged = object.__new__(H1ScopedDeliveryAuthorityCapture)
             forged._record = object()
+            supervisor = runtime._supervisor
+            original_manifest = supervisor._manifest
+            identity = supervisor._execution_identity
+            assert identity is not None
+            for invalid_manifest in (
+                replace(original_manifest, broker_version="foreign-broker-version"),
+                bind_execution_manifest(R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST, identity),
+            ):
+                with monkeypatch.context() as context:
+                    context.setattr(supervisor, "_manifest", invalid_manifest)
+                    with pytest.raises(sources.H1ProducerSourceViolation, match="open mounted"):
+                        await reader.read(authority_capture=forged, intent_id="new-intent")
+            assert supervisor._manifest is original_manifest
             with pytest.raises(sources.H1ProducerSourceViolation, match="not current"):
                 await reader.read(authority_capture=forged, intent_id="new-intent")
 

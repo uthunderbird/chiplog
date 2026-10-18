@@ -19,6 +19,7 @@ from chiplog.capabilities.effects.h1_scoped_preparation_v2_contracts import (
     PreparedH1ScopedDeliveryV2,
 )
 from chiplog.composition.common_cli_execution_runtime import open_installed_h1_scoped_v22_runtime
+from chiplog.composition.h1_completion_preparation_session import H1CompletionPreparationSession
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_scoped_delivery_producer_v2 import H1ScopedDeliveryProducerV2
 from chiplog.platform.broker import PublicPortRejected, PublicPortSuccess
@@ -39,11 +40,17 @@ async def test_mounted_v22_owner_derives_v2_mandate_and_rejects_v1_wire(tmp_path
         async with open_installed_h1_scoped_v22_runtime(
             launch, resources=scoped_resources(tmp_path)
         ) as runtime:
+            producer = H1CompletionPreparationSession._scoped_recovery_producer(
+                runtime, semantic_input=None
+            )
+            assert type(producer) is H1ScopedDeliveryProducerV2
             _, authority = await issue_real_h1_scoped_authority(runtime)
-            exchange = await H1ScopedDeliveryProducerV2(
-                runtime, runtime._h1_producer_inventory_reader
-            ).prepare(authority_capture=authority)
+            exchange = await producer.prepare(authority_capture=authority)
             call = H1ScopedDeliveryOwnerCallV2.model_validate_json(exchange.sent.canonical_payload)
+            replay_producer = H1CompletionPreparationSession._scoped_recovery_producer(
+                runtime, semantic_input=call.request.canonical_bytes()
+            )
+            assert type(replay_producer) is H1ScopedDeliveryProducerV2
             result = PreparedH1ScopedDeliveryV2.model_validate_json(
                 exchange.returned.canonical_payload
             )
