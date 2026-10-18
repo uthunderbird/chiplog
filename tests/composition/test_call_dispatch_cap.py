@@ -9,7 +9,12 @@ import pytest
 from chiplog.adapters.driven.effects_hermetic import HermeticResponseLost
 from chiplog.adapters.driven.loop_prompts import OwnedStaticPrompts
 from chiplog.capabilities.agent_loop.application import AgentLoop
-from chiplog.capabilities.agent_loop.contracts import BudgetPolicy, EndpointSelection, LoopRejected
+from chiplog.capabilities.agent_loop.contracts import (
+    BudgetPolicy,
+    EndpointSelection,
+    LoopRejected,
+    RunRecord,
+)
 from chiplog.capabilities.agent_loop.execution_contracts import (
     ConsequentialToolCall,
     ExecutionContinue,
@@ -33,6 +38,7 @@ from chiplog.composition.r16_dispatch_authority import (
 from chiplog.composition.r16_dispatch_inputs import source_inventory
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.composition.r16_dispatch_runtime import open_execution_dispatch_runtime
+from chiplog.composition.r16_effects import HermeticEffectProposal, R16EffectsProducer
 from chiplog.platform._owner_publication_contracts import JournalSelectedPublication
 from tests.support.dispatch import _response
 
@@ -43,6 +49,7 @@ async def test_shared_cap_survives_closed_or_unknown_send_across_both_policies(
     tmp_path: Path,
     first: str,
     unknown: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     response = ExecutionContinue(
         kind="Continue",
@@ -118,6 +125,22 @@ async def test_shared_cap_survives_closed_or_unknown_send_across_both_policies(
                     ),
                 )
                 return result.external_intent.subject_id
+            legacy = loop.record("legacy")
+            duplicate = legacy.model_copy(update={"run_id": "duplicate-proposal-run"})
+            with pytest.raises(LoopRejected, match="ambiguous"):
+                R16EffectsProducer._proposal_from_runs(
+                    "legacy/turn/1/proposal/effect", (legacy, duplicate)
+                )
+            proposal_reads: list[str] = []
+            original_proposal = R16EffectsProducer._proposal
+
+            def counted_proposal(
+                producer: R16EffectsProducer, proposal_id: str
+            ) -> tuple[RunRecord, HermeticEffectProposal]:
+                proposal_reads.append(proposal_id)
+                return original_proposal(producer, proposal_id)
+
+            monkeypatch.setattr(R16EffectsProducer, "_proposal", counted_proposal)
             display = await runtime.preview_dispatch("legacy/turn/1/proposal/effect")
             result_legacy = await runtime.adopt_dispatch(
                 "hermetic-ingress",
@@ -126,6 +149,7 @@ async def test_shared_cap_survives_closed_or_unknown_send_across_both_policies(
                 display.adoption_act_id,
                 "legacy",
             )
+            assert proposal_reads == ["legacy/turn/1/proposal/effect"] * 3
             assert isinstance(result_legacy, JournalSelectedPublication), result_legacy
             record = DispatchRecordV2.model_validate_json(
                 result_legacy.complete_records[-1].canonical_bytes

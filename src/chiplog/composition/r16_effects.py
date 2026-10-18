@@ -132,8 +132,12 @@ class R16EffectsProducer:
         self._runtime = runtime
 
     def _proposal(self, proposal_id: str) -> tuple[RunRecord, HermeticEffectProposal]:
-        runtime = self._runtime
-        rows = runtime._loop_snapshot().records
+        return self._proposal_from_runs(proposal_id, self._runtime._loop_snapshot().records)
+
+    @staticmethod
+    def _proposal_from_runs(
+        proposal_id: str, rows: tuple[RunRecord, ...]
+    ) -> tuple[RunRecord, HermeticEffectProposal]:
         latest = {row.run_id: row for row in rows}
         matches = [
             (run, outcome.call.text)
@@ -340,6 +344,17 @@ class R16EffectsProducer:
     async def adopt_effect(
         self, peer: str, display_id: str, digest: str, adoption_act_id: str
     ) -> PreparedEffectAdoption:
+        return await self._adopt_effect(peer, display_id, digest, adoption_act_id)
+
+    async def _adopt_effect(
+        self,
+        peer: str,
+        display_id: str,
+        digest: str,
+        adoption_act_id: str,
+        *,
+        captured_proposal: tuple[RunRecord, HermeticEffectProposal] | None = None,
+    ) -> PreparedEffectAdoption:
         runtime = self._runtime
         matches = [d for d in runtime._displays() if d.display_id == display_id]
         if len(matches) != 1:
@@ -357,7 +372,9 @@ class R16EffectsProducer:
             or time.monotonic_ns() >= binding.valid_until_ns
         ):
             raise LoopRejected("missing exact current authenticated effect adoption")
-        run, proposal = self._proposal(display.proposal_id)
+        run, proposal = (
+            self._proposal(display.proposal_id) if captured_proposal is None else captured_proposal
+        )
         if (run.run_id, run.head, run.tenant, run.principal, proposal) != (
             binding.run_id,
             binding.run_head,

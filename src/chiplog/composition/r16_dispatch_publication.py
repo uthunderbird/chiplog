@@ -10,7 +10,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
-from chiplog.capabilities.agent_loop.contracts import LoopRejected, ProposalDisplay
+from chiplog.capabilities.agent_loop.contracts import LoopRejected, ProposalDisplay, RunRecord
 from chiplog.capabilities.effects.contracts import CommandIdentity, ExactHead
 from chiplog.capabilities.effects.dispatch_authority_contracts import DispatchObservationDTO
 from chiplog.capabilities.effects.dispatch_v2 import (
@@ -430,19 +430,26 @@ async def publish_dispatch(
             or digest(display.display_text.encode()) != display_digest
         ):
             raise LoopRejected("v2 display identity or worker differs")
+        producer = R16EffectsProducer(runtime)
         with runtime._authority_gate().hold():
+            captured = authority.capture(worker_run_id)
             require_dispatch_scope(
-                authority.capture(worker_run_id),
+                captured,
                 runtime._dispatch_resources,
                 preview.mandate,
                 None,
                 first_send=False,
             )
-        planning = await R16EffectsProducer(runtime).adopt_effect(
+            captured_proposal = producer._proposal_from_runs(
+                display.proposal_id,
+                tuple(run for run in captured.cut.latest_runs if isinstance(run, RunRecord)),
+            )
+        planning = await producer._adopt_effect(
             peer,
             preview.original_display_id,
             preview.original_display_digest,
             preview.original_adoption_act_id,
+            captured_proposal=captured_proposal,
         )
         companions = planning_records(planning)
         planning_command = OwnerCommandBytes(
