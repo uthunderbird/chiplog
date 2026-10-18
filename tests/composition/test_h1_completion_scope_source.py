@@ -141,9 +141,15 @@ async def test_effects_source_replays_only_one_p_bound_scope_delivery_cut(tmp_pa
             )
 
             other_cap = await port._capture_completion_scope(native._capture, native, original)
-            with pytest.raises(H1PreissuanceSourceViolation, match=r"delivery.*scope"):
+            with pytest.raises(
+                H1PreissuanceSourceViolation,
+                match="H1 effects source scope/native/delivery identity differs",
+            ):
                 port._replay_completion_effects_source(other_cap, native, receipt, native._capture)
-            with pytest.raises(H1PreissuanceSourceViolation, match="receipt"):
+            with pytest.raises(
+                H1PreissuanceSourceViolation,
+                match="H1 effects source scope/native/delivery identity differs",
+            ):
                 port._replay_completion_effects_source(
                     scope_cap, native, cast(Any, object()), native._capture
                 )
@@ -183,5 +189,10 @@ async def test_effects_source_rejects_stale_physical_or_substituted_current_wire
                 )
                 expected_error = "owner wire"
 
-            with pytest.raises(H1PreissuanceSourceViolation, match=expected_error):
+            with pytest.raises(H1PreissuanceSourceViolation, match=expected_error) as rejected:
                 port._replay_completion_effects_source(scope_cap, native, receipt, native._capture)
+            if defect == "stale_physical":
+                assert type(rejected.value.__cause__) is RuntimeError
+                assert str(rejected.value.__cause__) == (
+                    "trust materialization differs from authenticated journal"
+                )

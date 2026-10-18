@@ -587,7 +587,12 @@ class _H1RuntimePreissuancePort:
         self._launch.assert_current()
         slot = self._launch._slot
         registry = self._custody._registry
-        observed = self._runtime._trust.verify()
+        try:
+            observed = self._runtime._trust.verify()
+        except RuntimeError as error:
+            raise H1PreissuanceSourceViolation(
+                "installed H1 launch/trust scope is unavailable"
+            ) from error
         if (
             observed is None
             or observed.phase != "ACTIVE"
