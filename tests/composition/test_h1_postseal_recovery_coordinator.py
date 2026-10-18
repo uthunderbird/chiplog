@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Never, cast
 
 import pytest
 
@@ -18,7 +18,10 @@ from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition.common_cli_execution_runtime import open_installed_h1_runtime
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_postseal_recovery import (
+    H1PostSealRecoveryAppendReceipt,
     H1PostSealRecoveryJournal,
+    H1PostSealRecoveryRecordV1,
+    H1PostSealRecoveryRecordV2,
     H1PostSealRecoveryState,
     H1PostSealRecoveryTransition,
 )
@@ -193,11 +196,19 @@ async def test_root_append_uncertainty_reopens_and_reconciles_without_a_second_a
     original_append = H1PostSealRecoveryJournal.append_transition
     append_calls = 0
 
-    def append_then_lose_readback(self, record, *, expected_global_tip) -> None:
+    def append_then_lose_readback(
+        self: H1PostSealRecoveryJournal,
+        record: H1PostSealRecoveryRecordV1 | H1PostSealRecoveryRecordV2,
+        *,
+        expected_global_tip: str | None,
+    ) -> H1PostSealRecoveryAppendReceipt:
         nonlocal append_calls
-        append_calls += 1
-        original_append(self, record, expected_global_tip=expected_global_tip)
-        raise OSError("simulated post-append readback loss")
+        if record.kind == "ROOT":
+            append_calls += 1
+        receipt = original_append(self, record, expected_global_tip=expected_global_tip)
+        if record.kind == "ROOT":
+            raise OSError("simulated post-append readback loss")
+        return receipt
 
     monkeypatch.setattr(H1PostSealRecoveryJournal, "append_transition", append_then_lose_readback)
     with _open_installed_h1_launch(slot) as launch:
@@ -217,14 +228,23 @@ async def test_root_append_uncertainty_reopens_and_reconciles_without_a_second_a
 
             assert result.phase == "RUNNING"
             assert append_calls == 1
-            assert len(runtime._h1_postseal_recovery_journal.scan().states_by_root) == 1
+            journal = runtime._h1_postseal_recovery_journal
+            assert journal is not None
+            states = journal.scan().states_by_root
+            assert len(states) == 1
+            assert states[0][1].selected_producer == "LOCAL_V2"
+            assert len(states[0][1].inputs) == len(states[0][1].results) == 4
 
 
 @pytest.mark.asyncio
 async def test_scoped_root_fails_closed_before_local_recovery_or_finalization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A mounted SCOPED_V3 choice cannot enter the local V2 coordinator."""
+    """SCOPED failures preserve its selection and never fall back to LOCAL_V2.
+
+    The historical nodeid predates the supported scoped route. Its shared
+    source capture and finalization classification are now legitimate seams.
+    """
     slot, expected = installed_slot(tmp_path)
     await prepare_installed_slot(slot, expected, tmp_path)
     with _open_installed_h1_launch(slot) as launch:
@@ -233,31 +253,65 @@ async def test_scoped_root_fails_closed_before_local_recovery_or_finalization(
             private = cast(Any, runtime)
             coordinator = private._h1_postseal_recovery_coordinator
             assert coordinator is not None
+            journal = runtime._h1_postseal_recovery_journal
+            assert journal is not None
+            states = journal.scan().states_by_root
+            assert len(states) == 1
+            selected = states[0][1]
+            assert selected.selected_producer == "SCOPED_V3"
             engine = _install_recorder(runtime, monkeypatch)
             before = _recovery_body_and_tip(runtime)
+            source_error = RuntimeError("scoped source unavailable")
+            authority_error = RuntimeError("scoped authority unavailable")
+            reached: list[str] = []
 
-            def capture_must_not_run(*_args: object, **_kwargs: object) -> object:
-                raise AssertionError("SCOPED_V3 reached local recovery source capture")
+            def local_must_not_run(_state: H1PostSealRecoveryState) -> Never:
+                raise AssertionError("SCOPED_V3 reached LOCAL_V2 fallback")
 
-            async def finalization_must_not_run(_authority: object, **_kwargs: object) -> object:
-                raise AssertionError("SCOPED_V3 reached finalization authority")
+            def source_unavailable(actual_source: object, **kwargs: object) -> Never:
+                assert actual_source is coordinator._source
+                assert kwargs["original_identity"] == request.identity
+                assert (
+                    kwargs["original_fingerprint"] == request.original_driver_command_fingerprint()
+                )
+                assert kwargs["root"] == selected.root
+                reached.append("source")
+                raise source_error
 
-            monkeypatch.setattr(
-                type(coordinator._source), "_capture_recovery", capture_must_not_run
-            )
             authority = private._h1_live_publication_authority
+
+            async def authority_unavailable(actual_authority: object, **kwargs: object) -> Never:
+                assert actual_authority is authority
+                assert kwargs["identity"] == request.identity
+                assert (
+                    kwargs["original_fingerprint"] == request.original_driver_command_fingerprint()
+                )
+                reached.append("authority")
+                raise authority_error
+
             monkeypatch.setattr(
-                type(authority), "_recover_finalization_held", finalization_must_not_run
+                type(coordinator), "_require_local_producer", staticmethod(local_must_not_run)
+            )
+            monkeypatch.setattr(type(coordinator._source), "_capture_recovery", source_unavailable)
+            monkeypatch.setattr(
+                type(authority), "_recover_finalization_held", authority_unavailable
             )
 
-            with pytest.raises(H1PostSealRecoveryCoordinatorError, match="producer"):
+            with pytest.raises(H1PostSealRecoveryCoordinatorError) as resumed:
                 await coordinator.resume_selected(
                     request.identity, request.original_driver_command_fingerprint()
                 )
-            with pytest.raises(H1PostSealRecoveryCoordinatorError, match="producer"):
+            assert resumed.value.__cause__ is source_error
+            assert reached == ["source"]
+            assert _recovery_body_and_tip(runtime) == before
+            assert engine.calls == []
+
+            with pytest.raises(RuntimeError) as finalized:
                 await coordinator.finalize_selected(
                     request.identity, request.original_driver_command_fingerprint()
                 )
-
+            assert finalized.value is authority_error
+            assert reached == ["source", "authority"]
             assert _recovery_body_and_tip(runtime) == before
+            assert journal.scan().states_by_root[0][1].selected_producer == "SCOPED_V3"
             assert engine.calls == []
