@@ -15,7 +15,10 @@ from chiplog.capabilities.agent_loop.delivery_preparation import (
 )
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition.common_cli_execution_runtime import open_installed_h1_runtime
-from chiplog.composition.common_execution_driver_contracts import ExecutionDriverRejectedV1
+from chiplog.composition.common_execution_driver_contracts import (
+    ExecutionDriverRejectedV1,
+    SelectedExecutionReceiptV1,
+)
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_postseal_recovery import (
     H1PostSealRecoveryState,
@@ -65,6 +68,7 @@ async def test_installed_exact_replay_recovers_root_from_preexisting_h1_v2_seal(
         async with open_installed_h1_runtime(launch, resources=resources) as runtime:
             request = await _admit(runtime)
             initial = await runtime.drive_input(request)
+            assert isinstance(initial, SelectedExecutionReceiptV1)
             runtime._execution_model._responses = (
                 DeliveryCompletion(
                     tenant=TENANT,
@@ -118,6 +122,7 @@ async def test_installed_exact_replay_holds_on_a_forged_selected_root(tmp_path: 
         async with open_installed_h1_runtime(launch, resources=resources) as runtime:
             request = await _admit(runtime)
             initial = await runtime.drive_input(request)
+            assert isinstance(initial, SelectedExecutionReceiptV1)
             runtime._execution_model._responses = (
                 DeliveryCompletion(
                     tenant=TENANT,

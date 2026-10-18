@@ -24,6 +24,7 @@ from chiplog.composition.common_execution_driver_contracts import (
     CliRetainedSelectedSourceV1,
     DriveInputRequestV1,
     DriverCommandIdentityV1,
+    SelectedExecutionReceiptV1,
 )
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_postseal_recovery_source import H1PostSealRecoveryRootSource
@@ -90,6 +91,7 @@ async def test_installed_v2_selector_replays_old_native_cut_after_seal(tmp_path:
         async with open_installed_h1_runtime(launch, resources=resources) as runtime:
             request = await _admit(runtime)
             initial = await runtime.drive_input(request)
+            assert isinstance(initial, SelectedExecutionReceiptV1)
             runtime._execution_model._responses = (
                 DeliveryCompletion(
                     tenant=TENANT,
