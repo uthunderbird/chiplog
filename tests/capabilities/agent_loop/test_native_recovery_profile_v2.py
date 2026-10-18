@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -21,6 +22,7 @@ from chiplog.composition.r14_recovery_profile_publication import (
     _assert_v2_precedes_covered_lineage,
     profile_command,
 )
+from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 
 def test_native_recovery_profile_v2_is_closed_and_distinct_from_v1() -> None:
@@ -99,9 +101,10 @@ def test_v2_selection_guard_rejects_v1_rows_and_late_lineage(tmp_path: Path) -> 
         )
         connection.execute("CREATE TABLE publications (tenant_id TEXT, operation_kind TEXT)")
     journal = SimpleNamespace(entries=lambda: ())
-    runtime = SimpleNamespace(
-        _tenant_id="tenant", _database=database, _loop_decisions=lambda: journal
-    )
+    runtime = create_autospec(R14PlanningRuntime, instance=True)
+    runtime._tenant_id = "tenant"
+    runtime._database = database
+    runtime._loop_decisions.return_value = journal
 
     _assert_v2_precedes_covered_lineage(runtime)
     with sqlite3.connect(database) as connection:

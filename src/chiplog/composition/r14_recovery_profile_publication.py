@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import replace
+from typing import TYPE_CHECKING, Literal
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.contracts import LoopRejected
@@ -35,6 +37,10 @@ from chiplog.capabilities.agent_loop.recovery_contracts import Present, Recovery
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
+
+if TYPE_CHECKING:
+    from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 
 class RetainedNativeProfilePublication(RecoveryDTO):
@@ -88,7 +94,7 @@ def profile_command(evidence: RetainedNativeProfilePublication) -> PhysicalPubli
     )
 
 
-def _selected_v1_profile(runtime) -> bool:
+def _selected_v1_profile(runtime: R14PlanningRuntime) -> bool:
     for _, _, raw in runtime._loop_decisions().entries():
         entry = json.loads(raw)
         if entry.get("kind") != "DECIDED":
@@ -101,7 +107,9 @@ def _selected_v1_profile(runtime) -> bool:
     return False
 
 
-def _assert_v2_precedes_covered_lineage(runtime, profile_sequence: int | None = None) -> None:
+def _assert_v2_precedes_covered_lineage(
+    runtime: R14PlanningRuntime, profile_sequence: int | None = None
+) -> None:
     """Reject V2 when V1 profile state exists or covered call lineage came first."""
     if _selected_v1_profile(runtime):
         raise ValueError("V1 recovery profile selection blocks V2")
@@ -145,7 +153,11 @@ def _assert_v2_precedes_covered_lineage(runtime, profile_sequence: int | None = 
         raise ValueError("V2 recovery profile must precede covered call lineage")
 
 
-def validate_profile_selected(runtime, entry, batch):
+def validate_profile_selected(
+    runtime: R14PlanningRuntime,
+    entry: Mapping[str, object],
+    batch: PhysicalPublicationCommand,
+) -> RetainedNativeProfilePublication:
     raw = entry.get("native_recovery_profile_evidence")
     if not isinstance(raw, str):
         raise ValueError("native recovery profile evidence missing")
@@ -162,7 +174,9 @@ def validate_profile_selected(runtime, entry, batch):
     return evidence
 
 
-def read_native_recovery_profile_held(runtime):
+def read_native_recovery_profile_held(
+    runtime: R14PlanningRuntime,
+) -> RecoverySourceRecord | None:
     runtime._pending()
     selections = []
     for decision_id, _, raw in runtime._loop_decisions().entries():
@@ -218,7 +232,9 @@ def read_native_recovery_profile_held(runtime):
     )
 
 
-async def _finish(runtime, entry):
+async def _finish(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> RecoverySourceRecord | None:
     batch = runtime._publication(entry)
     with runtime._authority_gate().hold():
         validate_profile_selected(runtime, entry, batch)
@@ -233,7 +249,9 @@ async def _finish(runtime, entry):
         return read_native_recovery_profile_held(runtime)
 
 
-async def publish_native_recovery_profile(runtime, peer="hermetic-ingress", *, version="v2"):
+async def publish_native_recovery_profile(
+    runtime: CommonCliExecutionRuntime, peer: str = "hermetic-ingress", *, version: str = "v2"
+) -> RecoverySourceRecord | None:
     if version not in ("v2", "v3", "v4", "v5"):
         raise ValueError("native recovery profile version must be v2, v3, v4, or v5")
     operation = {
@@ -301,7 +319,7 @@ async def publish_native_recovery_profile(runtime, peer="hermetic-ingress", *, v
         return await _finish(runtime, prior[0])
     batch = profile_command(evidence)
 
-    def guard():
+    def guard() -> Literal["STALE"] | None:
         with runtime._authority_gate().hold():
             try:
                 runtime._check_execution_actor(observed)
@@ -315,7 +333,7 @@ async def publish_native_recovery_profile(runtime, peer="hermetic-ingress", *, v
                 return "STALE"
         return None
 
-    def decide(resulting):
+    def decide(resulting: str) -> None:
         if guard() is not None:
             raise LoopRejected("native profile source changed at selection")
         runtime._require_no_pending()
@@ -364,7 +382,7 @@ async def publish_native_recovery_profile(runtime, peer="hermetic-ingress", *, v
     return await _finish(runtime, selected[0])
 
 
-def validate_profile_startup(runtime):
+def validate_profile_startup(runtime: R14PlanningRuntime) -> None:
     runtime._pending()
     for _, _, raw in runtime._loop_decisions().entries():
         entry = json.loads(raw)

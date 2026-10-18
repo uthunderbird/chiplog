@@ -152,6 +152,7 @@ async def test_profile_physical_tamper_rejects_read_and_restart(tmp_path: Path) 
         database, resources=resources, manifest=R14_EXECUTION_RECOVERY_V26_PRODUCTION_MANIFEST
     ) as runtime:
         selected = await publish_native_recovery_profile(runtime)
+        assert selected is not None
         with sqlite3.connect(database) as connection:
             connection.execute(
                 "UPDATE records SET canonical_bytes=? WHERE record_id=?",
