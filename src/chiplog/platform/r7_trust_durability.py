@@ -13,7 +13,6 @@ from chiplog.adapters.driven.deployment_trust import (
     SQLiteTrustMaterializer,
 )
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
-from chiplog.capabilities.deployment_trust._j7_grant_process import request_from_source
 from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
     HermeticTrustObservationV1,
 )
@@ -1139,6 +1138,8 @@ class BrokerTrustDurability:
         if gate is None:
             raise RuntimeError("prepared external delivery grant append requires an authority gate")
         try:
+            from chiplog.capabilities.deployment_trust._j7_grant_process import request_from_source
+
             request = request_from_source(call.canonical_signed_source_bytes)
             pin = load_operator_grant_key_pin(
                 gate,
@@ -1164,6 +1165,8 @@ class BrokerTrustDurability:
                 "signed prepared external delivery grant reads require an authority gate"
             )
         try:
+            from chiplog.capabilities.deployment_trust._j7_grant_process import request_from_source
+
             source = selected.operator_source
             signed = SignedOperatorGrantAuthorizationV2.model_validate_json(
                 source.canonical_source_bytes

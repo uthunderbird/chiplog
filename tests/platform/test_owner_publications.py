@@ -18,6 +18,7 @@ from chiplog.platform._owner_publication_contracts import (
     RegisteredPublication,
 )
 from chiplog.platform._sqlite import (
+    AuthorityMutationAdmissionError,
     EventAppender,
     FenceAdvanceCommand,
     PhysicalPublicationCommand,
@@ -319,6 +320,52 @@ async def test_exact_decision_replay_never_reenters_owner_preparation(
                     }
                 )
                 assert (await coordinator.commit(changed)).kind == "CONFLICT"
+
+
+@pytest.mark.parametrize("phase", ["before_selection", "after_selection", "unexpected"])
+async def test_authority_admission_refusal_preserves_selected_decision_uncertainty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    path = tmp_path / "store.sqlite"
+    with SQLiteMaterializer(path, record_contracts={"effects": "fixture.record.v1"}) as store:
+        async with EventAppender(store, capacity=4) as appender:
+            await appender.advance_fence(FenceAdvanceCommand("tenant", "fence", 0))
+            authority, journal = FixtureAuthority(path), FixtureJournal(tmp_path / "journal")
+            coordinator = BrokerPublicationCoordinator(appender, authority, journal)
+            proposed = request(capture_authority_storage_state(path)[0])
+            error = (
+                ValueError("unexpected writer failure")
+                if phase == "unexpected"
+                else AuthorityMutationAdmissionError("selected authority decision is pending")
+            )
+            submitted: list[PhysicalPublicationCommand] = []
+
+            async def refuse(command: PhysicalPublicationCommand) -> PublicationResult:
+                submitted.append(command)
+                assert command.idempotency_key == proposed.identity.command_id
+                if phase == "after_selection":
+                    prepared = await authority.prepare(proposed)
+                    journal.select(prepared, digest(b"selected by concurrent identical request"))
+                raise error
+
+            monkeypatch.setattr(appender, "submit", refuse)
+            if phase == "before_selection":
+                result = await coordinator.commit(proposed)
+                assert result.kind == "HOLD"
+                assert result.reason == "authority mutation admission refused publication"
+            elif phase == "after_selection":
+                with pytest.raises(OwnerPublicationUncertain) as uncertain:
+                    await coordinator.commit(proposed)
+                assert uncertain.value.__cause__ is error
+            else:
+                with pytest.raises(ValueError) as unexpected:
+                    await coordinator.commit(proposed)
+                assert unexpected.value is error
+            assert len(submitted) == 1
+            assert store.durable_records() == ()
+            snapshot = journal.snapshot()
+            assert len(snapshot.decisions) == (1 if phase == "after_selection" else 0)
+            assert snapshot.materialized_command_ids == frozenset()
 
 
 async def test_selected_decision_survives_sqlite_rollback_without_semantic_retry(

@@ -9,11 +9,6 @@ from dataclasses import dataclass
 from typing import cast
 
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
-from chiplog.capabilities.deployment_trust._j7_grant_process import (
-    derive_grant,
-    request_from_source,
-    retained_source,
-)
 from chiplog.capabilities.deployment_trust.operator_grant_authorization_contracts import (
     RetainedOperatorGrantAuthorizationSourceV2,
     SignedOperatorGrantAuthorizationV2,
@@ -187,6 +182,12 @@ def _check_derived_grant(
     previous: AuthenticatedPreparedExternalDeliveryGrant | None,
 ) -> None:
     try:
+        from chiplog.capabilities.deployment_trust._j7_grant_process import (
+            derive_grant,
+            request_from_source,
+            retained_source,
+        )
+
         if previous is not None:
             raise ValueError("grant successor issuance is unsupported")
         if source != retained_source(call.canonical_signed_source_bytes):

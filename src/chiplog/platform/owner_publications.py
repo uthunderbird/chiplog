@@ -17,7 +17,12 @@ from chiplog.platform._owner_publication_contracts import (
     PublicationRejected,
     RegisteredPublication,
 )
-from chiplog.platform._sqlite import EventAppender, PhysicalPublicationCommand, PhysicalRecord
+from chiplog.platform._sqlite import (
+    AuthorityMutationAdmissionError,
+    EventAppender,
+    PhysicalPublicationCommand,
+    PhysicalRecord,
+)
 from chiplog.platform.delivery_work_claim_binding_contracts import DeliveryWorkClaimBindingV1
 from chiplog.platform.delivery_work_genesis_binding_contracts import DeliveryWorkGenesisBindingV1
 from chiplog.platform.h1_delivery_binding_contracts import H1DeliveryBinding
@@ -342,6 +347,13 @@ class BrokerPublicationCoordinator:
                 is not None
             ):
                 raise OwnerPublicationUncertain(request.identity.command_id) from error
+            if isinstance(error, AuthorityMutationAdmissionError):
+                return PublicationRejected(
+                    kind="HOLD",
+                    tenant_id=request.identity.tenant_id,
+                    command_id=request.identity.command_id,
+                    reason="authority mutation admission refused publication",
+                )
             raise
         if result.disposition not in ("COMMITTED", "REPLAY"):
             if selected is not None:

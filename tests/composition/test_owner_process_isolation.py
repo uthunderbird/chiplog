@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 from dataclasses import replace
 
 import pytest
@@ -52,6 +55,25 @@ def test_broker_starts_one_distinct_dishka_graph_process_per_owner() -> None:
             )
             for route in R7_PRODUCTION_MANIFEST.routes
         )
+
+
+def test_dispatch_spawn_entry_imports_no_owner_policy_process_modules() -> None:
+    script = """import json, sys
+from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.composition.r16_dispatch_runtime import open_dispatch_runtime
+from chiplog.capabilities.effects.dispatch_outcome_contracts import DispatchOutcomeRecordV2
+print(json.dumps(sorted(
+    name for name in sys.modules
+    if name.startswith("chiplog.capabilities.")
+    and name.endswith("_process")
+    and name.rsplit(".", 1)[-1].startswith("_")
+)))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(completed.stdout) == []
 
 
 def test_generation_teardown_closes_all_owner_processes() -> None:
