@@ -19,8 +19,15 @@ from chiplog.capabilities.agent_loop.delivery_preparation import (
     DeliveryCompletion,
     ProposedDelivery,
 )
-from chiplog.composition.common_cli_execution_runtime import open_installed_h1_runtime
-from chiplog.composition.common_execution_driver_contracts import SelectedExecutionReceiptV1
+from chiplog.composition.common_cli_execution_runtime import (
+    CommonCliExecutionRuntime,
+    open_installed_h1_runtime,
+)
+from chiplog.composition.common_execution_driver_contracts import (
+    AdvanceExecutionRequestV1,
+    DriveInputRequestV1,
+    SelectedExecutionReceiptV1,
+)
 from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
@@ -45,7 +52,9 @@ def _resources(tmp_path: Path) -> HermeticDispatchResources:
     )
 
 
-async def _advance_to_durable_recovery(runtime: Any) -> tuple[Any, SelectedExecutionReceiptV1]:
+async def _advance_to_durable_recovery(
+    runtime: CommonCliExecutionRuntime,
+) -> tuple[DriveInputRequestV1, SelectedExecutionReceiptV1, AdvanceExecutionRequestV1]:
     """Drive a genuine selected input to the durable, non-final recovery cut."""
     request = await _admit(runtime)
     initial = await runtime.drive_input(request)
@@ -58,15 +67,18 @@ async def _advance_to_durable_recovery(runtime: Any) -> tuple[Any, SelectedExecu
             deliveries=(ProposedDelivery(payload=(Commentary(text="final issuance"),)),),
         ).canonical_bytes(),
     )
-    recovered = await runtime.advance_execution(advance(initial, request))
+    original_advance = advance(initial, request)
+    recovered = await runtime.advance_execution(original_advance)
     if not isinstance(recovered, SelectedExecutionReceiptV1) or recovered.phase != "RUNNING":
         raise H1FinalIssuanceUnavailable(
             "recovery did not reach the durable four-stage cut: expected selected RUNNING receipt"
         )
-    state = runtime._h1_postseal_recovery_journal.scan().states_by_root[0][1]
+    journal = runtime._h1_postseal_recovery_journal
+    assert journal is not None
+    state = journal.scan().states_by_root[0][1]
     if len(state.inputs) != 4 or len(state.results) != 4:
         raise H1FinalIssuanceUnavailable("recovery did not durably retain all four owner exchanges")
-    return request, recovered
+    return request, recovered, original_advance
 
 
 @pytest.mark.asyncio
@@ -76,7 +88,7 @@ async def test_installed_recovery_selects_one_physical_v2_terminal_batch(tmp_pat
     await prepare_installed_slot(slot, expected, tmp_path)
     with _open_installed_h1_launch(slot) as launch:
         async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            _request, recovery = await _advance_to_durable_recovery(runtime)
+            _request, recovery, _advance = await _advance_to_durable_recovery(runtime)
             assert recovery.phase == "RUNNING"
             raise H1FinalIssuanceUnavailable(
                 "installed finalization operation is not frozen; durable recovery cannot mint"
@@ -177,9 +189,11 @@ async def test_fully_durable_recovery_replays_four_frames_before_final_mint(tmp_
     await prepare_installed_slot(slot, expected, tmp_path)
     with _open_installed_h1_launch(slot) as launch:
         async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            _request, first = await _advance_to_durable_recovery(runtime)
+            _request, first, original_advance = await _advance_to_durable_recovery(runtime)
             assert first.phase == "RUNNING"
-            state = runtime._h1_postseal_recovery_journal.scan().states_by_root[0][1]
+            journal = runtime._h1_postseal_recovery_journal
+            assert journal is not None
+            state = journal.scan().states_by_root[0][1]
             assert tuple(stage for stage, _raw, _command_id in state.inputs) == (
                 "COMPLETION",
                 "CONVERSATION",
@@ -195,7 +209,7 @@ async def test_fully_durable_recovery_replays_four_frames_before_final_mint(tmp_
             # Existing recovery remains an exact no-IPC RUNNING replay.  The
             # later finalization operation, not this branch, must do the fresh
             # four-frame replay before it can mint.
-            replay = await runtime.advance_execution(advance(first, _request))
+            replay = await runtime.advance_execution(original_advance)
             assert isinstance(replay, SelectedExecutionReceiptV1)
             assert replay.disposition == "EXACT_REPLAY"
             assert replay.phase == "RUNNING"
