@@ -200,7 +200,7 @@ def test_oversized_non_v2_evidence_is_rejected_before_schema_dispatch(
     monkeypatch.setattr(contracts, "_root", _spy("root"))
     raw = _oversized_wire(schema_id, 1_000_000)
 
-    with pytest.raises(ValueError, match="schema bound"):
+    with pytest.raises(ValueError, match="absent or exceed the bound"):
         decode_h1_delivery_evidence(raw)
 
     assert dispatched == []
@@ -215,7 +215,14 @@ def test_oversized_v2_evidence_reaches_v2_dispatcher(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(contracts, "_root_v2", validate)
     raw = _oversized_wire(ROOT_V2_SCHEMA, 1_000_000)
 
-    decoded = decode_h1_delivery_evidence(raw)
+    # The historical nodeid predates compact V2: its oversized wire now rejects.
+    with pytest.raises(ValueError, match="absent or exceed the bound"):
+        decode_h1_delivery_evidence(raw)
+    assert dispatched == []
+
+    bounded_raw = _oversized_wire(ROOT_V2_SCHEMA, 999_000)
+    assert len(bounded_raw) <= 1_000_000
+    decoded = decode_h1_delivery_evidence(bounded_raw)
 
     assert isinstance(decoded, H1DeliverySelectionClosureV2)
     assert len(dispatched) == 1

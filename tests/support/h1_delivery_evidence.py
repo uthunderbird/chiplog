@@ -17,6 +17,8 @@ def member(
     original_label_value: str = "UNRESTRICTED",
     original_allowed_endpoints: list[str] | None = None,
 ) -> dict[str, object]:
+    member_bytes = b"member"
+    member_digest = hashlib.sha256(member_bytes).hexdigest()
     key = [
         "deployment",
         "database",
@@ -28,7 +30,7 @@ def member(
         "attempt",
         "b" * 64,
         0,
-        "c" * 64,
+        member_digest,
     ]
     workspace = {
         "schema_id": "chiplog.execution.h1-workspace-issuance-ref.v1",
@@ -93,7 +95,11 @@ def member(
         "ordinal": 0,
         "source_ref": {"identity": "endpoint", "head": "policy", "fingerprint": "2" * 64},
         "source_bytes_base64": base64.b64encode(b"policy").decode(),
-        "label": {"value": "ENDPOINT_RESTRICTED", "allowed_endpoints": ["endpoint"]},
+        "label": {
+            "lattice_version": "chiplog.disclosure.v1",
+            "value": "ENDPOINT_RESTRICTED",
+            "allowed_endpoints": ["endpoint"],
+        },
     }
     cut = {
         "schema_id": "chiplog.execution.h1-member-narrowing-cut.v1",
@@ -120,10 +126,10 @@ def member(
         "attempt_id": "attempt",
         "manifest_digest": "b" * 64,
         "member_index": 0,
-        "member_digest": "c" * 64,
+        "member_digest": member_digest,
         "selected_prepare": prepare,
         "workspace_issuance": workspace,
-        "member_bytes_base64": base64.b64encode(b"member").decode(),
+        "member_bytes_base64": base64.b64encode(member_bytes).decode(),
         "provenance": provenance,
         "disclosure": disclosure,
         "narrowing_cut": cut,
