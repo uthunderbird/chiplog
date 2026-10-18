@@ -38,20 +38,32 @@ if TYPE_CHECKING:
 def test_open_cut_validation_reuses_authenticated_history_without_skipping_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The fresh subset's selected-history proof is forwarded within the held gate."""
+    """Unit doubles probe forwarding, not authenticated producer conformance."""
+    from unittest.mock import create_autospec
+
     from chiplog.composition import r14_accepted_open_accounting_publication as publication
+    from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+    from chiplog.composition.r14_loop_history import ExecutionRecoveryHistory
     from chiplog.composition.r14_native_recovery_cut import NativeRecoveryCutSource
+    from chiplog.composition.r14_native_recovery_source_subset import R14NativeRecoverySourceSubset
+    from chiplog.composition.r14_native_selected_accounting_source import (
+        R14NativeAcceptedOpenOutcome,
+    )
 
     class ReachedAccounting(BaseException):
         pass
 
-    history = object()
-    subset = SimpleNamespace(
-        accepted_closed_outcome=None,
-        accepted_open_outcome=SimpleNamespace(accepted=SimpleNamespace(original_call_id="call")),
-        authenticated_execution_history=history,
+    history: ExecutionRecoveryHistory = create_autospec(ExecutionRecoveryHistory, instance=True)
+    opened: R14NativeAcceptedOpenOutcome = create_autospec(
+        R14NativeAcceptedOpenOutcome, instance=True
     )
-    events = []
+    subset: R14NativeRecoverySourceSubset = create_autospec(
+        R14NativeRecoverySourceSubset, instance=True
+    )
+    monkeypatch.setattr(subset, "accepted_closed_outcome", None)
+    monkeypatch.setattr(subset, "accepted_open_outcome", opened)
+    monkeypatch.setattr(subset, "authenticated_execution_history", history)
+    events: list[str] = []
 
     class Gate:
         held = False
@@ -70,10 +82,15 @@ def test_open_cut_validation_reuses_authenticated_history_without_skipping_gate(
                 self.held = was_held
 
     gate = Gate()
-    runtime = SimpleNamespace(_authority_gate=lambda: gate)
+    runtime: CommonCliExecutionRuntime = create_autospec(CommonCliExecutionRuntime, instance=True)
+    monkeypatch.setattr(runtime, "_authority_gate", lambda: gate)
     source = object.__new__(NativeRecoveryCutSource)
 
-    def frontier(actual_runtime, *, _authenticated_history=None) -> None:
+    def frontier(
+        actual_runtime: CommonCliExecutionRuntime,
+        *,
+        _authenticated_history: ExecutionRecoveryHistory | None = None,
+    ) -> None:
         assert actual_runtime is runtime
         assert gate.held
         assert _authenticated_history is history
@@ -89,6 +106,33 @@ def test_open_cut_validation_reuses_authenticated_history_without_skipping_gate(
 def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Unit doubles prove one collection reaches the R16 read under the gate."""
+    from sqlite3 import Connection
+    from typing import NoReturn
+    from unittest.mock import create_autospec
+
+    from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
+        CallLifecycleObservation,
+        InitializedCallRecord,
+    )
+    from chiplog.capabilities.agent_loop.execution_preparation_bindings_contracts import (
+        NativeExecutionPreparationBindingsV2,
+    )
+    from chiplog.composition import r16_effects
+    from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+    from chiplog.composition.r14_native_selected_accounting_source import (
+        R14NativeOneCallAcceptedFacts,
+        R14NativeSelectedAccountingSourceFacts,
+        R14NativeSelectedResponseSealFacts,
+    )
+    from chiplog.composition.r14_original_prepare_source import R14OriginalNativePrepareProjection
+    from chiplog.composition.r14_runtime import AnchoredOwnerDecisionJournal
+    from chiplog.platform.authority_reads import AuthorityCommitmentJournal
+    from chiplog.platform.owner_decision_journal import (
+        IndependentOwnerDecisionJournal,
+        OwnerJournalSnapshot,
+    )
+
     events: list[str] = []
 
     class Gate:
@@ -104,24 +148,28 @@ def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(
                 self.held = False
 
     gate = Gate()
-    journal = object()
-    owner_decisions = SimpleNamespace(snapshot=lambda: journal)
+    journal = OwnerJournalSnapshot("tenant", None, (), frozenset())
+    owner_decisions: AnchoredOwnerDecisionJournal = create_autospec(
+        AnchoredOwnerDecisionJournal, instance=True
+    )
+    monkeypatch.setattr(owner_decisions, "snapshot", lambda: journal)
+    runtime = object.__new__(CommonCliExecutionRuntime)
+    runtime._tenant_id = "tenant"
+    runtime._database = tmp_path / "runtime.sqlite"
+    runtime._database_identity = ("database", 1, 2)
+    runtime._commitment_journal = create_autospec(AuthorityCommitmentJournal, instance=True)
 
-    class Runtime:
-        _tenant_id = "tenant"
-        _database = tmp_path / "runtime.sqlite"
-        _database_identity = ("database", 1, 2)
-        _commitment_journal = SimpleNamespace(load=lambda _tenant: "commitment")
+    def load_commitment(tenant: str) -> str:
+        assert tenant == "tenant"
+        return "commitment"
 
-        def _authority_gate(self):
-            return gate
+    def check_identity() -> None:
+        events.append("identity")
 
-        def _check_database_identity(self) -> None:
-            events.append("identity")
-
-        def _owner_decisions(self):
-            return owner_decisions
-
+    monkeypatch.setattr(runtime._commitment_journal, "load", load_commitment)
+    monkeypatch.setattr(runtime, "_authority_gate", lambda: gate)
+    monkeypatch.setattr(runtime, "_check_database_identity", check_identity)
+    monkeypatch.setattr(runtime, "_owner_decisions", lambda: owner_decisions)
     branch = ConsequentialAcceptedCall(
         initialized=Present(head="initialized", fingerprint="1" * 64),
         accepted=Present(head="accepted", fingerprint="2" * 64),
@@ -132,52 +180,84 @@ def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(
             Present(head="execution", fingerprint="3" * 64),
         ),
     )
-    accepted = SimpleNamespace(
-        source=SimpleNamespace(target_inventory_rows=(SimpleNamespace(acceptance=branch),))
+    initialized: InitializedCallRecord = create_autospec(InitializedCallRecord, instance=True)
+    monkeypatch.setattr(initialized, "original_call_id", "call", raising=False)
+    row: CallLifecycleObservation = create_autospec(CallLifecycleObservation, instance=True)
+    monkeypatch.setattr(row, "original_call_id", "call", raising=False)
+    monkeypatch.setattr(row, "acceptance", branch, raising=False)
+    seal: R14NativeSelectedResponseSealFacts = create_autospec(
+        R14NativeSelectedResponseSealFacts, instance=True
     )
+    monkeypatch.setattr(seal, "initialized_records", (initialized,))
+    facts: R14NativeSelectedAccountingSourceFacts = create_autospec(
+        R14NativeSelectedAccountingSourceFacts, instance=True
+    )
+    monkeypatch.setattr(facts, "selected_native_seals", (seal,))
+    monkeypatch.setattr(facts, "target_inventory_rows", (row,))
+    accepted: R14NativeOneCallAcceptedFacts = create_autospec(
+        R14NativeOneCallAcceptedFacts, instance=True
+    )
+    monkeypatch.setattr(accepted, "source", facts)
+    monkeypatch.setattr(accepted, "selected_seal", seal)
+    monkeypatch.setattr(accepted, "original_call_id", "call")
     source = object.__new__(R14NativeSelectedAccountingSource)
-    source._runtime = Runtime()
-    source._original_prepare = SimpleNamespace()
-    source._preparation_bindings = SimpleNamespace()
+    source._runtime = runtime
+    source._original_prepare = create_autospec(R14OriginalNativePrepareProjection, instance=True)
+    source._preparation_bindings = create_autospec(
+        NativeExecutionPreparationBindingsV2, instance=True
+    )
 
-    def collect_one_accepted(*_args, **_kwargs):
+    def collect_one_accepted(*_args: object, **_kwargs: object) -> R14NativeOneCallAcceptedFacts:
         assert gate.held
         events.append("collect-one")
         return accepted
 
-    def duplicate_collect(*_args, **_kwargs):
+    def duplicate_collect(
+        *_args: object, **_kwargs: object
+    ) -> R14NativeSelectedAccountingSourceFacts:
         events.append("duplicate-collect")
-        return accepted.source
+        return facts
 
-    source.collect_one_accepted = collect_one_accepted
-    source.collect = duplicate_collect
+    monkeypatch.setattr(source, "collect_one_accepted", collect_one_accepted)
+    monkeypatch.setattr(source, "collect", duplicate_collect)
+    connection_double: Connection = create_autospec(Connection, instance=True)
 
     @contextmanager
-    def connection(_database):
-        yield object()
+    def connection(database: Path) -> Iterator[Connection]:
+        assert database == runtime._database
+        yield connection_double
+
+    def capture_baseline(actual: Connection, tenant: str) -> str:
+        assert actual is connection_double and tenant == "tenant"
+        events.append("baseline")
+        return "commitment"
 
     monkeypatch.setattr(accounting_module, "read_connection", connection)
     monkeypatch.setattr(
-        accounting_module,
-        "capture_authority_snapshot_commitment",
-        lambda *_args: events.append("baseline") or "commitment",
+        accounting_module, "capture_authority_snapshot_commitment", capture_baseline
     )
 
-    from chiplog.composition import r16_effects
-
-    def stop_after_selected_source(*_args, **_kwargs) -> None:
+    def stop_after_selected_source(
+        actual_runtime: CommonCliExecutionRuntime,
+        actual_journal: IndependentOwnerDecisionJournal,
+        **_kwargs: object,
+    ) -> NoReturn:
+        assert actual_runtime is runtime and actual_journal is owner_decisions
+        assert gate.held
+        events.append("r16-held")
         raise RuntimeError("stop after source collection")
 
     monkeypatch.setattr(
         r16_effects, "_read_materialized_effects_with_history", stop_after_selected_source
     )
-
     result = source._collect_one_accepted_outcome(current_obligation_state="CLOSED")
 
     assert result is None
     assert events.index("baseline") < events.index("collect-one")
     assert "duplicate-collect" not in events
     assert events.count("collect-one") == 1
+    assert events.count("r16-held") == 1
+    assert events.index("collect-one") < events.index("r16-held")
 
 
 @pytest.mark.parametrize(
