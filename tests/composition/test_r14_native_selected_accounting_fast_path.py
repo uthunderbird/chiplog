@@ -273,10 +273,34 @@ def test_closed_outcome_collects_once_under_gate_after_capturing_baseline(
 def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_seals(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, prefix_kind: str
 ) -> None:
-    """Probe the caller/verifier boundary; source authentication is tested elsewhere."""
+    """Unit doubles probe forwarding; source authentication is tested elsewhere."""
+    from collections.abc import Callable
+    from sqlite3 import Connection
+    from typing import NoReturn
+    from unittest.mock import create_autospec
+
+    from chiplog.capabilities.agent_loop.call_acceptance_contracts import (
+        CallLifecycleObservation,
+        InitializedCallRecord,
+    )
     from chiplog.composition import r14_historical_suffix as suffix
     from chiplog.composition import r14_original_call_resolution_source as resolution
     from chiplog.composition import r16_dispatch_history, r16_effects
+    from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+    from chiplog.composition.r13_planning import R13PlanningRuntime
+    from chiplog.composition.r14_native_selected_accounting_source import (
+        R14NativeOneCallAcceptedFacts,
+        R14NativeSelectedAccountingSourceFacts,
+        R14NativeSelectedResponseSealFacts,
+    )
+    from chiplog.composition.r14_runtime import AnchoredOwnerDecisionJournal
+    from chiplog.composition.r16_dispatch_history import VerifiedDispatchHistory
+    from chiplog.composition.r16_effects import MaterializedEffectsCut
+    from chiplog.platform.authority_reads import AuthorityCommitmentJournal
+    from chiplog.platform.owner_decision_journal import (
+        IndependentOwnerDecisionJournal,
+        OwnerJournalSnapshot,
+    )
 
     class ReachedSemanticVerifier(BaseException):
         pass
@@ -284,22 +308,30 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
     class ReachedPrefixVerdict(BaseException):
         pass
 
-    @contextmanager
-    def held() -> Iterator[None]:
-        yield
+    class Gate:
+        @contextmanager
+        def hold(self) -> Iterator[None]:
+            yield
 
-    journal = SimpleNamespace(decisions=())
-    owners = SimpleNamespace(snapshot=lambda: journal)
-    runtime = SimpleNamespace(
-        _tenant_id="tenant",
-        _database=tmp_path / "runtime.sqlite",
-        _database_identity=("database", 1, 2),
-        _commitment_journal=SimpleNamespace(load=lambda _tenant: "anchored"),
-        _authority_gate=lambda: SimpleNamespace(hold=held),
-        _check_database_identity=lambda: None,
-        _owner_decisions=lambda: owners,
-        _pending=lambda: (
-            (
+    gate = Gate()
+    journal = OwnerJournalSnapshot("tenant", None, (), frozenset())
+    owners: AnchoredOwnerDecisionJournal = create_autospec(
+        AnchoredOwnerDecisionJournal, instance=True
+    )
+    monkeypatch.setattr(owners, "snapshot", lambda: journal)
+    runtime = object.__new__(CommonCliExecutionRuntime)
+    runtime._tenant_id = "tenant"
+    runtime._database = tmp_path / "runtime.sqlite"
+    runtime._database_identity = ("database", 1, 2)
+    runtime._commitment_journal = create_autospec(AuthorityCommitmentJournal, instance=True)
+
+    def load_commitment(tenant: str) -> str:
+        assert tenant == "tenant"
+        return "anchored"
+
+    def pending() -> tuple[dict[str, object], ...]:
+        if prefix_kind in {"pending-resolver-invocation", "pending-original-resolution"}:
+            return (
                 {
                     "operation_kind": {
                         "pending-resolver-invocation": "agent_loop.original-resolver-invocation.v1",
@@ -307,15 +339,21 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
                     }[prefix_kind]
                 },
             )
-            if prefix_kind in {"pending-resolver-invocation", "pending-original-resolution"}
-            else ()
-        ),
-    )
+        return ()
 
-    def row(call_id, intent_id):
-        return SimpleNamespace(
-            original_call_id=call_id,
-            acceptance=ConsequentialAcceptedCall(
+    monkeypatch.setattr(runtime._commitment_journal, "load", load_commitment)
+    monkeypatch.setattr(runtime, "_authority_gate", lambda: gate)
+    monkeypatch.setattr(runtime, "_check_database_identity", lambda: None)
+    monkeypatch.setattr(runtime, "_owner_decisions", lambda: owners)
+    monkeypatch.setattr(runtime, "_pending", pending)
+
+    def row(call_id: str, intent_id: str) -> CallLifecycleObservation:
+        result: CallLifecycleObservation = create_autospec(CallLifecycleObservation, instance=True)
+        monkeypatch.setattr(result, "original_call_id", call_id, raising=False)
+        monkeypatch.setattr(
+            result,
+            "acceptance",
+            ConsequentialAcceptedCall(
                 initialized=Present(head="initialized-" + call_id, fingerprint="1" * 64),
                 accepted=Present(head="accepted-" + call_id, fingerprint="2" * 64),
                 execution_intent=Present(head="execution-" + call_id, fingerprint="3" * 64),
@@ -325,34 +363,49 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
                     Present(head="execution-" + call_id, fingerprint="3" * 64),
                 ),
             ),
+            raising=False,
         )
+        return result
+
+    def seal(call_id: str) -> R14NativeSelectedResponseSealFacts:
+        initialized: InitializedCallRecord = create_autospec(InitializedCallRecord, instance=True)
+        monkeypatch.setattr(initialized, "original_call_id", call_id, raising=False)
+        result: R14NativeSelectedResponseSealFacts = create_autospec(
+            R14NativeSelectedResponseSealFacts, instance=True
+        )
+        monkeypatch.setattr(result, "initialized_records", (initialized,))
+        return result
 
     first, second = row("call-first", "effect-first"), row("call-second", "effect-second")
-    first_seal = SimpleNamespace(
-        initialized_records=(SimpleNamespace(original_call_id="call-first"),)
+    first_seal, second_seal = seal("call-first"), seal("call-second")
+    facts: R14NativeSelectedAccountingSourceFacts = create_autospec(
+        R14NativeSelectedAccountingSourceFacts, instance=True
     )
-    second_seal = SimpleNamespace(
-        initialized_records=(SimpleNamespace(original_call_id="call-second"),)
+    monkeypatch.setattr(
+        facts, "target_inventory_rows", (first, second, row("foreign-call", "foreign-effect"))
     )
-    accepted = SimpleNamespace(
-        original_call_id="call-first",
-        selected_seal=first_seal,
-        source=SimpleNamespace(
-            target_inventory_rows=(first, second, row("foreign-call", "foreign-effect")),
-            selected_native_seals=(first_seal, second_seal),
-        ),
+    monkeypatch.setattr(facts, "selected_native_seals", (first_seal, second_seal))
+    accepted: R14NativeOneCallAcceptedFacts = create_autospec(
+        R14NativeOneCallAcceptedFacts, instance=True
     )
+    monkeypatch.setattr(accepted, "original_call_id", "call-first")
+    monkeypatch.setattr(accepted, "selected_seal", first_seal)
+    monkeypatch.setattr(accepted, "source", facts)
     source = object.__new__(R14NativeSelectedAccountingSource)
     source._runtime = runtime
+    connection_double: Connection = create_autospec(Connection, instance=True)
 
     @contextmanager
-    def connection(_database):
-        yield object()
+    def connection(database: Path) -> Iterator[Connection]:
+        assert database == runtime._database
+        yield connection_double
+
+    def baseline(actual_connection: Connection, tenant: str) -> str:
+        assert actual_connection is connection_double and tenant == "tenant"
+        return "actual"
 
     monkeypatch.setattr(accounting_module, "read_connection", connection)
-    monkeypatch.setattr(
-        accounting_module, "capture_authority_snapshot_commitment", lambda *_: "actual"
-    )
+    monkeypatch.setattr(accounting_module, "capture_authority_snapshot_commitment", baseline)
     monkeypatch.setattr(
         resolution, "authenticate_selected_resolution_prefix_held", lambda *_: False
     )
@@ -362,35 +415,51 @@ def test_historical_suffix_admits_authenticated_accepted_intents_from_both_run_s
         lambda *_, **kw: prefix_kind == "native-direct",
     )
     monkeypatch.setattr(
-        suffix,
-        "authenticate_selected_open_prefix_held",
-        lambda *_: prefix_kind == "pending-open",
+        suffix, "authenticate_selected_open_prefix_held", lambda *_: prefix_kind == "pending-open"
     )
-    pending_suffix_calls = []
+    pending_suffix_calls: list[tuple[str, str]] = []
 
-    def authenticate_pending_suffix(runtime, actual, anchored):
+    def authenticate_pending_suffix(
+        actual_runtime: CommonCliExecutionRuntime, actual: str, anchored: str
+    ) -> bool:
+        assert actual_runtime is runtime
         pending_suffix_calls.append((actual, anchored))
-        return prefix_kind in {
-            "pending-resolver-invocation",
-            "pending-original-resolution",
-        }
+        return prefix_kind in {"pending-resolver-invocation", "pending-original-resolution"}
 
     monkeypatch.setattr(
         suffix, "authenticate_selected_pending_r14_suffix_held", authenticate_pending_suffix
     )
+    cut: MaterializedEffectsCut = create_autospec(MaterializedEffectsCut, instance=True)
+    monkeypatch.setattr(cut, "materialization_commitment", "actual")
 
-    def effects_read(runtime, owners, *, authenticate_later_suffix, **kwargs):
-        assert authenticate_later_suffix(runtime, "actual", "anchored") is (
+    def effects_read(
+        actual_runtime: R13PlanningRuntime,
+        actual_owners: IndependentOwnerDecisionJournal,
+        *,
+        authenticate_later_suffix: Callable[[R13PlanningRuntime, str, str], bool] | None,
+        **kwargs: object,
+    ) -> tuple[MaterializedEffectsCut, OwnerJournalSnapshot]:
+        assert actual_runtime is runtime and actual_owners is owners
+        assert authenticate_later_suffix is not None
+        assert authenticate_later_suffix(actual_runtime, "actual", "anchored") is (
             prefix_kind != "rejected-open"
         )
         if prefix_kind != "native-direct":
             raise ReachedPrefixVerdict
-        return SimpleNamespace(materialization_commitment="actual"), journal
+        return cut, journal
 
     monkeypatch.setattr(r16_effects, "_read_materialized_effects_with_history", effects_read)
-    monkeypatch.setattr(r16_dispatch_history, "verify_dispatch_history", lambda *_: object())
+    verified = VerifiedDispatchHistory((), ())
+    monkeypatch.setattr(r16_dispatch_history, "verify_dispatch_history", lambda *_: verified)
 
-    def semantic_verifier(runtime, journal, call_id, *, allowed_intent_ids) -> None:
+    def semantic_verifier(
+        actual_runtime: CommonCliExecutionRuntime,
+        actual_journal: OwnerJournalSnapshot,
+        call_id: str,
+        *,
+        allowed_intent_ids: frozenset[str],
+    ) -> NoReturn:
+        assert actual_runtime is runtime and actual_journal is journal
         assert call_id == "call-first"
         assert allowed_intent_ids == frozenset({"effect-first", "effect-second"})
         raise ReachedSemanticVerifier
