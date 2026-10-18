@@ -252,7 +252,7 @@ async def test_reader_captures_and_rechecks_genuine_cli_h1_v2_postseal_cut(
             patch.setattr(runtime, "_supervisor", no_owner_ipc)
             with pytest.raises(
                 ValueError,
-                match="owner-authenticated DeliveryObservation and NonSchedulerFence",
+                match="H1 completion requires the installed P delivery owner",
             ):
                 reader._prepare_first_path_completion_request(capture, object())
         assert no_owner_ipc.calls == 0
@@ -535,7 +535,7 @@ async def test_historical_native_cut_replays_selected_raw_bytes_without_owner_ip
                 wrong_original, initialization_envelope_bytes=raw.initialization.raw
             )
         wrong_seal = source.model_copy(update={"selected_response_seal": source.current_run})
-        with pytest.raises(ValueError, match="no unique selected V3 seal"):
+        with pytest.raises(ValueError, match="H1 historical selector has no unique selected seal"):
             reader.replay_selected_native_cut(
                 wrong_seal, initialization_envelope_bytes=raw.initialization.raw
             )
