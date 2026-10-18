@@ -45,7 +45,11 @@ from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
+    from typing import Literal
+
+    from chiplog.capabilities.agent_loop.execution_run_versions import ExecutionRun
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 OPERATION = "agent_loop.execution-suspension.v1"
 OWNER_OPERATION = "agent_loop.prepare_execution_suspension.v1"
@@ -58,7 +62,7 @@ def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _run_ref(run: ExecutionRunRecord) -> CallSubjectHead:
+def _run_ref(run: ExecutionRun) -> CallSubjectHead:
     return CallSubjectHead(
         subject_id=run.run_id,
         revision=Present(head=run.head, fingerprint=run.digest()),
@@ -189,7 +193,9 @@ def _retained(entry: dict[str, object]) -> RetainedExecutionSuspension:
     return evidence
 
 
-def _entry_for(runtime, operation_id: str) -> tuple[str, str, dict[str, object]] | None:
+def _entry_for(
+    runtime: R14PlanningRuntime, operation_id: str
+) -> tuple[str, bytes, dict[str, object]] | None:
     matches = []
     for decision_id, _, raw in runtime._loop_decisions().entries():
         entry = json.loads(raw)
@@ -212,13 +218,13 @@ def _stored_entry(entry: dict[str, object]) -> dict[str, object]:
 
 
 def _validate_selected(
-    runtime,
+    runtime: R14PlanningRuntime,
     entry: dict[str, object],
-    physical_command,
+    physical_command: PhysicalPublicationCommand,
     *,
     check_history: bool = True,
     allow_pending_absent: bool = False,
-):
+) -> tuple[RetainedExecutionSuspension, SelectedExecutionSuspension]:
     if allow_pending_absent:
         runtime._authority_gate().require_held()
         if check_history:
@@ -235,14 +241,14 @@ def _validate_selected(
 
 
 def _validate_selected_evidence(
-    runtime,
+    runtime: R14PlanningRuntime,
     entry: dict[str, object],
-    physical_command,
+    physical_command: PhysicalPublicationCommand,
     evidence: RetainedExecutionSuspension,
     *,
     check_history: bool = True,
     allow_pending_absent: bool = False,
-):
+) -> tuple[RetainedExecutionSuspension, SelectedExecutionSuspension]:
     if allow_pending_absent:
         runtime._authority_gate().require_held()
         if check_history:
@@ -324,7 +330,9 @@ def _validate_selected_evidence(
     return evidence, selected
 
 
-async def _finish(runtime, entry: dict[str, object]) -> SelectedExecutionSuspension:
+async def _finish(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> SelectedExecutionSuspension:
     stored = _stored_entry(entry)
     with runtime._authority_gate().hold():
         evidence = _retained(stored)
@@ -444,7 +452,7 @@ async def suspend_execution(
         )
         source_cut_validated = False
 
-        def guard():
+        def guard() -> Literal["STALE"] | None:
             nonlocal source_cut_validated
             with runtime._authority_gate().hold():
                 try:
@@ -522,17 +530,19 @@ async def suspend_execution(
         return await _finish(runtime, selected[2])
 
 
-def read_selected_execution_suspension_held(runtime) -> SelectedExecutionSuspension | None:
+def read_selected_execution_suspension_held(
+    runtime: R14PlanningRuntime,
+) -> SelectedExecutionSuspension | None:
     from chiplog.composition.r14_loop_history import _read_call_history
 
     _read_call_history(runtime)
-    selected = [
+    candidates = [
         _entry_for(runtime, str(entry["operation_id"]))
         for _, _, raw in runtime._loop_decisions().entries()
         if (entry := json.loads(raw)).get("kind") == "DECIDED"
         and entry.get("operation_kind") == OPERATION
     ]
-    selected = [item for item in selected if item is not None]
+    selected = [item for item in candidates if item is not None]
     if not selected:
         return None
     if len(selected) != 1:
@@ -540,7 +550,9 @@ def read_selected_execution_suspension_held(runtime) -> SelectedExecutionSuspens
     return _finish_sync(runtime, selected[0][2])
 
 
-def _finish_sync(runtime, entry: dict[str, object]) -> SelectedExecutionSuspension:
+def _finish_sync(
+    runtime: R14PlanningRuntime, entry: dict[str, object]
+) -> SelectedExecutionSuspension:
     evidence = _retained(entry)
     command = _command(evidence)
     return _validate_selected(runtime, entry, command)[1]

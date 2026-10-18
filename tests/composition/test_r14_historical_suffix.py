@@ -5,10 +5,12 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
+from unittest.mock import create_autospec
 
 import pytest
 
 from chiplog.composition import r14_historical_suffix as suffix
+from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 
 @pytest.mark.parametrize(
@@ -859,7 +861,10 @@ def test_lifecycle_physical_validation_keeps_default_strict_and_reaches_pending_
         execution_suspension_evidence="inert evidence",
     )
     gate = AuthorityGate(database)
-    runtime = SimpleNamespace(_database=database, _authority_gate=lambda: gate)
+    # A unit double supplies only the path and real gate used by this readback probe.
+    runtime = create_autospec(R14PlanningRuntime, instance=True)
+    runtime._database = database
+    runtime._authority_gate.return_value = gate
     monkeypatch.setattr(suspension, "_retained", lambda _: evidence)
     monkeypatch.setattr(suspension, "_command", lambda _: command)
     monkeypatch.setattr(successor, "_command", lambda _: command)

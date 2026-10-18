@@ -56,6 +56,7 @@ from chiplog.platform.publication_readback import inspect_publication
 from chiplog.platform.workspace_snapshot import read_connection
 
 if TYPE_CHECKING:
+    from chiplog.capabilities.agent_loop.execution_run_versions import ExecutionRun
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
 
 OPERATION = "agent_loop.execution-resume.v1"
@@ -70,7 +71,7 @@ def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _run_ref(run: ExecutionRunRecord) -> CallSubjectHead:
+def _run_ref(run: ExecutionRun) -> CallSubjectHead:
     return CallSubjectHead(
         subject_id=run.run_id,
         revision=Present(head=run.head, fingerprint=run.digest()),

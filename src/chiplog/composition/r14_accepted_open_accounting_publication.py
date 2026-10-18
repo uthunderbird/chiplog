@@ -60,6 +60,9 @@ if TYPE_CHECKING:
     from chiplog.capabilities.agent_loop.execution_recovery_contracts import (
         AcceptedOpenAccountingRecordV1,
     )
+    from chiplog.capabilities.agent_loop.execution_recovery_observations import (
+        SelectedExecutionSuspension,
+    )
     from chiplog.composition.r14_native_selected_accounting_source import (
         R14NativeAcceptedOpenOutcome,
         R14NativeOneCallAcceptedFacts,
@@ -404,6 +407,7 @@ def _cut_is_preserved_by_selected_suspension(
         read_selected_execution_suspension_held,
     )
 
+    suspension: SelectedExecutionSuspension | None
     with runtime._authority_gate().hold():
         pending = runtime._pending()
         if (

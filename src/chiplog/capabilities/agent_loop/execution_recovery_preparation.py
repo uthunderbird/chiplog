@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from chiplog.capabilities.agent_loop.direct_effect_terminal_contracts import (
     classify_direct_effect_terminal_v1,
@@ -139,9 +139,11 @@ def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _record[T: RecoveryDTO](source: RecoverySourceRecord, type_: type[T]) -> T:
+def _record[T: (RecoveryDTO | DispatchOutcomeRecordV2)](
+    source: RecoverySourceRecord, type_: type[T]
+) -> T:
     try:
-        value = type_.model_validate_json(source.canonical_record_bytes)
+        value = TypeAdapter[T](type_).validate_json(source.canonical_record_bytes)
     except (ValidationError, ValueError) as error:
         raise RecoveryIntegrityFault("invalid recovery source bytes") from error
     if value.canonical_bytes() != source.canonical_record_bytes:
@@ -1075,7 +1077,7 @@ def _original_continuation_join(
         RecoveredCallOutcomeRecord,
     )
 
-    def exact[T](
+    def exact[T: (RecoveryDTO | DispatchOutcomeRecordV2)](
         ref: CallSubjectHead,
         schema: str,
         type_: type[T],
@@ -1098,7 +1100,7 @@ def _original_continuation_join(
             raise RecoveryHold("original join source is missing or duplicate")
         row = rows[0]
         value = _record(row, type_)
-        if owner == "effects":
+        if isinstance(value, DispatchOutcomeRecordV2):
             embedded = value.record
             body_ref = CallSubjectHead(
                 subject_id=embedded.subject_id,

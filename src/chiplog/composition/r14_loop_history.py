@@ -134,6 +134,7 @@ if TYPE_CHECKING:
         PreparedAcceptedOpenRecoveryV1,
     )
     from chiplog.capabilities.agent_loop.execution_recovery_observations import RecoverySourceRecord
+    from chiplog.capabilities.agent_loop.execution_run_versions import ExecutionRun
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
     from chiplog.composition.r14_native_accounting_records import (
         NativeOneCallCancelledAccountingRecord,
@@ -307,8 +308,8 @@ def completion_v2_terminal_run(
 
 def _successor_run_pair(
     command: PhysicalPublicationCommand,
-    expected_superseded: ExecutionRunRecord,
-    expected_created: ExecutionRunRecord,
+    expected_superseded: ExecutionRun,
+    expected_created: ExecutionRun,
 ) -> tuple[ExecutionRunRecord, ExecutionRunRecord]:
     """Decode the exact ordered V2 Run pair in one selected successor batch."""
     members = tuple(
