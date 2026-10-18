@@ -14,7 +14,8 @@ from chiplog.capabilities.agent_loop.execution_contracts import (
     ExecutionContinue,
     SelfEffectArguments,
 )
-from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.agent_loop.recovery_contracts import NotApplicable, Present
+from chiplog.capabilities.agent_loop.recovery_frontier_contracts import ConsequentialAcceptedCall
 from chiplog.capabilities.agent_loop.recovery_frontier_registry_contracts import (
     execution_native_one_call_cancellation_frontier_registry_v1,
     frontier_registry_reference,
@@ -187,12 +188,28 @@ async def test_holds_for_accepted_or_any_extra_selected_seal(tmp_path: Path) -> 
         source = R14NativeCancelledCallSource(runtime)
         history = read_execution_recovery_history(runtime)
         snapshot, inventory, legacy_seals, seals, cancellations, _acceptances = history
-        # An acceptance in the selected history is structurally ineligible even
-        # where downstream effects might report CLOSED.
+        # The cancellation's own accepted branch is ineligible. An accepted
+        # sibling is allowed by the per-call projection (covered by the mounted
+        # mixed-member test), so a global acceptance-list veto is obsolete.
         assert source.collect() is not None
+        target = inventory.ordered_calls[0]
+        accepted = Present(head="accepted-target", fingerprint="a" * 64)
+        intent = Present(head="target-intent", fingerprint="b" * 64)
+        accepted_target = target.model_copy(
+            update={
+                "acceptance": ConsequentialAcceptedCall(
+                    initialized=target.initialized.revision,
+                    accepted=accepted,
+                    execution_intent=intent,
+                    external_effect_intent=NotApplicable(),
+                    complete_acceptance_manifest=(accepted, intent),
+                )
+            }
+        )
+        accepted_inventory = inventory.model_copy(update={"ordered_calls": (accepted_target,)})
         with patch(
             "chiplog.composition.r14_execution_recovery_source.read_execution_recovery_history",
-            return_value=(snapshot, inventory, legacy_seals, seals, cancellations, (object(),)),
+            return_value=(snapshot, accepted_inventory, legacy_seals, seals, cancellations, ()),
         ):
             assert source.collect() is None
         with patch(

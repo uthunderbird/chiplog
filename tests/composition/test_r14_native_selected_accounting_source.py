@@ -53,6 +53,7 @@ from chiplog.composition.r14_execution_complete_seal_records import (
     RetainedExecutionCompleteSealV3,
 )
 from chiplog.composition.r14_execution_fanout_records import reference
+from chiplog.composition.r14_execution_recovery_source import R14NativeCancelledCallSource
 from chiplog.composition.r14_loop_history import (
     read_execution_history,
     read_execution_recovery_history,
@@ -445,6 +446,9 @@ async def test_cancelled_member_projection_uses_call_identity_in_multi_call_seal
         )
         assert accepted is not None
         assert accepted.original_call_id == first_original_id
+        cancelled_source = R14NativeCancelledCallSource(runtime).collect()
+        assert cancelled_source is not None
+        assert cancelled_source.original_call_id == second_original_id
 
     resources = HermeticDispatchResources(
         scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
@@ -466,6 +470,7 @@ async def test_cancelled_member_projection_uses_call_identity_in_multi_call_seal
         assert reopened_cancelled is not None
         assert reopened_accepted is not None
         assert reopened_accepted.acceptance == accepted.acceptance
+        assert R14NativeCancelledCallSource(reopened).collect() == cancelled_source
 
 
 @pytest.mark.asyncio
