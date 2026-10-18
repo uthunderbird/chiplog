@@ -7,7 +7,7 @@ import hashlib
 import json
 import secrets
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal, cast
@@ -336,7 +336,7 @@ class R13Runtime(R8PlanningRuntime):
         except ValueError as error:
             raise LoopRejected("pending H1 V2 authority cut cannot be verified") from error
 
-    def _publication(self, entry: dict[str, object]) -> PhysicalPublicationCommand:
+    def _publication(self, entry: Mapping[str, object]) -> PhysicalPublicationCommand:
         rows = cast(list[dict[str, str]], entry["records"])
         return PhysicalPublicationCommand(
             tenant_id=self._tenant_id,

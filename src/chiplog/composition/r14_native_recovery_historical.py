@@ -9,11 +9,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 from pydantic import TypeAdapter
 
@@ -58,6 +58,14 @@ if TYPE_CHECKING:
 _LOOP_CUT_TOKEN = object()
 
 
+@overload
+def _freeze_json(value: dict[str, object]) -> MappingProxyType[str, object]: ...
+
+
+@overload
+def _freeze_json(value: object) -> object: ...
+
+
 def _freeze_json(value: object) -> object:
     if isinstance(value, dict):
         return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
@@ -66,7 +74,19 @@ def _freeze_json(value: object) -> object:
     return value
 
 
-def _thaw_json(value):
+@overload
+def _thaw_json(value: MappingProxyType[str, object]) -> dict[str, object]: ...
+
+
+@overload
+def _thaw_json(value: dict[str, object]) -> dict[str, object]: ...
+
+
+@overload
+def _thaw_json(value: object) -> object: ...
+
+
+def _thaw_json(value: object) -> object:
     if isinstance(value, MappingProxyType):
         return {key: _thaw_json(item) for key, item in value.items()}
     if isinstance(value, tuple):
@@ -79,8 +99,8 @@ class _AuthenticatedLoopDecision:
     decision_id: str
     predecessor: str | None
     raw: bytes
-    entry: object
-    publication: object | None
+    entry: MappingProxyType[str, object]
+    publication: PhysicalPublicationCommand | None
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -93,7 +113,14 @@ class _AuthenticatedLoopDecisionCut:
         tuple[str, bytes], tuple[RetainedRecoveryPublication, PhysicalPublicationCommand]
     ] = field(compare=False, repr=False)
 
-    def __init__(self, token, runtime, decisions):
+    def __init__(
+        self,
+        token: object,
+        runtime: object,
+        decisions: Sequence[
+            tuple[str, str | None, bytes, dict[str, object], PhysicalPublicationCommand | None]
+        ],
+    ) -> None:
         if token is not _LOOP_CUT_TOKEN:
             raise TypeError("authenticated loop cut is internal")
         object.__setattr__(self, "runtime", runtime)
@@ -114,7 +141,12 @@ class _AuthenticatedLoopDecisionCut:
         )
 
 
-def _make_authenticated_loop_decision_cut(runtime, decisions):
+def _make_authenticated_loop_decision_cut(
+    runtime: object,
+    decisions: Sequence[
+        tuple[str, str | None, bytes, dict[str, object], PhysicalPublicationCommand | None]
+    ],
+) -> _AuthenticatedLoopDecisionCut:
     """Seal rows from ``_read_call_history`` to their parsing runtime.
 
     This is an internal data-transfer helper, not an authentication API: its sole

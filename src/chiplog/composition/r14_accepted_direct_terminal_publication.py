@@ -289,7 +289,7 @@ async def publish_accepted_direct_terminal(
         observed = refreshed
 
     request = PrepareAcceptedDirectTerminalV1(command_id=identity, cut=cut)
-    result, owner_call, owner_reply = await _exchange(  # type: ignore[no-untyped-call]
+    result, owner_call, owner_reply = await _exchange(
         runtime,
         request,
         "agent_loop.prepare_accepted_direct_terminal.v1",

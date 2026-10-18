@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import operator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -64,14 +65,31 @@ from chiplog.composition.r14_native_recovery_historical import (
 )
 from chiplog.composition.r14_recovery_profile_publication import publish_native_recovery_profile
 from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
+from chiplog.platform._sqlite import PhysicalPublicationCommand
 from tests.capabilities.effects.support.dispatch_outcomes import original_intent, original_send
 from tests.support.native_cancelled import native_response, selected_native_cancelled
 from tests.support.recovery_candidate import inert_recovery_candidate
 
 
+def _historical_command(expected_head: int) -> PhysicalPublicationCommand:
+    return PhysicalPublicationCommand(
+        tenant_id="tenant",
+        operation_kind="agent_loop.test",
+        idempotency_key="selected",
+        request_fingerprint="fingerprint",
+        expected_head=expected_head,
+        fence_generation="r6",
+        expected_fence_frontier=0,
+        minimum_fence_frontier=0,
+        records=(),
+    )
+
+
 def test_historical_loop_cut_rechecks_every_fresh_journal_row() -> None:
-    selected_command = SimpleNamespace(expected_head=2)
-    decisions = (
+    selected_command = _historical_command(2)
+    decisions: tuple[
+        tuple[str, str | None, bytes, dict[str, object], PhysicalPublicationCommand | None], ...
+    ] = (
         (
             "selected-id",
             None,
@@ -102,10 +120,13 @@ def test_historical_loop_cut_rechecks_every_fresh_journal_row() -> None:
     )
     assert not _authenticated_loop_cut_matches(foreign_runtime, cut)
     assert not _authenticated_loop_cut_matches(runtime, decisions)
+    # Deliberately invoke unsupported mutations dynamically to check runtime immutability.
+    mutation = "setitem"
     with pytest.raises(TypeError):
-        cut.decisions[0].entry["kind"] = "MATERIALIZED"
+        getattr(operator, mutation)(cut.decisions[0].entry, "kind", "MATERIALIZED")
+    field = "publication"
     with pytest.raises((AttributeError, TypeError)):
-        cut.decisions[0].publication = SimpleNamespace(expected_head=999)
+        setattr(cut.decisions[0], field, _historical_command(999))
     with pytest.raises(TypeError):
         _AuthenticatedLoopDecisionCut(None, runtime, decisions)
 
@@ -125,14 +146,14 @@ def test_historical_loop_cut_rechecks_every_fresh_journal_row() -> None:
 
 
 def test_historical_publications_reuse_exact_commands_and_keep_all_decisions() -> None:
-    cached = SimpleNamespace(expected_head=2)
-    equal_to_cut = SimpleNamespace(expected_head=3)
-    non_agent_loop = {
+    cached = _historical_command(2)
+    equal_to_cut = _historical_command(3)
+    non_agent_loop: dict[str, object] = {
         "kind": "DECIDED",
         "operation_id": "workspace-policy",
         "operation_kind": "workspace.policy",
     }
-    fallback_command = SimpleNamespace(expected_head=1)
+    fallback_command = _historical_command(1)
     runtime = SimpleNamespace(
         _publication=lambda entry: (
             fallback_command
@@ -140,7 +161,9 @@ def test_historical_publications_reuse_exact_commands_and_keep_all_decisions() -
             else pytest.fail("cached command should not be rebuilt")
         )
     )
-    decisions = (
+    decisions: tuple[
+        tuple[str, str | None, bytes, dict[str, object], PhysicalPublicationCommand | None], ...
+    ] = (
         (
             "agent-loop-id",
             None,

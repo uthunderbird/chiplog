@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -29,7 +30,7 @@ from chiplog.capabilities.agent_loop.execution_recovery_preparation import (
     _selected_direct_evidence_sources,
     _selected_direct_outcome_sources,
 )
-from chiplog.capabilities.agent_loop.recovery_contracts import Present
+from chiplog.capabilities.agent_loop.recovery_contracts import Present, RecoveryDTO
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     ConsequentialAcceptedCall,
 )
@@ -40,7 +41,8 @@ from chiplog.composition.r14_accepted_direct_terminal_frontier import (
     require_complete_direct_terminal_publication,
 )
 from chiplog.composition.r14_recovery_publication import _exchange
-from chiplog.platform.broker import BrokerSession, PublicPortSuccess
+from chiplog.composition.r14_runtime import R14PlanningRuntime
+from chiplog.platform.broker import BrokerSession, PublicPortCall, PublicPortSuccess
 
 _FINGERPRINT = "a" * 64
 
@@ -314,10 +316,10 @@ def test_direct_evidence_lookup_uses_semantic_head_and_keeps_physical_carrier() 
 @pytest.mark.asyncio
 async def test_direct_terminal_exchange_uses_its_registered_wire_schema() -> None:
     _, prepared, _ = _frontier_fixture("SUCCEEDED")
-    request = SimpleNamespace(canonical_bytes=lambda: b"{}")
+    request = RecoveryDTO()
 
     class Engine:
-        sent = None
+        sent: PublicPortCall | None = None
 
         def session(self, owner_id: str) -> BrokerSession:
             return BrokerSession(
@@ -328,7 +330,7 @@ async def test_direct_terminal_exchange_uses_its_registered_wire_schema() -> Non
                 session_id=owner_id + ":session",
             )
 
-        async def call(self, sent):
+        async def call(self, sent: PublicPortCall) -> PublicPortSuccess:
             self.sent = sent
             return PublicPortSuccess(
                 request_id=sent.request_id,
@@ -338,9 +340,9 @@ async def test_direct_terminal_exchange_uses_its_registered_wire_schema() -> Non
             )
 
     engine = Engine()
-    runtime = SimpleNamespace(
-        _supervisor=SimpleNamespace(runtime=lambda: engine), _tenant_id="tenant"
-    )
+    runtime = create_autospec(R14PlanningRuntime, instance=True)
+    runtime._supervisor = SimpleNamespace(runtime=lambda: engine)
+    runtime._tenant_id = "tenant"
     result, sent, _ = await _exchange(
         runtime,
         request,

@@ -11,6 +11,7 @@ import hashlib
 import json
 import secrets
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from chiplog.composition.common_cli_execution_runtime import CommonCliExecutionRuntime
     from chiplog.composition.r7_planning import ObservedTrustCall
     from chiplog.composition.r14_execution_runtime import R14ExecutionRuntime
+    from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 OPERATION = "agent_loop.execution-accounting-readiness.v1"
 ACCOUNTING_SCHEMA = "chiplog.execution.sealed-accounting.v1"
@@ -324,7 +326,7 @@ def _bind_readiness_artifacts(
     return replace(artifacts.base_command, request_fingerprint=evidence.digest())
 
 
-def retained(entry):
+def retained(entry: Mapping[str, object]) -> RetainedRecoveryPublication:
     raw = entry.get("execution_recovery_evidence")
     if not isinstance(raw, str):
         raise ValueError("recovery selected evidence missing")
@@ -441,14 +443,14 @@ def validate_selected(
     return evidence
 
 
-async def _exchange(
-    runtime,
-    request,
-    operation,
-    result_type,
+async def _exchange[T: RecoveryDTO](
+    runtime: R14PlanningRuntime,
+    request: RecoveryDTO,
+    operation: str,
+    result_type: type[T],
     *,
-    request_schema=EXECUTION_RECOVERY_REQUEST_SCHEMA,
-):
+    request_schema: str = EXECUTION_RECOVERY_REQUEST_SCHEMA,
+) -> tuple[T, PublicPortCall, PublicPortSuccess]:
     engine = runtime._supervisor.runtime()
     callee = engine.session("agent_loop")
     caller = BrokerSession(

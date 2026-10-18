@@ -444,7 +444,7 @@ def _read_call_history(
             identities = [entry["operation_id"] for entry in decisions]
             if len(identities) != len(set(identities)):
                 raise ValueError("duplicate independently selected loop identity")
-            authenticated_loop_decisions = tuple(
+            authenticated_loop_decision_rows = tuple(
                 (
                     decision_id,
                     predecessor,
@@ -461,7 +461,7 @@ def _read_call_history(
             )
 
             authenticated_loop_decisions = _make_authenticated_loop_decision_cut(
-                runtime, authenticated_loop_decisions
+                runtime, authenticated_loop_decision_rows
             )
             call_values = {}
             owner_snapshot = runtime._owner_decisions().snapshot()
