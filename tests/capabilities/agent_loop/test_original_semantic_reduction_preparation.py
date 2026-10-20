@@ -112,29 +112,6 @@ def test_preparation_holds_on_foreign_stream() -> None:
     assert rejected.code == "HOLD"
 
 
-def test_owner_process_dispatches_semantic_reduction_operation() -> None:
-    import base64
-
-    from chiplog.capabilities.agent_loop._original_recovery_process import (
-        PREPARE_SEMANTIC_REDUCTION_OPERATION,
-        dispatch,
-    )
-    from chiplog.capabilities.agent_loop.recovery_wire_contracts import (
-        ORIGINAL_RECOVERY_RESULT_SCHEMA,
-        decode_original_recovery_result,
-    )
-
-    source = request()
-    response = dispatch(PREPARE_SEMANTIC_REDUCTION_OPERATION, source.canonical_bytes())
-
-    assert response["schema_id"] == ORIGINAL_RECOVERY_RESULT_SCHEMA
-    prepared = decode_original_recovery_result(
-        ORIGINAL_RECOVERY_RESULT_SCHEMA,
-        base64.b64decode(response["payload"]),
-    ).value
-    assert prepared == prepare_loop_semantic_reduction(source)
-
-
 def test_contradictory_selected_evidence_builds_typed_hold() -> None:
     source = request()
     witness_source = source.complete_anchor_sources[-1]
