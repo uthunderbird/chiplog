@@ -19,14 +19,13 @@ from chiplog.verification.assembly_forwarding import (
 
 ROOT = Path(__file__).resolve().parents[2]
 PREFIX = "chiplog/composition/"
-CLI = PREFIX + "common_cli_execution_runtime.py"
 
 
 def _sources():
     return tuple(
         (str(path.relative_to(ROOT / "src")), path.read_text())
         for path in sorted((ROOT / "src/chiplog/composition").glob("*.py"))
-        if "_open_runtime" in path.read_text() or path.name == "common_cli_execution_runtime.py"
+        if "_open_runtime" in path.read_text()
     )
 
 
@@ -42,12 +41,6 @@ def _mutate(sources, module, old, new):
 
 # Independent direct-call expectation, not generated from inspected rows.
 EXPECTED = (
-    (
-        "common_cli_execution_runtime.py",
-        "open_common_cli_execution_runtime",
-        "CommonCliExecutionRuntime",
-        "manifest",
-    ),
     ("r13_runtime.py", "open_r13_runtime", "R13PlanningRuntime", "R13_PRODUCTION_MANIFEST"),
     (
         "r14_execution_runtime.py",
@@ -100,21 +93,9 @@ def _expected_edges():
                 + runtime,
             )
         )
-        if manifest == "manifest":
-            manifest_symbol = AssemblySymbol(
-                manifest,
-                "parameter",
-                module + ":" + caller + ".manifest",
-                None
-                if caller.startswith("_")
-                else (
-                    "chiplog.architecture.r7_runtime:R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST"
-                ),
-            )
-        else:
-            manifest_symbol = AssemblySymbol(
-                manifest, "symbol", "chiplog.architecture.r7_runtime:" + manifest
-            )
+        manifest_symbol = AssemblySymbol(
+            manifest, "symbol", "chiplog.architecture.r7_runtime:" + manifest
+        )
         callee = "chiplog.composition.r7_planning:_open_runtime"
         edges.append(
             AssemblyEdge(PREFIX + filename, caller, 1, callee, runtime_symbol, manifest_symbol)
@@ -128,14 +109,6 @@ def test_actual_all_src_direct_mounts_match_independent_expected_rows_and_stay_o
     verify_assembly_forwarding(observed.edges, _expected_edges())
     assert all(row.ordinal == 1 for row in observed.edges)
     by_caller = {row.caller: row for row in observed.edges}
-    cli = by_caller["open_common_cli_execution_runtime"]
-    assert cli.manifest.kind == "parameter"
-    assert cli.manifest.default == (
-        "chiplog.architecture.r7_runtime:R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST"
-    )
-    assert cli.runtime.origin == (
-        "chiplog.composition.common_cli_execution_runtime:CommonCliExecutionRuntime"
-    )
     assert by_caller["open_r8_runtime"].callee == "chiplog.composition.r7_planning:_open_runtime"
     assert by_caller["open_r7_runtime"].manifest.origin == (
         "chiplog.architecture.r7_runtime:R7_PRODUCTION_MANIFEST"
@@ -287,13 +260,21 @@ def test_same_spelling_foreign_manifest_origin_is_observed_and_independently_rej
     ],
 )
 def test_forwarded_manifest_parameter_cannot_be_rebound_by_other_binding_syntax(statement) -> None:
-    changed = _mutate(
-        _sources(),
-        CLI,
-        ") -> AsyncIterator[CommonCliExecutionRuntime]:\n    model = HermeticModel(responses)",
-        ") -> AsyncIterator[CommonCliExecutionRuntime]:\n    "
-        + statement
-        + "\n    model = HermeticModel(responses)",
+    module = PREFIX + "r8.py"
+    forwarded_call = (
+        "    return _open_runtime(database, runtime_type=R8PlanningRuntime, manifest=manifest)\n"
     )
+    addition = (
+        "\nasync def forward_parameter(database, resources, *, manifest=R8_PRODUCTION_MANIFEST):\n"
+        + forwarded_call
+    )
+    sources = tuple(
+        (name, source + addition) if name == module else (name, source)
+        for name, source in _sources()
+    )
+    baseline = inspect_assembly_forwarding(sources)
+    forwarded = next(row for row in baseline.edges if row.caller == "forward_parameter")
+    assert forwarded.manifest.kind == "parameter"
+    changed = _mutate(sources, module, forwarded_call, "    " + statement + "\n" + forwarded_call)
     with pytest.raises(UnknownAssemblyForwarding, match=r"parameter.*(bound|shadow)"):
         inspect_assembly_forwarding(changed)

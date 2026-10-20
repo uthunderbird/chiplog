@@ -18,7 +18,6 @@ from chiplog.verification.constant_sql_scripts import (
     UnknownConstantSql,
     extract_constant_sql_scripts,
 )
-from chiplog.verification.cutoff_sql_families import UnknownCutoffSql, extract_h1_cutoff_sql
 from chiplog.verification.identifier_sql_families import (
     _TARGETS,
     UnknownIdentifierSql,
@@ -162,7 +161,6 @@ def extract_sql_expression_inventory(
             UnknownSqlExpression,
             UnknownPlaceholderSql,
             UnknownConstantSql,
-            UnknownCutoffSql,
             UnknownIdentifierSql,
         ) as error:
             unresolved.append(UnresolvedSqlExpression(site, f"{type(error).__name__}: {error}"))
@@ -352,19 +350,6 @@ def _named_payloads(
                 tuple((_PREFIX + name, digest) for name, digest in identifier_item.source_digests),
                 target_module=_PREFIX + identifier_item.module,
                 target_qualname=identifier_item.qualname,
-            )
-    elif key == ("composition/h1_owner_inventory.py", "read_h1_scoped_owner_inventory"):
-        for cutoff_item in extract_h1_cutoff_sql(texts[module]):
-            attach(
-                cutoff_item.site,
-                cutoff_item.receiver,
-                tuple(
-                    SqlExpressionAlternative(label, sql)
-                    for label, sql in zip(
-                        ("boundary-is-None", "boundary-is-not-None"), cutoff_item.sql, strict=True
-                    )
-                ),
-                ((module, cutoff_item.source_sha256),),
             )
     elif key == ("platform/authority_reads.py", "BrokerAuthorityReader._execute_planning_read"):
         grouped: dict[int, list[SqlExpressionAlternative]] = {}
