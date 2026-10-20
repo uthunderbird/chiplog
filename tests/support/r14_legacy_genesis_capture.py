@@ -1,7 +1,22 @@
 """One-time authentic V1 fixture capture; run from producer checkout at 0846538."""
 
+from typing import TypedDict
 
-def main():
+
+class _CapturedFile(TypedDict):
+    mode: int
+    sha256: str
+    bytes_b64: str
+
+
+class _CapturedBundle(TypedDict):
+    producer_revision: str
+    database_name: str
+    operator_secret: str
+    files: dict[str, _CapturedFile]
+
+
+def main() -> None:
     import asyncio
     import base64
     import gzip
@@ -20,7 +35,7 @@ def main():
     directory = Path(tempfile.mkdtemp(prefix="r14-legacy-genesis-producer-"))
     database = directory / "legacy.sqlite3"
 
-    async def produce():
+    async def produce() -> None:
         async with open_r7_runtime(
             database,
             tenant_id="legacy-fixture-tenant",
@@ -33,10 +48,12 @@ def main():
                 session_id="legacy-fixture-session",
                 token="legacy-fixture-token",
             )
-            assert runtime._trust.verify().phase == "ACTIVE"
+            observed = runtime._trust.verify()
+            assert observed is not None
+            assert observed.phase == "ACTIVE"
 
     asyncio.run(produce())
-    files = {}
+    files: dict[str, _CapturedFile] = {}
     for path in sorted(directory.iterdir()):
         assert path.is_file() and not path.is_symlink(), path
         raw = path.read_bytes()
@@ -46,7 +63,7 @@ def main():
             "sha256": hashlib.sha256(raw).hexdigest(),
             "bytes_b64": base64.b64encode(raw).decode("ascii"),
         }
-    capture = {
+    capture: _CapturedBundle = {
         "producer_revision": revision,
         "database_name": database.name,
         "operator_secret": "r14-public-legacy-fixture-secret",

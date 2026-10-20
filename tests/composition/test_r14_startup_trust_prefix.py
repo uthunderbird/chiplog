@@ -7,22 +7,36 @@ import json
 import os
 import sqlite3
 import stat
+from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+from chiplog.adapters.driven.deployment_trust import (
+    IndependentTenantDecisionJournal,
+    SQLiteTrustMaterializer,
+)
+from chiplog.adapters.driven.deployment_trust._journal import (
+    AuthenticatedJournalSnapshot,
+    read_authenticated_journal_snapshot,
+)
 from chiplog.composition import r7_planning
+from chiplog.composition.r7_supervisor import R7RuntimeSupervisor
+from chiplog.platform._sqlite import EventAppender, SQLiteMaterializer
+from chiplog.platform.authority_gate import AuthorityGate
+from chiplog.platform.read_ledger import BrokerReadLedger
 from chiplog.platform.startup_trust_prefix import StartupTrustPrefixIntegrityError
+from tests.support.r14_legacy_genesis_capture import _CapturedBundle
 
 
-def _restore_legacy(directory):
+def _restore_legacy(directory: Path) -> tuple[Path, bytes]:
     fixture = Path(__file__).with_name("fixtures") / "r14_legacy_genesis_v1.json.gz"
     raw = fixture.read_bytes()
     assert hashlib.sha256(raw).hexdigest() == (
         "187a44494e4d41286ebd5207e0811bfe5bb516fb769d0699a0ad95d3a83f5543"
     )
-    capture = json.loads(gzip.decompress(raw))
+    capture: _CapturedBundle = json.loads(gzip.decompress(raw))
     for name, item in capture["files"].items():
         assert Path(name).name == name
         body = base64.b64decode(item["bytes_b64"], validate=True)
@@ -55,8 +69,8 @@ def _files(directory: Path) -> dict[str, tuple[bytes, int]]:
     ],
 )
 async def test_incomplete_trust_companions_refuse_before_startup_constructors(
-    tmp_path, monkeypatch, corruption
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corruption: str
+) -> None:
     database, secret = _restore_legacy(tmp_path)
     trust_database = database.with_suffix(database.suffix + ".trust.sqlite3")
     with closing(sqlite3.connect(trust_database)) as connection:
@@ -105,23 +119,31 @@ async def test_incomplete_trust_companions_refuse_before_startup_constructors(
             connection.execute("DELETE FROM trust_decisions WHERE decision_id = ?", (decision_id,))
         connection.commit()
     before = _files(tmp_path)
-    entered = []
+    entered: list[str] = []
 
-    def observe(owner, attribute, name):
-        original = getattr(owner, attribute)
-
-        def construct(*args, **kwargs):
+    def observe[**P, R](owner: object, attribute: str, name: str, original: Callable[P, R]) -> None:
+        def construct(*args: P.args, **kwargs: P.kwargs) -> R:
             entered.append(name)
             return original(*args, **kwargs)
 
         monkeypatch.setattr(owner, attribute, construct)
 
-    observe(r7_planning.IndependentTenantDecisionJournal, "for_authority_bundle", "journal")
-    observe(r7_planning.SQLiteTrustMaterializer, "for_authority_bundle", "materializer")
-    observe(r7_planning, "R7RuntimeSupervisor", "supervisor")
-    observe(r7_planning, "BrokerReadLedger", "ledger")
-    observe(r7_planning, "SQLiteMaterializer", "main-factory")
-    error = None
+    observe(
+        IndependentTenantDecisionJournal,
+        "for_authority_bundle",
+        "journal",
+        IndependentTenantDecisionJournal.for_authority_bundle,
+    )
+    observe(
+        SQLiteTrustMaterializer,
+        "for_authority_bundle",
+        "materializer",
+        SQLiteTrustMaterializer.for_authority_bundle,
+    )
+    observe(r7_planning, "R7RuntimeSupervisor", "supervisor", R7RuntimeSupervisor)
+    observe(r7_planning, "BrokerReadLedger", "ledger", BrokerReadLedger)
+    observe(r7_planning, "SQLiteMaterializer", "main-factory", SQLiteMaterializer)
+    error: Exception | None = None
     try:
         async with r7_planning.open_r7_runtime(
             database, tenant_id="legacy-fixture-tenant", operator_secret=secret
@@ -139,7 +161,7 @@ async def test_incomplete_trust_companions_refuse_before_startup_constructors(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("materialization", ["complete", "prefix", "empty_prefix", "absent"])
 async def test_genuine_complete_prefix_and_absent_recover_exactly_without_journal_append(
-    tmp_path, materialization
+    tmp_path: Path, materialization: str
 ) -> None:
     database, secret = _restore_legacy(tmp_path)
     trust = database.with_suffix(database.suffix + ".trust.sqlite3")
@@ -169,7 +191,9 @@ async def test_genuine_complete_prefix_and_absent_recover_exactly_without_journa
         async with r7_planning.open_r7_runtime(
             database, tenant_id="legacy-fixture-tenant", operator_secret=secret
         ) as runtime:
-            assert runtime._trust.verify().tenant_id == "legacy-fixture-tenant"
+            observed = runtime._trust.verify()
+            assert observed is not None
+            assert observed.tenant_id == "legacy-fixture-tenant"
         with closing(sqlite3.connect(trust)) as connection:
             assert (
                 connection.execute("SELECT * FROM trust_decisions ORDER BY rowid").fetchall()
@@ -182,7 +206,7 @@ async def test_genuine_complete_prefix_and_absent_recover_exactly_without_journa
         assert _journal_files(journal) == journal_before
 
 
-def _journal_files(journal):
+def _journal_files(journal: Path) -> dict[str, bytes]:
     return {
         suffix: Path(str(journal) + suffix).read_bytes()
         for suffix in ("", ".key", ".head", ".lock")
@@ -191,7 +215,9 @@ def _journal_files(journal):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("remnant", ["-wal", "-journal", "-shm", "missing-main"])
-async def test_partial_bundle_namespace_refuses_without_creating_sources(tmp_path, remnant) -> None:
+async def test_partial_bundle_namespace_refuses_without_creating_sources(
+    tmp_path: Path, remnant: str
+) -> None:
     database, secret = _restore_legacy(tmp_path)
     trust = database.with_suffix(database.suffix + ".trust.sqlite3")
     if remnant == "missing-main":
@@ -208,7 +234,7 @@ async def test_partial_bundle_namespace_refuses_without_creating_sources(tmp_pat
     assert _files(tmp_path) == before
 
 
-def _write_remnant(trust, remnant) -> None:
+def _write_remnant(trust: Path, remnant: str) -> None:
     Path(str(trust) + remnant).write_bytes(b"partial-bundle-remnant")
 
 
@@ -221,24 +247,28 @@ async def test_sql_time_journal_mutation_refuses_before_consuming_constructors(
     database, secret = _restore_legacy(tmp_path)
     original = startup_trust_prefix.compare_trust_prefix
     journal = database.with_suffix(database.suffix + ".trust-journal")
-    entered = []
+    entered: list[str] = []
 
-    def mutate_after_compare(*args, **kwargs):
-        result = original(*args, **kwargs)
+    def mutate_after_compare(
+        connection: sqlite3.Connection,
+        entries: tuple[tuple[str, str | None, bytes], ...],
+        operator_secret: bytes,
+    ) -> int:
+        result = original(connection, entries, operator_secret)
         with journal.open("ab") as stream:
             stream.write(b"corrupt-after-first-authenticated-cut")
         return result
 
     monkeypatch.setattr(startup_trust_prefix, "compare_trust_prefix", mutate_after_compare)
-    original_constructor = r7_planning.IndependentTenantDecisionJournal.for_authority_bundle
+    original_constructor = IndependentTenantDecisionJournal.for_authority_bundle
 
-    def constructor(*args, **kwargs):
+    def constructor(
+        path: Path, *, authority_gate: AuthorityGate
+    ) -> IndependentTenantDecisionJournal:
         entered.append("journal")
-        return original_constructor(*args, **kwargs)
+        return original_constructor(path, authority_gate=authority_gate)
 
-    monkeypatch.setattr(
-        r7_planning.IndependentTenantDecisionJournal, "for_authority_bundle", constructor
-    )
+    monkeypatch.setattr(IndependentTenantDecisionJournal, "for_authority_bundle", constructor)
     with pytest.raises(StartupTrustPrefixIntegrityError):
         async with r7_planning.open_r7_runtime(
             database, tenant_id="legacy-fixture-tenant", operator_secret=secret
@@ -252,41 +282,43 @@ async def test_existing_cut_is_held_through_store_setup_and_released_before_asyn
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from chiplog.architecture.r7_runtime import R7_PRODUCTION_MANIFEST
-    from chiplog.platform.authority_gate import AuthorityGate, AuthorityGateError
+    from chiplog.platform.authority_gate import AuthorityGateError
 
     database, secret = _restore_legacy(tmp_path)
     gate = AuthorityGate.for_database(database)
-    original = r7_planning.IndependentTenantDecisionJournal.for_authority_bundle
-    observed = []
+    original = IndependentTenantDecisionJournal.for_authority_bundle
+    observed: list[str] = []
 
-    def constructor(*args, **kwargs):
+    def constructor(
+        path: Path, *, authority_gate: AuthorityGate
+    ) -> IndependentTenantDecisionJournal:
         gate.require_held()
         observed.append("journal")
-        return original(*args, **kwargs)
+        return original(path, authority_gate=authority_gate)
 
-    monkeypatch.setattr(
-        r7_planning.IndependentTenantDecisionJournal, "for_authority_bundle", constructor
-    )
+    monkeypatch.setattr(IndependentTenantDecisionJournal, "for_authority_bundle", constructor)
 
-    def preflight(actual_gate):
+    def preflight(actual_gate: AuthorityGate) -> str:
         assert actual_gate == gate
         observed.append("preflight")
         return "installed-role-evidence"
 
-    def store_setup(store, actual_gate, evidence) -> None:
+    def store_setup(
+        store: SQLiteMaterializer, actual_gate: AuthorityGate, evidence: object
+    ) -> None:
         actual_gate.require_held()
         assert evidence == "installed-role-evidence"
         observed.append("store_setup")
 
-    original_enter = r7_planning.EventAppender.__aenter__
+    original_enter = EventAppender.__aenter__
 
-    async def enter(appender):
+    async def enter(appender: EventAppender) -> EventAppender:
         with pytest.raises(AuthorityGateError):
             gate.require_held()
         observed.append("async-entry")
         return await original_enter(appender)
 
-    monkeypatch.setattr(r7_planning.EventAppender, "__aenter__", enter)
+    monkeypatch.setattr(EventAppender, "__aenter__", enter)
     async with r7_planning._open_runtime(
         database,
         tenant_id="legacy-fixture-tenant",
@@ -301,18 +333,22 @@ async def test_existing_cut_is_held_through_store_setup_and_released_before_asyn
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("absent", [False, True])
-async def test_final_journal_cut_cannot_hide_changed_trust_source(tmp_path, monkeypatch, absent):
+async def test_final_journal_cut_cannot_hide_changed_trust_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, absent: bool
+) -> None:
     from chiplog.platform import startup_trust_prefix
 
     database, secret = _restore_legacy(tmp_path)
     trust = database.with_suffix(database.suffix + ".trust.sqlite3")
     if absent:
         trust.unlink()
-    original = startup_trust_prefix.read_authenticated_journal_snapshot
-    calls = []
+    original = read_authenticated_journal_snapshot
+    calls: list[bool] = []
 
-    def mutate_at_final_cut(*args, **kwargs):
-        snapshot = original(*args, **kwargs)
+    def mutate_at_final_cut(
+        path: Path, *, authority_gate: AuthorityGate
+    ) -> AuthenticatedJournalSnapshot:
+        snapshot = original(path, authority_gate=authority_gate)
         calls.append(True)
         if len(calls) == 2:
             with trust.open("ab") as stream:
@@ -333,12 +369,10 @@ async def test_final_journal_cut_cannot_hide_changed_trust_source(tmp_path, monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize("corruption", ["operator_auth", "logical_predecessor"])
 async def test_unmaterialized_journal_suffix_is_authenticated_before_constructors(
-    tmp_path, monkeypatch, corruption
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corruption: str
+) -> None:
     import hmac
 
-    from chiplog.adapters.driven.deployment_trust import IndependentTenantDecisionJournal
-    from chiplog.platform.authority_gate import AuthorityGate
     from chiplog.platform.r7_trust_durability import authenticate_trust_entries
 
     database, secret = _restore_legacy(tmp_path)
@@ -355,7 +389,7 @@ async def test_unmaterialized_journal_suffix_is_authenticated_before_constructor
         "predecessor": logical[-1][0] if corruption == "operator_auth" else "wrong-logical-head",
     }
 
-    def canonical(value):
+    def canonical(value: object) -> bytes:
         return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
     raw = canonical(
@@ -368,16 +402,16 @@ async def test_unmaterialized_journal_suffix_is_authenticated_before_constructor
     )
     journal.append(raw, entries[-1][0])
     before = _files(tmp_path)
-    entered = []
-    original = r7_planning.IndependentTenantDecisionJournal.for_authority_bundle
+    entered: list[bool] = []
+    original = IndependentTenantDecisionJournal.for_authority_bundle
 
-    def constructor(*args, **kwargs):
+    def constructor(
+        path: Path, *, authority_gate: AuthorityGate
+    ) -> IndependentTenantDecisionJournal:
         entered.append(True)
-        return original(*args, **kwargs)
+        return original(path, authority_gate=authority_gate)
 
-    monkeypatch.setattr(
-        r7_planning.IndependentTenantDecisionJournal, "for_authority_bundle", constructor
-    )
+    monkeypatch.setattr(IndependentTenantDecisionJournal, "for_authority_bundle", constructor)
     with pytest.raises(StartupTrustPrefixIntegrityError):
         async with r7_planning.open_r7_runtime(
             database, tenant_id="legacy-fixture-tenant", operator_secret=secret
