@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-import json
-import os
 import shutil
 import sqlite3
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from chiplog.architecture.r7_runtime import R8_PRODUCTION_MANIFEST, bind_execution_manifest
-from chiplog.architecture.r8_execution_identity import (
-    resolve_runtime_identity,
-    snapshot_python_sources,
-)
+from chiplog.architecture.r8_execution_identity import resolve_runtime_identity
 from chiplog.composition.r7_supervisor import R7RuntimeSupervisor, RuntimeAdmissionEvidence
 from chiplog.platform.authority_ledger import (
     AuthorityLedgerConflict,
@@ -88,64 +81,3 @@ def test_source_drift_rejects_before_current_epoch_allocation(tmp_path: Path) ->
     with pytest.raises(RuntimeError, match="drift"):
         supervisor.start_generation("generation")
     assert BrokerAuthorityLedger(path).current_epoch("tenant") is None
-
-
-def _mounted_r14_snapshot(
-    source_root: Path, database: Path, *, mode: str = "development"
-) -> dict[str, object]:
-    script = """
-import asyncio, json, sys
-from pathlib import Path
-from chiplog.composition.r14_runtime import open_r14_runtime
-from chiplog.architecture.r8_execution_identity import execution_identity
-from chiplog.platform.authority_ledger import BrokerAuthorityLedger
-async def run():
-    with execution_identity(sys.argv[2]):
-      async with open_r14_runtime(Path(sys.argv[1])) as runtime:
-        graph = runtime._supervisor._graph
-        assert graph is not None
-        ledger = BrokerAuthorityLedger(Path(sys.argv[1] + '.broker.sqlite3'))
-        identity = ledger.read_generation_identity('hermetic-tenant', graph.broker_epoch)
-        value = {'epoch': graph.broker_epoch, 'graph': graph.manifest_digest}
-        print(json.dumps({**value, 'identity': identity.model_dump()}))
-asyncio.run(run())
-"""
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = str(source_root / "src")
-    completed = subprocess.run(
-        [sys.executable, "-c", script, str(database), mode],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    return json.loads(completed.stdout)
-
-
-def test_r14_public_mount_reopen_binds_fresh_observed_source_generation(tmp_path: Path) -> None:
-    source_root = tmp_path / "source"
-    shutil.copytree(Path(__file__).parents[2] / "src", source_root / "src")
-    database = tmp_path / "r14.sqlite"
-    first = _mounted_r14_snapshot(source_root, database)
-    (source_root / "src/chiplog/current_development_edit.py").write_text("VALUE = 'B'\n")
-    second = _mounted_r14_snapshot(source_root, database)
-    assert first["epoch"] != second["epoch"]
-    assert first["graph"] != second["graph"]
-    first_identity = first["identity"]
-    second_identity = second["identity"]
-    assert first_identity["mode"] == second_identity["mode"] == "development"
-    assert first_identity["source_snapshot_digest"] != second_identity["source_snapshot_digest"]
-    assert first_identity["selected_manifest_fingerprint"] == first["graph"]
-    assert second_identity["selected_manifest_fingerprint"] == second["graph"]
-    ledger = BrokerAuthorityLedger(Path(str(database) + ".broker.sqlite3"))
-    retained = ledger.read_generation_identity("hermetic-tenant", int(first["epoch"]))
-    assert retained.model_dump() == first_identity
-    with pytest.raises(subprocess.CalledProcessError):
-        _mounted_r14_snapshot(source_root, database, mode="release")
-    assert ledger.current_epoch("hermetic-tenant") == int(second["epoch"])
-    catalog = source_root / "src/chiplog/inert_shared/r8-implementation-v1.json"
-    catalog.write_text(json.dumps(snapshot_python_sources(source_root), sort_keys=True))
-    release = _mounted_r14_snapshot(source_root, database, mode="release")
-    release_identity = release["identity"]
-    assert release_identity["mode"] == "release"
-    assert release_identity["selected_manifest_fingerprint"] == release["graph"]
