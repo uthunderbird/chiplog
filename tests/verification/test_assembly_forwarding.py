@@ -9,6 +9,7 @@ import pytest
 
 from chiplog.verification.assembly_forwarding import (
     AssemblyEdge,
+    AssemblyForwarding,
     AssemblySymbol,
     UnknownAssemblyForwarding,
     UnregisteredAssemblyMount,
@@ -21,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PREFIX = "chiplog/composition/"
 
 
-def _sources():
+def _sources() -> tuple[tuple[str, str], ...]:
     return tuple(
         (str(path.relative_to(ROOT / "src")), path.read_text())
         for path in sorted((ROOT / "src/chiplog/composition").glob("*.py"))
@@ -29,7 +30,9 @@ def _sources():
     )
 
 
-def _mutate(sources, module, old, new):
+def _mutate(
+    sources: tuple[tuple[str, str], ...], module: str, old: str, new: str
+) -> tuple[tuple[str, str], ...]:
     result = []
     for name, source in sources:
         if name == module:
@@ -47,7 +50,9 @@ EXPECTED = (
 )
 
 
-def _summary(observed):
+def _summary(
+    observed: AssemblyForwarding,
+) -> tuple[tuple[str, str, str | None, str], ...]:
     return tuple(
         (
             Path(row.module).name,
@@ -59,7 +64,7 @@ def _summary(observed):
     )
 
 
-def _expected_edges():
+def _expected_edges() -> tuple[AssemblyEdge, ...]:
     edges = []
     for filename, caller, runtime, manifest in EXPECTED:
         module = "chiplog.composition." + filename.removesuffix(".py")
@@ -99,7 +104,7 @@ def test_actual_all_src_direct_mounts_match_independent_expected_rows_and_stay_o
 
 
 @pytest.mark.parametrize("change", ["manifest", "runtime", "duplicate", "missing", "ghost"])
-def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change) -> None:
+def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change: str) -> None:
     sources = _sources()
     baseline = inspect_assembly_forwarding(sources)
     module = PREFIX + "r8.py"
@@ -162,6 +167,7 @@ def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change) ->
         assert [row.ordinal for row in observed.edges if row.caller == "open_r8_runtime"] == [1, 2]
     if change in {"runtime", "manifest"}:
         row = next(row for row in observed.edges if row.caller == "open_r8_runtime")
+        assert row.runtime is not None
         assert (row.runtime.name if change == "runtime" else row.manifest.name) == (
             "R7PlanningRuntime" if change == "runtime" else "R7_PRODUCTION_MANIFEST"
         )
@@ -175,7 +181,7 @@ def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change) ->
 
 
 @pytest.mark.parametrize("change", ["alias", "foreign_import", "shadow", "escape", "nested"])
-def test_unknown_binding_or_frame_never_yields_resolved_identity(change) -> None:
+def test_unknown_binding_or_frame_never_yields_resolved_identity(change: str) -> None:
     sources = _sources()
     module = PREFIX + "r8.py"
     if change == "alias":
@@ -240,7 +246,9 @@ def test_same_spelling_foreign_manifest_origin_is_observed_and_independently_rej
         "match resources:\n        case {'key': manifest}:\n            pass",
     ],
 )
-def test_forwarded_manifest_parameter_cannot_be_rebound_by_other_binding_syntax(statement) -> None:
+def test_forwarded_manifest_parameter_cannot_be_rebound_by_other_binding_syntax(
+    statement: str,
+) -> None:
     module = PREFIX + "r8.py"
     forwarded_call = (
         "    return _open_runtime(database, runtime_type=R8PlanningRuntime, manifest=manifest)\n"

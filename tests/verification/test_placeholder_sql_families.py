@@ -72,9 +72,7 @@ def _expected(case: PlaceholderCase, n: int) -> tuple[SqlAction, ...]:
     # Empty IN makes the whole WHERE false before SQLite authorizes predicates;
     # output expressions remain authorized, but tenant/schema filters disappear.
     columns = tuple(column for column in columns if n or column != "tenant_id")
-    actions: list[SqlAction] = [
-        ("READ", "records", column, "main", None) for column in columns
-    ]
+    actions: list[SqlAction] = [("READ", "records", column, "main", None) for column in columns]
     actions.append(("SELECT", None, None, None, None))
     return tuple(
         sorted(actions, key=lambda row: tuple((value is not None, value or "") for value in row))
@@ -106,8 +104,6 @@ def test_actual_families_bind_exact_generator_and_parameter_source(
 def _replace(source: str, old: str, new: str) -> str:
     assert source.count(old) == 1
     return source.replace(old, new)
-
-
 
 
 def test_added_predicate_edge_is_extracted_before_independent_graph_refusal() -> None:
