@@ -2453,7 +2453,9 @@ class NativeRecoveryCutSource:
         profile_source: RecoverySourceRecord,
         profile: NativeOneCallRecoveryProfileV1
         | NativeOneCallRecoveryProfileV2
-        | NativeOneCallRecoveryProfileV3,
+        | NativeOneCallRecoveryProfileV3
+        | NativeOneCallRecoveryProfileV4
+        | NativeOneCallRecoveryProfileV5,
         lineage: tuple[ExecutionRunRecord, ...],
         seal: SealedResponseRecord,
         call: TerminalCallFrontier,

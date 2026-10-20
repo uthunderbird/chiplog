@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Sequence
 from contextlib import closing
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from chiplog.composition.r14_execution_suspension import RetainedExecutionSuspension
     from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
     from chiplog.composition.r14_runtime import R14PlanningRuntime
+    from chiplog.platform._sqlite import PhysicalPublicationCommand
 
 _SUFFIX_OPERATIONS = frozenset(
     {
@@ -335,7 +337,9 @@ def _materialized_native_open_run_history_held(
     return ExecutionHistorySnapshot(tenant_head=snapshot.tenant_head, records=records)
 
 
-def authenticate_selected_open_prefix_held(runtime, actual, anchored):
+def authenticate_selected_open_prefix_held(
+    runtime: R14PlanningRuntime, actual: str, anchored: str | None
+) -> bool:
     """Authenticate unchanged historical bytes, never the OPEN causal claim."""
     from chiplog.composition import r14_accepted_open_accounting_records as records
 
@@ -410,8 +414,15 @@ def authenticate_selected_open_prefix_held(runtime, actual, anchored):
 
 
 def authenticate_native_open_pending_lifecycle_held(
-    runtime, connection, actual, anchored, *, pending_publication, selected, frontier
-):
+    runtime: R14PlanningRuntime,
+    connection: sqlite3.Connection,
+    actual: str,
+    anchored: str | None,
+    *,
+    pending_publication: dict[str, object],
+    selected: Sequence[tuple[PhysicalPublicationCommand, dict[str, object]]],
+    frontier: int,
+) -> bool:
     """Prove the exact final lifecycle batch after its outer semantic decoding."""
     runtime._authority_gate().require_held()
     if (

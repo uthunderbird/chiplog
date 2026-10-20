@@ -49,9 +49,6 @@ CREATE TABLE IF NOT EXISTS gate_handoffs (
     operation text PRIMARY KEY, request bytea NOT NULL, payload bytea NOT NULL,
     entitlement text NOT NULL, mode text NOT NULL
 );
-CREATE TABLE IF NOT EXISTS migrations (
-    source_kind text PRIMARY KEY, source_fingerprint text NOT NULL
-);
 """
 
 

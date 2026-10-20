@@ -838,7 +838,7 @@ async def test_open_causal_source_joins_captured_prefix_and_excludes_future_clos
         _tenant_id=cut.tenant_id, _database_identity=selected.database_identity
     )
 
-    def reentry(*args, **kwargs) -> None:
+    def reentry(*args: object, **kwargs: object) -> None:
         raise AssertionError("causal join must consume captured history")
 
     monkeypatch.setattr(accounting_module, "read_execution_recovery_history", reentry)
@@ -1174,14 +1174,16 @@ async def test_effects_run_snapshot_reuse_keeps_exact_sql_checks(
 
     from chiplog.composition import r14_loop_history as history
     from chiplog.composition import r16_effects as effects
+    from chiplog.composition.r14_execution_transition_records import ExecutionHistorySnapshot
     from chiplog.composition.r14_runtime import R14PlanningRuntime
     from chiplog.platform._sqlite import SCHEMA_SQL
+    from chiplog.platform.owner_decision_journal import OwnerJournalSnapshot
     from tests.support.capabilities.agent_loop.execution_recovery_preparation import _cut
 
     cut = await _cut()
     runs = cast(tuple[ExecutionRunRecord, ...], cut.complete_ordered_run_lineage)
     assert len(runs) >= 2
-    snapshot = history.ExecutionHistorySnapshot(tenant_head=1, records=runs)
+    snapshot = ExecutionHistorySnapshot(tenant_head=1, records=runs)
     database = tmp_path / "effects-runs.sqlite"
     with sqlite3.connect(database) as connection:
         connection.executescript(SCHEMA_SQL)
@@ -1206,30 +1208,44 @@ async def test_effects_run_snapshot_reuse_keeps_exact_sql_checks(
         elif damage == "frontier":
             snapshot = snapshot.model_copy(update={"tenant_head": 2})
         runtime = object.__new__(R14PlanningRuntime)
-        runtime._record_schema_variants = (("agent_loop", runs[0].schema_id),)
-        reads = []
+        monkeypatch.setattr(
+            runtime, "_record_schema_variants", (("agent_loop", runs[0].schema_id),)
+        )
+        reads: list[bool] = []
 
-        def acquire(actual_runtime, **kwargs):
+        def acquire(
+            actual_runtime: R14PlanningRuntime, **kwargs: object
+        ) -> tuple[ExecutionHistorySnapshot, None, None, tuple[()], tuple[()], tuple[()]]:
             assert actual_runtime is runtime
             assert kwargs == {"selected_only": True, "exact_historical_sources": True}
             reads.append(True)
             return snapshot, None, None, (), (), ()
 
         monkeypatch.setattr(history, "read_execution_recovery_history", acquire)
-        kwargs = dict(
-            historical=True, authenticated_execution_history=snapshot if supplied else None
-        )
-        journal = SimpleNamespace(decisions=())
+        # The legacy journal branch is an empty control, not authenticated owner evidence.
+        journal = OwnerJournalSnapshot(cut.tenant_id, None, (), frozenset())
         if damage is None:
             assert effects._reconstruct_registered_runs(
-                runtime, connection, cut.tenant_id, journal, 1, **kwargs
+                runtime,
+                connection,
+                cut.tenant_id,
+                journal,
+                1,
+                historical=True,
+                authenticated_execution_history=snapshot if supplied else None,
             ) == (runs[-1],)
         else:
             with pytest.raises(
                 ValueError, match="execution selected history and effects physical cut"
             ):
                 effects._reconstruct_registered_runs(
-                    runtime, connection, cut.tenant_id, journal, 1, **kwargs
+                    runtime,
+                    connection,
+                    cut.tenant_id,
+                    journal,
+                    1,
+                    historical=True,
+                    authenticated_execution_history=snapshot if supplied else None,
                 )
         assert len(reads) == (0 if supplied else 1)
 
@@ -1329,7 +1345,7 @@ async def test_open_startup_validation_does_not_project_incomplete_whole_seal(
     monkeypatch.setattr(publication, "accepted_open_recovery_command", lambda _: command)
     monkeypatch.setattr(publication, "_current_cut", lambda *a, **kw: (facts, cut))
 
-    def incomplete_projection(*args) -> None:
+    def incomplete_projection(*args: object) -> None:
         raise AssertionError("startup must validate the exact call, not an incomplete whole seal")
 
     monkeypatch.setattr(publication, "_accepted_open_sealed_accounting", incomplete_projection)
@@ -1448,7 +1464,7 @@ async def test_open_writer_replays_requested_call_after_validating_all_marked_en
     def held() -> Iterator[None]:
         yield
 
-    async def actor(_):
+    async def actor(_: object) -> object:
         return object()
 
     runtime = SimpleNamespace(
@@ -1623,7 +1639,7 @@ def test_open_current_cut_reuses_history_but_keeps_original_historical_selection
             events.append("historical-selection")
             return facts
 
-    def duplicate(*args, **kwargs) -> None:
+    def duplicate(*args: object, **kwargs: object) -> None:
         pytest.fail("fresh held history was read again")
 
     def build(runtime, selected, **kwargs) -> None:
@@ -1839,7 +1855,7 @@ def test_open_builder_reuses_held_history_after_current_source_checks(
         accepted=SimpleNamespace(source=SimpleNamespace(target_run_lineage=())),
     )
 
-    def duplicate(*args, **kwargs) -> None:
+    def duplicate(*args: object, **kwargs: object) -> None:
         pytest.fail("builder read an already authenticated history again")
 
     monkeypatch.setattr(builder, "CommonCliExecutionRuntime", SimpleNamespace)

@@ -81,11 +81,11 @@ SCHEMA_V2: Literal["chiplog.execution.native-one-call-recovery-profile.v2"] = (
 PROFILE_OPERATION_V2 = "agent_loop.native-one-call-recovery-profile.v2"
 
 
-class NativeOneCallRecoveryProfileV2(RecoveryDTO):
-    """Immutable closed interpretation for cancellation and accepted-call recovery."""
+class _NativeOneCallRecoveryProfileFields(RecoveryDTO):
+    """Shared wire fields; public versions supply their exact discriminants."""
 
-    schema_id: Literal["chiplog.execution.native-one-call-recovery-profile.v2"] = SCHEMA_V2
-    kind: Literal["NATIVE_ONE_CALL_RECOVERY_PROFILE_V2"] = "NATIVE_ONE_CALL_RECOVERY_PROFILE_V2"
+    schema_id: str
+    kind: str
     registry: RecoveryFrontierRegistry
     call_branches: tuple[Literal["CANCELLED_BEFORE_ACCEPT", "CONSEQUENTIAL_ACCEPTED_RECOVERY"], ...]
     dispatch_outcomes: tuple[
@@ -119,13 +119,22 @@ class NativeOneCallRecoveryProfileV2(RecoveryDTO):
     absence_proof: Literal["COMPLETE_DECODED_SELECTED_PHYSICAL_OCCURRENCES_V1"] = (
         "COMPLETE_DECODED_SELECTED_PHYSICAL_OCCURRENCES_V1"
     )
-    causal_change_set: Literal["RUN_LINEAGE_CALL_ACCEPTANCE_AND_DISPATCH_V2"] = (
-        "RUN_LINEAGE_CALL_ACCEPTANCE_AND_DISPATCH_V2"
-    )
+    causal_change_set: str
     evidence_relevance: Literal["EXACT_AUTHENTICATED_ORIGIN_TOKEN_CUSTODY_IS_CONTEXT_V1"] = (
         "EXACT_AUTHENTICATED_ORIGIN_TOKEN_CUSTODY_IS_CONTEXT_V1"
     )
     causal_transitions: tuple[str, ...]
+    fingerprint_domain: str
+
+
+class NativeOneCallRecoveryProfileV2(_NativeOneCallRecoveryProfileFields):
+    """Immutable closed interpretation for cancellation and accepted-call recovery."""
+
+    schema_id: Literal["chiplog.execution.native-one-call-recovery-profile.v2"] = SCHEMA_V2
+    kind: Literal["NATIVE_ONE_CALL_RECOVERY_PROFILE_V2"] = "NATIVE_ONE_CALL_RECOVERY_PROFILE_V2"
+    causal_change_set: Literal["RUN_LINEAGE_CALL_ACCEPTANCE_AND_DISPATCH_V2"] = (
+        "RUN_LINEAGE_CALL_ACCEPTANCE_AND_DISPATCH_V2"
+    )
     fingerprint_domain: Literal["chiplog.execution.native-one-call-recovery.v2"] = (
         "chiplog.execution.native-one-call-recovery.v2"
     )
@@ -179,7 +188,7 @@ SCHEMA_V3: Literal["chiplog.execution.native-one-call-recovery-profile.v3"] = (
 PROFILE_OPERATION_V3 = "agent_loop.native-one-call-recovery-profile.v3"
 
 
-class NativeOneCallRecoveryProfileV3(NativeOneCallRecoveryProfileV2):
+class NativeOneCallRecoveryProfileV3(_NativeOneCallRecoveryProfileFields):
     """Immutable accepted-recovery causal interpretation; V1/V2 remain unchanged."""
 
     schema_id: Literal["chiplog.execution.native-one-call-recovery-profile.v3"] = SCHEMA_V3
@@ -229,7 +238,7 @@ SCHEMA_V4: Literal["chiplog.execution.native-one-call-recovery-profile.v4"] = (
 PROFILE_OPERATION_V4 = "agent_loop.native-one-call-recovery-profile.v4"
 
 
-class NativeOneCallRecoveryProfileV4(NativeOneCallRecoveryProfileV3):
+class NativeOneCallRecoveryProfileV4(_NativeOneCallRecoveryProfileFields):
     """New interpretation adding the authenticated same-Run suspension edge."""
 
     schema_id: Literal["chiplog.execution.native-one-call-recovery-profile.v4"] = SCHEMA_V4
@@ -268,7 +277,7 @@ SCHEMA_V5: Literal["chiplog.execution.native-one-call-recovery-profile.v5"] = (
 PROFILE_OPERATION_V5 = "agent_loop.native-one-call-recovery-profile.v5"
 
 
-class NativeOneCallRecoveryProfileV5(NativeOneCallRecoveryProfileV4):
+class NativeOneCallRecoveryProfileV5(_NativeOneCallRecoveryProfileFields):
     """Immutable interpretation for obligation-preserving suspension and resume."""
 
     schema_id: Literal["chiplog.execution.native-one-call-recovery-profile.v5"] = SCHEMA_V5

@@ -968,23 +968,27 @@ def test_completed_pending_lifecycle_requires_exact_final_batch_and_current_anch
         resulting=actual,
     )
     gate = AuthorityGate(database)
-    runtime = SimpleNamespace(
-        _tenant_id="tenant",
-        _database=database,
-        _database_identity=("database", 1, 2),
-        _publication=lambda _: command,
-        _authority_gate=lambda: gate,
-        _pending=lambda: (entry,),
-        _pending_owners=lambda: (),
-        _pending_gate_publications=lambda: (),
-        _commitment_journal=SimpleNamespace(load=lambda _: anchored),
-        _check_database_identity=lambda: None,
-    )
+    runtime = create_autospec(R14PlanningRuntime, instance=True)
+    runtime._tenant_id = "tenant"
+    runtime._database = database
+    runtime._database_identity = ("database", 1, 2)
+    runtime._publication.return_value = command
+    runtime._authority_gate.return_value = gate
+    runtime._pending.return_value = (entry,)
+    runtime._pending_owners.return_value = ()
+    runtime._pending_gate_publications.return_value = ()
+    runtime._commitment_journal = SimpleNamespace(load=lambda _: anchored)
+    runtime._check_database_identity.return_value = None
     selected = () if damage == "unselected" else ((command, entry),)
     with gate.hold(), read_connection(database) as connection:
-        kwargs = dict(pending_publication=entry, selected=selected, frontier=2)
         assert suffix.authenticate_native_open_pending_lifecycle_held(
-            runtime, connection, actual, anchored, **kwargs
+            runtime,
+            connection,
+            actual,
+            anchored,
+            pending_publication=entry,
+            selected=selected,
+            frontier=2,
         ) is (damage in (None, "anchor-advanced"))
     if (
         family in ("suspension", "accepted-open-accounting", "accepted-open-recovery")

@@ -8,7 +8,7 @@
 - [Архив стримов на YouTube](https://www.youtube.com/@udthunderbird)
 ## Локальный запуск
 
-Диалог через Codex OAuth (без установленного Codex CLI):
+Авторизация модельного транспорта через Codex OAuth:
 
 Нужен запущенный PostgreSQL. Задайте операторское подключение к одному инстансу;
 его роль должна уметь создавать базы. Для каждого пользователя приложение
@@ -24,9 +24,6 @@ export CHIPLOG_POSTGRES_DSN='host=localhost dbname=postgres'
 ```sh
 uv run chiplog auth login
 uv run chiplog auth status
-uv run chiplog chat
-# Один запрос:
-uv run chiplog chat --message 'Помоги продумать план на неделю'
 uv run chiplog auth logout
 ```
 
@@ -34,17 +31,8 @@ uv run chiplog auth logout
 с правами `0600`. Каталог задаётся через `CHIPLOG_HOME`. Личная сессия Codex
 не импортируется. Refresh выполняется перед запросом при истечении токена.
 По умолчанию используется `gpt-5.6-terra`, effort `low`; их можно изменить
-через `chat --model ... --effort ...`. Доступность модели зависит от аккаунта;
+через `native-chat --model ... --effort ...`. Доступность модели зависит от аккаунта;
 автоматической подмены модели нет.
-
-`chat` запускает существующий цикл Chiplog с прямым Codex Responses адаптером.
-Контекст текущего диалога отправляется в OpenAI. `/exit` завершает сеанс.
-История внутри сеанса включается в следующие сообщения; новая команда `chat`
-начинает новый диалог. Run/Turn и принятые ответы сохраняются в PostgreSQL-базе
-пользователя; refresh OAuth сохраняет ту же базу. После обрыва запроса попытка
-не повторяется автоматически.
-Этот вход поддерживает разговор и предложения; применение планов, Calendar и
-Telegram через него пока не подключены. OAuth не разрешает старые операции R8.
 
 Транспорт использует backend Codex, по примеру локального проекта `operator`
 (`providers/codex.py`) и `oauth-cli-kit==0.1.3`. Это не публичный Responses API
@@ -63,25 +51,10 @@ uv run chiplog show --help
 CLI использует PostgreSQL и deployment gate: успешный `bootstrap` сам по себе не разрешает `create`.
 Без соответствующего deployment entitlement операция возвращает `HOLD`.
 
-Существующая локальная SQLite-история диалога требует явного переноса. Остановите
-старые writer-процессы и выполните команду из сообщения `chat`, например:
-
-```sh
-uv run chiplog migrate-sqlite-chat --tenant 'cli:ACCOUNT_IDENTITY' --source '/path/to/chat-ACCOUNT_IDENTITY.sqlite3'
-```
-
-Перенос сохраняет исходные record bytes, идентификаторы и batch sequence в пустой
-PostgreSQL target одной транзакцией. SQLite-источник остаётся на месте и открывается
-только для чтения. Повтор того же импорта возвращает `REPLAY`. Неперенесённая
-история не подменяется пустым диалогом. Команда принимает только прежний local-chat
-формат: planning/R14 authority bundles и их sidecars требуют отдельного пути
-миграции и целиком отклоняются.
-
 ## Native CLI
 
 `native-chat` использует аутентифицированный durable inbox, общий native driver
-и доставку в приватный inbox текущего UID. Это отдельный вход; `chat` выше
-остаётся legacy-диалогом. OAuth разрешает обращение к модели, но не заменяет
+и доставку в приватный inbox текущего UID. OAuth разрешает обращение к модели, но не заменяет
 tenant/principal/credential/session и не выдаёт deployment entitlement.
 
 Для нового пользователя сначала выполните `bootstrap` с нужной идентичностью.
@@ -141,7 +114,7 @@ sh .harness/scripts/test.sh
 Focused PostgreSQL integration запускается на отдельном тестовом инстансе:
 
 ```sh
-CHIPLOG_TEST_POSTGRES_DSN='host=localhost dbname=postgres' uv run pytest -q tests/platform/test_postgres.py tests/composition/test_postgres_execution.py tests/platform/test_sqlite_chat_import.py
+CHIPLOG_TEST_POSTGRES_DSN='host=localhost dbname=postgres' uv run pytest -q tests/platform/test_postgres.py tests/composition/test_postgres_execution.py
 ```
 
 Fixture создаёт уникальные базы и удаляет только их. Без этой переменной

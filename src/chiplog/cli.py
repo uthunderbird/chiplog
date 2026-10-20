@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-from pathlib import Path
 
 from chiplog.capabilities.planning import CreateIntentionLine
 from chiplog.composition.postgres_planning import open_postgres_planning_runtime
@@ -111,20 +110,11 @@ def main() -> None:
     create.add_argument("--authority-act", required=True)
     show = sub.add_parser("show")
     _identity_arguments(show)
-    migrate = sub.add_parser(
-        "migrate-sqlite-chat", help="Import an old local dialogue without changing its source"
-    )
-    migrate.add_argument("--tenant", required=True)
-    migrate.add_argument("--source", required=True, type=Path)
     args = parser.parse_args()
     if args.action == "native-chat":
         run_native_command(args, _operator_secret())
-    elif args.action in {"auth", "chat"}:
+    elif args.action == "auth":
         run_command(args)
-    elif args.action == "migrate-sqlite-chat":
-        from chiplog.composition.postgres_import import import_local_chat
-
-        print(import_local_chat(args.source, args.tenant))
     elif args.action == "bootstrap":
         asyncio.run(_bootstrap(args))
     elif args.action == "create":
