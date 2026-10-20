@@ -16,7 +16,7 @@ import threading
 from asyncio import to_thread
 from base64 import b64decode, b64encode
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from types import TracebackType
@@ -404,54 +404,7 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
             "scheduler.prepare_rollover",
         ):
             return "chiplog.capabilities.agent_loop._native_one_call_accounting_v2_process"
-        from chiplog.architecture.r7_runtime import (
-            _V26_EXECUTION_OPERATIONS,
-            _V27_EXECUTION_OPERATIONS,
-            _V28_EXECUTION_OPERATIONS,
-            _V29_EXECUTION_OPERATIONS,
-            _V30_EXECUTION_OPERATIONS,
-            _V31_EXECUTION_OPERATIONS,
-            _V32_EXECUTION_OPERATIONS,
-            _V33_EXECUTION_OPERATIONS,
-            _V34_EXECUTION_OPERATIONS,
-            _V35_EXECUTION_OPERATIONS,
-            _V36_EXECUTION_OPERATIONS,
-            _V37_EXECUTION_OPERATIONS,
-            _V38_EXECUTION_OPERATIONS,
-            _V39_EXECUTION_OPERATIONS,
-            _V40_EXECUTION_OPERATIONS,
-        )
 
-        if identity.capability_ids == _V26_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._execution_recovery_process"
-        if identity.capability_ids == _V27_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._execution_next_turn_process"
-        if identity.capability_ids == _V28_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._execution_accepted_open_process"
-        if identity.capability_ids == _V29_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._execution_accepted_open_process"
-        if identity.capability_ids == _V30_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._execution_direct_terminal_process"
-        if identity.capability_ids == _V31_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._original_recovery_process"
-        if identity.capability_ids == _V32_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._original_recovery_process"
-        if identity.capability_ids == _V33_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._original_recovery_process"
-        if identity.capability_ids == _V34_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._original_recovery_process"
-        if identity.capability_ids == _V35_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._original_recovery_process"
-        if identity.capability_ids == _V36_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._original_recovery_process"
-        if identity.capability_ids == _V37_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._original_recovery_process"
-        if identity.capability_ids == _V38_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._original_recovery_process"
-        if identity.capability_ids == _V39_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._original_recovery_process"
-        if identity.capability_ids == _V40_EXECUTION_OPERATIONS:
-            return "chiplog.capabilities.agent_loop._original_recovery_process"
         raise OwnerProcessFailure("unknown agent-loop capability partition")
     if identity.owner_id == "projections" and identity.capability_ids == (
         "projections.prepare_conversation_completion",
@@ -485,102 +438,6 @@ def _owner_module(identity: OwnerProcessIdentity) -> str:
 
 def _owner_module_closure(identity: OwnerProcessIdentity) -> tuple[str, ...]:
     module = _owner_module(identity)
-    if module == "chiplog.capabilities.agent_loop._original_recovery_process":
-        from chiplog.architecture.r7_runtime import _V30_EXECUTION_OPERATIONS
-
-        return tuple(
-            sorted(
-                name
-                for name in (
-                    *_owner_module_closure(
-                        replace(identity, capability_ids=_V30_EXECUTION_OPERATIONS)
-                    ),
-                    module,
-                )
-                if name.rsplit(".", 1)[-1].startswith("_")
-                and name.rsplit(".", 1)[-1].endswith("_process")
-            )
-        )
-    if module == "chiplog.capabilities.agent_loop._execution_direct_terminal_process":
-        from chiplog.architecture.r7_runtime import _V29_EXECUTION_OPERATIONS
-
-        return tuple(
-            sorted(
-                name
-                for name in (
-                    *_owner_module_closure(
-                        replace(identity, capability_ids=_V29_EXECUTION_OPERATIONS)
-                    ),
-                    module,
-                )
-                if name.rsplit(".", 1)[-1].startswith("_")
-                and name.rsplit(".", 1)[-1].endswith("_process")
-            )
-        )
-    if module == "chiplog.capabilities.agent_loop._execution_accepted_open_process":
-        return tuple(
-            sorted(
-                (
-                    *_owner_module_closure(
-                        replace(
-                            identity,
-                            capability_ids=tuple(
-                                item
-                                for item in identity.capability_ids
-                                if item
-                                not in {
-                                    "agent_loop.prepare_accepted_open_accounting.v1",
-                                    "agent_loop.prepare_accepted_open_recovery.v1",
-                                    "agent_loop.prepare_accepted_direct_terminal.v1",
-                                }
-                            ),
-                        )
-                    ),
-                    module,
-                )
-            )
-        )
-    if module == "chiplog.capabilities.agent_loop._execution_next_turn_process":
-        return tuple(
-            sorted(
-                (
-                    *_owner_module_closure(
-                        replace(
-                            identity,
-                            capability_ids=tuple(
-                                item
-                                for item in identity.capability_ids
-                                if item != "agent_loop.prepare_next_execution_turn.v1"
-                            ),
-                        )
-                    ),
-                    module,
-                )
-            )
-        )
-    if module == "chiplog.capabilities.agent_loop._execution_recovery_process":
-        return tuple(
-            sorted(
-                (
-                    *_owner_module_closure(
-                        replace(
-                            identity,
-                            capability_ids=tuple(
-                                item
-                                for item in identity.capability_ids
-                                if item
-                                not in (
-                                    "agent_loop.prepare_execution_accounting.v1",
-                                    "agent_loop.prepare_execution_continuation.v1",
-                                    "agent_loop.prepare_execution_successor.v1",
-                                )
-                            ),
-                        )
-                    ),
-                    module,
-                )
-            )
-        )
     if module == "chiplog.capabilities.agent_loop._native_one_call_accounting_process":
         return (
             "chiplog.capabilities.agent_loop._call_process",
