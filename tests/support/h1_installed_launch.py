@@ -3,19 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
-import stat
 from pathlib import Path
 
-from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
 from chiplog.composition.h1_launch_enrollment import (
     ExpectedH1Genesis,
     InstalledH1Slot,
-    _provision_h1_enrollment,
-    _provision_h1_evidence_mount,
-    _provision_h1_recovery_mount,
 )
 from chiplog.composition.h1_registration_custody import H1RegistrationCustodyV1
-from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform.r7_trust_durability import TrustDurabilityObservation
 
 DEPLOYMENT = "installed-deployment"
@@ -81,37 +75,3 @@ def active_registration_custody(expected: ExpectedH1Genesis) -> H1RegistrationCu
             ],
         }
     )
-
-
-async def prepare_installed_slot(
-    slot: InstalledH1Slot, expected: ExpectedH1Genesis, tmp_path: Path
-) -> None:
-    # installed_slot also serves raw launch-negative tests. Its empty file is
-    # a placeholder, not an initialized authority bundle: let the real
-    # initializer create that bundle for positive installed-runtime tests.
-    placeholder = slot.database_path.lstat()
-    assert stat.S_ISREG(placeholder.st_mode) and placeholder.st_size == 0
-    assert not any(
-        path.name.startswith((slot.database_path.name + ".", slot.database_path.name + "-"))
-        for path in slot.database_path.parent.iterdir()
-    )
-    slot.database_path.unlink()
-    resources = HermeticDispatchResources(
-        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "bootstrap-custody"
-    )
-    async with open_common_cli_execution_runtime(
-        slot.database_path, resources=resources
-    ) as runtime:
-        observed = runtime._trust.verify()
-        assert observed is not None and observed.phase == "ACTIVE"
-        assert (observed.tenant_id, observed.database_instance_id, observed.genesis_head) == (
-            TENANT,
-            DATABASE,
-            expected.digest,
-        )
-    slot.database_path.chmod(0o600)
-    slot._trust = ActiveTrust(expected.digest)
-    registry = active_registration_custody(expected)
-    _provision_h1_enrollment(slot, expected, registry)
-    _provision_h1_evidence_mount(slot, expected)
-    _provision_h1_recovery_mount(slot, expected)
