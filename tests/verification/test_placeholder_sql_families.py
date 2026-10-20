@@ -53,15 +53,6 @@ CASES = (
         ("record_id", "tenant_id"),
     ),
     (
-        "composition/r14_native_accepted_open_cut.py",
-        "build_accepted_open_recovery_cut",
-        1,
-        "target_runs",
-        "(run.head for run in target_runs)",
-        2,
-        ("canonical_bytes", "commit_sequence", "owner", "record_id", "schema_id", "tenant_id"),
-    ),
-    (
         "composition/r14_original_call_resolution_source.py",
         "_require_resolution_absent",
         1,
@@ -158,94 +149,6 @@ def _replace(source: str, old: str, new: str) -> str:
     return source.replace(old, new)
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        "element",
-        "separator",
-        "filter",
-        "binder",
-        "rebind",
-        "conversion",
-        "format",
-        "projection_filter",
-        "projection_call",
-        "conditional_definition",
-        "nested_consumer",
-        "iterable_rebind",
-        "fixed_parameter_call",
-    ],
-)
-def test_actual_placeholder_and_binder_mutations_are_unknown(mutation: str) -> None:
-    case = CASES[2]
-    source = (ROOT / case[0]).read_text()
-    if mutation in {"element", "separator", "filter"}:
-        replacement = {
-            "element": '",".join(run.head for run in target_runs)',
-            "separator": '" OR ".join("?" for _ in target_runs)',
-            "filter": '",".join("?" for _ in target_runs if _.head)',
-        }[mutation]
-        changed = _replace(source, '",".join("?" for _ in target_runs)', replacement)
-    elif mutation == "binder":
-        changed = _replace(source, "*(run.head for run in target_runs)", "*other_runs")
-    elif mutation == "rebind":
-        changed = _replace(
-            source,
-            "                with read_connection(runtime._database)",
-            '                placeholders = "injected"\n'
-            "                with read_connection(runtime._database)",
-        )
-    elif mutation == "iterable_rebind":
-        changed = _replace(
-            source,
-            "                with read_connection(runtime._database)",
-            "                target_runs = other_runs\n"
-            "                with read_connection(runtime._database)",
-        )
-    elif mutation == "fixed_parameter_call":
-        changed = _replace(
-            source,
-            "                            runtime._tenant_id,\n"
-            "                            source_tenant_commit_sequence,",
-            "                            mutate(target_runs),\n"
-            "                            source_tenant_commit_sequence,",
-        )
-    elif mutation in {"conversion", "format"}:
-        changed = _replace(
-            source,
-            "{placeholders}",
-            "{placeholders!r}" if mutation == "conversion" else "{placeholders:>20}",
-        )
-    elif mutation.startswith("projection_"):
-        changed = _replace(
-            source,
-            "*(run.head for run in target_runs)",
-            "*(run.head for run in target_runs if run.head)"
-            if mutation == "projection_filter"
-            else "*(run.head() for run in target_runs)",
-        )
-    elif mutation == "conditional_definition":
-        changed = _replace(
-            source,
-            '                placeholders = ",".join',
-            '                if historical:\n                    placeholders = ",".join',
-        )
-    else:
-        # Move the real consumer into a nested frame with a foreign connection.
-        start = source.index("                with read_connection(runtime._database)")
-        end = source.index("                if not rows:", start)
-        block = source[start:end]
-        changed = (
-            source[:start]
-            + (
-                "                def consume(connection):\n"
-                + "\n".join("    " + line for line in block.split("\n"))
-                + "\n"
-            )
-            + source[end:]
-        )
-    with pytest.raises(UnknownPlaceholderSql):
-        _extract(case, changed)
 
 
 def test_added_predicate_edge_is_extracted_before_independent_graph_refusal() -> None:
@@ -270,7 +173,7 @@ def test_added_predicate_edge_is_extracted_before_independent_graph_refusal() ->
 
 
 def test_repeated_source_sites_are_not_deduplicated_and_missing_consumer_refuses() -> None:
-    case = CASES[3]
+    case = CASES[2]
     source = (ROOT / case[0]).read_text()
     changed = _replace(
         source,

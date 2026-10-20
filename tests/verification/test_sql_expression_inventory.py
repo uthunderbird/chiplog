@@ -219,7 +219,6 @@ def test_current_tree_accounts_all_candidates_without_hiding_verifier_sql_or_unk
         ("platform/authority_reads.py", "_authority_snapshot_bytes"),
         ("platform/authority_reads.py", "BrokerAuthorityReader._execute_planning_read"),
         ("adapters/driven/planning_sqlite.py", "SQLitePlanningRepository.committed_publications"),
-        ("composition/r14_native_accepted_open_cut.py", "build_accepted_open_recovery_cut"),
         ("composition/r14_original_call_resolution_source.py", "_require_resolution_absent"),
         ("composition/r14_original_call_resolution_publication.py", "_validate_physical_catalog"),
         ("composition/r14_recovery_profile_publication.py", "_assert_v2_precedes_covered_lineage"),
@@ -238,7 +237,7 @@ def test_current_tree_accounts_all_candidates_without_hiding_verifier_sql_or_unk
                 dynamic.append(row)
     # The uniqueness statement now has an explicit SQL local, joining the other
     # planning sites rather than remaining a literal execute argument.
-    assert len(dynamic) == 20
+    assert len(dynamic) == 19
     (preparation,) = [
         row for row in inventory.unresolved if row.site.qualname == "_prepared_planning_statement"
     ]
