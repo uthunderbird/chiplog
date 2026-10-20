@@ -99,12 +99,6 @@ EXPECTED = (
     ),
     ("r14_runtime.py", "open_r14_runtime", "R14PlanningRuntime", "R14_FANOUT_PRODUCTION_MANIFEST"),
     (
-        "r15_scheduler_runtime.py",
-        "open_r15_runtime",
-        "R15SchedulerRuntime",
-        "R15_MANDATE_PRODUCTION_MANIFEST",
-    ),
-    (
         "r16_denial_publication.py",
         "open_r16_runtime",
         "R16PlanningRuntime",

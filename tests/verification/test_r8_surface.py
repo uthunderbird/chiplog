@@ -165,11 +165,12 @@ def test_offline_gate_rejects_unregistered_dashboard_and_transport_imports(
         verify_offline_import_boundary(tmp_path)
 
 
-def test_offline_gate_accepts_only_registered_scheduler_version_query(tmp_path: Path) -> None:
+def test_offline_gate_rejects_metadata_version_query(tmp_path: Path) -> None:
     target = tmp_path / "src/chiplog/composition/scheduler_source_registry.py"
     target.parent.mkdir(parents=True)
     target.write_text("from importlib.metadata import version\n")
-    verify_offline_import_boundary(tmp_path)
+    with pytest.raises(R8SurfaceViolation):
+        verify_offline_import_boundary(tmp_path)
 
 
 @pytest.mark.parametrize(
