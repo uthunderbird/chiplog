@@ -105,18 +105,6 @@ EXPECTED = (
         "R16_PRODUCTION_MANIFEST",
     ),
     (
-        "r16_dispatch_runtime.py",
-        "open_dispatch_runtime",
-        "R16DispatchRuntime",
-        "R16_DISPATCH_PRODUCTION_MANIFEST",
-    ),
-    (
-        "r16_dispatch_runtime.py",
-        "open_execution_dispatch_runtime",
-        "ExecutionDispatchRuntime",
-        "R14_R16_CALL_PRODUCTION_MANIFEST",
-    ),
-    (
         "r17_ingress_runtime.py",
         "open_r17_runtime",
         "R17IngressRuntime",
@@ -211,20 +199,27 @@ def test_actual_all_src_direct_mounts_match_independent_expected_rows_and_stay_o
 def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change) -> None:
     sources = _sources()
     baseline = inspect_assembly_forwarding(sources)
-    module = PREFIX + "r16_dispatch_runtime.py"
+    module = PREFIX + "r8.py"
     if change == "manifest":
         changed = _mutate(
             sources,
             module,
-            "manifest=R16_DISPATCH_PRODUCTION_MANIFEST,",
-            "manifest=R14_R16_CALL_PRODUCTION_MANIFEST,",
+            "manifest=R8_PRODUCTION_MANIFEST,",
+            "manifest=R7_PRODUCTION_MANIFEST,",
+        )
+        changed = _mutate(
+            changed,
+            module,
+            "from chiplog.architecture.r7_runtime import R8_PRODUCTION_MANIFEST",
+            "from chiplog.architecture.r7_runtime import "
+            "R8_PRODUCTION_MANIFEST, R7_PRODUCTION_MANIFEST",
         )
     elif change == "runtime":
         changed = _mutate(
             sources,
             module,
-            "runtime_type=R16DispatchRuntime,",
-            "runtime_type=ExecutionDispatchRuntime,",
+            "runtime_type=R8PlanningRuntime,",
+            "runtime_type=R7PlanningRuntime,",
         )
     elif change == "missing":
         changed = _mutate(
@@ -263,11 +258,14 @@ def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change) ->
     if change == "duplicate":
         assert [row.ordinal for row in observed.edges if row.caller == "open_r8_runtime"] == [1, 2]
     if change in {"runtime", "manifest"}:
-        row = next(row for row in observed.edges if row.caller == "open_dispatch_runtime")
+        row = next(row for row in observed.edges if row.caller == "open_r8_runtime")
         assert (row.runtime.name if change == "runtime" else row.manifest.name) == (
-            "ExecutionDispatchRuntime"
+            "R7PlanningRuntime" if change == "runtime" else "R7_PRODUCTION_MANIFEST"
+        )
+        assert (row.runtime.origin if change == "runtime" else row.manifest.origin) == (
+            "chiplog.composition.r7_planning:R7PlanningRuntime"
             if change == "runtime"
-            else "R14_R16_CALL_PRODUCTION_MANIFEST"
+            else "chiplog.architecture.r7_runtime:R7_PRODUCTION_MANIFEST"
         )
     with pytest.raises(UnregisteredAssemblyMount):
         verify_assembly_forwarding(observed.edges, baseline.edges)
