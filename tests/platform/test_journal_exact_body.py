@@ -1,9 +1,9 @@
 """Exact-body decode reuse must still observe every durable corruption."""
 
-import json
 import os
 from pathlib import Path
 
+import orjson
 import pytest
 
 from chiplog.adapters.driven.deployment_trust._journal import IndependentTenantDecisionJournal
@@ -60,7 +60,7 @@ def test_exact_body_reuses_decode_but_append_reads_new_records(
     journal = IndependentTenantDecisionJournal(path)
     first = journal.append(b"first", None)
     expected = journal.entries()
-    original = json.loads
+    original = orjson.loads
     calls = 0
 
     def counted(raw: bytes) -> object:
@@ -68,7 +68,7 @@ def test_exact_body_reuses_decode_but_append_reads_new_records(
         calls += 1
         return original(raw)
 
-    monkeypatch.setattr(json, "loads", counted)
+    monkeypatch.setattr(orjson, "loads", counted)
     assert journal.entries() == expected
     assert calls == 0
     second = journal.append(b"second", first)

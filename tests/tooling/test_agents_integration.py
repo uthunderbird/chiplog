@@ -328,6 +328,15 @@ def test_new_retro_supports_explicit_collision_safe_ids(tmp_path: Path) -> None:
     retro.mkdir(parents=True)
     shutil.copy2(ROOT / ".harness/scripts/new-retro.sh", scripts / "new-retro.sh")
     shutil.copy2(ROOT / ".harness/retro/TEMPLATE.md", retro / "TEMPLATE.md")
+    (scripts / "retro-inputs.sh").write_text(
+        "#!/bin/sh\n"
+        "printf '%s\n' "
+        "'1. КОПИЛКА  .harness/observations.md' "
+        "'2. ДИФФЫ  вся история' "
+        "'3. ХВОСТЫ  .harness/handoff.md' "
+        "'4. КЕЙСЫ  .harness/reproducers/*/case.md' "
+        "'5. ИНВАРИАНТЫ И ДОЛГИ' 'RETRO_INPUTS_COMPLETE=1'\n"
+    )
 
     base = subprocess.run(
         ["sh", str(scripts / "new-retro.sh")], capture_output=True, text=True, check=True
@@ -336,6 +345,7 @@ def test_new_retro_supports_explicit_collision_safe_ids(tmp_path: Path) -> None:
     assert base_match is not None
     base_path = Path(base_match.group(1))
     base_bytes = base_path.read_bytes()
+    assert b"RETRO_INPUTS_COMPLETE=1" in base_bytes
     frontmatter = base_path.read_text().split("---", 2)[1]
     assert re.search(r"^trigger: cadence$", frontmatter, re.M)
     for field in ("outcome", "rule", "reason"):
