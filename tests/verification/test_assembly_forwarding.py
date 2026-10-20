@@ -56,39 +56,9 @@ EXPECTED = (
     ),
     (
         "common_cli_execution_runtime.py",
-        "open_installed_h1_native_one_call_accounting_v23_runtime",
-        None,
-        "R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST",
-    ),
-    (
-        "common_cli_execution_runtime.py",
-        "open_installed_h1_native_one_call_accounting_v24_runtime",
-        None,
-        "R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST",
-    ),
-    (
-        "common_cli_execution_runtime.py",
         "open_installed_h1_runtime",
         None,
         "R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST",
-    ),
-    (
-        "common_cli_execution_runtime.py",
-        "open_installed_h1_scoped_runtime",
-        None,
-        "R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST",
-    ),
-    (
-        "common_cli_execution_runtime.py",
-        "open_installed_h1_scoped_v21_runtime",
-        None,
-        "R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST",
-    ),
-    (
-        "common_cli_execution_runtime.py",
-        "open_installed_h1_scoped_v22_runtime",
-        None,
-        "R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST",
     ),
     ("r13_runtime.py", "open_r13_runtime", "R13PlanningRuntime", "R13_PRODUCTION_MANIFEST"),
     (

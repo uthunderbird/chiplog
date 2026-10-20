@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,17 +13,9 @@ from chiplog.capabilities.effects.scoped_intent_record_contracts import make_sco
 from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV3
 from chiplog.composition.h1_historical_selected_sources import H1HistoricalSelection
 from chiplog.composition.r16_effects import MaterializedEffectsCut
-from chiplog.composition.scoped_delivery_selected_sources import ScopedDeliverySelectedSources
 from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2, OwnerRecordBytes
 from chiplog.platform.owner_decision_journal import OwnerJournalSnapshot
 from chiplog.platform.owner_publications import PreparedOwnerPublication, SelectedOwnerDecision
-from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
-from tests.support.h1_scoped_first_b import scoped_resources, write_scoped_pins
-from tests.support.h1_v3_recovery import (
-    _issue_reconstructed_grant,
-    _recover_b_prefix,
-    _selected_scoped_root,
-)
 from tests.support.scoped_intent_records import delivery_publication_fixture
 
 
@@ -189,72 +179,3 @@ async def test_send_like_selected_member_holds_instead_of_proving_absence(
 
     with pytest.raises(subject.ScopedDeliverySelectedSourcesError, match="first-SEND material"):
         subject.ScopedDeliverySelectedSources(Runtime()).read(intent_id=fixture.intent.intent_id)
-
-
-@pytest.mark.asyncio
-async def test_mounted_selected_v3_reader_binds_journal_sql_and_reopens(tmp_path: Path) -> None:
-    """One mounted fixture proves the reader has no caller-supplied historical cut."""
-    from chiplog.composition.common_cli_execution_runtime import open_installed_h1_scoped_runtime
-    from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV3
-    from chiplog.composition.h1_historical_selected_sources import bind_selected_h1_completion
-    from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
-
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    write_scoped_pins(slot.database_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_scoped_runtime(
-            launch, resources=scoped_resources(tmp_path)
-        ) as runtime:
-            request, locator, state = await _selected_scoped_root(runtime)
-            state = await _recover_b_prefix(runtime, request, locator, state)
-            await _issue_reconstructed_grant(runtime, request, locator)
-            completed = await runtime._h1_postseal_recovery_coordinator.resume_selected(
-                request.identity, request.original_driver_command_fingerprint(), locator
-            )
-            assert len(completed.inputs) == len(completed.results) == 4
-            assert (
-                await runtime.finalize_execution(
-                    request.identity, request.original_driver_command_fingerprint()
-                )
-            ).disposition == "COMMITTED"
-
-            decision = next(
-                item
-                for item in runtime._owner_decisions().snapshot().decisions
-                if type(item.prepared.request) is CompleteDeliveryBatchV2
-            )
-            batch = decision.prepared.request
-            historical = bind_selected_h1_completion(batch, runtime)
-            assert type(historical.issuance) is H1CompletionIssuanceV3
-            expected_member = make_scoped_intent_member(
-                historical.issuance.effects_result.intent_result.intent
-            )
-            result = ScopedDeliverySelectedSources(runtime).read(
-                intent_id=expected_member.record_id
-            )
-            assert result.selected_h1 == historical
-            assert result.intent.canonical_record_bytes == expected_member.canonical_record_bytes
-            assert result.first_send.kind == "FIRST_SEND_ABSENT"
-
-            with sqlite3.connect(runtime._database) as connection:
-                physical = connection.execute(
-                    "SELECT owner, schema_id, canonical_bytes, commit_sequence FROM main.records "
-                    "WHERE tenant_id = ? AND record_id = ?",
-                    (runtime._tenant_id, expected_member.record_id),
-                ).fetchone()
-            assert physical == (
-                "effects",
-                expected_member.schema_id,
-                expected_member.canonical_record_bytes,
-                decision.tenant_commit_sequence,
-            )
-
-    with _open_installed_h1_launch(slot) as reopened_launch:
-        async with open_installed_h1_scoped_runtime(
-            reopened_launch, resources=scoped_resources(tmp_path)
-        ) as reopened:
-            replay = ScopedDeliverySelectedSources(reopened).read(
-                intent_id=expected_member.record_id
-            )
-            assert replay.intent.canonical_record_bytes == expected_member.canonical_record_bytes

@@ -35,31 +35,18 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
     ReadCurrentHermeticExecutionScopeV1,
     SelectedHermeticResourceObservationRefV1,
 )
-from chiplog.composition.common_cli_execution_runtime import open_installed_h1_scoped_runtime
 from chiplog.composition.h1_j7_current_scope_exchange import H1J7CurrentScopeExchangeV1
 from chiplog.composition.h1_j7_historical_scope import verify_h1_j7_historical_scope
-from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
-from chiplog.composition.h1_scoped_delivery_authority import H1ScopedDeliveryAuthorityReader
 from chiplog.domain_primitives import PrincipalId, TenantId
 from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
 from chiplog.platform.r7_trust import TrustOwnerCall
 from chiplog.platform.r7_trust_durability import BrokerTrustDurability
-from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
-from tests.support.h1_scoped_first_b import (
-    issue_real_h1_scoped_authority,
-    scoped_resources,
-    write_scoped_pins,
-)
 
 
 def _head(identity: str, body: bytes = b"source") -> ExactHead:
     digest = hashlib.sha256(body).hexdigest()
     return ExactHead(identity=identity, head=identity + "/" + digest, fingerprint=digest)
-
-
-def _live_call_forbidden(*_args: object, **_kwargs: object) -> None:
-    raise AssertionError("live scope authority called")
 
 
 def _mounted_current_scope_result_schema() -> str:
@@ -396,64 +383,3 @@ def test_historical_j7_verifier_rejects_wire_route_timestamp_record_and_lineage_
             verify_h1_j7_historical_scope(
                 exchange, scope, trust_reader=_Reader(), authority_gate=gate
             )
-
-
-@pytest.mark.asyncio
-async def test_reopened_mounted_j7_exchange_uses_no_live_scope_authority(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A retained J7 exchange remains historical after current resources change."""
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    write_scoped_pins(slot.database_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_scoped_runtime(
-            launch, resources=scoped_resources(tmp_path)
-        ) as runtime:
-            reader, capture = await issue_real_h1_scoped_authority(runtime)
-            retained_exchange = reader.export_current_scope_exchange(capture).canonical_bytes()
-            retained_scope = capture._record.projection.selected_scope.scope.canonical_bytes()
-
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_scoped_runtime(
-            launch, resources=scoped_resources(tmp_path)
-        ) as runtime:
-            exchange = H1J7CurrentScopeExchangeV1.model_validate_json(retained_exchange)
-            scope = HermeticOutputScopeV1.model_validate_json(retained_scope)
-            runtime._require_dispatch_resources().revoke()
-            monkeypatch.setattr(
-                H1ScopedDeliveryAuthorityReader,
-                "read",
-                _live_call_forbidden,
-            )
-            monkeypatch.setattr(
-                runtime._trust,
-                "capture_verified_observation",
-                _live_call_forbidden,
-            )
-            monkeypatch.setattr(
-                runtime,
-                "_read_current_hermetic_output_scope_with_wire",
-                _live_call_forbidden,
-            )
-            with pytest.raises(AssertionError, match="live scope authority called"):
-                await runtime._read_current_hermetic_output_scope_with_wire(exchange.request)
-
-            evidence = verify_h1_j7_historical_scope(
-                exchange,
-                scope,
-                trust_reader=runtime._trust,
-                authority_gate=runtime._authority_gate(),
-            )
-            assert evidence.scope == scope
-            with pytest.raises(ValueError):
-                verify_h1_j7_historical_scope(
-                    exchange.model_copy(
-                        update={
-                            "sent": exchange.sent.model_copy(update={"canonical_payload": b"{}"})
-                        }
-                    ),
-                    scope,
-                    trust_reader=runtime._trust,
-                    authority_gate=runtime._authority_gate(),
-                )

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
-import chiplog.composition.h1_scoped_delivery_authority as authority
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
 from chiplog.capabilities.deployment_trust import TrustReference
 from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts import (
@@ -18,9 +16,7 @@ from chiplog.capabilities.deployment_trust.hermetic_output_scope_contracts impor
     ReadCurrentHermeticExecutionScopeV1,
     SelectedHermeticResourceObservationRefV1,
 )
-from chiplog.composition.common_cli_execution_runtime import open_installed_h1_scoped_runtime
 from chiplog.composition.h1_j7_current_scope_exchange import H1J7CurrentScopeExchangeV1
-from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_scoped_delivery_authority import (
     H1ScopedDeliveryAuthorityCapture,
     H1ScopedDeliveryAuthorityReader,
@@ -28,12 +24,6 @@ from chiplog.composition.h1_scoped_delivery_authority import (
 )
 from chiplog.domain_primitives import PrincipalId, TenantId
 from chiplog.platform.broker import BrokerSession, CallBudget, PublicPortCall, PublicPortSuccess
-from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
-from tests.support.h1_scoped_first_b import (
-    issue_real_h1_scoped_authority,
-    scoped_resources,
-    write_scoped_pins,
-)
 
 
 def _head(identity: str) -> ExactHead:
@@ -206,100 +196,3 @@ def test_export_rejects_a_non_successful_retained_response(monkeypatch: pytest.M
 
     with pytest.raises(H1ScopedDeliveryAuthorityViolation, match="not successful"):
         reader.export_current_scope_exchange(capture)
-
-
-@pytest.mark.asyncio
-async def test_mounted_ordinary_capture_exports_the_exact_retained_scope_wire(
-    tmp_path: Path,
-) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    write_scoped_pins(slot.database_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_scoped_runtime(
-            launch, resources=scoped_resources(tmp_path)
-        ) as runtime:
-            reader, capture = await issue_real_h1_scoped_authority(runtime)
-            exported = reader.export_current_scope_exchange(capture)
-            record = capture._record
-            wire = record.fresh_scope_wire
-
-            assert exported.request == record.fresh_scope_request
-            assert exported.result == record.fresh_scope_result
-            assert exported.sent == wire.sent
-            assert exported.returned == wire.returned
-            assert (exported.sent_at_ns, exported.returned_at_ns) == (
-                wire.sent_at_ns,
-                wire.returned_at_ns,
-            )
-            assert reader.export_current_scope_exchange(capture).canonical_bytes() == (
-                exported.canonical_bytes()
-            )
-
-
-@pytest.mark.asyncio
-async def test_mounted_export_rechecks_current_resource_and_trust_sources(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    write_scoped_pins(slot.database_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_scoped_runtime(
-            launch, resources=scoped_resources(tmp_path)
-        ) as runtime:
-            reader, capture = await issue_real_h1_scoped_authority(runtime)
-            assert reader.export_current_scope_exchange(capture).request
-            runtime._require_dispatch_resources().revoke()
-            with pytest.raises(H1ScopedDeliveryAuthorityViolation):
-                reader.export_current_scope_exchange(capture)
-
-    trust_source_tmp_path = tmp_path / "trust-source-change"
-    trust_source_tmp_path.mkdir()
-    slot, expected = installed_slot(trust_source_tmp_path)
-    await prepare_installed_slot(slot, expected, trust_source_tmp_path)
-    write_scoped_pins(slot.database_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_scoped_runtime(
-            launch, resources=scoped_resources(trust_source_tmp_path)
-        ) as runtime:
-            reader, capture = await issue_real_h1_scoped_authority(runtime)
-            original = authority.H1ScopedDeliveryAuthorityReader._evidence
-
-            def changed_evidence(
-                issuer: authority.H1ScopedDeliveryAuthorityReader, grant: object, policy: object
-            ) -> object:
-                evidence = original(issuer, grant, policy)
-                rebuilt = evidence.model_dump(mode="python")
-                rebuilt["trust_observation"]["logical_snapshot_head"] = "advanced-trust-head"
-                return type(evidence).model_validate(rebuilt)
-
-            monkeypatch.setattr(
-                authority.H1ScopedDeliveryAuthorityReader, "_evidence", changed_evidence
-            )
-            with pytest.raises(
-                H1ScopedDeliveryAuthorityViolation, match="authority sources changed"
-            ):
-                reader.export_current_scope_exchange(capture)
-
-
-@pytest.mark.asyncio
-async def test_mounted_export_refreshes_to_a_new_current_scope_exchange(
-    tmp_path: Path,
-) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    write_scoped_pins(slot.database_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_scoped_runtime(
-            launch, resources=scoped_resources(tmp_path)
-        ) as runtime:
-            reader, capture = await issue_real_h1_scoped_authority(runtime)
-            original = reader.export_current_scope_exchange(capture)
-            refreshed = await reader.refresh(capture)
-            renewed = reader.export_current_scope_exchange(refreshed)
-
-            assert refreshed is not capture
-            assert renewed.request == refreshed._record.fresh_scope_request
-            assert renewed.returned.request_id == renewed.sent.request_id
-            assert renewed.canonical_bytes() != original.canonical_bytes()

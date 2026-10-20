@@ -51,8 +51,6 @@ from chiplog.adapters.driven.loop_hermetic import HermeticModel
 from chiplog.architecture.r7_runtime import (
     R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST,
-    R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
-    R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
     R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
@@ -3610,90 +3608,5 @@ async def open_installed_h1_runtime(
         resources=resources,
         responses=responses,
         manifest=R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST,
-    ) as runtime:
-        yield runtime
-
-
-@asynccontextmanager
-async def open_installed_h1_scoped_runtime(
-    launch: object,
-    *,
-    resources: HermeticDispatchResources,
-    responses: tuple[bytes, ...] = (),
-) -> AsyncIterator[CommonCliExecutionRuntime]:
-    """Open the separately registered v20 scoped-effects graph."""
-    async with _open_installed_h1_runtime(
-        launch,
-        resources=resources,
-        responses=responses,
-        manifest=R14_R17_H1_SCOPED_EFFECTS_J7_PRODUCTION_MANIFEST,
-    ) as runtime:
-        yield runtime
-
-
-@asynccontextmanager
-async def open_installed_h1_scoped_v21_runtime(
-    launch: object,
-    *,
-    resources: HermeticDispatchResources,
-    responses: tuple[bytes, ...] = (),
-) -> AsyncIterator[CommonCliExecutionRuntime]:
-    """Open the v21 scoped-dispatch graph while retaining v20 replay support."""
-    async with _open_installed_h1_runtime(
-        launch,
-        resources=resources,
-        responses=responses,
-        manifest=R14_R17_H1_SCOPED_EFFECTS_V3_J7_PRODUCTION_MANIFEST,
-    ) as runtime:
-        yield runtime
-
-
-@asynccontextmanager
-async def open_installed_h1_scoped_v22_runtime(
-    launch: object,
-    *,
-    resources: HermeticDispatchResources,
-    responses: tuple[bytes, ...] = (),
-) -> AsyncIterator[CommonCliExecutionRuntime]:
-    """Open the installed V2 producer profile; callers cannot select V2 by DTO."""
-    async with _open_installed_h1_runtime(
-        launch,
-        resources=resources,
-        responses=responses,
-        manifest=R14_R17_H1_SCOPED_EFFECTS_V2_J7_PRODUCTION_MANIFEST,
-    ) as runtime:
-        yield runtime
-
-
-@asynccontextmanager
-async def open_installed_h1_native_one_call_accounting_v23_runtime(
-    launch: object,
-    *,
-    resources: HermeticDispatchResources,
-    responses: tuple[bytes, ...] = (),
-) -> AsyncIterator[CommonCliExecutionRuntime]:
-    """Open V23 with only the bounded native cancellation accounting route added."""
-    async with _open_installed_h1_runtime(
-        launch,
-        resources=resources,
-        responses=responses,
-        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V23_PRODUCTION_MANIFEST,
-    ) as runtime:
-        yield runtime
-
-
-@asynccontextmanager
-async def open_installed_h1_native_one_call_accounting_v24_runtime(
-    launch: object,
-    *,
-    resources: HermeticDispatchResources,
-    responses: tuple[bytes, ...] = (),
-) -> AsyncIterator[CommonCliExecutionRuntime]:
-    """Open V24, retaining the V23 V1 owner route byte-for-byte."""
-    async with _open_installed_h1_runtime(
-        launch,
-        resources=resources,
-        responses=responses,
-        manifest=R14_R17_H1_NATIVE_ONE_CALL_ACCOUNTING_V24_PRODUCTION_MANIFEST,
     ) as runtime:
         yield runtime

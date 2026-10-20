@@ -3,34 +3,19 @@
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, NotRequired, TypedDict
 
 import pytest
 
-from chiplog.capabilities.effects.h1_scoped_preparation_contracts import (
-    H1ScopedDeliveryOwnerCallV1,
-    PreparedH1ScopedDeliveryV1,
-)
-from chiplog.composition.common_cli_execution_runtime import open_installed_h1_scoped_runtime
-from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_postseal_recovery import (
     H1PostSealRecoveryRecordV1,
     H1PostSealRecoveryRecordV2,
     H1PostSealRecoveryRootV1,
     H1PostSealRecoverySelectedRecord,
 )
-from chiplog.composition.h1_scoped_delivery_producer import H1ScopedDeliveryProducer
 from chiplog.composition.h1_v3_recovery_historical_source import (
     H1V3RecoveryHistoricalSource,
-    H1V3RecoveryHistoricalSourceError,
-)
-from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
-from tests.support.h1_scoped_first_b import (
-    issue_real_h1_scoped_authority,
-    scoped_resources,
-    write_scoped_pins,
 )
 
 
@@ -163,31 +148,3 @@ def test_historical_scope_comparison_ignores_fresh_current_scope_observations() 
     assert not H1V3RecoveryHistoricalSource._same_historical_selected_scope(
         refreshed, historical.__class__(**{**historical.__dict__, "scope": "other"})
     )
-
-
-@pytest.mark.asyncio
-async def test_effects_result_must_bind_the_exact_canonical_inner_request(tmp_path: Path) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    write_scoped_pins(slot.database_path)
-
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_scoped_runtime(
-            launch, resources=scoped_resources(tmp_path)
-        ) as runtime:
-            _, authority = await issue_real_h1_scoped_authority(runtime)
-            exchange = await H1ScopedDeliveryProducer(
-                runtime, runtime._h1_producer_inventory_reader
-            ).prepare(authority_capture=authority)
-
-    call = H1ScopedDeliveryOwnerCallV1.model_validate_json(exchange.sent.canonical_payload)
-    result = PreparedH1ScopedDeliveryV1.model_validate_json(exchange.returned.canonical_payload)
-    H1V3RecoveryHistoricalSource._require_effects_result(
-        call.request, result, exchange.returned.canonical_payload
-    )
-
-    altered = result.model_copy(update={"source_request_fingerprint": "0" * 64})
-    with pytest.raises(H1V3RecoveryHistoricalSourceError, match="result differs"):
-        H1V3RecoveryHistoricalSource._require_effects_result(
-            call.request, altered, altered.canonical_bytes()
-        )
