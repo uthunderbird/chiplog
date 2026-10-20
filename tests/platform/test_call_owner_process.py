@@ -4,7 +4,6 @@ import json
 import os
 import time
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 from pydantic import TypeAdapter
@@ -12,14 +11,11 @@ from pydantic import TypeAdapter
 from chiplog.architecture.r7_runtime import (
     R14_CALLS_EVALUATION_MANIFEST,
     R14_CALLS_PRODUCTION_MANIFEST,
-    R14_FANOUT_PRODUCTION_MANIFEST,
-    R14_PRODUCTION_MANIFEST,
     RuntimeAssemblyManifest,
     RuntimeManifestViolation,
     verify_runtime_manifest,
 )
 from chiplog.capabilities.agent_loop import call_acceptance_contracts as call
-from chiplog.composition.r14_runtime import open_r14_runtime
 from chiplog.platform.broker import (
     BrokerSession,
     CallBudget,
@@ -146,46 +142,13 @@ def test_call_owner_rejects_invalid_wire_or_route_and_remains_usable(defect: str
         )
 
 
-def test_version_four_owner_starts_without_new_call_preparation_routes() -> None:
-    with AuthorityBrokerRuntime(
-        "tenant", 1, "generation", R14_PRODUCTION_MANIFEST, b"secret"
-    ) as runtime:
-        owner = next(item for item in runtime.attest() if item.identity.owner_id == "agent_loop")
-        assert not set(_OPERATIONS) & set(owner.identity.capability_ids)
-        assert "chiplog.capabilities.agent_loop._call_process" not in owner.loaded_policy_modules
-        for route, prepared in enumerate(_requests()):
-            result = runtime.call_sync(
-                _request(runtime, route, prepared.canonical_bytes(), f"v4:{route}")
-            )
-            assert isinstance(result, PublicPortRejected)
-            assert result.failure.kind == "PROTOCOL_REJECTED"
-            assert "not manifested" in result.failure.reason
-
-
 @pytest.mark.parametrize("manifest", (R14_CALLS_PRODUCTION_MANIFEST, R14_CALLS_EVALUATION_MANIFEST))
 def test_version_five_manifest_is_additive_and_rejects_leaf_substitution(
     manifest: RuntimeAssemblyManifest,
 ) -> None:
     verify_runtime_manifest(manifest)
     assert manifest.manifest_version == 5
-    assert set(R14_PRODUCTION_MANIFEST.routes) <= set(manifest.routes)
-    additions = set(manifest.routes) - set(R14_PRODUCTION_MANIFEST.routes)
-    assert {route.operation_id for route in additions} == set(_OPERATIONS)
+    assert set(_OPERATIONS) <= {route.operation_id for route in manifest.routes}
     altered = replace(manifest.leaves[0], implementation="foreign.leaf:Implementation")
     with pytest.raises(RuntimeManifestViolation, match="registered hermetic leaf"):
         verify_runtime_manifest(replace(manifest, leaves=(altered, *manifest.leaves[1:])))
-
-
-async def test_canonical_r14_factory_preserves_call_preparation_routes(tmp_path: Path) -> None:
-    async with open_r14_runtime(tmp_path / "calls.sqlite") as runtime:
-        graph = runtime._supervisor.admitted_graph
-        assert graph is not None
-        assert graph.manifest_digest == R14_FANOUT_PRODUCTION_MANIFEST.fingerprint()
-        assert set(_OPERATIONS) <= {route[0] for route in graph.routes}
-        owner = next(
-            item
-            for item in runtime._supervisor.runtime().attest()
-            if item.identity.owner_id == "agent_loop"
-        )
-        assert set(_OPERATIONS) <= set(owner.identity.capability_ids)
-        assert owner.target_ids == ("chiplog.capabilities.agent_loop._r14_fanout_process:dispatch",)

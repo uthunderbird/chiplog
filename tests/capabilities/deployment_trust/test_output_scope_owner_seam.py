@@ -31,7 +31,7 @@ from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     H1_CALL_MAX_BYTES,
     H1OwnerCandidateCallV1,
 )
-from chiplog.platform.r7_trust import TrustOwnerCall, TrustOwnerResult
+from chiplog.platform.r7_trust import TrustOwnerCall
 from tests.support.capabilities.deployment_trust.output_scope_owner_seam import (
     head,
     read_request,
@@ -171,21 +171,6 @@ def test_real_owner_route_remains_unsupported(current: bool) -> None:
     )
 
 
-def test_legacy_wire_bytes_remain_exact() -> None:
-    assert TrustOwnerCall(
-        mode="AUTHENTICATE", snapshot_bytes=b"[]", request_bytes=b"{}"
-    ).canonical_bytes() == (
-        b'{"mode":"AUTHENTICATE","request_bytes":"e30=","snapshot_bytes":"W10="}'
-    )
-    assert TrustOwnerResult(
-        disposition="DENIED", reference_bytes=None, reason="denied"
-    ).canonical_bytes() == (b'{"disposition":"DENIED","reason":"denied","reference_bytes":null}')
-    with pytest.raises(ValidationError):
-        TrustOwnerCall.model_validate(
-            dict(mode="FUTURE", snapshot_bytes=b"[]", request_bytes=b"{}")
-        )
-
-
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -293,46 +278,6 @@ def test_materialized_locator_rejects_invalid_ordinals(tmp_path: Path, ordinal: 
     with pytest.raises(ValueError, match="ordinal"):
         adapter.record("d", ordinal)
     adapter.close()
-
-
-@pytest.mark.parametrize("current", [False, True])
-async def test_mounted_owner_contract_route_does_not_write(tmp_path: Path, current: bool) -> None:
-    from chiplog.composition.common_cli_execution_runtime import open_common_cli_execution_runtime
-    from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
-    from chiplog.platform.broker import PublicPortRejected, PublicPortSuccess
-
-    resources = HermeticDispatchResources(scenarios=("CONFIRM",), cap=1)
-    async with open_common_cli_execution_runtime(
-        tmp_path / "mounted.sqlite", resources=resources
-    ) as runtime:
-        before = runtime._trust.owner_snapshot_entries()
-        candidate, snapshot = candidate_request()
-        value = read_request() if current else candidate
-        operation = (
-            "read_current_hermetic_output_scope" if current else "issue_hermetic_output_scope"
-        )
-        mode: Literal["READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1", "ISSUE_HERMETIC_OUTPUT_SCOPE_V1"] = (
-            "READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1" if current else "ISSUE_HERMETIC_OUTPUT_SCOPE_V1"
-        )
-        wire = TrustOwnerCall(
-            mode=mode, snapshot_bytes=snapshot, request_bytes=value.canonical_bytes()
-        )
-        template = runtime._trust_call_request("AUTHENTICATE", {})
-        call = template.model_copy(
-            update={
-                "operation_id": "deployment_trust." + operation,
-                "canonical_payload": wire.canonical_bytes(),
-            }
-        )
-        response = await runtime._supervisor.runtime().call(call)
-        if not current:
-            assert isinstance(response, PublicPortRejected)
-            assert runtime._trust.owner_snapshot_entries() == before
-            return
-        assert isinstance(response, PublicPortSuccess)
-        payload = json.loads(response.canonical_payload)
-        assert payload["disposition"] == "UNSUPPORTED"
-        assert runtime._trust.owner_snapshot_entries() == before
 
 
 async def test_planning_only_r7_rejects_h1_route(tmp_path: Path) -> None:

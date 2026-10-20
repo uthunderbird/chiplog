@@ -1,11 +1,8 @@
 """Shared exact dispatch mandate, ticket and model-response builders."""
 
-import base64
 import hashlib
-import json
 
 from chiplog.adapters.driven.effects_hermetic import IssuedEffectSendTicket
-from chiplog.composition.r16_effects import HermeticEffectProposal
 
 
 def head(subject: str = "subject") -> dict[str, str]:
@@ -104,24 +101,3 @@ def _ticket() -> IssuedEffectSendTicket:
         idempotency_key="key",
         bundle_members=("effect",),
     )
-
-
-def _response() -> bytes:
-    proposal = HermeticEffectProposal(
-        schema_id="chiplog.hermetic-effect-proposal.v1",
-        purpose="My action",
-        payload_base64=base64.b64encode(b"exact payload").decode(),
-        bundle_members=("self-action",),
-    )
-    return json.dumps(
-        {
-            "kind": "Continue",
-            "tool_calls": [
-                {
-                    "call_id": "effect",
-                    "tool": "propose_intent",
-                    "text": proposal.canonical_bytes().decode(),
-                }
-            ],
-        }
-    ).encode()

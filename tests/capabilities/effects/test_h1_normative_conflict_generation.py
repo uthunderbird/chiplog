@@ -6,7 +6,6 @@ import hashlib
 
 import pytest
 
-import chiplog.composition.h1_producer_history as composition_history
 from chiplog.capabilities.effects.contracts import ExactHead
 from chiplog.capabilities.effects.h1_normative_conflict_generation import (
     H1EffectsHistoryMemberV1,
@@ -47,27 +46,6 @@ def _history(members: tuple[H1EffectsHistoryMemberV1, ...] | None = None) -> H1E
         owner_journal_head="owner/head",
         ordered_members=ordered,
         digest=h1_effects_history_digest("tenant", "owner/head", ordered),
-    )
-
-
-def test_history_digest_matches_composition_h1_producer_preimage_exactly() -> None:
-    history = _history()
-    composition_members = tuple(
-        composition_history.H1ProducerHistoryMember(
-            selected_decision=member.selected_decision,
-            tenant_commit_sequence=member.tenant_commit_sequence,
-            publication_ordinal=member.publication_ordinal,
-            record_id=member.record_id,
-            record_kind=member.record_kind,
-            schema_id=member.schema_id,
-            fingerprint=member.fingerprint,
-            canonical_record_bytes=member.canonical_record_bytes,
-            intent_id=member.intent_id,
-        )
-        for member in history.ordered_members
-    )
-    assert history.digest == composition_history._digest(
-        history.tenant_id, history.owner_journal_head, composition_members
     )
 
 

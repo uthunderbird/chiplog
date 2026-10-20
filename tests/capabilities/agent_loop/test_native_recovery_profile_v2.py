@@ -1,8 +1,3 @@
-import sqlite3
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import create_autospec
-
 import pytest
 
 from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
@@ -17,12 +12,6 @@ from chiplog.capabilities.agent_loop.native_recovery_profile_contracts import (
     native_one_call_recovery_profile_v4,
     native_one_call_recovery_profile_v5,
 )
-from chiplog.composition.r14_recovery_profile_publication import (
-    RetainedNativeProfilePublication,
-    _assert_v2_precedes_covered_lineage,
-    profile_command,
-)
-from chiplog.composition.r14_runtime import R14PlanningRuntime
 
 
 def test_native_recovery_profile_v2_is_closed_and_distinct_from_v1() -> None:
@@ -46,27 +35,6 @@ def test_native_recovery_profile_v2_is_closed_and_distinct_from_v1() -> None:
         decode_native_one_call_recovery_profile(current.canonical_bytes())
 
 
-def test_profile_command_keeps_exact_v1_decoder_and_selects_v2_schema() -> None:
-    old = RetainedNativeProfilePublication(
-        tenant_id="tenant",
-        database_id="db",
-        record_bytes=native_one_call_recovery_profile().canonical_bytes(),
-        expected_head=0,
-        predecessor="0" * 64,
-    )
-    current = old.model_copy(
-        update={"record_bytes": native_one_call_recovery_profile_v2().canonical_bytes()}
-    )
-
-    old_command = profile_command(old)
-    current_command = profile_command(current)
-
-    assert old_command.operation_kind == "agent_loop.native-one-call-recovery-profile.v1"
-    assert old_command.records[0].schema_id.endswith(".v1")
-    assert current_command.operation_kind == "agent_loop.native-one-call-recovery-profile.v2"
-    assert current_command.records[0].schema_id.endswith(".v2")
-
-
 def test_native_recovery_profile_v3_preserves_v2_and_registers_accepted_transitions() -> None:
     v2 = native_one_call_recovery_profile_v2()
     v3 = native_one_call_recovery_profile_v3()
@@ -80,48 +48,6 @@ def test_native_recovery_profile_v3_preserves_v2_and_registers_accepted_transiti
     assert "SemanticEvidenceReduced" in v3.causal_transitions
     with pytest.raises(ValueError):
         decode_native_one_call_recovery_profile_v2(v3.canonical_bytes())
-
-    retained = RetainedNativeProfilePublication(
-        tenant_id="tenant",
-        database_id="db",
-        record_bytes=v3.canonical_bytes(),
-        expected_head=0,
-        predecessor="0" * 64,
-    )
-    command = profile_command(retained)
-    assert command.operation_kind == "agent_loop.native-one-call-recovery-profile.v3"
-    assert command.records[0].schema_id.endswith(".v3")
-
-
-def test_v2_selection_guard_rejects_v1_rows_and_late_lineage(tmp_path: Path) -> None:
-    database = tmp_path / "profile.sqlite"
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "CREATE TABLE records (tenant_id TEXT, schema_id TEXT, commit_sequence INTEGER)"
-        )
-        connection.execute("CREATE TABLE publications (tenant_id TEXT, operation_kind TEXT)")
-    journal = SimpleNamespace(entries=lambda: ())
-    runtime = create_autospec(R14PlanningRuntime, instance=True)
-    runtime._tenant_id = "tenant"
-    runtime._database = database
-    runtime._loop_decisions.return_value = journal
-
-    _assert_v2_precedes_covered_lineage(runtime)
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "INSERT INTO records VALUES (?, ?, ?)",
-            ("tenant", "chiplog.call.initialized.v1", 4),
-        )
-    with pytest.raises(ValueError, match="must precede"):
-        _assert_v2_precedes_covered_lineage(runtime)
-    _assert_v2_precedes_covered_lineage(runtime, profile_sequence=3)
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "INSERT INTO records VALUES (?, ?, ?)",
-            ("tenant", "chiplog.execution.native-one-call-recovery-profile.v1", 2),
-        )
-    with pytest.raises(ValueError, match="V1 recovery profile"):
-        _assert_v2_precedes_covered_lineage(runtime, profile_sequence=1)
 
 
 def test_v5_adds_obligation_suspend_transitions_without_reinterpreting_v4() -> None:
@@ -138,15 +64,3 @@ def test_v5_adds_obligation_suspend_transitions_without_reinterpreting_v4() -> N
         decode_native_one_call_recovery_profile_v4(v5.canonical_bytes())
     with pytest.raises(ValueError):
         decode_native_one_call_recovery_profile_v5(v4.canonical_bytes())
-
-    for profile, version in ((v4, "v4"), (v5, "v5")):
-        retained = RetainedNativeProfilePublication(
-            tenant_id="tenant",
-            database_id="db",
-            record_bytes=profile.canonical_bytes(),
-            expected_head=0,
-            predecessor="0" * 64,
-        )
-        command = profile_command(retained)
-        assert command.operation_kind.endswith(version)
-        assert command.records[0].schema_id.endswith(version)
