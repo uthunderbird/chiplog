@@ -133,12 +133,6 @@ CURRENT_EXPORT_EXTENSIONS = (
 
 CURRENT_RECORD_EXTENSIONS = (
     FrozenRecord(
-        "chiplog.deployment_trust.prepared_external_delivery_grant",
-        "chiplog.deployment_trust.record.v1",
-        "deployment_trust",
-        "deployment_trust.commit",
-    ),
-    FrozenRecord(
         "chiplog.deployment_trust.prepared_self_delivery_policy",
         "chiplog.deployment_trust.record.v1",
         "deployment_trust",
@@ -148,11 +142,6 @@ CURRENT_RECORD_EXTENSIONS = (
 
 CURRENT_RECORD_EXTENSION_EVIDENCE = (
     (
-        "chiplog.deployment_trust.prepared_external_delivery_grant",
-        "tests/composition/test_j7_mounted_external_delivery_grant.py::"
-        "test_mounted_j7_issue_appends_and_reopens_historical_lifecycle",
-    ),
-    (
         "chiplog.deployment_trust.prepared_self_delivery_policy",
         "tests/platform/test_prepared_self_delivery_policy_lineage.py::"
         "test_issued_policy_is_physically_anchored_current_and_survives_reopen",
@@ -160,7 +149,7 @@ CURRENT_RECORD_EXTENSION_EVIDENCE = (
 )
 
 CURRENT_CONTRACT_EXTENSIONS_SHA256 = (
-    "bbfdecc4469314da62d3fdcbfa38c5c55231dc450df34b332ea6665c6f62a52a"
+    "9a84b367881bf18691714ac0b9a3f7d1baf8bc7431194826da55d2a19072d8af"
 )
 
 
