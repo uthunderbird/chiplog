@@ -37,7 +37,6 @@ from chiplog.capabilities.projections.workspace_boundary import (
 )
 from chiplog.composition.h1_preissuance_registration import H1PreissuanceRegistrationSource
 from chiplog.composition.h1_workspace_policy_v2 import (
-    H1OriginalWorkspaceIssuanceV2,
     H1WorkspacePolicyV2,
 )
 from chiplog.composition.r10 import HermeticIngressRegistry
@@ -48,11 +47,6 @@ from chiplog.composition.r12 import (
     install_h1_workspace_policy_v2,
 )
 from chiplog.composition.r13_workspace_provenance import accepted_sources, conversation_bindings
-from chiplog.composition.r14_h1_workspace_issuance import H1WorkspaceIssuanceJournal
-from chiplog.composition.r14_h1_workspace_issuance_contracts import (
-    H1RetainedDecisionV1,
-    H1WorkspaceIssuanceRefV1,
-)
 from chiplog.domain_primitives import TenantId
 from chiplog.platform.calendar_read_ledger import CalendarReadState
 
@@ -176,8 +170,6 @@ class R13Workspace:
         self.storage = SQLiteJournal(runtime._database, runtime._appender, fence_generation="r6")
         self.ingress = HermeticIngressRegistry({}, self.storage)
         self._issued: R12Workspace | None = None
-        self._h1_workspace_issuance: H1WorkspaceIssuanceJournal | None = None
-        self._last_h1_workspace_issuance: H1WorkspaceIssuanceRefV1 | None = None
 
     async def _workspace(
         self,
@@ -260,23 +252,6 @@ class R13Workspace:
         conversation_entries = _history(runtime, tenant)
         bindings = conversation_bindings(
             runtime, conversation_entries, extra, channel=channel, contour=contour
-        )
-        conversation_entry_ids = {entry.entry_id for entry in conversation_entries}
-        selected_decisions = tuple(
-            H1RetainedDecisionV1(
-                entry_id=entry_id,
-                predecessor=predecessor,
-                payload_base64=base64.b64encode(payload).decode("ascii"),
-            )
-            for entry_id, predecessor, payload in runtime._loop_decisions().entries()
-            if (
-                (decision := json.loads(payload)).get("kind") == "DECIDED"
-                and any(
-                    row.get("owner") == CONVERSATION_OWNER
-                    and row.get("record_id") in conversation_entry_ids
-                    for row in decision.get("records", ())
-                )
-            )
         )
         all_sources = (
             *(source for binding in bindings for source in binding.sources),
@@ -403,18 +378,12 @@ class R13Workspace:
             ledger,
             planning,
             conversation_provenance=bindings,
-            selected_loop_decisions=selected_decisions,
             issuance=WorkspaceIssuanceJournal.open(
                 runtime._database.with_suffix(".workspace-issuance"),
                 runtime._authority_gate(),
                 tenant,
             ),
             h1_workspace_policy=policy,
-        )
-        self._h1_workspace_issuance = H1WorkspaceIssuanceJournal.open(
-            runtime._database.with_suffix(".h1-workspace-issuance"),
-            runtime._authority_gate(),
-            tenant,
         )
         return self._issued
 
@@ -469,89 +438,7 @@ class R13Workspace:
             producer="projections",
             surface="workspace",
         )
-        # Legacy R13 contexts remain structurally unchanged.  Only the native
-        # executable first-turn path may create H1 evidence, and it does so
-        # before this member can reach Accumulate/model selection.
-        if isinstance(run, ExecutionRunRecord):
-            self.issue_h1_workspace_issuance(
-                run,
-                member,
-                h1_preissuance_selection=h1_preissuance_selection,
-                source=source,
-            )
         return member
-
-    def issue_h1_workspace_issuance(
-        self,
-        run: RunRecord | ExecutionRunRecord,
-        member: VisibilityMember,
-        *,
-        h1_preissuance_selection: object | None = None,
-        source: H1PreissuanceRegistrationSource | None = None,
-    ) -> H1WorkspaceIssuanceRefV1:
-        """Append an original cut under the runtime authority gate before selection.
-
-        V3 must retain the returned typed ref in its selected transition; this
-        method deliberately does not infer a ref during reopening.
-        """
-        if (
-            self._issued is None
-            or self._issued._issued is None
-            or self._h1_workspace_issuance is None
-        ):
-            raise LoopRejected("H1 original workspace issuance lacks an issued cut")
-        batch = self._issued._issued
-        context = self._issued.proposal_context(batch)
-        turn_id = run.turns[-1].turn_id if run.turns else run.run_id + "/initial"
-        issuance_args = {
-            "run_id": run.run_id,
-            "started_run_head": run.head,
-            "turn_id": turn_id,
-            "worker_session": getattr(run, "worker_session", "legacy-worker"),
-            "workspace_member_json": member.model_dump_json(),
-            "proposal_context_json": context.model_dump_json(),
-        }
-        if self._issued._h1_workspace_policy is None:
-            issuance = self._issued.h1_original_issuance(**issuance_args)
-            with self.runtime._authority_gate().hold():
-                ref = self._h1_workspace_issuance.append(issuance)
-            self._last_h1_workspace_issuance = ref
-            return ref
-
-        with self.runtime._authority_gate().hold():
-            if (
-                source is None
-                or h1_preissuance_selection is None
-                or source.check_current(h1_preissuance_selection) is not True
-                or source.resolved_workspace_policy(h1_preissuance_selection)
-                is not self._issued._h1_workspace_policy
-                or member.content != context.model_dump_json()
-            ):
-                raise LoopRejected("H1 V2 original issuance selection is unavailable or stale")
-            issuance = self._issued.h1_original_issuance(**issuance_args)
-            if (
-                type(issuance) is not H1OriginalWorkspaceIssuanceV2
-                or issuance.workspace_member_json != member.model_dump_json()
-                or issuance.proposal_context_json != context.model_dump_json()
-            ):
-                raise LoopRejected("H1 V2 original issuance differs from selected workspace")
-            ref = self._h1_workspace_issuance.append(issuance)
-            reloaded = self._h1_workspace_issuance.load(ref)
-            if type(reloaded) is not H1OriginalWorkspaceIssuanceV2 or reloaded != issuance:
-                raise LoopRejected("H1 V2 original issuance reload differs")
-        self._last_h1_workspace_issuance = ref
-        return ref
-
-    def open_h1_workspace_issuance(self) -> H1WorkspaceIssuanceJournal:
-        """Read-only verifier seam; callers still need a retained typed ref."""
-        if self._h1_workspace_issuance is None:
-            tenant = self._issued._identity.tenant if self._issued is not None else TENANT
-            self._h1_workspace_issuance = H1WorkspaceIssuanceJournal.open(
-                self.runtime._database.with_suffix(".h1-workspace-issuance"),
-                self.runtime._authority_gate(),
-                tenant,
-            )
-        return self._h1_workspace_issuance
 
     def open_dashboard_issuance(self) -> WorkspaceIssuanceJournal:
         """Open the runtime-configured dashboard authority, never a caller path."""
