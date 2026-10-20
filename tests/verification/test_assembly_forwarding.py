@@ -42,18 +42,6 @@ def _mutate(sources, module, old, new):
 # Independent direct-call expectation, not generated from inspected rows.
 EXPECTED = (
     ("r13_runtime.py", "open_r13_runtime", "R13PlanningRuntime", "R13_PRODUCTION_MANIFEST"),
-    (
-        "r16_denial_publication.py",
-        "open_r16_runtime",
-        "R16PlanningRuntime",
-        "R16_PRODUCTION_MANIFEST",
-    ),
-    (
-        "r17_ingress_runtime.py",
-        "open_r17_runtime",
-        "R17IngressRuntime",
-        "R17_CUSTODY_PRODUCTION_MANIFEST",
-    ),
     ("r7_planning.py", "open_r7_runtime", "R7PlanningRuntime", "R7_PRODUCTION_MANIFEST"),
     ("r8.py", "open_r8_runtime", "R8PlanningRuntime", "R8_PRODUCTION_MANIFEST"),
 )
@@ -141,11 +129,11 @@ def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change) ->
             sources, PREFIX + "r8.py", "async with _open_runtime(\n", "async with other(\n"
         )
     else:
-        name = "open_extra" if change == "ghost" else "open_dispatch_runtime"
+        name = "open_extra" if change == "ghost" else "open_duplicate_runtime"
         addition = (
             f"\nasync def {name}(database):\n"
-            "    return _open_runtime(database, runtime_type=R16DispatchRuntime, "
-            "manifest=R16_DISPATCH_PRODUCTION_MANIFEST)\n"
+            "    return _open_runtime(database, runtime_type=R7PlanningRuntime, "
+            "manifest=R7_PRODUCTION_MANIFEST)\n"
         )
         if change == "duplicate":
             changed = _mutate(
@@ -161,10 +149,10 @@ def test_changed_direct_edge_is_observed_before_bidirectional_refusal(change) ->
                 (
                     "sibling/extra.py",
                     (
-                        "from chiplog.composition.r7_planning import _open_runtime\n"
-                        "from chiplog.composition.r16_dispatch_runtime import R16DispatchRuntime\n"
+                        "from chiplog.composition.r7_planning import "
+                        "R7PlanningRuntime, _open_runtime\n"
                         "from chiplog.architecture.r7_runtime imp"
-                        "ort R16_DISPATCH_PRODUCTION_MANIFEST\n" + addition
+                        "ort R7_PRODUCTION_MANIFEST\n" + addition
                     ),
                 ),
             )
