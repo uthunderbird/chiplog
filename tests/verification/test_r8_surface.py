@@ -343,7 +343,6 @@ def test_execution_prompt_registration_does_not_expand_other_imports(
     "relative",
     [
         "composition/r13_runtime.py",
-        "composition/r14_loop_history.py",
         "adapters/driven/deployment_trust/_journal.py",
         "capabilities/agent_loop/execution_first_path_completion_contracts.py",
     ],

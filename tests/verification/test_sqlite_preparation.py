@@ -138,23 +138,6 @@ def test_actual_update_predicate_mutation_adds_a_read_before_expected_refusal() 
         verify_sql_actions(foreign.actions, expected)
 
 
-def test_actual_historical_delete_observes_predicate_and_subquery_reads() -> None:
-    sql = _sql(
-        "composition/r14_original_call_resolution_source.py",
-        "DELETE FROM records WHERE tenant_id=? AND commit_sequence>?",
-    )
-    expected = (
-        ("DELETE", "records", None, "main", None),
-        ("READ", "records", "commit_sequence", "main", None),
-        ("READ", "records", "tenant_id", "main", None),
-    )
-    verify_sql_actions(_observe(sql).actions, expected)
-    changed = _observe(sql + " AND EXISTS (SELECT 1 FROM deletion_fences WHERE frontier >= 0)")
-    assert ("READ", "deletion_fences", "frontier", "main", None) in changed.actions
-    with pytest.raises(UnregisteredSqlAccess):
-        verify_sql_actions(changed.actions, expected)
-
-
 def test_trust_foreign_key_setting_is_explicit_and_changes_preparation_reads() -> None:
     schema = _sql("adapters/driven/deployment_trust/_sqlite.py", "CREATE TABLE IF NOT EXISTS")
     sql = _sql("adapters/driven/deployment_trust/_sqlite.py", "INSERT INTO trust_records(")

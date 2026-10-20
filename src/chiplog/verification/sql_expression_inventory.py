@@ -203,9 +203,6 @@ _CONSTANTS = {
 _PLACEHOLDERS = {
     ("adapters/driven/planning_sqlite.py", "SQLitePlanningRepository.committed_publications"),
     ("platform/_sqlite.py", "SQLiteMaterializer._register_derivative"),
-    ("composition/r14_original_call_resolution_source.py", "_require_resolution_absent"),
-    ("composition/r14_original_call_resolution_publication.py", "_validate_physical_catalog"),
-    ("composition/r14_recovery_profile_publication.py", "_assert_v2_precedes_covered_lineage"),
 }
 _IDENTIFIERS = {(module, qualname) for module, qualname, _, _ in _TARGETS}
 _IDENTIFIER_SOURCES = {module for module, _, _, _ in _TARGETS} | {

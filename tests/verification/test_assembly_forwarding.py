@@ -43,13 +43,6 @@ def _mutate(sources, module, old, new):
 EXPECTED = (
     ("r13_runtime.py", "open_r13_runtime", "R13PlanningRuntime", "R13_PRODUCTION_MANIFEST"),
     (
-        "r14_execution_runtime.py",
-        "open_execution_runtime",
-        "R14ExecutionRuntime",
-        "R14_EXECUTION_LIFECYCLE_PRODUCTION_MANIFEST",
-    ),
-    ("r14_runtime.py", "open_r14_runtime", "R14PlanningRuntime", "R14_FANOUT_PRODUCTION_MANIFEST"),
-    (
         "r16_denial_publication.py",
         "open_r16_runtime",
         "R16PlanningRuntime",

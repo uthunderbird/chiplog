@@ -244,7 +244,6 @@ def verify_offline_import_boundary(root: Path) -> None:
                 in {
                     "chiplog/composition/r13_runtime.py",
                     "chiplog/adapters/driven/deployment_trust/_journal.py",
-                    "chiplog/composition/r14_loop_history.py",
                     "chiplog/capabilities/agent_loop/execution_first_path_completion_contracts.py",
                 }
                 and isinstance(node, ast.Import)
