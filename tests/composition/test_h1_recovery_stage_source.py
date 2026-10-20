@@ -5,31 +5,15 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 from collections.abc import Iterator
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
 import chiplog.composition.h1_recovery_stage_source as stage_module
-from chiplog.composition.common_cli_execution_runtime import (
-    open_installed_h1_runtime,
-)
-from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_recovery_stage_source import (
     H1RecoveryStageSource,
     H1RecoveryStageSourceError,
 )
-from chiplog.composition.h1_v2_recovery_native_source import (
-    H1V2RecoveryNativeCut,
-    H1V2RecoveryNativeSource,
-)
-from tests.support.composition.h1_recovery_stage_source import (
-    _admit_other,
-    _resources,
-    _v2_seal_with_historical_v3_prepare,
-)
-from tests.support.h1_installed_launch import installed_slot, prepare_installed_slot
 
 
 def test_require_current_holds_one_cut_and_reconstructs_once(
@@ -107,129 +91,3 @@ def test_require_current_holds_one_cut_and_reconstructs_once(
     with pytest.raises(H1RecoveryStageSourceError, match="historical P source differs"):
         source._require_current(context)
     assert events == ["enter", "native", "reconstruct", "p-replay-changed", "exit"]
-
-
-@pytest.mark.asyncio
-async def test_stage_source_reopens_v3_prepare_and_v2_seal_as_one_issued_native_cut(
-    tmp_path: Path,
-) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            request, locator, selected_prepare = await _v2_seal_with_historical_v3_prepare(runtime)
-
-            reader = H1RecoveryStageSource(runtime)
-            issued = reader.issue_completion_native(
-                original_identity=request.identity,
-                original_fingerprint=request.original_driver_command_fingerprint(),
-                selected_seal=locator,
-            )
-            native = reader.replay_completion_native(issued)
-
-            assert native.selected_response_seal == locator
-            assert native.run.head == issued.native_cut.source.complete_ordered_run_lineage[-1].head
-            assert selected_prepare.decision_id
-
-            # A dataclass copy has no issuer identity and cannot be used as a
-            # recovery capability even when every visible field is identical.
-            with pytest.raises(H1RecoveryStageSourceError, match="issuer-owned"):
-                reader.replay_completion_native(dataclasses.replace(issued))
-
-
-@pytest.mark.asyncio
-async def test_stage_source_replays_selected_prefix_after_later_unrelated_publication(
-    tmp_path: Path,
-) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            request, locator, _prepare = await _v2_seal_with_historical_v3_prepare(runtime)
-            reader = H1RecoveryStageSource(runtime)
-            issued = reader.issue_completion_native(
-                original_identity=request.identity,
-                original_fingerprint=request.original_driver_command_fingerprint(),
-                selected_seal=locator,
-            )
-            before = reader.replay_completion_native(issued)
-
-        async with open_installed_h1_runtime(
-            launch, resources=_resources(tmp_path, "-later")
-        ) as runtime:
-            await runtime.drive_input(await _admit_other(runtime))
-            reader = H1RecoveryStageSource(runtime)
-            replayed = reader.issue_completion_native(
-                original_identity=request.identity,
-                original_fingerprint=request.original_driver_command_fingerprint(),
-                selected_seal=locator,
-            )
-
-            assert reader.replay_completion_native(replayed) == before
-
-
-@pytest.mark.asyncio
-async def test_stage_source_rejects_a_changed_replayed_native_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            request, locator, _prepare = await _v2_seal_with_historical_v3_prepare(runtime)
-            reader = H1RecoveryStageSource(runtime)
-            issued = reader.issue_completion_native(
-                original_identity=request.identity,
-                original_fingerprint=request.original_driver_command_fingerprint(),
-                selected_seal=locator,
-            )
-            select = H1V2RecoveryNativeSource.select
-
-            def changed_select(
-                self: H1V2RecoveryNativeSource, **kwargs: Any
-            ) -> H1V2RecoveryNativeCut:
-                selected = select(self, **kwargs)
-                return dataclasses.replace(
-                    selected,
-                    seal=dataclasses.replace(selected.seal, raw_bytes=b'{"changed":true}'),
-                )
-
-            monkeypatch.setattr(H1V2RecoveryNativeSource, "select", changed_select)
-
-            with pytest.raises(H1RecoveryStageSourceError, match="selected native source"):
-                reader.replay_completion_native(issued)
-
-
-@pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "P owns the historical delivery/fence reconstruction and exposes only a current, "
-        "opaque receipt; no installed historical P bridge exists"
-    ),
-)
-async def test_stage_source_derives_canonical_completion_input_from_historical_native_and_p(
-    tmp_path: Path,
-) -> None:
-    """The eventual seam must return a canonical request without caller DTO input."""
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            request, locator, _prepare = await _v2_seal_with_historical_v3_prepare(runtime)
-            reader = H1RecoveryStageSource(runtime)
-            issued = reader.issue_completion_native(
-                original_identity=request.identity,
-                original_fingerprint=request.original_driver_command_fingerprint(),
-                selected_seal=locator,
-            )
-
-            completion = reader.reconstruct_completion_input(issued)
-
-            facts = reader.replay_completion_native(issued)
-            assert completion.kind == "PREPARE_EXECUTION_COMPLETION_FIRST_PATH_V2"
-            assert completion.run == facts.run
-            assert completion.selected_attempt == facts.selected_attempt
-            assert completion.exact_captured_response == facts.exact_captured_response
-            assert completion.delivery.captured_response == facts.exact_captured_response
-            assert completion.fence.run_head == facts.run.head

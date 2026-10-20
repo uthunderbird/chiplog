@@ -173,7 +173,7 @@ def _call_kind(function: ast.expr) -> str:
         return "sql_call_candidate"
     if name in _SQL_NAMES:
         return "factory_or_wrapper_call_candidate"
-    if name in {"_open_runtime", "_open_installed_h1_runtime"}:
+    if name == "_open_runtime":
         return "mount_call_candidate"
     if name in {"getattr", "setattr", "delattr", "__import__", "import_module"}:
         return "reflection_call"

@@ -42,7 +42,6 @@ class AssemblyForwarding:
 
 _OWNERS = {
     "_open_runtime": "chiplog.composition.r7_planning",
-    "_open_installed_h1_runtime": "chiplog.composition.common_cli_execution_runtime",
 }
 
 

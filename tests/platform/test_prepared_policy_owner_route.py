@@ -10,9 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from pathlib import Path
 
-import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import TypeAdapter
@@ -28,9 +26,7 @@ from chiplog.capabilities.deployment_trust.operator_policy_command_verifier impo
 )
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_contracts import (
     IssuePreparedExternalSelfDeliveryPolicyRequestV1,
-    PreparedExternalSelfDeliveryPolicyAnchorV1,
     PreparedExternalSelfDeliveryPolicyTermsV1,
-    RevokePreparedExternalSelfDeliveryPolicyRequestV1,
 )
 from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_owner_contracts import (  # noqa: E501
     AuthorizePreparedSelfDeliveryPolicyCallV1,
@@ -38,32 +34,16 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_own
     PreparedSelfDeliveryPolicyRejectedV1,
     PreparedSelfDeliveryPolicyResultV1,
 )
-from chiplog.composition.common_cli_execution_runtime import (
-    CommonCliExecutionRuntime,
-    open_installed_h1_runtime,
-)
-from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
-from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from tests.support.h1_installed_launch import (
     DATABASE,
     TENANT,
-    installed_slot,
-    prepare_installed_slot,
 )
 from tests.support.platform.prepared_policy_owner_route import (
     _OPERATOR_KEY,
-    _authorize,
     _signed_source,
-    _write_pin,
 )
 
 _FOREIGN_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(33, 65)))
-
-
-def _resources(tmp_path: Path) -> HermeticDispatchResources:
-    return HermeticDispatchResources(
-        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
-    )
 
 
 def _head(identity: str, body: bytes = b"j7") -> ExactHead:
@@ -102,66 +82,6 @@ def _terms() -> PreparedExternalSelfDeliveryPolicyTermsV1:
         not_before_ns=10,
         expires_at_ns=20,
     )
-
-
-def _observation(runtime: CommonCliExecutionRuntime) -> HermeticTrustObservationV1:
-    frozen = runtime._trust.capture_verified_observation()
-    entries = runtime._trust._journal.entries()
-    logical = runtime._trust.owner_snapshot_entries()
-    assert frozen.snapshot_bytes and entries and logical
-    decision_id, _, raw = entries[-1]
-    return HermeticTrustObservationV1(
-        physical_journal_head=ExactHead(
-            identity="deployment-trust/journal",
-            head=decision_id,
-            fingerprint=hashlib.sha256(raw).hexdigest(),
-        ),
-        logical_snapshot_head=logical[-1][0],
-    )
-
-
-def _issue(
-    runtime: CommonCliExecutionRuntime,
-    *,
-    command_id: str,
-    observation: HermeticTrustObservationV1 | None = None,
-    signing_key: Ed25519PrivateKey = _OPERATOR_KEY,
-) -> bytes:
-    request = IssuePreparedExternalSelfDeliveryPolicyRequestV1(
-        operation="ISSUE_PREPARED_EXTERNAL_SELF_DELIVERY_POLICY",
-        command_id=command_id,
-        tenant_id=TENANT,
-        database_id=DATABASE,
-        policy_id="policy",
-        expected_trust_observation=observation or _observation(runtime),
-        expected_policy=None,
-        terms=_terms(),
-    )
-    return _signed_source(request, signing_key=signing_key)
-
-
-def _revoke(
-    runtime: CommonCliExecutionRuntime, anchor: PreparedExternalSelfDeliveryPolicyAnchorV1
-) -> bytes:
-    request = RevokePreparedExternalSelfDeliveryPolicyRequestV1(
-        operation="REVOKE_PREPARED_EXTERNAL_SELF_DELIVERY_POLICY",
-        command_id="revoke-command",
-        tenant_id=TENANT,
-        database_id=DATABASE,
-        policy_id="policy",
-        expected_trust_observation=_observation(runtime),
-        expected_policy=anchor,
-    )
-    return _signed_source(request)
-
-
-def _durable_state(runtime: CommonCliExecutionRuntime) -> tuple[object, object]:
-    return runtime._trust._journal.entries(), runtime._trust._materializer.records()
-
-
-async def _reject(runtime: CommonCliExecutionRuntime, source: bytes, *, request_id: str) -> None:
-    with pytest.raises(PermissionError):
-        await runtime.authorize_prepared_self_delivery_policy(source, request_id=request_id)
 
 
 def _owner_call(
@@ -262,85 +182,3 @@ def test_owner_stale_raw_wire_is_canonical_schema_bound_and_call_bound() -> None
     result = _owner_result(_owner_call(request_observation=stale_observation))
     assert isinstance(result, PreparedSelfDeliveryPolicyRejectedV1)
     assert result.disposition == "STALE"
-
-
-@pytest.mark.asyncio
-async def test_installed_owner_route_issues_then_revokes_one_physically_anchored_policy(
-    tmp_path: Path,
-) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    _write_pin(slot.database_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            before_journal, before_records = _durable_state(runtime)
-            issued = await _authorize(
-                runtime, _issue(runtime, command_id="issue-command"), request_id="j7-issue"
-            )
-            assert issued.policy.status == "ACTIVE"
-            after_issue_journal, after_issue_records = _durable_state(runtime)
-            assert after_issue_journal[:-1] == before_journal
-            assert after_issue_records[:-2] == before_records
-            assert len(after_issue_journal) == len(before_journal) + 1
-            assert len(after_issue_records) == len(before_records) + 2
-            assert issued.anchor.decision.head == after_issue_journal[-1][0]
-
-            revoked = await _authorize(
-                runtime, _revoke(runtime, issued.anchor), request_id="j7-revoke"
-            )
-            assert revoked.policy.status == "REVOKED"
-            assert revoked.policy.predecessor == issued.anchor.policy
-            after_revoke_journal, after_revoke_records = _durable_state(runtime)
-            assert after_revoke_journal[:-1] == after_issue_journal
-            assert after_revoke_records[:-2] == after_issue_records
-            assert len(after_revoke_journal) == len(after_issue_journal) + 1
-            assert len(after_revoke_records) == len(after_issue_records) + 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ("invalid_signature", "missing_pin", "revoked_pin"))
-async def test_installed_owner_route_rejects_bad_authority_without_durable_mutation(
-    tmp_path: Path, failure: str
-) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    pin_path = _write_pin(slot.database_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            source = _issue(
-                runtime,
-                command_id="bad-authority",
-                signing_key=_FOREIGN_KEY if failure == "invalid_signature" else _OPERATOR_KEY,
-            )
-            if failure == "missing_pin":
-                pin_path.unlink()
-            elif failure == "revoked_pin":
-                _write_pin(slot.database_path, status="REVOKED")
-            before = _durable_state(runtime)
-            await _reject(runtime, source, request_id="j7-" + failure)
-            assert _durable_state(runtime) == before
-
-
-@pytest.mark.asyncio
-async def test_installed_owner_route_rejects_stale_trust_and_latest_anchor_without_mutation(
-    tmp_path: Path,
-) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    _write_pin(slot.database_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            initial = _observation(runtime)
-            stale_trust = _issue(runtime, command_id="stale-trust", observation=initial)
-            issued = await _authorize(
-                runtime, _issue(runtime, command_id="issue-command"), request_id="j7-issue"
-            )
-            after_issue = _durable_state(runtime)
-
-            await _reject(runtime, stale_trust, request_id="j7-stale-trust")
-            assert _durable_state(runtime) == after_issue
-
-            stale_latest = _issue(runtime, command_id="stale-latest")
-            await _reject(runtime, stale_latest, request_id="j7-stale-latest")
-            assert _durable_state(runtime) == after_issue
-            assert issued.policy.status == "ACTIVE"

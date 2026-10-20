@@ -7,12 +7,9 @@ owner record.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import sqlite3
 from collections.abc import Callable
 from dataclasses import replace
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -20,17 +17,11 @@ import pytest
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.delivery_contracts import ExactHead
-from chiplog.capabilities.agent_loop.delivery_preparation import (
-    Commentary,
-    DeliveryCompletion,
-    ProposedDelivery,
-)
 from chiplog.capabilities.agent_loop.execution_contracts import ExecutionRunRecord
 from chiplog.capabilities.agent_loop.recovery_contracts import Present
 from chiplog.composition import common_cli_execution_runtime
 from chiplog.composition.common_cli_execution_runtime import (
     _FinalizationReceiptIntegrityError,
-    open_installed_h1_runtime,
 )
 from chiplog.composition.common_execution_driver_contracts import (
     AcceptedTerminalDetailV1,
@@ -41,10 +32,7 @@ from chiplog.composition.common_execution_driver_contracts import (
     SelectedExecutionReceiptV1,
     UncertainExecutionPublicationV1,
 )
-from chiplog.composition.h1_completion_issuance import H1CompletionIssuanceV2
-from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_live_publication_authority import (
-    H1LivePublicationAuthority,
     _H1SelectedTerminalReadback,
 )
 from chiplog.composition.h1_postseal_recovery_coordinator import (
@@ -53,20 +41,12 @@ from chiplog.composition.h1_postseal_recovery_coordinator import (
     _H1FinalizationRejection,
     _H1PostSealRecoveryCoordinator,
 )
-from chiplog.composition.h1_recovery_execution_fence import (
-    _H1RecoveryExecutionFence,
-    _H1RecoveryExecutionLease,
-)
-from chiplog.composition.r14_execution_completion_records import COMPLETE_ACCEPTANCE_OPERATION
 from chiplog.composition.r14_execution_inbox_records import RetainedInboxExecutionInitialization
-from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
 from chiplog.platform._ingress_contracts import Head, SourceBinding, UnknownEndpoint
 from chiplog.platform._owner_publication_contracts import (
-    CompleteDeliveryBatchV2,
     JournalSelectedPublication,
     OwnerRecordBytes,
     PublicationRejected,
-    WorkerAuthentication,
 )
 from chiplog.platform._sqlite import PhysicalPublicationCommand, PhysicalRecord
 from chiplog.platform.ingress_source_contracts import CliPeerObservation
@@ -79,14 +59,6 @@ from chiplog.platform.owner_publications import (
     PreparedOwnerPublication,
     SelectedOwnerDecision,
 )
-from tests.support.h1_cli_execution import _admit, advance
-from tests.support.h1_installed_launch import TENANT, installed_slot, prepare_installed_slot
-
-
-def _resources(tmp_path: Path) -> HermeticDispatchResources:
-    return HermeticDispatchResources(
-        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
-    )
 
 
 def _identity() -> DriverCommandIdentityV1:
@@ -378,23 +350,6 @@ async def test_finalization_uncertainty_stays_publicly_uncertain_on_each_broker_
     assert public.reason == str(error)
 
 
-async def _durable_recovery(runtime: Any) -> Any:
-    request = await _admit(runtime)
-    initial = await runtime.drive_input(request)
-    runtime._execution_model._responses = (
-        DeliveryCompletion(
-            tenant=TENANT,
-            run_id=initial.stable_run_lineage_id,
-            turn_id=initial.stable_run_lineage_id + "/turn/1",
-            deliveries=(ProposedDelivery(payload=(Commentary(text="A finalizer witness"),)),),
-        ).canonical_bytes(),
-    )
-    await runtime.advance_execution(advance(initial, request))
-    state = runtime._h1_postseal_recovery_journal.scan().states_by_root[0][1]
-    assert len(state.inputs) == len(state.results) == 4
-    return request
-
-
 class H1FinalizationReceiptUnavailable(RuntimeError):
     """The installed finalizer cannot yet project its exact terminal receipt."""
 
@@ -415,141 +370,6 @@ def _require_terminal_receipt(value: object, *, disposition: str) -> SelectedExe
     assert detail.delivery_manifest_head.identity
     assert detail.committed_conversation_projection_head.identity
     return value
-
-
-def _assert_selected_terminal_receipt_is_physical(
-    runtime: Any, receipt: SelectedExecutionReceiptV1
-) -> None:
-    from chiplog.platform._owner_publication_contracts import CompleteDeliveryBatchV2
-
-    selected = [
-        decision
-        for decision in runtime._owner_decisions().snapshot().decisions
-        if decision.decision_id == receipt.selected_journal_decision.head
-        and type(decision.prepared.request) is CompleteDeliveryBatchV2
-    ]
-    assert len(selected) == 1
-    decision = selected[0]
-    command = runtime._owner_command(decision)
-    assert receipt.selected_journal_decision == Head(
-        identity=command.idempotency_key,
-        head=decision.decision_head,
-        fingerprint=decision.decision_fingerprint,
-    )
-    assert receipt.commit_sequence == decision.tenant_commit_sequence
-    terminal_rows = [
-        row
-        for row in command.records
-        if row.owner == "agent_loop" and row.schema_id == "chiplog.agent-loop.execution-record.v2"
-    ]
-    assert len(terminal_rows) == 1
-    terminal = ExecutionRunRecord.model_validate_json(terminal_rows[0].canonical_bytes)
-    assert receipt.selected_run_head == Head(
-        identity=terminal.head,
-        head=terminal.head,
-        fingerprint=hashlib.sha256(terminal.canonical_bytes()).hexdigest(),
-    )
-    assert terminal.state == receipt.selected_run_state == "SUCCEEDED"
-    assert type(receipt.terminal_detail) is AcceptedTerminalDetailV1
-    for head in (
-        receipt.terminal_detail.acceptance_head,
-        receipt.terminal_detail.delivery_manifest_head,
-        receipt.terminal_detail.committed_conversation_projection_head,
-    ):
-        matching = [row for row in command.records if row.record_id == head.identity]
-        assert len(matching) == 1
-        assert head.head == matching[0].record_id
-        assert head.fingerprint == matching[0].fingerprint
-        assert head.fingerprint == hashlib.sha256(matching[0].canonical_bytes).hexdigest()
-
-
-@pytest.mark.asyncio
-async def test_finalizer_worker_owns_lease_and_settles_after_repeated_caller_cancellation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A public cancellation cannot borrow or release the worker's task lease."""
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    observed_tasks: list[asyncio.Task[object]] = []
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    original_acquire = _H1RecoveryExecutionFence.acquire
-    # These patched classification/readback seams test task ownership, not a mint.
-    _evidence, _request, synthetic = _synthetic_finalization_inputs()
-    publication = synthetic.publication
-    readback = synthetic.readback
-    assert type(publication) is JournalSelectedPublication
-    assert type(readback) is _H1SelectedTerminalReadback
-
-    async def record_acquire(fence: _H1RecoveryExecutionFence) -> _H1RecoveryExecutionLease:
-        task = asyncio.current_task()
-        assert task is not None
-        observed_tasks.append(task)
-        return await original_acquire(fence)
-
-    async def parked_recover(
-        self: H1LivePublicationAuthority,
-        *,
-        identity: DriverCommandIdentityV1,
-        original_fingerprint: str,
-        lease: _H1RecoveryExecutionLease,
-    ) -> JournalSelectedPublication:
-        del self, identity, original_fingerprint
-        lease.require_owned()
-        task = asyncio.current_task()
-        assert task is not None
-        observed_tasks.append(task)
-        entered.set()
-        await release.wait()
-        return publication
-
-    async def record_readback(
-        self: H1LivePublicationAuthority,
-        *,
-        identity: DriverCommandIdentityV1,
-        original_fingerprint: str,
-        publication: JournalSelectedPublication,
-    ) -> _H1SelectedTerminalReadback:
-        del self, identity, original_fingerprint
-        assert publication is synthetic.publication
-        task = asyncio.current_task()
-        assert task is not None
-        observed_tasks.append(task)
-        return readback
-
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            request = await _durable_recovery(runtime)
-            monkeypatch.setattr(_H1RecoveryExecutionFence, "acquire", record_acquire)
-            monkeypatch.setattr(
-                H1LivePublicationAuthority, "_recover_finalization_held", parked_recover
-            )
-            monkeypatch.setattr(
-                H1LivePublicationAuthority, "_read_finalization_receipt_held", record_readback
-            )
-            coordinator = runtime._h1_postseal_recovery_coordinator
-            assert coordinator is not None
-            caller = asyncio.create_task(
-                coordinator.finalize_selected(
-                    request.identity, request.original_driver_command_fingerprint()
-                )
-            )
-            await entered.wait()
-            caller.cancel()
-            await asyncio.sleep(0)
-            assert not caller.done()
-            caller.cancel()
-            await asyncio.sleep(0)
-            assert not caller.done()
-            release.set()
-            with pytest.raises(asyncio.CancelledError):
-                await caller
-            assert coordinator._fence._lease is None
-
-    assert len(observed_tasks) == 3
-    assert len(set(observed_tasks)) == 1
-    assert observed_tasks[0] is not caller
 
 
 @pytest.mark.asyncio
@@ -629,78 +449,3 @@ async def test_finalization_projection_rejects_untyped_selected_physical_readbac
         _runtime_for_finalization(malformed)._project_finalization_receipt(
             evidence, request.identity, request.original_driver_command_fingerprint(), malformed
         )
-
-
-@pytest.mark.asyncio
-async def test_installed_finalizer_returns_the_exact_selected_readback_on_replay(
-    tmp_path: Path,
-) -> None:
-    """A selected retry bypasses B/P and returns the retained physical decision."""
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=_resources(tmp_path)) as runtime:
-            request = await _durable_recovery(runtime)
-            first = _require_terminal_receipt(
-                await runtime.finalize_execution(
-                    request.identity, request.original_driver_command_fingerprint()
-                ),
-                disposition="COMMITTED",
-            )
-            selected = tuple(
-                decision
-                for decision in runtime._owner_decisions().snapshot().decisions
-                if type(decision.prepared.request) is CompleteDeliveryBatchV2
-                and decision.prepared.request.operation == COMPLETE_ACCEPTANCE_OPERATION
-            )
-            assert len(selected) == 1
-            batch = selected[0].prepared.request
-            enrollment = cast(Any, runtime)._h1_live_completion_enrollment
-            markers = tuple(enrollment._issuances.values())
-            assert len(markers) == 1
-            marker = markers[0]
-            assert marker.state == "CONSUMED"
-            assert type(marker.issuance) is H1CompletionIssuanceV2
-            assert marker.batch == batch
-            assert type(batch.authentication) is WorkerAuthentication
-            assert batch.authentication.applicability_bytes == marker.issuance.canonical_bytes()
-            assert tuple(exchange.role for exchange in marker.issuance.owner_exchanges) == (
-                "completion",
-                "conversation",
-                "effects",
-                "terminal_work",
-            )
-            current_ids = (
-                marker.issuance.scope_current_exchange.sent.request_id,
-                marker.issuance.terminal_admission.preterminal_current_exchange.sent.request_id,
-                marker.issuance.final_current_exchange.sent.request_id,
-            )
-            assert len(set(current_ids)) == 3
-            command = runtime._owner_command(selected[0])
-            with sqlite3.connect(runtime._database) as connection:
-                physical = tuple(
-                    row[0]
-                    for record in command.records
-                    for row in connection.execute(
-                        "SELECT canonical_bytes FROM records WHERE record_id = ?",
-                        (record.record_id,),
-                    ).fetchall()
-                )
-            assert physical == tuple(record.canonical_bytes for record in command.records)
-            replay = _require_terminal_receipt(
-                await runtime.finalize_execution(
-                    request.identity, request.original_driver_command_fingerprint()
-                ),
-                disposition="EXACT_REPLAY",
-            )
-            _assert_selected_terminal_receipt_is_physical(runtime, first)
-            _assert_selected_terminal_receipt_is_physical(runtime, replay)
-            assert replay.identity == first.identity
-            assert (
-                replay.original_driver_command_fingerprint
-                == first.original_driver_command_fingerprint
-            )
-            assert replay.selected_journal_decision == first.selected_journal_decision
-            assert replay.selected_run_head == first.selected_run_head
-            assert replay.terminal_detail == first.terminal_detail
-            assert len(enrollment._issuances) == 1

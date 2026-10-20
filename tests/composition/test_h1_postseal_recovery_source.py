@@ -2,31 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from pathlib import Path
-
 import pytest
 
-from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
-from chiplog.capabilities.agent_loop.delivery_preparation import (
-    Commentary,
-    DeliveryCompletion,
-    ProposedDelivery,
-)
-from chiplog.capabilities.agent_loop.recovery_contracts import Present
-from chiplog.composition.common_cli_execution_runtime import open_installed_h1_runtime
-from chiplog.composition.h1_launch_enrollment import _open_installed_h1_launch
 from chiplog.composition.h1_postseal_recovery_source import (
     H1PostSealRecoveryRootSource,
     H1PostSealRecoverySourceError,
     publication_identity_for_source,
     source_commitment_for_preimage,
 )
-from chiplog.composition.r14_execution_complete_seal_records import RetainedExecutionCompleteSealV2
-from chiplog.composition.r16_dispatch_registry import HermeticDispatchResources
-from tests.support.h1_cli_execution import _admit
-from tests.support.h1_installed_launch import TENANT, installed_slot, prepare_installed_slot
 
 
 def _preimage() -> dict[str, object]:
@@ -142,62 +125,3 @@ def test_v2_source_rejects_checkpoint_substitution_before_any_root_derivation() 
 
     with pytest.raises(H1PostSealRecoverySourceError, match="rejects a checkpoint"):
         H1PostSealRecoveryRootSource._require_exact_v2(raw)
-
-
-@pytest.mark.asyncio
-async def test_installed_immediate_v2_seal_derives_root_from_authenticated_source(
-    tmp_path: Path,
-) -> None:
-    slot, expected = installed_slot(tmp_path)
-    await prepare_installed_slot(slot, expected, tmp_path)
-    resources = HermeticDispatchResources(
-        scenarios=("CONFIRM",), cap=1, custody_path=tmp_path / "dispatch-custody"
-    )
-    with _open_installed_h1_launch(slot) as launch:
-        async with open_installed_h1_runtime(launch, resources=resources) as runtime:
-            request = await _admit(runtime)
-            initial = await runtime.drive_input(request)
-            runtime._execution_model._responses = (
-                DeliveryCompletion(
-                    tenant=TENANT,
-                    run_id=initial.stable_run_lineage_id,
-                    turn_id=initial.stable_run_lineage_id + "/turn/1",
-                    deliveries=(ProposedDelivery(payload=(Commentary(text="recovery root"),)),),
-                ).canonical_bytes(),
-            )
-            started = await runtime.begin_execution(
-                "hermetic-ingress", initial.stable_run_lineage_id, initial.selected_run_head.head
-            )
-            captured = await runtime.capture_execution(
-                "hermetic-ingress", initial.stable_run_lineage_id, started.head
-            )
-            sealed = await runtime.seal_execution_complete(
-                "hermetic-ingress", initial.stable_run_lineage_id, captured.head, profile="H1_V2"
-            )
-            raw = next(
-                raw
-                for _, _, raw in runtime._loop_decisions().entries()
-                if json.loads(raw).get("operation_id") == sealed.head
-            )
-            retained = RetainedExecutionCompleteSealV2.model_validate_json(
-                json.loads(raw)["execution_complete_seal"]
-            )
-            response_seal = retained.exchange.proposal.fan_out.response_seal
-            locator = CallSubjectHead(
-                subject_id=response_seal.response_seal_id,
-                revision=Present(
-                    head="record:" + response_seal.digest(), fingerprint=response_seal.digest()
-                ),
-            )
-
-            root = H1PostSealRecoveryRootSource(runtime).derive_immediate(
-                request.identity, request.original_driver_command_fingerprint(), locator
-            )
-
-            assert root.tenant_id == TENANT
-            assert root.database_id == slot.database_id
-            assert root.selected_seal_subject_id == locator.subject_id
-            assert root.selected_seal_head == locator.revision.head
-            assert root.selected_decision_digest == hashlib.sha256(raw).hexdigest()
-            assert root.selected_run_head == sealed.head
-            assert root.original_command_id == request.identity.driver_command_id

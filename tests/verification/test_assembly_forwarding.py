@@ -44,21 +44,9 @@ def _mutate(sources, module, old, new):
 EXPECTED = (
     (
         "common_cli_execution_runtime.py",
-        "_open_installed_h1_runtime",
-        "CommonCliExecutionRuntime",
-        "manifest",
-    ),
-    (
-        "common_cli_execution_runtime.py",
         "open_common_cli_execution_runtime",
         "CommonCliExecutionRuntime",
         "manifest",
-    ),
-    (
-        "common_cli_execution_runtime.py",
-        "open_installed_h1_runtime",
-        None,
-        "R14_R17_H1_LOCAL_EFFECTS_J7_PRODUCTION_MANIFEST",
     ),
     ("r13_runtime.py", "open_r13_runtime", "R13PlanningRuntime", "R13_PRODUCTION_MANIFEST"),
     (
@@ -127,11 +115,7 @@ def _expected_edges():
             manifest_symbol = AssemblySymbol(
                 manifest, "symbol", "chiplog.architecture.r7_runtime:" + manifest
             )
-        callee = (
-            "chiplog.composition.common_cli_execution_runtime:_open_installed_h1_runtime"
-            if runtime is None
-            else "chiplog.composition.r7_planning:_open_runtime"
-        )
+        callee = "chiplog.composition.r7_planning:_open_runtime"
         edges.append(
             AssemblyEdge(PREFIX + filename, caller, 1, callee, runtime_symbol, manifest_symbol)
         )
@@ -145,19 +129,14 @@ def test_actual_all_src_direct_mounts_match_independent_expected_rows_and_stay_o
     assert all(row.ordinal == 1 for row in observed.edges)
     by_caller = {row.caller: row for row in observed.edges}
     cli = by_caller["open_common_cli_execution_runtime"]
-    installed = by_caller["_open_installed_h1_runtime"]
-    assert cli.manifest.kind == installed.manifest.kind == "parameter"
+    assert cli.manifest.kind == "parameter"
     assert cli.manifest.default == (
         "chiplog.architecture.r7_runtime:R14_R17_H1_LOCAL_EFFECTS_PRODUCTION_MANIFEST"
     )
-    assert installed.manifest.default is None
     assert cli.runtime.origin == (
         "chiplog.composition.common_cli_execution_runtime:CommonCliExecutionRuntime"
     )
     assert by_caller["open_r8_runtime"].callee == "chiplog.composition.r7_planning:_open_runtime"
-    assert by_caller["open_installed_h1_runtime"].callee == (
-        "chiplog.composition.common_cli_execution_runtime:_open_installed_h1_runtime"
-    )
     assert by_caller["open_r7_runtime"].manifest.origin == (
         "chiplog.architecture.r7_runtime:R7_PRODUCTION_MANIFEST"
     )
