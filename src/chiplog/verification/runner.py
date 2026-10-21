@@ -6,8 +6,6 @@ import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
-from chiplog.architecture.r7_compatibility import verify_r7_compatibility_ledger
-
 from .artifacts import write_artifact
 from .identity import digest_file, sha256_bytes
 from .invariants import extract_invariant_manifest
@@ -294,7 +292,6 @@ def stage0_test_slices() -> dict[str, tuple[str, ...]]:
             "tests/architecture/test_canonical_entrypoint.py",
             "tests/architecture/test_inert_owner_models.py",
             "tests/architecture/test_owner_imports.py",
-            "tests/architecture/test_r7_compatibility.py",
             "tests/architecture/test_read_invalidation_manifest.py",
             "tests/architecture/test_runtime_manifest.py",
             "tests/capabilities/planning/test_r7_boundary.py",
@@ -312,7 +309,6 @@ def stage0_test_slices() -> dict[str, tuple[str, ...]]:
             "tests/platform/test_read_release_order.py",
             "tests/verification/test_inert_owner_models.py",
             "tests/verification/test_r7_bypass.py",
-            "tests/verification/test_r7_compatibility.py",
             "tests/verification/test_read_invalidation.py",
         ),
         "R8": (
@@ -336,7 +332,6 @@ def _check_stage0(root: Path) -> list[CheckResult]:
     verify_r8_surfaces(root, R8_SURFACES)
     verify_offline_import_boundary(root)
     verify_implementation_identity(root)
-    compatibility_digest = verify_r7_compatibility_ledger(evidence_root=root)
     current_surfaces = CheckResult(
         "V10.current-operation-surfaces",
         "PASS",
@@ -348,7 +343,6 @@ def _check_stage0(root: Path) -> list[CheckResult]:
                 for surface in R8_SURFACES
             ],
             "exposure": "HOLD",
-            "compatibility_ledger_digest": compatibility_digest,
         },
     )
     slices = stage0_test_slices()

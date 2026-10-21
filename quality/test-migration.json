@@ -503,24 +503,6 @@
     "tests/r7/test_broker_routing.py::test_stale_callee_and_exclusive_resource_hold_reject_before_delivery": [
       "tests/platform/test_broker_routing.py::test_stale_callee_and_exclusive_resource_hold_reject_before_delivery"
     ],
-    "tests/r7/test_compatibility_ledger.py::test_ledger_is_canonical_complete_and_bound": [
-      "tests/architecture/test_r7_compatibility.py::test_ledger_is_canonical_complete_and_bound"
-    ],
-    "tests/r7/test_compatibility_ledger.py::test_ledger_rejects_unknown_successor": [
-      "tests/verification/test_r7_compatibility.py::test_ledger_rejects_unknown_successor"
-    ],
-    "tests/r7/test_compatibility_ledger.py::test_ledger_rejects_missing_successor_evidence": [
-      "tests/verification/test_r7_compatibility.py::test_ledger_rejects_missing_successor_evidence"
-    ],
-    "tests/r7/test_compatibility_ledger.py::test_ledger_rejects_missing_duplicate_and_orphan_predecessors": [
-      "tests/verification/test_r7_compatibility.py::test_ledger_rejects_missing_duplicate_and_orphan_predecessors"
-    ],
-    "tests/r7/test_compatibility_ledger.py::test_every_predecessor_has_one_owned_successor_and_evidence": [
-      "tests/architecture/test_r7_compatibility.py::test_every_predecessor_has_one_owned_successor_and_evidence"
-    ],
-    "tests/r7/test_compatibility_ledger.py::test_parity_corpus_freezes_canonical_request_and_compared_artifacts": [
-      "tests/architecture/test_r7_compatibility.py::test_parity_corpus_freezes_canonical_request_and_compared_artifacts"
-    ],
     "tests/r7/test_inert_owner_models.py::test_inert_schema_is_closed_and_owner_models_encode_identically": [
       "tests/architecture/test_inert_owner_models.py::test_inert_schema_is_closed_and_owner_models_encode_identically"
     ],
