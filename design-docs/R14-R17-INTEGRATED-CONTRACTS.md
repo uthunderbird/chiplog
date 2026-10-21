@@ -478,7 +478,7 @@ are representation evidence; owner runtime enumeration, proof verification,
 journal selection, restart behavior and transport handoff remain unimplemented
 by these additions. Central operation/source mounting remains OPEN.
 
-## Conversation preparation and common driver wire
+## Conversation preparation
 
 `capabilities.projections.conversation_preparation_contracts` separates admitted
 input, accepted completion and semantic rejection. Source cuts retain preexisting
@@ -489,37 +489,27 @@ new assistant entries. Full consumers use ACTIVE captured sources and distinct
 SUCCEEDED/ABORTED proposed results, including a v3 history-tool Turn followed by
 a real captured completion.
 
-`composition.common_execution_driver_contracts` retains original ingress identity
-and exact source bytes for CLI peer, retained CLI, Telegram push and poll. Results
-distinguish selected, pending, uncertain and rejected outcomes. Terminal selected
-receipts distinguish accepted completion, semantic rejection, ordinary abort and
-cancellation; phase, Run state and required selected heads must agree. A semantic
-rejection retains the unchanged projection (possibly absent) and its no-change
-commitment, not a fabricated newly selected conversation record.
-
-Evidence: `uv run pytest -q
-tests/composition/test_common_execution_driver_contracts.py
-tests/capabilities/projections/test_conversation_preparation_contracts.py` passed
-47 tests after root review corrections. These are unmounted contract consumers.
-Actual source authentication, Telegram admitted lookup, complete owner exchange
-assembly, public driver execution and selected projection readback remain OPEN.
-The driver receipt supplies no acknowledgement, cursor or SEND permission.
+The unmounted common-driver wire and its shape-only consumers were removed during
+OE-05 cleanup. The current application uses `PostgresApplicationDriver` and native
+ingress receipts directly. Functional ingress, completion, delivery and restart
+coverage lives in the PostgreSQL composition tests; the removed wire is no longer
+an implementation obligation.
 
 The broker now has separate `CompleteDeliveryBatchV2` and
 `RejectedCompletionBatchV1` envelopes, fixed owner slots and exact source-command
 order for replay identity. These operations cannot enter `SingleOwnerBatch`.
 The historical completion envelope remains separate. Focused broker envelope
-tests plus the two consumers above passed 55 tests with `uv run pytest -q
+tests plus conversation preparation were originally checked alongside the removed
+driver wire. The remaining focused selectors are `uv run pytest -q
 tests/platform/test_completion_batch_v2_contracts.py
 tests/platform/test_owner_publication_contracts.py
-tests/composition/test_common_execution_driver_contracts.py
 tests/capabilities/projections/test_conversation_preparation_contracts.py`;
-targeted mypy passed on those consumers and their four source modules.
+the old combined test count is not current evidence.
 
 This checkpoint does not admit completion assembly as complete: fixed loop and
 effects owner-record conversion, full positive owner-exchange fixtures, exact
 ordered batch-byte comparison and result/request fingerprint joins remain OPEN.
-The independently useful driver/conversation/broker wire can be reviewed without
+The conversation/broker wire can be reviewed without
 treating the unfinished assembly validator as evidence of atomic publication.
 
 ## Recovery physical records and proof sources

@@ -185,7 +185,7 @@ Native corrupt-read, auth/CAS, atomicity и no-repeat tests остаются.
 
 ### OE-05. Второй, неиспользуемый API общего driver
 
-[common_execution_driver_contracts](../src/chiplog/composition/common_execution_driver_contracts.py)
+`composition/common_execution_driver_contracts.py` (удалён в OE-05)
 определяет command/source variants, reader bindings, fingerprint domains,
 Drive/Advance/Lookup и receipts. Source-импортера модуля не найдено.
 Текущий [postgres_application](../src/chiplog/composition/postgres_application.py)
@@ -202,7 +202,7 @@ Drive/Advance/Lookup и receipts. Source-импортера модуля не н
 Независимые срезы:
 
 - [operation_registry_contracts](../src/chiplog/platform/operation_registry_contracts.py),
-  [production_operation_inventory](../src/chiplog/platform/production_operation_inventory.py)
+  `platform/production_operation_inventory.py` (удалён вместе с OE-05)
   и их исключительные [runtime_surface_contracts](../src/chiplog/platform/runtime_surface_contracts.py)
   описывают роли, cardinality, C_OPEN/UNMOUNTED и applicability без текущего bridge
   к native publication. У верхнего inventory не найден source-импортер.
@@ -438,4 +438,27 @@ tests/composition/test_postgres_model_recovery.py` — 23 passed.
 Четыре добавленных случая проверяют отказ без частичных записей после реальной
 конкурентной публикации или отзыва доступа между подготовкой и записью; они
 проходили и до рефакторинга. Ruff и mypy изменённого runtime проходят.
-Ускорение не измерялось. Остальные пункты остаются результатами аудита.
+Ускорение не измерялось.
+
+### OE-05 и верхний inventory из OE-06 — неиспользуемый driver API
+
+Удалены `composition/common_execution_driver_contracts.py`,
+`platform/production_operation_inventory.py` и два их исключительных тестовых
+модуля. Это были DTO/Protocol и незавершённые декларации операций без текущего
+runtime-потребителя. Их проверки сериализации и замороженного состава не
+исполняли native driver. Прямых импортов, динамической регистрации или именованных
+verification selectors для удаляемой связки не найдено; холодная проверка плана
+не нашла функциональных блокеров. Независимый hash domain в
+`r14_execution_inbox_records.py` и общие registry/runtime-surface типы сохранены.
+
+Проверка: с локальным `CHIPLOG_TEST_POSTGRES_DSN` команда `uv run pytest -q
+tests/composition/test_postgres_application.py
+tests/composition/test_postgres_ingress.py
+tests/composition/test_native_channel_delivery.py
+tests/composition/test_postgres_completion.py` — 26 passed. Это действующие
+ingress, driver, завершение, доставка, отказ при подделке/смене источника,
+откат и reopen без повторного вызова модели или отправки.
+`uv run pytest --collect-only -q` собирает весь оставшийся набор без ошибок;
+Ruff затронутого функционального среза проходит. Каталог источников требует
+обычного обновления перед полной интеграцией, а не repin на checkpoint.
+Остальные пункты остаются результатами аудита.
