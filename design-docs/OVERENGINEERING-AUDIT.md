@@ -139,10 +139,9 @@ inventory registry взамен. Shared workspace policy и DTO с живыми 
 
 ### OE-03. Не смонтированная terminal-fault диагностика
 
-[recovery_diagnostic_contracts](../src/chiplog/platform/recovery_diagnostic_contracts.py),
-[terminal_recovery_fault_contracts](../src/chiplog/capabilities/agent_loop/terminal_recovery_fault_contracts.py)
-и [terminal_fault_observer_sources](../src/chiplog/capabilities/agent_loop/terminal_fault_observer_sources.py)
-задают capture inventories, observer registry, issuance, provenance и fresh/historical
+Удалённые `recovery_diagnostic_contracts`, `terminal_recovery_fault_contracts`
+и `terminal_fault_observer_sources` задавали capture inventories, observer registry,
+issuance, provenance и fresh/historical
 joins. Для верхнего diagnostic module не найден source-потребитель; найденные
 нижние связи замыкаются на этот протокол и его tests/support.
 Отдельная durable terminal-fault recipe явно отложена в B-R14-A08.
@@ -196,10 +195,10 @@ Drive/Advance/Lookup и receipts. Source-импортера модуля не н
 
 Независимые срезы:
 
-- [operation_registry_contracts](../src/chiplog/platform/operation_registry_contracts.py),
+- Удалённые `platform/operation_registry_contracts.py`,
   `platform/production_operation_inventory.py` (удалён вместе с OE-05)
-  и их исключительные [runtime_surface_contracts](../src/chiplog/platform/runtime_surface_contracts.py)
-  описывают роли, cardinality, C_OPEN/UNMOUNTED и applicability без текущего bridge
+  и их исключительные `platform/runtime_surface_contracts.py`
+  описывали роли, cardinality, C_OPEN/UNMOUNTED и applicability без текущего bridge
   к native publication. У верхнего inventory не найден source-импортер.
 - [cli_custody_socket](../src/chiplog/adapters/driven/cli_custody_socket.py)
   содержит отдельный challenge/nonce/inode/deadline socket protocol.
@@ -534,3 +533,27 @@ tests/composition/test_postgres_ingress.py` — 26 passed.
 `uv run pytest --collect-only -q` собирает оставшийся набор без ошибок;
 `mypy` по настроенному source scope проходит. Ruff и format check изменённого
 policy-route теста проходят. Каталог источников обновляется перед full integration.
+
+### OE-03 и registry DSL из OE-06 — отдельная terminal-fault диагностика
+
+Удалены diagnostic capture/observer/issuance/provenance протоколы, terminal fault
+owner shapes, fault-rule registry, исключительные source refs и operation/runtime
+registry DSL. Удалены их восемь тестовых модулей и два больших fixture builder.
+В общем owner-publication codec удалена только diagnostic authentication ветка,
+её operation literal и validator; остальные auth/envelopes сохранены.
+
+Source/import/dynamic-manifest проверка и холодный разбор не нашли действующего
+runtime-потребителя удалённой семьи. Общие recovery/frontier/wire DTO и их тесты
+остаются; typed integrity отказ, HOLD/abort и существующее model/run/effect
+recovery не заменялись диагностикой или частичным успешным результатом.
+
+С локальным `CHIPLOG_TEST_POSTGRES_DSN` команда `uv run pytest -q
+tests/platform/test_owner_publication_contracts.py
+tests/composition/test_postgres_model_recovery.py
+tests/composition/test_postgres_run_recovery.py
+tests/composition/test_postgres_effects.py
+tests/composition/test_postgres_two_seals.py` — 33 passed.
+`uv run pytest -q tests/platform/test_broker_contract.py
+tests/platform/test_broker_routing.py tests/platform/test_broker_peer_authentication.py`
+— 17 passed. Полная collection, mypy по source, Ruff и format изменённого codec
+проходят. CLI custody socket из OE-06 остаётся отдельным следующим срезом.

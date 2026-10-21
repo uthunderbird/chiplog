@@ -33,11 +33,10 @@ new version is explicitly needed. No row is CONTRACTS READY from class existence
 | J6: model-attempt recovery | `model_attempt_recovery_contracts` executable replacement and separate late-evidence request/result/port | Registered source/record interpretation and operation bindings; authenticity, race handling and immutable late evidence remain T/I |
 | J7: completion/delivery/channel driver | `execution_completion_contracts` direct executable completion request/result retains captured response, complete earlier joins and delivery observation; existing delivery owner port/broker envelope retained | Complete conversation/effects/work participant assembly contract and consumers, plus public common CLI/Telegram driver receipts preserving distinct authentication and committed projection; owner proposal alone is not CompleteAcceptance publication |
 
-The recovery classification `TERMINAL_RECOVERY_FAULT` is observation-only in the
-current contracts. Normative recovery requires a durable typed terminal fault;
-its owner preparation and physical publication recipe remain a separate explicit
-`terminal_fault_publication` C_OPEN obligation. A zero-record classification or
-ordinary rejection does not satisfy that required branch.
+The unmounted terminal-fault diagnostic protocol and its publication obligation
+were removed during OE-03 cleanup. Current recovery keeps typed integrity refusal,
+HOLD/abort and the existing model, Run and effect recovery flows. A diagnostic
+classification in shared recovery wires does not mount a durable fault protocol.
 
 These are work packages within one contract phase. No missing row is moved to
 post-implementation detail coverage. The common runtime is implemented only after
@@ -640,14 +639,11 @@ This is pure preparation/representation evidence. Actual owner preparation,
 registered publication, source authentication, writer CAS and replay remain T/I;
 the overall contract graph remains OPEN.
 
-## Native source and diagnostic authority checkpoint
+## Native source checkpoint
 
 `execution_run_record_contracts` decodes physical v2/v3 Run members in all seven
 native states, checks canonical bytes, full hash and native head, and joins an
 owner result to the retained member. It does not validate state transitions.
-`recovery_fault_rule_contracts` checks exact selected registry bytes and decision
-references, classifier/version and precise rule head/code/relation membership;
-it does not execute the rule predicate or authenticate its selection.
 
 `scheduler_seed_producer_contracts` declares the fresh automatic seed exchange
 and a closed eleven-row source decoder. Its source projection binds native
@@ -658,19 +654,8 @@ overflow primitive helpers have consumers; the prepared-result roundtrip covers
 the ordinary branch. Source authentication, actual seed preparation and replay
 remain required integration work.
 
-Broker diagnostic source references remain outside the physical owner domain.
-The new diagnostic authentication branch is structurally restricted to the fixed
-terminal-fault command and one loop-owned fault record. It binds the invocation
-subject and declared final-request fingerprints. These guards do not verify the
-request byte preimage, retained issuance, source authenticity or current writer
-cut. The diagnostic broker and fault preparation contracts remain OPEN; no fault
-operation is registered or mounted by this checkpoint.
-
-Evidence: the four selected new test modules for execution Run records, fault
-rules, scheduler seed and diagnostic authentication pass 71 tests. Ruff, format
-and mypy cover their six source files, four consumers and scheduler support.
-The checkpoint command carries the exact pytest selectors; no full regression
-or implementation red-team was run. Overall Phase C remains OPEN.
+Fault-rule registries and diagnostic authentication were later removed in OE-03.
+The original combined test count is historical and is not current evidence.
 
 ## Frontier and read-only physical codec checkpoint
 
@@ -753,23 +738,6 @@ replay only; the Run has not yet been completed or delivered by this path.
 The adjacent read-only source, obligation and assembly contracts and scheduler
 service-acceptance contract remain preparatory interfaces. Their 53 focused
 consumer tests pass, but none of these contracts is a mounted runtime writer.
-
-## Terminal recovery fault representation checkpoint
-
-The fault owner exchange now retains the exact native SUSPENDED Run, diagnostic
-inventory, frontier and selected rule bytes. Worker fences bind the selected Run;
-observer requests require retained capture, observation and issuance sources.
-Decoded frontiers share the diagnostic coordinates, and valid canonical frontiers
-cannot masquerade as undecodable input. Findings bind the registered source roles
-and counts. Broker fresh/historical verification carriers retain and compare the
-original request, selected fault record and diagnostic references.
-
-Focused consumers are `test_terminal_recovery_fault_contracts.py`,
-`test_terminal_fault_observer_sources.py`, `test_terminal_fault_frontier_contracts.py`
-and `tests/platform/test_recovery_diagnostic_contracts.py`. These representation
-checks do not authenticate journal membership or implement the runtime classifier,
-publication-time fault/continuation race, terminal accounting or recovery blocking.
-Those remain required work in the common runtime.
 
 ## Publication discipline
 
