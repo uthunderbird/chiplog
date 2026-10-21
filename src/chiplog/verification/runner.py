@@ -258,11 +258,9 @@ def stage0_test_slices() -> dict[str, tuple[str, ...]]:
         "R2": (
             "tests/architecture/test_inert_shared.py",
             "tests/architecture/test_r1_r2_contract.py",
-            "tests/architecture/test_r4_r5_freeze.py",
             "tests/verification/test_inert_shared.py",
             "tests/verification/test_manifest_contract.py",
             "tests/verification/test_manifest_mutants.py",
-            "tests/verification/test_r4_r5_freeze.py",
         ),
         "R3": (
             "tests/platform/test_deletion_provenance.py",
@@ -271,7 +269,7 @@ def stage0_test_slices() -> dict[str, tuple[str, ...]]:
         ),
         "R4": ("tests/capabilities/deployment_trust/test_trust.py",),
         "R5": (
-            "tests/architecture/test_r4_r5_convergence.py",
+            "tests/architecture/test_parallel_capability_imports.py",
             "tests/capabilities/planning/test_planning.py",
             "tests/capabilities/projections/test_projection.py",
         ),

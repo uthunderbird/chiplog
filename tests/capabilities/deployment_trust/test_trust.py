@@ -13,7 +13,6 @@ from chiplog.adapters.driven.deployment_trust import (
     IndependentTenantDecisionJournal,
     SQLiteTrustMaterializer,
 )
-from chiplog.architecture.current_contract_extensions import current_record_ids
 from chiplog.capabilities.deployment_trust import (
     AuthenticationRequest,
     TenantDecisionJournalPort,
@@ -27,7 +26,6 @@ from chiplog.capabilities.deployment_trust._model import (
     RecoveryRequired,
     TrustInvariantError,
 )
-from chiplog.capabilities.deployment_trust._records import RECORD_TYPE_IDS
 from chiplog.domain_primitives import PrincipalId, RecordId, TenantId
 
 
@@ -84,10 +82,6 @@ def test_boundaries_are_protocols_and_adapters_are_structural(tmp_path: Path) ->
     trust, journal, materializer = service(tmp_path)
     assert hasattr(journal, "append") and hasattr(materializer, "materialize")
     assert hasattr(trust, "revalidate")
-
-
-def test_durable_record_discriminators_equal_the_freeze() -> None:
-    assert current_record_ids("deployment_trust") == RECORD_TYPE_IDS
 
 
 def test_genesis_is_immutable_and_cross_tenant_relabel_is_denied(tmp_path: Path) -> None:

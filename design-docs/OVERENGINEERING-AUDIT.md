@@ -258,9 +258,8 @@ takeover и stale-lease отказ. Контрпример — текущий cl
 
 ### OE-09. Immutable freeze плюс отдельные current extensions
 
-[r4_r5_freeze](../src/chiplog/architecture/r4_r5_freeze.py#L420)
-и [current_contract_extensions](../src/chiplog/architecture/current_contract_extensions.py#L1)
-поддерживают неизменный исторический universe и отдельный список additions.
+Удалённые `architecture/r4_r5_freeze.py` и `current_contract_extensions.py`
+поддерживали неизменный исторический universe и отдельный список additions.
 Второй модуль прямо называет это registration представлений, не running authority.
 Найденная source-связь — extension → freeze; проверки вызываются из tests/verification
 lanes. Native runtime этими списками не авторизуется.
@@ -606,3 +605,21 @@ tests/composition/test_postgres_scheduler_actions.py` — 25 passed.
 Это актуальные occurrence/Run atomicity, replay, overflow, takeover и lease fences.
 Полная collection, mypy по source, Ruff и format изменённого теста проходят.
 Холодный разбор не нашёл блокеров. Каталог обновляется перед full integration.
+
+### OE-09 — исторический freeze и current extensions
+
+Удалены два source-модуля исторического universe/extensions и три исключительных
+freeze/shape тестовых модуля. Смешанный convergence модуль заменён одним
+`test_parallel_capability_imports.py`: перенесённый import-boundary тест имеет
+неизменный AST. Удалена только freeze-equality проверка в `test_trust.py`.
+Selectors stage0 runner обновлены на оставшийся тест. Действующие manifests,
+verifier, ownership/commit-boundary и отрицательные CROSS_OWNER_COMMIT проверки
+сохранены; новой заморозки API взамен не добавлено.
+
+`uv run pytest -q tests/architecture/test_parallel_capability_imports.py
+tests/capabilities/deployment_trust/test_trust.py
+tests/capabilities/planning/test_planning.py tests/verification/test_manifest_contract.py
+tests/verification/test_manifest_mutants.py` — 85 passed.
+Полная collection, mypy по source и Ruff изменённых файлов проходят.
+Холодная проверка не нашла runtime-потребителей или блокеров. Историческая
+`quality/test-migration.json` не используется как текущий selector registry.
