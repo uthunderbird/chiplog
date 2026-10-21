@@ -240,9 +240,8 @@ def test_offline_gate_rejects_other_operator_policy_imports(
         verify_offline_import_boundary(tmp_path)
 
 
-@pytest.mark.parametrize("leaf", ["cli_custody_socket.py", "native_ingress_cli.py"])
-def test_offline_gate_accepts_exact_cli_peer_leaf(tmp_path: Path, leaf: str) -> None:
-    target = tmp_path / "src/chiplog/adapters/driven" / leaf
+def test_offline_gate_accepts_exact_cli_peer_leaf(tmp_path: Path) -> None:
+    target = tmp_path / "src/chiplog/adapters/driven/native_ingress_cli.py"
     target.parent.mkdir(parents=True)
     target.write_text("import socket\nimport ctypes\n")
     verify_offline_import_boundary(tmp_path)
@@ -253,12 +252,13 @@ def test_offline_gate_accepts_exact_cli_peer_leaf(tmp_path: Path, leaf: str) -> 
     [
         ("cli_custody_neighbor.py", "import socket"),
         ("cli_custody_neighbor.py", "import ctypes"),
-        ("cli_custody_socket.py", "import ssl"),
-        ("cli_custody_socket.py", "import importlib"),
-        ("cli_custody_socket.py", "import socket.unknown"),
-        ("cli_custody_socket.py", "import ctypes.util"),
-        ("cli_custody_socket.py", "from socket import *"),
-        ("cli_custody_socket.py", "import httpx"),
+        ("cli_custody_socket.py", "import socket"),
+        ("native_ingress_cli.py", "import ssl"),
+        ("native_ingress_cli.py", "import importlib"),
+        ("native_ingress_cli.py", "import socket.unknown"),
+        ("native_ingress_cli.py", "import ctypes.util"),
+        ("native_ingress_cli.py", "from socket import *"),
+        ("native_ingress_cli.py", "import httpx"),
     ],
 )
 def test_cli_peer_leaf_registration_rejects_other_transports(

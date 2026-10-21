@@ -200,8 +200,8 @@ Drive/Advance/Lookup и receipts. Source-импортера модуля не н
   и их исключительные `platform/runtime_surface_contracts.py`
   описывали роли, cardinality, C_OPEN/UNMOUNTED и applicability без текущего bridge
   к native publication. У верхнего inventory не найден source-импортер.
-- [cli_custody_socket](../src/chiplog/adapters/driven/cli_custody_socket.py)
-  содержит отдельный challenge/nonce/inode/deadline socket protocol.
+- Удалённый `adapters/driven/cli_custody_socket.py`
+  содержал отдельный challenge/nonce/inode/deadline socket protocol.
   Source-конструктор не найден; найден whitelist в verifier.
   `native-chat` использует [postgres_native_cli](../src/chiplog/composition/postgres_native_cli.py)
   с trust/current UID и PG ingress. Отдельный рабочий socket-channel adapter
@@ -557,3 +557,16 @@ tests/composition/test_postgres_two_seals.py` — 33 passed.
 tests/platform/test_broker_routing.py tests/platform/test_broker_peer_authentication.py`
 — 17 passed. Полная collection, mypy по source, Ruff и format изменённого codec
 проходят. CLI custody socket из OE-06 остаётся отдельным следующим срезом.
+
+### OE-06 — неиспользуемый CLI custody socket
+
+Удалён отдельный `CliCustodySocket` и его исключение в import-boundary whitelist.
+Source-конструкторов, direct/dynamic consumers и manifest registration не найдено.
+Рабочий `native_ingress_cli` и общие custody DTO/валидация сохранены.
+Матрица отрицательных import cases теперь испытывает оставшийся native leaf;
+отдельный отрицательный случай подтверждает отказ для удалённого socket leaf.
+
+С локальным `CHIPLOG_TEST_POSTGRES_DSN` команда `uv run pytest -q
+tests/verification/test_r8_surface.py tests/cli/test_native_chat.py
+tests/composition/test_postgres_ingress.py` — 85 passed.
+Холодная проверка не нашла блокеров. Каталог обновляется перед full integration.
