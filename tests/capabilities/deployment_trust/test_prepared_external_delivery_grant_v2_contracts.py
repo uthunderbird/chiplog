@@ -20,7 +20,6 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_contracts 
     IssuePreparedExternalDeliveryGrantRequestV2,
     ObservedPreparedExternalDeliveryGrantLifecycleV2,
     PreparedExternalDeliveryGrantLifecycleResultV2,
-    PreparedExternalDeliveryGrantV1,
     PreparedExternalDeliveryGrantV2,
     ReadPreparedExternalDeliveryGrantLifecycleV2,
     RevokePreparedExternalDeliveryGrantRequestV2,
@@ -269,15 +268,3 @@ def test_v2_signed_source_rejects_v1_wrapper_and_request_mismatch() -> None:
     data["operation"] = "REVOKE_PREPARED_EXTERNAL_DELIVERY_GRANT"
     with pytest.raises(ValidationError, match="request"):
         OperatorGrantAuthorizationPayloadV2.model_validate(data)
-
-
-def test_v1_canonical_grant_bytes_are_stable() -> None:
-    # V2 fields and imports must not alter the registered V1 JSON canonicalization.
-    from tests.support.capabilities.deployment_trust.prepared_external_delivery_contracts import (
-        grant as v1_grant,
-    )
-
-    value: PreparedExternalDeliveryGrantV1 = v1_grant()
-    assert hashlib.sha256(value.canonical_bytes()).hexdigest() == (
-        "646aa154568672ba26825824670555310964f5fe0a4aebf46e8703414159ba78"
-    )

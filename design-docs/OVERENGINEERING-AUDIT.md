@@ -245,8 +245,8 @@ takeover и stale-lease отказ. Контрпример — текущий cl
 
 Три разных небольших среза:
 
-- [prepared_external_delivery_contracts:98](../src/chiplog/capabilities/deployment_trust/prepared_external_delivery_contracts.py#L98):
-  V1 grant/anchor/current-reader family явно сохранена для historical byte compatibility.
+- [prepared_external_delivery_contracts](../src/chiplog/capabilities/deployment_trust/prepared_external_delivery_contracts.py):
+  удалённая в OE-08 V1 grant/anchor/current-reader family была явно сохранена для historical byte compatibility.
   У неё не найден отдельный source-потребитель. Общие Source/Resources/Mandate V1
   используются V2 scope и остаются, несмотря на имя V1.
 - [deployment_trust/_r7_process:457](../src/chiplog/capabilities/deployment_trust/_r7_process.py#L457):
@@ -461,4 +461,23 @@ ingress, driver, завершение, доставка, отказ при по�
 `uv run pytest --collect-only -q` собирает весь оставшийся набор без ошибок;
 Ruff затронутого функционального среза проходит. Каталог источников требует
 обычного обновления перед полной интеграцией, а не repin на checkpoint.
+
+### OE-08 — исторический V1 grant
+
+Удалены исторические V1 grant/anchor/current-reader/result, их исключительные
+тест и builder, а также V1 byte-stability test из V2-набора. Source-потребителей
+и динамической регистрации этой семьи не найдено; холодная проверка подтвердила
+замкнутость удаления. Общие Source/Resources/Mandate DTO сохранены для V2.
+Текущие lifecycle, подписи команд, источник полномочий и ограничения SEND
+не менялись. Это первый из трёх независимых срезов OE-08.
+
+Проверка: `uv run pytest -q
+tests/capabilities/deployment_trust/test_prepared_external_delivery_grant_v2_contracts.py
+tests/capabilities/deployment_trust/test_operator_grant_command_verifier.py
+tests/capabilities/effects/test_h1_scoped_preparation.py
+tests/capabilities/effects/test_h1_prepared_delivery_basis.py` — 57 passed.
+С локальным `CHIPLOG_TEST_POSTGRES_DSN` команда `uv run pytest -q
+tests/composition/test_postgres_completion.py
+tests/platform/test_operator_grant_key_pin.py` — 18 passed.
+Полная collection, Ruff и mypy изменённого source проходят.
 Остальные пункты остаются результатами аудита.
