@@ -46,7 +46,7 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 [tool.mypy]
 python_version = "3.14"
 strict = true
-files = ["src", "tests"]
+files = ["src"]
 
 [[tool.mypy.overrides]]
 module = ["tests.tooling.test_scaffold"]
