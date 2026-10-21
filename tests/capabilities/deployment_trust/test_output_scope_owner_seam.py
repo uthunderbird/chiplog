@@ -29,7 +29,10 @@ from chiplog.capabilities.deployment_trust._output_scope_profile import (
 from chiplog.capabilities.deployment_trust._r7_process import dispatch
 from chiplog.capabilities.deployment_trust.h1_broker_evidence_contracts import (
     H1_CALL_MAX_BYTES,
+    H1CurrentBrokerRouteV1,
     H1OwnerCandidateCallV1,
+    H1OwnerCurrentCallV1,
+    H1OwnerCurrentCandidateV1,
 )
 from chiplog.platform.r7_trust import TrustOwnerCall
 from tests.support.capabilities.deployment_trust.output_scope_owner_seam import (
@@ -135,7 +138,7 @@ def test_issue_rejects_invalid_candidate_or_outer_snapshot(variant: str) -> None
 
 
 @pytest.mark.parametrize("current", [False, True])
-def test_real_owner_route_remains_unsupported(current: bool) -> None:
+def test_owner_issue_candidate_and_invalid_direct_current_wire(current: bool) -> None:
     candidate, snapshot = candidate_request()
     value = read_request() if current else candidate
     operation = "read_current_hermetic_output_scope" if current else "issue_hermetic_output_scope"
@@ -144,12 +147,12 @@ def test_real_owner_route_remains_unsupported(current: bool) -> None:
     )
     call = TrustOwnerCall(mode=mode, snapshot_bytes=snapshot, request_bytes=value.canonical_bytes())
     result = dispatch("deployment_trust." + operation, call.canonical_bytes())
-    if not current and "payload" not in result:
+    if current or "payload" not in result:
         assert result["failure"] == "PROTOCOL_REJECTED"
         return
     assert isinstance(result["payload"], str)
     payload = json.loads(base64.b64decode(result["payload"]))
-    assert payload["disposition"] == ("UNSUPPORTED" if current else "CANDIDATE")
+    assert payload["disposition"] == "CANDIDATE"
     assert result["schema_id"] == (
         "chiplog.deployment-trust.current-hermetic-output-scope-result.v1"
         if current
@@ -169,6 +172,75 @@ def test_real_owner_route_remains_unsupported(current: bool) -> None:
         dispatch("deployment_trust.authenticate", call.canonical_bytes())["failure"]
         == "PROTOCOL_REJECTED"
     )
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+def test_wrapped_current_read_checks_selected_credential(revoked: bool) -> None:
+    from chiplog.platform.r7_trust import encode_trust_journal
+
+    read = read_request()
+    binding = {"tenant_id": read.tenant_id}
+    ref = replace(
+        read.authenticated_cli_ref,
+        trust_head=hashlib.sha256(
+            json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        freshness_sequence=1,
+    )
+    read = read.model_copy(update={"authenticated_cli_ref": ref})
+    events = (
+        ("INITIALIZE", {"binding": binding}),
+        (
+            "BOOTSTRAP",
+            {
+                "principal_id": ref.principal_id.value,
+                "credential": {
+                    "head": ref.credential_head,
+                    "session_head": ref.session_head,
+                    "peer_credential": ref.peer_credential,
+                    "revoked": revoked,
+                },
+            },
+        ),
+    )
+    entries: list[tuple[str, str | None, bytes]] = []
+    predecessor = None
+    for kind, payload in events:
+        raw = json.dumps(
+            {"kind": kind, "payload": payload, "predecessor": predecessor},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        identity = hashlib.sha256((predecessor or "GENESIS").encode() + b"\x00" + raw).hexdigest()
+        entries.append((identity, predecessor, raw))
+        predecessor = identity
+    pinned = H1OwnerCurrentCallV1(
+        route=H1CurrentBrokerRouteV1(
+            tenant_id=read.tenant_id,
+            broker_epoch=1,
+            runtime_generation="generation",
+            broker_session_id="broker-session",
+            owner_session_id="owner-session",
+            request_id="current-request",
+        ),
+        read_request_bytes=read.canonical_bytes(),
+        request_digest=hashlib.sha256(read.canonical_bytes()).hexdigest(),
+    )
+    call = TrustOwnerCall(
+        mode="READ_CURRENT_HERMETIC_OUTPUT_SCOPE_V1",
+        snapshot_bytes=encode_trust_journal(tuple(entries)),
+        request_bytes=pinned.canonical_bytes(),
+    )
+    result = dispatch("deployment_trust.read_current_hermetic_output_scope", call.canonical_bytes())
+    if revoked:
+        assert result["failure"] == "PROTOCOL_REJECTED"
+    else:
+        assert isinstance(result["payload"], str)
+        candidate = H1OwnerCurrentCandidateV1.model_validate_json(
+            base64.b64decode(result["payload"])
+        )
+        candidate.check_pinned_call(pinned)
+        assert candidate.current.disposition == "CURRENT"
 
 
 @pytest.mark.parametrize(

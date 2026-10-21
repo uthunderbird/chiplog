@@ -249,13 +249,13 @@ takeover и stale-lease отказ. Контрпример — текущий cl
   удалённая в OE-08 V1 grant/anchor/current-reader family была явно сохранена для historical byte compatibility.
   У неё не найден отдельный source-потребитель. Общие Source/Resources/Mandate V1
   используются V2 scope и остаются, несмотря на имя V1.
-- [deployment_trust/_r7_process:457](../src/chiplog/capabilities/deployment_trust/_r7_process.py#L457):
-  дополнительный old direct-wire decoder выдаёт UNSUPPORTED, тогда как текущий
+- [deployment_trust/_r7_process](../src/chiplog/capabilities/deployment_trust/_r7_process.py):
+  удалённый дополнительный old direct-wire decoder выдавал UNSUPPORTED, тогда как текущий
   маршрут использует pinned wrapper. Можно сохранить один текущий decoder и
   обычный protocol refusal; сам embedded payload type остаётся.
-- [_journal:53](../src/chiplog/adapters/driven/deployment_trust/_journal.py#L53)
-  и [test_journal_native_json:53](../tests/platform/test_journal_native_json.py#L53):
-  отдельная поддержка исторических UTF-16/non-standard envelope forms и тест
+- [_journal](../src/chiplog/adapters/driven/deployment_trust/_journal.py)
+  и [test_journal_native_json](../tests/platform/test_journal_native_json.py):
+  удалены отдельная поддержка исторических UTF-16/non-standard envelope forms и тест
   вызова fallback parser. У текущего writer другой нормальный контракт.
 
 Меньший вариант: удалить только обещание принимать старую форму и его исключительные
@@ -480,4 +480,27 @@ tests/capabilities/effects/test_h1_prepared_delivery_basis.py` — 57 passed.
 tests/composition/test_postgres_completion.py
 tests/platform/test_operator_grant_key_pin.py` — 18 passed.
 Полная collection, Ruff и mypy изменённого source проходят.
-Остальные пункты остаются результатами аудита.
+### OE-08 — старый direct wire и journal parser fallback
+
+Owner читает только текущий pinned wrapper; старый bare read получает обычный
+`PROTOCOL_REJECTED`. Добавлены положительный wrapper-dispatch и отказ при
+отозванном credential с настоящими закодированными событиями trust snapshot.
+Journal использует один parser, соответствующий текущему writer. Убраны два
+fallback, legacy acceptance и счётчики вызовов parser/writer. Сохранены opaque
+payload roundtrip, неизменность записанного префикса, oversized integer refusal,
+HMAC/цепочка и отказ при повреждении durable sources.
+
+Удалён исключительно исторический readonly V1 bundle test. Сам fixture пока
+используется функциональными corruption/startup tests в
+`test_r14_startup_trust_prefix.py`: их нужно перевести на актуальную подготовку
+данных перед удалением fixture, сохранив проверки отказа и восстановления.
+
+Проверка перед финальным удалением одного исторического теста: `uv run pytest -q
+tests/capabilities/deployment_trust/test_output_scope_owner_seam.py
+tests/capabilities/deployment_trust/test_h1_broker_evidence_contracts.py
+tests/platform/test_journal_native_json.py tests/platform/test_journal_exact_body.py
+tests/platform/test_readonly_decision_journal.py
+tests/platform/test_existing_only_decision_journal.py
+tests/composition/test_journal_restart_and_plan.py` — 121 passed.
+Эта же функциональная выборка повторяется checkpoint после удаления.
+Ruff и mypy двух изменённых source проходят. Остальные пункты остаются в очереди.

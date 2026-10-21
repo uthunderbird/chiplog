@@ -455,22 +455,7 @@ def _dispatch(operation: str, payload: bytes) -> dict[str, object]:
                     "schema_id": route[4],
                 }
             else:
-                try:
-                    current_call = H1OwnerCurrentCallV1.model_validate_json(call.request_bytes)
-                except ValueError:
-                    # Legacy direct read wire remains a non-authoritative unsupported route.
-                    legacy = ReadCurrentHermeticExecutionScopeV1.model_validate_json(
-                        call.request_bytes
-                    )
-                    if legacy.canonical_bytes() != call.request_bytes:
-                        raise ValueError("H1 request is not canonical") from None
-                    route = next(route for route in _H1_ROUTES if route[0] == operation)
-                    return {
-                        "payload": b64encode(_canonical({"disposition": "UNSUPPORTED"})).decode(
-                            "ascii"
-                        ),
-                        "schema_id": route[4],
-                    }
+                current_call = H1OwnerCurrentCallV1.model_validate_json(call.request_bytes)
                 if current_call.canonical_bytes() != call.request_bytes:
                     raise ValueError("H1 current wrapper is not canonical")
                 request = ReadCurrentHermeticExecutionScopeV1.model_validate_json(
