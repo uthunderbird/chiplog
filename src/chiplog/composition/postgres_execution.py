@@ -207,7 +207,10 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
             ) from error
 
     def execution_record(self, run_id: str) -> ExecutionRun:
-        rows = [run for run in self._runs(self.snapshot()) if run.run_id == run_id]
+        return self._execution_record(self.snapshot(), run_id)
+
+    def _execution_record(self, snapshot: Snapshot, run_id: str) -> ExecutionRun:
+        rows = [run for run in self._runs(snapshot) if run.run_id == run_id]
         if not rows:
             raise LoopRejected("execution Run is absent")
         return rows[-1]
@@ -438,7 +441,7 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
             prior = self._replay_run(snapshot, "execution.begin", key)
             if prior is not None:
                 return prior
-            run = self.execution_record(run_id)
+            run = self._execution_record(snapshot, run_id)
             if run.head != expected_head:
                 raise LoopRejected("stale exact execution Run")
             active, started = begin(run)
@@ -578,7 +581,7 @@ class PostgresExecutionRuntime(PostgresPlanningRuntime):
             prior = self._replay_run(snapshot, "execution.seal", key)
             if prior is not None:
                 return prior
-            run = self.execution_record(run_id)
+            run = self._execution_record(snapshot, run_id)
             if run.head != expected_head:
                 raise LoopRejected("stale exact captured Run")
             sealed, response, calls, states = seal(run)

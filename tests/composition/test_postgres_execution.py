@@ -326,3 +326,55 @@ async def test_native_v3_uses_actual_codex_adapter_after_durable_emission(
     assert runtime.initialized_calls()[0].call.classification == "READ_ONLY"
     assert await runtime.capture_execution("local-cli", "live", started.head) == captured
     assert requests == 1
+
+
+@pytest.mark.parametrize("operation", ["begin", "seal"])
+@pytest.mark.parametrize("interference", ["head", "revocation"])
+async def test_execution_preparation_cannot_publish_after_head_change_or_revocation(
+    postgres_server: PostgresServer,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    interference: str,
+) -> None:
+    database = await bootstrap(postgres_server)
+    response = {
+        "kind": "Continue",
+        "tool_calls": [{"call_id": "proposal", "tool": "propose_intent", "text": "Swim"}],
+    }
+    runtime = opened(database, HermeticModel((json.dumps(response).encode(),)))
+    selected = await runtime.create_execution(
+        "local-cli", "run", "Hi", BudgetPolicy(), execution_version="v3"
+    )
+    if operation == "seal":
+        started = await runtime.begin_execution("local-cli", "run", selected.head)
+        selected = await runtime.capture_execution("local-cli", "run", started.head)
+
+    original_snapshot = runtime._snapshot_for_peer
+    changed: Snapshot | None = None
+
+    def snapshot_then_change(peer: str) -> Snapshot:
+        nonlocal changed
+        snapshot = original_snapshot(peer)
+        if changed is None:
+            if interference == "head":
+                result = database.publish(
+                    "test.competing",
+                    "competing",
+                    "competing",
+                    (Record("competing", "test", "test", b"concurrent publication"),),
+                    snapshot.head,
+                )
+                assert result.disposition == "COMMITTED"
+            else:
+                runtime.revoke("credential:1")
+            changed = database.snapshot()
+        return snapshot
+
+    monkeypatch.setattr(runtime, "_snapshot_for_peer", snapshot_then_change)
+    action = runtime.begin_execution if operation == "begin" else runtime.seal_execution
+    error = LoopRejected if interference == "head" else PermissionError
+    message = "stale execution tenant head" if interference == "head" else "authenticated"
+    with pytest.raises(error, match=message):
+        await action("local-cli", "run", selected.head)
+    assert changed is not None
+    assert database.snapshot() == changed
