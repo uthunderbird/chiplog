@@ -1,5 +1,11 @@
 # R15–R17 functional verification
 
+Integration update, 2026-10-21: legacy chat, SQLite execution adapters and
+compatibility requirements are removed under [AGENTS.md §12](../AGENTS.md#12-продуктовый-режим-без-legacy-до-завершения-роудмапа).
+The native requirements below remain current. The following executed evidence
+is dated; full validation of the cleaned branch and its final cold review are
+pending. It is not a fresh passing result for the current HEAD.
+
 2026-10-17. Functional acceptance verified on product source `4866099` plus
 the Plan recovery test extension. Acceptance is the user-authorized scope in
 [R15-R17-FUNCTIONAL-PLAN.md](R15-R17-FUNCTIONAL-PLAN.md), not the exhaustive
@@ -74,4 +80,4 @@ permutations, universal source/FIFO/quarantine closure and stress/global
 certification. Supported scheduling assumes a nondecreasing clock. Live Telegram
 or Calendar deployment, external credentials and main/master integration are not
 verified here. `native-chat` requires real existing PG trust and an independently
-signed operator entitlement; legacy `chat` remains a separate conversational path.
+signed operator entitlement.

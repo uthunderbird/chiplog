@@ -7,9 +7,18 @@ This replaces the old serial milestone order, not authorization, data ownership,
 atomicity or no-repeat-SEND requirements. R14 functional baseline is `4576ae4`.
 The broader historical assurance scope and deployment eligibility remain open.
 
-## Current integrated evidence
+## Integration update (2026-10-21)
 
-The final functional union passed **103 tests in 47.80s** on the current
+[AGENTS.md §12](../AGENTS.md#12-продуктовый-режим-без-legacy-до-завершения-роудмапа)
+cancels legacy and backward-compatibility work until roadmap completion. The
+native functional criteria below remain required. Earlier implementation gaps,
+SQLite adapters and compatibility promises describe history, not pending work.
+The cleaned branch still requires its full integration gate/regression and cold
+whole-diff blocking review; the dated results below do not establish readiness.
+
+## Historical integrated evidence (2026-10-17)
+
+The final functional union passed **103 tests in 47.80s** on the then-current
 `4866099` source plus the Plan recovery test change. It includes the actual
 `native-chat` subprocess and private local inbox, both authenticated ingress
 channels, scheduled execution/delivery, and Plan/effect recovery with a fresh
@@ -40,7 +49,8 @@ not optional assurance backlog. Plan-specific lost-ACK/fresh-provider recovery
 evidence is still weaker than the existing tool/delivery witnesses.
 
 Native CLI closure plan and assumptions, reread: add an explicit `native-chat`
-command, keeping legacy OAuth chat separate. Require real tenant/principal/
+command. The earlier separate legacy OAuth chat path has since been removed
+under AGENTS.md §12. Require real tenant/principal/
 credential/session and operator secret, plus independently signed entitlement
 and pinned verification key for delivery. OAuth identifies only the model
 credential. One invocation composes ingress, the existing driver and a private
@@ -78,8 +88,8 @@ Assumptions, reread: one current native application worker per user; scheduler,
 ingress and outbox components consume that runtime rather than independently
 opening clients and fencing one another. PostgreSQL remains one DB per user on
 one configured server. Hermetic provider/channel transports exercise real adapter
-boundaries; live exposure and credentials are not required or granted. Known
-unsupported authority bundles are retained without conversion.
+boundaries; live exposure and credentials are not required or granted. Legacy
+authority bundles and conversion paths have no support obligation under §12.
 
 Cold plan review required concrete client outputs, shared-file ownership and
 explicit historical-order supersession. Those corrections are incorporated here.
@@ -194,8 +204,9 @@ leave them untouched. New preparation owns this document, current-order notes,
 contract leaves/tests and three identified legacy harness fixtures. The actual
 guard thresholds are `HC_FILES_SOFT=10`, `HC_FILES_HARD=40` in thresholds.sh;
 split preparation, contracts and implementation semantically before the hard
-limit, counting inherited dirty paths and final evidence. No production catalog
-repin is planned. Final checks read one frozen source revision.
+limit, counting inherited dirty paths and final evidence. That preparation did not repin the production catalog. Current integration must
+reconcile the catalog with the reviewed source before final checks on one frozen
+revision; no passing final gate is claimed here.
 
 Initial `test.sh --preflight` failed: layout and checkpoint fixtures omitted the
 new PG CLI dependency; corruption reproducer used removed SQLite CLI arguments.

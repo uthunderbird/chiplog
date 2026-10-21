@@ -1,5 +1,70 @@
 # R14 verification status
 
+## Current integration boundary (2026-10-21)
+
+[AGENTS.md §12](../AGENTS.md#12-продуктовый-режим-без-legacy-до-завершения-роудмапа)
+cancels legacy/backward compatibility until roadmap completion. The old SQLite
+execution/dispatch factories, CommonCli/H1 kernel and chat importer are removed.
+Historical commands, deleted test paths and old version-reader claims below are
+an evidence archive, not current entrypoints or obligations. Current native
+criteria and scenario selectors are in [R14-FUNCTIONAL-SCOPE.md](R14-FUNCTIONAL-SCOPE.md).
+
+Integration remains open. The full regression at `5d68f53` failed; subsequent
+focused repairs and checkpoints do not substitute for a new full regression.
+The full gate at `979a670` also failed. The final source/catalog reconciliation,
+remaining quality checks, retro, full gate/regression with confirmed stage0
+coverage and cold whole-diff blocking review remain root's work before merge.
+No main/master merge or deployment readiness is asserted.
+
+
+## Session-debt reconciliation (2026-10-21)
+
+The old journal entries below are closed as cancelled or superseded under §12,
+except the finite completed cleanup 96. Superseded does not mean implemented.
+The current criteria referenced in this table remain requirements; root owns
+verification against the native scenario map and final full regression before
+merge. Until that run, ordinary-clock usability and each retained current
+criterion have no fresh full-branch verdict. Optional backlog items retain their
+named triggers and are not claimed complete.
+
+| Former handoff ID | Disposition | Retained requirement or reason |
+|---|---|---|
+| 1 | Cancelled | H1/V2/J1–J7 closure; current R14–R17 requirements stay in the native maps. |
+| 2 | Cancelled | SCOPED_V3 inter-history grant fixture. |
+| 3 | Cancelled | SCOPED_V3 sixth-record successor fixture. |
+| 7 | Cancelled | Old g1 lease/recovery mechanism; current lease fencing remains required. |
+| 8 | Cancelled | Old selected-V4 serialization profiling. |
+| 9 | Cancelled | Old v2 envelope-size mechanism; current authenticated acceptance and denied SEND remain required. |
+| 10 | Superseded | Old one-child V2 redesign cancelled; ordinary compensation stays required, generalized retry proofs stay B-R16-01. |
+| 15 | Cancelled | Deleted denial-history profiling. |
+| 16 | Cancelled | Deleted owner-journal scope-scan profiling. |
+| 17 | Cancelled | Old 66 MB journal investigation; current reduction/rival HOLD stays required. |
+| 19 | Cancelled | Old resolver latency investigation; current resolution/continuation stays required. |
+| 22 | Superseded | Old full-frontier recipe cancelled; root must verify native pending-work resume/successor, stale refusal and atomic publication. |
+| 23 | Superseded | Unimplemented optional durable terminal-fault recipe remains B-R14-A08. |
+| 25 | Superseded | Old suspension-wire retrofit cancelled; root must verify nonempty original-obligation/no-retry preservation in native recovery. |
+| 27 | Cancelled | Old growing-journal fixture optimization; current resolution/reopen/no resend stays required. |
+| 28 | Cancelled | Old expensive successor fixture; current unresolved-work HOLD/no publication stays required. |
+| 29 | Cancelled | Old direct-terminal/two-member fixture optimization; current two-seal/reopen/next-turn criterion remains. |
+| 31 | Cancelled | Old V3/history-growth profiling. |
+| 32 | Cancelled | Old writer trace investigation. |
+| 33 | Cancelled | Captured-prefix OPEN-source fold; current accepted/cancelled accounting and replay remain required. |
+| 34 | Superseded | Slowed-clock fixture and credential repin cancelled; root must verify current native ordinary-clock/admission scenarios in final regression. |
+| 36 | Cancelled | Old OPEN/ABSENT/COMPLETE machinery; current recovery/atomicity remains required, exhaustive corruption matrices stay optional. |
+| 41 | Superseded | Old version-tuple controls cancelled; root must verify normal bounds, retained read-only members and stale-writer refusal. Exhaustive matrices stay B-R14-A05/A07. |
+| 42 | Cancelled | Old owner-join implementation debt; current evidence reduction and unresolved/rival HOLD stay required. |
+| 54 | Superseded | V1 compatibility/refusal and V2 initializer cancelled; root must verify current authorization, no unauthorized repair and data integrity. User-owned untracked draft stays untouched. |
+| 58 | Cancelled | Historical-plus-extension/version-tuple certification; optional current deployment assurance stays B-R14-A01. |
+| 67 | Superseded | Old H1/CURRENT/schema particulars cancelled; optional current OS/image/authority-boundary assurance stays B-R14-A01, unimplemented. |
+| 74 | Superseded | Optional B-R15-01/B-R16-01/B-R17-01/B-VERIFY-01 remain in R15-R17-FUNCTIONAL-PLAN.md, including clock rollback; not implemented. |
+| 96 | Complete (finite scope) | Every planned CommonCli/H1 kernel source is absent; direct test imports are zero and collection is clean. This does not mean all legacy or integration work is complete. |
+
+Finite cleanup checks at `a070867`: `.venv/bin/python
+/private/tmp/count_deleted_kernel_test_importers.py` reported zero direct test
+importers; `.venv/bin/python -m pytest --collect-only -q` collected 4908 tests
+with exit 0. The source deletion plan is a finite worklist, not an assertion that
+every old-looking component is legacy. Current/shared consumers remain protected.
+
 **Acceptance update, 2026-10-17:** use
 [R14 functional scope](R14-FUNCTIONAL-SCOPE.md). Earlier global assurance and
 exhaustive matrix gaps below are deferred where listed in its backlog.

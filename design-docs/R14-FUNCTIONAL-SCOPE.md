@@ -4,11 +4,19 @@ User scope decision, 2026-10-17: complete client functionality; move thick
 verification layers, isolated corner cases and work unnecessary to those flows
 to backlog. This supersedes earlier R14 release obligations in the remaining
 roadmap, completion ledger, admission preparation and normative implementation
-mechanisms. It changes neither stored record bytes nor deployment eligibility.
+mechanisms. Deployment eligibility remains separate. The user decision of
+2026-10-21 in [AGENTS.md §12](../AGENTS.md#12-продуктовый-режим-без-legacy-до-завершения-роудмапа)
+also removes all legacy/backward-compatibility obligations until the roadmap is
+complete; formats, storage and APIs may change freely.
 
-## Current acceptance
+## Acceptance boundary
 
-Functional R14 is CLOSED at integrated runtime commit `b514e8a` (2026-10-17).
+The criteria below remain current. The 2026-10-17 closure is dated evidence; its deleted
+SQLite compatibility witnesses are historical; current native evidence is mapped in
+[R14-VERIFICATION-STATUS.md](R14-VERIFICATION-STATUS.md). Final integration
+validation of the cleaned branch is still pending.
+
+Functional R14 was CLOSED at integrated runtime commit `b514e8a` (2026-10-17).
 The retained scenarios passed on the combined source; the main workspace was
 fast-forwarded to that commit and its native public-client smoke passed.
 Requirement-by-requirement evidence is in `R14-VERIFICATION-STATUS.md`.
@@ -27,46 +35,32 @@ to merge into main/master or grant deployment eligibility.
 | R14.12 post-terminal | Continue recovery in the original stream after Run termination without repeating the original external action. |
 | R14.13 convergence | Run the retained client scenarios and record their actual outcomes; no exhaustive clause/mutation certification prerequisite. |
 
-Keep existing data/versions, original-call identity, tenant scope, atomic writes,
-current authorization/CAS and SEND idempotency. Historical readers decode
-selected stored outputs and check their publication batches. They need not
-recreate an old physical database or rerun the original owner preparation.
+Preserve current original-call identity, tenant scope, atomic writes,
+authorization/CAS and no-repeat SEND behavior. Legacy formats, version readers,
+physical-prefix reconstruction and old preparation replay are not requirements.
 Keep normal limits; exhaustive independent boundary matrices are deferred.
 Read-only members must not be silently dropped from a selected seal while their
 functional branch is unavailable.
 
-## R14.6 acceptance scenarios
+## Current native acceptance witnesses
 
-- Mixed accepted/cancelled seal, publication, reopen and idempotent replay:
-  `tests/composition/test_r14_native_selected_accounting_source.py::test_v3_mixed_seal_publishes_reads_after_reopen_and_replays_once`.
-- Acceptance/cancellation competition:
-  `tests/composition/test_execution_call_branch_competition.py::test_selected_acceptance_and_native_cancellation_compete_on_one_initialized_cut`.
-- OPEN resolution/reopen without another SEND, including current-actor resume:
-  `tests/composition/test_r14_original_resolution_mounted.py::test_original_resolution_publishes_closed_outcome_and_reopens_without_resend`.
-- Ordinary two-seal accounting/reopen:
-  `tests/composition/test_r14_native_selected_accounting_source.py::test_v3_accounts_two_sequential_turn_seals_after_reopen_and_cross_order_replay`.
-- Reopen to a captured next Turn:
-  `tests/composition/test_r14_direct_terminal_next_turn_mounted.py::test_selected_direct_terminal_reopens_to_one_next_turn`.
+These existing selectors identify current scenarios, not new passing results:
 
-These are existing scenario targets, not new passing results or a per-edit test
-suite. Split bundled adversarial tails from ordinary scenarios when editing the
-tests. The combined multiple-OPEN/foreign-locator matrix is not minimal acceptance.
+- Mixed accepted/cancelled members, two seals, reopen, next turn and no-repeat SEND:
+  `tests/composition/test_postgres_two_seals.py::test_two_actual_accepted_effect_seals_reopen_and_complete_without_repeat_send`.
+- Adoption/cancellation competition and replay after reopen:
+  `tests/composition/test_postgres_call_branch_competition.py::test_actual_adoption_and_cancellation_keep_one_branch_after_reopen`.
+- Original resolution, unresolved-work HOLD, nonempty obligation preservation,
+  resume/next turn and post-abort recovery without resend:
+  `tests/composition/test_postgres_run_recovery.py::test_original_effect_recovers_after_suspend_or_abort_without_resend`.
+- Current reduction and rival evidence across retained seals:
+  `tests/composition/test_postgres_effects.py::test_late_evidence_requires_current_join_and_rival_holds_every_old_seal`.
+- Both completion boundaries recheck the current result:
+  `tests/composition/test_postgres_completion.py::test_current_provider_assertion_and_old_seal_rival_at_both_acceptance_and_claim`.
 
-## First implementation cuts
-
-1. Remove the historical physical-prefix reconstruction from ordinary OPEN reads
-   in `r14_historical_suffix.py`: both the selected-source wrapper and final
-   pending-lifecycle caller. Retain selected tenant/head/predecessor binding and
-   present final-batch checks. Delete the unused backup/DELETE/hash helper rather
-   than add a verification mode. Update tests to the explicitly reduced contract.
-2. In `r14_native_sealed_accounting_v3_history.py`, decode the selected V3 result
-   without re-verifying original preparation, collecting its sources again and
-   rerunning `prepare_sealed_accounting_v3`. Retain selected seal identity,
-   version decoding, exact stored command/envelope and COMPLETE batch checks.
-   Keep current writer preparation and CAS.
-
-No speedup is established yet. These cuts leave record formats unchanged and do
-not claim that the previous second-accept writer-STALE failure is already fixed.
+The old reader-cut implementation plan is cancelled: its SQLite modules were
+removed with the CommonCli/H1 kernel. There is no compatibility reconstruction
+work to resume.
 
 ## Backlog, outside functional R14 acceptance
 
@@ -75,23 +69,14 @@ named pressure is present; these items do not hold intermediate R14 work.
 
 | ID | Deferred work | Revisit trigger |
 |---|---|---|
-| B-R14-A01 | Whole-tree descriptor/receiver/assembly closure; engine/schema/AMR goldens; complete approved image/CURRENT/version-tuple certification and V2 initializer proof. Existing supported-version behavior remains. | A real format transition or deployment assurance milestone. |
-| B-R14-A02 | Reconstructing historical physical prefixes; repinned historical mutation/fence proofs. | An observed historical corruption case or explicit offline audit requirement. |
-| B-R14-A03 | Re-deriving historical V3 preparation/sources and exhaustive companion/source substitution proofs. | An observed selected-output mismatch. |
+| B-R14-A01 | Optional current deployment/OS-image and authority-boundary assurance. Old version-tuple certification, V1 support and V2 compatibility initializer work are cancelled. | A concrete deployment assurance requirement. |
+| B-R14-A02 | Cancelled: historical SQLite physical-prefix reconstruction. | No active work. |
+| B-R14-A03 | Cancelled: historical V3 preparation/source reconstruction. | No active work. |
 | B-R14-A04 | Three-plus accepted members, delayed dispatch permutations, multi-OPEN interleavings and every foreign-locator substitution. | A client needs that concurrency/interleaving. Ordinary two seals stay in current acceptance. |
 | B-R14-A05 | Independent A54 N/N+1 matrices; exhaustive missing/extra/duplicate/reordered/orphan histories, including repinned materialization attacks. | Demonstrated size/corruption pressure; retain normal bounds and batch checks now. |
-| B-R14-A06 | Simplifying runtime EXPLAIN/exact-read-graph/SQL-fingerprint proof. Do not issue false V2 attestations while removing it. | Next scoped performance cut after the two reader cuts. |
+| B-R14-A06 | Cancelled: old SQLite reader/SQL-fingerprint optimization. | No active work. |
 | B-R14-A07 | Exhaustive writer applicability inventory, lifecycle/rollover matrices and final OS-owner termination proof (handoff 69). | Scheduler/takeover integration or an observed surviving-owner failure. |
 | B-R14-A08 | Separate durable terminal-recovery-fault recipe and exhaustive fault classification (handoff 23). Normal unresolved work remains HOLD and explicit abort is available. | A concrete client workflow needs a durable terminal fault distinct from HOLD/abort. |
 
-H1 owner-inventory whole-runtime closure is part of B-R14-A01. Its deferred
-criterion remains that `unsupported_runtime_record_pairs(CommonCliExecutionRuntime)`
-returns `frozenset()`; the helper continues to expose the actual gap. The retained
-completion inventory tests require the H1 completion pairs, and actual unknown
-rows still reject with `UNSUPPORTED`. This does not claim complete decoder
-coverage for every writer schema advertised by the runtime.
-
-Investigation: cold full Swarm artifact
-`/private/tmp/r14-simplification-swarm.md`; source-backed recommendations, no
-runtime test or performance verdict. Root inspected the relevant helpers and
-retains ownership of the implementation.
+The old H1 whole-runtime inventory/decoder closure is cancelled under §12.
+Current authorization, data integrity and functional tests remain required.

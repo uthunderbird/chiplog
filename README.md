@@ -97,12 +97,11 @@ custody/recovery, history/read-only successor, original effects, continuation,
 CompleteAcceptance и durable delivery. SEND требует отдельно подписанного
 актуального deployment entitlement и зарегистрированного transport.
 
-Прежние versioned SQLite factories в `r14_execution_runtime`,
-`r16_dispatch_runtime` и `common_cli_execution_runtime` сохранены как legacy
-compatibility для существующих callers и исторических verifier fixtures. Они
-не являются новым default client route. Источники данных не удаляются;
-planning/R14 authority bundles не принимаются local-chat importer.
-Точная граница: [POSTGRES-SURFACE-INVENTORY.md](design-docs/POSTGRES-SURFACE-INVENTORY.md).
+До завершения текущего роудмапа проект не поддерживает legacy и обратную
+совместимость ([AGENTS.md, §12](AGENTS.md#12-продуктовый-режим-без-legacy-до-завершения-роудмапа)).
+Старые SQLite execution/dispatch factories, CommonCli/H1 kernel и chat importer
+удалены. Текущие функциональные сценарии используют PostgreSQL native client.
+Остальные общие компоненты сохраняются по их актуальным потребителям.
 
 ## Тесты
 
@@ -118,8 +117,8 @@ CHIPLOG_TEST_POSTGRES_DSN='host=localhost dbname=postgres' uv run pytest -q test
 ```
 
 Fixture создаёт уникальные базы и удаляет только их. Без этой переменной
-PostgreSQL integration помечается как skipped. Старые SQLite assurance-сценарии
-пока остаются отдельными offline regression fixtures.
+PostgreSQL integration помечается как skipped. Для подтверждения функциональных
+сценариев PostgreSQL этот DSN должен быть задан явно.
 
 Полный pytest выполняет настоящий stage0. Тесты, которые stage0 запускает в дочерних
 pytest, не повторяются во внешнем процессе. Строка `stage0: … coverage confirmed`
