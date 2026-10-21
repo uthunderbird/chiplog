@@ -157,17 +157,15 @@ errors, HOLD, abort и исходные доказательства внешн�
 
 ### OE-04. SQLite AST/SQL source-proof после отмены задачи
 
-[planning_descriptor_chain](../src/chiplog/verification/planning_descriptor_chain.py),
-[protected_anchor_chain](../src/chiplog/verification/protected_anchor_chain.py),
-[authority_descriptor_closure](../src/chiplog/verification/authority_descriptor_closure.py)
-и supporting SQL-family/engine-evidence анализаторы проверяют исторический SQLite
+Удалённые `planning_descriptor_chain`, `protected_anchor_chain`,
+`authority_descriptor_closure`
+и supporting SQL-family/engine-evidence анализаторы проверяли исторический SQLite
 reader/anchor маршрут. Встречаются собственная модель части Python, точные AST
 выражения, SQL expansion и фиксированные стадии proof. Потребители верхнего API
 найдены в verification/tests, не в текущем native admission.
 
-[test_planning_descriptor_chain](../tests/verification/test_planning_descriptor_chain.py)
-и [test_authority_descriptor_closure](../tests/verification/test_authority_descriptor_closure.py)
-пинят старые source paths, подстроки реализации и цепочку стадий. Это создаёт
+Удалённые `test_planning_descriptor_chain` и `test_authority_descriptor_closure`
+пинили старые source paths, подстроки реализации и цепочку стадий. Это создавало
 синхронную правку runtime → recognizer → текстовые mutants → каталог для задачи,
 которую текущий R14 scope отменил. Полнота global admission этими helper не заявляется.
 
@@ -570,3 +568,23 @@ Source-конструкторов, direct/dynamic consumers и manifest registra
 tests/verification/test_r8_surface.py tests/cli/test_native_chat.py
 tests/composition/test_postgres_ingress.py` — 85 passed.
 Холодная проверка не нашла блокеров. Каталог обновляется перед full integration.
+
+### OE-04 — отменённый SQLite source-proof engine
+
+Удалены четырнадцать verification-модулей: planning/protected-anchor/descriptor
+цепочки, selected engine evidence/contracts, SQL corpus, assembly forwarding,
+read graph, SQLite preparation, database routes и SQL expression/family expanders.
+Удалены их двенадцать исключительных тестовых модулей. Зависимости замкнуты
+внутри этой семьи; отдельных runtime, selector или manifest consumers не найдено.
+Холодный разбор подтвердил границы удаления.
+
+Runtime `startup_trust_prefix`, `readonly_sqlite_snapshot` и их функциональные
+проверки сохранены. Current import-boundary, source identity и PostgreSQL
+admission/integrity/auth/CAS проверки не менялись.
+
+С локальным `CHIPLOG_TEST_POSTGRES_DSN` команда `uv run pytest -q
+tests/verification/test_postgres_import_boundary.py tests/verification/test_r8_surface.py
+tests/platform/test_readonly_sqlite_snapshot.py tests/composition/test_postgres_planning.py
+tests/composition/test_postgres_execution.py` — 109 passed.
+Полная collection и mypy по source проходят. Исторические записи выполнения
+source-proof в design-docs/ретро не являются оставшимися runtime obligations.
