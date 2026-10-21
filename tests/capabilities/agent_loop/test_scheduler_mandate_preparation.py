@@ -4,7 +4,6 @@ import base64
 import hashlib
 import json
 
-import pytest
 from tests.support.scheduler_mandate_lifecycle import issue
 
 from chiplog.capabilities.agent_loop._scheduler_process import ROUTES, dispatch
@@ -16,12 +15,6 @@ from chiplog.capabilities.agent_loop.scheduler_preparation import (
     MandateIssuancePreparationRequest,
     PreparedSchedulerBatch,
     prepare_mandate_issuance,
-)
-from chiplog.capabilities.agent_loop.scheduler_startup import (
-    MaterializedSchedulerRow,
-    SchedulerStartupHold,
-    SelectedSchedulerBatch,
-    validate_selected_scheduler_records,
 )
 
 
@@ -100,60 +93,3 @@ def test_isolated_route_rejects_substituted_scope_cut_and_noncanonical_command()
         response = dispatch("scheduler.prepare_mandate_issuance", changed.canonical_bytes())
         assert response["failure"] == "PROTOCOL_REJECTED"
         assert "payload" not in response
-
-
-def _selected() -> tuple[SelectedSchedulerBatch, tuple[MaterializedSchedulerRow, ...]]:
-    request = _request()
-    prepared = prepare_mandate_issuance(request)
-    decision = Present(head="selected-decision", fingerprint="e" * 64)
-    batch = SelectedSchedulerBatch(
-        tenant_id="tenant",
-        physical_database_id="physical-db",
-        publication_ordinal=1,
-        decision=decision,
-        historical_validator="chiplog.scheduler.selected-records.v1",
-        context=request.context,
-        command_id=issue().command_id,
-        operation="scheduler.issue_mandate",
-        records=prepared.records,
-    )
-    rows = tuple(
-        MaterializedSchedulerRow(
-            tenant_id="tenant",
-            physical_database_id="physical-db",
-            publication_ordinal=1,
-            member_ordinal=ordinal,
-            decision=decision,
-            record=member,
-        )
-        for ordinal, member in enumerate(prepared.records)
-    )
-    return batch, rows
-
-
-def test_selected_readback_requires_exact_two_record_zero_genesis() -> None:
-    batch, rows = _selected()
-    index = validate_selected_scheduler_records(
-        tenant_id="tenant",
-        physical_database_id="physical-db",
-        selected=(batch,),
-        materialized=rows,
-    )
-    selected = index.mandates[0]
-    assert selected.mandate.scope.mandate_id == selected.budget.mandate_id
-    assert selected.budget.generation == 0
-    assert index.selected_record_ids == tuple(member.record_id for member in batch.records)
-
-    for changed in (
-        batch.model_copy(update={"records": batch.records[:1]}),
-        batch.model_copy(update={"records": batch.records[::-1]}),
-        batch.model_copy(update={"command_id": "rival"}),
-        batch.model_copy(update={"physical_database_id": "other-db"}),
-    ):
-        with pytest.raises(SchedulerStartupHold):
-            validate_selected_scheduler_records(
-                tenant_id="tenant",
-                physical_database_id="physical-db",
-                selected=(changed,),
-                materialized=rows,
-            )

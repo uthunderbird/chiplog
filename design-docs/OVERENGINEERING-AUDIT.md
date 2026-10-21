@@ -213,13 +213,13 @@ Drive/Advance/Lookup и receipts. Source-импортера модуля не н
 
 ### OE-07. Scheduler startup/service proof и отдельный AST-интерпретатор
 
-[scheduler_startup](../src/chiplog/capabilities/agent_loop/scheduler_startup.py#L1308)
-восстанавливает полный historical materialized cut;
-[scheduler_service_acceptance_contracts](../src/chiplog/capabilities/agent_loop/scheduler_service_acceptance_contracts.py)
-переносит records, их bytes, preparations и inventory через повторные joins.
+Удалённый `capabilities/agent_loop/scheduler_startup.py`
+восстанавливал полный historical materialized cut;
+`scheduler_service_acceptance_contracts.py`
+переносил records, их bytes, preparations и inventory через повторные joins.
 Для этих верхних entrypoints найдены тестовые, но не source-потребители.
-[scheduler_schema](../src/chiplog/verification/scheduler_schema.py#L550)
-добавляет field-sensitive AST abstract interpreter с фиксированными codec hashes;
+Удалённый `verification/scheduler_schema.py`
+добавлял field-sensitive AST abstract interpreter с фиксированными codec hashes;
 его manifest API тоже используется тестами.
 
 Текущий [postgres_scheduler](../src/chiplog/composition/postgres_scheduler.py)
@@ -588,3 +588,21 @@ tests/platform/test_readonly_sqlite_snapshot.py tests/composition/test_postgres_
 tests/composition/test_postgres_execution.py` — 109 passed.
 Полная collection и mypy по source проходят. Исторические записи выполнения
 source-proof в design-docs/ретро не являются оставшимися runtime obligations.
+
+### OE-07 — неиспользуемые scheduler startup/service-proof листья
+
+Удалены `scheduler_startup`, `scheduler_service_acceptance_contracts` и
+`verification/scheduler_schema`, три исключительных тестовых модуля и service
+acceptance builder. Source/dynamic/selector consumers вне этой связки не найдены.
+В смешанном mandate-preparation тесте удалены только historical selected-index
+helper и его проверка; две текущие owner-dispatch проверки сохранены AST-identical.
+Scheduler domain, current client contracts, native records и зарегистрированные
+preparation handlers не менялись.
+
+С локальным `CHIPLOG_TEST_POSTGRES_DSN` команда `uv run pytest -q
+tests/capabilities/agent_loop/test_scheduler_mandate_preparation.py
+tests/composition/test_postgres_scheduler.py
+tests/composition/test_postgres_scheduler_actions.py` — 25 passed.
+Это актуальные occurrence/Run atomicity, replay, overflow, takeover и lease fences.
+Полная collection, mypy по source, Ruff и format изменённого теста проходят.
+Холодный разбор не нашёл блокеров. Каталог обновляется перед full integration.
