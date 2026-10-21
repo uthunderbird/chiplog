@@ -31,15 +31,10 @@ from chiplog.capabilities.agent_loop.original_recovery_contracts import (
     OriginalResolutionBasis,
     OriginalResolverBatchRecord,
     OriginalResolverInvocationV1,
-    PreparedOriginalResolverInvocationV1,
-    PrepareOriginalResolverInvocationV1,
     RecoveredCallOutcomeRecord,
     ResolvedReductionAnchor,
     original_effect_evidence_reducer_policy_v1,
     original_resolver_authority_policy_v1,
-)
-from chiplog.capabilities.agent_loop.original_resolver_invocation_preparation import (
-    prepare_original_resolver_invocation_v1,
 )
 from chiplog.capabilities.agent_loop.readonly_execution_contracts import (
     ReadOnlyAttemptAcceptedRecord,
@@ -421,7 +416,7 @@ def records() -> RecoveryRecords:
 
 
 def original_resolver_policy_members() -> dict[str, RecoveryRecordMember]:
-    """Canonical codec examples, prepared by the owner; no publication authority."""
+    """Canonical codec examples; no publication authority."""
     resolver = original_resolver_authority_policy_v1("tenant")
     reducer = original_effect_evidence_reducer_policy_v1("tenant")
     original = obligation().model_copy(
@@ -507,12 +502,6 @@ def original_resolver_policy_members() -> dict[str, RecoveryRecordMember]:
         trust_journal_head="codec-trust-head",
         trust_response_fingerprint=digest("codec-trust-response"),
     )
-    prepared = prepare_original_resolver_invocation_v1(
-        PrepareOriginalResolverInvocationV1(
-            command_id=invocation.invocation_id, invocation=invocation
-        )
-    )
-    assert isinstance(prepared, PreparedOriginalResolverInvocationV1), prepared
     return {
         "ORIGINAL_RESOLVER_AUTHORITY_POLICY": member_for(
             "ORIGINAL_RESOLVER_AUTHORITY_POLICY", resolver
@@ -520,9 +509,7 @@ def original_resolver_policy_members() -> dict[str, RecoveryRecordMember]:
         "ORIGINAL_EFFECT_EVIDENCE_REDUCER_POLICY": member_for(
             "ORIGINAL_EFFECT_EVIDENCE_REDUCER_POLICY", reducer
         ),
-        "ORIGINAL_RESOLVER_INVOCATION": member_for(
-            "ORIGINAL_RESOLVER_INVOCATION", prepared.invocation
-        ),
+        "ORIGINAL_RESOLVER_INVOCATION": member_for("ORIGINAL_RESOLVER_INVOCATION", invocation),
     }
 
 

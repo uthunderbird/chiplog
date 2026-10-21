@@ -4,18 +4,16 @@ from typing import cast
 
 import pytest
 
-from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
-from chiplog.composition.r14_direct_effect_terminal_policy import (
+from chiplog.capabilities.agent_loop.direct_effect_terminal_contracts import (
     CLASSIFIER_ID,
     CLASSIFIER_VERSION,
     MAPPING_ID,
     MAPPING_VERSION,
-    classify_direct_effect_terminal_v1,
-)
-from chiplog.composition.r14_original_outcome_translation import (
     RecoveredEffectStatusV1,
+    classify_direct_effect_terminal_v1,
     translate_selected_outcome_v1,
 )
+from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
 from tests.capabilities.effects.support.dispatch_outcomes import original_send
 from tests.support.capabilities.effects.dispatch_outcomes import request
 

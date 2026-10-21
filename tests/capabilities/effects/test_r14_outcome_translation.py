@@ -4,14 +4,14 @@ import pytest
 from tests.capabilities.effects.support.dispatch_outcomes import original_send
 from tests.support.capabilities.effects.dispatch_outcomes import request
 
+from chiplog.capabilities.agent_loop.direct_effect_terminal_contracts import (
+    translate_selected_outcome_v1,
+)
 from chiplog.capabilities.effects.dispatch_outcome_contracts import (
     DispatchOutcomeRecordV2,
 )
 from chiplog.capabilities.effects.dispatch_outcomes import prepare_outcome
 from chiplog.capabilities.effects.dispatch_v2 import reference
-from chiplog.composition.r14_original_outcome_translation import (
-    translate_selected_outcome_v1,
-)
 
 
 def closed_outcome(*, negative: bool = False) -> DispatchOutcomeRecordV2:
