@@ -663,3 +663,23 @@ docstrings/docs прямо называют offline simulation; artifact сод�
 tests/evaluation/test_stateful_transcripts.py tests/composition/test_loop_adoption.py`
 — 61 passed. Ruff, mypy и строгий каталог проходят. Это проверка offline пути;
 native PG evidence остаётся в его собственных функциональных тестах.
+
+### Финальные compatibility-хвосты
+
+Удалены `_PlanningCommittedResult`/`_PlanningOutcome` aliases; use case и SQLite
+adapter используют те же публичные типы напрямую. У executable overflow decoder
+удалены V1 acceptance, legacy selected/unsupported DTO и повторный canonicalizer.
+V2 corruption mutations по-прежнему проверяют настоящий decoder.
+
+Холодная проверка остановила более широкое удаление: V1 hold всё ещё производит
+текущий scheduler preparation и использует native client-контракт. Producer,
+его fixture и функциональный тест полного hold/resolution сохранены. Номер схемы
+не служит основанием для удаления действующей функции.
+
+С локальным `CHIPLOG_TEST_POSTGRES_DSN` команда `uv run pytest -q
+tests/capabilities/planning/test_planning.py
+tests/capabilities/agent_loop/test_scheduler_overflow_hold_records.py
+tests/capabilities/agent_loop/test_scheduler_client_contracts.py
+tests/capabilities/agent_loop/test_scheduler_preparation.py
+tests/composition/test_postgres_planning.py tests/composition/test_postgres_scheduler.py`
+— 82 passed. Ruff, mypy и строгий каталог проходят.

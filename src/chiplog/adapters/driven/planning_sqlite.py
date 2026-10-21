@@ -13,9 +13,9 @@ from typing import Literal, TypeVar, cast
 
 from chiplog.capabilities.planning import PlanningTrustDecision, PlanningTrustReference
 from chiplog.capabilities.planning._planning import (
+    PlanningCommittedResult,
+    PlanningOutcome,
     _OwnedRecord,
-    _PlanningCommittedResult,
-    _PlanningOutcome,
     _PlanningPublication,
     _PlanningState,
     _publication_fingerprint,
@@ -124,7 +124,7 @@ def _publication(
         )
     fields = records[-1].fields
     try:
-        result = _PlanningCommittedResult(
+        result = PlanningCommittedResult(
             _rid(tenant, fields["command_id"], record_id=records[-1].record_id.value),
             records[-1].record_id,
             records[2].record_id,
@@ -309,7 +309,7 @@ class SQLitePlanningRepository:
         ).result()
         if physical.disposition == "COMMITTED":
             return result
-        if isinstance(result, _PlanningOutcome):
+        if isinstance(result, PlanningOutcome):
             if physical.disposition == "REPLAY":
                 replay = next(
                     (
@@ -319,13 +319,13 @@ class SQLitePlanningRepository:
                     ),
                     None,
                 )
-                return _PlanningOutcome("REPLAY", None if replay is None else replay.result, None)  # type: ignore[return-value]
+                return PlanningOutcome("REPLAY", None if replay is None else replay.result, None)  # type: ignore[return-value]
             if physical.disposition == "STALE":
-                return _PlanningOutcome("STALE", None, "durable planning head changed")  # type: ignore[return-value]
+                return PlanningOutcome("STALE", None, "durable planning head changed")  # type: ignore[return-value]
             if physical.disposition == "CONFLICT":
-                return _PlanningOutcome("CONFLICT", None, "durable command identity conflict")  # type: ignore[return-value]
+                return PlanningOutcome("CONFLICT", None, "durable command identity conflict")  # type: ignore[return-value]
             if physical.disposition in {"DENIED", "INDETERMINATE"}:
-                return _PlanningOutcome(
+                return PlanningOutcome(
                     physical.disposition, None, "commit-time trust revalidation failed"
                 )  # type: ignore[return-value]
         return result

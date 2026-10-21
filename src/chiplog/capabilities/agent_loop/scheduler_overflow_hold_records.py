@@ -1,14 +1,13 @@
-"""Fixed physical codecs for historical and executable scheduler overflow holds.
+"""Physical codecs for executable scheduler overflow holds.
 
 Decoding establishes only byte and identity integrity.  It does not establish
-journal selection or authorize a legacy hold to enter the executable V2 path.
+journal selection or publication authority.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
-import json
 from typing import Annotated, Literal
 
 from pydantic import Field, ValidationError, model_validator
@@ -32,27 +31,11 @@ from .scheduler_seed_producer_contracts import (
 )
 
 OVERFLOW_HOLD_RECORD_KIND = "overflow-hold"
-OVERFLOW_HOLD_V1_SCHEMA = "chiplog.scheduler.overflow-hold.v1"
 OVERFLOW_HOLD_V2_SCHEMA = "chiplog.scheduler.overflow-hold.v2"
 
 
 class OverflowHoldRecordIntegrityError(ValueError):
     """A fixed overflow-hold physical row disagrees with its bytes."""
-
-
-def scheduler_hold_canonical_bytes(value: object) -> bytes:
-    """Encode historical scheduler hold data with its public kind-first ordering."""
-
-    def order(item: object) -> object:
-        if isinstance(item, dict):
-            return {
-                key: order(item[key]) for key in sorted(item, key=lambda key: (key != "kind", key))
-            }
-        if isinstance(item, (list, tuple)):
-            return [order(member) for member in item]
-        return item
-
-    return json.dumps(order(value), ensure_ascii=False, separators=(",", ":")).encode()
 
 
 def _digest(raw: bytes) -> str:
@@ -86,25 +69,6 @@ def _require_member_shape(member: SchedulerCanonicalMember, schema_id: str) -> b
     if member.fingerprint != _digest(raw):
         raise OverflowHoldRecordIntegrityError("overflow hold physical fingerprint differs")
     return raw
-
-
-def _legacy_hold_data(hold: SchedulerOverflowHold) -> dict[str, object]:
-    return {
-        "command": hold.command.model_dump(mode="json"),
-        "boundary": hold.boundary.model_dump(mode="json"),
-        "bound_head": hold.bound_head.model_dump(mode="json"),
-        "dimension": hold.exceeded_dimension,
-        "actual": hold.actual_value,
-        "limit": hold.limit,
-        "evidence": hold.evidence.model_dump(mode="json"),
-        "operator": hold.operator_recovery_owner,
-    }
-
-
-def _legacy_semantic_reference(hold: SchedulerOverflowHold) -> Present:
-    raw = scheduler_hold_canonical_bytes(_legacy_hold_data(hold))
-    digest = _digest(raw)
-    return Present(head="scheduler-overflow-hold-v1:" + digest, fingerprint=digest)
 
 
 class ExecutableOverflowHoldRecordV2(SchedulerExecutionDTO):
@@ -146,14 +110,6 @@ def executable_overflow_hold_member(
     )
 
 
-class SelectedLegacyActiveOverflowHoldV1(SchedulerExecutionDTO):
-    kind: Literal["SELECTED_LEGACY_ACTIVE_OVERFLOW_HOLD_V1"] = (
-        "SELECTED_LEGACY_ACTIVE_OVERFLOW_HOLD_V1"
-    )
-    hold: SchedulerOverflowHold
-    physical_record: Present
-
-
 class DecodedExecutableOverflowHoldRecordV2(SchedulerExecutionDTO):
     """One verified V2 physical row, including terminal successor states."""
 
@@ -172,20 +128,6 @@ class SelectedExecutableActiveOverflowHoldV2(SchedulerExecutionDTO):
     record: ExecutableOverflowHoldRecordV2
     hold: SchedulerOverflowHold
     physical_record: Present
-
-
-SelectedActiveOverflowHold = Annotated[
-    SelectedLegacyActiveOverflowHoldV1 | SelectedExecutableActiveOverflowHoldV2,
-    Field(discriminator="kind"),
-]
-
-
-class UnsupportedLegacyOverflowHoldExecutionV2(SchedulerExecutionDTO):
-    kind: Literal["UNSUPPORTED_LEGACY_OVERFLOW_HOLD_EXECUTION_V2"] = (
-        "UNSUPPORTED_LEGACY_OVERFLOW_HOLD_EXECUTION_V2"
-    )
-    code: Literal["UNSUPPORTED"] = "UNSUPPORTED"
-    legacy_hold: SelectedLegacyActiveOverflowHoldV1
 
 
 def _project_v2_hold(record: ExecutableOverflowHoldRecordV2) -> SchedulerOverflowHold:
@@ -229,29 +171,9 @@ def decode_executable_overflow_hold_record(
 
 def decode_selected_active_overflow_hold(
     member: SchedulerCanonicalMember,
-) -> SelectedActiveOverflowHold:
-    """Decode one fixed V1/V2 active hold without fabricating cross-version provenance."""
+) -> SelectedExecutableActiveOverflowHoldV2:
+    """Decode an active executable hold under its registered schema."""
 
-    if member.schema_id == OVERFLOW_HOLD_V1_SCHEMA:
-        raw = _require_member_shape(member, OVERFLOW_HOLD_V1_SCHEMA)
-        try:
-            hold = SchedulerOverflowHold.model_validate_json(raw)
-        except ValidationError as error:
-            raise OverflowHoldRecordIntegrityError("overflow hold V1 bytes are invalid") from error
-        if hold.canonical_bytes() != raw:
-            raise OverflowHoldRecordIntegrityError("overflow hold V1 bytes are not canonical")
-        expected = _legacy_semantic_reference(hold)
-        if hold.hold != expected or member.record_id != hold.hold.head:
-            raise OverflowHoldRecordIntegrityError(
-                "overflow hold V1 semantic or physical ID differs"
-            )
-        if not isinstance(hold.state, OverflowActive):
-            raise OverflowHoldRecordIntegrityError(
-                "resolved overflow hold cannot be selected active"
-            )
-        return SelectedLegacyActiveOverflowHoldV1(
-            hold=hold, physical_record=_physical_reference(member)
-        )
     if member.schema_id != OVERFLOW_HOLD_V2_SCHEMA:
         raise OverflowHoldRecordIntegrityError("unregistered overflow hold schema")
     decoded = decode_executable_overflow_hold_record(member)
@@ -265,12 +187,10 @@ def decode_selected_active_overflow_hold(
 
 
 def finalize_selected_overflow_hold(
-    selected: SelectedActiveOverflowHold,
-) -> FinalizedOverflowHoldV2 | UnsupportedLegacyOverflowHoldExecutionV2:
-    """Return executable V2 finalization references or the explicit legacy boundary."""
+    selected: SelectedExecutableActiveOverflowHoldV2,
+) -> FinalizedOverflowHoldV2:
+    """Return the exact executable hold and primitive finalization references."""
 
-    if isinstance(selected, SelectedLegacyActiveOverflowHoldV1):
-        return UnsupportedLegacyOverflowHoldExecutionV2(legacy_hold=selected)
     return FinalizedOverflowHoldV2(
         hold=selected.physical_record,
         overflow_primitive=overflow_primitive_reference(selected.record.primitive),

@@ -133,11 +133,6 @@ class PlanningOutcome:
     reason: str | None
 
 
-# The concrete use case and its driven adapter retain these compatibility aliases.
-_PlanningCommittedResult = PlanningCommittedResult
-_PlanningOutcome = PlanningOutcome
-
-
 class _PlanningState:
     def __init__(self, tenant_id: TenantId) -> None:
         self.tenant_id = tenant_id
@@ -328,7 +323,7 @@ class _PlanningOwnerFactory:
         command: CreateIntentionLine,
         commit_sequence: int,
         request_fingerprint: str,
-    ) -> tuple[tuple[_OwnedRecord, ...], _PlanningCommittedResult]:
+    ) -> tuple[tuple[_OwnedRecord, ...], PlanningCommittedResult]:
         tenant = context.tenant_id
         evidence_id = RecordId(tenant, f"{command.command_id.value}.authorization")
         result_id = RecordId(tenant, f"{command.command_id.value}.result")
@@ -416,7 +411,7 @@ class _PlanningOwnerFactory:
         record_manifest = tuple(
             (item.record_id, item.record_type_id, item.fingerprint) for item in records
         )
-        result = _PlanningCommittedResult(
+        result = PlanningCommittedResult(
             command.command_id,
             result_id,
             command.intention_line_id,
@@ -447,17 +442,17 @@ class _PlanningUseCase:
         self,
         context: InvocationContext,
         command: CreateIntentionLine,
-    ) -> _PlanningOutcome:
+    ) -> PlanningOutcome:
         structural_error = _structural_error(context, command, None)
         if structural_error is not None:
-            return _PlanningOutcome("DENIED", None, structural_error)
+            return PlanningOutcome("DENIED", None, structural_error)
         request_fingerprint = _request_fingerprint(context, command, None)
 
-        def commit(state: _PlanningState) -> _PlanningOutcome:
+        def commit(state: _PlanningState) -> PlanningOutcome:
             prior = state.by_command.get(command.command_id.value)
             if prior is not None:
                 if prior.request_fingerprint != request_fingerprint:
-                    return _PlanningOutcome(
+                    return PlanningOutcome(
                         "CONFLICT", None, "command identity reused with changed bytes"
                     )
                 replay_decision = self._trust_revalidation.revalidate(
@@ -471,8 +466,8 @@ class _PlanningUseCase:
                         if replay_decision.disposition == "DENIED"
                         else replay_decision.disposition
                     )
-                    return _PlanningOutcome(disposition, None, replay_decision.reason)
-                return _PlanningOutcome("REPLAY", prior.result, None)
+                    return PlanningOutcome(disposition, None, replay_decision.reason)
+                return PlanningOutcome("REPLAY", prior.result, None)
             observed_head = state.head
             observed_version = state.version
             decision = self._trust_revalidation.revalidate(
@@ -480,15 +475,15 @@ class _PlanningUseCase:
             )
             if decision.disposition != "VALID":
                 disposition = "DENIED" if decision.disposition == "DENIED" else decision.disposition
-                return _PlanningOutcome(disposition, None, decision.reason)
+                return PlanningOutcome(disposition, None, decision.reason)
             if state.head != observed_head or state.version != observed_version:
-                return _PlanningOutcome("STALE", None, "planning head changed during revalidation")
+                return PlanningOutcome("STALE", None, "planning head changed during revalidation")
             records, result = self._owner_factory.construct(
                 context, command, observed_head + 1, request_fingerprint
             )
             record_values = {item.record_id.value for item in records}
             if len(record_values) != len(records) or record_values & state.record_ids:
-                return _PlanningOutcome("CONFLICT", None, "record identity collision")
+                return PlanningOutcome("CONFLICT", None, "record identity collision")
             publication = _PlanningPublication(
                 state.tenant_id,
                 command.command_id,
@@ -504,6 +499,6 @@ class _PlanningUseCase:
             state.record_ids.update(record_values)
             state.head = observed_head + 1
             state.version = observed_version + 1
-            return _PlanningOutcome("COMMITTED", result, None)
+            return PlanningOutcome("COMMITTED", result, None)
 
         return self._repository.transact(context.tenant_id, commit)
