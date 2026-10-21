@@ -6,7 +6,54 @@
 выбранных механизмов. На момент исходного аудита реализация, тесты, правила и
 каталог источников не менялись. Последующие изменения отмечены ниже.
 
-## Вывод
+## Итог очистки, 2026-10-21
+
+Все подтверждённые кандидаты аудита обработаны; функционально нужные компоненты
+сохранены по конкретным текущим потребителям. Код проверки: `10dee4c`.
+Полный гейт выполнен на `2f98e48`; между этими commits source/tests не менялись.
+
+| Пункт | Результат |
+|---|---|
+| OE-01 | Begin/seal используют snapshot подготовки; locked publication recheck сохранён |
+| OE-02 | Отменённые H1 inventory/enrollment/custody/read-plan семьи удалены |
+| OE-03 | Не смонтированная terminal-fault диагностика и её fixture-графы удалены |
+| OE-04 | SQLite AST/SQL source-proof engine и исключительные тесты удалены |
+| OE-05 | Неиспользуемый common-driver API удалён |
+| OE-06 | Неиспользуемые operation/runtime registry DSL и custody socket удалены |
+| OE-07 | Ненужные scheduler startup/service-proof листья удалены |
+| OE-08 | Исторический grant API, direct-wire fallback и journal fallback удалены |
+| OE-09 | Исторический API freeze/extensions удалён; import/ownership границы сохранены |
+| OE-10 | Полезный planning-adoption сценарий сохранён как явно обозначенная offline simulation |
+| OE-11 | Полный pytest исполняет оставшиеся cases без вложенного stage0/dedup/receipts |
+| Дополнительно | Архив genesis заменён текущим bootstrap; planning aliases и overflow execution compatibility удалены |
+
+Сохранены реальные Run V2/V3, текущий V1 scheduler producer, owner isolation,
+auth/CAS/integrity, model/run/effect recovery, no-repeat SEND и общие workspace
+контракты. У них есть действующие функциональные потребители. Строгий source
+catalog остаётся явным требованием AGENTS §7. Неподтверждённые гипотезы ниже
+не выдаются за доказанную ненужность и не создают новых обязательств инфраструктуры.
+
+Полная проверка:
+
+```sh
+CHIPLOG_TEST_POSTGRES_DSN='host=127.0.0.1 port=55439 user=postgres dbname=postgres' \
+UV_CACHE_DIR=/private/tmp/chiplog-uv-cache \
+CHIPLOG_COMMIT_MODE=full sh .harness/scripts/gate.sh
+```
+
+Exit 0, **3948 passed in 1192.03s**, гейт открыт. Это весь собранный pytest-набор,
+включая PostgreSQL race/recovery сценарии, без delegated deselection. Самотесты
+харнесса, строгий каталог, fast verification, Ruff/format и mypy также прошли.
+Лог: `/private/tmp/chiplog-overengineering-full-gate.log`.
+
+Один холодный swarm-red-team всего source diff `5c18b07..10dee4c`:
+**0 подтверждённых P0/P1**, с явными пределами same-model/source review.
+Root отдельно закрыл отсутствовавший у reviewer PG DSN полным прогоном выше.
+Артефакт: `/private/tmp/chiplog-overengineering-whole-cold-review.md`.
+Обязательная ретро завершена в `2f98e48`, без нового правила или инструмента.
+Ветка локальная; merge/push этой исследовательской ветки не выполнялись.
+
+## Исходный вывод (до очистки)
 
 Главные кандидаты на упрощение — оставшиеся системы для уже отменённых задач:
 H1-инвентаризация, SQLite source-proof, отдельная terminal-fault диагностика,
