@@ -42,13 +42,13 @@ def test_completion_source_union_rejects_other_terminalization_bytes() -> None:
 def test_accepted_source_rejects_rehashed_terminal_with_foreign_predecessor() -> None:
     async def exercise() -> None:
         fixture = await accepted_completion_fixture("v3", "nonempty")
-        source = fixture.assembly.work_source
+        source = fixture.work_source
         assert sources.decode_completion_terminal_work_source(source.canonical_bytes()) == source
         pending = source.terminal_run.model_copy(
             update={"predecessor": "foreign-original-run", "head": "pending"}
         )
         foreign = pending.model_copy(update={"head": "loop:" + pending.digest()})
-        prepared = fixture.assembly.prepared_completion.model_copy(update={"run": foreign})
+        prepared = fixture.prepared_completion.model_copy(update={"run": foreign})
         wire = source.model_dump()
         wire.update(
             terminal_run=foreign,

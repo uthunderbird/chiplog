@@ -1,8 +1,4 @@
-"""Real, closed completion-publication fixtures shared by composition consumers.
-
-The module deliberately builds owner exchanges before it wraps them as broker
-records.  It contains no assertions and imports no test module.
-"""
+"""Completion request and result DTOs shared by their direct consumers."""
 
 from __future__ import annotations
 
@@ -13,24 +9,18 @@ from typing import Literal
 
 from chiplog.capabilities.agent_loop.call_acceptance_contracts import CallSubjectHead
 from chiplog.capabilities.agent_loop.completion_owner_record_contracts import (
-    CompletionCanonicalMember,
-    make_completion_rejection_member,
     make_prepared_delivery_acceptance_member,
     make_terminal_manifest_member,
     make_terminal_run_member,
 )
 from chiplog.capabilities.agent_loop.completion_terminal_work_sources import (
     AcceptedCompletionWorkSourceV1,
-    RejectedCompletionWorkSourceV1,
     completion_terminal_work_source_bytes,
 )
 from chiplog.capabilities.agent_loop.contracts import (
     BudgetPolicy,
     DisclosureLabel,
     VisibilityMember,
-)
-from chiplog.capabilities.agent_loop.delivery_contracts import (
-    AcceptedDelivery,
 )
 from chiplog.capabilities.agent_loop.delivery_contracts import (
     ExactHead as LoopHead,
@@ -46,9 +36,7 @@ from chiplog.capabilities.agent_loop.delivery_contracts import (
 )
 from chiplog.capabilities.agent_loop.delivery_preparation import (
     Commentary,
-    DeliveryAcceptanceProposal,
     DeliveryCompletion,
-    DeliveryObservation,
     ProposedDelivery,
 )
 from chiplog.capabilities.agent_loop.delivery_preparation import (
@@ -76,19 +64,8 @@ from chiplog.capabilities.agent_loop.execution_recovery_observations import (
 )
 from chiplog.capabilities.agent_loop.execution_run_versions import ExecutionRun
 from chiplog.capabilities.agent_loop.post_terminal_contracts import (
-    PostTerminalWorkView,
-    PreparedPostTerminalWork,
     PrepareTerminalWork,
-    UnleasedWork,
-    WorkCanonicalMember,
     WorkCommandIdentity,
-)
-from chiplog.capabilities.agent_loop.post_terminal_record_contracts import (
-    PostTerminalEpochRecord,
-    PostTerminalLeaseRecord,
-    PostTerminalSelectorRecord,
-    PostTerminalSubjectRecord,
-    WorkDurableRecord,
 )
 from chiplog.capabilities.agent_loop.readonly_history_tool_contracts import (
     ConversationHistoryQuery,
@@ -98,8 +75,6 @@ from chiplog.capabilities.agent_loop.recovery_contracts import (
     Absent,
     OriginalObligationBinding,
     Present,
-    WorkEpochBinding,
-    WorkSubjectBinding,
 )
 from chiplog.capabilities.agent_loop.recovery_frontier_contracts import (
     FrontierMember,
@@ -115,71 +90,8 @@ from chiplog.capabilities.agent_loop.rejected_completion_terminalization_contrac
     rejected_terminalization_request_fingerprint,
     run_ref,
 )
-from chiplog.capabilities.effects.contracts import (
-    CommandIdentity,
-    DeliverySendBinding,
-    ExactHead,
-    ModelSelection,
-    OriginSelection,
-    ProviderRecipient,
-)
-from chiplog.capabilities.effects.dispatch_v2 import reference
-from chiplog.capabilities.effects.fences import Absent as EffectsAbsent
-from chiplog.capabilities.effects.scoped_intent_contracts import (
-    DispatchMandateV3,
-    ExternalActionIntentV3,
-    PreparedDeliveryAuthority,
-    PreparedDeliveryBasisV3,
-    PreparedDeliveryOriginV3,
-    PreparedScopedIntentPublication,
-    PrepareScopedIntentPublication,
-    ScopedAuthorityRecord,
-    ScopedDispatchAcquisition,
-    ScopedPrecursorRequest,
-    ScopedPrecursorResult,
-)
-from chiplog.capabilities.effects.scoped_intent_record_contracts import (
-    ScopedIntentCanonicalMemberV3,
-    make_scoped_intent_member,
-    make_scoped_intent_retained_exchange,
-    scoped_intent_complete_owner_commitment,
-    scoped_intent_fingerprint,
-)
-from chiplog.capabilities.projections.conversation_preparation_contracts import (
-    ConversationCanonicalMemberV2,
-    ConversationCompletionEntryV1,
-    ConversationCompletionSourceV1,
-    ConversationSourceCutV1,
-    PrepareConversationCompletionRejectedV1,
-    PrepareConversationCompletionV1,
-    PreparedConversationCompletionRejectedV1,
-    PreparedConversationCompletionV1,
-    conversation_complete_owner_commitment,
-    conversation_no_change_commitment,
-    conversation_recipient_binding_json,
-    conversation_source_heads_json,
-    conversation_source_request_fingerprint,
-    make_conversation_canonical_member,
-)
-from chiplog.capabilities.projections.r9_boundary import ConversationEntry
-from chiplog.composition.completion_publication_contracts import (
-    DeliveryEffectsExchangeV1,
-    PrepareCompleteAcceptanceAssemblyV1,
-    PrepareRejectedCompletionAssemblyV1,
-    acceptance_commands,
-    completion_batch_fingerprint,
-    rejected_commands,
-)
-from chiplog.platform._owner_publication_contracts import (
-    CompleteDeliveryBatchV2,
-    OwnerCommandBytes,
-    OwnerRecordBytes,
-    RejectedCompletionBatchV1,
-)
-from tests.support.acceptance_v2 import prepared_acceptance
 from tests.support.delivery_completion import _captured as captured_delivery
 from tests.support.execution_fan_out import fixture as captured_execution
-from tests.support.workspace import envelope
 
 
 def _sha(raw: bytes) -> str:
@@ -189,57 +101,6 @@ def _sha(raw: bytes) -> str:
 def _loop_head(name: str) -> CallSubjectHead:
     return CallSubjectHead(
         subject_id=name, revision=Present(head=f"{name}/head", fingerprint=_sha(name.encode()))
-    )
-
-
-def _effects_head(name: str) -> ExactHead:
-    return reference(name, name.encode())
-
-
-def _effects_source(name: str) -> ScopedAuthorityRecord:
-    return ScopedAuthorityRecord(
-        owner="effects",
-        head=_effects_head(name),
-        schema_id=f"{name}.v1",
-        canonical_record_bytes=name.encode(),
-        selected_decision=_effects_head(f"selected:{name}"),
-    )
-
-
-def _effect_head(value: LoopHead) -> ExactHead:
-    return ExactHead(subject_id=value.identity, head=value.head, fingerprint=value.fingerprint)
-
-
-def _effect_recipient(value: LoopRecipient) -> ProviderRecipient:
-    return ProviderRecipient(
-        provider=value.provider_id,
-        account=value.account_id,
-        recipient=value.recipient_id,
-        endpoint=_effect_head(value.endpoint),
-        canonical_address=value.canonical_address,
-        credential_binding=_effect_head(value.credential_binding),
-    )
-
-
-def _owner(
-    owner: Literal["agent_loop", "effects", "conversation"],
-    member: CompletionCanonicalMember
-    | ConversationCanonicalMemberV2
-    | ScopedIntentCanonicalMemberV3
-    | WorkCanonicalMember,
-) -> OwnerRecordBytes:
-    raw = (
-        member.canonical_bytes
-        if isinstance(member, ConversationCanonicalMemberV2)
-        else member.canonical_record_bytes
-    )
-    return OwnerRecordBytes(
-        owner=owner,
-        record_kind=member.record_kind,
-        record_id=member.record_id,
-        schema_id=member.schema_id,
-        canonical_bytes=raw,
-        fingerprint=member.fingerprint,
     )
 
 
@@ -531,320 +392,6 @@ def _obligation() -> OriginalObligationBinding:
     )
 
 
-def _work_member(record: WorkDurableRecord) -> WorkCanonicalMember:
-    raw = record.canonical_bytes()
-    return WorkCanonicalMember(
-        record_kind=record.record_kind,
-        record_id=record.record_id,
-        schema_id=record.schema_id,
-        canonical_record_bytes=raw,
-        fingerprint=_sha(raw),
-    )
-
-
-def _work(request: PrepareTerminalWork) -> PreparedPostTerminalWork:
-    if not request.ordered_open_obligations:
-        return PreparedPostTerminalWork(
-            source_request_fingerprint=_sha(request.canonical_bytes()),
-            ordered_work=(),
-            complete_records=(),
-            complete_commitment=_sha(b"empty-work"),
-        )
-    views: list[PostTerminalWorkView] = []
-    members: list[WorkCanonicalMember] = []
-    for ordinal, source in enumerate(request.ordered_open_obligations):
-        suffix = str(ordinal + 1)
-        work_id = f"completion-work-{suffix}"
-        subject = _work_member(
-            PostTerminalSubjectRecord(
-                tenant_id="tenant",
-                command_id=request.identity.command_id,
-                record_id=f"completion-subject-{suffix}",
-                work_id=work_id,
-                terminal_run_head=request.terminal_run.head,
-                terminal_manifest_head=request.terminal_manifest.revision.head,
-                terminal_manifest_member_fingerprint=request.terminal_manifest.revision.fingerprint,
-                original_obligation=source,
-            )
-        )
-        epoch = _work_member(
-            PostTerminalEpochRecord(
-                tenant_id="tenant",
-                command_id=request.identity.command_id,
-                record_id=f"completion-epoch-{suffix}",
-                work_id=work_id,
-                epoch_id=f"completion-epoch-{suffix}",
-                subject=Present(head=subject.record_id, fingerprint=subject.fingerprint),
-                predecessor_epoch=Absent(),
-            )
-        )
-        selector = _work_member(
-            PostTerminalSelectorRecord(
-                tenant_id="tenant",
-                command_id=request.identity.command_id,
-                record_id=f"completion-selector-{suffix}",
-                work_id=work_id,
-                selector_id=f"completion-selector-{suffix}",
-                selector_version=0,
-                selected_epoch_id=epoch.record_id,
-                selected_epoch=Present(head=epoch.record_id, fingerprint=epoch.fingerprint),
-                predecessor_selector=Absent(),
-            )
-        )
-        lease = _work_member(
-            PostTerminalLeaseRecord(
-                tenant_id="tenant",
-                command_id=request.identity.command_id,
-                record_id=f"completion-lease-{suffix}",
-                work_id=work_id,
-                epoch=Present(head=epoch.record_id, fingerprint=epoch.fingerprint),
-                selector=Present(head=selector.record_id, fingerprint=selector.fingerprint),
-                predecessor_lease=Absent(),
-                lease=UnleasedWork(lease_head=f"completion-lease-{suffix}"),
-                original_obligation=Present(
-                    head=source.obligation_head, fingerprint=_sha(source.obligation_head.encode())
-                ),
-                original_evidence=source.evidence_head,
-                resolver_batch=Absent(),
-            )
-        )
-        views.append(
-            PostTerminalWorkView(
-                subject=WorkSubjectBinding(
-                    work_id=work_id,
-                    work_subject_head=subject.record_id,
-                    work_subject_fingerprint=subject.fingerprint,
-                    terminal_manifest_head=request.terminal_manifest.revision.head,
-                    terminal_manifest_member_fingerprint=request.terminal_manifest.revision.fingerprint,
-                    original_obligation=source,
-                ),
-                work_epoch=WorkEpochBinding(
-                    selector_id=selector.record_id,
-                    selector_head=selector.record_id,
-                    selector_version=0,
-                    current_epoch_id=epoch.record_id,
-                    current_epoch_head=epoch.record_id,
-                ),
-                work_state_head=Present(head=lease.record_id, fingerprint=lease.fingerprint),
-                lease=UnleasedWork(lease_head=lease.record_id),
-                predecessor_rollover=Absent(),
-            )
-        )
-        members.extend((subject, epoch, selector, lease))
-    records = tuple(members)
-    return PreparedPostTerminalWork(
-        source_request_fingerprint=_sha(request.canonical_bytes()),
-        ordered_work=tuple(views),
-        complete_records=records,
-        complete_commitment=_sha(b"".join(item.canonical_record_bytes for item in records)),
-    )
-
-
-def _effects_exchange(
-    index: int,
-    completion: DeliveryCompletion,
-    observation: DeliveryObservation,
-    proposal: DeliveryAcceptanceProposal,
-    delivery: AcceptedDelivery,
-) -> DeliveryEffectsExchangeV1:
-    # The support delivery DTOs are exact owner bytes; the effects DTOs deliberately
-    # use their separate head/recipient vocabulary.
-    accepted = delivery
-    selection = (
-        OriginSelection(
-            kind="ORIGIN_EXACT",
-            ingress_binding=_effect_head(accepted.selection.ingress_binding),
-            recipient=_effect_recipient(accepted.selection.recipient),
-        )
-        if accepted.selection.kind == "ORIGIN_EXACT"
-        else ModelSelection(
-            kind="MODEL_SELECTED_EXACT", recipient=_effect_recipient(accepted.selection.recipient)
-        )
-    )
-    binding = DeliverySendBinding(
-        delivery_id=accepted.delivery_id,
-        acceptance=_effect_head(accepted.acceptance),
-        render_digest=accepted.render_digest,
-        manifest_digest=accepted.manifest_digest,
-        selection=selection,
-        visibility=tuple(_effect_head(item) for item in accepted.visibility),
-        provenance=tuple(_effect_head(item) for item in accepted.provenance),
-        disclosure=tuple(_effect_head(item) for item in accepted.disclosure),
-        narrowing=tuple(_effect_head(item) for item in accepted.narrowing),
-        policy=_effect_head(accepted.policy),
-    )
-    basis = PreparedDeliveryBasisV3(
-        source_cut=_effects_head(f"completion-cut-{index}"),
-        acceptance=_effect_head(proposal.acceptance),
-        completion_command_bytes=completion.canonical_bytes(),
-        delivery_observation_bytes=observation.canonical_bytes(),
-        loop_proposal_bytes=proposal.canonical_bytes(),
-    )
-    origin = PreparedDeliveryOriginV3(
-        original_run=_effects_head(f"run-{index}"),
-        captured_attempt=_effects_head(f"attempt-{index}"),
-        binding=binding,
-        preparation_basis=_effects_head(f"basis-{index}"),
-    )
-    baseline = prepared_acceptance().effects_proposal.snapshot.intent.mandate.model_dump()
-    baseline.update(
-        schema_id="chiplog.effects.dispatch-mandate.v3",
-        mandate_id=f"delivery-mandate-{index}",
-        origin=origin,
-        recipient=_effect_recipient(accepted.selection.recipient),
-        payload=accepted.rendered_bytes,
-        effect_fingerprint=_sha(accepted.rendered_bytes),
-        idempotency_fence_key=f"delivery-fence-{index}",
-    )
-    mandate = DispatchMandateV3.model_validate(baseline)
-    precursor = ScopedPrecursorRequest(
-        request_id=f"delivery-precursor-{index}",
-        mandate=mandate,
-        interpretation_policy=_effects_source(f"policy-{index}"),
-        preexisting_sources=(_effects_source(f"authority-{index}"),),
-    )
-    precursor_result = ScopedPrecursorResult(
-        source_request_fingerprint=_sha(precursor.canonical_bytes()),
-        mandate_fingerprint=_sha(mandate.canonical_bytes()),
-        interpretation_policy=precursor.interpretation_policy.head,
-        complete_evaluation_evidence=(_effects_head(f"evaluation-{index}"),),
-    )
-    acquisition = ScopedDispatchAcquisition(
-        authority=PreparedDeliveryAuthority(
-            basis=basis,
-            preexisting_communication_authority=_effects_source(f"communication-{index}"),
-            current_disclosure_authority=_effects_source(f"disclosure-{index}"),
-            exact_mandate_bytes=mandate.canonical_bytes(),
-        ),
-        precursor_request=precursor,
-        precursor_result=precursor_result,
-        original_sources=prepared_acceptance().effects_proposal.snapshot.intent.acquisition.original_sources,
-    )
-    unsigned = ExternalActionIntentV3(
-        intent_id=f"{accepted.delivery_id}/intent",
-        fingerprint="0" * 64,
-        mandate=mandate,
-        acquisition=acquisition,
-    )
-    intent = unsigned.model_copy(update={"fingerprint": scoped_intent_fingerprint(unsigned)})
-    request = PrepareScopedIntentPublication(
-        identity=CommandIdentity(
-            command_id=f"publish-delivery-{index}",
-            fingerprint=_sha(f"publish-delivery-{index}".encode()),
-            expected_tenant_head=index,
-        ),
-        intent=intent,
-        expected_intent=EffectsAbsent(),
-        current=prepared_acceptance().effects_request.current,
-        complete_current_origin_sources=(_effects_source(f"current-origin-{index}"),),
-        fence=prepared_acceptance().effects_request.command.fence,
-    )
-    retained = make_scoped_intent_retained_exchange(request)
-    references = retained.original_references
-    member = make_scoped_intent_member(intent)
-    result = PreparedScopedIntentPublication(
-        source_request_fingerprint=_sha(request.canonical_bytes()),
-        intent=intent,
-        original_references=references,
-        complete_owner_commitment=scoped_intent_complete_owner_commitment(
-            member, retained.original_sources
-        ),
-    )
-    return DeliveryEffectsExchangeV1(
-        delivery_id=accepted.delivery_id,
-        basis=basis,
-        precursor_request=precursor,
-        precursor_result=precursor_result,
-        intent_request=request,
-        intent_result=result,
-        acquisition_bytes=acquisition.canonical_bytes(),
-        mandate_bytes=mandate.canonical_bytes(),
-        retained_sources=retained.original_sources,
-    )
-
-
-def _conversation_entry(delivery_id: str, sequence: int, rendered: bytes) -> ConversationEntry:
-    return ConversationEntry(
-        tenant_id="tenant",
-        conversation_id="conversation",
-        entry_id=f"assistant/{delivery_id}",
-        sequence=sequence,
-        origin_channel_id="channel",
-        visible_channels=("channel",),
-        role="assistant",
-        accepted_bytes=rendered,
-        envelope=envelope(rendered),
-    )
-
-
-def _batch_values(command_id: str, records: tuple[OwnerRecordBytes, ...]) -> dict[str, object]:
-    digest = _sha(command_id.encode())
-    return {
-        "identity": {
-            "tenant_id": "tenant",
-            "command_id": command_id,
-            "command_fingerprint": digest,
-            "canonicalization_version": "chiplog.owner-publication.v1",
-        },
-        "authentication": {
-            "invocation": {
-                "issuance_id": "fixture-issued",
-                "issuance_fingerprint": _sha(b"fixture-issued"),
-                "broker_epoch": "fixture-epoch",
-                "broker_session": "fixture-session",
-                "runtime_generation": "fixture-generation",
-                "operation_subject": command_id,
-            },
-            "applicability_schema": "fixture.v1",
-            "applicability_bytes": b"fixture-applicability",
-            "applicability_fingerprint": _sha(b"fixture-applicability"),
-        },
-        "expected": {
-            "tenant_id": "tenant",
-            "tenant_frontier": 0,
-            "expected_materialization_commitment": _sha(b"fixture-materialization"),
-            "registry_head": "fixture-registry",
-            "registry_fingerprint": _sha(b"fixture-registry"),
-            "ordered_heads": (),
-            "complete_manifest_fingerprint": _sha(b"fixture-manifest"),
-        },
-        "complete_records": records,
-        "complete_batch_fingerprint": "0" * 64,
-    }
-
-
-def _complete_batch(
-    commands: tuple[OwnerCommandBytes, ...], records: tuple[OwnerRecordBytes, ...]
-) -> CompleteDeliveryBatchV2:
-    values = _batch_values("completion-accepted", records)
-    values.update(
-        loop_command=commands[0],
-        conversation_command=commands[1],
-        prepared_effects_commands=commands[2:-1],
-        terminal_work_command=commands[-1],
-    )
-    placeholder = CompleteDeliveryBatchV2.model_validate(values)
-    return placeholder.model_copy(
-        update={"complete_batch_fingerprint": completion_batch_fingerprint(placeholder)}
-    )
-
-
-def _rejected_batch(
-    commands: tuple[OwnerCommandBytes, ...], records: tuple[OwnerRecordBytes, ...]
-) -> RejectedCompletionBatchV1:
-    values = _batch_values("completion-rejected", records)
-    values.update(
-        loop_rejection_command=commands[0],
-        rejected_terminalization_command=commands[1],
-        conversation_no_change_command=commands[2],
-        terminal_work_command=commands[3],
-    )
-    placeholder = RejectedCompletionBatchV1.model_validate(values)
-    return placeholder.model_copy(
-        update={"complete_batch_fingerprint": completion_batch_fingerprint(placeholder)}
-    )
-
-
 async def accepted_completion_fixture(
     run_schema: Literal["v2", "v3"],
     work: Literal["nonempty", "empty", "nonempty2"] = "nonempty",
@@ -952,67 +499,6 @@ async def accepted_completion_fixture(
             )
         }
     )
-    source_cut = ConversationSourceCutV1(
-        tenant_id="tenant",
-        database_id="database",
-        tenant_commit_sequence=4,
-        materialization_commitment=_sha(b"conversation-materialization"),
-        expected_previous_entry=Present(head="principal/1", fingerprint=_sha(b"principal/1")),
-        source_selected_decision=_loop_head("decision"),
-        source_physical_record=_loop_head("physical"),
-        source_schema_id=run.schema_id,
-        source_bytes=run.canonical_bytes(),
-        source=ConversationCompletionSourceV1(
-            captured_run=original_run, selected_attempt=selected_attempt
-        ),
-    )
-    entries = tuple(
-        ConversationCompletionEntryV1(
-            delivery_id=item.delivery_id,
-            recipient_binding=item.selection,
-            entry=_conversation_entry(item.delivery_id, index + 2, item.rendered_bytes),
-        )
-        for index, item in enumerate(proposal.manifest.ordered_deliveries)
-    )
-    conversation_request = PrepareConversationCompletionV1(
-        command_id="conversation-complete",
-        source_cut=source_cut,
-        original_completion_request_bytes=original.canonical_bytes(),
-        loop_preparation_bytes=prepared.canonical_bytes(),
-        original_delivery_proposal_bytes=proposal.canonical_bytes(),
-        proposed_terminal_run=terminal,
-        proposed_terminal_run_head=run_ref(terminal),
-        proposed_acceptance_head=proposal.acceptance,
-        proposed_terminal_manifest=manifest,
-        proposed_terminal_manifest_head=manifest_ref(manifest),
-        proposed_accepted_delivery_manifest_bytes=proposal.manifest.canonical_bytes(),
-        ordered_assistant_entries=entries,
-    )
-    conversation_fp = conversation_source_request_fingerprint(conversation_request)
-    conversation_members = tuple(
-        make_conversation_canonical_member(
-            source_kind="COMPLETION",
-            source_request_fingerprint=conversation_fp,
-            entry=item.entry,
-            delivery_id=item.delivery_id,
-            recipient_binding_json=conversation_recipient_binding_json(item.recipient_binding),
-            source_heads_json=conversation_source_heads_json(
-                source_cut.source_selected_decision,
-                source_cut.source_physical_record,
-                source_cut.expected_previous_entry,
-            ),
-        )
-        for item in entries
-    )
-    conversation_result = PreparedConversationCompletionV1(
-        source_request_fingerprint=conversation_fp,
-        ordered_members=conversation_members,
-        complete_owner_commitment=conversation_complete_owner_commitment(conversation_members),
-    )
-    effects = tuple(
-        _effects_exchange(index, completion, observation, proposal, delivery)
-        for index, delivery in enumerate(proposal.manifest.ordered_deliveries)
-    )
     work_source = AcceptedCompletionWorkSourceV1(
         original_completion_request_bytes=original.canonical_bytes(),
         prepared_completion_bytes=prepared.canonical_bytes(),
@@ -1029,32 +515,11 @@ async def accepted_completion_fixture(
         terminal_manifest=manifest_ref(manifest),
         ordered_open_obligations=obligations,
     )
-    work_result = _work(work_request)
-    assembly = PrepareCompleteAcceptanceAssemblyV1(
+    return AcceptedAssemblyFixture(
         original_completion_request=original,
         prepared_completion=prepared,
-        conversation_request=conversation_request,
-        conversation_result=conversation_result,
-        ordered_effects=effects,
         work_source=work_source,
         terminal_work_request=work_request,
-        terminal_work_result=work_result,
-    )
-    effect_members = tuple(make_scoped_intent_member(item.intent_result.intent) for item in effects)
-    records = (
-        _owner("agent_loop", delivery_member),
-        _owner("agent_loop", manifest_member),
-        _owner("agent_loop", run_member),
-        *(_owner("conversation", item) for item in conversation_members),
-        *(_owner("effects", item) for item in effect_members),
-        *(_owner("agent_loop", item) for item in work_result.complete_records),
-    )
-    commands = acceptance_commands(assembly)
-    return AcceptedAssemblyFixture(
-        assembly=assembly,
-        batch=_complete_batch(commands, records),
-        expected_commands=commands,
-        expected_records=records,
     )
 
 
@@ -1063,7 +528,7 @@ async def rejected_completion_fixture(
 ) -> RejectedAssemblyFixture:
     """Return the semantic-rejection graph: aborted Run, no conversation/effects rows."""
     accepted = await accepted_completion_fixture(run_schema, "empty")
-    original = accepted.assembly.original_completion_request
+    original = accepted.original_completion_request
     assert isinstance(original, PrepareExecutionCompletion)
     aborted = _terminal_run(original.run, "ABORTED", "ExecutionRejected")
     reject = PreparedExecutionCompletionReject(
@@ -1109,77 +574,21 @@ async def rejected_completion_fixture(
             manifest_member.canonical_record_bytes + run_member.canonical_record_bytes
         ),
     )
-    accepted_cut = accepted.assembly.conversation_request.source_cut
-    conversation_request = PrepareConversationCompletionRejectedV1(
-        command_id="conversation-reject",
-        source_cut=accepted_cut,
-        original_completion_request_bytes=original.canonical_bytes(),
-        loop_rejection_bytes=reject.canonical_bytes(),
-        proposed_terminal_run=aborted,
-        proposed_terminal_run_head=terminalization_result.terminal_run_head,
-        preserved_trace=reject.preserved_trace,
-    )
-    conversation_result = PreparedConversationCompletionRejectedV1(
-        source_request_fingerprint=conversation_source_request_fingerprint(conversation_request),
-        no_conversation_change_commitment=conversation_no_change_commitment(),
-    )
-    source = RejectedCompletionWorkSourceV1(
-        original_completion_request_bytes=original.canonical_bytes(),
-        original_completion_reject_bytes=reject.canonical_bytes(),
-        rejected_terminalization_request_bytes=terminalization_request.canonical_bytes(),
-        rejected_terminalization_result_bytes=terminalization_result.canonical_bytes(),
-        terminal_manifest=manifest,
-        terminal_manifest_head=terminalization_result.terminal_manifest_head,
-        terminal_run=aborted,
-        terminal_run_head=terminalization_result.terminal_run_head,
-        ordered_open_obligations=(),
-    )
-    work_request = PrepareTerminalWork(
-        identity=WorkCommandIdentity(tenant_id="tenant", command_id="rejected-terminal-work"),
-        terminal_run=aborted,
-        original_terminalization_request=completion_terminal_work_source_bytes(source),
-        terminal_manifest=terminalization_result.terminal_manifest_head,
-        ordered_open_obligations=(),
-    )
-    work_result = _work(work_request)
-    assembly = PrepareRejectedCompletionAssemblyV1(
-        original_completion_request=original,
-        completion_reject=reject,
-        rejected_terminalization_request=terminalization_request,
-        rejected_terminalization_result=terminalization_result,
-        conversation_request=conversation_request,
-        conversation_result=conversation_result,
-        work_source=source,
-        terminal_work_request=work_request,
-        terminal_work_result=work_result,
-    )
-    rejection_member = make_completion_rejection_member(original, reject)
-    records = (
-        _owner("agent_loop", rejection_member),
-        _owner("agent_loop", manifest_member),
-        _owner("agent_loop", run_member),
-        *(_owner("agent_loop", item) for item in work_result.complete_records),
-    )
-    commands = rejected_commands(assembly)
     return RejectedAssemblyFixture(
-        assembly=assembly,
-        batch=_rejected_batch(commands, records),
-        expected_commands=commands,
-        expected_records=records,
+        rejected_terminalization_request=terminalization_request,
+        result=terminalization_result,
     )
 
 
 @dataclass(frozen=True)
 class AcceptedAssemblyFixture:
-    assembly: PrepareCompleteAcceptanceAssemblyV1
-    batch: CompleteDeliveryBatchV2
-    expected_commands: tuple[OwnerCommandBytes, ...]
-    expected_records: tuple[OwnerRecordBytes, ...]
+    original_completion_request: PrepareExecutionCompletion
+    prepared_completion: PreparedExecutionCompletion
+    work_source: AcceptedCompletionWorkSourceV1
+    terminal_work_request: PrepareTerminalWork
 
 
 @dataclass(frozen=True)
 class RejectedAssemblyFixture:
-    assembly: PrepareRejectedCompletionAssemblyV1
-    batch: RejectedCompletionBatchV1
-    expected_commands: tuple[OwnerCommandBytes, ...]
-    expected_records: tuple[OwnerRecordBytes, ...]
+    rejected_terminalization_request: PrepareRejectedCompletionTerminalizationV1
+    result: PreparedRejectedCompletionTerminalizationV1

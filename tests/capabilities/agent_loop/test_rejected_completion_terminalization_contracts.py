@@ -36,8 +36,8 @@ def test_rejected_terminalization_result_is_closed_and_has_no_caller_manifest_sl
 def test_exchange_revalidates_a_direct_model_copy_request() -> None:
     async def exercise() -> None:
         fixture = await rejected_completion_fixture("v3")
-        request = fixture.assembly.rejected_terminalization_request
-        result = fixture.assembly.rejected_terminalization_result
+        request = fixture.rejected_terminalization_request
+        result = fixture.result
         terminal.validate_rejected_terminalization_exchange(request, result)
         forged = request.model_copy(update={"source_cut_fingerprint": "0" * 64})
         with pytest.raises(ValueError, match="source cut fingerprint"):

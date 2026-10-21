@@ -18,7 +18,7 @@ from tests.support.completion_assembly import accepted_completion_fixture
 def test_h1_terminal_work_owner_returns_canonical_empty_result_over_ipc() -> None:
     async def exercise() -> None:
         fixture = await accepted_completion_fixture("v3", "empty")
-        request = fixture.assembly.terminal_work_request
+        request = fixture.terminal_work_request
         leaves = {
             "clock": ProductionClock(),
             "planning_store": ProductionPlanningStore(),

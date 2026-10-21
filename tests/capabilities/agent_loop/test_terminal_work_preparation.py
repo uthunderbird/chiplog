@@ -21,7 +21,7 @@ from chiplog.capabilities.agent_loop.post_terminal_contracts import (
 
 
 def _request(fixture: AcceptedAssemblyFixture) -> PrepareTerminalWork:
-    return fixture.assembly.terminal_work_request
+    return fixture.terminal_work_request
 
 
 def test_h1_zero_obligation_terminal_work_preserves_exact_source_and_result_bytes() -> None:
@@ -51,10 +51,7 @@ def test_h1_zero_obligation_terminal_work_preserves_exact_source_and_result_byte
             result.canonical_bytes()
             == preparation.prepare_h1_terminal_work(request).canonical_bytes()
         )
-        assert (
-            request.original_terminalization_request
-            == fixture.assembly.work_source.canonical_bytes()
-        )
+        assert request.original_terminalization_request == fixture.work_source.canonical_bytes()
 
     asyncio.run(exercise())
 

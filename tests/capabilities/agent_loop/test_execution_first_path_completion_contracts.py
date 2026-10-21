@@ -228,9 +228,7 @@ async def test_rehashed_frontier_cannot_hide_required_or_forbidden_heads(family:
 async def test_v1_request_bytes_remain_exact_through_versioned_decoder() -> None:
     from tests.support.completion_assembly import accepted_completion_fixture
 
-    original = (
-        await accepted_completion_fixture("v3", "empty")
-    ).assembly.original_completion_request
+    original = (await accepted_completion_fixture("v3", "empty")).original_completion_request
     raw = original.canonical_bytes()
     assert contracts.decode_completion_request(raw).canonical_bytes() == raw
     with pytest.raises(ValueError):
@@ -294,9 +292,7 @@ async def test_legacy_completion_owner_route_keeps_its_existing_result_bytes() -
         prepare_execution_completion,
     )
 
-    original = (
-        await accepted_completion_fixture("v3", "empty")
-    ).assembly.original_completion_request
+    original = (await accepted_completion_fixture("v3", "empty")).original_completion_request
     assert isinstance(original, PrepareExecutionCompletion)
     expected = prepare_execution_completion(original)
 
