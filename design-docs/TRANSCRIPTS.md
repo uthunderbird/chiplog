@@ -176,9 +176,11 @@ expectations шага, строит каждый вариант и зависи�
 Наличие синтаксически допустимого поля или capture ещё не доказывает исполнимость.
 
 `verification.loop_scenario` продолжает исполнять зарегистрированный
-[local-planning-receipt](transcripts/local-planning-receipt.md) через настоящий
-production loop. Он проверяет canonical input, порядок шагов, состояние до
-подтверждения и итоговый receipt. Неподдерживаемый контракт не получает PASS.
+[local-planning-receipt](transcripts/local-planning-receipt.md) через отдельную
+offline R13 simulation. Он проверяет canonical input, порядок шагов, состояние до
+подтверждения и итоговый receipt. Это функциональный сценарий planning adoption;
+его PASS не доказывает работу текущего native PostgreSQL application driver.
+Неподдерживаемый контракт не получает PASS.
 
 Общий запуск одного файла или каталога:
 
@@ -218,7 +220,7 @@ records, display и receipt; для остальных перечислены о
 - [Календарный блок после подтверждения](transcripts/calendar-proposal-confirmation.md) — design; уточнение времени, подтверждение, внешний результат.
 - [Пропущенное занятие](transcripts/fact-claim-without-plan-change.md) — design; запись сообщения пользователя без изменения плана.
 - [Потерянный ответ календаря](transcripts/unknown-calendar-outcome.md) — design; неопределённый внешний исход без повторного создания.
-- [Локальная запись в планы](transcripts/local-planning-receipt.md) — executable hermetic; текущий production loop.
+- [Локальная запись в планы](transcripts/local-planning-receipt.md) — executable hermetic; отдельная offline R13 simulation.
 - [Набор R13](transcripts/drafts/r13/STATEFUL-PROTOCOL.md#набор) — design; история, подтверждение, replay, completion и workspace.
 
 Набор R14–R17 использует тот же stateful-профиль. T01 и T03 выше сохраняют свои

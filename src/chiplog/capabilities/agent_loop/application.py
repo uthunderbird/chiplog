@@ -1,4 +1,4 @@
-"""One orchestration service shared by production and evaluation adapters."""
+"""Offline R13 orchestration with explicit planning proposal adoption."""
 
 from __future__ import annotations
 

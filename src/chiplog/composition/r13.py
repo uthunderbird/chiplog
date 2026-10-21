@@ -1,4 +1,4 @@
-"""Canonical offline R13 loop assembly for production and evaluation entrypoints."""
+"""Offline R13 simulation with planning adoption; separate from the native PG driver."""
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager

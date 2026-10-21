@@ -11,12 +11,14 @@ from chiplog.verification.transcripts import TranscriptCompileError, compile_tra
 SOURCE = Path(__file__).parents[2] / "design-docs/transcripts/local-planning-receipt.md"
 
 
-async def test_authored_local_receipt_executes_production_ports_and_retains_evidence(
+async def test_authored_local_receipt_executes_offline_simulation_and_retains_evidence(
     tmp_path: Path,
 ) -> None:
     artifact = tmp_path / "result.json"
     result = await run_scenario(SOURCE, tmp_path / "loop.sqlite", artifact)
     assert result["status"] == "PASS"
+    assert result["execution_kind"] == "OFFLINE_R13_SIMULATION"
+    assert {"production_manifest", "evaluation_manifest", "loop_id"}.isdisjoint(result)
     assert result["deployment"] == result["provider_execution"] == "HOLD"
     assert result["compiled_bundle_digest"] == compile_transcript(SOURCE).compiled_bundle_digest
     assert result == json.loads(artifact.read_bytes())

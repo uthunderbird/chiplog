@@ -641,3 +641,25 @@ artifact integrity сохранены. Ruff и format проходят; полн
 накопленными удалениями. После сверки с рассмотренным source diff каталог обновлён;
 `python3 .harness/scripts/checkpoint.py --strict-r8` проходит. Это обновление
 учитывает предыдущие срезы и не заменяет финальную полную регрессию.
+
+### OE-10 — offline planning-adoption сценарий сохранён по текущему требованию
+
+Проверка потребителей и холодный semantic mapping выявили непокрытый native PG
+эквивалент: model planning proposal → неизменный display → exact authenticated
+adoption → planning receipt. Native driver HOLDs изменяющие вызовы; его тест
+проверяет продолжение после отмены, а не planning adoption. PG planning.create
+покрывает прямое создание, но не эту цепочку. Удаление R13 loop сейчас потеряло бы
+действующее функциональное покрытие: неверный peer, подмену receipt, replay и stale
+display. Поэтому отдельный offline сценарий сохранён, бизнес-логика в PG не добавлена.
+
+Убрано ложное утверждение об evidence текущего native production path:
+docstrings/docs прямо называют offline simulation; artifact содержит
+`execution_kind=OFFLINE_R13_SIMULATION`, `offline_runtime_manifest`,
+`offline_evaluation_manifest`, `offline_loop_id`. Старых misleading полей нет.
+Тест подтверждает маркировку и сохранение HOLD. Общие R13/calendar/workspace
+компоненты остаются ради конкретного исполняемого сценария, а не совместимости.
+
+`uv run pytest -q tests/evaluation/test_loop_scenario.py
+tests/evaluation/test_stateful_transcripts.py tests/composition/test_loop_adoption.py`
+— 61 passed. Ruff, mypy и строгий каталог проходят. Это проверка offline пути;
+native PG evidence остаётся в его собственных функциональных тестах.

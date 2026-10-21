@@ -1,4 +1,4 @@
-"""Transcript boundary driver; all Run/Turn decisions execute the production service."""
+"""Offline R13 transcript simulation; not native PostgreSQL execution evidence."""
 
 from __future__ import annotations
 
@@ -140,9 +140,10 @@ async def run_scenario(source: Path, database: Path, artifact: Path) -> dict[str
             "scenario_id": compiled.scenario_id,
             "source_digest": compiled.source_digest,
             "compiled_bundle_digest": compiled.compiled_bundle_digest,
-            "production_manifest": R13_PRODUCTION_MANIFEST.fingerprint(),
-            "evaluation_manifest": R13_EVALUATION_MANIFEST.fingerprint(),
-            "loop_id": R13_PRODUCTION_MANIFEST.application_loop_id,
+            "execution_kind": "OFFLINE_R13_SIMULATION",
+            "offline_runtime_manifest": R13_PRODUCTION_MANIFEST.fingerprint(),
+            "offline_evaluation_manifest": R13_EVALUATION_MANIFEST.fingerprint(),
+            "offline_loop_id": R13_PRODUCTION_MANIFEST.application_loop_id,
             "implementation_catalog": digest_file(
                 Path(__file__).parents[1] / "inert_shared/r8-implementation-v1.json"
             ),

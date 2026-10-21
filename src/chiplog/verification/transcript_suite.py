@@ -123,7 +123,7 @@ async def _run_document(path: Path, compiled: CompiledTranscript) -> dict[str, A
                 {
                     "kind": "runner",
                     "name": compiled.scenario_id,
-                    "reason": "no registered production scenario adapter",
+                    "reason": "no registered scenario execution adapter",
                 }
             ],
         }
