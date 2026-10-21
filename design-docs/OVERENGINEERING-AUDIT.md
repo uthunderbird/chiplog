@@ -121,17 +121,12 @@ Replay уже возвращается после первого snapshot, не 
 
 ### OE-02. Оставшаяся H1 inventory/enrollment инфраструктура
 
-[h1_inventory_call](../src/chiplog/composition/h1_inventory_call.py),
-[baseline](../src/chiplog/composition/h1_inventory_baseline.py),
-[completion](../src/chiplog/composition/h1_inventory_completion.py),
-[workspace_planning](../src/chiplog/composition/h1_inventory_workspace_planning.py)
-и [leaf_contracts](../src/chiplog/composition/h1_inventory_leaf_contracts.py)
-образуют отдельную грамматику scope/record edges. Импорты найденной семьи
+Удалённые `h1_inventory_{call,baseline,completion,workspace_planning,leaf_contracts}`
+образовывали отдельную грамматику scope/record edges. Импорты найденной семьи
 остаются внутри неё и в тестах.
-[launch_enrollment](../src/chiplog/composition/h1_launch_enrollment.py),
-[registration_custody](../src/chiplog/composition/h1_registration_custody.py)
-и [completion_readplan_registry](../src/chiplog/composition/h1_completion_readplan_registry.py)
-сохраняют enrollment, marker/lock/resource lifecycle и исторические планы чтения.
+Удалённые `h1_launch_enrollment`, `h1_registration_custody`
+и `h1_completion_readplan_registry` сохраняли enrollment, marker/lock/resource
+lifecycle и исторические планы чтения.
 Текущий native PG путь их не монтирует; scope прямо отменяет H1 whole-runtime closure.
 
 Меньший вариант: удалить замкнутые семьи вместе с исключительными тестами/support,
@@ -517,3 +512,25 @@ INITIALIZE, отказ до mutating constructors, полный/частичны
 `uv run pytest -q tests/composition/test_r14_startup_trust_prefix.py` — 24 passed
 на реальных owner subprocess. Ruff и format check проходят. Холодная проверка
 плана не нашла блокеров или дополнительных потребителей удалённых файлов.
+
+### OE-02 — отменённая H1 inventory/enrollment подсистема
+
+Удалены восемь source-модулей inventory, enrollment, custody и read-plan registry,
+их одиннадцать исключительных тестовых модулей и три support-модуля.
+Прямых, динамических или manifest-потребителей за пределами этой связки не найдено;
+холодная проверка дополнительно сопоставила публичные имена с остальным source.
+Нового registry или compatibility API не добавлено.
+
+`test_prepared_policy_owner_route.py` сохранён: импорт двух ID из installed helper
+заменён теми же локальными значениями. AST всех его функций совпадает с исходным;
+проверки подписи, чужого ключа, stale observation и result binding остаются.
+Shared workspace policy/DTO и r12/r13 workspace consumers не менялись.
+
+С локальным `CHIPLOG_TEST_POSTGRES_DSN` команда `uv run pytest -q
+tests/platform/test_prepared_policy_owner_route.py
+tests/composition/test_postgres_two_seals.py
+tests/composition/test_postgres_completion.py
+tests/composition/test_postgres_ingress.py` — 26 passed.
+`uv run pytest --collect-only -q` собирает оставшийся набор без ошибок;
+`mypy` по настроенному source scope проходит. Ruff и format check изменённого
+policy-route теста проходят. Каталог источников обновляется перед full integration.

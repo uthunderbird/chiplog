@@ -1,9 +1,4 @@
-"""Mounted witnesses for the J7 prepared-policy owner route.
-
-These tests use the installed H1 runtime, rather than calling trust durability
-directly: the public broker method alone may select an owner result and make
-its proposal durable.
-"""
+"""Signed calls, refusals and result binding at the prepared-policy owner route."""
 
 from __future__ import annotations
 
@@ -34,16 +29,13 @@ from chiplog.capabilities.deployment_trust.prepared_external_delivery_policy_own
     PreparedSelfDeliveryPolicyRejectedV1,
     PreparedSelfDeliveryPolicyResultV1,
 )
-from tests.support.h1_installed_launch import (
-    DATABASE,
-    TENANT,
-)
 from tests.support.platform.prepared_policy_owner_route import (
     _OPERATOR_KEY,
     _signed_source,
 )
 
 _FOREIGN_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(33, 65)))
+TENANT, DATABASE = "hermetic-tenant", "hermetic-database"
 
 
 def _head(identity: str, body: bytes = b"j7") -> ExactHead:
