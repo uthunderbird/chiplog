@@ -207,20 +207,13 @@ there is no basis to invent a parallel storage/read manifest. Full actual graph
 coverage, tuple registration and all no-write/current recovery evidence are still
 required, not inferred from the existence of those constants.
 
-## Frozen authentic legacy input
+## Current startup integrity inputs
 
-Before changing the initializer, the real R7 runtime at revision
-`08465384aa9127909909de49d9a9eb560a8b3cd4` produced a bootstrap-only V1 bundle.
-The fixture `tests/composition/fixtures/r14_legacy_genesis_v1.json.gz` preserves
-all ten closed files, including authenticated journal/key/head and exact trust
-materialization. Its adjacent Markdown file records the reproduction command,
-public fixture credentials and artifact SHA256; the capture script lives at
-`tests/support/r14_legacy_genesis_capture.py` and requires that producer revision.
-No test regenerates the historical fixture. Command `.venv/bin/pytest -q
-tests/composition/test_r14_legacy_genesis_fixture.py --tb=short` passed one test
-in 0.76s: complete historical authentication succeeded and every restored file
-remained byte-identical. This supplies preserved V1 input for the future startup
-refusal test; it does not implement version admission or its no-write guarantee.
+Startup integrity tests bootstrap a fresh database through the current runtime,
+then corrupt or remove the selected durable sources. Historical fixture capture
+and byte-compatibility promises were removed during overengineering cleanup.
+The corruption, prefix recovery and refusal-before-construction assertions remain
+in `tests/composition/test_r14_startup_trust_prefix.py`.
 
 ## Executed preparation checks
 

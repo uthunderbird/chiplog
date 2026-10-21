@@ -490,10 +490,8 @@ fallback, legacy acceptance и счётчики вызовов parser/writer. С
 payload roundtrip, неизменность записанного префикса, oversized integer refusal,
 HMAC/цепочка и отказ при повреждении durable sources.
 
-Удалён исключительно исторический readonly V1 bundle test. Сам fixture пока
-используется функциональными corruption/startup tests в
-`test_r14_startup_trust_prefix.py`: их нужно перевести на актуальную подготовку
-данных перед удалением fixture, сохранив проверки отказа и восстановления.
+Удалён исключительно исторический readonly V1 bundle test. Оставшийся fixture
+затем удалён отдельным срезом ниже с сохранением startup integrity tests.
 
 Проверка перед финальным удалением одного исторического теста: `uv run pytest -q
 tests/capabilities/deployment_trust/test_output_scope_owner_seam.py
@@ -504,3 +502,18 @@ tests/platform/test_existing_only_decision_journal.py
 tests/composition/test_journal_restart_and_plan.py` — 121 passed.
 Эта же функциональная выборка повторяется checkpoint после удаления.
 Ruff и mypy двух изменённых source проходят. Остальные пункты остаются в очереди.
+
+### Исторический genesis fixture
+
+Startup integrity tests теперь готовят базу через текущий `open_r7_runtime` и
+bootstrap, а не распаковывают архив старого checkout. Все прежние assertions
+сохранены (AST-сравнение с заменой только tenant literal), включая пять записей
+INITIALIZE, отказ до mutating constructors, полный/частичный/отсутствующий prefix,
+изменение источников и восстановление без повторного journal append.
+Удалены gzip fixture, инструкция его воспроизведения и capture script, который
+требовал историческую ревизию. Текущий producer по-прежнему использует собственную
+схему genesis V1; её номер сам по себе не является compatibility-механикой.
+
+`uv run pytest -q tests/composition/test_r14_startup_trust_prefix.py` — 24 passed
+на реальных owner subprocess. Ruff и format check проходят. Холодная проверка
+плана не нашла блокеров или дополнительных потребителей удалённых файлов.

@@ -1,7 +1,5 @@
-"""Real historical bundle refusal must precede all mutating startup constructors."""
+"""Current bundle integrity refusal precedes all mutating startup constructors."""
 
-import base64
-import gzip
 import hashlib
 import json
 import os
@@ -27,24 +25,22 @@ from chiplog.platform._sqlite import EventAppender, SQLiteMaterializer
 from chiplog.platform.authority_gate import AuthorityGate
 from chiplog.platform.read_ledger import BrokerReadLedger
 from chiplog.platform.startup_trust_prefix import StartupTrustPrefixIntegrityError
-from tests.support.r14_legacy_genesis_capture import _CapturedBundle
 
 
-def _restore_legacy(directory: Path) -> tuple[Path, bytes]:
-    fixture = Path(__file__).with_name("fixtures") / "r14_legacy_genesis_v1.json.gz"
-    raw = fixture.read_bytes()
-    assert hashlib.sha256(raw).hexdigest() == (
-        "187a44494e4d41286ebd5207e0811bfe5bb516fb769d0699a0ad95d3a83f5543"
-    )
-    capture: _CapturedBundle = json.loads(gzip.decompress(raw))
-    for name, item in capture["files"].items():
-        assert Path(name).name == name
-        body = base64.b64decode(item["bytes_b64"], validate=True)
-        assert hashlib.sha256(body).hexdigest() == item["sha256"]
-        path = directory / name
-        path.write_bytes(body)
-        path.chmod(item["mode"])
-    return directory / capture["database_name"], capture["operator_secret"].encode()
+async def _bootstrap_current(directory: Path) -> tuple[Path, bytes]:
+    database = directory / "current.sqlite3"
+    secret = b"startup-test-secret"
+    async with r7_planning.open_r7_runtime(
+        database, tenant_id="startup-test-tenant", operator_secret=secret
+    ) as runtime:
+        await runtime.bootstrap(
+            database_instance_id="startup-test-database",
+            principal_id="startup-test-principal",
+            credential_id="startup-test-credential",
+            session_id="startup-test-session",
+            token="startup-test-token",
+        )
+    return database, secret
 
 
 def _files(directory: Path) -> dict[str, tuple[bytes, int]]:
@@ -71,7 +67,7 @@ def _files(directory: Path) -> dict[str, tuple[bytes, int]]:
 async def test_incomplete_trust_companions_refuse_before_startup_constructors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corruption: str
 ) -> None:
-    database, secret = _restore_legacy(tmp_path)
+    database, secret = await _bootstrap_current(tmp_path)
     trust_database = database.with_suffix(database.suffix + ".trust.sqlite3")
     with closing(sqlite3.connect(trust_database)) as connection:
         rows = connection.execute(
@@ -113,7 +109,7 @@ async def test_incomplete_trust_companions_refuse_before_startup_constructors(
         elif corruption == "extra_decision":
             connection.execute("INSERT INTO trust_decisions VALUES ('foreign', 'wrong')")
         else:
-            # The genuine fixture has INITIALIZE and BOOTSTRAP. Keep only the latter.
+            # Bootstrap writes INITIALIZE and BOOTSTRAP. Keep only the latter.
             assert connection.execute("SELECT count(*) FROM trust_decisions").fetchone()[0] >= 2
             connection.execute("DELETE FROM trust_records WHERE decision_id = ?", (decision_id,))
             connection.execute("DELETE FROM trust_decisions WHERE decision_id = ?", (decision_id,))
@@ -146,14 +142,14 @@ async def test_incomplete_trust_companions_refuse_before_startup_constructors(
     error: Exception | None = None
     try:
         async with r7_planning.open_r7_runtime(
-            database, tenant_id="legacy-fixture-tenant", operator_secret=secret
+            database, tenant_id="startup-test-tenant", operator_secret=secret
         ):
             entered.append("runtime-admitted")
     except Exception as observed:
         error = observed
     assert isinstance(error, StartupTrustPrefixIntegrityError), repr(error)
     assert error.__cause__ is not None
-    assert "operation=startup_trust_prefix tenant=legacy-fixture-tenant record=" in str(error)
+    assert "operation=startup_trust_prefix tenant=startup-test-tenant record=" in str(error)
     assert entered == [], f"integrity refusal happened after startup effects: {entered}"
     assert _files(tmp_path) == before
 
@@ -163,7 +159,7 @@ async def test_incomplete_trust_companions_refuse_before_startup_constructors(
 async def test_genuine_complete_prefix_and_absent_recover_exactly_without_journal_append(
     tmp_path: Path, materialization: str
 ) -> None:
-    database, secret = _restore_legacy(tmp_path)
+    database, secret = await _bootstrap_current(tmp_path)
     trust = database.with_suffix(database.suffix + ".trust.sqlite3")
     journal = database.with_suffix(database.suffix + ".trust-journal")
     journal_before = _journal_files(journal)
@@ -189,11 +185,11 @@ async def test_genuine_complete_prefix_and_absent_recover_exactly_without_journa
         trust.unlink()
     for _ in range(2):
         async with r7_planning.open_r7_runtime(
-            database, tenant_id="legacy-fixture-tenant", operator_secret=secret
+            database, tenant_id="startup-test-tenant", operator_secret=secret
         ) as runtime:
             observed = runtime._trust.verify()
             assert observed is not None
-            assert observed.tenant_id == "legacy-fixture-tenant"
+            assert observed.tenant_id == "startup-test-tenant"
         with closing(sqlite3.connect(trust)) as connection:
             assert (
                 connection.execute("SELECT * FROM trust_decisions ORDER BY rowid").fetchall()
@@ -218,7 +214,7 @@ def _journal_files(journal: Path) -> dict[str, bytes]:
 async def test_partial_bundle_namespace_refuses_without_creating_sources(
     tmp_path: Path, remnant: str
 ) -> None:
-    database, secret = _restore_legacy(tmp_path)
+    database, secret = await _bootstrap_current(tmp_path)
     trust = database.with_suffix(database.suffix + ".trust.sqlite3")
     if remnant == "missing-main":
         database.unlink()
@@ -228,7 +224,7 @@ async def test_partial_bundle_namespace_refuses_without_creating_sources(
     before = _files(tmp_path)
     with pytest.raises(StartupTrustPrefixIntegrityError):
         async with r7_planning.open_r7_runtime(
-            database, tenant_id="legacy-fixture-tenant", operator_secret=secret
+            database, tenant_id="startup-test-tenant", operator_secret=secret
         ):
             pytest.fail("partial namespace admitted")
     assert _files(tmp_path) == before
@@ -244,7 +240,7 @@ async def test_sql_time_journal_mutation_refuses_before_consuming_constructors(
 ) -> None:
     from chiplog.platform import startup_trust_prefix
 
-    database, secret = _restore_legacy(tmp_path)
+    database, secret = await _bootstrap_current(tmp_path)
     original = startup_trust_prefix.compare_trust_prefix
     journal = database.with_suffix(database.suffix + ".trust-journal")
     entered: list[str] = []
@@ -271,7 +267,7 @@ async def test_sql_time_journal_mutation_refuses_before_consuming_constructors(
     monkeypatch.setattr(IndependentTenantDecisionJournal, "for_authority_bundle", constructor)
     with pytest.raises(StartupTrustPrefixIntegrityError):
         async with r7_planning.open_r7_runtime(
-            database, tenant_id="legacy-fixture-tenant", operator_secret=secret
+            database, tenant_id="startup-test-tenant", operator_secret=secret
         ):
             pytest.fail("changed journal consumed")
     assert entered == []
@@ -284,7 +280,7 @@ async def test_existing_cut_is_held_through_store_setup_and_released_before_asyn
     from chiplog.architecture.r7_runtime import R7_PRODUCTION_MANIFEST
     from chiplog.platform.authority_gate import AuthorityGateError
 
-    database, secret = _restore_legacy(tmp_path)
+    database, secret = await _bootstrap_current(tmp_path)
     gate = AuthorityGate.for_database(database)
     original = IndependentTenantDecisionJournal.for_authority_bundle
     observed: list[str] = []
@@ -321,7 +317,7 @@ async def test_existing_cut_is_held_through_store_setup_and_released_before_asyn
     monkeypatch.setattr(EventAppender, "__aenter__", enter)
     async with r7_planning._open_runtime(
         database,
-        tenant_id="legacy-fixture-tenant",
+        tenant_id="startup-test-tenant",
         operator_secret=secret,
         runtime_type=r7_planning.R7PlanningRuntime,
         manifest=R7_PRODUCTION_MANIFEST,
@@ -338,7 +334,7 @@ async def test_final_journal_cut_cannot_hide_changed_trust_source(
 ) -> None:
     from chiplog.platform import startup_trust_prefix
 
-    database, secret = _restore_legacy(tmp_path)
+    database, secret = await _bootstrap_current(tmp_path)
     trust = database.with_suffix(database.suffix + ".trust.sqlite3")
     if absent:
         trust.unlink()
@@ -360,7 +356,7 @@ async def test_final_journal_cut_cannot_hide_changed_trust_source(
     )
     with pytest.raises(StartupTrustPrefixIntegrityError):
         async with r7_planning.open_r7_runtime(
-            database, tenant_id="legacy-fixture-tenant", operator_secret=secret
+            database, tenant_id="startup-test-tenant", operator_secret=secret
         ):
             pytest.fail("changed trust source admitted")
     assert len(calls) == 2
@@ -375,7 +371,7 @@ async def test_unmaterialized_journal_suffix_is_authenticated_before_constructor
 
     from chiplog.platform.r7_trust_durability import authenticate_trust_entries
 
-    database, secret = _restore_legacy(tmp_path)
+    database, secret = await _bootstrap_current(tmp_path)
     gate = AuthorityGate.for_database(database)
     journal = IndependentTenantDecisionJournal.for_authority_bundle(
         database.with_suffix(database.suffix + ".trust-journal"), authority_gate=gate
@@ -414,7 +410,7 @@ async def test_unmaterialized_journal_suffix_is_authenticated_before_constructor
     monkeypatch.setattr(IndependentTenantDecisionJournal, "for_authority_bundle", constructor)
     with pytest.raises(StartupTrustPrefixIntegrityError):
         async with r7_planning.open_r7_runtime(
-            database, tenant_id="legacy-fixture-tenant", operator_secret=secret
+            database, tenant_id="startup-test-tenant", operator_secret=secret
         ):
             pytest.fail("unauthenticated journal suffix admitted")
     assert entered == []
