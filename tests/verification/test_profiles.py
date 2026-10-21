@@ -13,7 +13,6 @@ from chiplog.verification import CLOSED_PROFILES, run_profile
 from chiplog.verification.artifacts import write_artifact
 from chiplog.verification.models import FixtureRegistration
 from chiplog.verification.registries import FIXTURES
-from tests.support.stage0_delegation import confirm_reports, prepare_reports
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,11 +49,21 @@ def test_unimplemented_profile_is_nonpassing_hold(profile: str) -> None:
     assert eligibility["adoption"] == "HOLD_ADOPTION"
 
 
-def test_stage0_evidences_r0_through_r8_and_holds_deployment_eligibility(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_stage0_aggregates_all_slices_and_holds_deployment_eligibility(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    reports = tmp_path / "stage0-children"
-    prepare_reports(request.config, monkeypatch, reports)
+    from chiplog.verification import runner
+    from chiplog.verification.models import CheckResult
+
+    reached: dict[str, tuple[str, ...]] = {}
+
+    def passed_slice(root: Path, increment: str, paths: tuple[str, ...]) -> CheckResult:
+        assert root == ROOT
+        assert paths
+        reached[increment] = paths
+        return CheckResult(f"stage0.{increment.lower()}", "PASS", "controlled outcome", {})
+
+    monkeypatch.setattr(runner, "_run_test_slice", passed_slice)
     result, artifact = run_profile(ROOT, "stage0")
 
     assert result["status"] == "PASS"
@@ -76,7 +85,20 @@ def test_stage0_evidences_r0_through_r8_and_holds_deployment_eligibility(
         "adoption": "HOLD_ADOPTION",
     }
     assert json.loads(artifact.read_text()) == result
-    confirm_reports(request.config, result, reports)
+    assert reached == runner.stage0_test_slices()
+    assert tuple(reached) == tuple(f"R{number}" for number in range(1, 9))
+
+
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_slice_subprocess_propagates_actual_exit_status(tmp_path: Path, succeeds: bool) -> None:
+    from chiplog.verification import runner
+
+    probe = tmp_path / "test_slice_probe.py"
+    probe.write_text(f"def test_probe():\n    assert {succeeds!r}\n")
+    result = runner._run_test_slice(ROOT, "R1", (str(probe),))
+    assert result.status == ("PASS" if succeeds else "FAIL")
+    assert result.observed["returncode"] == (0 if succeeds else 1)
+    assert result.observed["command"] == ["uv", "run", "pytest", "-q", str(probe)]
 
 
 @pytest.mark.parametrize(

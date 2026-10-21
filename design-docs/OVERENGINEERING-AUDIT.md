@@ -297,7 +297,7 @@ simulator, назвать его отдельный сценарий и пере
 вызывает stage0; [runner:231](../src/chiplog/verification/runner.py#L231)
 запускает pytest для восьми frozen slices. Это не рекурсивный полный suite.
 Чтобы не исполнять те же cases ещё раз во внешнем наборе,
-[stage0_delegation](../tests/support/stage0_delegation.py#L49) меняет collection,
+удалённый `tests/support/stage0_delegation.py` менял collection,
 удаляет внешние items, пишет дочерние phase reports и сверяет covered union.
 Его собственные meta-tests добавляют ещё subprocess scenarios.
 
@@ -623,3 +623,21 @@ tests/verification/test_manifest_mutants.py` — 85 passed.
 Полная collection, mypy по source и Ruff изменённых файлов проходят.
 Холодная проверка не нашла runtime-потребителей или блокеров. Историческая
 `quality/test-migration.json` не используется как текущий selector registry.
+
+### OE-11 — один полный pytest вместо вложенной оркестрации
+
+Profile aggregation теперь испытывает управляемые исходы всех R1–R8 срезов,
+их точные непустые selectors, PASS/FAIL и неизменный HOLD eligibility.
+Два ограниченных настоящих subprocess probe проверяют returncode 0/1 и PASS/FAIL.
+Standalone stage0 CLI сохраняет свои реальные срезы; полный pytest больше
+не вызывает их из profile regression test. Удалены plugin collection-dedup,
+coverage receipts и их исключительные meta-tests; PostgreSQL plugin сохранён.
+Каждый оставшийся функциональный case должен исполниться обычным полным pytest.
+
+`uv run pytest -q tests/verification/test_profiles.py tests/verification/test_stage1.py`
+— 40 passed. Проверки failed increment, malformed registry, unknown profiles и
+artifact integrity сохранены. Ruff и format проходят; полная collection успешна.
+Первый прогон обнаружил ожидаемую строгую несовместимость старого каталога с
+накопленными удалениями. После сверки с рассмотренным source diff каталог обновлён;
+`python3 .harness/scripts/checkpoint.py --strict-r8` проходит. Это обновление
+учитывает предыдущие срезы и не заменяет финальную полную регрессию.
